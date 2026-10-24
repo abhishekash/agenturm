@@ -46,6 +46,43 @@ class NativeSessionTests(unittest.TestCase):
         self.assertFalse(thread.alive)
         self.assertEqual(thread.calls, 2)
 
+    def test_codex_turn_aborted_clears_pending_status_and_emits_interruption(self):
+        session = self.session('Codex')
+        rows = [
+            {'type': 'event_msg', 'timestamp': '2026-10-24T12:00:00Z',
+             'payload': {'type': 'task_started', 'turn_id': 'turn-1'}},
+            {'type': 'response_item', 'timestamp': '2026-10-24T12:00:01Z',
+             'payload': {'type': 'function_call', 'call_id': 'call', 'name': 'exec'}},
+            {'type': 'event_msg', 'timestamp': '2026-10-24T12:00:02Z',
+             'payload': {'type': 'turn_aborted', 'turn_id': 'turn-1'}},
+        ]
+        self.append(session, *rows)
+        self.assertEqual(session.run_state, 'interrupted')
+        self.assertEqual(session.waiting_for, '')
+        self.assertFalse(session.pending_tools)
+        self.assertGreater(session.last_record_ns, session.state_since - 1)
+
+    def test_new_codex_user_message_resumes_and_clears_old_wait(self):
+        session = self.session('Codex')
+        session.run_state, session.waiting_for = 'waiting', 'Approval'
+        self.append(session, {'type': 'event_msg', 'timestamp': '2026-10-24T12:00:00Z',
+            'payload': {'type': 'item_completed', 'item': {'type': 'UserMessage', 'content': 'Continue'}}})
+        self.assertEqual(session.run_state, 'running')
+        self.assertEqual(session.waiting_for, '')
+
+    def test_codex_final_answer_closes_the_turn_even_without_a_following_task_complete(self):
+        session = self.session('Codex')
+        self.append(session,
+            {'type': 'event_msg', 'timestamp': '2026-10-24T12:00:00Z',
+             'payload': {'type': 'task_started', 'turn_id': 'turn-1'}},
+            {'type': 'event_msg', 'timestamp': '2026-10-24T12:00:05Z',
+             'payload': {'type': 'item_completed', 'turn_id': 'turn-1',
+                         'item': {'type': 'AgentMessage', 'phase': 'final_answer', 'content': 'Done'}}})
+        self.assertEqual(session.run_state, 'completed')
+        with self.store._connect() as db:
+            attrs = json.loads(db.execute("SELECT attributes FROM spans WHERE name='agent.run'").fetchone()[0])
+        self.assertEqual(attrs['agent.run.state'], 'completed')
+
     def test_mcp_configuration_inventory_reads_names_only_across_client_formats(self):
         codex = self.root / 'config.toml'
         claude = self.root / '.mcp.json'

@@ -121,6 +121,31 @@ class ObservatoryTest(unittest.TestCase):
         with self.assertRaises(sqlite3.ProgrammingError):
             db.execute("SELECT 1")
 
+    def test_derived_refresh_close_consumes_interrupt_during_join(self):
+        store = Store(Path(self.temp.name) / "derived.db", async_derived_refresh=True)
+
+        class InterruptedOnce:
+            alive = True
+            calls = 0
+
+            def is_alive(self):
+                return self.alive
+
+            def join(self, timeout=None):
+                self.calls += 1
+                if self.calls == 1:
+                    raise KeyboardInterrupt
+                self.alive = False
+
+        thread = InterruptedOnce()
+        store._derived_thread = thread
+        store.close()
+        self.assertFalse(thread.alive)
+        self.assertIsNone(store._derived_thread)
+        self.assertEqual(thread.calls, 2)
+        # Closing again stays safe after the thread reference was cleared.
+        store.close()
+
     def test_native_dedup_and_no_double_count(self):
         self.assertEqual(stat.S_IMODE(Path(self.store.path).stat().st_mode), 0o600)
         root = normalize_native({"trace_id": TID, "span_id": ROOT, "parent_span_id": None,

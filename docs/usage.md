@@ -67,7 +67,7 @@ It reads actual logged activity as files update, including already running sessi
 
 Native session capture includes bounded text and content by default. Recognizable credentials and sensitive structured fields are redacted before storage; this is best effort. Opaque/encrypted reasoning, private reasoning text, binary payloads, process environments and credential files are excluded. Content is limited to 8,000 characters per activity record, with nested fields bounded to 2,000 characters and at most 60 entries. Source schemas and upstream truncation can leave gaps. Use `serve --metadata-only` or `cockpit --metadata-only` for a receiver that omits native message text, commands and results. This setting controls future ingestion and does not erase previously stored content.
 
-Connections show **RECENT** when a file changed within 35 seconds and **IDLE** otherwise; these describe observed file activity. Process inventory is reported separately and is not an inferred session-to-process mapping. Token usage comes from records; input counts include repeated/cached context and are not a billable-cost estimate. Costs remain unknown when not reported. Model-call latency is marked unknown when the log has no start time.
+The **Working agents** headline counts unfinished, actively observed turns and names their runtimes; total sessions and open host processes are separate. A quiet model/tool call does not become idle after 35 seconds. On Linux, exact open session-file matches provide process/child CPU and I/O evidence; shared working directories are never used to guess a session-to-process match. Token usage comes from records; input counts include repeated/cached context and are not a billable-cost estimate. Costs remain unknown when not reported. Model-call latency is marked unknown when the log has no start time.
 
 Discovery scans every 10 seconds and tails discovered files every second. It selects up to 50 Codex/Claude Code/Pi files modified within the past 24 hours and up to 50 OpenCode sessions with recent session or message activity, importing at most the last 8 MiB initially per file. Pi sessions are read from `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`). OpenCode supports both the legacy `message`/`part` tables and current `session_message` records, including recent records whose parent session row is absent. If a limit is reached, the terminal health line reports how many sessions are outside the visible window. Summaries may cover only part of a long session. Codex response IDs, Claude message IDs, and Pi message IDs prevent duplicate usage entries on reread; older Codex cumulative token snapshots are handled separately. A version with a different log schema may expose less activity. `GET /api/health` reports discovery status, session/task snapshots, runtime metadata, source count, read errors, and skipped malformed records. `GET /api/activity?limit=100&service=codex&domain=shell&q=...` exposes a bounded, searchable activity view from the latest 100 observed traces. The terminal shows up to 100 recent events, with full trace investigation available separately.
 
@@ -113,10 +113,11 @@ follow the same bounded, redacted content policy as other native sources; pass
 `--metadata-only` to omit those payloads and task text. Discovery covers the 50
 most recently updated sessions from the last 24 hours, up to 30 assistant
 messages per session, 200 tool parts per message, and 100 checklist items per
-session. OpenCode's internal schema
-can change; use OTLP for a stable cross-version integration. Its session label
-is based on database update recency, not proof of a live process; Goechala
-does not infer a waiting-for-approval state from inactivity.
+session. Both legacy session metadata and V2 `session_v2` metadata are supported,
+with V2 taking precedence for migrated IDs. User/assistant and idle-outcome records
+determine running, completed, interrupted, and failed status independently of
+the bounded transcript window. OpenCode's internal schema can change; use OTLP
+for a stable cross-version integration. Inactivity does not imply an approval wait.
 
 ### Optional Python SDK capture
 
@@ -159,7 +160,7 @@ The Metrics view shows the latest stored point for each instrument with its valu
 
 Filters stay with their view when switching tabs. A task search in Agents does not hide MCP calls or reduce the selected agent's recent-work feed. **Clear** resets that view's query; the session Scope control applies across views. Overview counters retain the inventory for the selected session scope. The **Errors** button in Activity and MCP Calls filters failures within the current results; it does not change the inventory counts. **a** also resets these error filters. Tables prioritize subject and status columns in narrow terminals; lower-priority metadata returns when widened, and complete records remain available in the inspector. Inspectors wrap long text to the panel width.
 
-MCP shows reported servers, tools or methods, state, duration, arguments/results and trace/span IDs. It includes protocol methods such as `tools/call`, `tools/list`, `resources/read`, and `prompts/get` when telemetry records them. Calls without a reported server remain visible under **Not reported**; Goechala does not guess their server. Tool execution spans are joined to transport calls to fill in arguments or results when the transport span omits them. Explicit MCP `isError` results mark the run and call as failed, appear in error filters, and create an evidence-linked finding even when the producing span has no error status. The trace view shows a parent-linked span tree; unknown durations remain “not reported”. “Error” describes recorded errors within a trace; “Active · errors” means a logged active turn also contains an error. Agent “Recent/Idle” states describe observed session activity. Live process counts exclude zombie/exited states and do not claim a session-to-PID mapping.
+MCP shows reported servers, tools or methods, state, duration, arguments/results and trace/span IDs. It includes protocol methods such as `tools/call`, `tools/list`, `resources/read`, and `prompts/get` when telemetry records them. Calls without a reported server remain visible under **Not reported**; Goechala does not guess their server. Tool execution spans are joined to transport calls to fill in arguments or results when the transport span omits them. Explicit MCP `isError` results mark the run and call as failed, appear in error filters, and create an evidence-linked finding even when the producing span has no error status. The trace view shows a parent-linked span tree; unknown durations remain “not reported”. “Error” describes recorded errors within a trace; “Active · errors” means a logged active turn also contains an error. Live host process counts exclude zombie/exited states and do not imply that every open terminal is working on a turn.
 
 The feed waits two seconds between refreshes and preserves the event being read as new records arrive. Independent reads use at most four workers; inventory and findings are cached for five seconds unless their scope changes. Only the visible view is rendered; hidden views refresh when activated. Activity, MCP Calls, and Traces have **Older**, **Newer**, and **Latest** controls (shortcuts **]**, **[**, and **l**) to browse saved records in pages of 200 events, 100 MCP calls, or 100 traces. Search and scope changes return that view to its latest matching page. Activity history includes saved logs beyond a trace's preview window. The selected trace initially shows 100 spans; related-trace navigation also loads its exact target span and up to eight missing ancestors. MCP overview counts cover the latest loaded operations in scope. Global token totals include stored history and repeated/cached context; costs remain unreported when telemetry has no price. History controls require the updated receiver; if a separate receiver is already running, restart it after updating.
 
@@ -410,10 +411,19 @@ prompts. Turn Prompts off to return to the full activity stream.
 
 Status comes from native lifecycle records: **Working**, **Waiting**, **Completed**,
 or **Interrupted**. A known input request shows **User input**; a pending tool shows
-**Tool response** and its name. After 35 seconds without new evidence, an unfinished
-session shows **No updates**. That does not prove the process stopped or that an
-approval is required. Unrecognized/missing lifecycle records remain **Unknown**.
-SDK connections report connection state separately from native session state.
+**Tool response** and its name. Unfinished turns with quiet logs show **Quiet work**
+(**Working (quiet)** in the inspector);
+CPU/I/O progress from an exactly matched session process or its children can support
+**Processing** or **Tool running**. These are activity signals, not proof that a model
+request is making useful progress. Explicit approval/input waits persist until resolved.
+
+After at least five minutes without records or observed process progress, a matched
+live session shows **May be stalled** (**Possibly stalled** in the inspector), not a definitive hang. Without a process match,
+the status is **Unconfirmed** instead. **Monitor delayed** or **Catching up** identifies
+collector delay/unread data, not an agent failure. Details explain the status evidence.
+New transcript headers without started work are not counted as working. Completed
+turns stay completed even if their terminal process remains open. Unrecognized/missing
+lifecycle records remain **Unknown**. SDK connections report connection state separately.
 
 The **MCP Calls** view includes configured server names discovered in known local
 Codex, Claude Code, Cursor, Gemini CLI, GitHub Copilot CLI, OpenCode, and VS Code configuration files, alongside

@@ -147,6 +147,7 @@ class OpenCodeReader:
         self.omitted_sessions = 0
         self.errors = 0
         self.updated_ns = 0
+        self.checked_ns = 0
         self.schema_errors = 0
         self.skipped_oversized = 0
         self.skipped_budget = 0
@@ -261,16 +262,35 @@ class OpenCodeReader:
             return None
 
     def status_sessions(self):
-        """Refresh recency labels even when OpenCode has not written a new DB page."""
-        now_ns = time.time_ns()
-        result = []
-        for item in self.sessions:
-            entry = dict(item)
-            updated = entry.pop("last_update_ns", 0)
-            entry["run_state"] = "running" if updated and now_ns - updated < 35_000_000_000 else "idle"
-            entry["state_since_ns"] = updated
-            result.append(entry)
-        return result
+        """Keep lifecycle state; silence must not overwrite completion or running."""
+        return [{**item, "collector_updated_ns": self.checked_ns} for item in self.sessions]
+
+    def _lifecycle(self, db, table, columns, session_id):
+        """Read status independently of rotating/budget-limited transcript windows."""
+        order = '"seq" DESC,"id" DESC' if 'seq' in columns else ('"time_created" DESC,"id" DESC' if 'time_created' in columns else '"id" DESC')
+        data = (f'CASE WHEN length(CAST("data" AS BLOB))<={MAX_PAYLOAD_BYTES} '
+                'AND json_valid("data") THEN "data" ELSE \'{}\' END')
+        role = '"type"' if 'type' in columns else f'json_extract({data},\'$.role\')'
+        stamp = '"time_updated"' if 'time_updated' in columns else '"time_created"' if 'time_created' in columns else '0'
+        row = db.execute(
+            f'SELECT {role} AS role,{stamp} AS stamp,'
+            f'substr(json_extract({data},\'$.outcome\'),1,100) AS outcome,'
+            f'substr(json_extract({data},\'$.finish\'),1,100) AS finish,'
+            f'json_extract({data},\'$.time.completed\') AS completed '
+            f'FROM "{table}" WHERE "session_id"=? AND {role} IN (\'user\',\'assistant\',\'idle\') '
+            f'ORDER BY {order} LIMIT 1', (session_id,)).fetchone()
+        if not row:
+            return "unknown", 0, "No lifecycle record was found."
+        state = "running"
+        if row['role'] == 'idle':
+            state = {"succeeded": "completed", "failed": "error", "interrupted": "interrupted"}.get(row['outcome'], "idle")
+        elif table == 'message' and row['role'] == 'assistant':
+            if row['finish'] in {'error', 'failed'}:
+                state = 'error'
+            elif (row['completed'] or row['finish'] in {'stop', 'end_turn'}) and row['finish'] not in {'tool-calls', 'tool_calls'}:
+                state = 'completed'
+        evidence = f"OpenCode recorded {row['role']}" + (f" ({row['outcome']})" if row['outcome'] else '') + "."
+        return state, timestamp(row['stamp']), evidence
 
     def _plan_progress(self, db, tables, session_id, trace_id, root_span_id, updated_ns):
         """Convert OpenCode's durable todo checklist into a deduplicated progress event."""
@@ -333,6 +353,7 @@ class OpenCodeReader:
             self.backlog_records = 0
             return 0
         if fingerprint == self.fingerprint and not self.backlog_records and time.monotonic() - self._last_refresh < LOOKBACK_REFRESH_SECONDS:
+            self.checked_ns = time.time_ns()
             return 0
         self.payload_bytes = 0
         self.budget_excluded_bytes = 0
@@ -355,7 +376,9 @@ class OpenCodeReader:
                 db.execute("PRAGMA busy_timeout=250")
                 db.execute("BEGIN")
                 tables = self._tables(db)
-                if "session" not in tables:
+                session_tables = [table for table in ("session_v2", "session")
+                                  if table in tables and {"id", "time_updated"} <= self._columns(db, table)]
+                if not session_tables:
                     self.schema_errors += 1
                     self.sessions = []
                     self.discovered_sessions = 0
@@ -367,23 +390,20 @@ class OpenCodeReader:
                     self.fingerprint = fingerprint
                     self._last_refresh = time.monotonic()
                     return 0
-                session_columns = self._columns(db, "session")
-                required = {"id", "time_updated"}
-                if not required <= session_columns:
-                    self.schema_errors += 1
-                    self.sessions = []
-                    self.discovered_sessions = 0
-                    self.omitted_sessions = 0
-                    self._message_revisions.clear()
-                    self._progress_revisions.clear()
-                    self._part_revisions.clear()
-                    self._payload_cursors.clear()
-                    self.fingerprint = fingerprint
-                    self._last_refresh = time.monotonic()
-                    return 0
+                session_columns = set().union(*(self._columns(db, table) for table in session_tables))
                 columns = [name for name in ("id", "project_id", "title", "directory", "time_created",
                             "time_updated", "agent", "model", "tokens_input", "tokens_output")
                            if name in session_columns]
+                # V2 metadata is authoritative for migrated IDs. Keep legacy
+                # sessions that have not migrated, without displaying duplicates.
+                selects = []
+                for table in session_tables:
+                    available = self._columns(db, table)
+                    fields = ','.join(f'"{name}"' if name in available else f'NULL AS "{name}"' for name in columns)
+                    suffix = (' WHERE NOT EXISTS (SELECT 1 FROM "session_v2" v2 WHERE v2.id="session".id)'
+                              if table == 'session' and 'session_v2' in session_tables else '')
+                    selects.append(f'SELECT {fields} FROM "{table}"{suffix}')
+                session_source = '(' + ' UNION ALL '.join(selects) + ')'
                 now_ns = time.time_ns()
                 cutoff_ms = (now_ns - LOOKBACK_NS) // 1_000_000
                 message_table = "message" if "message" in tables else "session_message" if "session_message" in tables else None
@@ -432,12 +452,12 @@ class OpenCodeReader:
                 active_join = f'LEFT JOIN ({activity_cte}) recent ON recent.session_id=s.id'
                 active_where = '(CAST(COALESCE(s.time_updated,0) AS INTEGER)>=? OR recent.session_id IS NOT NULL)'
                 self.discovered_sessions = int(db.execute(
-                    f'SELECT COUNT(*) FROM "session" s {active_join} WHERE {active_where}',
+                    f'SELECT COUNT(*) FROM {session_source} s {active_join} WHERE {active_where}',
                     (*active_params, cutoff_ms)).fetchone()[0])
                 self.omitted_sessions = max(0, self.discovered_sessions - MAX_SESSIONS)
                 expressions = [f'substr(s."{name}",1,4096) AS "{name}"' if name in {"title", "directory", "agent", "model"} else f's."{name}"' for name in columns]
                 expressions.append('MAX(CAST(COALESCE(s.time_updated,0) AS INTEGER),COALESCE(recent.activity_ns,0)) AS _last_activity_ns')
-                sql = (f'SELECT {",".join(expressions)} FROM "session" s {active_join} '
+                sql = (f'SELECT {",".join(expressions)} FROM {session_source} s {active_join} '
                        f'WHERE {active_where} ORDER BY _last_activity_ns DESC,s.id LIMIT ?')
                 rows = db.execute(sql, (*active_params, cutoff_ms, MAX_SESSIONS)).fetchall()
                 # Newer OpenCode builds can retain recent session_message rows
@@ -454,7 +474,7 @@ class OpenCodeReader:
                         continue
                     marks = ",".join("?" for _ in batch)
                     existing_activity_ids.update(str(row[0]) for row in db.execute(
-                        f'SELECT "id" FROM "session" WHERE "id" IN ({marks})', batch))
+                        f'SELECT "id" FROM {session_source} WHERE "id" IN ({marks})', batch))
                 orphan_ids = activity_ids - existing_activity_ids
                 self.discovered_sessions += len(orphan_ids)
                 self.omitted_sessions = max(0, self.discovered_sessions - MAX_SESSIONS)
@@ -515,6 +535,9 @@ class OpenCodeReader:
                             item["task"] = prompt
                     if not read_table or not {"id", "session_id", "data"} <= read_columns:
                         continue
+                    state, lifecycle_ns, evidence = self._lifecycle(db, read_table, read_columns, session_id)
+                    item.update(run_state=state, state_since_ns=lifecycle_ns,
+                                last_record_ns=lifecycle_ns, status_evidence=evidence)
                     msg_fields = [name for name in ("id", "session_id", "type", "time_created", "time_updated", "data") if name in read_columns]
                     order_by = ' ORDER BY "time_created" DESC' if "time_created" in read_columns else ""
                     messages, message_ids = self._payload_rows(db, read_table, msg_fields,
@@ -731,5 +754,6 @@ class OpenCodeReader:
         self._progress_revisions = progress_revisions
         self.fingerprint = fingerprint
         self.updated_ns = time.time_ns()
+        self.checked_ns = self.updated_ns
         self._last_refresh = time.monotonic()
         return len(accepted) + len(progress_logs)

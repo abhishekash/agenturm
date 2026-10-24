@@ -773,7 +773,16 @@ class Store:
         with self._derived_condition:
             self._derived_stopping = True
             self._derived_condition.notify_all()
-        self._derived_thread.join()
+        # Ctrl-C can land while waiting for the derived-refresh worker to
+        # drain its bounded queue; the stop flag is set, so keep draining
+        # instead of leaking a traceback through run_cockpit's finally block.
+        deadline = time.monotonic() + 15
+        while self._derived_thread.is_alive() and time.monotonic() < deadline:
+            try:
+                self._derived_thread.join(timeout=min(1, max(0, deadline - time.monotonic())))
+            except KeyboardInterrupt:
+                continue
+        self._derived_thread = None
 
     def _finding_logs(self, trace_id):
         with self._connect() as db:

@@ -139,7 +139,7 @@ def codex_activity(session, row, stamp):
                         {"result": output} if mcp else output,
                         "error" if mcp_failed(output) else "success" if mcp else "observed", mcp,
                         call_id=key if mcp else None, turn=pending[2] if pending else call_turn))
-    elif kind == "event_msg" and event in {"task_started", "task_complete", "task_aborted"}:
+    elif kind == "event_msg" and event in {"task_started", "task_complete", "task_aborted", "turn_aborted"}:
         action = "started" if event == "task_started" else "completed" if event == "task_complete" else "interrupted"
         out.append(emit(session, row, stamp, "agent", action, session.project or session.runtime,
                         {key: payload[key] for key in ("duration_ms", "time_to_first_token_ms") if key in payload}, action))

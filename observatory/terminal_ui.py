@@ -26,7 +26,8 @@ from textual.strip import Strip
 from textual.widgets import Button, Checkbox, DataTable, Input, RichLog, Select, Static, TabbedContent, TabPane, Tree
 
 from .terminal import clean, number, trace_name
-from .branding import NAME, AMBER, LAVENDER, MINT, ICE, masthead, shortcut_hints, SCOPE_HINTS
+from .session_status import session_health
+from .branding import NAME, AMBER, LAVENDER, MINT, ICE, masthead, shortcut_hints, SCOPE_HINTS, TOOL_TICKER
 from .themes import PALETTES, supported_themes, themed_style, themed_text
 from .ui_layout import column_layout
 from .ui_diagnostics import DiagnosticsScreen, FIRST_RUN
@@ -389,15 +390,9 @@ def sources(snapshot, include_reviews=False):
         review=entry.get('service')=='codex-review' or entry.get('model')=='codex-auto-review'
         if review and not include_reviews:
             continue
-        last=entry.get('last_activity') or {}
-        stamp=last.get('time_unix_nano') or 0
-        recent=bool(last and time.time()-stamp/1e9<35)
-        reported=entry.get('run_state','unknown')
-        state={'completed':'Completed','interrupted':'Interrupted','waiting':'Waiting','running':'Working'}.get(reported,'Active' if recent else 'Unknown')
-        if reported in {'running','waiting'} and not recent:
-            state='No updates'
-        result.append({**entry,'id':entry['source_id'],'review':review,'recent':recent,'stamp':stamp,
-                       'state':state,'spans':connection.get('span_count',0)})
+        health=session_health(entry,time.time_ns())
+        result.append({**entry,**health,'id':entry['source_id'],'review':review,
+                       'spans':connection.get('span_count',0)})
     for entry in connections.values():
         if 'local-session-log' in entry.get('integrations',[]):
             continue
@@ -420,15 +415,10 @@ def sources(snapshot, include_reviews=False):
         services=session.get('services') or []
         service=services[0] if len(services)==1 else ''
         stamp=session.get('last_unix_nano') or 0
-        recent=bool(stamp and time.time()-stamp/1e9<35)
         reported=session.get('latest_status','UNKNOWN')
         waiting_for=session.get('waiting_for') or ''
-        if reported in {'RUNNING','WAITING'}:
-            state=('No updates' if not recent else
-                   'Waiting' if reported=='WAITING' or waiting_for else 'Working')
-        else:
-            state={'ERROR':'Error','FAILED':'Failed','INCOMPLETE':'Incomplete',
-                   'OK':'Completed'}.get(reported,'Unknown')
+        health=session_health({'run_state':'completed' if reported=='OK' else reported.casefold(),
+            'waiting_for':waiting_for,'last_record_ns':stamp},time.time_ns())
         latest_activity=latest_by_session.get(session_id)
         runtime='Gemini CLI' if any('gemini' in name.casefold() for name in services) else 'OpenTelemetry'
         result.append({'id':'otlp-session:'+str(session_id),'source_id':'otlp-session:'+str(session_id),
@@ -436,9 +426,9 @@ def sources(snapshot, include_reviews=False):
             'working_directory':'','branch':'','model':', '.join(session.get('models') or []),
             'task':session.get('latest_task') or '', 'run_state':reported.casefold(),
             'waiting_for':waiting_for,'last_activity':latest_activity,'capture_content':False,
-            'recent':recent,'stamp':stamp,'state':state,'spans':session.get('span_count',0),
+            **health,'spans':session.get('span_count',0),
             'trace_count':session.get('trace_count',0),'review':False})
-    return sorted(result,key=lambda item:(not item['recent'],-item['stamp'],item['id']))
+    return sorted(result,key=lambda item:(not (item.get('active') or item.get('state')=='Waiting'),not item['recent'],-item['stamp'],item['id']))
 
 
 def wait_summary(item):
@@ -458,6 +448,10 @@ def wait_summary(item):
         return 'The agent reported completion.'
     if item.get('state') in {'Error','Failed','Incomplete'}:
         return 'Review the recorded error in Activity or Traces.'
+    if item.get('state') in {'Possibly stalled','Unconfirmed','Monitor delayed','Catching up'}:
+        return item.get('status_evidence') or 'Check the agent terminal and collection diagnostics.'
+    if item.get('active'):
+        return 'The turn is still in progress; no user action was requested.'
     return 'Remaining work is not reported by the agent.'
 
 
@@ -505,7 +499,8 @@ def task_text(item):
 def input_status(item):
     """Name only user actions explicitly reported by a session."""
     if not input_required(item):
-        return item.get('state') or 'Unknown'
+        state=item.get('state') or 'Unknown'
+        return {'Working (quiet)':'Quiet work','Possibly stalled':'May be stalled'}.get(state,state)
     reason=str(item.get('waiting_for') or '').casefold()
     return 'NEEDS APPROVAL' if 'approval' in reason or 'permission' in reason else 'NEEDS REPLY'
 
@@ -661,6 +656,7 @@ class ObservatoryApp(App):
     Screen > .screen--selection { background: $agent-selection; color: $agent-on-selection; }
     * { scrollbar-color: $agent-scrollbar; scrollbar-color-hover: $agent-secondary; scrollbar-color-active: $agent-primary; scrollbar-background: $agent-surface; scrollbar-background-hover: $agent-surface; scrollbar-background-active: $agent-surface; }
     #masthead { layout: grid; grid-size: 3; grid-columns: 1fr auto 1fr; grid-rows: 1; height: 2; padding: 0 2; background: $agent-canvas; border-bottom: solid $agent-border-subtle; }
+    #masthead-left { width: 100%; height: 1; color: $agent-muted; background: $agent-header; text-wrap: nowrap; text-overflow: ellipsis; }
     #brand-lockup { width: auto; height: 1; align-vertical: middle; }
     #brand { width: auto; height: 1; color: $agent-text; text-wrap: nowrap; }
     #connection { width: 100%; height: 1; color: $agent-success; text-align: right; text-wrap: nowrap; text-overflow: ellipsis; }
@@ -860,7 +856,8 @@ class ObservatoryApp(App):
 
     def compose(self)->ComposeResult:
         with Horizontal(id='masthead'):
-            yield Static('', id='masthead-left')
+            ticker = '  //  '.join(TOOL_TICKER)
+            yield Static(f'{ticker}  //  {ticker}', id='masthead-left', markup=False)
             with Horizontal(id='brand-lockup'):
                 yield Static(masthead(), id='brand')
             yield Static('○ Connecting',id='connection',markup=False)
@@ -1123,16 +1120,20 @@ class ObservatoryApp(App):
         agents=sources(data,self.feed.include_reviews)
         work=[item for item in agents if not item['review']]
         recent=sum(item['recent'] for item in work)
+        active=[item for item in work if item.get('active') or item.get('state')=='Connected']
         reviews=sum(entry.get('service')=='codex-review' for entry in data.local_status.get('sessions',[]))
         processes=(data.local_status.get('runtime') or {}).get('processes',[])
         live=sum(not str(item.get('state','')).startswith(('Z','X')) for item in processes)
         waiting=sum(item['state']=='Waiting' for item in work)
         replies=sum(input_required(item) for item in work)
-        session_detail=f'{recent} recent · {waiting} waiting · {replies} action'
+        runtimes={name:sum(item.get('runtime')==name for item in active) for name in sorted({item.get('runtime') or 'Agent' for item in active})}
+        session_detail=' · '.join(f'{name} {count}' for name,count in runtimes.items()) or f'{len(work)} sessions · {replies} action'
+        if replies and active:
+            session_detail+=f' · {replies} action'
         stat_width=(self.size.width-(4 if self.size.width>=140 else 2))//(2 if self.size.width<100 else 4)
         if cell_len(session_detail)>stat_width-(5 if self.size.width>=140 else 3):
-            session_detail=f'{waiting} waiting · {replies} action'
-        self.stat('sessions',len(work),'Agent sessions',session_detail)
+            session_detail=f'{len(work)} sessions · {replies} action'
+        self.stat('sessions',len(active),'Working agents',session_detail)
         self.stat('processes',live,'Host processes','Live on this host')
         servers={item.get('server') for item in data.mcp if item.get('server') and item.get('server')!='Not reported'}
         operations={(item.get('server'),item.get('tool')) for item in data.mcp if item.get('tool') and item.get('tool')!='Not reported'}
@@ -1153,7 +1154,11 @@ class ObservatoryApp(App):
             'Calls are individual calls with operation details. Metric calls are Cursor aggregate counts; '
             'they cannot be opened or attributed to a session. Calls without a reported server are listed separately.')
         self.stat('usage',observed_count(data.totals,'input_tokens')+' / '+observed_count(data.totals,'output_tokens'),'Tokens in / out','Includes cached input')
-        self.query_one('#stat-sessions').tooltip=f'{recent} updated recently · {waiting} waiting · {replies} need action\n{reviews} approval reviews · Recent means a session record changed within 35 seconds'
+        stalled=sum(item.get('state')=='Possibly stalled' for item in work)
+        self.query_one('#stat-sessions').tooltip=(f'{len(active)} working · {len(work)} total sessions · {recent} recently updated\n'
+            f'{waiting} waiting · {replies} need action · {stalled} possibly stalled · {reviews} approval reviews\n'
+            +' · '.join(f'{name}: {count} working' for name,count in runtimes.items())
+            +'\nWorking includes quiet unfinished turns and exact process CPU / I/O progress, not every open terminal.')
         self.query_one('#stat-usage').tooltip=(
             'Recorded token totals; repeated and cached input is included. '
             f"Cache read {observed_count(data.totals,'cache_read_input_tokens')} · "
@@ -1178,11 +1183,11 @@ class ObservatoryApp(App):
         agent_query=self.search_queries['agents'].casefold()
         visible_agents=[item for item in agents if (self.scope_value=='all' or item['id']==self.scope_value) and
                         (not agent_query or agent_query in ' '.join(str(item.get(key) or '') for key in ('runtime','service','project','working_directory','branch','task','model','session_id','id','state','waiting_for')).casefold())]
-        visible_agents.sort(key=lambda item:(not input_required(item),not item['recent'],-item['stamp'],item['id']))
+        visible_agents.sort(key=lambda item:(not input_required(item),not item.get('active'),not item['recent'],-item['stamp'],item['id']))
         self.fill('agent-table',[(item['id'],[
             cell(item['runtime']),cell(item.get('session_id') or item['id'],'#c5adff'),
             cell(item.get('project') or '—'),
-            cell(input_status(item),'bold #ff8799' if input_required(item) else '#ffbd69' if item['state']=='Waiting' else '#86e3b5' if item['recent'] else '#b9afc5'),
+            cell(input_status(item),'bold #ff8799' if input_required(item) else '#ffbd69' if item['state'] in {'Waiting','Possibly stalled','Monitor delayed','Catching up'} else 'bold #86e3b5' if item.get('active') else '#b9afc5'),
             cell(age(item['stamp']),'#b9afc5'),task_text(item)],item) for item in visible_agents])
         self.search_status('agents',len(visible_agents),'session')
         if self.selected_source not in {item['id'] for item in visible_agents}:self.selected_source=visible_agents[0]['id'] if visible_agents else None
@@ -1530,7 +1535,7 @@ class ObservatoryApp(App):
               ('Session details',session_details),
               ('Analysis coverage',analysis_coverage(summary)),
              ('Working directory',item.get('working_directory')),
-             ('Status evidence','No new session records for 35 seconds; the last reported wait may no longer be current.' if item['state']=='No updates' else 'Status comes from recorded lifecycle events. A tool response wait is not an approval request.')])
+             ('Status evidence',item.get('status_evidence') or 'Status comes from recorded lifecycle events. A tool response wait is not an approval request.')])
         rows=[(event.get('id') or event['source_id'],[cell(table_when(event['time_unix_nano'])),cell(event['domain'].upper()),cell(headline(event))],event) for event in actions[:30]]
         if not rows:
             rows=[('__empty__',[cell('—'),cell('INFO'),cell('No recent activity captured')],{})]

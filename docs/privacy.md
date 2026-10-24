@@ -8,6 +8,13 @@ On loopback receivers, the local monitor reads recent Codex, Claude Code, and Pi
 
 The local MCP inventory parses known Codex, Claude Code, Cursor, Gemini CLI, OpenCode, and VS Code configuration files. It supports OpenCode's `opencode.json` and `opencode.jsonc` MCP layouts, including the current nested `mcp.servers` format. For running same-user Gemini CLI, Cursor, and OpenCode processes, it checks the process working directory for the corresponding project config; that directory is used only for the lookup and is not returned. It retains and returns only server names, client names, and configuration scope; command, argument, URL, header, and environment values are discarded and never sent to the receiver API. It does not launch or contact configured servers. Discovery is bounded to known config locations and files up to 1 MiB.
 
+On Linux, session health checks same-user known agent processes for an exact open
+session-file match. Only matching PIDs, process start identity, and CPU/I/O counters
+(including bounded child-process observations) are used for activity hints. This
+does not inspect process arguments, environment variables, or file contents, and
+does not infer a match from a shared project directory. Process observations are
+in-memory health metadata, not additional stored telemetry.
+
 Recognizable credentials and selected sensitive structured fields are redacted before storage on a best-effort basis. Private reasoning text, opaque encrypted reasoning, binary payloads, process environments, and credential files are excluded. Upstream schemas and truncation can leave gaps. Treat the local database as sensitive because normal agent activity may itself contain private project information.
 
 Native activity content can be limited for new ingestion with:

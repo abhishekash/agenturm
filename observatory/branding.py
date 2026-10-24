@@ -19,6 +19,11 @@ SHORTCUTS = (('/', 'search'), ('e', 'expand'), ('t', 'trace'), ('c', 'copy'), ('
 SCOPE_HINTS = (('e', 'expand'), ('q', 'quit'), ('ctrl+p', 'palette'),
                ('/', 'search'), ('d', 'diagnostics'))
 
+# A compact tooling ticker for the dashboard masthead, inspired by terminal
+# status bars. Keep it factual and focused on the project's supported stack.
+TOOL_TICKER = ('MCP', 'SQLITE', 'TEXTUAL', 'PYTHON 3.11+', 'MIT',
+               'CODEX CLI', 'CLAUDE CODE', 'OPENCODE', 'PI', 'OTLP / HTTP')
+
 
 def shortcut_hints(keys=SHORTCUTS):
     """Keyboard hints, styled like the footer keys."""

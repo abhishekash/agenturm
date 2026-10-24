@@ -143,6 +143,31 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('NEEDS APPROVAL', row)
             self.assertIn('Claude terminal', app.query_one('#agent-detail').plain_text)
 
+    async def test_three_working_agents_are_counted_named_and_prioritized_over_history(self):
+        feed = ManualFeed()
+        now = time.time_ns()
+        feed.snapshot.local_status['sessions'] = [
+            {'source_id': f'live-{index}', 'session_id': f'live-session-{index}',
+             'service': runtime.lower(), 'runtime': runtime, 'run_state': 'running',
+             'last_record_ns': now-120_000_000_000, 'task': 'A long model request'}
+            for index, runtime in enumerate(('Codex', 'Codex', 'OpenCode'))]
+        feed.snapshot.local_status['sessions'].append({
+            'source_id': 'done', 'session_id': 'done', 'runtime': 'Pi', 'service': 'pi',
+            'run_state': 'completed', 'last_record_ns': now, 'task': 'Finished work'})
+        app = ObservatoryApp(feed)
+        async with app.run_test(size=(160, 48)) as pilot:
+            await pilot.pause()
+            widget = app.query_one('#stat-sessions')
+            text = ' '.join(widget.render_line(row).text for row in range(widget.size.height))
+            self.assertIn('WORKING AGENTS', text)
+            self.assertIn('3', text)
+            self.assertIn('Codex 2', text)
+            self.assertIn('OpenCode 1', text)
+            table = app.query_one('#agent-table', DataTable)
+            self.assertEqual(list(table.rows)[0].value, 'live-0')
+            self.assertEqual(list(table.rows)[-1].value, 'done')
+            self.assertIn('Quiet work', str(table.get_row('live-0')))
+
     async def test_prompts_filter_shows_only_user_messages_for_scoped_agent(self):
         feed = ManualFeed()
         stamp = time.time_ns() + 1
@@ -306,13 +331,14 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('not-called-yet', str(table.get_row_at(row_index)))
             self.assertIn('Configured · Codex', str(table.get_row_at(row_index)))
 
-    def test_stale_running_session_does_not_claim_live_or_approval_wait(self):
+    def test_quiet_unfinished_turn_is_not_mistaken_for_a_stall_or_approval_wait(self):
         feed = ManualFeed()
         entry = feed.snapshot.local_status['sessions'][0]
         entry.update(run_state='running', waiting_for='Tool response: github / search')
         entry['last_activity']['time_unix_nano'] = time.time_ns() - 120_000_000_000
         item = next(item for item in sources(feed.snapshot) if item['id'] == entry['source_id'])
-        self.assertEqual(item['state'], 'No updates')
+        self.assertEqual(item['state'], 'Working (quiet)')
+        self.assertTrue(item['active'])
         self.assertFalse(item['recent'])
         self.assertNotIn('approval', item['waiting_for'].lower())
 

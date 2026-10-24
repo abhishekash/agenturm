@@ -66,9 +66,9 @@ class OpenCodeReaderTests(unittest.TestCase):
         self.assertEqual(reader.sessions[0]["runtime"], "OpenCode")
         self.assertEqual(reader.sessions[0]["project"], "sample-repo")
         self.assertEqual(reader.sessions[0]["task"], "Fix the MCP integration")
-        self.assertEqual(reader.status_sessions()[0]["run_state"], "running")
+        self.assertEqual(reader.status_sessions()[0]["run_state"], "completed")
         reader.sessions[0]["last_update_ns"] -= 40_000_000_000
-        self.assertEqual(reader.status_sessions()[0]["run_state"], "idle")
+        self.assertEqual(reader.status_sessions()[0]["run_state"], "completed")
         sessions = self.store.sessions()
         self.assertEqual(sessions[0]["session_id"], "ses_test")
         self.assertEqual((sessions[0]["input_tokens"], sessions[0]["output_tokens"]), (12, 7))
@@ -160,6 +160,48 @@ class OpenCodeReaderTests(unittest.TestCase):
         self.assertIn('Read', {row[0] for row in rows})
         model = next(json.loads(row[1]) for row in rows if row[0] == 'chat model-new')
         self.assertEqual(model['gen_ai.provider.name'], 'provider-new')
+
+    def test_v2_metadata_and_idle_outcomes_replace_stale_legacy_status(self):
+        now = time.time_ns() // 1_000_000
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.executescript('''CREATE TABLE session_v2(id TEXT PRIMARY KEY, title TEXT,
+                directory TEXT, model TEXT, time_updated INTEGER);
+                CREATE TABLE session_message(id TEXT PRIMARY KEY, session_id TEXT,
+                type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);''')
+            db.execute('INSERT INTO session_v2 VALUES(?,?,?,?,?)',
+                ('ses_test', 'V2 real task', '/work/v2-project', '{"id":"v2-model"}', now))
+            db.executemany('INSERT INTO session_message VALUES(?,?,?,?,?,?,?)', [
+                ('v2-user', 'ses_test', 'user', 1, now-1000, now-1000, '{"text":"initial prompt"}'),
+                ('v2-assistant', 'ses_test', 'assistant', 2, now, now,
+                 json.dumps({'model': {'id': 'v2-model'}, 'content': []})),
+                ('v2-idle', 'ses_test', 'idle', 3, now, now, '{"outcome":"succeeded"}'),
+            ])
+        reader = OpenCodeReader(self.store, path=self.database)
+        reader.poll()
+        self.assertEqual(reader.discovered_sessions, 1)
+        entry = reader.status_sessions()[0]
+        self.assertEqual(entry['task'], 'V2 real task')
+        self.assertEqual(entry['project'], 'v2-project')
+        self.assertEqual(entry['model'], 'v2-model')
+        self.assertEqual(entry['run_state'], 'completed')
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.execute('INSERT INTO session_message VALUES(?,?,?,?,?,?,?)',
+                ('v2-next-user', 'ses_test', 'user', 4, now+1, now+1, '{"text":"next task"}'))
+        reader.poll()
+        self.assertEqual(reader.status_sessions()[0]['run_state'], 'running')
+        for outcome, expected in [('failed', 'error'), ('interrupted', 'interrupted')]:
+            with closing(sqlite3.connect(self.database)) as db, db:
+                db.execute('INSERT OR REPLACE INTO session_message VALUES(?,?,?,?,?,?,?)',
+                    ('v2-next-idle', 'ses_test', 'idle', 5, now+2, now+2, json.dumps({'outcome': outcome})))
+            reader.poll()
+            self.assertEqual(reader.status_sessions()[0]['run_state'], expected)
+
+    def test_v2_only_database_still_discovers_sessions(self):
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.execute('ALTER TABLE session RENAME TO session_v2')
+        reader = OpenCodeReader(self.store, path=self.database)
+        self.assertGreater(reader.poll(), 0)
+        self.assertEqual(reader.discovered_sessions, 1)
 
     def test_uses_first_user_prompt_when_opencode_title_is_missing(self):
         now_ms = time.time_ns() // 1_000_000

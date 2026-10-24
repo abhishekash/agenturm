@@ -244,6 +244,7 @@ class Session:
         self.last_state = None
         self.skipped = 0
         self.last_activity = None
+        self.last_record_ns = 0
         self.last_success_ns = 0
         self.backlog_bytes = 0
         self.schema_errors = 0
@@ -309,12 +310,22 @@ class Session:
         event = payload.get("type")
         if self.runtime == "Codex":
             if row.get("type") == "event_msg":
-                if event in {"task_started", "task_complete", "task_aborted"}:
-                    state = {"task_started": "running", "task_complete": "completed", "task_aborted": "interrupted"}[event]
+                if event in {"task_started", "task_complete", "task_aborted", "turn_aborted"}:
+                    state = {"task_started": "running", "task_complete": "completed",
+                             "task_aborted": "interrupted", "turn_aborted": "interrupted"}[event]
                     self.pending_tools.clear()
                 elif event in {"approval_request", "request_user_input"}:
                     state = "waiting"
                     self.waiting_for = "Approval" if event == "approval_request" else "User input"
+                elif event == "item_completed":
+                    item = payload.get("item") or {}
+                    if isinstance(item, dict):
+                        if item.get("type") == "UserMessage":
+                            state = "running"
+                            self.pending_tools.clear()
+                        elif item.get("type") == "AgentMessage" and item.get("phase") == "final_answer":
+                            state = "completed"
+                            self.pending_tools.clear()
             if row.get("type") == "response_item":
                 key = str(payload.get("call_id") or payload.get("id"))
                 if event in {"function_call", "custom_tool_call"}:
@@ -548,7 +559,7 @@ class Session:
             if event == "task_started":
                 self.started[self.turn] = timestamp(payload.get("started_at")) or stamp
                 return [self.root(stamp, "running")]
-            if event in {"task_complete", "task_aborted"}:
+            if event in {"task_complete", "task_aborted", "turn_aborted"}:
                 return [self.root(stamp, "completed" if event == "task_complete" else "interrupted")]
             if event == "token_count" and not self.modern_usage:
                 info = payload.get("info") or {}
@@ -561,6 +572,8 @@ class Session:
             if event == "item_completed":
                 item = payload.get("item") or {}
                 tool_type = item.get("type")
+                if tool_type == "AgentMessage" and item.get("phase") == "final_answer":
+                    return [self.root(stamp, "completed")]
                 names = {"CommandExecution": "Shell command", "FileChange": "File changes",
                          "McpToolCall": "MCP tool", "Extension": "Extension tool"}
                 if tool_type in names:
@@ -661,6 +674,7 @@ class Session:
             self.tool_inputs.clear()
             self.pending_tools.clear()
             self.run_state, self.waiting_for, self.state_since = "unknown", "", 0
+            self.last_record_ns = 0
         with self.path.open("rb") as stream:
             if self.offset == 0 and stat.st_size > MAX_READ:
                 # Recover session identity from the header, then import a bounded tail.
@@ -724,6 +738,7 @@ class Session:
         for row in records:
             try:
                 stamp = timestamp(row.get("timestamp"))
+                self.last_record_ns = max(self.last_record_ns, stamp)
                 if self.runtime == "Codex":
                     new_spans = self.codex(row, stamp)
                 elif self.runtime == "Pi":
@@ -805,6 +820,7 @@ class LocalAgents:
         self.errors = 0
         self.runtime_snapshot = {}
         self.runtime_updated = 0
+        self.process_samples = {}
         self.mcp_configurations = []
         self.mcp_config_errors = 0
         self.mcp_config_updated = 0
@@ -823,6 +839,8 @@ class LocalAgents:
                 if not root.is_dir():
                     continue
                 for path in root.rglob("*.jsonl"):
+                    if self.stop.is_set():
+                        return
                     try:
                         modified = path.stat().st_mtime
                         if modified >= cutoff:
@@ -841,6 +859,8 @@ class LocalAgents:
     def poll(self):
         accepted = 0
         for session in list(self.sessions.values()):
+            if self.stop.is_set():
+                break
             try:
                 accepted += session.poll()
             except OSError:
@@ -869,8 +889,9 @@ class LocalAgents:
                     self.mcp_config_errors = config_errors[0]
                     self.mcp_config_updated = time.monotonic()
                     discovered = time.monotonic()
-                self.opencode.poll()
                 self.poll()
+                if not self.stop.is_set():
+                    self.opencode.poll()
             except Exception:
                 self.errors += 1
             self.stop.wait(1)
@@ -883,7 +904,19 @@ class LocalAgents:
         sessions = list(self.sessions.values())
         if time.monotonic() - self.runtime_updated >= 5:
             from .local_runtime import snapshot
-            self.runtime_snapshot = snapshot()
+            self.runtime_snapshot = snapshot({session.path: session.source_id for session in sessions})
+            now_ns = time.time_ns()
+            samples = self.runtime_snapshot.get('sessions', {})
+            for source, sample in samples.items():
+                previous = self.process_samples.get(source, {})
+                same_process = previous.get('identity') == sample['identity']
+                progressed = (same_process and
+                              (sample['cpu_seconds'] > previous.get('cpu_seconds', 0) or
+                               sample['io_chars'] > previous.get('io_chars', 0)))
+                sample['observed_since_ns'] = previous.get('observed_since_ns', now_ns) if same_process else now_ns
+                sample['last_progress_ns'] = now_ns if progressed else previous.get('last_progress_ns', 0) if same_process else 0
+                sample['observed_at_ns'] = now_ns
+            self.process_samples = samples
             self.runtime_updated = time.monotonic()
         return {"enabled": True, "sources": len(sessions), "discovered_sources": self.discovered_sources,
                 "omitted_sources": self.omitted_sources, "read_errors": self.errors,
@@ -908,6 +941,8 @@ class LocalAgents:
                               "task": "Approval review" if session.internal else (session.tasks.get(session.turn) or "")[:500],
                               "capture_content": session.capture_details,
                               "last_activity": session.last_activity,
+                              "last_record_ns": session.last_record_ns,
+                              "process": self.process_samples.get(session.source_id, {}),
                               "diagnostics": session.diagnostics(),
                               "bytes_read": session.offset} for session in sessions] + self.opencode.status_sessions(),
                 "opencode_read_errors": self.opencode.errors}
