@@ -2,7 +2,7 @@
 import time
 import unittest
 
-from textual.widgets import DataTable, TabbedContent
+from textual.widgets import DataTable, Select, TabbedContent
 
 from observatory.terminal_ui import ObservatoryApp, agent_status, sources, task_text
 from observatory.themes import PALETTES
@@ -14,6 +14,8 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         app = ObservatoryApp(ManualFeed(), persist_preferences=False)
         async with app.run_test(size=(180, 48)) as pilot:
             await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
             results = app.query_one('#results-agents')
             inspector = app.query_one('#agent-bottom')
             self.assertEqual(results.region.y, inspector.region.y)
@@ -23,11 +25,11 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             tabs = app.query_one('#pages > Tabs')
             self.assertGreaterEqual(controls.region.y, tabs.region.bottom)
             self.assertGreaterEqual(results.region.y, controls.region.bottom)
-            self.assertLessEqual(results.region.y,12)
+            self.assertEqual(results.region.y,9)
             self.assertEqual(app.query_one('#search-agents').size.height,1)
             self.assertEqual(controls.size.height,1)
             self.assertEqual([str(c.label) for c in app.query_one('#agent-table', DataTable).columns.values()],
-                             ['Agent / project', 'Current task', 'Status', 'Updated'])
+                             ['Task / source', 'State', 'Updated'])
             self.assertFalse(app.query_one('#agent-table').zebra_stripes)
             self.assertNotIn('session-1', app.query_one('#agent-detail').plain_text)
             self.assertNotIn('LATEST RECORDED EVENT', app.query_one('#agent-detail').plain_text)
@@ -52,11 +54,9 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             work = app.query_one('#stat-sessions').render().plain
             attention = app.query_one('#stat-attention').render().plain
-            self.assertEqual(work.splitlines()[0],'1')
-            self.assertEqual(attention.splitlines()[0],'1')
-            self.assertEqual(app.query_one('#stat-sessions').border_title,'WORKING AGENTS')
-            self.assertEqual(app.query_one('#stat-attention').border_title,'NEEDS ATTENTION')
-            self.assertIn('Codex 1', work)
+            self.assertIn('1 working agent',work)
+            self.assertIn('1 needs attention',attention)
+            self.assertIn('Codex 1', app.query_one('#stat-sessions').tooltip)
             self.assertEqual(len(app.query('#stat-processes')), 0)
             await pilot.press('2')
             await pilot.pause()
@@ -67,8 +67,13 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         app = ObservatoryApp(ManualFeed(), persist_preferences=False)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
             results = app.query_one('#results-agents')
             inspector = app.query_one('#agent-bottom')
+            self.assertEqual(inspector.region.y, results.region.y)
+            await pilot.resize_terminal(100, 40)
+            await pilot.pause()
             self.assertGreaterEqual(inspector.region.y, results.region.bottom)
             await pilot.resize_terminal(80, 24)
             await pilot.pause()
@@ -86,6 +91,8 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         feed.snapshot.local_status['sessions'][1].update(run_state='completed',last_record_ns=now)
         app=ObservatoryApp(feed,persist_preferences=False)
         async with app.run_test(size=(180,48)) as pilot:
+            await pilot.pause()
+            app.set_agent_filter('all')
             await pilot.pause()
             table=app.query_one('#agent-table',DataTable)
             self.assertTrue(table.get_row('source-1')[0].plain.startswith('▸ '))
@@ -117,13 +124,77 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             tabs=app.query_one('#pages > Tabs')
             findings=app.query_one('#--content-tab-findings')
-            self.assertTrue(tabs.region.contains_region(findings.region))
+            self.assertFalse(findings.display)
+            self.assertTrue(app.query_one('#more-views').display)
+            await pilot.press('7')
+            await pilot.pause()
+            self.assertEqual(app.query_one('#pages', TabbedContent).active,'findings')
+            self.assertEqual(str(app.query_one('#more-views').value),'findings')
             app.remember_location()
             await pilot.pause()
             back=app.query_one('#history-back')
             self.assertEqual(back.size.height,1)
             self.assertIn('Back',back.render_line(0).text)
             self.assertTrue(app.query_one('#controls').region.contains_region(back.region))
+
+    async def test_secondary_views_are_direct_tabs_or_a_labelled_visible_picker(self):
+        app=ObservatoryApp(ManualFeed(),persist_preferences=False)
+        async with app.run_test(size=(160,48)) as pilot:
+            await pilot.pause()
+            picker=app.query_one('#more-views',Select)
+            self.assertFalse(picker.display)
+            for page in ('host','metrics','findings'):
+                tab=app.query_one('#--content-tab-'+page)
+                self.assertTrue(tab.display)
+                self.assertTrue(app.screen.region.contains_region(tab.region))
+                await pilot.click('#--content-tab-'+page)
+                await pilot.pause()
+                self.assertEqual(app.query_one('#pages',TabbedContent).active,page)
+
+            await pilot.press('1')
+            await pilot.resize_terminal(80,24)
+            await pilot.pause()
+            self.assertTrue(picker.display)
+            self.assertIn('Other views',picker.query_one('SelectCurrent #label').render_line(0).text)
+            self.assertTrue(app.screen.region.contains_region(picker.region))
+            self.assertGreaterEqual(picker.region.x,app.query_one('#--content-tab-traces').region.right)
+            await pilot.click('#more-views')
+            await pilot.press('down','enter')
+            await pilot.pause()
+            self.assertEqual(app.query_one('#pages',TabbedContent).active,'host')
+            self.assertIn('5 Host',picker.query_one('SelectCurrent #label').render_line(0).text)
+            self.assertTrue(picker.has_class('secondary-active'))
+
+            # Very narrow terminals use one labelled selector for all seven
+            # views, rather than letting an overflow control cover a tab.
+            await pilot.resize_terminal(50,24)
+            await pilot.pause()
+            self.assertTrue(app.screen.region.contains_region(picker.region))
+            await pilot.press('3')
+            await pilot.pause()
+            self.assertEqual(picker.value,'mcp')
+            self.assertIn('Views: 3 MCP Calls',picker.query_one('SelectCurrent #label').render_line(0).text)
+            await pilot.resize_terminal(160,48)
+            await pilot.pause()
+            self.assertFalse(picker.display)
+            self.assertEqual(app.query_one('#pages',TabbedContent).active,'mcp')
+
+    async def test_enter_and_e_both_expand_the_selected_agent_inspector(self):
+        app=ObservatoryApp(ManualFeed(),persist_preferences=False)
+        async with app.run_test(size=(160,48)) as pilot:
+            await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
+            await pilot.press('enter')
+            await pilot.pause()
+            self.assertFalse(app.query_one('#results-agents').display)
+            self.assertTrue(app.query_one('#agent-bottom').display)
+            await pilot.press('escape')
+            await pilot.pause()
+            self.assertTrue(app.query_one('#results-agents').display)
+            await pilot.press('e')
+            await pilot.pause()
+            self.assertFalse(app.query_one('#results-agents').display)
 
     async def test_inspector_rewraps_after_its_actual_width_changes(self):
         feed=ManualFeed()
@@ -132,11 +203,13 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         app=ObservatoryApp(feed,persist_preferences=False)
         async with app.run_test(size=(180,48)) as pilot:
             await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
             log=app.query_one('#agent-detail')
             self.assertNotIn(title,[line.text.rstrip() for line in log.lines])
             await pilot.resize_terminal(120,40)
             await pilot.pause()
-            self.assertIn(title,[line.text.rstrip() for line in log.lines])
+            self.assertIn(title,' '.join(line.text.rstrip() for line in log.lines))
             self.assertIn('Shell command · git',log.plain_text)
             self.assertLessEqual(len(log.lines),log.scrollable_content_region.height)
             await pilot.resize_terminal(180,48)
@@ -160,12 +233,14 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         app=ObservatoryApp(feed,persist_preferences=False)
         async with app.run_test(size=(180,48)) as pilot:
             await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
             log=app.query_one('#agent-detail')
             text=log.plain_text
             self.assertIn('Shell command · curl',text)
             self.assertNotIn('--secret-argument',text)
             self.assertNotIn('RAW_RESPONSE_MARKER',text)
-            self.assertLess(len(log.lines),14)
+            self.assertLessEqual(len(log.lines),16)
             self.assertFalse(app.query_one('#agent-actions').display)
             self.assertFalse(app.query_one('#agent-summary').display)
             await pilot.press('e')
@@ -174,6 +249,254 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press('escape')
             await pilot.pause()
             self.assertNotIn('RAW_RESPONSE_MARKER',log.plain_text)
+
+    async def test_task_rows_filters_palette_theme_and_secondary_view_picker(self):
+        feed=ManualFeed()
+        now=time.time_ns()
+        feed.snapshot.local_status['sessions'][0].update(
+            task='',run_state='waiting',waiting_for='Approval',last_record_ns=now)
+        feed.snapshot.local_status['sessions'][1].update(
+            task='Repair keyboard navigation',run_state='running',last_record_ns=now)
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(160,48)) as pilot:
+            await pilot.pause()
+            self.assertEqual(app.theme,'Observation')
+            self.assertIn('Untitled session · Codex',app.query_one('#agent-table').get_row('source-1')[0].plain)
+            self.assertIn('Repair keyboard navigation',app.query_one('#agent-table').get_row('source-2')[0].plain)
+            self.assertEqual(app.query_one('#agent-table').get_row('source-1')[0].plain.count('\n'),1)
+            app.query_one('#agent-filter',Select).value='active'
+            await pilot.pause()
+            self.assertEqual(app.agent_filter,'active')
+            self.assertEqual(app.query_one('#agent-table').row_count,1)
+            await pilot.press('ctrl+p')
+            await pilot.pause()
+            self.assertTrue(app.screen.__class__.__name__.endswith('CommandPalette'))
+            await pilot.press('escape')
+            await pilot.pause()
+            app.action_page('metrics')
+            await pilot.pause()
+            self.assertEqual(app.query_one('#more-views').value,'metrics')
+
+    async def test_recent_filter_shows_active_and_only_latest_finished_with_tab_navigation(self):
+        feed=ManualFeed()
+        now=time.time_ns()
+        sessions=feed.snapshot.local_status['sessions']
+        sessions[0].update(run_state='completed',last_record_ns=now-2_000_000)
+        sessions[1].update(run_state='completed',last_record_ns=now-1_000_000)
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(160,48)) as pilot:
+            await pilot.pause()
+            table=app.query_one('#agent-table',DataTable)
+            self.assertEqual(table.row_count,1)
+            expected=max(app.source_map.values(),key=lambda item:item['stamp'])['id']
+            self.assertEqual(list(table.rows)[0].value,expected)
+            sessions[0].update(run_state='running',last_record_ns=now)
+            app.last_update=-1
+            app.refresh_data()
+            await pilot.pause()
+            self.assertEqual(table.row_count,2)
+            self.assertEqual(app.focused,table)
+            await pilot.press('tab')
+            await pilot.pause()
+            self.assertNotEqual(app.focused,table)
+            await pilot.press('shift+tab')
+            await pilot.pause()
+            self.assertEqual(app.focused,table)
+            app.query_one('#agent-filter',Select).value='all'
+            await pilot.pause()
+            self.assertEqual(table.row_count,2)
+
+    async def test_live_priority_changes_queue_order_until_explicit_refresh(self):
+        feed=ManualFeed()
+        now=time.time_ns()
+        for entry in feed.snapshot.local_status['sessions']:
+            entry.update(run_state='running',waiting_for='',last_record_ns=now)
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(160,48)) as pilot:
+            await pilot.pause()
+            table=app.query_one('#agent-table')
+            before=[key.value for key in table.rows]
+            waiting=next(item for item in feed.snapshot.local_status['sessions'] if item['source_id']=='source-2')
+            waiting.update(run_state='waiting',waiting_for='Approval',last_record_ns=now+1)
+            app.last_update=-1
+            app.refresh_data()
+            await pilot.pause()
+            self.assertEqual([key.value for key in table.rows],before)
+            self.assertTrue(app.query_one('#refresh-order').display)
+            await pilot.click('#refresh-order')
+            await pilot.pause()
+            self.assertEqual(list(table.rows)[0].value,'source-2')
+            self.assertFalse(app.query_one('#refresh-order').display)
+
+    async def test_sessions_arriving_after_empty_start_are_not_dropped_by_order_freeze(self):
+        feed=ManualFeed()
+        initial=feed.snapshot.local_status['sessions']
+        feed.snapshot.local_status['sessions']=[]
+        feed.snapshot.sessions=[]
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(160,48)) as pilot:
+            await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
+            table=app.query_one('#agent-table')
+            self.assertEqual(table.row_count,0)
+            feed.snapshot.local_status['sessions']=initial
+            app.last_update=-1
+            app.refresh_data()
+            await pilot.pause()
+            self.assertEqual(table.row_count,2)
+            self.assertFalse(app.query_one('#refresh-order').display)
+
+    async def test_default_inspector_exposes_recorded_user_request_and_latest_action(self):
+        feed=ManualFeed()
+        now=time.time_ns()
+        feed.snapshot.activity.append({
+            'id':'user-request','source_id':'user-request','service':'codex','session_id':'session-1',
+            'time_unix_nano':now,'domain':'message','action':'user',
+            'subject':'Implement a retry guard for the payment request',
+            'detail':'Implement a retry guard for the payment request and preserve the original response.',
+        })
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(160,48)) as pilot:
+            await pilot.pause()
+            app.set_agent_filter('all')
+            app.select_agent('source-1')
+            await pilot.pause()
+            detail=app.query_one('#agent-detail').plain_text
+            self.assertIn('LATEST RECORDED REQUEST',detail)
+            self.assertIn('Implement a retry guard for the payment request',detail)
+            self.assertIn('LATEST RECORDED ACTION',detail)
+            self.assertIn('Activity · s',app.query_one('#agent-open').label.plain)
+            await pilot.press('e')
+            await pilot.pause()
+            expanded=app.query_one('#agent-detail').plain_text
+            self.assertIn('Recorded User Prompts',expanded)
+            self.assertIn('preserve the original response',' '.join(expanded.split()))
+            self.assertIn('Recent Recorded Activity',expanded)
+            self.assertIn('git status --short',expanded)
+
+    async def test_running_agents_keep_all_prompts_activity_and_mcp_calls_visible(self):
+        feed=ManualFeed()
+        now=time.time_ns()
+        sessions=feed.snapshot.local_status['sessions']
+        running=[
+            ('session-1','source-1','codex','Codex','Build the billing dashboard'),
+            ('session-2','source-2','claude','Claude','Review the deployment plan'),
+        ]
+        for session_id,source_id,service,runtime,task in running:
+            entry=next(item for item in sessions if item.get('source_id')==source_id)
+            entry.update(session_id=session_id,service=service,runtime=runtime,task=task,
+                         run_state='running',waiting_for='',last_record_ns=now)
+        third=dict(sessions[1])
+        third.update(source_id='source-3',session_id='session-3',service='opencode',runtime='OpenCode',
+                     task='Investigate the flaky test',run_state='running',waiting_for='',last_record_ns=now)
+        sessions.append(third)
+        feed.snapshot.mcp=[]
+
+        for index,(session_id,source_id,service,runtime,task) in enumerate(running+[
+                ('session-3','source-3','opencode','OpenCode','Investigate the flaky test')]):
+            feed.snapshot.activity.extend([
+                {'id':f'{source_id}-prompt-1','source_id':f'{source_id}-prompt-1','session_id':session_id,
+                 'service':service,'time_unix_nano':now+index*10+1,'domain':'message','action':'user',
+                 'subject':f'{runtime} first prompt · {task}'},
+                {'id':f'{source_id}-prompt-2','source_id':f'{source_id}-prompt-2','session_id':session_id,
+                 'service':service,'time_unix_nano':now+index*10+2,'domain':'message','action':'user',
+                 'subject':f'{runtime} follow-up prompt · keep going'},
+                {'id':f'{source_id}-action','source_id':f'{source_id}-action','session_id':session_id,
+                 'service':service,'time_unix_nano':now+index*10+3,'domain':'shell','action':'run',
+                 'subject':f'Current work for {runtime}', 'result':'running'},
+            ])
+            feed.snapshot.mcp.append({
+                'id':f'{source_id}-mcp','source_id':f'{source_id}-mcp','session_id':session_id,
+                'service':service,'time_unix_nano':now+index*10+4,'server':'workspace-tools',
+                'tool':f'{runtime.lower()}_lookup','method':'tools/call','status':'OK','duration_ms':12,
+                'arguments':{'task':task},'output':{'state':'in progress'},'source':'test',
+            })
+        feed.snapshot.mcp_summary.update(calls=3,tools=3,errors=0)
+        feed.snapshot.mcp_results=list(feed.snapshot.mcp)
+        feed.snapshot.updated+=1
+
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(180,48)) as pilot:
+            await pilot.pause()
+            app.last_update=-1
+            app.refresh_data()
+            table=app.query_one('#agent-table',DataTable)
+            self.assertEqual(table.row_count,3,'Recent must include every currently running session')
+            self.assertEqual({app.table_data['agent-table'][key.value]['session_id']
+                              for key in table.rows},{'session-1','session-2','session-3'})
+
+            app.action_expand()
+            await pilot.pause()
+            for session_id,source_id,service,runtime,task in running+[
+                    ('session-3','source-3','opencode','OpenCode','Investigate the flaky test')]:
+                app.select_agent(source_id)
+                text=app.query_one('#agent-detail').plain_text
+                self.assertIn(f'{runtime} first prompt · {task}',text)
+                self.assertIn(f'{runtime} follow-up prompt · keep going',text)
+                self.assertIn(f'Current work for {runtime}',text)
+
+            app.action_page('mcp')
+            await pilot.pause()
+            mcp=app.query_one('#mcp-table',DataTable)
+            self.assertEqual(mcp.row_count,3)
+            self.assertEqual({call['session_id'] for call in app.table_data['mcp-table'].values()},
+                             {'session-1','session-2','session-3'})
+            for _,_,_,runtime,_ in running+[
+                    ('session-3','source-3','opencode','OpenCode','Investigate the flaky test')]:
+                self.assertTrue(any(call['tool']==f'{runtime.lower()}_lookup'
+                                    for call in app.table_data['mcp-table'].values()))
+
+            await pilot.resize_terminal(80,24)
+            await pilot.press('1')
+            await pilot.pause()
+            self.assertEqual(app.query_one('#agent-table').row_count,3)
+            await pilot.press('enter')
+            await pilot.pause()
+            detail=' '.join(app.query_one('#agent-detail').plain_text.split())
+            self.assertIn('OpenCode first prompt · Investigate the flaky test',detail)
+            self.assertIn('OpenCode follow-up prompt · keep going',detail)
+            self.assertIn('Current work for OpenCode',detail)
+
+    async def test_compact_overview_leaves_full_height_agent_and_inspector_frames(self):
+        feed=ManualFeed()
+        now=time.time_ns()
+        sessions=feed.snapshot.local_status['sessions']
+        for index in range(12):
+            if index < len(sessions):
+                entry=sessions[index]
+            else:
+                entry=dict(sessions[0])
+                sessions.append(entry)
+            entry.update(source_id=f'source-{index+1}',session_id=f'session-{index+1}',
+                         service='codex',runtime='Codex',task=f'Work item {index+1}',
+                         run_state='running',waiting_for='',last_record_ns=now+index)
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(180,60)) as pilot:
+            await pilot.pause()
+            table=app.query_one('#agent-table',DataTable)
+            results=app.query_one('#results-agents')
+            self.assertEqual(table.row_count,12,'The view retains all agents in its scrollable list')
+            inspector=app.query_one('#agent-bottom')
+            self.assertEqual(results.region.y,10)
+            self.assertEqual(results.region.y,inspector.region.y)
+            self.assertEqual(results.region.bottom,inspector.region.bottom)
+            self.assertEqual(results.region.bottom,app.query_one('#shortcuts').region.y)
+            self.assertGreater(results.region.height,34,'No artificial cap or empty space below the list')
+            self.assertTrue(app.query_one('#masthead').region.contains_region(
+                app.query_one('#brand').region))
+            table.focus()
+            await pilot.press(*['down']*11)
+            await pilot.pause()
+            self.assertEqual(table.cursor_row,11)
+
+            # Resizing trades header space against the whole workspace, not
+            # just the agent list. All 12 sessions remain in the table.
+            await pilot.resize_terminal(180,40)
+            await pilot.pause()
+            self.assertEqual(results.region.y,8)
+            self.assertEqual(results.region.bottom,inspector.region.bottom)
+            self.assertEqual(table.row_count,12)
 
     def test_hidden_reviews_are_not_reintroduced_from_stored_otlp_summaries(self):
         feed=ManualFeed()

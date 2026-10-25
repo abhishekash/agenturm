@@ -41,7 +41,7 @@ agenturm
 
 If uv is not installed, use its [official installation instructions](https://docs.astral.sh/uv/getting-started/installation/). If the installed command is missing from your PATH, run `uv tool update-shell` and open a new terminal. You can also install into an active Python environment with `python -m pip install "agenturm @ git+https://github.com/abhishekash/agenturm"`.
 
-The cockpit opens a tabbed interface for Agents, Activity, MCP Calls, Traces, Host, Metrics, and Findings. The Agents view shows individual sessions, tasks, and a compact status/latest-action overview; expand with `e` for model, recorded progress, and full session details. Findings provides a searchable, paged review queue with occurrence counts, evidence links, and direct navigation to the source trace. Session counts and live process counts are separate; approval reviews are hidden by default. The cockpit attaches to a receiver on **127.0.0.1:14318**, or starts one there. Run `agenturm` for full-screen panels in your current terminal. From this checkout, `python3 -m observatory` also works without installation.
+The cockpit opens Agents, Activity, MCP Calls, and Traces as primary views; use **More** or **5–7** for Host, Metrics, and Findings. Agents opens to **Recent**: working sessions (including explicit waits) and the most recently finished session. The compact filter can switch to **Active** only or **All** history. Task-first rows have an evidence inspector. Its website-aligned **Observation** palette is the default; change themes with **Ctrl+P**. Findings provides a searchable, paged review queue with occurrence counts, evidence links, and direct navigation to the source trace. Session counts and live process counts are separate; approval reviews are hidden by default. The cockpit attaches to a receiver on **127.0.0.1:14318**, or starts one there. Run `agenturm` for full-screen panels in your current terminal. From this checkout, `python3 -m observatory` also works without installation.
 
 ### Existing Codex and Claude Code agents
 
@@ -132,7 +132,7 @@ Replace the environment path, service name, and agent filename with your own. Ar
 
 This launcher runs the selected script in that terminal and is intended for SDKs not already captured from local session records. Existing processes can send OTLP telemetry to the receiver. Python SDK prompts and responses are omitted unless you add `--capture-content`. Native session capture has its own `--metadata-only` receiver setting.
 
-Use the mouse or **1–7** to switch views. **↑/↓** selects a table row; its inspector updates automatically. **Enter** opens the inspector; **e** expands it to use the full workspace and **Esc** returns to the list. On compact terminals, Enter expands the inspector automatically. **Tab** moves between controls and scrollable panels. On Agents, **s** focuses the selected session's activity. **t** opens the selected activity, MCP operation, finding, or metric exemplar's related trace when one is linked. **Alt+Left** or the **Back** button returns to the original event and scroll position; **Esc** first clears a text selection or closes an expanded inspector, then returns from a linked trace. **/** focuses the current view's search, **Esc** returns to its table, **a** resets session and search filters, **v** toggles approval reviews, **p** pauses updates, and **q** quits. When search has focus, printable keys enter text; press **Esc** before using shortcuts.
+Use the mouse or **1–7** to switch views. **↑/↓** selects a table row; its inspector updates automatically. **Enter** opens the inspector; **e** expands it to use the full workspace and **Esc** returns to the list. On compact terminals, Enter expands the inspector automatically. Expanded session details include captured user prompts and a recent action trail; these are recorded evidence, not a live transcript. OpenCode prompt text appears after the local receiver imports the session database; metadata-only mode omits it. If prompt text was not captured, the inspector says so. **Tab** moves between controls and scrollable panels. On Agents, use the session-filter dropdown or **s** to open the selected session's activity. A **Reorder** control appears when live updates would otherwise reorder the session list. **t** opens the selected activity, MCP operation, finding, or metric exemplar's related trace when one is linked. **Alt+Left** or the **Back** button returns to the original event and scroll position; **Esc** first clears a text selection or closes an expanded inspector, then returns from a linked trace. **/** focuses the current view's search, **Ctrl+P** opens the command/theme palette, **Esc** returns to its table, **a** resets session and search filters, **v** toggles approval reviews, **p** pauses updates, and **q** quits. When search has focus, printable keys enter text; press **Esc** before using shortcuts.
 
 Press **d** for local collection diagnostics: source paths, last successful
 reads, backlog, skipped records, schema errors, first-run guidance, and retention
@@ -147,7 +147,7 @@ owner-only. Exports contain only the selected record and currently loaded
 evidence, not complete history. They may contain private prompts, outputs,
 paths, or producer-recorded secrets: review before sharing.
 
-Theme, active view, Reviews, Prompts, and Activity/MCP error-filter flags are
+Theme (Observation by default), active view, Reviews, Prompts, and Activity/MCP error-filter flags are
 saved in `$XDG_CONFIG_HOME/agenturm/ui.json` (or
 `~/.config/agenturm/ui.json`). Searches, session IDs, selected records, endpoint
 addresses, and credentials are not persisted. Set `AGENTURM_UI_PREFERENCES=0` to
@@ -411,11 +411,19 @@ detail pane and Activity. The default view does not repeat the activity table or
 show an unconfigured AI-summary button. Internal reviews are hidden from native
 sessions and stored session summaries alike unless Reviews is enabled.
 
-The top cards separate **Working agents**, **Needs attention**, **MCP calls**, and
-**Tokens in / out**. Attention counts explicit input requests and possible stalls,
-not ordinary tool waits. Host process inventory remains in **Host**. Scope controls
-sit below the tabs; search stays with its evidence view. Themes and the five-key
-shortcut legend remain available throughout.
+The compact framed overview sits above a separate **Views** frame and scope
+controls. **Working agents** and **Needs attention** have separate summary
+areas; attention includes explicit input requests, possible stalls, and recorded
+failures, not ordinary tool waits. Press **1** for Agents, **2** for Activity,
+**3** for MCP Calls, or **4** for Traces. MCP details, token usage, and process
+inventory remain in their dedicated views. Wide terminals show all seven view
+tabs; narrower terminals expose **5 Host**, **6 Metrics**, and **7 Findings** in
+the highlighted **Other views** selector. Very narrow terminals use a single
+labelled view selector for all seven destinations. Search stays with its evidence view,
+and keyboard hints stay at the bottom. The agent list has no fixed row or height
+cap: it and the inspector fill the remaining workspace, with additional sessions
+reachable by scrolling. Short terminals use a compact summary to preserve room
+for evidence.
 
 Square, single-line panel edges and aligned headers separate the workspace without
 extra toolbars. An amber **▸** marks the selected session. Status uses shape and

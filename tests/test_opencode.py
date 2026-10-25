@@ -95,6 +95,10 @@ class OpenCodeReaderTests(unittest.TestCase):
         self.assertEqual(mcp["calls"][0]["server"], "github")
         self.assertEqual(mcp["calls"][0]["tool"], "search_issues")
         self.assertIn("[REDACTED]", str(mcp["calls"][0]["arguments"]))
+        tool_activity=self.store.activity_page(session_id='ses_test',domain='mcp')['activity']
+        self.assertIn('Input:',tool_activity[0]['detail'])
+        self.assertIn('"query": "bug"',tool_activity[0]['detail'])
+        self.assertIn('"count": "2"',tool_activity[0]['detail'])
         db = sqlite3.connect(self.database)
         self.assertEqual(db.execute("SELECT COUNT(*) FROM part").fetchone()[0], 1)
         db.close()
@@ -223,8 +227,19 @@ class OpenCodeReaderTests(unittest.TestCase):
         reader.poll()
         session = next(item for item in reader.status_sessions() if item['session_id'] == 'ses_test')
         self.assertEqual(session['task'], 'Please fix the flaky MCP reconnect test')
+        prompts = self.store.activity_page(session_id='ses_test', domain='message', action='user')['activity']
+        self.assertEqual({item['subject'] for item in prompts}, {
+            'Please fix the flaky MCP reconnect test', 'A later follow-up prompt'})
+        self.assertTrue(all(item['source'] == 'log' and item['detail'] for item in prompts))
 
     def test_metadata_only_keeps_tool_identity_but_omits_payload_and_task(self):
+        now_ms=time.time_ns()//1_000_000
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.execute('INSERT INTO message VALUES(?,?,?,?,?)',(
+                'msg_private_prompt','ses_test',now_ms,now_ms,json.dumps({'role':'user'})))
+            db.execute('INSERT INTO part VALUES(?,?,?,?,?)',(
+                'part_private_prompt','ses_test','msg_private_prompt',now_ms,
+                json.dumps({'type':'text','text':'Do not store this prompt'})))
         reader = OpenCodeReader(self.store, capture_details=False, path=self.database)
         reader.poll()
         self.assertEqual(reader.sessions[0]["task"], "")
@@ -233,6 +248,7 @@ class OpenCodeReaderTests(unittest.TestCase):
         self.assertEqual(calls[0]["tool"], "search_issues")
         self.assertEqual(calls[0]["arguments"], "")
         self.assertEqual(calls[0]["output"], "")
+        self.assertEqual(self.store.activity_page(session_id='ses_test',domain='message',action='user')['activity'],[])
         db = sqlite3.connect(self.store.path)
         trace_id = db.execute("SELECT trace_id FROM spans WHERE name='agent.run'").fetchone()[0]
         db.close()

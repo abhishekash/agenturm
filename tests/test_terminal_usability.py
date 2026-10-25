@@ -176,6 +176,8 @@ class PointerCopyTest(unittest.IsolatedAsyncioTestCase):
         app=ObservatoryApp(feed)
         async with app.run_test(size=(160,48)) as pilot:
             await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
             app.action_page('agents')
             await pilot.pause()
             self.assertEqual(app.query_one('#pages',TabbedContent).active,'agents')

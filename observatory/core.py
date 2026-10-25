@@ -229,8 +229,15 @@ def _tool_activity(span):
         "agent.activity.result": result,
         "agent.activity.actor": str(attrs.get("gen_ai.agent.name") or attrs.get("agent.name") or ""),
     }
+    evidence=[]
+    for label,key in (("Input","input.value"),("Output","output.value")):
+        value=attrs.get(key)
+        if value not in (None, ""):
+            text=value if isinstance(value,str) else json.dumps(value,ensure_ascii=False,indent=2)
+            evidence.append(f"{label}:\n{text[:4000]}")
     return _activity_row(normalized, span.get("end_unix_nano") or span.get("start_unix_nano"),
-                         "span", span["span_id"], span["span_id"], span.get("service", "unknown"))
+                         "span", span["span_id"], span["span_id"], span.get("service", "unknown"),
+                         "\n".join(evidence))
 
 
 def _native_event_activity(span, event, index):

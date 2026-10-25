@@ -13,7 +13,7 @@ def safe_preferences(value):
     if not isinstance(value, dict):
         return {}
     result = {}
-    if value.get('theme') in ('Current', 'Bright', 'Dark', 'Solarized'):
+    if value.get('theme') in ('Observation', 'Current', 'Bright', 'Dark', 'Solarized'):
         result['theme'] = value['theme']
     if value.get('view') in VIEWS:
         result['view'] = value['view']

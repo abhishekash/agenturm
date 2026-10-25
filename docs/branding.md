@@ -51,17 +51,18 @@ endpoint is available in its tooltip. Short terminals drop the tagline to leave
 the name alone, and the MCP server inventory is hidden to preserve room for the
 session and call tables. The footer keeps the full key map, and a few keys —
 search, trace, and the command palette — repeat beside the scope control in the
-footer's key style, dropping out below 120 columns. No image protocols, emoji rendering, or Nerd Font is
-required. Below 100 columns, summary cards form two rows; longer explanations
-live in tooltips rather than running off the edge of a card. The wordmark uses
-the theme's primary text color and the tagline its supporting color; both meet
-at least 4.5:1 contrast against the canvas in every supported theme.
+footer's key style, dropping out below 120 columns. No image protocols, emoji
+rendering, or Nerd Font is required. Compact layouts use a one-line
+identity/status header, task-first session list, and responsive inspector. Usage
+and MCP totals remain available in Metrics and MCP Calls rather than taking
+persistent header space. Verify contrast when changing palette tokens.
 
 ## Terminal themes
 
-The command palette exposes exactly four themes: **Current** (Alpine Ember,
-the default), **Bright** (light), **Dark** (cool charcoal), and **Solarized**
-(blue-green dark). Open **Ctrl+P → Theme** to switch. Panels, table rows,
+The command palette exposes five themes: **Observation** (website-aligned,
+the default), **Current** (Alpine Ember), **Bright** (light), **Dark**
+(cool charcoal), and **Solarized** (blue-green dark). Open **Ctrl+P → Theme**
+to switch. Panels, table rows,
 controls, evidence text, and syntax backgrounds follow the selected palette.
 
 ## Naming and compatibility

@@ -11,11 +11,14 @@ from tests.test_terminal_search import ManualFeed
 
 
 class ThemePickerTest(unittest.IsolatedAsyncioTestCase):
-    async def test_only_four_themes_and_each_is_selectable(self):
+    async def test_supported_themes_and_each_is_selectable(self):
         app = ObservatoryApp(ManualFeed())
         async with app.run_test(size=(120, 40)) as pilot:
-            self.assertEqual(set(app.available_themes), {'Current', 'Bright', 'Dark', 'Solarized'})
-            self.assertEqual(app.theme, 'Current')
+            await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
+            self.assertEqual(set(app.available_themes), {'Observation', 'Current', 'Bright', 'Dark', 'Solarized'})
+            self.assertEqual(app.theme, 'Observation')
             backgrounds = set()
             for name in ('Bright', 'Dark', 'Solarized', 'Current'):
                 app.search_themes()
@@ -32,8 +35,8 @@ class ThemePickerTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.query_one('#agent-table').styles.background.hex.lower(), colors['surface'])
                 # Cached evidence and Rich table colors must change, not just the app shell.
                 table = app.query_one('#agent-table')
-                task = table.get_row_at(0)[1]
-                self.assertEqual(str(task.style), colors['label'])
+                task = table.get_row_at(0)[0]
+                self.assertTrue(any(str(span.style) == colors['label'] for span in task.spans))
                 log = app.query_one('#agent-detail')
                 segments = [segment for line in log.lines for segment in line]
                 self.assertTrue(any(segment.style and segment.style.color and

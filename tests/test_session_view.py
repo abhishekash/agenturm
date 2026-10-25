@@ -9,6 +9,20 @@ from tests.test_terminal_search import ManualFeed
 
 
 class SessionViewTests(unittest.IsolatedAsyncioTestCase):
+    def test_missing_task_uses_first_recorded_user_prompt_as_identity(self):
+        feed=ManualFeed()
+        entry=feed.snapshot.local_status['sessions'][0]
+        entry['task']='Task not reported'
+        feed.snapshot.activity.extend([
+            {'id':'prompt-later','source_id':'prompt-later','session_id':entry['session_id'],
+             'time_unix_nano':20,'domain':'message','action':'user','subject':'Second request'},
+            {'id':'prompt-first','source_id':'prompt-first','session_id':entry['session_id'],
+             'time_unix_nano':10,'domain':'message','action':'user','subject':'Repair terminal navigation'},
+        ])
+        item=next(row for row in sources(feed.snapshot) if row['source_id']==entry['source_id'])
+        self.assertEqual(item['task'],'Repair terminal navigation')
+        self.assertEqual(item['task_source'],'recorded user request')
+
     def test_native_opencode_and_pi_status_sessions_are_agent_rows(self):
         feed = ManualFeed()
         now = time.time_ns()
@@ -31,15 +45,18 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
         feed.snapshot.local_status['sessions'][1]['task']='Task not reported'
         app=ObservatoryApp(feed)
         async with app.run_test(size=(160,48)) as pilot:
+            await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
             for size in ((160,48),(120,40),(160,48)):
                 await pilot.resize_terminal(*size)
                 await pilot.pause()
                 table=app.query_one('#agent-table',DataTable)
                 self.assertNotIn('Waiting on',[str(column.label) for column in table.columns.values()])
-                self.assertGreater(table.column_widths[1],table.column_widths[0])
-                self.assertEqual(table.rows['source-1'].height,2)
-                self.assertEqual(table.rows['source-2'].height,2)
-                task_cell=table.get_row('source-1')[1]
+                self.assertGreater(table.column_widths[0],table.column_widths[1])
+                self.assertEqual(table.rows['source-1'].height,3)
+                self.assertEqual(table.rows['source-2'].height,3)
+                task_cell=table.get_row('source-1')[0]
                 self.assertTrue(task_cell.no_wrap)
                 rendered='\n'.join(table.render_line(row).text for row in range(table.size.height))
                 self.assertIn('Investigate the checkout',rendered)
@@ -49,14 +66,14 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(task,app.query_one('#agent-detail').plain_text.replace('\n',' '))
                 await pilot.press('escape')
                 await pilot.pause()
-                self.assertIn('italic',str(table.get_row('source-2')[1].style))
+                self.assertIn('Untitled session',table.get_row('source-2')[0].plain)
             # Live updates can shrink a wrapped row without changing row identity.
             feed.snapshot.local_status['sessions'][0]['task']='Fix checkout'
             app.last_update=-1
             app.refresh_data()
             await pilot.pause()
-            self.assertEqual(table.rows['source-1'].height,2)
-            self.assertEqual(table.get_row('source-1')[1].plain,'Fix checkout')
+            self.assertEqual(table.rows['source-1'].height,3)
+            self.assertEqual(table.get_row('source-1')[0].plain.splitlines()[0].strip(), '▸ Fix checkout')
 
     async def test_columns_waiting_and_summary_are_bound_to_selected_session(self):
         feed = ManualFeed()
@@ -74,7 +91,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.pause()
                     table = app.query_one('#agent-table', DataTable)
                     self.assertEqual([str(c.label) for c in table.columns.values()],
-                        ['Agent / project', 'Current task', 'Status', 'Updated'])
+                        ['Task / source', 'State', 'Updated'])
                     row = ' '.join(str(value) for value in table.get_row_at(0))
                     self.assertIn('NEEDS REPLY', row)
                     self.assertNotIn('Reply · Codex terminal', row)
@@ -86,7 +103,8 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn('Current: Waiting', detail)
                     self.assertIn('answer in the Codex terminal', ' '.join(detail.split()))
                     self.assertIn('Goechala is read-only', ' '.join(detail.split()))
-                    self.assertLess(detail.index('LATEST RECORDED EVENT'),detail.index('Progress Summary · Recorded Activity'))
+                    self.assertIn('Status Evidence',detail)
+                    self.assertIn('Progress Summary · Recorded Activity',detail)
                     # Mounting and refreshes never trigger paid API calls.
                     generate.assert_not_called()
                     await pilot.click('#agent-summary')
@@ -112,10 +130,12 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
             app = ObservatoryApp(feed)
             async with app.run_test(size=(140, 42)) as pilot:
                 await pilot.pause()
+                app.set_agent_filter('all')
+                await pilot.pause()
                 self.assertTrue(app.query_one('#agent-summary').disabled)
                 self.assertIn('works without setup', app.query_one('#agent-summary').tooltip)
                 detail = app.query_one('#agent-detail').plain_text
-                self.assertIn('LATEST ACTION', detail)
+                self.assertIn('LATEST RECORDED ACTION', detail)
                 self.assertIn('Shell command · git', detail)
                 self.assertNotIn('AI summary ·', detail)
                 actions = app.query_one('#agent-actions', DataTable)
@@ -151,7 +171,9 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(next(iter(table.rows)).value, 'source-2')
             row = ' '.join(str(value) for value in table.get_row_at(0))
             self.assertIn('NEEDS APPROVAL', row)
-            self.assertIn('Claude terminal', app.query_one('#agent-detail').plain_text)
+            detail=' '.join(app.query_one('#agent-detail').plain_text.split())
+            self.assertIn('An explicit approval or input wait remains pending',detail)
+            self.assertIn('Claude terminal',detail)
 
     async def test_three_working_agents_are_counted_named_and_prioritized_over_history(self):
         feed = ManualFeed()
@@ -169,14 +191,11 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             widget = app.query_one('#stat-sessions')
             text = ' '.join(widget.render_line(row).text for row in range(widget.size.height))
-            self.assertEqual(widget.border_title,'WORKING AGENTS')
-            self.assertIn('3', text)
-            self.assertIn('Codex 2', text)
-            self.assertIn('OpenCode 1', text)
+            self.assertIn('3 working agents', text)
             table = app.query_one('#agent-table', DataTable)
             self.assertEqual(list(table.rows)[0].value, 'live-0')
             self.assertEqual(list(table.rows)[-1].value, 'done')
-            self.assertIn('Quiet work', str(table.get_row('live-0')))
+            self.assertIn('A long model request', table.get_row('live-0')[0].plain)
 
     async def test_prompts_filter_shows_only_user_messages_for_scoped_agent(self):
         feed = ManualFeed()
