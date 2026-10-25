@@ -11,31 +11,24 @@
 <path d="M1114 72V350M1154 98V350M1194 72V350M1082 130h144M1082 205h144M1082 280h144" fill="none" stroke="#67516d" stroke-width="2" opacity=".6"/>
 <path d="M64 55h30" stroke="#ffbd69" stroke-width="3"/>
   <text x="106" y="61" fill="#b9afc5" font-family="DejaVu Sans Mono,monospace" font-size="13" letter-spacing="3">LOCAL OBSERVABILITY FOR CODING AGENTS</text>
-<g transform="translate(54 72) scale(.14)">
-  <path d="M252 62h8v28h-8Z M248 110h16v34h-16Z" fill="#ffbd69"/>
-  <path d="M250 90h12v20h-12Z" fill="#f6f0e8"/>
-  <path d="M249 258h14l12 168h-38Z M218 426h76v10h-76Z" fill="#ffbd69"/>
-  <path fill="#c5adff" fill-rule="evenodd" d="M201.741 232a62 62 0 1 1 108.518 0Z M205.522 238h100.956a62 62 0 0 1-100.956 0Z M266.41 206.75l14.42 14.42-5.66 5.66-14.42-14.42a21 21 0 1 1 5.66-5.66Z M262 195a13 13 0 1 0-26 0 13 13 0 1 0 26 0Z"/>
+<!-- Match the website header: its outlined observation tower and lowercase wordmark. -->
+<g transform="translate(61 78) scale(.62)" fill="none" stroke="#f6f0e8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M20 3v17M17.5 20h5M18 35l-3 32h10l-3-32M10 68h20M20 4h2M18 11h4"/>
+  <ellipse cx="20" cy="28" rx="11" ry="8"/>
+  <path d="M9 28h22M12 32h16M20 20v16"/>
+  <circle cx="20" cy="3" r="2" fill="#c5adff" stroke="none"/>
 </g>
-<text x="116" y="113" fill="#f6f0e8" font-family="DejaVu Sans,Arial,sans-serif" font-weight="bold" font-size="34" letter-spacing=".5">Agenturm</text>
+<text x="94" y="112" fill="#f6f0e8" font-family="DejaVu Sans,Arial,sans-serif" font-size="30" letter-spacing="0">agenturm</text>
+<text x="238" y="112" fill="#b9afc5" font-family="DejaVu Sans,Arial,sans-serif" font-size="20">.dev</text>
 <text x="58" y="198" fill="#f6f0e8" font-family="DejaVu Sans,Arial,sans-serif" font-weight="bold" font-size="65" letter-spacing="0">Know what your</text>
 <text x="58" y="274" fill="#ffbd69" font-family="DejaVu Sans,Arial,sans-serif" font-weight="bold" font-size="65" letter-spacing="0">agents are doing.</text>
 <text x="64" y="333" fill="#f6f0e8" font-family="DejaVu Sans,Arial,sans-serif" font-size="23">See recorded progress. Inspect tool calls. Follow traces.</text>
 <text x="65" y="383" fill="#b9afc5" font-family="DejaVu Sans Mono,monospace" font-size="14">CODEX  /  CLAUDE CODE  /  OPENCODE  /  PI  /  OTEL</text>
-<g transform="translate(913 50) scale(.65)">
-
-  <!-- Berlin's distinctive proportions: antenna, spherical deck, slim mast. -->
-  <path d="M252 62h8v28h-8Z M248 110h16v34h-16Z" fill="#ffbd69"/>
-  <path d="M250 90h12v20h-12Z" fill="#f6f0e8"/>
-  <path d="M249 258h14l12 168h-38Z M218 426h76v10h-76Z" fill="#ffbd69"/>
-  <!-- A circular deck split by one thin band below the central hand lens. -->
-  <!-- The band and lens are true cutouts, not painted background rectangles. -->
-  <path fill="#c5adff" fill-rule="evenodd" d="
-    M201.741 232a62 62 0 1 1 108.518 0Z
-    M205.522 238h100.956a62 62 0 0 1-100.956 0Z
-    M266.41 206.75l14.42 14.42-5.66 5.66-14.42-14.42a21 21 0 1 1 5.66-5.66Z
-    M262 195a13 13 0 1 0-26 0 13 13 0 1 0 26 0Z
-  "/>
+<g transform="translate(932 49) scale(3.9)" fill="none" stroke="#f6f0e8" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" opacity=".92">
+  <path d="M20 3v17M17.5 20h5M18 35l-3 32h10l-3-32M10 68h20M20 4h2M18 11h4"/>
+  <ellipse cx="20" cy="28" rx="11" ry="8"/>
+  <path d="M9 28h22M12 32h16M20 20v16"/>
+  <circle cx="20" cy="3" r="2" fill="#c5adff" stroke="none"/>
 </g>
 <rect x=".5" y=".5" width="1279" height="419" rx="28" fill="none" stroke="#51475f"/>
 
