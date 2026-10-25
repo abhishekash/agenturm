@@ -2,7 +2,7 @@
 
 # Lowest-value columns disappear first; full records remain in the inspector.
 DROP_ORDER = {
-    'agent-table': (1, 4, 2, 0),
+    'agent-table': (3, 0),
     'activity-table': (1, 0),
     'mcp-servers': (4, 3, 1, 2),
     'mcp-table': (1, 5, 0, 2),

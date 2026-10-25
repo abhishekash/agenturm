@@ -20,6 +20,7 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
 from .feed_requests import FeedScope, RequestBatch
+from .shutdown import complete_cleanup
 
 
 class CockpitError(Exception):
@@ -98,12 +99,10 @@ class LocalReceiver:
         self.store.local_agent_monitor = self.local
 
     def close(self):
-        if self.local:
-            self.local.close()
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join()
-        self.store.close()
+        complete_cleanup(
+            *([self.local.close] if self.local else []),
+            self.server.shutdown, self.server.server_close, self.thread.join,
+            self.store.close)
 
 
 @dataclass
@@ -571,8 +570,5 @@ def run_cockpit(*, db_path="observatory.db", port=14318, endpoint=None,
     except KeyboardInterrupt:
         pass
     finally:
-        if feed is not None:
-            if feed.thread.is_alive():
-                feed.close()
-        if receiver is not None:
-            receiver.close()
+        complete_cleanup(*([feed.close] if feed is not None else []),
+                         *([receiver.close] if receiver is not None else []))

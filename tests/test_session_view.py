@@ -23,7 +23,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
         for runtime, sid in (("OpenCode", "opencode-session"), ("Pi", "pi-session")):
             self.assertTrue(any(item['runtime'] == runtime and item['session_id'] == sid for item in rows))
 
-    async def test_tasks_get_spare_width_and_wrap_without_expanding_missing_rows(self):
+    async def test_tasks_get_spare_width_and_projects_have_readable_two_line_rows(self):
         feed=ManualFeed()
         task=('Investigate the checkout regression and improve keyboard navigation '
               'for the payment form before preparing the next release.')
@@ -36,23 +36,27 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 table=app.query_one('#agent-table',DataTable)
                 self.assertNotIn('Waiting on',[str(column.label) for column in table.columns.values()])
-                self.assertGreater(table.column_widths[-1],table.column_widths[2]*3)
+                self.assertGreater(table.column_widths[1],table.column_widths[0])
                 self.assertEqual(table.rows['source-1'].height,2)
-                self.assertEqual(table.rows['source-2'].height,1)
-                task_cell=table.get_row('source-1')[-1]
-                self.assertFalse(task_cell.no_wrap)
+                self.assertEqual(table.rows['source-2'].height,2)
+                task_cell=table.get_row('source-1')[1]
+                self.assertTrue(task_cell.no_wrap)
                 rendered='\n'.join(table.render_line(row).text for row in range(table.size.height))
                 self.assertIn('Investigate the checkout',rendered)
-                self.assertIn('keyboard navigation',rendered)
+                self.assertIn('payments',rendered)
+                await pilot.press('e')
+                await pilot.pause()
                 self.assertIn(task,app.query_one('#agent-detail').plain_text.replace('\n',' '))
-                self.assertIn('italic',str(table.get_row('source-2')[-1].style))
+                await pilot.press('escape')
+                await pilot.pause()
+                self.assertIn('italic',str(table.get_row('source-2')[1].style))
             # Live updates can shrink a wrapped row without changing row identity.
             feed.snapshot.local_status['sessions'][0]['task']='Fix checkout'
             app.last_update=-1
             app.refresh_data()
             await pilot.pause()
-            self.assertEqual(table.rows['source-1'].height,1)
-            self.assertEqual(table.get_row('source-1')[-1].plain,'Fix checkout')
+            self.assertEqual(table.rows['source-1'].height,2)
+            self.assertEqual(table.get_row('source-1')[1].plain,'Fix checkout')
 
     async def test_columns_waiting_and_summary_are_bound_to_selected_session(self):
         feed = ManualFeed()
@@ -70,16 +74,19 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.pause()
                     table = app.query_one('#agent-table', DataTable)
                     self.assertEqual([str(c.label) for c in table.columns.values()],
-                        ['Agent', 'Session ID', 'Repo / project', 'Status', 'Updated', 'Task / details'])
+                        ['Agent / project', 'Current task', 'Status', 'Updated'])
                     row = ' '.join(str(value) for value in table.get_row_at(0))
                     self.assertIn('NEEDS REPLY', row)
                     self.assertNotIn('Reply · Codex terminal', row)
+                    self.assertNotIn('Progress Summary · Recorded Activity',app.query_one('#agent-detail').plain_text)
+                    await pilot.press('e')
+                    await pilot.pause()
                     detail = app.query_one('#agent-detail').plain_text
                     self.assertIn('Progress Summary · Recorded Activity', detail)
                     self.assertIn('Current: Waiting', detail)
-                    self.assertIn('answer in the Codex terminal', detail)
-                    self.assertIn('Goechala is read-only', detail)
-                    self.assertLess(detail.splitlines().index('Progress Summary · Recorded Activity'), 10)
+                    self.assertIn('answer in the Codex terminal', ' '.join(detail.split()))
+                    self.assertIn('Goechala is read-only', ' '.join(detail.split()))
+                    self.assertLess(detail.index('LATEST RECORDED EVENT'),detail.index('Progress Summary · Recorded Activity'))
                     # Mounting and refreshes never trigger paid API calls.
                     generate.assert_not_called()
                     await pilot.click('#agent-summary')
@@ -108,12 +115,15 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(app.query_one('#agent-summary').disabled)
                 self.assertIn('works without setup', app.query_one('#agent-summary').tooltip)
                 detail = app.query_one('#agent-detail').plain_text
-                self.assertIn('Progress Summary · Recorded Activity', detail)
-                self.assertIn('Latest: git status --short', detail)
+                self.assertIn('LATEST ACTION', detail)
+                self.assertIn('Shell command · git', detail)
                 self.assertNotIn('AI summary ·', detail)
                 actions = app.query_one('#agent-actions', DataTable)
-                self.assertEqual(actions.row_count, 1)
-                self.assertIn('No recent activity captured', str(actions.get_row_at(0)))
+                self.assertEqual(actions.row_count, 0)
+                self.assertFalse(actions.display)
+                await pilot.press('e')
+                await pilot.pause()
+                self.assertIn('Progress Summary · Recorded Activity',app.query_one('#agent-detail').plain_text)
                 self.assertEqual(len(app.query('#agent-output')), 0)
                 self.assertFalse(any(binding.key == 'b' for binding in app.BINDINGS))
 
@@ -159,7 +169,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             widget = app.query_one('#stat-sessions')
             text = ' '.join(widget.render_line(row).text for row in range(widget.size.height))
-            self.assertIn('WORKING AGENTS', text)
+            self.assertEqual(widget.border_title,'WORKING AGENTS')
             self.assertIn('3', text)
             self.assertIn('Codex 2', text)
             self.assertIn('OpenCode 1', text)

@@ -32,8 +32,8 @@ class ThemePickerTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.query_one('#agent-table').styles.background.hex.lower(), colors['surface'])
                 # Cached evidence and Rich table colors must change, not just the app shell.
                 table = app.query_one('#agent-table')
-                session = table.get_row_at(0)[1]
-                self.assertEqual(str(session.style), colors['secondary'])
+                task = table.get_row_at(0)[1]
+                self.assertEqual(str(task.style), colors['label'])
                 log = app.query_one('#agent-detail')
                 segments = [segment for line in log.lines for segment in line]
                 self.assertTrue(any(segment.style and segment.style.color and
