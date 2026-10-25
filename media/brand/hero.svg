@@ -11,10 +11,17 @@
 <path d="M1114 72V350M1154 98V350M1194 72V350M1082 130h144M1082 205h144M1082 280h144" fill="none" stroke="#67516d" stroke-width="2" opacity=".6"/>
 <path d="M64 55h30" stroke="#ffbd69" stroke-width="3"/>
   <text x="106" y="61" fill="#b9afc5" font-family="DejaVu Sans Mono,monospace" font-size="13" letter-spacing="3">LOCAL OBSERVABILITY FOR CODING AGENTS</text>
-  <text x="58" y="176" fill="#f6f0e8" font-family="DejaVu Sans,Arial,sans-serif" font-weight="bold" font-size="65" letter-spacing="0">Know what your</text>
-  <text x="58" y="252" fill="#ffbd69" font-family="DejaVu Sans,Arial,sans-serif" font-weight="bold" font-size="65" letter-spacing="0">agents are doing.</text>
-  <text x="64" y="311" fill="#f6f0e8" font-family="DejaVu Sans,Arial,sans-serif" font-size="23">See recorded progress. Inspect tool calls. Follow traces.</text>
-  <text x="65" y="366" fill="#b9afc5" font-family="DejaVu Sans Mono,monospace" font-size="14">CODEX  /  CLAUDE CODE  /  OPENCODE  /  PI  /  OTEL</text>
+<g transform="translate(54 72) scale(.14)">
+  <path d="M252 62h8v28h-8Z M248 110h16v34h-16Z" fill="#ffbd69"/>
+  <path d="M250 90h12v20h-12Z" fill="#f6f0e8"/>
+  <path d="M249 258h14l12 168h-38Z M218 426h76v10h-76Z" fill="#ffbd69"/>
+  <path fill="#c5adff" fill-rule="evenodd" d="M201.741 232a62 62 0 1 1 108.518 0Z M205.522 238h100.956a62 62 0 0 1-100.956 0Z M266.41 206.75l14.42 14.42-5.66 5.66-14.42-14.42a21 21 0 1 1 5.66-5.66Z M262 195a13 13 0 1 0-26 0 13 13 0 1 0 26 0Z"/>
+</g>
+<text x="116" y="113" fill="#f6f0e8" font-family="DejaVu Sans,Arial,sans-serif" font-weight="bold" font-size="34" letter-spacing=".5">Agenturm</text>
+<text x="58" y="198" fill="#f6f0e8" font-family="DejaVu Sans,Arial,sans-serif" font-weight="bold" font-size="65" letter-spacing="0">Know what your</text>
+<text x="58" y="274" fill="#ffbd69" font-family="DejaVu Sans,Arial,sans-serif" font-weight="bold" font-size="65" letter-spacing="0">agents are doing.</text>
+<text x="64" y="333" fill="#f6f0e8" font-family="DejaVu Sans,Arial,sans-serif" font-size="23">See recorded progress. Inspect tool calls. Follow traces.</text>
+<text x="65" y="383" fill="#b9afc5" font-family="DejaVu Sans Mono,monospace" font-size="14">CODEX  /  CLAUDE CODE  /  OPENCODE  /  PI  /  OTEL</text>
 <g transform="translate(913 50) scale(.65)">
 
   <!-- Berlin's distinctive proportions: antenna, spherical deck, slim mast. -->
