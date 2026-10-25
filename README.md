@@ -25,12 +25,12 @@
 ## The view from your terminal
 
 <p align="center">
-  <a href="https://www.agenturm.dev/#terminal">
-    <img src="media/agenturm-terminal.png" alt="Actual Agenturm terminal showing three synthetic agent sessions, recorded status, recent work, and the selected session's progress." width="100%">
+  <a href="media/agenturm-demo.mp4">
+    <img src="media/agenturm-demo.gif" alt="29-second animated walkthrough of Agenturm's synthetic terminal: agent sessions, recorded prompts, MCP evidence, and a linked trace." width="100%">
   </a>
 </p>
 
-<p align="center"><sub>Actual terminal UI · synthetic example records · <a href="docs/investigation-video.md">Watch the walkthrough</a></sub></p>
+<p align="center"><sub>Actual terminal UI · synthetic example records · <a href="media/agenturm-demo.mp4">Watch or download the full 29-second video</a> · <a href="docs/investigation-video.md">Rebuild the walkthrough</a></sub></p>
 
 ## Start here. Stay in your terminal.
 

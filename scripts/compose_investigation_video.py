@@ -14,8 +14,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
 WIDTH, HEIGHT, FPS = 1920, 1080, 24
-BG, PANEL, WHITE = '#121018', '#191621', '#f6f0e8'
-CYAN, GOLD, MUTED = '#c5adff', '#ffbd69', '#b9afc5'
+# Match the website's current dark-default palette in src/styles/global.css.
+BG, PANEL, WHITE = '#100f16', '#17151f', '#f4f1eb'
+CYAN, GOLD, MUTED = '#c5adff', '#ffbd69', '#a6a0b2'
 FONT_DIR = Path('/usr/share/fonts/truetype/dejavu')
 SCENES = [
     ('agents', 5, '01 / OVERVIEW', 'Every session, in one place.',
