@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://www.agenturm.dev/">
-    <img src="media/brand/hero.svg" alt="Know what your agents are doing. Local observability for Codex, Claude Code, OpenCode, Pi, and OpenTelemetry agents." width="100%">
+    <img src="media/brand/hero.svg" alt="Agenturm tower-and-lens logo and the headline: Know what your agents are doing. Local observability for Codex, Claude Code, OpenCode, Pi, and OpenTelemetry agents." width="100%">
   </a>
 </p>
 
