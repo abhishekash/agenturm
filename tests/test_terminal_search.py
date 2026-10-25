@@ -537,7 +537,9 @@ class TokenPresenceRenderingTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(140, 42)) as pilot:
             await pilot.pause()
             self.assertIn('Not reported / Not reported', str(app.query_one('#stat-usage').render()))
-            self.assertIn('Not reported in / Not reported out', app.query_one('#agent-detail').plain_text)
+            await pilot.press('e')
+            await pilot.pause()
+            self.assertIn('Not reported in / Not reported out', ' '.join(app.query_one('#agent-detail').plain_text.split()))
             app.action_page('traces')
             await pilot.pause()
             row = app.query_one('#trace-table').get_row_at(0)

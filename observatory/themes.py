@@ -6,7 +6,7 @@ from textual.theme import Theme
 
 
 # Semantic roles shared by TCSS and Rich-rendered evidence, not just palette chrome.
-CURRENT = {
+_ORIGINAL = {
     'canvas': '#121018', 'surface': '#191621', 'panel': '#242030',
     'text': '#f6f0e8', 'label': '#e1d9eb', 'muted': '#b9afc5', 'disabled': '#8f849d',
     'primary': '#ffbd69', 'secondary': '#c5adff', 'success': '#86e3b5',
@@ -17,6 +17,16 @@ CURRENT = {
     'selection': '#5c4578', 'on-selection': '#ffffff', 'cursor': '#443555',
     'on-cursor': '#fff7eb', 'header': '#30283e', 'row-hover': '#352b43',
     'row-alt': '#211b2b', 'footer-key': '#3b2d4c',
+}
+
+# The terminal and the website's observation deck share the same restrained
+# surfaces. Retain the original Rich color roles for cached evidence styles.
+CURRENT = {**_ORIGINAL,
+    'canvas': '#0e0e14', 'surface': '#15151e', 'panel': '#1e1e2a',
+    'text': '#f3f1ed', 'label': '#dedce5', 'muted': '#a6a4b8', 'disabled': '#78768b',
+    'border': '#565366', 'border-subtle': '#393746', 'border-disabled': '#2c2b38',
+    'focus': '#30291e', 'cursor': '#292735', 'header': '#1e1e2a',
+    'row-alt': '#15151e', 'row-hover': '#20202d', 'hover': '#20202d',
 }
 
 
@@ -72,7 +82,8 @@ def supported_themes():
 def themed_style(widget, style):
     """Translate the original Rich styles, including cached table/evidence colors."""
     colors = PALETTES.get(widget.app.theme, CURRENT)
-    replacements = {original: colors[role] for role, original in CURRENT.items()}
+    replacements = {**{original: colors[role] for role, original in _ORIGINAL.items()},
+                    **{original: colors[role] for role, original in CURRENT.items()}}
     # Translate once: Bright's white canvas must not be remapped as selection text.
     return re.sub(r'#[0-9a-fA-F]{6}\b',
                   lambda match: replacements.get(match.group().lower(), match.group()), style)

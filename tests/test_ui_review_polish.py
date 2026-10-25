@@ -43,14 +43,14 @@ class LocalHelpersTest(unittest.TestCase):
                 store.save({'view': 'agents'})
 
     def test_narrow_columns_keep_subject_and_result(self):
-        specs = [('Agent', 11, 0), ('ID', 10, 0), ('Project', 14, 0),
-                 ('Status', 14, 0), ('Updated', 8, 0), ('Task', 32, 1)]
+        specs = [('Agent / project', 18, 0), ('Current task', 28, 1),
+                 ('Status', 17, 0), ('Updated', 8, 0)]
         visible, widths = column_layout('agent-table', specs, 60)
-        self.assertIn(3, visible)
-        self.assertIn(5, visible)
-        self.assertNotIn(1, visible)
+        self.assertIn(1, visible)
+        self.assertIn(2, visible)
+        self.assertNotIn(3, visible)
         self.assertLessEqual(sum(widths) + 2 * len(widths) + 1, 60)
-        self.assertEqual(column_layout('agent-table', specs, 180)[0], tuple(range(6)))
+        self.assertEqual(column_layout('agent-table', specs, 180)[0], tuple(range(4)))
 
     def test_diagnostics_only_include_allowlisted_health(self):
         text = diagnostics_text({'enabled': True, 'token': 'SECRET', 'endpoint': 'SECRET',
@@ -132,15 +132,15 @@ class CockpitPolishTest(unittest.IsolatedAsyncioTestCase):
             key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
             await pilot.resize_terminal(70, 30)
             await pilot.pause()
-            self.assertNotIn(1, table.visible_columns)
-            self.assertIn(5, table.visible_columns)
+            self.assertNotIn(3, table.visible_columns)
+            self.assertIn(1, table.visible_columns)
+            self.assertIn(2, table.visible_columns)
             await pilot.resize_terminal(180, 48)
             await pilot.pause()
-            self.assertEqual(table.visible_columns, tuple(range(6)))
+            self.assertEqual(table.visible_columns, tuple(range(4)))
             self.assertEqual(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value, key)
             # Time cells may age; identity and task must be restored intact.
-            self.assertEqual(table.get_row_at(0)[:4], original[:4])
-            self.assertEqual(table.get_row_at(0)[-1], original[-1])
+            self.assertEqual(table.get_row_at(0)[:3], original[:3])
 
     async def test_preferences_restore_safe_state_without_search_or_scope(self):
         with tempfile.TemporaryDirectory() as directory:

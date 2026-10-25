@@ -59,7 +59,7 @@ class BrandingTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(len(app.query('Footer')), 0)
 
-    async def test_masthead_lockup_is_centered(self):
+    async def test_masthead_is_left_aligned_like_the_observation_deck(self):
         app = ObservatoryApp(ManualFeed())
         async with app.run_test(size=(200, 50)) as pilot:
             for width, height in ((200, 50), (120, 40)):
@@ -67,9 +67,8 @@ class BrandingTest(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 masthead = app.query_one('#masthead')
                 lockup = app.query_one('#brand-lockup')
-                self.assertAlmostEqual(
-                    lockup.region.x + lockup.region.width / 2,
-                    masthead.region.x + masthead.region.width / 2, delta=2)
+                self.assertLessEqual(lockup.region.x,masthead.region.x+2)
+                self.assertEqual(len(app.query('#masthead-left')),0)
                 connection = app.query_one('#connection')
                 self.assertGreaterEqual(connection.region.right, masthead.region.right - 3)
 

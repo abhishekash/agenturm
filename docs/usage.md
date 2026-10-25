@@ -41,7 +41,7 @@ agenturm
 
 If uv is not installed, use its [official installation instructions](https://docs.astral.sh/uv/getting-started/installation/). If the installed command is missing from your PATH, run `uv tool update-shell` and open a new terminal. You can also install into an active Python environment with `python -m pip install "agenturm @ git+https://github.com/abhishekash/agenturm"`.
 
-The cockpit opens a tabbed interface for Agents, Activity, MCP Calls, Traces, Host, Metrics, and Findings. The Agents view shows individual sessions, tasks, models, recent work, and an immediate recorded-progress summary. Findings provides a searchable, paged review queue with occurrence counts, evidence links, and direct navigation to the source trace. Session counts and live process counts are separate; approval reviews are hidden by default. The cockpit attaches to a receiver on **127.0.0.1:14318**, or starts one there. Run `agenturm` for full-screen panels in your current terminal. From this checkout, `python3 -m observatory` also works without installation.
+The cockpit opens a tabbed interface for Agents, Activity, MCP Calls, Traces, Host, Metrics, and Findings. The Agents view shows individual sessions, tasks, and a compact status/latest-action overview; expand with `e` for model, recorded progress, and full session details. Findings provides a searchable, paged review queue with occurrence counts, evidence links, and direct navigation to the source trace. Session counts and live process counts are separate; approval reviews are hidden by default. The cockpit attaches to a receiver on **127.0.0.1:14318**, or starts one there. Run `agenturm` for full-screen panels in your current terminal. From this checkout, `python3 -m observatory` also works without installation.
 
 ### Existing Codex and Claude Code agents
 
@@ -51,7 +51,7 @@ Local receivers automatically discover recent session files under `~/.codex/sess
 agenturm
 ```
 
-It reads actual logged activity as files update, including already running sessions. Agents need no restart or configuration change. Source logs stay untouched. Select an agent to see a zero-setup progress summary and its recent activity. When a session explicitly asks for a user reply or approval, the monitor points you to that agent's own terminal; it cannot submit the answer or approve actions for the agent.
+It reads actual logged activity as files update, including already running sessions. Agents need no restart or configuration change. Source logs stay untouched. Select an agent for its status and latest action; press `e` for the zero-setup recorded-progress summary or `s` for its activity. When a session explicitly asks for a user reply or approval, the monitor points you to that agent's own terminal; it cannot submit the answer or approve actions for the agent.
 
 | Observed data | What appears |
 | --- | --- |
@@ -398,11 +398,30 @@ The offline LangGraph retrieval control was run and imported alongside the harne
 
 ## Agent session overview
 
-The terminal's **Agents** view lists agent, session ID, repo/project, reported status,
-last update, waiting reason, and current/last task. Select a row for the full session
-ID, working directory, branch (when recorded), model, usage, and recent work.
+The terminal's **Agents** view puts **Agent / project**, **Current task**, **Status**,
+and **Updated** in a task-focused list. Task previews stay on one line; agent/project
+rows use two lines. On wide terminals the session inspector is on the right with
+only status and a short latest-action label, not command arguments or output. On narrower
+terminals it stacks below; compact terminals prioritize the list until you inspect.
+Full session IDs, working directories, branches (when recorded), models, and usage
+remain available in the expanded inspector rather than taking up table columns.
 Press **Enter** to inspect; **e** expands the details and **s** opens session activity.
-Long values remain available in the selectable, copyable detail pane.
+Raw output and long values remain available in the selectable, copyable expanded
+detail pane and Activity. The default view does not repeat the activity table or
+show an unconfigured AI-summary button. Internal reviews are hidden from native
+sessions and stored session summaries alike unless Reviews is enabled.
+
+The top cards separate **Working agents**, **Needs attention**, **MCP calls**, and
+**Tokens in / out**. Attention counts explicit input requests and possible stalls,
+not ordinary tool waits. Host process inventory remains in **Host**. Scope controls
+sit below the tabs; search stays with its evidence view. Themes and the five-key
+shortcut legend remain available throughout.
+
+Square, single-line panel edges and aligned headers separate the workspace without
+extra toolbars. An amber **▸** marks the selected session. Status uses shape and
+wording as well as color: **●** working, **◌** quiet work, **✓** completed, and **!**
+for input requests or status warnings. Completed rows keep a muted status rather
+than competing with live work. Selection retains these colors in every theme.
 
 In **Activity**, select an agent with the Scope control (or press **s** on its row
 in Agents), then click **Prompts** beside Errors. This shows only recorded user
@@ -412,13 +431,13 @@ prompts. Turn Prompts off to return to the full activity stream.
 Status comes from native lifecycle records: **Working**, **Waiting**, **Completed**,
 or **Interrupted**. A known input request shows **User input**; a pending tool shows
 **Tool response** and its name. Unfinished turns with quiet logs show **Quiet work**
-(**Working (quiet)** in the inspector);
+(**Working (quiet)** in the expanded inspector);
 CPU/I/O progress from an exactly matched session process or its children can support
 **Processing** or **Tool running**. These are activity signals, not proof that a model
 request is making useful progress. Explicit approval/input waits persist until resolved.
 
 After at least five minutes without records or observed process progress, a matched
-live session shows **May be stalled** (**Possibly stalled** in the inspector), not a definitive hang. Without a process match,
+live session shows **May be stalled** (**Possibly stalled** in the expanded inspector), not a definitive hang. Without a process match,
 the status is **Unconfirmed** instead. **Monitor delayed** or **Catching up** identifies
 collector delay/unread data, not an agent failure. Details explain the status evidence.
 New transcript headers without started work are not counted as working. Completed

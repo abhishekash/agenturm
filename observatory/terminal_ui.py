@@ -10,9 +10,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from rich.cells import cell_len, get_character_cell_size
+from rich.panel import Panel
 from rich.segment import Segment
 from rich.syntax import Syntax
 from rich.table import Table
@@ -23,11 +24,11 @@ from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical
 from textual.screen import Screen
 from textual.strip import Strip
-from textual.widgets import Button, Checkbox, DataTable, Input, RichLog, Select, Static, TabbedContent, TabPane, Tree
+from textual.widgets import Button, Checkbox, DataTable, Input, RichLog, Select, Static, TabbedContent, TabPane, Tabs, Tree
 
 from .terminal import clean, number, trace_name
 from .session_status import session_health
-from .branding import NAME, AMBER, LAVENDER, MINT, ICE, masthead, shortcut_hints, SCOPE_HINTS, TOOL_TICKER
+from .branding import NAME, AMBER, LAVENDER, MINT, ICE, masthead, shortcut_hints, SCOPE_HINTS
 from .themes import PALETTES, supported_themes, themed_style, themed_text
 from .ui_layout import column_layout
 from .ui_diagnostics import DiagnosticsScreen, FIRST_RUN
@@ -382,25 +383,37 @@ def headline(item):
     return subject if item.get('action') in {'call','result','execute_tool'} else f"{item.get('action') or domain} · {subject}"
 
 
+def review_session(entry):
+    """Recognize internal reviews in native, connection, and stored summaries."""
+    services=[entry.get('service'),*(entry.get('services') or [])]
+    models=[entry.get('model'),*(entry.get('models') or [])]
+    return (bool(entry.get('review')) or 'codex-review' in services or
+            'codex-auto-review' in models)
+
+
 def sources(snapshot, include_reviews=False):
     connections={item['source_id']:item for item in snapshot.agents}
     result=[]
     for entry in snapshot.local_status.get('sessions',[]):
         connection=connections.pop(entry['source_id'],{})
-        review=entry.get('service')=='codex-review' or entry.get('model')=='codex-auto-review'
+        review=review_session(entry)
         if review and not include_reviews:
             continue
         health=session_health(entry,time.time_ns())
         result.append({**entry,**health,'id':entry['source_id'],'review':review,
                        'spans':connection.get('span_count',0)})
     for entry in connections.values():
+        review=review_session(entry)
+        if review and not include_reviews:
+            continue
         if 'local-session-log' in entry.get('integrations',[]):
             continue
         result.append({**entry,'id':entry['source_id'],'session_id':None,'project':'SDK / OTLP','model':'',
                        'runtime':entry.get('service'),'task':'Task not reported','recent':entry['state']=='running',
                        'state':'Connected' if entry['state']=='running' else 'Finished' if entry['state']=='stopped' else 'Offline',
-                       'stamp':entry.get('last_seen_ns',0),'spans':entry.get('span_count',0),'review':False})
+                       'stamp':entry.get('last_seen_ns',0),'spans':entry.get('span_count',0),'review':review})
     known_sessions={item.get('session_id') for item in result if item.get('session_id')}
+    known_sessions.update(item.get('session_id') for item in snapshot.local_status.get('sessions',[]))
     latest_by_session={}
     for event in snapshot.activity:
         session_id=event.get('session_id')
@@ -410,6 +423,9 @@ def sources(snapshot, include_reviews=False):
     for session in getattr(snapshot,'sessions',[]):
         session_id=session.get('session_id')
         if not session_id or session_id in known_sessions:
+            continue
+        review=review_session(session)
+        if review and not include_reviews:
             continue
         known_sessions.add(session_id)
         services=session.get('services') or []
@@ -427,7 +443,7 @@ def sources(snapshot, include_reviews=False):
             'task':session.get('latest_task') or '', 'run_state':reported.casefold(),
             'waiting_for':waiting_for,'last_activity':latest_activity,'capture_content':False,
             **health,'spans':session.get('span_count',0),
-            'trace_count':session.get('trace_count',0),'review':False})
+            'trace_count':session.get('trace_count',0),'review':review})
     return sorted(result,key=lambda item:(not (item.get('active') or item.get('state')=='Waiting'),not item['recent'],-item['stamp'],item['id']))
 
 
@@ -488,12 +504,71 @@ def wait_label(item):
     return reason or '—'
 
 
+def task_preview(item):
+    task=clean(' '.join(str(item.get('task') or '').split()))
+    if task.startswith(('<send_user_message_question_reply>','[{"questionItemId"','{"questionItemId"')):
+        return 'Reply to input request'
+    return task if task!='Task not reported' else ''
+
+
+def brief_activity(item):
+    """A bounded action label, never a command's arguments or its output."""
+    domain=item.get('domain') or 'agent'
+    subject=clean(str(item.get('subject') or ''))
+    if domain=='shell':
+        try:
+            args=shlex.split(subject[:1000])
+            if len(args)>=3 and args[1] in {'-c','-lc','-ilc'}:
+                args=shlex.split(args[2])
+            executable=Path(args[0]).name if args else ''
+        except ValueError:
+            executable=subject.split(maxsplit=1)[0] if subject else ''
+        label='Shell command'+(' · '+executable if executable else '')
+    elif domain=='message':
+        label='User message' if item.get('action')=='user' else 'Agent message'
+    elif domain=='model':
+        label='Model call'+(' · '+subject if subject else '')
+    elif domain=='file':
+        label=str(item.get('action') or 'File').title()+' · '+Path(subject).name
+    elif domain=='mcp':
+        label='MCP · '+str(item.get('mcp_server') or subject)+' / '+str(item.get('mcp_tool') or item.get('action') or 'call')
+    elif domain=='tool':
+        label='Tool · '+str(item.get('tool_name') or subject or 'call')
+    else:
+        label=str(item.get('action') or 'Session update').replace('_',' ').capitalize()
+    return clean(' '.join(label.split()))[:76]
+
+
 def task_text(item):
     """Keep real tasks prominent and missing descriptions quiet."""
-    task=clean(' '.join(str(item.get('task') or '').split()))
-    if not task or task=='Task not reported':
-        return Text('Not reported',style='italic #b9afc5',no_wrap=True)
-    return Text(task,style='#f6f0e8',no_wrap=False,overflow='ellipsis')
+    task=task_preview(item)
+    if not task:
+        return Text('—',style='italic #b9afc5',no_wrap=True)
+    return Text(task,style='#f6f0e8' if item.get('active') or input_required(item) else '#e1d9eb',no_wrap=True,overflow='ellipsis')
+
+
+def agent_identity(item,selected=False):
+    """A visible keyboard cursor without turning every row into a bright badge."""
+    text=Text('▸ ' if selected else '  ',style='#ffbd69',no_wrap=True,overflow='ellipsis')
+    text.append(clean(item['runtime']),style='bold #f6f0e8' if item.get('active') or input_required(item) else '#e1d9eb')
+    text.append('\n  '+clean(item.get('project') or '—'),style='#b9afc5')
+    return text
+
+
+def agent_status(item):
+    """Status uses shape and wording as well as color; history stays subdued."""
+    state=item.get('state')
+    if input_required(item):
+        marker,style='!','bold #ff8799'
+    elif state in {'Error','Failed'}:
+        marker,style='×','#ff8799'
+    elif state in {'Waiting','Possibly stalled','Monitor delayed','Catching up','Unconfirmed'}:
+        marker,style='!','#ffbd69'
+    elif item.get('active'):
+        marker,style=('◌' if state=='Working (quiet)' else '●'),'#86e3b5'
+    else:
+        marker,style=('✓' if state=='Completed' else '·'),'#b9afc5'
+    return cell(marker+' '+input_status(item),style)
 
 
 def input_status(item):
@@ -526,6 +601,8 @@ class ResultsTable(DataTable):
     def preview_height(self,values):
         if self.id!='agent-table' or not self.column_widths or not values:
             return 1
+        if len(values)==4:
+            return 2
         task=values[-1]
         return min(2,max(1,len(task.wrap(self.app.console,self.column_widths[-1]))))
 
@@ -576,6 +653,15 @@ class SearchInput(Input):
     BINDINGS=[Binding('ctrl+a','select_all','Select all',show=False)]
 
 
+class CockpitTabs(TabbedContent):
+    """Place shared scope controls below navigation, above the active evidence."""
+    def compose(self)->ComposeResult:
+        for widget in super().compose():
+            yield widget
+            if isinstance(widget,Tabs):
+                yield self.app.scope_controls()
+
+
 def evidence_syntax(content, lexer, theme='Current'):
     return Syntax(content, lexer, word_wrap=True,
                   theme='friendly' if theme == 'Bright' else 'monokai',
@@ -584,6 +670,13 @@ def evidence_syntax(content, lexer, theme='Current'):
 
 class SelectableRichLog(RichLog):
     """Selectable evidence with visible highlighting and plain-text extraction."""
+    def on_resize(self,event):
+        # App resize precedes child layout. Rewrap only after the log itself
+        # has its new width, rather than caching strips for the old sidebar.
+        if event.size.width!=getattr(self,'_reflow_width',None):
+            self._reflow_width=event.size.width
+            self.app.schedule_inspector_reflow()
+
     def write(self, content, *args, **kwargs):
         if isinstance(content, Text):
             content = themed_text(self, content)
@@ -655,69 +748,69 @@ class ObservatoryApp(App):
     Screen { background: $agent-canvas; color: $agent-text; }
     Screen > .screen--selection { background: $agent-selection; color: $agent-on-selection; }
     * { scrollbar-color: $agent-scrollbar; scrollbar-color-hover: $agent-secondary; scrollbar-color-active: $agent-primary; scrollbar-background: $agent-surface; scrollbar-background-hover: $agent-surface; scrollbar-background-active: $agent-surface; }
-    #masthead { layout: grid; grid-size: 3; grid-columns: 1fr auto 1fr; grid-rows: 1; height: 2; padding: 0 2; background: $agent-canvas; border-bottom: solid $agent-border-subtle; }
-    #masthead-left { width: 100%; height: 1; color: $agent-muted; background: $agent-header; text-wrap: nowrap; text-overflow: ellipsis; }
+    #masthead { height: 2; padding: 0 2; background: $agent-canvas; }
     #brand-lockup { width: auto; height: 1; align-vertical: middle; }
     #brand { width: auto; height: 1; color: $agent-text; text-wrap: nowrap; }
-    #connection { width: 100%; height: 1; color: $agent-success; text-align: right; text-wrap: nowrap; text-overflow: ellipsis; }
-    #summary { height: 3; margin: 0 2 1 2; grid-size: 4; grid-columns: 1fr; grid-rows: 3; }
-    .stat { height: 3; min-width: 0; border-left: solid $agent-border-subtle; background: $agent-surface; padding: 0 2; text-wrap: nowrap; text-overflow: ellipsis; }
-    #stat-sessions { border-left: solid $agent-primary; }
-    #stat-processes { border-left: solid $agent-success; }
-    #stat-mcp-count { border-left: solid $agent-secondary; }
-    #stat-usage { border-left: solid $agent-info; }
-    #controls { height: 3; margin: 0 2; align-vertical: middle; }
-    #scope-label { width: 6; height: 1; margin-top: 1; color: $agent-muted; }
-    #scope { width: 32; margin-right: 1; }
-    #shortcuts { height: 2; max-height: 2; margin: 0 2; padding: 0 1; color: $agent-muted; text-wrap: wrap; overflow: hidden; }
+    #connection { width: 1fr; height: 1; color: $agent-success; text-align: right; text-wrap: nowrap; text-overflow: ellipsis; }
+    #summary { height: 4; margin: 0 2 1 2; grid-size: 4; grid-columns: 1fr; grid-rows: 4; grid-gutter: 0 1; }
+    .stat { height: 4; min-width: 0; border: solid $agent-border-subtle; border-title-color: $agent-muted; border-title-style: none; background: $agent-surface; padding: 0 1; text-wrap: nowrap; text-overflow: ellipsis; }
+    #stat-sessions { border-left: solid $agent-success; }
+    #stat-attention.needs-attention { border-left: solid $agent-error; }
+    #controls { height: 1; margin-bottom: 1; align-vertical: middle; }
+    #scope-label { width: 6; height: 1; color: $agent-muted; }
+    #scope { width: 32; height: 1; margin-right: 1; }
+    #scope SelectCurrent { height: 1; border: none; background: $agent-surface; padding: 0 1; }
+    #scope:focus > SelectCurrent { border: none; color: $agent-primary; }
+    #shortcuts { height: 1; max-height: 1; margin: 0 2; color: $agent-muted; text-wrap: nowrap; overflow: hidden; }
     SelectCurrent { background: $agent-panel; border: tall $agent-border; }
     SelectCurrent #label { height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
     Select:focus > SelectCurrent { border: tall $agent-primary; background-tint: transparent; }
     SelectOverlay { background: $agent-panel; border: tall $agent-primary; }
     #controls-spacer { width: 1fr; }
-    #reviews { width: 14; border: none; background: $agent-canvas; margin-top: 1; color: $agent-muted; }
+    #reviews { width: 14; height: 1; border: none; background: $agent-surface; margin-top: 0; color: $agent-muted; }
     Checkbox > .toggle--button { color: $agent-disabled; background: $agent-panel; }
     Checkbox.-on > .toggle--button { color: $agent-primary; }
     Button { height: 3; min-width: 9; padding: 1 0 0 0; background: $agent-panel; color: $agent-label; border: none; border-bottom: solid $agent-border; text-style: none; }
     Button:hover { background: $agent-hover; border-bottom: solid $agent-secondary; }
     Button:focus { border-bottom: heavy $agent-primary; background: $agent-focus; color: $agent-primary; text-style: bold; }
     Button:disabled { color: $agent-disabled; border-bottom: solid $agent-border-disabled; background: $agent-surface; }
-    #pause { width: 12; }
+    #pause { width: 12; height: 1; padding: 0; border: none; background: $agent-surface; }
     #pages { height: 1fr; margin: 0 2; }
-    Tabs { height: 2; padding-top: 0; margin-top: 1; }
-    Tab { color: $agent-muted; padding: 0 2; background: $agent-surface; }
-    Tab.-active { color: $agent-on-primary; background: $agent-primary; text-style: bold; }
-    Tabs:focus .-active { background: $agent-primary-focus; color: $agent-on-primary; text-style: bold underline; }
-    Underline > .underline--bar { color: $agent-primary; background: $agent-border; }
+    Tabs { height: 2; padding-top: 0; margin-top: 0; }
+    Tab { color: $agent-muted; padding: 0 2; background: $agent-canvas; }
+    Tab.-active { color: $agent-primary; background: $agent-focus; text-style: bold; }
+    Tabs:focus .-active { background: $agent-focus; color: $agent-primary; text-style: underline; }
+    Underline > .underline--bar { color: $agent-primary; background: $agent-border-subtle; }
     TabPane { padding: 0; }
     ContentSwitcher { height: 1fr; }
     .hint { height: 2; color: $agent-muted; }
-    .box { border: round $agent-border-subtle; border-title-color: $agent-label; border-title-style: bold; background: $agent-surface; padding: 0 1; }
-    .box:focus-within { border: round $agent-primary; border-title-color: $agent-primary; }
-    .results { height: 1fr; }
-    .searchbar { height: 3; align-vertical: middle; }
-    .view-search { width: 1fr; margin-right: 1; padding: 0 1; background: $agent-panel; border: tall $agent-border; }
-    .view-search:focus { border: tall $agent-primary; background-tint: transparent; }
+    .box { border: none; background: $agent-surface; padding: 0 1; }
+    .results { height: 1fr; border: solid $agent-border-subtle; border-title-color: $agent-label; border-title-style: bold; border-subtitle-color: $agent-muted; }
+    .searchbar { height: 1; align-vertical: middle; }
+    .searchbar Button { height: 1; padding: 0; border: none; background: $agent-surface; }
+    .view-search { width: 1fr; height: 1; margin-right: 1; padding: 0 1; background: $agent-surface; border: none; }
+    .view-search:focus { border: none; background: $agent-panel; background-tint: transparent; }
     Input > .input--placeholder { color: $agent-muted; }
     Input > .input--cursor { background: $agent-primary; color: $agent-canvas; }
     Input > .input--selection { background: $agent-selection; color: $agent-on-selection; }
     .clear-search { width: 9; }
+    .clear-search:disabled { display: none; }
     .error-filter { width: 12; margin-right: 1; }
-    .error-filter.-on { color: $agent-error; border-bottom: heavy $agent-error; background: $agent-error-surface; text-style: bold; }
+    .error-filter.-on { color: $agent-error; border: none; background: $agent-error-surface; text-style: bold; }
     .prompt-filter { width: 12; margin-right: 1; }
-    .prompt-filter.-on { color: $agent-primary; border-bottom: heavy $agent-primary; background: $agent-focus; text-style: bold; }
+    .prompt-filter.-on { color: $agent-primary; border: none; background: $agent-focus; text-style: bold; }
     .search-status { height: 1; color: $agent-muted; padding: 0 1; }
     .history-controls { height: 1; margin-top: 1; }
     .history-controls Static { width: 1fr; color: $agent-muted; }
     .history-controls Button { min-width: 8; width: auto; height: 1; padding: 0 1; margin-left: 1; border: none; }
     .history-controls Button:focus { background: $agent-cursor; color: $agent-on-selection; }
-    #history-back { width: 10; margin-right: 1; }
+    #history-back { width: 10; height: 1; padding: 0; border: none; margin-right: 1; }
     #history-back:disabled { display: none; }
     DataTable { background: $agent-surface; height: 1fr; scrollbar-size: 1 1; }
     DataTable:focus { background-tint: transparent; }
-    DataTable > .datatable--header { background: $agent-header; color: $agent-secondary; text-style: bold; }
-    DataTable > .datatable--cursor { background: $agent-cursor; color: $agent-on-cursor; text-style: bold; }
-    DataTable:blur > .datatable--cursor { background: $agent-header; color: $agent-text; text-style: none; }
+    DataTable > .datatable--header { background: $agent-header; color: $agent-label; text-style: bold; }
+    DataTable > .datatable--cursor { background: $agent-cursor; color: $agent-on-cursor; text-style: none; }
+    DataTable:blur > .datatable--cursor { background: $agent-cursor; color: $agent-on-cursor; text-style: none; }
     DataTable > .datatable--hover { background: $agent-row-hover; }
     DataTable > .datatable--odd-row { background: $agent-row-alt; }
     DataTable > .datatable--even-row { background: $agent-surface; }
@@ -726,50 +819,59 @@ class ObservatoryApp(App):
     #mcp-servers { height: 7; margin-bottom: 1; }
     .expanded #mcp-servers { display: none; }
     #agent-table { height: 1fr; min-height: 3; }
-    #agent-bottom { height: 14; margin-top: 1; }
-    #agent-info { width: 1fr; margin-right: 1; }
+    #agent-bottom { height: 1fr; width: 44; }
+    #agent-info { width: 100%; height: 1fr; }
     #agent-detail { width: 100%; height: 1fr; }
-    #agent-open { height: 3; width: 1fr; }
-    #agent-actions { width: 1fr; }
+    #agent-open { height: 1; width: 1fr; }
+    #agent-actions { display: none; }
+    .inspector-heading { height: 2; color: $agent-label; border-bottom: solid $agent-border-subtle; margin-bottom: 1; text-style: bold; }
+    .inspector-heading Static { width: 1fr; }
+    .inspector-heading Button { width: 12; min-width: 12; height: 1; padding: 0; border: none; background: $agent-surface; color: $agent-secondary; }
     .split { height: 1fr; }
-    .list { width: 3fr; margin-right: 1; }
-    .detail { width: 2fr; }
+    .list { width: 2fr; margin-right: 1; }
+    #results-agents { width: 1fr; }
+    .detail { width: 1fr; min-width: 36; border: solid $agent-border-subtle; padding: 0 2; }
     .detail-log { height: 1fr; }
     #usage-series { height: 12; min-height: 6; padding: 0 1; color: $agent-secondary; }
     .detail-button { height: 3; width: 100%; }
-    .inspector-actions { height: 3; }
-    .inspector-actions Button { width: 1fr; }
+    .inspector-actions { height: 1; margin: 1 0; }
+    .inspector-actions Button { width: 1fr; height: 1; padding: 0; border: none; color: $agent-secondary; background: $agent-surface; }
+    .inspector-actions Button:focus { color: $agent-primary; background: $agent-focus; }
     .expand-button { min-width: 12; }
-    #trace-detail { width: 2fr; }
+    #trace-detail { width: 1fr; border: solid $agent-border-subtle; }
     #span-tree { height: 1fr; min-height: 4; background: $agent-surface; scrollbar-size: 1 1; }
     #span-info { height: 10; border-top: solid $agent-border-subtle; }
-    #health { height: 1; padding: 0 2; color: $agent-muted; }
+    #health { height: 1; padding: 0 2; color: $agent-muted; text-wrap: nowrap; text-overflow: ellipsis; }
     .narrow #masthead { padding: 0 1; }
     .narrow #summary { margin: 0 1 1 1; }
     .narrow .stat { padding: 0 1; }
-    .narrow #controls { margin: 0 1; }
+    .narrow #controls { margin: 0; }
     .narrow #scope { width: 32; }
-    .narrow #shortcuts { height: 3; max-height: 3; margin: 0 1; padding: 0; }
+    .narrow #shortcuts { height: 1; max-height: 1; margin: 0 1; padding: 0; }
     .narrow #pages { margin: 0 1; }
     .narrow Tab { padding: 0 1; }
-    .narrow #agent-bottom { height: 12; }
+    .narrow #agent-bottom { height: 12; width: 100%; }
+    .narrow #agent-bottom .inspector-heading { height: 1; border: none; margin-bottom: 0; }
+    .narrow #agent-bottom .inspector-actions { margin: 0; }
+    .narrow #agent-actions { display: none; }
     .narrow .split { layout: vertical; }
     .narrow .list { width: 100%; height: 1fr; margin-right: 0; margin-bottom: 1; }
-    .narrow .detail, .narrow #trace-detail { width: 100%; height: 1fr; }
-    .small #summary { height: 6; grid-size: 2; }
-    .small #shortcuts { height: 4; max-height: 4; }
+    .narrow .detail, .narrow #trace-detail { width: 100%; min-width: 0; height: 1fr; }
+    .small #summary { height: 8; grid-size: 2; }
+    .small Tab { padding: 0 1 0 0; }
     .small #agent-bottom { height: 9; }
     .small #pause { width: 9; }
     .compact #masthead { height: 1; border-bottom: none; }
     .compact #summary { height: 2; margin: 0 1; grid-rows: 2; }
-    .compact .stat { height: 2; }
+    .compact .stat { height: 2; border: none; background: $agent-canvas; }
+    .compact #stat-sessions, .compact #stat-attention { border: none; }
     .compact.small #summary { height: 4; }
     .compact Tabs { height: 2; padding-top: 0; margin-top: 0; }
     .compact #mcp-servers { display: none; }
     .compact #agent-bottom, .compact .detail, .compact #trace-detail, .compact #host-detail { display: none; }
     .compact .list { width: 100%; height: 1fr; margin: 0; }
     .expanded .results { display: none; }
-    .expanded #agent-bottom { display: block; height: 1fr; margin: 0; }
+    .expanded #agent-bottom { display: block; width: 100%; height: 1fr; margin: 0; }
     .expanded .detail, .expanded #trace-detail, .expanded #host-detail { display: block; width: 100%; height: 1fr; }
     .expanded #agent-info { width: 100%; margin: 0; }
     .expanded #agent-actions { display: none; }
@@ -802,6 +904,7 @@ class ObservatoryApp(App):
         self.table_data={}
         self.table_signatures={}
         self.inspector_signatures={}
+        self.inspector_reflow_pending=False
         self.selected_source=None
         self.selected_activity=None
         self.selected_mcp=None
@@ -850,56 +953,61 @@ class ObservatoryApp(App):
         return Vertical(
             Horizontal(*controls,classes='searchbar'),
             Static('Loading…',id='mcp-hint' if page=='mcp' else 'search-status-'+page,classes='search-status',markup=False),
-            ResultsTable(id=table,cursor_type='row',zebra_stripes=True),
+            ResultsTable(id=table,cursor_type='row',zebra_stripes=False,cursor_foreground_priority='renderable'),
             *footer,
             id='results-'+page,classes='box results '+classes)
 
+    def scope_controls(self):
+        return Horizontal(
+            Button('← Back',id='history-back',disabled=True,tooltip='Return to the event you opened · Alt+Left'),
+            Static('Scope',id='scope-label'),
+            Select([('All agent sessions','all')],value='all',allow_blank=False,id='scope'),
+            Static('',id='controls-spacer'), Checkbox('Reviews',id='reviews'), Button('Pause',id='pause'),
+            id='controls')
+
     def compose(self)->ComposeResult:
         with Horizontal(id='masthead'):
-            ticker = '  //  '.join(TOOL_TICKER)
-            yield Static(f'{ticker}  //  {ticker}', id='masthead-left', markup=False)
             with Horizontal(id='brand-lockup'):
                 yield Static(masthead(), id='brand')
             yield Static('○ Connecting',id='connection',markup=False)
         with Grid(id='summary'):
-            for name in ('sessions','processes','mcp-count','usage'):
+            for name in ('sessions','attention','mcp-count','usage'):
                 yield Static('',id='stat-'+name,classes='stat',markup=False)
-        with Horizontal(id='controls'):
-            yield Button('← Back',id='history-back',disabled=True,tooltip='Return to the event you opened · Alt+Left')
-            yield Static('Scope',id='scope-label')
-            yield Select([('All agent sessions','all')],value='all',allow_blank=False,id='scope')
-            yield Static('',id='controls-spacer')
-            yield Checkbox('Reviews',id='reviews')
-            yield Button('Pause',id='pause')
         yield Static(shortcut_hints(SCOPE_HINTS),id='shortcuts',markup=False)
-        with TabbedContent(initial='agents',id='pages'):
+        with CockpitTabs(initial='agents',id='pages'):
             with TabPane('1  Agents',id='agents'):
-                yield self.results('agents','agent-table','Filter agents by task, project, model, or session…')
-                with Horizontal(id='agent-bottom'):
-                    with Vertical(id='agent-info'):
-                        yield SelectableRichLog(id='agent-detail',classes='box',min_width=1,wrap=True,markup=False,auto_scroll=False)
-                        with Horizontal(classes='inspector-actions'):
-                            yield Button(Text('Session activity · s'),id='agent-open')
-                            yield Button('AI summary',id='agent-summary',tooltip='Uses OPENAI_API_KEY when available. Runs only when requested; the recorded progress summary needs no setup.')
-                    yield ResultsTable(id='agent-actions',classes='box',cursor_type='row',zebra_stripes=True)
+                with Horizontal(id='agent-split',classes='split'):
+                    yield self.results('agents','agent-table','Search sessions by task, project, model, or ID…','list')
+                    with Vertical(id='agent-bottom',classes='detail box'):
+                        with Horizontal(classes='inspector-heading'):
+                            yield Static('SESSION INSPECTOR')
+                            yield Button('Expand · e',id='expand-agents',classes='expand-button',compact=True)
+                        with Vertical(id='agent-info'):
+                            yield SelectableRichLog(id='agent-detail',min_width=1,wrap=True,markup=False,auto_scroll=False)
+                            with Horizontal(classes='inspector-actions'):
+                                yield Button(Text('Activity · s'),id='agent-open',tooltip='Read all recorded activity for this session')
+                                yield Button('AI summary',id='agent-summary',tooltip='Uses OPENAI_API_KEY when available. Runs only when requested; the recorded progress summary needs no setup.')
+                        yield ResultsTable(id='agent-actions',cursor_type='row',zebra_stripes=False)
             with TabPane('2  Activity',id='activity'):
                 with Horizontal(classes='split'):
                     yield self.results('activity','activity-table','Filter activity by command, message, tool, or path…','list')
                     with Vertical(id='activity-inspector',classes='detail box'):
+                        yield Static('EVENT INSPECTOR',classes='inspector-heading')
                         yield SelectableRichLog(id='activity-detail',classes='detail-log',min_width=1,wrap=True,markup=False,auto_scroll=False)
                         with Horizontal(classes='inspector-actions'):
-                            yield Button(Text('Open trace · t'),id='activity-trace')
-                            yield Button(Text('Copy event · c'),id='activity-copy')
+                            yield Button(Text('Trace · t'),id='activity-trace',tooltip='Follow the selected event into its trace')
+                            yield Button(Text('Copy · c'),id='activity-copy')
                             yield Button(Text('Expand · e'),id='expand-activity',classes='expand-button')
             with TabPane('3  MCP Calls',id='mcp'):
                 yield ResultsTable(id='mcp-servers',classes='box',cursor_type='row',zebra_stripes=True)
                 with Horizontal(classes='split'):
                     yield self.results('mcp','mcp-table','Filter MCP operations by server, method, tool, arguments, or result…','list')
                     with Vertical(id='mcp-inspector',classes='detail box'):
+                        yield Static('TOOL INSPECTOR',classes='inspector-heading')
                         yield SelectableRichLog(id='mcp-detail',classes='detail-log',min_width=1,wrap=True,markup=False,auto_scroll=False)
                         with Horizontal(classes='inspector-actions'):
-                            yield Button(Text('Open trace · t'),id='mcp-trace')
-                            yield Button(Text('Copy call · c'),id='mcp-copy')
+                            yield Button(Text('Trace · t'),id='mcp-trace',tooltip='Follow the selected call into its trace')
+                            yield Button(Text('Copy · c'),id='mcp-copy')
                             yield Button(Text('Expand · e'),id='expand-mcp',classes='expand-button')
             with TabPane('4  Traces',id='traces'):
                 with Horizontal(classes='split'):
@@ -914,20 +1022,22 @@ class ObservatoryApp(App):
                 with Horizontal(classes='split'):
                     yield self.results('metrics','metrics-table','Filter metric, service, kind, or unit…','list')
                     with Vertical(id='metrics-inspector',classes='detail box'):
+                        yield Static('METRIC INSPECTOR',classes='inspector-heading')
                         yield Static(id='usage-series')
                         yield SelectableRichLog(id='metrics-detail',classes='detail-log',min_width=1,wrap=True,markup=False,auto_scroll=False)
                         with Horizontal(classes='inspector-actions'):
-                            yield Button(Text('Open exemplar · t'),id='metrics-trace',disabled=True)
-                            yield Button(Text('Copy metric · c'),id='metrics-copy')
+                            yield Button(Text('Exemplar · t'),id='metrics-trace',disabled=True)
+                            yield Button(Text('Copy · c'),id='metrics-copy')
                             yield Button(Text('Expand · e'),id='expand-metrics',classes='expand-button')
             with TabPane('7  Findings',id='findings'):
                 with Horizontal(classes='split'):
                     yield self.results('findings','finding-table','Filter findings by severity, type, task, or evidence…','list')
                     with Vertical(id='finding-inspector',classes='detail box'):
+                        yield Static('EVIDENCE INSPECTOR',classes='inspector-heading')
                         yield SelectableRichLog(id='finding-detail',classes='detail-log',min_width=1,wrap=True,markup=False,auto_scroll=False)
                         with Horizontal(classes='inspector-actions'):
-                            yield Button(Text('Open trace · t'),id='finding-trace')
-                            yield Button(Text('Copy finding · c'),id='finding-copy')
+                            yield Button(Text('Trace · t'),id='finding-trace',tooltip='Open the finding’s source trace')
+                            yield Button(Text('Copy · c'),id='finding-copy')
                             yield Button(Text('Expand · e'),id='expand-findings',classes='expand-button')
         yield Static('Connecting to receiver…',id='health',markup=False)
 
@@ -955,10 +1065,10 @@ class ObservatoryApp(App):
         self.feed.include_reviews=preferences.get('reviews',False)
         self.theme_changed_signal.subscribe(self, self.on_theme_changed)
         columns={
-            'agent-table':[('Agent',11,0),('Session ID',10,0),('Repo / project',14,0),('Status',14,0),('Updated',8,0),('Task / details',32,1)],
+            'agent-table':[('Agent / project',18,0),('Current task',28,1),('Status',17,0),('Updated',8,0)],
             'agent-actions':[('Time',8,0),('Type',7,0),('Recent actions',15,1)],
             'activity-table':[('Time',8,0),('Type',7,0),('Result',9,0),('Action',20,1)],
-            'mcp-servers':[('Server · Enter filters operations',24,3),('Inventory',22,2),('Operations',8,0),('Metric calls',11,0),('Tools',8,0),('Errors',8,0)],
+            'mcp-servers':[('Server · Enter filters operations',24,3),('Inventory',22,2),('Calls',5,0),('Metric calls',12,0),('Tools',8,0),('Errors',8,0)],
             'mcp-table':[('Time',8,0),('Agent',11,1),('Server',9,1),('Tool / method',14,3),('Result',7,0),('Latency',7,0)],
             'trace-table':[('Result',11,0),('Task / run',20,1),('Spans',5,0),('Tokens in / out',15,0)],
             'host-table':[('Process',10,1),('PID',7,0),('Project',12,2),('State',8,1),('RAM',9,0),('CPU total',9,0)],
@@ -967,7 +1077,8 @@ class ObservatoryApp(App):
         for name,cols in columns.items():
             self.query_one('#'+name,ResultsTable).configure(cols)
         for name,title in [('results-agents','Agent sessions'),('agent-detail','Session overview'),('agent-actions','Recent work'),('results-activity','Activity stream'),('activity-inspector','Event detail'),('mcp-servers','Configured servers and servers with observed calls'),('results-mcp','MCP operations'),('mcp-inspector','Operation detail'),('results-traces','Traces'),('trace-detail','Execution tree'),('results-host','Agent processes'),('host-detail','Collection status'),('results-metrics','OTLP metric instruments'),('metrics-inspector','Metric detail'),('results-findings','Finding review'),('finding-inspector','Evidence and source')]:
-            self.query_one('#'+name).border_title=title
+            widget=self.query_one('#'+name)
+            if not widget.has_class('detail'):widget.border_title=title
         for page in self.search_queries:
             self.query_one('#results-'+page).border_subtitle='↑↓ select  ·  Enter inspect'
             self.query_one('#search-'+page).tooltip='Search this view · / to focus · Esc to return'
@@ -997,7 +1108,16 @@ class ObservatoryApp(App):
 
     def on_resize(self,event):
         self.update_layout(event.size)
-        self.call_after_refresh(self.reflow_inspectors)
+        self.schedule_inspector_reflow()
+
+    def schedule_inspector_reflow(self):
+        if self.inspector_reflow_pending:return
+        self.inspector_reflow_pending=True
+        self.call_after_refresh(self.finish_inspector_reflow)
+
+    def finish_inspector_reflow(self):
+        self.inspector_reflow_pending=False
+        self.reflow_inspectors()
 
     def reflow_inspectors(self):
         if not isinstance(self.screen,ObservatoryScreen):return
@@ -1026,11 +1146,22 @@ class ObservatoryApp(App):
         self.last_update=-1
 
     def stat(self,name,value,label,detail):
-        accent={'sessions':AMBER,'processes':MINT,'mcp-count':LAVENDER,'usage':ICE}[name]
-        text=Text(label.upper()+'\n',style='#b9afc5',no_wrap=True,overflow='ellipsis')
+        accent=AMBER if name=='attention' and value else '#f6f0e8'
+        text=Text(style='#b9afc5',no_wrap=True,overflow='ellipsis')
         text.append(str(value),style='bold '+accent)
+        if self.size.height<36:text.append('  '+label.upper(),style='#b9afc5')
         text.append('\n'+detail,style='#b9afc5')
-        self.query_one('#stat-'+name,Static).update(themed_text(self.query_one('#stat-'+name),text))
+        widget=self.query_one('#stat-'+name,Static)
+        widget.border_title=label.upper()
+        widget.set_class(name=='attention' and bool(value),'needs-attention')
+        columns=2 if self.size.width<100 else 4
+        margin=4 if self.size.width>=140 else 2
+        padding=2 if self.size.height<36 else 4
+        width=max(1,(self.size.width-margin-(columns-1))//columns-padding)
+        lines=text.split('\n')
+        for line in lines:line.truncate(width,overflow='ellipsis')
+        text=Text('\n').join(lines)
+        widget.update(themed_text(widget,text))
 
     def fill(self,name,rows,preserve=None):
         """Preserve row identity and scroll position while live values change."""
@@ -1099,9 +1230,8 @@ class ObservatoryApp(App):
         connection_widget.tooltip=state+' · '+endpoint
         connection=Text()
         connection.append('● ', style='bold '+state_color)
-        connection.append(state, style='bold '+state_color)
-        if self.size.width>=160 and len(endpoint)<=24:
-            connection.append('  '+endpoint, style='#b9afc5')
+        local=urlsplit(self.feed.api.endpoint).hostname in {'localhost','127.0.0.1','::1'}
+        connection.append('LOCAL / SQLITE' if state=='Connected' and local else state, style=state_color)
         update_status_text(connection_widget,themed_text(connection_widget,connection))
         health_text=(data.error if data.error else
             f"{'Display paused' if self.feed.paused else 'Updated '+age(int(data.updated*1e9))}  ·  {self.scope_label()}  ·  {'Reviews included' if self.feed.include_reviews else 'Reviews hidden'}")
@@ -1134,7 +1264,10 @@ class ObservatoryApp(App):
         if cell_len(session_detail)>stat_width-(5 if self.size.width>=140 else 3):
             session_detail=f'{len(work)} sessions · {replies} action'
         self.stat('sessions',len(active),'Working agents',session_detail)
-        self.stat('processes',live,'Host processes','Live on this host')
+        stalled=sum(item.get('state')=='Possibly stalled' for item in work)
+        self.stat('attention',replies+stalled,'Needs attention',f'{replies} need input · {stalled} may be stalled' if replies or stalled else 'No action needed')
+        self.query_one('#stat-attention').tooltip=(f'{replies} explicit approval/reply requests · {stalled} possible stalls. '
+            f'Ordinary tool calls do not need action. {live} live host processes are listed in Host.')
         servers={item.get('server') for item in data.mcp if item.get('server') and item.get('server')!='Not reported'}
         operations={(item.get('server'),item.get('tool')) for item in data.mcp if item.get('tool') and item.get('tool')!='Not reported'}
         mcp_errors=sum(str(item.get('status','')).upper() in {'ERROR','FAILED'} for item in data.mcp)
@@ -1154,7 +1287,6 @@ class ObservatoryApp(App):
             'Calls are individual calls with operation details. Metric calls are Cursor aggregate counts; '
             'they cannot be opened or attributed to a session. Calls without a reported server are listed separately.')
         self.stat('usage',observed_count(data.totals,'input_tokens')+' / '+observed_count(data.totals,'output_tokens'),'Tokens in / out','Includes cached input')
-        stalled=sum(item.get('state')=='Possibly stalled' for item in work)
         self.query_one('#stat-sessions').tooltip=(f'{len(active)} working · {len(work)} total sessions · {recent} recently updated\n'
             f'{waiting} waiting · {replies} need action · {stalled} possibly stalled · {reviews} approval reviews\n'
             +' · '.join(f'{name}: {count} working' for name,count in runtimes.items())
@@ -1182,15 +1314,27 @@ class ObservatoryApp(App):
         agents=list(self.source_map.values())
         agent_query=self.search_queries['agents'].casefold()
         visible_agents=[item for item in agents if (self.scope_value=='all' or item['id']==self.scope_value) and
-                        (not agent_query or agent_query in ' '.join(str(item.get(key) or '') for key in ('runtime','service','project','working_directory','branch','task','model','session_id','id','state','waiting_for')).casefold())]
+                        (not agent_query or agent_query in (' '.join(str(item.get(key) or '') for key in ('runtime','service','project','working_directory','branch','task','model','session_id','id','state','waiting_for'))+' '+task_preview(item)).casefold())]
         visible_agents.sort(key=lambda item:(not input_required(item),not item.get('active'),not item['recent'],-item['stamp'],item['id']))
-        self.fill('agent-table',[(item['id'],[
-            cell(item['runtime']),cell(item.get('session_id') or item['id'],'#c5adff'),
-            cell(item.get('project') or '—'),
-            cell(input_status(item),'bold #ff8799' if input_required(item) else '#ffbd69' if item['state'] in {'Waiting','Possibly stalled','Monitor delayed','Catching up'} else 'bold #86e3b5' if item.get('active') else '#b9afc5'),
-            cell(age(item['stamp']),'#b9afc5'),task_text(item)],item) for item in visible_agents])
-        self.search_status('agents',len(visible_agents),'session')
         if self.selected_source not in {item['id'] for item in visible_agents}:self.selected_source=visible_agents[0]['id'] if visible_agents else None
+        self.fill('agent-table',[(item['id'],[
+            agent_identity(item,item['id']==self.selected_source),
+            task_text(item),
+            agent_status(item),
+            cell(age(item['stamp']),'#b9afc5')],item) for item in visible_agents],preserve=self.selected_source)
+        self.search_status('agents',len(visible_agents),'session')
+        self.show_agent()
+
+    def select_agent(self,source_id):
+        previous=self.selected_source
+        self.selected_source=source_id
+        table=self.query_one('#agent-table',ResultsTable)
+        for key in {previous,source_id}:
+            if key not in table.full_rows:continue
+            values=list(table.full_rows[key])
+            values[0]=themed_text(table,agent_identity(self.source_map[key],key==source_id))
+            table.full_rows[key]=values
+            if 0 in table.visible_columns:table.update_cell(key,'0',values[0])
         self.show_agent()
 
     def render_activity(self):
@@ -1407,18 +1551,33 @@ class ObservatoryApp(App):
             return [*items,current]
         return items
 
-    def inspect(self,name,title,fields,sections):
-        signature=(title,str(fields),str(sections))
+    def inspect(self,name,title,fields,sections,*,overview=False):
+        signature=(title,str(fields),str(sections),overview)
         if self.inspector_signatures.get(name)==signature:return
         previous=self.inspector_signatures.get(name)
         self.inspector_signatures[name]=signature
         log=self.query_one('#'+name,RichLog)
         scroll=log.scroll_offset
         log.clear();log.write(Text(title,style='bold #f6f0e8'))
-        table=Table.grid(padding=(0,2));table.add_column(style=themed_style(log,'#b9afc5'),no_wrap=True);table.add_column()
-        for label,value in fields:table.add_row(Text(label),Text(str('Not reported' if value is None or value=='' else value)))
+        if overview:log.write('')
+        table=Table.grid(padding=(0,2));table.add_column(style=themed_style(log,'#b9afc5'),no_wrap=True)
+        table.add_column(no_wrap=overview,overflow='ellipsis')
+        for label,value in fields:
+            value=themed_text(log,value) if isinstance(value,Text) else Text(str('Not reported' if value is None or value=='' else value))
+            table.add_row(Text(label),value)
         log.write(table)
-        for label,value in sections:self.write_evidence(log,label,value)
+        for label,value in sections:
+            if overview:
+                if not value:continue
+                log.write(Text('\n'+label.upper(),style='#b9afc5'))
+                log.write(Text(str(value),style='#f6f0e8'))
+            elif label=='Latest recorded event' and value:
+                log.write(Panel(Text(value,style=themed_style(log,'#ffbd69')),
+                    title=Text('LATEST RECORDED EVENT',style=themed_style(log,'#b9afc5')),
+                    title_align='left',border_style=themed_style(log,PALETTES['Current']['border-subtle']),
+                    style='on '+PALETTES[self.theme]['canvas'],padding=(0,1)))
+            else:
+                self.write_evidence(log,label,value)
         if previous and previous[0]==title and previous[2]==signature[2]:
             log.scroll_to(y=scroll.y,animate=False)
 
@@ -1490,12 +1649,13 @@ class ObservatoryApp(App):
     def show_agent(self):
         item=getattr(self,'source_map',{}).get(self.selected_source)
         button=self.query_one('#agent-summary',Button)
+        button.display=self.ai_summary_available and bool(item)
         button.disabled=not bool(item) or self.summary_busy or not self.ai_summary_available
         if not self.ai_summary_available:
             button.tooltip='No compatible API key or provider is configured. The recorded progress summary below works without setup.'
         if not item:
             self.query_one('#agent-open',Button).disabled=True
-            self.fill('agent-actions',[('__empty__',[cell('—'),cell('INFO'),cell('No session selected')],{})])
+            self.fill('agent-actions',[])
             if self.search_queries['agents']:
                 self.inspect('agent-detail','No matching agent sessions',[],[('Search','Clear the filter in Agent sessions to show all sessions in this scope.')])
             else:
@@ -1513,8 +1673,34 @@ class ObservatoryApp(App):
         actions=[event for event in self.data.activity if event.get('session_id')==item.get('session_id')] if item.get('session_id') else [event for event in self.data.activity if event.get('service')==item.get('service')]
         meaningful=[event for event in actions if event.get('domain') in {'shell','file','mcp','browser','model','message'}]
         actions=sorted(meaningful or actions,key=lambda event:event.get('time_unix_nano',0),reverse=True)
+        recorded=actions[0] if actions else latest
+        # Retain trace links without rendering a duplicate activity table.
+        self.table_data['agent-actions']={event.get('id') or event['source_id']:event for event in actions[:30]}
+        if not self.query_one('#agents').has_class('expanded'):
+            title=task_preview(item) or 'Session overview'
+            title=title[:71]+'…' if len(title)>72 else title
+            agent=item['runtime']+(' / '+str(item['project']) if item.get('project') else '')
+            fields=[('Agent',agent),('Status',agent_status(item))]
+            if item['stamp']:
+                fields.append(('Updated',age(item['stamp'])))
+            sections=[('Latest action',brief_activity(recorded) if recorded else 'No activity captured yet.')]
+            if input_required(item):
+                sections.append(('Next step',wait_summary(item)))
+            elif item['state'] in {'Possibly stalled','Unconfirmed','Monitor delayed','Catching up','Error','Failed'}:
+                sections.append(('Status evidence',str(item.get('status_evidence') or wait_summary(item))[:250]))
+            self.inspect('agent-detail',title,fields,sections+ai_sections,overview=True)
+            return
         progress=recorded_progress(item,actions,summary)
-        wait=wait_summary(item)
+        preview=''
+        if recorded:
+            content=decode_nested(recorded.get('detail') or '')
+            if isinstance(content,dict):
+                content=next((content[key] for key in ('output','response','result') if content.get(key)),content)
+            if isinstance(content,(dict,list)):
+                content=json.dumps(content,ensure_ascii=False,indent=2)
+            preview=clean(headline(recorded))[:500]
+            if content:
+                preview+='\n'+clean(str(content))[:8000]
         work_detail=(f"{reported_number(summary.get('trace_count'))} traces · {reported_number(item.get('spans'))} spans · "
                      f"{observed_count(summary,'input_tokens')} in / {observed_count(summary,'output_tokens')} out")
         token_detail=(f"Cache read {observed_count(summary,'cache_read_input_tokens')} · "
@@ -1522,24 +1708,22 @@ class ObservatoryApp(App):
                       f"reasoning output {observed_count(summary,'reasoning_output_tokens')}")
         cost_detail=('Not reported' if not summary or summary.get('unknown_cost_runs') or summary.get('known_cost_usd') is None
                      else f"${summary.get('known_cost_usd',0):.4f} known")
-        session_details=(f"Session ID: {item.get('session_id') or item['id']}\n"
-            f"Repo / project: {item.get('project') or 'Not reported'}\n"
-            f"Branch: {item.get('branch') or 'Not reported'}\n"
-            f"Model: {item.get('model') or 'Not reported'}\n"
-            f"Work: {work_detail}\nToken breakdown: {token_detail}\nCost: {cost_detail}")
-        self.inspect('agent-detail',clean(item.get('task') or 'Task not reported'),[
-            ('Agent',item['runtime']),
-            ('Status',item['state']),('Waiting on',wait if item['state']=='Waiting' or item.get('waiting_for') else 'No wait reported'),
-            ('Last updated',when(item['stamp'])+' · '+age(item['stamp']) if item['stamp'] else 'Not reported')],
-            [('Progress summary · recorded activity',progress)]+ai_sections+[
+        detail_fields=[('Session ID',item.get('session_id') or item['id']),
+            ('Repo / project',item.get('project')),('Branch',item.get('branch')),('Model',item.get('model'))]
+        if summary:
+            detail_fields.extend([('Work',work_detail),('Token breakdown',token_detail),('Cost',cost_detail)])
+        session_details='\n'.join(f'{label}: {value}' for label,value in detail_fields if value)
+        fields=[('Agent',item['runtime']),('Status',item['state'])]
+        if item['state']=='Waiting' or item.get('waiting_for'):
+            fields.append(('Waiting on',wait_label(item)))
+        if item['stamp']:
+            fields.append(('Updated',when(item['stamp'])+' · '+age(item['stamp'])))
+        self.inspect('agent-detail',clean(item.get('task') or 'Task not reported'),fields,
+            [('Latest recorded event',preview),('Progress summary · recorded activity',progress)]+ai_sections+[
               ('Session details',session_details),
               ('Analysis coverage',analysis_coverage(summary)),
              ('Working directory',item.get('working_directory')),
              ('Status evidence',item.get('status_evidence') or 'Status comes from recorded lifecycle events. A tool response wait is not an approval request.')])
-        rows=[(event.get('id') or event['source_id'],[cell(table_when(event['time_unix_nano'])),cell(event['domain'].upper()),cell(headline(event))],event) for event in actions[:30]]
-        if not rows:
-            rows=[('__empty__',[cell('—'),cell('INFO'),cell('No recent activity captured')],{})]
-        self.fill('agent-actions',rows)
 
     def show_activity(self):
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
@@ -1669,7 +1853,7 @@ class ObservatoryApp(App):
         item=self.valid_row(event)
         if not item:return
         name=event.data_table.id
-        if name=='agent-table':self.selected_source=item['id'];self.show_agent()
+        if name=='agent-table':self.select_agent(item['id'])
         elif name=='activity-table':self.selected_activity=event.row_key.value;self.show_activity()
         elif name=='mcp-table':self.selected_mcp=item['id'];self.show_mcp()
         elif name=='finding-table':self.selected_finding=item['id'];self.show_finding()
@@ -1693,7 +1877,7 @@ class ObservatoryApp(App):
             self.action_expand()
             return
         if event.data_table.id=='agent-table':
-            self.selected_source=item['id'];self.show_agent();self.query_one('#agent-detail',RichLog).focus()
+            self.select_agent(item['id']);self.query_one('#agent-detail',RichLog).focus()
         elif event.data_table.id=='agent-actions':
             self.selected_activity=item.get('id') or item['source_id'];self.action_page('activity');self.show_activity()
         elif event.data_table.id=='activity-table':self.query_one('#activity-detail',RichLog).focus()
