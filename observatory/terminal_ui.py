@@ -496,10 +496,13 @@ def sources(snapshot, include_reviews=False):
             'working_directory':'','branch':'','model':', '.join(session.get('models') or []),
             'task':session.get('latest_task') or first_prompt_by_session.get(session_id,(0,''))[1],
             'task_source':'recorded user request' if not session.get('latest_task') and first_prompt_by_session.get(session_id) else '',
-            'run_state':reported.casefold(),
-            'waiting_for':waiting_for,'last_activity':latest_activity,'capture_content':False,
-            **health,'spans':session.get('span_count',0),
-            'trace_count':session.get('trace_count',0),'review':review})
+             'run_state':reported.casefold(),
+             'waiting_for':waiting_for,'last_activity':latest_activity,'capture_content':False,
+             **health,'spans':session.get('span_count',0),
+             'trace_count':session.get('trace_count',0),'errors':session.get('errors',0),
+             'failed':session.get('failed',0),'incomplete':session.get('incomplete',0),
+             'latest_trace_id':session.get('latest_trace_id'),
+             'status_complete':session.get('status_complete',True),'review':review})
     return sorted(result,key=lambda item:(not (item.get('active') or item.get('state')=='Waiting'),not item['recent'],-item['stamp'],item['id']))
 
 
@@ -525,6 +528,26 @@ def wait_summary(item):
     if item.get('active'):
         return 'The turn is still in progress; no user action was requested.'
     return 'Remaining work is not reported by the agent.'
+
+
+def attention_evidence(item,summary=None,error_event=None):
+    """Explain whether an attention state is backed by workload or collector evidence."""
+    if error_event:
+        return 'Agent/tool activity failed: '+failure_evidence(error_event)
+    if item.get('state') in {'Error','Failed','Incomplete'}:
+        aggregate=summary if isinstance(summary,dict) and summary else item
+        failures=sum(int(aggregate.get(key) or 0) for key in ('errors','failed','incomplete'))
+        traces=int(aggregate.get('trace_count') or item.get('trace_count') or 0)
+        trace_id=aggregate.get('latest_trace_id') or item.get('latest_trace_id')
+        if failures:
+            evidence=(f'Telemetry recorded {failures} failed run(s) across {traces} trace(s); '
+                      'this is run-level evidence, not proof of a collector failure or a specific tool failure.')
+            if trace_id:
+                evidence+=f' Latest trace: {trace_id}.'
+            return evidence+' Open Traces to inspect spans; check Diagnostics/Host for collection health.'
+        return ('The lifecycle reported '+item['state'].lower()+', but no error message or failed action was captured. '
+                'The cause is unknown: inspect Traces and check Diagnostics/Host to distinguish agent/tool failure from missing collection.')
+    return item.get('status_evidence') or 'Status comes from recorded lifecycle events.'
 
 
 def recorded_progress(item, events, totals):
@@ -1002,7 +1025,8 @@ class ObservatoryApp(App):
               Binding('p','pause','Pause'),Binding('a','all','Reset',show=False),Binding('v','reviews','Reviews',show=False),
               Binding('d','diagnostics','Diagnostics'),Binding('x','export','Export'),
               Binding('q','quit','Quit'),Binding('escape','back','Back',show=False),
-              Binding('s','focus_agent','Focus agent',show=False),Binding('1','page("agents")','Agents',show=False),
+              Binding('s','focus_agent','Focus agent',show=False),Binding('r','review_attention','Mark reviewed',show=False),
+              Binding('1','page("agents")','Agents',show=False),
               Binding('2','page("activity")','Activity',show=False),Binding('3','page("mcp")','MCP',show=False),
               Binding('4','page("traces")','Traces',show=False),Binding('5','page("host")','Host',show=False),
               Binding('6','page("metrics")','Metrics',show=False),Binding('7','page("findings")','Findings',show=False)]
@@ -1046,6 +1070,7 @@ class ObservatoryApp(App):
         self.prompts_only=False
         self.navigation_history=[]
         self.ai_summaries={}
+        self.reviewed_attention=set()
         self.summary_busy=False
         self.preferences=Preferences(preferences_path,enabled=persist_preferences is not False)
         self.persist_preferences=persist_preferences
@@ -1119,6 +1144,8 @@ class ObservatoryApp(App):
                             yield SelectableRichLog(id='agent-detail',min_width=1,wrap=True,markup=False,auto_scroll=False)
                             with Horizontal(classes='inspector-actions'):
                                 yield Button(Text('Activity · s'),id='agent-open',tooltip='Read all recorded activity for this session')
+                                yield Button('Trace · t',id='agent-trace',tooltip='Inspect the latest linked trace for this session')
+                                yield Button('Mark reviewed · r',id='agent-reviewed',tooltip='Acknowledge this attention item for this run; does not change the recorded session status')
                                 yield Button('AI summary',id='agent-summary',tooltip='Uses OPENAI_API_KEY when available. Runs only when requested; the recorded progress summary needs no setup.')
                         yield ResultsTable(id='agent-actions',cursor_type='row',zebra_stripes=False)
             with TabPane('2  Activity',id='activity'):
@@ -1475,11 +1502,11 @@ class ObservatoryApp(App):
         self.stat('sessions',len(active),'Working agents',session_detail)
         stalled=sum(item.get('state')=='Possibly stalled' for item in work)
         failures=sum(item.get('state') in {'Error','Failed','Incomplete'} for item in work)
-        needs_attention=sum(attention_required(item) for item in work)
+        needs_attention=sum(attention_required(item) and item['id'] not in self.reviewed_attention for item in work)
         self.stat('attention',needs_attention,'Needs attention',
                   f'{replies} need input · {stalled} may be stalled · {failures} failures' if needs_attention else 'No action needed')
         self.query_one('#stat-attention').tooltip=(f'{replies} explicit approval/reply requests · {stalled} possible stalls · {failures} recorded failures. '
-            f'Ordinary tool calls do not need action. {live} live host processes are listed in Host.')
+            f'Open a session and press r / Mark reviewed to acknowledge it for this run. Ordinary tool calls do not need action. {live} live host processes are listed in Host.')
         servers={item.get('server') for item in data.mcp if item.get('server') and item.get('server')!='Not reported'}
         operations={(item.get('server'),item.get('tool')) for item in data.mcp if item.get('tool') and item.get('tool')!='Not reported'}
         mcp_errors=sum(str(item.get('status','')).upper() in {'ERROR','FAILED'} for item in data.mcp)
@@ -1910,6 +1937,8 @@ class ObservatoryApp(App):
             button.tooltip='No compatible API key or provider is configured. The recorded progress summary below works without setup.'
         if not item:
             self.query_one('#agent-open',Button).disabled=True
+            self.query_one('#agent-trace',Button).disabled=True
+            self.query_one('#agent-reviewed',Button).display=False
             self.fill('agent-actions',[])
             if self.search_queries['agents']:
                 self.inspect('agent-detail','No matching agent sessions',[],[('Search','Clear the filter in Agent sessions to show all sessions in this scope.')])
@@ -1928,6 +1957,14 @@ class ObservatoryApp(App):
             return
         self.query_one('#agent-open',Button).disabled=False
         summary=next((entry for entry in self.data.sessions if item.get('session_id') and entry.get('session_id')==item.get('session_id')),{})
+        trace_button=self.query_one('#agent-trace',Button)
+        trace_button.disabled=not bool(self.linked_agent_trace())
+        reviewed_button=self.query_one('#agent-reviewed',Button)
+        reviewed= item['id'] in self.reviewed_attention
+        reviewed_button.display=attention_required(item)
+        reviewed_button.label='Reviewed ✓ · r' if reviewed else 'Mark reviewed · r'
+        reviewed_button.tooltip=('Acknowledged for this run. Press r to restore it to Needs attention.' if reviewed else
+                                 'Acknowledge this attention item for this run; does not change the recorded session status.')
         latest=item.get('last_activity') or {}
         generated=self.ai_summaries.get(item['id'])
         ai_sections=[]
@@ -1978,11 +2015,13 @@ class ObservatoryApp(App):
                 sections.insert(0,('Failure details',failure_detail))
             if request_text:
                 sections.insert(0,('Latest recorded request',request_text))
-            sections.append(('Status evidence',str(item.get('status_evidence') or 'Status comes from recorded lifecycle events.')))
+            sections.append(('What happened',attention_evidence(item,summary,error_event)))
+            if reviewed:
+                sections.append(('Review state','Marked reviewed for this run. The session status and recorded evidence are unchanged.'))
             if input_required(item):
                 sections.append(('Next step',wait_summary(item)))
             elif item['state'] in {'Possibly stalled','Unconfirmed','Monitor delayed','Catching up','Error','Failed'}:
-                sections[-1]=('Status evidence',str(item.get('status_evidence') or wait_summary(item))[:250])
+                sections[-2 if reviewed else -1]=('What happened',attention_evidence(item,summary,error_event)[:400])
             self.inspect('agent-detail',title,fields,sections+ai_sections,overview=True)
             return
         progress=recorded_progress(item,actions,summary)
@@ -2053,8 +2092,8 @@ class ObservatoryApp(App):
               ('Session details',session_details),
               ('Analysis coverage',analysis_coverage(summary)),
               ('Working directory',item.get('working_directory')),
-              ('Failure details',failure_detail or None),
-              ('Status evidence',item.get('status_evidence') or 'Status comes from recorded lifecycle events. A tool response wait is not an approval request.')])
+              ('Status evidence',attention_evidence(item,summary,error_event)),
+              ('Review state','Marked reviewed for this run; status and evidence are unchanged.' if reviewed else None)])
 
     def show_activity(self):
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
@@ -2363,6 +2402,8 @@ class ObservatoryApp(App):
             field=self.query_one('#search-'+event.button.id.removeprefix('clear-'),Input)
             field.value='';field.focus()
         elif event.button.id=='agent-open':self.action_focus_agent()
+        elif event.button.id=='agent-trace':self.action_open_trace()
+        elif event.button.id=='agent-reviewed':self.action_review_attention()
         elif event.button.id=='agent-summary':self.request_ai_summary()
         elif event.button.id in {'activity-trace','mcp-trace','metrics-trace','finding-trace'}:self.action_open_trace()
         elif event.button.id in {'activity-copy','mcp-copy','metrics-copy','finding-copy'}:self.action_copy()
@@ -2584,6 +2625,9 @@ class ObservatoryApp(App):
             trace_id=event.get('trace_id')
             if trace_id and trace_id in known:
                 return {'trace_id':trace_id,'span_id':event.get('span_id')}
+        trace_id=session.get('latest_trace_id')
+        if trace_id:
+            return {'trace_id':trace_id}
         session_id=session.get('session_id')
         if session_id:
             match=next((item for item in traces if item.get('session_id')==session_id),None)
@@ -2630,6 +2674,19 @@ class ObservatoryApp(App):
         self.jump_span=item.get('span_id')
         self.feed.selected_span_id=self.jump_span
         self.feed.selected_trace=item['trace_id'];self.feed.pinned_trace=True;self.feed.request_refresh();self.action_page('traces')
+
+    def action_review_attention(self):
+        item=getattr(self,'source_map',{}).get(self.selected_source)
+        if not item or not attention_required(item):
+            return
+        if item['id'] in self.reviewed_attention:
+            self.reviewed_attention.remove(item['id'])
+            self.notify('Returned to Needs attention.')
+        else:
+            self.reviewed_attention.add(item['id'])
+            self.notify('Marked reviewed for this run; recorded status is unchanged.')
+        self.last_update=-1
+        self.refresh_data()
 
     @work(group='metric-history',exclusive=True,thread=True)
     def load_metric_history(self,metric,key):
