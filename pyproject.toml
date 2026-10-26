@@ -47,9 +47,6 @@ openai-agents = ["openai-agents>=0.1.0,<2"]
 
 [project.scripts]
 agenturm = "observatory.__main__:main"
-# Keep historical commands available for existing installs.
-agent-goechala = "observatory.__main__:main"
-agent-observatory = "observatory.__main__:main"
 
 [tool.setuptools.exclude-package-data]
 observatory = ["*.html", "*.js", "*.css"]
