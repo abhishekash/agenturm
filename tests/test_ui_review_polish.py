@@ -9,7 +9,7 @@ from unittest.mock import patch
 from textual.widgets import Input, RichLog
 
 from observatory.terminal import Snapshot
-from observatory.terminal_ui import ObservatoryApp
+from observatory.terminal_ui import ObservatoryApp, attention_key
 from observatory.ui_diagnostics import DiagnosticsScreen, diagnostics_text
 from observatory.ui_export import ExportScreen, investigation_json, write_investigation
 from observatory.ui_layout import column_layout
@@ -18,6 +18,22 @@ from tests.test_terminal_search import ManualFeed
 
 
 class LocalHelpersTest(unittest.TestCase):
+    def test_dismissals_persist_only_bounded_fingerprints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'prefs.json'
+            keys=[attention_key({'id':f'session-{i}','state':'Error','stamp':i}) for i in range(105)]
+            Preferences(path).save({'dismissed_attention':keys,'session_id':'private-session'})
+            saved=Preferences(path).load()['dismissed_attention']
+            self.assertEqual(saved,keys[-100:])
+            self.assertNotIn('session-',path.read_text())
+            self.assertNotIn('private-session',path.read_text())
+
+    def test_failure_fingerprint_changes_for_a_new_trace_or_timestamp(self):
+        original={'id':'session-1','state':'Error','latest_trace_id':'trace-1','stamp':100}
+        self.assertEqual(attention_key(original),attention_key(dict(original)))
+        self.assertNotEqual(attention_key(original),attention_key({**original,'latest_trace_id':'trace-2'}))
+        self.assertNotEqual(attention_key(original),attention_key({**original,'stamp':101}))
+
     def test_preferences_allowlist_and_private_file(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'prefs.json'
