@@ -127,7 +127,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development and demo production. [Iss
 <details>
 <summary>Upgrading from Agent Observatory</summary>
 
-Agenturm is the new name. Install from this repository to get the `agenturm` command. Existing Python imports (`observatory`), `OBSERVATORY_*` settings, telemetry keys, and `observatory.db` history continue to work. The previous command is retained as an alias. The source install above works independently of PyPI publication.
+Agenturm is the new name. Install from this repository to get the `agenturm` command. Existing Python imports (`observatory`), `OBSERVATORY_*` settings, telemetry keys, and `observatory.db` history continue to work. The old executable aliases are intentionally not installed; use `agenturm`. The source install above works independently of PyPI publication.
 
 </details>
 

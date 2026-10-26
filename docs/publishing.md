@@ -1,6 +1,6 @@
 # Publishing to PyPI
 
-The Python distribution and primary command are named `agenturm`. The former `agent-goechala` and `agent-observatory` commands remain compatibility aliases.
+The Python distribution and sole installed command are named `agenturm`.
 
 The rename does not publish a new package automatically. Register the pending publisher below before tagging the first Agenturm release. `agenturm` is a new PyPI distribution and needs its own Trusted Publisher registration.
 

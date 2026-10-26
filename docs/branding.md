@@ -68,14 +68,14 @@ controls, evidence text, and syntax backgrounds follow the selected palette.
 ## Naming and compatibility
 
 - Product: **Agenturm**
-- Repository, Python distribution, and primary command: **agenturm**
-- Compatibility commands: **agent-goechala**, **agent-observatory**
+- Repository, Python distribution, and sole installed command: **agenturm**
 - JavaScript client: **@agenturm/client**
 - Former names: Agent Observatory, Agent Goechala
 
 The `observatory` Python import, `OBSERVATORY_*` settings, telemetry attribute
 names, and the default `observatory.db` filename remain compatible. Existing
-saved history is reused. The old `agent-observatory` command remains an alias.
+saved history is reused. The old executable names are not installed; use
+`agenturm`.
 Package publication and PyPI's Trusted Publisher registration are separate from
 the source rename; see [publishing](publishing.md).
 
