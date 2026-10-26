@@ -175,6 +175,33 @@ def decode_nested(value,depth=0):
     return value
 
 
+def failure_evidence(event):
+    """Build a short, human-readable reason from a recorded failed event."""
+    if not event:
+        return ''
+    details=decode_nested(event.get('detail') or {})
+    keys=('exception.message','error.message','tool.error_message','tool.error',
+          'exception.type','error.type','message','error','reason','stderr')
+    candidates=[]
+    def collect(value):
+        if isinstance(value,dict):
+            for key in keys:
+                child=value.get(key)
+                if isinstance(child,(str,int,float)) and str(child).strip():
+                    candidates.append(str(child).strip())
+            for child in value.values():
+                collect(child)
+        elif isinstance(value,list):
+            for child in value:
+                collect(child)
+    collect(details)
+    result=str(event.get('result') or event.get('status') or 'failed').replace('_',' ')
+    action=' '.join(str(event.get(key) or '').strip() for key in ('domain','action','subject')).strip()
+    prefix=f'{action} · {result}' if action else result
+    reason=next((text for text in candidates if text.casefold() not in {result.casefold(), 'error', 'failed'}), '')
+    return f'{prefix}: {reason}' if reason else f'{prefix}. Open the failed event for its recorded details.'
+
+
 def shell_command(value):
     """Remove the login-shell wrapper from commands captured from a PTY."""
     command=str(value).strip()
@@ -1914,6 +1941,7 @@ class ObservatoryApp(App):
         recorded=next((event for event in actions if event.get('domain')!='message'),actions[0] if actions else latest)
         error_event=next((event for event in actions if str(event.get('result') or event.get('status') or '').casefold()
                           in {'error','failed','denied','blocked','policy_denied','incomplete'}),None)
+        failure_detail=failure_evidence(error_event)
         request_event=next((event for event in actions if event.get('domain')=='message'
                             and event.get('action')=='user'),None)
         if request_event:
@@ -1946,6 +1974,8 @@ class ObservatoryApp(App):
             if item['stamp']:
                 fields.append(('Updated',age(item['stamp'])))
             sections=[('Latest recorded action',brief_activity(recorded) if recorded else 'No activity captured yet.')]
+            if failure_detail:
+                sections.insert(0,('Failure details',failure_detail))
             if request_text:
                 sections.insert(0,('Latest recorded request',request_text))
             sections.append(('Status evidence',str(item.get('status_evidence') or 'Status comes from recorded lifecycle events.')))
@@ -2022,8 +2052,9 @@ class ObservatoryApp(App):
              ('Recorded user prompts',prompt_history),('Recent recorded activity',activity_history)]+ai_sections+[
               ('Session details',session_details),
               ('Analysis coverage',analysis_coverage(summary)),
-             ('Working directory',item.get('working_directory')),
-             ('Status evidence',item.get('status_evidence') or 'Status comes from recorded lifecycle events. A tool response wait is not an approval request.')])
+              ('Working directory',item.get('working_directory')),
+              ('Failure details',failure_detail or None),
+              ('Status evidence',item.get('status_evidence') or 'Status comes from recorded lifecycle events. A tool response wait is not an approval request.')])
 
     def show_activity(self):
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
