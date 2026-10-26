@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from textual.widgets import DataTable, Input, Select
-from observatory.terminal_ui import (ObservatoryApp, coverage_warning, failure_evidence, input_required, recorded_progress,
+from observatory.terminal_ui import (ObservatoryApp, attention_evidence, coverage_warning, failure_evidence, input_required, recorded_progress,
                                      input_status, sources, wait_label, wait_summary)
 from tests.test_terminal_search import ManualFeed
 
@@ -19,6 +19,19 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
         event={'domain':'shell','action':'run','subject':'pytest','result':'failed','detail':'{}'}
         self.assertEqual(failure_evidence(event),
                          'shell run pytest · failed. Open the failed event for its recorded details.')
+
+    def test_aggregate_error_distinguishes_run_evidence_from_collection_health(self):
+        item={'state':'Error','trace_count':2,'errors':1,'latest_trace_id':'trace-abc'}
+        evidence=attention_evidence(item,item)
+        self.assertIn('Telemetry recorded 1 failed run(s)',evidence)
+        self.assertIn('Latest trace: trace-abc',evidence)
+        self.assertIn('not proof of a collector failure',evidence)
+        self.assertIn('Diagnostics/Host',evidence)
+
+    def test_lifecycle_error_without_captured_detail_says_cause_is_unknown(self):
+        evidence=attention_evidence({'state':'Error'})
+        self.assertIn('no error message or failed action was captured',evidence)
+        self.assertIn('cause is unknown',evidence)
 
     def test_missing_task_uses_first_recorded_user_prompt_as_identity(self):
         feed=ManualFeed()
