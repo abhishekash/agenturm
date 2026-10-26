@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shlex
@@ -687,6 +688,13 @@ def attention_required(item):
     }
 
 
+def attention_key(item):
+    """Hash the local identity of one failure instance for privacy-safe dismissal."""
+    identity='\0'.join(str(item.get(key) or '') for key in
+                        ('id','state','latest_trace_id','stamp'))
+    return hashlib.sha256(identity.encode('utf-8')).hexdigest()
+
+
 def navigation_hints(width):
     if width >= 120:
         return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  Ctrl+P Palette  d Diagnostics  q Quit'
@@ -1026,6 +1034,7 @@ class ObservatoryApp(App):
               Binding('d','diagnostics','Diagnostics'),Binding('x','export','Export'),
               Binding('q','quit','Quit'),Binding('escape','back','Back',show=False),
               Binding('s','focus_agent','Focus agent',show=False),Binding('r','review_attention','Mark reviewed',show=False),
+              Binding('x','dismiss_attention','Dismiss attention',show=False),
               Binding('1','page("agents")','Agents',show=False),
               Binding('2','page("activity")','Activity',show=False),Binding('3','page("mcp")','MCP',show=False),
               Binding('4','page("traces")','Traces',show=False),Binding('5','page("host")','Host',show=False),
@@ -1071,6 +1080,7 @@ class ObservatoryApp(App):
         self.navigation_history=[]
         self.ai_summaries={}
         self.reviewed_attention=set()
+        self.dismissed_attention=set()
         self.summary_busy=False
         self.preferences=Preferences(preferences_path,enabled=persist_preferences is not False)
         self.persist_preferences=persist_preferences
@@ -1146,6 +1156,7 @@ class ObservatoryApp(App):
                                 yield Button(Text('Activity · s'),id='agent-open',tooltip='Read all recorded activity for this session')
                                 yield Button('Trace · t',id='agent-trace',tooltip='Inspect the latest linked trace for this session')
                                 yield Button('Mark reviewed · r',id='agent-reviewed',tooltip='Acknowledge this attention item for this run; does not change the recorded session status')
+                                yield Button('Dismiss · x',id='agent-dismissed',tooltip='Hide this failure from Recent and Needs attention; it remains in All history and Traces')
                                 yield Button('AI summary',id='agent-summary',tooltip='Uses OPENAI_API_KEY when available. Runs only when requested; the recorded progress summary needs no setup.')
                         yield ResultsTable(id='agent-actions',cursor_type='row',zebra_stripes=False)
             with TabPane('2  Activity',id='activity'):
@@ -1252,6 +1263,7 @@ class ObservatoryApp(App):
         self.query_one('#pages',TabbedContent).active=self.preference_view
         self.errors_only=set(preferences.get('errors',[]))
         self.prompts_only=preferences.get('prompts',False)
+        self.dismissed_attention=set(preferences.get('dismissed_attention',[]))
         self.feed.activity_prompts=self.prompts_only
         for page in self.errors_only:
             button=self.query_one('#errors-'+page,Button)
@@ -1292,11 +1304,15 @@ class ObservatoryApp(App):
         self.action_page(self.preference_view)
 
     def on_unmount(self):
-        self.preferences.save({'theme':self.theme,'view':self.preference_view,
-            'reviews':self.feed.include_reviews,'prompts':self.prompts_only,
-            'errors':sorted(self.errors_only)})
+        self.save_preferences()
         if self.refresh_timer:self.refresh_timer.stop()
         for timer in self.search_timers.values():timer.stop()
+
+    def save_preferences(self):
+        self.preferences.save({'theme':self.theme,'view':self.preference_view,
+            'reviews':self.feed.include_reviews,'prompts':self.prompts_only,
+            'errors':sorted(self.errors_only),
+            'dismissed_attention':sorted(self.dismissed_attention)})
 
     def on_theme_changed(self, theme):
         # RichLog stores rendered strips; cached rows/inspectors must be rebuilt too.
@@ -1502,11 +1518,12 @@ class ObservatoryApp(App):
         self.stat('sessions',len(active),'Working agents',session_detail)
         stalled=sum(item.get('state')=='Possibly stalled' for item in work)
         failures=sum(item.get('state') in {'Error','Failed','Incomplete'} for item in work)
-        needs_attention=sum(attention_required(item) and item['id'] not in self.reviewed_attention for item in work)
+        needs_attention=sum(attention_required(item) and item['id'] not in self.reviewed_attention
+                            and attention_key(item) not in self.dismissed_attention for item in work)
         self.stat('attention',needs_attention,'Needs attention',
                   f'{replies} need input · {stalled} may be stalled · {failures} failures' if needs_attention else 'No action needed')
         self.query_one('#stat-attention').tooltip=(f'{replies} explicit approval/reply requests · {stalled} possible stalls · {failures} recorded failures. '
-            f'Open a session and press r / Mark reviewed to acknowledge it for this run. Ordinary tool calls do not need action. {live} live host processes are listed in Host.')
+            f'Open a session and press r to acknowledge it for this run or x to dismiss it from Recent and Needs attention. Dismissed sessions remain in All history and Traces. Ordinary tool calls do not need action. {live} live host processes are listed in Host.')
         servers={item.get('server') for item in data.mcp if item.get('server') and item.get('server')!='Not reported'}
         operations={(item.get('server'),item.get('tool')) for item in data.mcp if item.get('tool') and item.get('tool')!='Not reported'}
         mcp_errors=sum(str(item.get('status','')).upper() in {'ERROR','FAILED'} for item in data.mcp)
@@ -1559,9 +1576,12 @@ class ObservatoryApp(App):
         finished=sorted((item for item in scoped_agents if item.get('state') in finished_states),
                         key=lambda item:(-item['stamp'],item['id']))
         recent_ids={item['id'] for item in scoped_agents
-                    if item.get('active') or attention_required(item)}
-        if finished:
-            recent_ids.add(finished[0]['id'])
+                    if item.get('active') or attention_required(item)
+                    if attention_key(item) not in self.dismissed_attention}
+        latest_finished=next((item for item in finished
+                              if attention_key(item) not in self.dismissed_attention),None)
+        if latest_finished:
+            recent_ids.add(latest_finished['id'])
         counts={'recent':len(recent_ids),'active':sum(bool(item.get('active')) for item in scoped_agents),
                 'all':len(scoped_agents)}
         filter_options=[(f'Recent {counts["recent"]}','recent'),
@@ -1575,7 +1595,8 @@ class ObservatoryApp(App):
             picker.value=self.agent_filter
         visible_agents=[item for item in visible_agents if self.agent_filter=='all' or
                         (item['id'] in recent_ids if self.agent_filter=='recent' else bool(item.get('active')))]
-        visible_agents.sort(key=lambda item:(not attention_required(item),not item.get('active'),-item['stamp'],item['id']))
+        visible_agents.sort(key=lambda item:(not (attention_required(item) and
+            attention_key(item) not in self.dismissed_attention),not item.get('active'),-item['stamp'],item['id']))
         order_key=(self.scope_value,agent_query)
         desired_order=[item['id'] for item in visible_agents]
         if order_key!=self.agent_order_key:
@@ -1939,6 +1960,7 @@ class ObservatoryApp(App):
             self.query_one('#agent-open',Button).disabled=True
             self.query_one('#agent-trace',Button).disabled=True
             self.query_one('#agent-reviewed',Button).display=False
+            self.query_one('#agent-dismissed',Button).display=False
             self.fill('agent-actions',[])
             if self.search_queries['agents']:
                 self.inspect('agent-detail','No matching agent sessions',[],[('Search','Clear the filter in Agent sessions to show all sessions in this scope.')])
@@ -1965,6 +1987,12 @@ class ObservatoryApp(App):
         reviewed_button.label='Reviewed ✓ · r' if reviewed else 'Mark reviewed · r'
         reviewed_button.tooltip=('Acknowledged for this run. Press r to restore it to Needs attention.' if reviewed else
                                  'Acknowledge this attention item for this run; does not change the recorded session status.')
+        dismissed=attention_key(item) in self.dismissed_attention
+        dismissed_button=self.query_one('#agent-dismissed',Button)
+        dismissed_button.display=attention_required(item)
+        dismissed_button.label='Restore · x' if dismissed else 'Dismiss · x'
+        dismissed_button.tooltip=('Restore this failure to Recent and Needs attention.' if dismissed else
+                                  'Hide this failure from Recent and Needs attention; keep it in All history and Traces.')
         latest=item.get('last_activity') or {}
         generated=self.ai_summaries.get(item['id'])
         ai_sections=[]
@@ -2018,6 +2046,8 @@ class ObservatoryApp(App):
             sections.append(('What happened',attention_evidence(item,summary,error_event)))
             if reviewed:
                 sections.append(('Review state','Marked reviewed for this run. The session status and recorded evidence are unchanged.'))
+            if dismissed:
+                sections.append(('Attention state','Dismissed from Recent and Needs attention. Still available in All history and Traces.'))
             if input_required(item):
                 sections.append(('Next step',wait_summary(item)))
             elif item['state'] in {'Possibly stalled','Unconfirmed','Monitor delayed','Catching up','Error','Failed'}:
@@ -2093,7 +2123,8 @@ class ObservatoryApp(App):
               ('Analysis coverage',analysis_coverage(summary)),
               ('Working directory',item.get('working_directory')),
               ('Status evidence',attention_evidence(item,summary,error_event)),
-              ('Review state','Marked reviewed for this run; status and evidence are unchanged.' if reviewed else None)])
+              ('Review state','Marked reviewed for this run; status and evidence are unchanged.' if reviewed else None),
+              ('Attention state','Dismissed from Recent and Needs attention. Still available in All history and Traces.' if dismissed else None)])
 
     def show_activity(self):
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
@@ -2404,6 +2435,7 @@ class ObservatoryApp(App):
         elif event.button.id=='agent-open':self.action_focus_agent()
         elif event.button.id=='agent-trace':self.action_open_trace()
         elif event.button.id=='agent-reviewed':self.action_review_attention()
+        elif event.button.id=='agent-dismissed':self.action_dismiss_attention()
         elif event.button.id=='agent-summary':self.request_ai_summary()
         elif event.button.id in {'activity-trace','mcp-trace','metrics-trace','finding-trace'}:self.action_open_trace()
         elif event.button.id in {'activity-copy','mcp-copy','metrics-copy','finding-copy'}:self.action_copy()
@@ -2685,6 +2717,22 @@ class ObservatoryApp(App):
         else:
             self.reviewed_attention.add(item['id'])
             self.notify('Marked reviewed for this run; recorded status is unchanged.')
+        self.last_update=-1
+        self.refresh_data()
+
+    def action_dismiss_attention(self):
+        item=getattr(self,'source_map',{}).get(self.selected_source)
+        if not item or not attention_required(item):
+            return
+        key=attention_key(item)
+        if key in self.dismissed_attention:
+            self.dismissed_attention.remove(key)
+            self.notify('Restored to Recent and Needs attention.')
+        else:
+            self.dismissed_attention.add(key)
+            self.reviewed_attention.discard(item['id'])
+            self.notify('Dismissed from attention. The session remains in All history and Traces.')
+        self.save_preferences()
         self.last_update=-1
         self.refresh_data()
 

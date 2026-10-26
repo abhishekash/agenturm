@@ -4,9 +4,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 
 VIEWS = ('agents', 'activity', 'mcp', 'traces', 'host', 'metrics', 'findings')
+MAX_DISMISSED_ATTENTION = 100
 
 
 def safe_preferences(value):
@@ -22,6 +24,11 @@ def safe_preferences(value):
             result[key] = value[key]
     if isinstance(value.get('errors'), list):
         result['errors'] = [page for page in ('activity', 'mcp') if page in value['errors']]
+    if isinstance(value.get('dismissed_attention'), list):
+        result['dismissed_attention'] = list(dict.fromkeys(
+            key for key in value['dismissed_attention']
+            if isinstance(key, str) and re.fullmatch(r'[0-9a-f]{64}', key)
+        ))[-MAX_DISMISSED_ATTENTION:]
     if result.get('prompts') and 'activity' in result.get('errors', []):
         result['errors'].remove('activity')
     return result
