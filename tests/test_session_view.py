@@ -3,12 +3,23 @@ import unittest
 from unittest.mock import patch
 
 from textual.widgets import DataTable, Input, Select
-from observatory.terminal_ui import (ObservatoryApp, coverage_warning, input_required, recorded_progress,
+from observatory.terminal_ui import (ObservatoryApp, coverage_warning, failure_evidence, input_required, recorded_progress,
                                      input_status, sources, wait_label, wait_summary)
 from tests.test_terminal_search import ManualFeed
 
 
 class SessionViewTests(unittest.IsolatedAsyncioTestCase):
+    def test_failure_evidence_prefers_recorded_exception_reason(self):
+        event={'domain':'mcp','action':'call','subject':'github / search_issues','result':'error',
+               'detail':'{"exception":{"type":"TimeoutError","message":"request timed out after 30s"}}'}
+        self.assertEqual(failure_evidence(event),
+                         'mcp call github / search_issues · error: request timed out after 30s')
+
+    def test_failure_evidence_without_reason_says_where_to_look(self):
+        event={'domain':'shell','action':'run','subject':'pytest','result':'failed','detail':'{}'}
+        self.assertEqual(failure_evidence(event),
+                         'shell run pytest · failed. Open the failed event for its recorded details.')
+
     def test_missing_task_uses_first_recorded_user_prompt_as_identity(self):
         feed=ManualFeed()
         entry=feed.snapshot.local_status['sessions'][0]
