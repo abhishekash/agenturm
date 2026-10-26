@@ -216,6 +216,57 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertNotIn(title,[line.text.rstrip() for line in log.lines])
 
+    async def test_hidden_inspector_updates_reappear_at_the_same_width_without_character_wrapping(self):
+        feed=ManualFeed()
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(180,48)) as pilot:
+            await pilot.pause()
+            app.refresh_timer.stop()
+            app.set_agent_filter('all')
+            await pilot.pause()
+            log=app.query_one('#agent-detail')
+            inspector=app.query_one('#agent-bottom')
+            app.select_agent('source-1')
+            width=log.scrollable_content_region.width
+            for title in ('Best reliable mini PC under €300 in Germany','Inspect the failed web search'):
+                inspector.display=False
+                await pilot.pause()
+                self.assertEqual(log.scrollable_content_region.width,0)
+                previous=log.plain_text
+                # A late selection or live update can reach an inspector after
+                # its parent is hidden. Showing it again need not resize it.
+                feed.snapshot.local_status['sessions'][0]['task']=title
+                app.source_map[app.selected_source]['task']=title
+                app.show_agent()
+                self.assertEqual(log.plain_text,previous)
+                inspector.display=True
+                await pilot.pause()
+                self.assertEqual(log.scrollable_content_region.width,width)
+                self.assertIn(title,[line.text.rstrip() for line in log.lines])
+                self.assertLessEqual(len(log.lines),log.scrollable_content_region.height)
+
+    async def test_failed_session_inspector_survives_compact_and_tab_transitions(self):
+        feed=ManualFeed()
+        feed.snapshot.local_status['sessions']=[]
+        feed.snapshot.sessions=[{'session_id':'failed-session','latest_status':'ERROR',
+            'latest_task':'Best reliable mini PC under €300 in Germany',
+            'last_unix_nano':time.time_ns(),'errors':1,'trace_count':1}]
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(180,48)) as pilot:
+            await pilot.pause()
+            app.refresh_timer.stop()
+            log=app.query_one('#agent-detail')
+            for width,height in ((180,24),(180,48),(100,40),(180,48)):
+                await pilot.resize_terminal(width,height)
+                await pilot.pause()
+                app.show_agent()
+                if height>=30:
+                    self.assertIn('Best reliable mini PC',' '.join(line.text.rstrip() for line in log.lines))
+                    self.assertIn('Telemetry recorded 1 failed run(s)',log.plain_text)
+                await pilot.press('2','1')
+                await pilot.pause()
+            self.assertIn('Best reliable mini PC under €300 in Germany',log.plain_text)
+
     def test_status_shapes_separate_work_history_and_explicit_requests(self):
         self.assertEqual(agent_status({'state':'Working','active':True}).plain,'● Working')
         self.assertEqual(agent_status({'state':'Working (quiet)','active':True}).plain,'◌ Quiet work')
