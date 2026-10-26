@@ -101,6 +101,32 @@ def _first_user_prompt(db, table, columns, session_id, part_columns=()):
     return ""
 
 
+def _user_message_text(db, message, data, session_id, part_columns):
+    """Read only text authored in a user message; never mistake tool parts for prompts."""
+    content = data.get("text") or data.get("content") or ""
+    if isinstance(content, str) and content.strip():
+        return safe(content, 8000).strip()
+    if isinstance(content, list):
+        text = [str(block.get("text") or "") for block in content
+                if isinstance(block, dict) and block.get("type") in {"text", "input_text"}
+                and isinstance(block.get("text"), str)]
+        if text:
+            return safe("\n".join(text), 8000).strip()
+    # Legacy databases store message content in linked part rows.
+    if {"id", "session_id", "message_id", "data"} <= set(part_columns):
+        part_order = ' ORDER BY "time_created","id"' if "time_created" in part_columns else ' ORDER BY "id"'
+        rows = db.execute(f'SELECT "data" FROM "part" WHERE "session_id"=? AND "message_id"=?'
+                          f'{part_order} LIMIT 200', (session_id, message["id"])).fetchall()
+        text = []
+        for row in rows:
+            block = _json(row["data"])
+            if block.get("type") in {"text", "input_text"} and isinstance(block.get("text"), str):
+                text.append(block["text"])
+        if text:
+            return safe("\n".join(text), 8000).strip()
+    return ""
+
+
 def _opencode_mcp_attributes(tool_name, server_names):
     """Resolve OpenCode's ``server_tool`` IDs using configured server names.
 
@@ -158,6 +184,7 @@ class OpenCodeReader:
         # Fixed-size digests, bounded to the current session/message window.
         # Never keep tool payloads or an unbounded history in memory.
         self._message_revisions = {}
+        self._prompt_revisions = {}
         self._progress_revisions = {}
         self._part_revisions = {}
         self._payload_cursors = {}
@@ -241,6 +268,7 @@ class OpenCodeReader:
             # enrich tool records that were initially ingested without it.
             self.fingerprint = None
             self._message_revisions.clear()
+            self._prompt_revisions.clear()
             self._part_revisions.clear()
 
     @staticmethod
@@ -361,8 +389,10 @@ class OpenCodeReader:
         self._message_bytes = 0
         accepted = []
         progress_logs = []
+        prompt_logs = []
         sessions = []
         message_revisions = dict(self._message_revisions)
+        prompt_revisions = dict(self._prompt_revisions)
         part_revisions = dict(self._part_revisions)
         cursors = dict(self._payload_cursors)
         message_window = set()
@@ -565,6 +595,43 @@ class OpenCodeReader:
                     for message in messages:
                         message_data = self._decode(message["data"])
                         role = message_data.get("role") or (message["type"] if "type" in message.keys() else "")
+                        if str(role) == "user":
+                            message_id = str(message["id"])
+                            key = (session_id, message_id)
+                            prompt = (_user_message_text(db, message, message_data, session_id, part_columns)
+                                      if self.capture_details else "")
+                            if prompt:
+                                revision = hashlib.sha256(prompt.encode("utf-8", "replace")).digest()
+                                if prompt_revisions.get(key) != revision:
+                                    message_created = message["time_created"] if "time_created" in message.keys() else 0
+                                    stamp = _first_timestamp((message_data.get("time") or {}).get("created"),
+                                                             message_created)
+                                    record_id = identity("opencode-prompt", self.source_id, session_id, message_id)
+                                    prompt_logs.append({
+                                        "time_unix_nano": stamp, "trace_id": None, "span_id": None,
+                                        "service": "opencode",
+                                        "severity_number": 9, "severity_text": "INFO",
+                                        "event_name": "agent.activity", "body": prompt,
+                                        "attributes": {
+                                            "session.id": session_id,
+                                            "observatory.project": project,
+                                            "agent.activity.domain": "message",
+                                            "agent.activity.action": "user",
+                                            "agent.activity.subject": prompt,
+                                            "agent.activity.result": "observed",
+                                            "agent.activity.actor": "user",
+                                            "observatory.record_id": record_id,
+                                        },
+                                        "resource_attributes": {
+                                            "service.name": "opencode",
+                                            "agent.runtime": "OpenCode",
+                                            "observatory.source_id": self.source_id,
+                                            "observatory.capture": "local-session-database",
+                                        },
+                                        "scope_name": "observatory.local_agents",
+                                    })
+                                prompt_revisions[key] = revision
+                            continue
                         if str(role) != "assistant":
                             continue
                         message_id = str(message["id"])
@@ -742,8 +809,11 @@ class OpenCodeReader:
             self.store.ingest(accepted)
         if progress_logs:
             self.store.ingest_logs(progress_logs)
+        if prompt_logs:
+            self.store.ingest_logs(prompt_logs)
         # Publish only after successful ingestion, so a failure can be retried.
         self._message_revisions = {key: value for key, value in message_revisions.items() if key in message_window}
+        self._prompt_revisions = {key: value for key, value in prompt_revisions.items() if key in message_window}
         self._part_revisions = {key: value for key, value in part_revisions.items()
                                 if key[:2] in message_window and
                                 (key[:2] not in part_windows or key[2] in part_windows[key[:2]])}
@@ -756,4 +826,4 @@ class OpenCodeReader:
         self.updated_ns = time.time_ns()
         self.checked_ns = self.updated_ns
         self._last_refresh = time.monotonic()
-        return len(accepted) + len(progress_logs)
+        return len(accepted) + len(progress_logs) + len(prompt_logs)

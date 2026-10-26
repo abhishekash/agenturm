@@ -288,6 +288,8 @@ class CockpitSearchTest(unittest.IsolatedAsyncioTestCase):
         app = ObservatoryApp(feed)
         async with app.run_test(size=(180, 50)) as pilot:
             await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
             # Trace inspectors are built on activation, not behind Agents.
             app.action_page('traces')
             await pilot.pause()
@@ -398,6 +400,8 @@ class CockpitSearchTest(unittest.IsolatedAsyncioTestCase):
         feed = ManualFeed()
         app = ObservatoryApp(feed)
         async with app.run_test(size=(150, 42)) as pilot:
+            await pilot.pause()
+            app.set_agent_filter('all')
             await pilot.pause()
             app.query_one('#search-agents').value = 'release'
             await pilot.pause()
@@ -536,7 +540,10 @@ class TokenPresenceRenderingTest(unittest.IsolatedAsyncioTestCase):
         app = ObservatoryApp(feed)
         async with app.run_test(size=(140, 42)) as pilot:
             await pilot.pause()
-            self.assertIn('Not reported / Not reported', str(app.query_one('#stat-usage').render()))
+            app.set_agent_filter('all')
+            await pilot.pause()
+            self.assertFalse(app.query_one('#stat-usage').display,
+                             'Detailed usage belongs in Metrics, not the compact workspace header')
             await pilot.press('e')
             await pilot.pause()
             self.assertIn('Not reported in / Not reported out', ' '.join(app.query_one('#agent-detail').plain_text.split()))

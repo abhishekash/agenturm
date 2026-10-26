@@ -43,14 +43,13 @@ class LocalHelpersTest(unittest.TestCase):
                 store.save({'view': 'agents'})
 
     def test_narrow_columns_keep_subject_and_result(self):
-        specs = [('Agent / project', 18, 0), ('Current task', 28, 1),
-                 ('Status', 17, 0), ('Updated', 8, 0)]
+        specs = [('Task / source', 34, 2), ('State', 17, 0), ('Updated', 8, 0)]
         visible, widths = column_layout('agent-table', specs, 60)
+        self.assertIn(0, visible)
         self.assertIn(1, visible)
-        self.assertIn(2, visible)
-        self.assertNotIn(3, visible)
+        self.assertNotIn(2, visible)
         self.assertLessEqual(sum(widths) + 2 * len(widths) + 1, 60)
-        self.assertEqual(column_layout('agent-table', specs, 180)[0], tuple(range(4)))
+        self.assertEqual(column_layout('agent-table', specs, 180)[0], tuple(range(3)))
 
     def test_diagnostics_only_include_allowlisted_health(self):
         text = diagnostics_text({'enabled': True, 'token': 'SECRET', 'endpoint': 'SECRET',
@@ -78,6 +77,22 @@ class LocalHelpersTest(unittest.TestCase):
 
 
 class CockpitPolishTest(unittest.IsolatedAsyncioTestCase):
+    async def test_span_cursor_is_initialized_before_the_new_pane_is_painted(self):
+        app=ObservatoryApp(ManualFeed(),persist_preferences=False)
+        async with app.run_test(size=(160,48)) as pilot:
+            await pilot.pause()
+            app.refresh_timer.stop()
+            tree=app.query_one('#span-tree')
+            # Rebuild while Traces is still hidden. Selection must not depend
+            # on a later paint/idle callback that can race with tab activation.
+            app.span_signature=None
+            with patch.object(app,'call_after_refresh'):
+                app.show_spans()
+                self.assertEqual(tree.cursor_node.data['span_id'],'span-1')
+            await pilot.press('4')
+            await pilot.pause()
+            self.assertEqual(tree.cursor_node.data['span_id'],'span-1')
+
     async def test_keyboard_tab_navigation_preserves_selected_trace_span(self):
         feed = ManualFeed()
         app = ObservatoryApp(feed, persist_preferences=False)
@@ -127,20 +142,22 @@ class CockpitPolishTest(unittest.IsolatedAsyncioTestCase):
         app = ObservatoryApp(ManualFeed(), persist_preferences=False)
         async with app.run_test(size=(180, 48)) as pilot:
             await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
             table = app.query_one('#agent-table')
             original = table.get_row_at(0)
             key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
             await pilot.resize_terminal(70, 30)
             await pilot.pause()
-            self.assertNotIn(3, table.visible_columns)
+            self.assertNotIn(2, table.visible_columns)
+            self.assertIn(0, table.visible_columns)
             self.assertIn(1, table.visible_columns)
-            self.assertIn(2, table.visible_columns)
             await pilot.resize_terminal(180, 48)
             await pilot.pause()
-            self.assertEqual(table.visible_columns, tuple(range(4)))
+            self.assertEqual(table.visible_columns, tuple(range(3)))
             self.assertEqual(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value, key)
-            # Time cells may age; identity and task must be restored intact.
-            self.assertEqual(table.get_row_at(0)[:3], original[:3])
+            # Recorded age may advance while the semantic task identity stays fixed.
+            self.assertEqual(table.get_row_at(0)[0].plain.splitlines()[0],original[0].plain.splitlines()[0])
 
     async def test_preferences_restore_safe_state_without_search_or_scope(self):
         with tempfile.TemporaryDirectory() as directory:

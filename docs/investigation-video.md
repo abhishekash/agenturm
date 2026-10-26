@@ -1,6 +1,7 @@
 # Agenturm walkthrough
 
-[Watch the README animation](../media/agenturm-demo.gif),
+Watch the [README animation](../media/agenturm-demo.gif) or the
+[full 29-second MP4](../media/agenturm-demo.mp4),
 [open the current terminal overview](../media/agenturm-terminal.png),
 [inspect the failed MCP call](../media/screenshots/mcp-detail.png), or
 [see the compact layout](../media/screenshots/compact.png).
@@ -40,7 +41,7 @@ Render the 29-second walkthrough from those 148-column captures:
 ```bash
 uv run --with cairosvg --with pillow --with imageio-ffmpeg \
   python scripts/compose_investigation_video.py \
-  --captures /tmp/opencode/agenturm-capture --output /tmp/opencode/agenturm-demo.mp4
+  --captures /tmp/opencode/agenturm-capture --output media/agenturm-demo.mp4
 ```
 
 Build the README animation from a 100-column terminal so the text stays

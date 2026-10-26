@@ -1,4 +1,4 @@
-"""Four supported terminal palettes; Current preserves the Alpine Ember identity."""
+"""Semantic terminal palettes, including the website-aligned Observation theme."""
 import re
 
 from rich.text import Span
@@ -29,12 +29,25 @@ CURRENT = {**_ORIGINAL,
     'row-alt': '#15151e', 'row-hover': '#20202d', 'hover': '#20202d',
 }
 
+OBSERVATION = {**CURRENT,
+    'canvas': '#151a17', 'surface': '#1c221e', 'panel': '#222a24',
+    'text': '#edf1e7', 'label': '#dce5d8', 'muted': '#abb4a5', 'disabled': '#788477',
+    'primary': '#dceb5a', 'secondary': '#c5adff', 'success': '#86e3b5', 'info': '#86d9ed',
+    'error': '#ff8799', 'border': '#485448', 'border-subtle': '#394239',
+    'border-disabled': '#2c352d', 'scrollbar': '#687768', 'hover': '#29352a',
+    'focus': '#303a27', 'on-primary': '#20271a', 'primary-focus': '#e9f58a',
+    'error-surface': '#422a2e', 'selection': '#2b3429', 'on-selection': '#edf1e7',
+    'cursor': '#2b3429', 'on-cursor': '#edf1e7', 'header': '#222a24',
+    'row-hover': '#252e27', 'row-alt': '#191f1b', 'footer-key': '#29352a',
+}
+
 
 def palette(**overrides):
     return {**CURRENT, **{key.replace('_', '-'): value for key, value in overrides.items()}}
 
 
 PALETTES = {
+    'Observation': OBSERVATION,
     'Current': CURRENT,
     'Bright': palette(
         canvas='#ffffff', surface='#f5f6fa', panel='#e8ebf2',
@@ -84,6 +97,7 @@ def themed_style(widget, style):
     colors = PALETTES.get(widget.app.theme, CURRENT)
     replacements = {**{original: colors[role] for role, original in _ORIGINAL.items()},
                     **{original: colors[role] for role, original in CURRENT.items()}}
+    replacements.update({original: colors[role] for role, original in OBSERVATION.items()})
     # Translate once: Bright's white canvas must not be remapped as selection text.
     return re.sub(r'#[0-9a-fA-F]{6}\b',
                   lambda match: replacements.get(match.group().lower(), match.group()), style)
