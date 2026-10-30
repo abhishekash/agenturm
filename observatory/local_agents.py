@@ -18,6 +18,7 @@ import tomllib
 from datetime import datetime
 from pathlib import Path
 
+from .agent_hierarchy import canonical_agent_id, provenance
 from .core import normalize_native
 from .local_activity import mcp_attributes, mcp_failed, plaintext
 from .local_state import RecentMap
@@ -219,6 +220,54 @@ class Session:
         self.capture_details = capture_details
         self.internal = False
         self.session_id = self.path.stem
+        # Hierarchy identity is deliberately separate from the file source ID.
+        # A child discovered through a spawn result and later through its own
+        # transcript resolves to this same canonical node.
+        self.agent_namespace = {"Codex": "codex-rollout", "Claude Code": "claude-code-projects",
+                                "Pi": "pi-sessions"}.get(runtime, runtime.casefold())
+        self.native_session_id = self.session_id
+        self.native_worker_id = None
+        self.native_root_session_id = None
+        self.claude_agent_id = None
+        self.claude_parent_session_id = None
+        self.claude_meta = {}
+        self.agent_id = canonical_agent_id(runtime, self.agent_namespace, self.session_id)
+        self.parent_agent_id = None
+        self.relationship_kind = "unknown"
+        self.relationship_state = "unresolved"
+        self.relationship_provenance = provenance(runtime, "session path; no parent metadata")
+        self.discovery_state = "observed"
+        self.announced_agents = RecentMap(MAX_RECENT_CALLS)
+        self.spawn_calls = RecentMap(MAX_RECENT_CALLS)
+        if runtime == "Claude Code":
+            agent_id, parent_session, metadata = _claude_subagent_identity(self.path)
+            if agent_id:
+                self.claude_agent_id = agent_id
+                self.claude_parent_session_id = parent_session
+                self.claude_meta = metadata
+                self.session_id = agent_id
+                self.native_session_id = parent_session or agent_id
+                self.native_worker_id = agent_id
+                self.agent_id = canonical_agent_id(runtime, self.agent_namespace, agent_id)
+                parent_agent = _safe_identifier(metadata.get("parentAgentId"))
+                if parent_agent:
+                    parent_id = canonical_agent_id(runtime, self.agent_namespace, parent_agent)
+                    reference = "subagents/agent-" + agent_id[:80] + ".meta.json parentAgentId"
+                elif parent_session:
+                    parent_id = canonical_agent_id(runtime, self.agent_namespace, parent_session)
+                    reference = "subagents transcript path parent session"
+                else:
+                    parent_id = None
+                    reference = "subagent transcript without a parent session directory"
+                self.parent_agent_id = parent_id
+                self.relationship_kind = "delegated"
+                self.relationship_state = "confirmed" if parent_id else "unresolved"
+                self.relationship_provenance = provenance(
+                    "claude-code", reference, metadata.get("toolUseId") or None)
+            else:
+                self.native_worker_id = None
+                self.relationship_provenance = provenance(
+                    "claude-code", "main transcript path; no parent metadata")
         self.offset = 0
         self.file_id = None
         self.pending = b""
@@ -258,6 +307,54 @@ class Session:
         self.records_total = 0
         self.spans_total = 0
         self.logs_total = 0
+
+    def hierarchy(self):
+        """Return the structural observation persisted by the receiver."""
+        coverage = "partial" if (self.schema_errors or self.skipped or self.backlog_bytes) else "complete"
+        return {
+            "agent_id": self.agent_id, "runtime": self.runtime,
+            "source_namespace": self.agent_namespace, "source_id": self.source_id,
+            "native_session_id": self.native_session_id,
+            "native_worker_id": self.native_worker_id,
+            "parent_agent_id": self.parent_agent_id,
+            "relationship_kind": self.relationship_kind,
+            "relationship_state": self.relationship_state,
+            "relationship_provenance": self.relationship_provenance,
+            "discovery_state": self.discovery_state,
+            "coverage": coverage,
+            "observed_ns": max(self.last_record_ns, self.last_success_ns),
+            "review": bool(self.internal),
+        }
+
+    def announce(self, child_native_id, stamp, reference, parent_agent_id=None, namespace=None,
+                 runtime=None):
+        """Record an exact spawn result before the child transcript arrives."""
+        child_native_id = _safe_identifier(child_native_id)
+        if not child_native_id:
+            return None
+        runtime = runtime or self.runtime
+        namespace = namespace or self.agent_namespace
+        parent_agent_id = parent_agent_id or self.agent_id
+        try:
+            child_id = canonical_agent_id(runtime, namespace, child_native_id)
+        except ValueError:
+            return None
+        if child_id == parent_agent_id:
+            return None
+        item = self.announced_agents.get(child_id) or {}
+        item.update({
+            "agent_id": child_id, "runtime": runtime, "source_namespace": namespace,
+            "source_id": "announced:" + child_id,
+            "native_session_id": child_native_id, "native_worker_id": child_native_id,
+            "parent_agent_id": parent_agent_id,
+            "relationship_kind": "delegated", "relationship_state": "confirmed",
+            "relationship_provenance": provenance("spawn-result", reference, stamp),
+            "discovery_state": "announced", "coverage": "unknown",
+            "observed_ns": max(item.get("observed_ns") or 0, stamp or 0),
+            "review": bool(self.internal),
+        })
+        self.announced_agents[child_id] = item
+        return item
 
     def finish_turn(self):
         # Roots and model usage are durable in Store. Keep only the current
@@ -397,8 +494,18 @@ class Session:
     def span(self, key, name, stamp, attrs=None, *, start=None, parent=True, error=False):
         if not stamp:
             return None
+        relationship = {"agent.id": self.agent_id, "agent.runtime": self.runtime,
+                        "agent.discovery_state": self.discovery_state,
+                        "agent.relationship.kind": self.relationship_kind,
+                        "agent.relationship.state": self.relationship_state,
+                        "agent.native_session.id": self.native_session_id}
+        if self.native_worker_id:
+            relationship["agent.native_worker_id"] = self.native_worker_id
+        if self.parent_agent_id:
+            relationship["agent.parent_id"] = self.parent_agent_id
         attributes = {"session.id": self.session_id, "observatory.project": self.project,
-                      "observatory.data_source": "local-session-log", **(attrs or {})}
+                      "observatory.data_source": "local-session-log", **relationship,
+                      **(attrs or {})}
         return normalize_native({
             "trace_id": identity(self.source_id, self.turn),
             "span_id": identity(self.source_id, key, size=16) if parent else identity(self.source_id, self.turn, "root", size=16),
@@ -450,7 +557,27 @@ class Session:
     def pi(self, row, stamp):
         kind = row.get("type")
         if kind == "session":
-            self.session_id = str(row.get("id") or self.session_id)
+            native_id = (_safe_identifier(row.get("agentId")) or
+                         _safe_identifier(row.get("id")) or self.session_id)
+            self.session_id = native_id
+            self.native_session_id = _safe_identifier(row.get("sessionId")) or native_id
+            self.native_worker_id = native_id if native_id != self.native_session_id else None
+            self.agent_id = canonical_agent_id(self.runtime, self.agent_namespace, native_id)
+            parent = (_safe_identifier(row.get("parentAgentId")) or
+                      _safe_identifier(row.get("parentSessionId")) or
+                      _safe_identifier(row.get("parent_id")))
+            if parent:
+                self.parent_agent_id = canonical_agent_id(
+                    self.runtime, self.agent_namespace, parent)
+                self.relationship_kind = "delegated"
+                self.relationship_state = "confirmed"
+                self.relationship_provenance = provenance(
+                    "pi-session", "explicit parentAgentId/parentSessionId", timestamp(row.get("timestamp")))
+            else:
+                self.relationship_kind = "unknown"
+                self.relationship_state = "unresolved"
+                self.relationship_provenance = provenance(
+                    "pi-session", "no verified parent metadata", timestamp(row.get("timestamp")))
             cwd = row.get("cwd")
             if cwd:
                 self.project = Path(cwd).name
@@ -521,7 +648,56 @@ class Session:
         if not isinstance(payload, dict):
             return []
         if kind == "session_meta":
-            self.session_id = str(payload.get("id") or payload.get("session_id") or self.session_id)
+            thread_id = _safe_identifier(payload.get("id")) or self.session_id
+            self.session_id = thread_id
+            self.native_session_id = _safe_identifier(payload.get("session_id")) or thread_id
+            self.native_root_session_id = self.native_session_id
+            self.native_worker_id = thread_id if thread_id != self.native_session_id else None
+            self.agent_id = canonical_agent_id(self.runtime, self.agent_namespace, thread_id)
+            source = payload.get("source")
+            spawn = {}
+            if isinstance(source, dict):
+                nested = source.get("subagent")
+                if isinstance(nested, dict):
+                    spawn = nested.get("thread_spawn") if isinstance(nested.get("thread_spawn"), dict) else {}
+            parent_native = (_safe_identifier(payload.get("parent_thread_id")) or
+                             _safe_identifier(spawn.get("parent_thread_id")))
+            if parent_native:
+                self.parent_agent_id = canonical_agent_id(
+                    self.runtime, self.agent_namespace, parent_native)
+                self.relationship_kind = "delegated"
+                self.relationship_state = "confirmed"
+                self.relationship_provenance = provenance(
+                    "codex-session-meta", "payload.parent_thread_id/source.subagent.thread_spawn",
+                    timestamp(payload.get("timestamp")))
+            elif _safe_identifier(payload.get("forked_from_id")):
+                fork = _safe_identifier(payload.get("forked_from_id"))
+                self.parent_agent_id = canonical_agent_id(
+                    self.runtime, self.agent_namespace, fork)
+                self.relationship_kind = "forked"
+                self.relationship_state = "confirmed"
+                self.relationship_provenance = provenance(
+                    "codex-session-meta", "payload.forked_from_id is a fork, not delegation",
+                    timestamp(payload.get("timestamp")))
+            elif (isinstance(source, dict) and "subagent" in source) or \
+                    str(payload.get("thread_source") or "").casefold() == "subagent":
+                self.relationship_kind = "delegated"
+                self.relationship_state = "unresolved"
+                self.relationship_provenance = provenance(
+                    "codex-session-meta", "subagent source without parent_thread_id",
+                    timestamp(payload.get("timestamp")))
+            elif isinstance(source, str) and source.casefold() in {"cli", "vscode", "exec", "mcp"}:
+                self.relationship_kind = "unknown"
+                self.relationship_state = "confirmed"
+                self.relationship_provenance = provenance(
+                    "codex-session-meta", "top-level source=" + source.casefold(),
+                    timestamp(payload.get("timestamp")))
+            else:
+                self.relationship_kind = "unknown"
+                self.relationship_state = "unresolved"
+                self.relationship_provenance = provenance(
+                    "codex-session-meta", "no parent or root marker",
+                    timestamp(payload.get("timestamp")))
             self.project = Path(payload["cwd"]).name if payload.get("cwd") else self.project
         elif kind == "turn_context":
             self.turn = str(payload.get("turn_id") or self.turn)
@@ -543,9 +719,18 @@ class Session:
             key = str(payload.get("call_id") or payload.get("id"))
             if event in {"function_call", "custom_tool_call"}:
                 name = str(payload.get("name") or "Tool")
+                if name == "spawn_agent":
+                    self.spawn_calls[key] = (name, stamp, self.turn)
                 if mcp_attributes(name):
                     self.calls[key] = (name, stamp, self.turn)
-            elif event in {"function_call_output", "custom_tool_call_output"} and key in self.calls:
+            elif event in {"function_call_output", "custom_tool_call_output"} and key in self.spawn_calls:
+                self.spawn_calls.pop(key, None)
+                child = _spawned_agent_id(payload.get("output"))
+                if child:
+                    self.announce(child, stamp, "function_call_output spawn_agent agent_id")
+                if key not in self.calls:
+                    return []
+            if event in {"function_call_output", "custom_tool_call_output"} and key in self.calls:
                 name, start, turn = self.calls[key]
                 previous, self.turn = self.turn, turn
                 span = self.span(("tool", key), name, stamp,
@@ -601,7 +786,25 @@ class Session:
         return []
 
     def claude(self, row, stamp, prior_models=None):
-        self.session_id = str(row.get("sessionId") or self.session_id)
+        row_session = _safe_identifier(row.get("sessionId"))
+        row_agent = _safe_identifier(row.get("agentId"))
+        if self.claude_agent_id:
+            # Shared-session workers keep their own evidence identity even when
+            # every record repeats the root sessionId.
+            self.session_id = row_agent or self.claude_agent_id
+            self.native_session_id = row_session or self.claude_parent_session_id or self.session_id
+            self.native_worker_id = self.claude_agent_id
+        elif row_session:
+            self.session_id = row_session
+            self.native_session_id = row_session
+            if not self.native_root_session_id:
+                self.native_root_session_id = row_session
+            self.agent_id = canonical_agent_id(self.runtime, self.agent_namespace, row_session)
+            if not row_agent and not self.parent_agent_id:
+                self.relationship_kind = "unknown"
+                self.relationship_state = "unresolved"
+                self.relationship_provenance = provenance(
+                    "claude-code", "main transcript; no parent metadata")
         self.project = Path(row["cwd"]).name if row.get("cwd") else self.project
         message = row.get("message") or {}
         if not isinstance(message, dict):
@@ -617,6 +820,13 @@ class Session:
                 result.append(self.root(stamp, "running"))
             for block in tools:
                 key = block.get("tool_use_id")
+                if key in self.spawn_calls:
+                    self.spawn_calls.pop(key, None)
+                    if not block.get("is_error"):
+                        child = _spawned_agent_id(row.get("toolUseResult"))
+                        if child:
+                            self.announce(child, stamp,
+                                          "tool_result.toolUseResult.agentId (Claude Task/Agent)")
                 name, start, turn = self.calls.get(key, ("Claude tool", stamp, self.turn))
                 previous, self.turn = self.turn, turn
                 result.append(self.span(("tool", key), name, stamp,
@@ -650,7 +860,10 @@ class Session:
                 result.append(self.model_span(("model", key), previous, stamp, claude=True))
             for block in blocks:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
-                    self.calls[block.get("id")] = (str(block.get("name") or "Claude tool"), stamp, self.turn)
+                    name = str(block.get("name") or "Claude tool")
+                    self.calls[block.get("id")] = (name, stamp, self.turn)
+                    if name in SPAWN_TOOLS:
+                        self.spawn_calls[block.get("id")] = (name, stamp, self.turn)
             if message.get("stop_reason") == "end_turn":
                 result.append(self.root(stamp, "completed"))
         return result
@@ -673,6 +886,8 @@ class Session:
             self.tasks.clear()
             self.tool_inputs.clear()
             self.pending_tools.clear()
+            self.spawn_calls.clear()
+            self.announced_agents.clear()
             self.run_state, self.waiting_for, self.state_since = "unknown", "", 0
             self.last_record_ns = 0
         with self.path.open("rb") as stream:
@@ -801,6 +1016,60 @@ class Session:
         return len(spans)
 
 
+CLAUDE_META_BYTES = 64 * 1024
+SPAWN_TOOLS = {"spawn_agent", "Task", "Agent"}
+
+
+def _claude_subagent_identity(path):
+    """Return (agent_id, parent_session_id, sidecar) for a subagent transcript."""
+    parts = path.parts
+    if "subagents" not in parts:
+        return None, None, {}
+    index = parts.index("subagents")
+    name = path.name
+    if not name.startswith("agent-") or path.suffix != ".jsonl":
+        return None, None, {}
+    agent_id = name[len("agent-"):-len(".jsonl")]
+    if not agent_id or len(agent_id) > 256:
+        return None, None, {}
+    parent_session = parts[index - 1] if index else None
+    metadata = {}
+    meta_path = path.with_name(name[:-len(".jsonl")] + ".meta.json")
+    try:
+        if meta_path.is_file() and meta_path.stat().st_size <= CLAUDE_META_BYTES:
+            value = loads(meta_path.read_bytes())
+            if isinstance(value, dict):
+                metadata = value
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        metadata = {}
+    return agent_id, parent_session, metadata
+
+
+def _spawned_agent_id(value):
+    """Extract only an exact child identity from a successful spawn result."""
+    if isinstance(value, str):
+        try:
+            value = loads(value)
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            return None
+    if not isinstance(value, dict):
+        return None
+    if value.get("is_error") or value.get("isError") or value.get("error"):
+        return None
+    for key in ("agent_id", "agentId", "thread_id"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip() and len(candidate) <= 256:
+            return candidate.strip()
+    return None
+
+
+def _safe_identifier(value, limit=256):
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value if value and len(value) <= limit else None
+
+
 def plaintext_task(row):
     message = row.get("message") or {}
     if not isinstance(message, dict):
@@ -824,6 +1093,9 @@ class LocalAgents:
         self.mcp_configurations = []
         self.mcp_config_errors = 0
         self.mcp_config_updated = 0
+        self.hierarchy_revision = ""
+        self.hierarchy_facts_revision = ""
+        self.hierarchy_write_errors = 0
         from .opencode import OpenCodeReader
         self.opencode = OpenCodeReader(store, capture_details=capture_details)
         self.thread = threading.Thread(target=self.loop, name="observatory-local-agents", daemon=True)
@@ -900,6 +1172,18 @@ class LocalAgents:
         self.thread.start()
         return self
 
+    def hierarchy_nodes(self, sessions=None):
+        """Collect observed and announced nodes, deduplicated by canonical identity."""
+        sessions = list(self.sessions.values()) if sessions is None else list(sessions)
+        observed = {session.agent_id: session.hierarchy() for session in sessions}
+        announced = {}
+        for session in sessions:
+            for child_id, item in session.announced_agents.items():
+                if child_id not in observed:
+                    announced[child_id] = dict(item)
+        nodes = [*observed.values(), *announced.values()]
+        return nodes, announced
+
     def status(self):
         sessions = list(self.sessions.values())
         if time.monotonic() - self.runtime_updated >= 5:
@@ -918,6 +1202,78 @@ class LocalAgents:
                 sample['observed_at_ns'] = now_ns
             self.process_samples = samples
             self.runtime_updated = time.monotonic()
+        observed = [{"source_id": session.source_id, "runtime": session.runtime,
+                     "service": session.service, "session_id": session.session_id,
+                     "project": session.project, "model": session.model,
+                     "working_directory": session.working_directory, "branch": session.branch,
+                     "run_state": session.run_state, "state_since_ns": session.state_since,
+                     "waiting_for": session.waiting_for,
+                     "task": "Approval review" if session.internal else (session.tasks.get(session.turn) or "")[:500],
+                     "capture_content": session.capture_details,
+                     "last_activity": session.last_activity,
+                     "last_record_ns": session.last_record_ns,
+                     "process": self.process_samples.get(session.source_id, {}),
+                     "diagnostics": session.diagnostics(),
+                     **session.hierarchy(),
+                     "bytes_read": session.offset} for session in sessions]
+        opencode_observed = self.opencode.status_sessions()
+        observed.extend(opencode_observed)
+        nodes, announced = self.hierarchy_nodes(sessions)
+        observed_ids = {item.get("agent_id") for item in observed}
+        nodes.extend(item for item in opencode_observed
+                     if item.get("agent_id") and item.get("agent_id") not in
+                     {node.get("agent_id") for node in nodes})
+        facts = tuple(sorted(
+            (node.get("agent_id"), node.get("parent_agent_id"), node.get("relationship_kind"),
+             node.get("relationship_state"), node.get("relationship_provenance"),
+             node.get("discovery_state"), node.get("coverage"), bool(node.get("review")))
+            for node in nodes))
+        facts_revision = identity("hierarchy", *facts) if facts else ""
+        if facts_revision != self.hierarchy_facts_revision:
+            upsert = getattr(self.store, "upsert_agent_nodes", None)
+            if upsert:
+                try:
+                    upsert(nodes)
+                except (ValueError, TypeError, OSError):
+                    self.hierarchy_write_errors += 1
+                else:
+                    self.hierarchy_facts_revision = facts_revision
+            else:
+                self.hierarchy_facts_revision = facts_revision
+        persisted = getattr(self.store, "hierarchy_revision", None)
+        if persisted:
+            self.hierarchy_revision = persisted()
+        elif not self.hierarchy_revision:
+            self.hierarchy_revision = facts_revision
+        for child_id, node in announced.items():
+            if child_id in observed_ids:
+                continue
+            observed.append({
+                **node, "source_id": node.get("source_id") or "announced:" + child_id,
+                "id": node.get("source_id") or "announced:" + child_id,
+                "session_id": node.get("native_worker_id") or node.get("native_session_id"),
+                "service": node.get("runtime", "").casefold().replace(" ", "-"),
+                "project": "", "model": "", "working_directory": "", "branch": "",
+                "run_state": "announced", "state_since_ns": node.get("observed_ns", 0),
+                "waiting_for": "", "task": "Spawn recorded", "capture_content": self.capture_details,
+                "last_activity": {}, "last_record_ns": node.get("observed_ns", 0),
+                "diagnostics": {}, "bytes_read": 0,
+            })
+        node_ids = {item.get("agent_id") for item in nodes}
+        missing_parents = {item.get("parent_agent_id") for item in observed
+                           if item.get("parent_agent_id") and
+                           item.get("parent_agent_id") not in node_ids}
+        context_lookup = getattr(self.store, "agent_node_contexts", None)
+        if missing_parents and context_lookup:
+            try:
+                contexts = context_lookup(missing_parents)
+            except (ValueError, TypeError, OSError):
+                contexts = {}
+                self.hierarchy_write_errors += 1
+            for item in observed:
+                context = contexts.get(item.get("parent_agent_id"))
+                if context:
+                    item["parent_context"] = context
         return {"enabled": True, "sources": len(sessions), "discovered_sources": self.discovered_sources,
                 "omitted_sources": self.omitted_sources, "read_errors": self.errors,
                 "skipped_records": sum(session.skipped for session in sessions),
@@ -932,19 +1288,14 @@ class LocalAgents:
                 "mcp_configurations": list(self.mcp_configurations),
                 "mcp_config_errors": self.mcp_config_errors,
                 "mcp_config_updated": self.mcp_config_updated,
-                "sessions": [{"source_id": session.source_id, "runtime": session.runtime,
-                              "service": session.service, "session_id": session.session_id,
-                              "project": session.project, "model": session.model,
-                              "working_directory": session.working_directory, "branch": session.branch,
-                              "run_state": session.run_state, "state_since_ns": session.state_since,
-                              "waiting_for": session.waiting_for,
-                              "task": "Approval review" if session.internal else (session.tasks.get(session.turn) or "")[:500],
-                              "capture_content": session.capture_details,
-                              "last_activity": session.last_activity,
-                              "last_record_ns": session.last_record_ns,
-                              "process": self.process_samples.get(session.source_id, {}),
-                              "diagnostics": session.diagnostics(),
-                              "bytes_read": session.offset} for session in sessions] + self.opencode.status_sessions(),
+                "hierarchy": {"revision": self.hierarchy_revision or facts_revision,
+                              "nodes": len(nodes), "announced": len(announced),
+                              "coverage": ("partial" if any(
+                                  node.get("discovery_state") == "announced" or
+                                  node.get("coverage") in {"partial", "unknown"}
+                                  for node in nodes) else "complete"),
+                              "write_errors": self.hierarchy_write_errors},
+                "sessions": observed,
                 "opencode_read_errors": self.opencode.errors}
 
     def close(self):

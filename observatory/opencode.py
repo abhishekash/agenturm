@@ -11,6 +11,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
+from .agent_hierarchy import canonical_agent_id, provenance
 from .core import normalize_native
 from .local_activity import mcp_attributes, safe
 from .local_agents import identity, timestamp
@@ -360,7 +361,10 @@ class OpenCodeReader:
         return {"trace_id": trace_id, "span_id": root_span_id, "time_unix_nano": stamp,
                 "service": "opencode", "severity_number": 9, "severity_text": "INFO",
                 "event_name": "agent.progress", "body": message,
-                "attributes": {"session.id": session_id, "agent.progress.stage": "Plan",
+                "attributes": {"session.id": session_id,
+                    "agent.id": canonical_agent_id("OpenCode", self.source_id, session_id),
+                    "agent.runtime": "OpenCode",
+                    "agent.progress.stage": "Plan",
                     "agent.progress.message": message, "agent.progress.percent": percent,
                     "observatory.record_id": event_id},
                 "resource_attributes": {"service.name": "opencode", "agent.runtime": "OpenCode",
@@ -421,18 +425,19 @@ class OpenCodeReader:
                     self._last_refresh = time.monotonic()
                     return 0
                 session_columns = set().union(*(self._columns(db, table) for table in session_tables))
-                columns = [name for name in ("id", "project_id", "title", "directory", "time_created",
-                            "time_updated", "agent", "model", "tokens_input", "tokens_output")
-                           if name in session_columns]
+                columns = [name for name in ("id", "project_id", "parent_id", "title", "directory",
+                            "time_created", "time_updated", "agent", "model", "tokens_input",
+                            "tokens_output") if name in session_columns]
                 # V2 metadata is authoritative for migrated IDs. Keep legacy
                 # sessions that have not migrated, without displaying duplicates.
                 selects = []
                 for table in session_tables:
                     available = self._columns(db, table)
                     fields = ','.join(f'"{name}"' if name in available else f'NULL AS "{name}"' for name in columns)
+                    parent_supported = 1 if 'parent_id' in available else 0
                     suffix = (' WHERE NOT EXISTS (SELECT 1 FROM "session_v2" v2 WHERE v2.id="session".id)'
                               if table == 'session' and 'session_v2' in session_tables else '')
-                    selects.append(f'SELECT {fields} FROM "{table}"{suffix}')
+                    selects.append(f'SELECT {fields},{parent_supported} AS "_parent_supported" FROM "{table}"{suffix}')
                 session_source = '(' + ' UNION ALL '.join(selects) + ')'
                 now_ns = time.time_ns()
                 cutoff_ms = (now_ns - LOOKBACK_NS) // 1_000_000
@@ -512,7 +517,9 @@ class OpenCodeReader:
                 for session_id in sorted(orphan_ids, key=lambda key: activity_updates[key], reverse=True)[:MAX_SESSIONS]:
                     orphan = {name: None for name in columns}
                     orphan.update({"id": session_id, "time_updated": activity_updates[session_id],
-                                   "title": "", "directory": "", "model": "", "_last_activity_ns": activity_updates[session_id]})
+                                   "title": "", "directory": "", "model": "",
+                                   "_last_activity_ns": activity_updates[session_id],
+                                   "_orphan": True, "_parent_supported": 0})
                     rows.append(orphan)
                 rows.sort(key=lambda row: (-int((dict(row).get("_last_activity_ns") or 0)),
                                            str(dict(row).get("id") or "")))
@@ -535,12 +542,18 @@ class OpenCodeReader:
                     self.schema_errors += 1
                 if "part" in tables and not {"id", "session_id", "message_id", "data"} <= part_columns:
                     self.schema_errors += 1
+                supports_parent = "parent_id" in session_columns
                 for session in rows:
                     data = dict(session)
                     session_id = str(data["id"])
                     directory = str(data.get("directory") or "")
                     project = project_names.get(data.get("project_id")) or Path(directory).name or ""
                     updated = timestamp(data.get("_last_activity_ns", data.get("time_updated")))
+                    parent_session = data.get("parent_id")
+                    parent_supported = bool(data.get("_parent_supported", supports_parent))
+                    agent_id = canonical_agent_id("OpenCode", self.source_id, session_id)
+                    parent_agent_id = (canonical_agent_id("OpenCode", self.source_id, str(parent_session))
+                                       if isinstance(parent_session, str) and parent_session else None)
                     item = {"source_id": identity(self.source_id, session_id), "runtime": "OpenCode",
                             "service": "opencode", "session_id": session_id, "project": project,
                             "working_directory": directory if self.capture_details else "",
@@ -550,7 +563,24 @@ class OpenCodeReader:
                                 if self.capture_details else ""), "capture_content": self.capture_details,
                             "last_activity": {"time_unix_nano": updated, "domain": "agent",
                                               "action": "session update", "subject": project or "OpenCode session",
-                                              "result": "observed"}, "bytes_read": 0}
+                                              "result": "observed"}, "bytes_read": 0,
+                            "agent_id": agent_id, "source_namespace": self.source_id,
+                            "native_session_id": session_id, "native_worker_id": None,
+                            "parent_agent_id": parent_agent_id,
+                            "relationship_kind": "delegated" if parent_agent_id else "unknown",
+                            "relationship_state": ("unresolved" if data.get("_orphan") else
+                                                   "confirmed" if parent_agent_id else
+                                                   "confirmed" if parent_supported and parent_session is None else
+                                                   "unresolved"),
+                            "relationship_provenance": provenance(
+                                "opencode-session", "orphan activity without a session row" if data.get("_orphan")
+                                else "session.parent_id" if parent_agent_id
+                                else "session.parent_id is null (top-level)" if parent_supported and parent_session is None
+                                else "session.parent_id unavailable in this schema",
+                                _first_timestamp(data.get("time_created"))),
+                            "discovery_state": "observed",
+                            "coverage": "unknown" if data.get("_orphan") else "complete",
+                            "observed_ns": updated}
                     sessions.append(item)
                     # Prefer the message table that actually has the latest
                     # records for this session. Old databases may retain both
@@ -614,6 +644,8 @@ class OpenCodeReader:
                                         "event_name": "agent.activity", "body": prompt,
                                         "attributes": {
                                             "session.id": session_id,
+                                            "agent.id": agent_id,
+                                            "agent.runtime": "OpenCode",
                                             "observatory.project": project,
                                             "agent.activity.domain": "message",
                                             "agent.activity.action": "user",
@@ -689,7 +721,11 @@ class OpenCodeReader:
                                 if self.capture_details else "")
                         root_attrs = {"session.id": session_id, "agent.run.state": state,
                                       "agent.task": task or "OpenCode session",
+                                      "agent.id": agent_id,
+                                      "agent.runtime": "OpenCode",
                                       "observatory.project": project}
+                        if parent_agent_id:
+                            root_attrs["agent.parent_id"] = parent_agent_id
                         root = normalize_native({"trace_id": trace_id, "span_id": root_id, "parent_span_id": None,
                             "name": "agent.run", "start_unix_nano": start_ns, "end_unix_nano": end_ns,
                             "status": "ERROR" if state == "error" else "OK", "attributes": root_attrs,
@@ -766,7 +802,9 @@ class OpenCodeReader:
                             tool_start = _first_timestamp((tool_state.get("time") or {}).get("start"), start_ns) or start_ns
                             tool_end = _first_timestamp((tool_state.get("time") or {}).get("end"), end_ns) or end_ns
                             mcp = mcp_attributes(tool_name) or _opencode_mcp_attributes(tool_name, self.mcp_servers)
-                            tool_attrs = {"session.id": session_id, "gen_ai.operation.name": "execute_tool",
+                            tool_attrs = {"session.id": session_id, "agent.id": agent_id,
+                                          "agent.runtime": "OpenCode",
+                                          "gen_ai.operation.name": "execute_tool",
                                           "tool.name": tool_name, "tool.result_status": tool_status,
                                           "agent.activity.domain": "mcp" if mcp else "tool",
                                           "agent.activity.action": "call", "agent.activity.subject": tool_name,

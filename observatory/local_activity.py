@@ -60,11 +60,17 @@ def emit(session, row, stamp, domain, action, subject, detail="", result="observ
         return None
     from .local_agents import identity
     attrs = {"session.id": session.session_id, "observatory.project": session.project,
+             "agent.id": session.agent_id, "agent.runtime": session.runtime,
+             "agent.discovery_state": session.discovery_state,
+             "agent.relationship.kind": session.relationship_kind,
+             "agent.relationship.state": session.relationship_state,
              "observatory.data_source": "local-session-log", "agent.activity.domain": domain,
              "agent.activity.action": action, "agent.activity.subject": safe(subject, 500),
              "agent.activity.result": result, "agent.activity.actor": session.runtime,
              "observatory.record_id": identity(session.source_id, row.get("ordinal") or row.get("uuid") or stamp,
                                                 domain, action, str(subject)[:500], *([call_id] if call_id else [])), **(extra or {})}
+    if session.parent_agent_id:
+        attrs["agent.parent_id"] = session.parent_agent_id
     payload = row.get("payload") or {}
     item = payload.get("item") or {} if isinstance(payload, dict) else {}
     span_id = None
