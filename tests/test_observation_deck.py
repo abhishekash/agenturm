@@ -2,7 +2,7 @@
 import time
 import unittest
 
-from textual.widgets import DataTable, Select, TabbedContent
+from textual.widgets import Button, DataTable, Select, TabbedContent
 
 from observatory.terminal_ui import ObservatoryApp, agent_status, sources, task_text
 from observatory.themes import PALETTES
@@ -309,15 +309,23 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
     async def test_live_priority_changes_queue_order_until_explicit_refresh(self):
         feed=ManualFeed()
         now=time.time_ns()
-        for entry in feed.snapshot.local_status['sessions']:
-            entry.update(run_state='running',waiting_for='',last_record_ns=now)
+        sessions=feed.snapshot.local_status['sessions']
+        sessions[0].update(run_state='running',waiting_for='',last_record_ns=now+1)
+        sessions[1].update(run_state='completed',waiting_for='',last_record_ns=now+2)
+        feed.snapshot.sessions=[]
         app=ObservatoryApp(feed,persist_preferences=False)
         async with app.run_test(size=(160,48)) as pilot:
             await pilot.pause()
+            app.refresh_timer.stop()
+            app.set_agent_filter('all')
+            await pilot.pause()
             table=app.query_one('#agent-table')
             before=[key.value for key in table.rows]
-            waiting=next(item for item in feed.snapshot.local_status['sessions'] if item['source_id']=='source-2')
-            waiting.update(run_state='waiting',waiting_for='Approval',last_record_ns=now+1)
+            self.assertEqual(before,['source-1','source-2'])
+            # A terminated session must stay below working work even when its
+            # timestamp is newer.  When it starts again, the list freezes until
+            # the operator applies the queued order.
+            sessions[1].update(run_state='running',waiting_for='',last_record_ns=now+3)
             app.last_update=-1
             app.refresh_data()
             await pilot.pause()
@@ -327,6 +335,62 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(list(table.rows)[0].value,'source-2')
             self.assertFalse(app.query_one('#refresh-order').display)
+
+    async def test_updated_sort_keeps_working_first_and_terminated_last(self):
+        feed=ManualFeed()
+        now=time.time_ns()
+        base=feed.snapshot.local_status['sessions'][0]
+        specs=[('source-1','Working','running',now+3,''),
+               ('source-2','Waiting','waiting',now+2,'Approval'),
+               ('source-3','Completed','completed',now+4,''),
+               ('source-4','Error','error',now+1,'')]
+        feed.snapshot.local_status['sessions']=[
+            {**base,'source_id':sid,'session_id':'session-'+sid[-1],'service':'codex',
+             'runtime':'Codex','task':state,'run_state':run_state,
+             'waiting_for':waiting,'last_record_ns':stamp}
+            for sid,state,run_state,stamp,waiting in specs
+        ]
+        feed.snapshot.sessions=[]
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(160,48)) as pilot:
+            await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
+            table=app.query_one('#agent-table')
+            self.assertEqual([key.value for key in table.rows],
+                             ['source-1','source-2','source-3','source-4'])
+            self.assertIn('Updated ↓',str(app.query_one('#agent-sort',Button).label))
+            table.move_cursor(row=2)
+            app.select_agent('source-3')
+            await pilot.pause()
+            await pilot.click('#agent-sort')
+            await pilot.pause()
+            self.assertIn('Updated ↑',str(app.query_one('#agent-sort',Button).label))
+            self.assertEqual([key.value for key in table.rows],
+                             ['source-1','source-2','source-4','source-3'])
+            self.assertEqual(app.selected_source,'source-3')
+            self.assertEqual(table.cursor_row,3)
+            await pilot.press('o')
+            await pilot.pause()
+            self.assertIn('Updated ↓',str(app.query_one('#agent-sort',Button).label))
+            self.assertEqual([key.value for key in table.rows],
+                             ['source-1','source-2','source-3','source-4'])
+            self.assertEqual(app.selected_source,'source-3')
+            self.assertEqual(table.cursor_row,2)
+
+    async def test_sort_control_is_available_on_agents(self):
+        app=ObservatoryApp(ManualFeed(),persist_preferences=False)
+        async with app.run_test(size=(160,48)) as pilot:
+            await pilot.pause()
+            sort=app.query_one('#agent-sort',Button)
+            self.assertTrue(sort.display)
+            await pilot.resize_terminal(80,24)
+            await pilot.pause()
+            self.assertTrue(sort.display)
+            self.assertTrue(app.screen.region.contains_region(sort.region))
+            await pilot.press('2')
+            await pilot.pause()
+            self.assertFalse(sort.display)
 
     async def test_sessions_arriving_after_empty_start_are_not_dropped_by_order_freeze(self):
         feed=ManualFeed()
