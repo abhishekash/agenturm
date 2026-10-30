@@ -1,12 +1,20 @@
 # Changelog
 
-## Agenturm 0.1.5
+## Agenturm 0.1.6
 
 - Show exact recorded delegations as an expandable agent tree, with a flat fallback, subtree activity/attention summaries, and canonical child inspection.
 - Discover Codex subagent rollouts, Claude Code subagent sidecars, and OpenCode child sessions; keep forks and unlinked observations distinct from delegated workers.
 - Persist normalized agent identities and bounded relationship provenance in additive SQLite tables, with `/api/hierarchy` and exact/subtree scope parameters for Activity, MCP, Traces, and Findings.
 - Add explicit SDK/OTLP hierarchy attributes and document runtime capabilities and limitations.
 - Add an Updated ↓/↑ sort control (and `o` shortcut) that always keeps working sessions first and terminated sessions last, with updated-time ordering inside each group.
+
+## Agenturm 0.1.5
+
+- Install only the `agenturm` command; remove the legacy `agent-observatory` and `agent-goechala` entry points.
+- Show recorded reasons when a session fails.
+- Make attention states actionable and evidence-based, and persist dismissed attention failures.
+- Avoid caching inspector text at a hidden-pane width.
+- Refresh the terminal walkthrough media.
 
 ## Agenturm 0.1.4
 
