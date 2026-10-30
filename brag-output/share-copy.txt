@@ -1,0 +1,3 @@
+Agenturm: follow your coding agents from one terminal. Inspect recorded progress, tool calls, and traces—open source, local by default, no account required. https://www.agenturm.dev/
+
+Music: Sascha Ende, ende.app — “Happy Beats / Business Moves Vol. 12” (excerpt), CC BY 4.0: https://creativecommons.org/licenses/by/4.0/
