@@ -1,5 +1,13 @@
 # Changelog
 
+## Agenturm 0.1.5
+
+- Install only the `agenturm` command; remove the legacy `agent-observatory` and `agent-goechala` entry points.
+- Show recorded reasons when a session fails.
+- Make attention states actionable and evidence-based, and persist dismissed attention failures.
+- Avoid caching inspector text at a hidden-pane width.
+- Refresh the terminal walkthrough media.
+
 ## Agenturm 0.1.4
 
 - Rework the terminal cockpit with a compact status overview and a separate, clearly framed view navigator.
