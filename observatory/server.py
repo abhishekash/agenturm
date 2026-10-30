@@ -10,6 +10,7 @@ import threading
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
+from .agent_hierarchy import CAPABILITIES, HierarchyGraph
 from .core import Store, normalize_native, normalize_otlp, TRACE_ID
 from .otlp_proto import decode_trace_request
 from .logs import normalize_otlp_logs, decode_log_request
@@ -75,6 +76,25 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                 self._json(200, {"ok": True, "local_agents": local.status() if local else {"enabled": False}})
             elif path == "/api/connections":
                 self._json(200, {"connections": store.connections()})
+            elif path == "/api/hierarchy":
+                query = parse_qs(route.query)
+                try:
+                    limit = max(1, min(10000, int(query.get("limit", [2000])[0])))
+                    include_reviews = query.get("include_reviews", ["1"])[0] not in {"0", "false", "False"}
+                    nodes = store.agent_nodes(limit=limit, include_reviews=include_reviews)
+                    graph = HierarchyGraph(nodes)
+                    self._json(200, {
+                        "nodes": nodes,
+                        "capabilities": CAPABILITIES,
+                        "revision": store.hierarchy_revision(),
+                        "diagnostics": graph.diagnostics,
+                        "coverage": ("complete" if not graph.diagnostics["missing_parents"] and
+                                     not graph.diagnostics["announced"] and
+                                     all(node.get("coverage") == "complete" for node in nodes)
+                                     else "partial"),
+                    })
+                except ValueError as exc:
+                    self._json(400, {"error": str(exc)})
             elif path == "/api/activity":
                 query = parse_qs(route.query)
                 try:
@@ -84,7 +104,10 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                         cursor=query.get("cursor", [None])[0],
                         include_reviews=query.get("include_reviews", ["1"])[0]!="0",
                         errors_only=query.get("errors_only", ["0"])[0]=="1",
-                        action=query.get("action", [None])[0])
+                        action=query.get("action", [None])[0],
+                        agent_id=query.get("agent_id", [None])[0],
+                        subtree=query.get("subtree", ["0"])[0]=="1",
+                        scope_revision=query.get("scope_revision", [None])[0])
                     self._json(200, page)
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
@@ -96,8 +119,11 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                     page = store.mcp_page(limit=int(query.get('limit', [100])[0]),
                         service=query.get('service', [None])[0], session_id=query.get('session_id', [None])[0],
                         query=query.get('q', [None])[0], cursor=query.get('cursor', [None])[0],
-                        include_reviews=query.get('include_reviews', ['1'])[0]!='0')
-                    self._json(200, {**page, 'scope': 'stored MCP operations'})
+                        include_reviews=query.get('include_reviews', ['1'])[0]!='0',
+                        agent_id=query.get('agent_id', [None])[0],
+                        subtree=query.get('subtree', ['0'])[0]=='1',
+                        scope_revision=query.get('scope_revision', [None])[0])
+                    self._json(200, {**page, 'scope': page.get('scope', 'stored MCP operations')})
                 except ValueError as exc:
                     self._json(400, {'error': str(exc)})
             elif path == "/api/usage-series":
@@ -145,7 +171,10 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                 query = parse_qs(route.query)
                 try:
                     limit = max(1, min(500, int(query.get("limit", [100])[0])))
-                    page = store.finding_page(limit=limit, cursor=query.get("cursor", [None])[0])
+                    page = store.finding_page(limit=limit, cursor=query.get("cursor", [None])[0],
+                                              agent_id=query.get("agent_id", [None])[0],
+                                              subtree=query.get("subtree", ["0"])[0] == "1",
+                                              scope_revision=query.get("scope_revision", [None])[0])
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
                     return
@@ -180,7 +209,10 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                                             query.get("session_id", [None])[0],
                                             query.get("q", [None])[0],
                                             query.get("endpoint_id", [None])[0],
-                                            query.get("include_reviews", ["1"])[0]!="0")
+                                            query.get("include_reviews", ["1"])[0]!="0",
+                                            query.get("agent_id", [None])[0],
+                                            query.get("subtree", ["0"])[0]=="1",
+                                            query.get("scope_revision", [None])[0])
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
                     return

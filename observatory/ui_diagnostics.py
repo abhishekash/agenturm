@@ -30,6 +30,12 @@ def diagnostics_text(local):
              f"Discovery: {'enabled' if local.get('enabled') else 'disabled or not reported'} · lookback {local.get('lookback_hours', 'not reported')}h",
              f"Read errors: {local.get('read_errors', 0)} · OpenCode read errors: {local.get('opencode_read_errors', 0)}",
              f"Omitted older sources: {local.get('omitted_sources', 0)} · OpenCode: {local.get('opencode_omitted_sessions', 0)}"]
+    hierarchy = local.get('hierarchy') or {}
+    if hierarchy:
+        lines.append(
+            f"Hierarchy: {hierarchy.get('nodes', 0)} nodes · {hierarchy.get('announced', 0)} spawn announcements · "
+            f"coverage {hierarchy.get('coverage', 'unknown')} · "
+            f"{hierarchy.get('write_errors', 0)} persistence errors · revision {hierarchy.get('revision', 'not reported')}")
     diagnostics = [row.get('diagnostics') or {} for row in local.get('sessions', [])]
     if isinstance(local.get('opencode_diagnostics'), dict):
         diagnostics.append(local['opencode_diagnostics'])

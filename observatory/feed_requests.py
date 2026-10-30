@@ -16,6 +16,10 @@ class FeedScope:
     selected_trace: str | None
     selected_span_id: str | None
     pinned_trace: bool
+    scope_agent_id: str
+    scope_subtree: bool
+    hierarchy_revision: str
+    generation: int
 
     @classmethod
     def capture(cls, feed):

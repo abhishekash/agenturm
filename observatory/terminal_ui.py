@@ -28,6 +28,8 @@ from textual.strip import Strip
 from textual.widgets import Button, Checkbox, DataTable, Input, RichLog, Select, Static, TabbedContent, TabPane, Tabs, Tree
 
 from .terminal import clean, clipped, number, trace_name
+from .agent_hierarchy import (AGENT_ID, HierarchyGraph, branch_marker, canonical_agent_id,
+                              node_active, node_attention, tree_prefix)
 from .session_status import session_health
 from .branding import NAME, AMBER, LAVENDER, MINT, ICE, masthead
 from .themes import PALETTES, supported_themes, themed_style, themed_text
@@ -440,7 +442,12 @@ def sources(snapshot, include_reviews=False):
         review=review_session(entry)
         if review and not include_reviews:
             continue
-        health=session_health(entry,time.time_ns())
+        if entry.get('discovery_state')=='announced':
+            health={'state':'Spawn recorded','active':False,'recent':False,
+                    'stamp':entry.get('last_record_ns') or 0,
+                    'status_evidence':'Spawn recorded · status unavailable'}
+        else:
+            health=session_health(entry,time.time_ns())
         result.append({**entry,**health,'id':entry['source_id'],'review':review,
                        'spans':connection.get('span_count',0)})
     for entry in connections.values():
@@ -452,9 +459,14 @@ def sources(snapshot, include_reviews=False):
         result.append({**entry,'id':entry['source_id'],'session_id':None,'project':'SDK / OTLP','model':'',
                        'runtime':entry.get('service'),'task':'Task not reported','recent':entry['state']=='running',
                        'state':'Connected' if entry['state']=='running' else 'Finished' if entry['state']=='stopped' else 'Offline',
-                       'stamp':entry.get('last_seen_ns',0),'spans':entry.get('span_count',0),'review':review})
+                       'stamp':entry.get('last_seen_ns',0),'spans':entry.get('span_count',0),'review':review,
+                       'discovery_state':'observed','coverage':'unknown',
+                       'relationship_kind':'unknown','relationship_state':'unresolved',
+                       'relationship_provenance':'SDK/OTLP producer did not report agent hierarchy'})
     known_sessions={item.get('session_id') for item in result if item.get('session_id')}
     known_sessions.update(item.get('session_id') for item in snapshot.local_status.get('sessions',[]))
+    known_agent_ids={item.get('agent_id') for item in result if item.get('agent_id')}
+    known_agent_ids.update(item.get('agent_id') for item in snapshot.local_status.get('sessions',[]))
     latest_by_session={}
     first_prompt_by_session={}
     for event in snapshot.activity:
@@ -477,12 +489,19 @@ def sources(snapshot, include_reviews=False):
             item['task_source']='recorded user request'
     for session in getattr(snapshot,'sessions',[]):
         session_id=session.get('session_id')
-        if not session_id or session_id in known_sessions:
+        if not session_id:
+            continue
+        stored_agent_id=session.get('agent_id')
+        if stored_agent_id and stored_agent_id in known_agent_ids:
+            continue
+        if session_id in known_sessions and not stored_agent_id:
             continue
         review=review_session(session)
         if review and not include_reviews:
             continue
         known_sessions.add(session_id)
+        if stored_agent_id:
+            known_agent_ids.add(stored_agent_id)
         services=session.get('services') or []
         service=services[0] if len(services)==1 else ''
         stamp=session.get('last_unix_nano') or 0
@@ -503,7 +522,48 @@ def sources(snapshot, include_reviews=False):
              'trace_count':session.get('trace_count',0),'errors':session.get('errors',0),
              'failed':session.get('failed',0),'incomplete':session.get('incomplete',0),
              'latest_trace_id':session.get('latest_trace_id'),
-             'status_complete':session.get('status_complete',True),'review':review})
+             'status_complete':session.get('status_complete',True),'review':review,
+             'source_namespace':session.get('agent_namespace') or service or runtime,
+             'native_session_id':session_id,'native_worker_id':session.get('agent_worker_id'),
+             'relationship_kind':session.get('relationship_kind') or 'unknown',
+             'relationship_state':session.get('relationship_state') or 'unresolved',
+             'relationship_provenance':session.get('relationship_provenance') or
+                 'SDK/OTLP session has no explicit parent metadata',
+             'discovery_state':'observed','coverage':session.get('coverage') or 'unknown',
+             'agent_id':session.get('agent_id'),
+             'parent_agent_id':session.get('parent_agent_id'),
+             'agent_native_id':session.get('agent_native_id'),
+             'parent_agent_native_id':session.get('parent_agent_native_id')})
+    for item in result:
+        runtime=item.get('runtime') or item.get('service') or 'Agent'
+        namespace=item.get('source_namespace') or item.get('source_id') or item.get('service') or runtime
+        if not item.get('agent_id') or not AGENT_ID.fullmatch(str(item.get('agent_id'))):
+            native=(item.get('agent_native_id') or item.get('native_worker_id') or
+                    item.get('session_id') or item.get('id'))
+            if native:
+                item['agent_id']=(str(native).lower() if AGENT_ID.fullmatch(str(native))
+                                  else canonical_agent_id(str(runtime),str(namespace),str(native)))
+        explicit_parent=item.get('parent_agent_native_id')
+        if explicit_parent and not item.get('parent_agent_id'):
+            try:
+                item['parent_agent_id']=(str(explicit_parent).lower()
+                    if AGENT_ID.fullmatch(str(explicit_parent)) else
+                    canonical_agent_id(str(runtime),str(namespace),str(explicit_parent)))
+            except ValueError:
+                item['parent_agent_id']=None
+            if item.get('parent_agent_id') and item.get('relationship_state')=='unresolved':
+                item['relationship_kind']='delegated'
+                item['relationship_state']='confirmed'
+                item['relationship_provenance']='SDK/OTLP explicit agent.parent_id'
+        item.setdefault('relationship_kind','unknown')
+        item.setdefault('relationship_state','unresolved')
+        item.setdefault('relationship_provenance','No parent relationship was reported')
+        item.setdefault('discovery_state','observed')
+        item.setdefault('coverage','unknown')
+        item.setdefault('source_namespace',str(namespace))
+        item.setdefault('native_session_id',item.get('session_id'))
+        item['attention']=attention_required(item)
+        item['owns_attention']=attention_required(item)
     return sorted(result,key=lambda item:(not (item.get('active') or item.get('state')=='Waiting'),not item['recent'],-item['stamp'],item['id']))
 
 
@@ -635,16 +695,47 @@ def agent_identity(item,selected=False):
     return text
 
 
-def agent_list_text(item,selected=False):
-    """Two-line task-first row: task first, concise runtime/action provenance below."""
-    title=task_preview(item) or f"Untitled session · {item.get('runtime') or 'agent'}"
-    title=' '.join(title.split())
+def task_metadata(item, summary=None, *, announced=False, unlinked=False, depth=0,
+                  parent_unavailable=False, parent_retained=False):
     runtime=clean(item.get('runtime') or item.get('service') or 'Agent')
     project=clean(item.get('project') or 'SDK')
     action=brief_activity(item.get('last_activity') or {}) if item.get('last_activity') else 'No recent action recorded'
-    stamp=item.get('stamp')
-    metadata=f"{runtime} · {project} · {action} · {age(stamp)}"
+    if announced:
+        return f"{runtime} · Spawn recorded · status unavailable"
+    parts=[runtime,project,action,age(item.get('stamp'))]
+    if summary and summary.get('descendants'):
+        count=summary.get('descendants',0)
+        parts.insert(2,f"{quantity(count,'subagent')}")
+        if summary.get('attention'):
+            parts.insert(3,f"{summary['attention']} needs attention")
+        elif summary.get('working'):
+            parts.insert(3,f"{summary['working']} working")
+        if summary.get('announced'):
+            parts.insert(3,f"{summary['announced']} spawn recorded")
+    elif parent_retained:
+        parts.insert(2,'parent outside window')
+    elif parent_unavailable:
+        parts.insert(2,'parent unavailable')
+    elif unlinked:
+        parts.insert(2,'parent not reported')
+    if depth>8:
+        parts.append(f"depth {depth}")
+    return ' · '.join(parts)
+
+
+def agent_list_text(item,selected=False,*,prefix='',summary=None,announced=False,
+                    unlinked=False,depth=0,ascii_only=False,parent_unavailable=False,
+                    parent_retained=False):
+    """Two-line task-first row: task first, concise runtime/action provenance below."""
+    title=task_preview(item) or (f"Spawn recorded · {item.get('runtime') or 'agent'}" if announced
+                                 else f"Untitled session · {item.get('runtime') or 'agent'}")
+    title=' '.join(title.split())
+    marker=branch_marker(bool(item.get('_expanded')),bool(item.get('_has_children')),ascii_only=ascii_only)
+    metadata=task_metadata(item,summary,announced=announced,unlinked=unlinked,depth=depth,
+                           parent_unavailable=parent_unavailable,
+                           parent_retained=parent_retained)
     text=Text('▸ ' if selected else '  ',style='#dceb5a',no_wrap=True,overflow='ellipsis')
+    text.append(prefix+marker,style='#abb4a5')
     text.append(title,style='bold #edf1e7' if item.get('active') or input_required(item) else '#dedce5')
     text.append('\n  '+metadata,style='#abb4a5')
     return text
@@ -695,6 +786,36 @@ def attention_key(item):
     return hashlib.sha256(identity.encode('utf-8')).hexdigest()
 
 
+# Lifecycle outcomes that are finished.  These always sort below live work,
+# even when they are newer than a working session.
+TERMINATED_STATES = {'Completed','Interrupted','Error','Failed','Incomplete','Finished','Offline'}
+WORKING_STATES = {'Working','Processing','Tool running','Working (quiet)'}
+
+
+def agent_status_group(item):
+    """Fixed sort groups: working, needs-action, other, terminated.
+
+    The group order is deliberately independent of the selected updated-time
+    direction.  A sort control can change order inside a group; it cannot put a
+    terminated session above a working one.
+    """
+    state=item.get('state')
+    if item.get('active') or state in WORKING_STATES:
+        return 0
+    if state in TERMINATED_STATES:
+        return 3
+    if attention_required(item):
+        return 1
+    return 2
+
+
+def agent_order_key(item, newest_first=True):
+    """Sort by updated time inside a fixed status group."""
+    stamp=int(item.get('stamp') or 0)
+    return (agent_status_group(item), -stamp if newest_first else stamp,
+            str(item.get('agent_id') or item.get('id') or ''))
+
+
 def navigation_hints(width):
     if width >= 120:
         return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  Ctrl+P Palette  d Diagnostics  q Quit'
@@ -710,11 +831,47 @@ def coverage_warning(local_status):
         omitted.append(f"{local_status['omitted_sources']} older Codex/Claude sessions beyond the {local_status.get('max_sources',50)}-session limit")
     if local_status.get('opencode_omitted_sessions'):
         omitted.append(f"{local_status['opencode_omitted_sessions']} older OpenCode sessions beyond the 50-session limit")
+    hierarchy=local_status.get('hierarchy') or {}
+    if hierarchy.get('coverage')=='partial':
+        omitted.append(f"{hierarchy.get('announced',0)} spawn announcements or partial child evidence; relationship coverage is incomplete")
     return 'Coverage limited: '+'; '.join(omitted) if omitted else ''
 
 
 class ResultsTable(DataTable):
     """Size columns to the panel while keeping the selected record on resize."""
+    BINDINGS=[Binding('right','tree_right','Expand branch',show=False),
+              Binding('left','tree_left','Collapse branch',show=False)]
+
+    def action_tree_right(self):
+        if self.id=='agent-table' and getattr(self.app,'agent_tree_active',False):
+            self.app.action_tree_right()
+        else:
+            self.action_cursor_right()
+
+    def action_tree_left(self):
+        if self.id=='agent-table' and getattr(self.app,'agent_tree_active',False):
+            self.app.action_tree_left()
+        else:
+            self.action_cursor_left()
+
+    async def _on_click(self,event):
+        if self.id=='agent-table' and event.button==1:
+            meta=event.style.meta
+            if 'row' in meta and 'column' in meta and meta.get('row',-1)>=0 and meta.get('column')==0:
+                # Click coordinates are relative to this widget, not screen cells.
+                relative=event.x
+                if 0<=relative<=5:
+                    try:
+                        source_id=self.ordered_rows[meta['row']].key.value
+                    except (IndexError,KeyError):
+                        source_id=None
+                    if source_id:
+                        self.app.toggle_agent_branch(source_id)
+                        event.prevent_default()
+                        event.stop()
+                        return
+        await super()._on_click(event)
+
     def preview_height(self,values):
         if self.id!='agent-table' or not self.column_widths or not values:
             return 1
@@ -899,6 +1056,13 @@ class ObservatoryApp(App):
     #controls.agents-active #scope { display: block; }
     #scope SelectCurrent { height: 1; border: none; background: $agent-surface; padding: 0 1; }
     #scope:focus > SelectCurrent { border: none; color: $agent-primary; }
+    #evidence-scope-label, #evidence-scope { display: none; }
+    #evidence-scope-label { width: auto; height: 1; color: $agent-muted; }
+    #scope-label { width: auto; }
+    #controls.evidence-active #evidence-scope-label { display: block; }
+    #controls.evidence-active #evidence-scope { display: block; width: 12; height: 1; margin-right: 1; }
+    #evidence-scope SelectCurrent { height: 1; border: none; background: $agent-surface; padding: 0 1; }
+    #evidence-scope:focus > SelectCurrent { border: none; color: $agent-primary; }
     #shortcuts { height: 1; max-height: 1; margin: 0 2; color: $agent-muted; text-wrap: nowrap; overflow: hidden; }
     SelectCurrent { background: $agent-panel; border: tall $agent-border; }
     SelectCurrent #label { height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
@@ -906,6 +1070,10 @@ class ObservatoryApp(App):
     SelectOverlay { background: $agent-panel; border: tall $agent-primary; }
     #controls-spacer { display: none; }
     #refresh-order { height: 1; min-width: 0; width: 9; padding: 0; margin-right: 2; border: none; background: $agent-focus; color: $agent-primary; }
+    #agent-sort { display: none; height: 1; min-width: 0; width: 12; padding: 0; margin-right: 2; border: none; background: $agent-surface; color: $agent-secondary; }
+    #controls.agents-active #agent-sort { display: block; }
+    #agent-sort:hover { background: $agent-hover; color: $agent-primary; }
+    #agent-sort:focus { background: $agent-focus; color: $agent-primary; text-style: bold; }
     #reviews { width: 14; height: 1; border: none; background: $agent-surface; margin-top: 0; color: $agent-muted; }
     Checkbox > .toggle--button { color: $agent-disabled; background: $agent-panel; }
     Checkbox.-on > .toggle--button { color: $agent-primary; }
@@ -999,8 +1167,14 @@ class ObservatoryApp(App):
     .narrow #controls { margin: 0 1; }
     .narrow #scope { width: 16; }
     .narrow #scope-label { display: none; }
+    .narrow #evidence-scope { width: 10; }
+    .narrow #evidence-scope-label { display: none !important; }
+    .small #evidence-scope { width: 8; }
     .narrow #reviews { display: none; }
     .narrow #pause { width: 8; }
+    .narrow #agent-sort { width: 11; margin-right: 1; }
+    .small #agent-sort { width: 10; }
+    .minimal #agent-sort { display: none; }
     .narrow #shortcuts { height: 1; max-height: 1; margin: 0 1; padding: 0; }
     .narrow #pages { margin: 0 1; }
     .narrow Tab { padding: 0 1; }
@@ -1040,6 +1214,11 @@ class ObservatoryApp(App):
               Binding('d','diagnostics','Diagnostics'),Binding('x','export','Export'),
               Binding('q','quit','Quit'),Binding('escape','back','Back',show=False),
               Binding('s','focus_agent','Focus agent',show=False),Binding('r','review_attention','Mark reviewed',show=False),
+              Binding('f','toggle_tree','Tree or flat agents',show=False),
+              Binding('o','toggle_sort','Sort by updated',show=False),
+              Binding('alt+up','inspect_parent','Inspect parent',show=False),
+              Binding('alt+down','inspect_first_child','Inspect child',show=False),
+              Binding('alt+right','inspect_next_attention','Next descendant needing attention',show=False),
               Binding('x','dismiss_attention','Dismiss attention',show=False),
               Binding('1','page("agents")','Agents',show=False),
               Binding('2','page("activity")','Activity',show=False),Binding('3','page("mcp")','MCP',show=False),
@@ -1072,10 +1251,26 @@ class ObservatoryApp(App):
         self.scope_options=None
         self.scope_value='all'
         self.agent_filter='recent'
+        self.agent_sort_desc=True
         self.agent_order=[]
+        self.agent_order_ids=[]
         self.agent_order_key=None
         self.agent_order_pending=False
         self.agent_filter_options=None
+        self.tree_mode=True
+        self.agent_tree_active=False
+        self.ascii_tree=os.environ.get('AGENTURM_ASCII','').lower() in {'1','true','yes','on'}
+        self.expanded_agents=set()
+        self.collapsed_agents=set()
+        self.hierarchy_seen=set()
+        self.hierarchy_graph=None
+        self.hierarchy_structure_key=None
+        self.hierarchy_entries={}
+        self.agent_visual_parents={}
+        self.hierarchy_reparent_pending=False
+        self.visible_agent_rows=[]
+        self.agent_row_meta={}
+        self.evidence_scope_subtree=False
         self.summary_values={}
         self.span_signature=None
         self.search_timers={}
@@ -1128,8 +1323,12 @@ class ObservatoryApp(App):
             Select([('Recent','recent'),('Active','active'),('All','all')],
                    value='recent',allow_blank=False,id='agent-filter',tooltip='Recent shows working sessions and the last finished session'),
             Button('Reorder',id='refresh-order',tooltip='List changed; apply queued ordering without losing your selected session'),
+            Button('Updated ↓',id='agent-sort',tooltip='Sort by updated time. Working stays on top; terminated stays at the bottom.'),
             Static('Session',id='scope-label'),
             Select([('All agent sessions','all')],value='all',allow_blank=False,id='scope'),
+            Static('Evidence',id='evidence-scope-label'),
+            Select([('This agent','exact'),('This agent + subagents','subtree')],
+                   value='exact',allow_blank=False,id='evidence-scope'),
             Static('',id='controls-spacer'), Checkbox('Reviews',id='reviews'),
             id='controls')
 
@@ -1236,7 +1435,15 @@ class ObservatoryApp(App):
             ('Show recent sessions','Show working sessions and the most recently finished session',lambda:self.set_agent_filter('recent')),
             ('Show active sessions','Show only working sessions',lambda:self.set_agent_filter('active')),
             ('Show all sessions','Show the full session history',lambda:self.set_agent_filter('all')),
+            ('Sort sessions by newest update','Newest updated first inside fixed status groups',lambda:self.set_agent_sort(True)),
+            ('Sort sessions by oldest update','Oldest updated first inside fixed status groups',lambda:self.set_agent_sort(False)),
+            ('Switch sort direction','Toggle newest/oldest update ordering',self.action_toggle_sort),
             ('Refresh session order','Apply queued ordering while preserving session selection',self.refresh_agent_order),
+            ('Switch agent tree or flat list','Toggle hierarchy indentation for troubleshooting',self.action_toggle_tree),
+            ('Inspect parent agent',"Open the selected agent's confirmed parent",self.action_inspect_parent),
+            ('Inspect first child agent','Open the first observed delegated child',self.action_inspect_first_child),
+            ('Inspect next descendant needing attention','Navigate to the next descendant evidence',self.action_inspect_next_attention),
+            ('Scope evidence to this agent or subtree','Switch related Activity, MCP, Traces and Findings scope',lambda:self.query_one('#evidence-scope',Select).toggle()),
             ('Pause or resume display','Freeze or resume the cockpit display; collection continues',self.action_pause),
             ('Open diagnostics','Inspect local collection health',self.action_diagnostics),
             ('Copy selected evidence','Copy selected evidence or the current record',self.action_copy),
@@ -1255,9 +1462,32 @@ class ObservatoryApp(App):
 
     def refresh_agent_order(self):
         self.agent_order_key=None
+        self.agent_order_ids=[]
         self.agent_order_pending=False
+        self.agent_visual_parents={}
+        self.hierarchy_reparent_pending=False
+        self.hierarchy_structure_key=None
         self.last_update=-1
         self.refresh_data()
+
+    def set_agent_sort(self,newest_first):
+        """Change updated-time direction inside fixed status groups."""
+        self.agent_sort_desc=bool(newest_first)
+        try:
+            button=self.query_one('#agent-sort',Button)
+        except Exception:
+            button=None
+        if button is not None:
+            button.label='Updated ↓' if self.agent_sort_desc else 'Updated ↑'
+            button.tooltip=(
+                'Sort by updated time, newest first. Working stays on top; terminated stays at the bottom.'
+                if self.agent_sort_desc else
+                'Sort by updated time, oldest first. Working stays on top; terminated stays at the bottom.')
+        self.refresh_agent_order()
+
+    def action_toggle_sort(self):
+        self.set_agent_sort(not self.agent_sort_desc)
+        self.notify('Sort: Updated ↓' if self.agent_sort_desc else 'Sort: Updated ↑',timeout=2)
 
     def on_mount(self):
         # A normal headless test must never read/write the developer's config.
@@ -1397,7 +1627,7 @@ class ObservatoryApp(App):
         terminal_width=getattr(self,'layout_size',self.size).width
         width=max(1,min(widget.content_size.width,(terminal_width-4)//2-3))
         text.truncate(width,overflow='ellipsis')
-        if name in {'sessions','attention'} and getattr(self,'overview_height',4)>=5:
+        if name in {'sessions','attention'} and getattr(self,'overview_height',4)>=4:
             secondary=Text(clean(detail or ''),style='#abb4a5',no_wrap=True,overflow='ellipsis')
             secondary.truncate(width,overflow='ellipsis')
             text.append('\n')
@@ -1507,16 +1737,33 @@ class ObservatoryApp(App):
         self.last_update=data.updated;self.data=data
         agents=sources(data,self.feed.include_reviews)
         work=[item for item in agents if not item['review']]
-        recent=sum(item['recent'] for item in work)
-        active=[item for item in work if item.get('active') or item.get('state')=='Connected']
+        observed_work=[item for item in work if item.get('discovery_state')!='announced']
+        recent=sum(item['recent'] for item in observed_work)
+        active=[item for item in observed_work if item.get('active') or item.get('state')=='Connected']
         reviews=sum(entry.get('service')=='codex-review' for entry in data.local_status.get('sessions',[]))
         processes=(data.local_status.get('runtime') or {}).get('processes',[])
         live=sum(not str(item.get('state','')).startswith(('Z','X')) for item in processes)
-        waiting=sum(item['state']=='Waiting' for item in work)
-        replies=sum(input_required(item) for item in work)
+        waiting=sum(item['state']=='Waiting' for item in observed_work)
+        replies=sum(input_required(item) for item in observed_work)
+        groups=sum(1 for item in observed_work
+                   if item.get('relationship_state')=='confirmed' and
+                   not item.get('parent_agent_id') and item.get('relationship_kind')=='unknown')
+        workers=sum(1 for item in observed_work
+                    if item.get('relationship_state')=='confirmed' and
+                    item.get('relationship_kind')=='delegated' and item.get('parent_agent_id'))
+        known_agents={item.get('agent_id') for item in observed_work}
+        unlinked=sum(1 for item in observed_work
+                     if item.get('relationship_state') in {'unresolved','conflicted','invalid'} or
+                     (item.get('parent_agent_id') and item.get('parent_agent_id') not in known_agents))
         runtimes={name:sum(item.get('runtime')==name for item in active) for name in sorted({item.get('runtime') or 'Agent' for item in active})}
-        session_detail=' · '.join(f'{name} {count}' for name,count in runtimes.items()) or f'{len(work)} sessions · {replies} action'
-        if replies and active:
+        session_detail=' · '.join(f'{name} {count}' for name,count in runtimes.items()) or f'{len(observed_work)} sessions · {replies} action'
+        if groups or workers:
+            session_detail=f"{quantity(groups,'task group')} · {quantity(workers,'worker')}"
+            if unlinked:
+                session_detail+=f" · {unlinked} unlinked"
+            elif replies:
+                session_detail+=f" · {replies} action"
+        elif replies and active:
             session_detail+=f' · {replies} action'
         stat_width=(self.size.width-(4 if self.size.width>=140 else 2))//(2 if self.size.width<100 else 4)
         if cell_len(session_detail)>stat_width-(5 if self.size.width>=140 else 3):
@@ -1549,10 +1796,13 @@ class ObservatoryApp(App):
             'Calls are individual calls with operation details. Metric calls are Cursor aggregate counts; '
             'they cannot be opened or attributed to a session. Calls without a reported server are listed separately.')
         self.stat('usage',observed_count(data.totals,'input_tokens')+' / '+observed_count(data.totals,'output_tokens'),'Tokens in / out','Includes cached input')
-        self.query_one('#stat-sessions').tooltip=(f'{len(active)} working · {len(work)} total sessions · {recent} recently updated\n'
+        self.query_one('#stat-sessions').tooltip=(
+            f'{len(active)} working · {len(observed_work)} observed agents · {recent} recently updated\n'
+            f'{groups} task groups · {workers} delegated workers · {unlinked} unlinked/unresolved\n'
             f'{waiting} waiting · {replies} need action · {stalled} possibly stalled · {reviews} approval reviews\n'
             +' · '.join(f'{name}: {count} working' for name,count in runtimes.items())
-            +'\nWorking includes quiet unfinished turns and exact process CPU / I/O progress, not every open terminal.')
+            +'\nWorking includes quiet unfinished turns and exact process CPU / I/O progress, not every open terminal. '
+             'Spawn announcements are not counted as working.')
         self.query_one('#stat-usage').tooltip=(
             'Recorded token totals; repeated and cached input is included. '
             f"Cache read {observed_count(data.totals,'cache_read_input_tokens')} · "
@@ -1562,8 +1812,13 @@ class ObservatoryApp(App):
         options=[('All agent sessions','all')]+[(f"{item['runtime']} · {item.get('project') or 'SDK'} · {(item.get('session_id') or item['id'])[-6:]}",item['id']) for item in agents]
         if options!=self.scope_options:
             picker=self.query_one('#scope',Select);old=self.scope_value
-            picker.set_options(options);picker.value=old if any(value==old for _,value in options) else 'all';self.scope_options=options
+            available=any(value==old for _,value in options)
+            if not available:
+                self.scope_value='all'
+                self.feed.session_id='';self.feed.service='';self.feed.scope_agent_id=''
+            picker.set_options(options);picker.value=old if available else 'all';self.scope_options=options
         self.source_map={item['id']:item for item in agents}
+        self.sync_evidence_scope()
         # Build view models and evidence only for the visible tab. Hidden views
         # retain their selection and are refreshed from the latest snapshot on
         # activation, rather than repeatedly decoding invisible evidence.
@@ -1572,12 +1827,65 @@ class ObservatoryApp(App):
         if render:render()
         if page in {'activity','mcp','traces','findings'}:self.render_paging(page)
 
+    def hierarchy_for(self,agents):
+        """Reuse one adjacency index until structural relationships change."""
+        key=tuple(sorted((item.get('agent_id'),item.get('parent_agent_id'),
+                          item.get('relationship_kind'),item.get('relationship_state'),
+                          item.get('relationship_provenance'),item.get('discovery_state'),
+                          item.get('coverage'))
+                         for item in agents))
+        graph=self.hierarchy_graph
+        if graph is None or key!=self.hierarchy_structure_key:
+            graph=HierarchyGraph(agents)
+            self.hierarchy_graph=graph
+            self.hierarchy_structure_key=key
+        else:
+            dynamic=('state','active','attention','stamp','last_activity','waiting_for',
+                     'task','project','run_state','last_record_ns','source_id','id','review')
+            for item in agents:
+                node=graph.nodes.get(item.get('agent_id'))
+                if node is None:continue
+                for field in dynamic:
+                    if field in item:node[field]=item[field]
+            graph._summary_cache.clear()
+        return graph
+
     def render_agents(self):
         agents=list(self.source_map.values())
+        # Duplicate observations of one canonical agent are one node.  A later
+        # transcript always supersedes its earlier spawn announcement.
+        by_agent={}
+        for item in agents:
+            agent_id=item.get('agent_id')
+            if not agent_id:continue
+            previous=by_agent.get(agent_id)
+            if previous is None or (previous.get('discovery_state')=='announced' and
+                                    item.get('discovery_state')=='observed'):
+                by_agent[agent_id]=item
+        agents=list(by_agent.values())
+        self.hierarchy_entries={item['agent_id']:item for item in agents}
+        graph=self.hierarchy_for(agents)
+        tree_available=any(node.get('parent_agent_id') and node.get('relationship_state')=='confirmed'
+                           and node.get('relationship_kind')=='delegated'
+                           for node in graph.nodes.values())
+        tree_mode=bool(self.tree_mode and tree_available)
+        self.agent_tree_active=tree_mode
+        now=time.time_ns()
+        for agent_id,node in graph.nodes.items():
+            if agent_id in self.hierarchy_seen:continue
+            self.hierarchy_seen.add(agent_id)
+            summary=graph.summary(agent_id)
+            if ((node_active(node) or node_attention(node) or summary['working'] or summary['attention'])
+                    and agent_id not in self.collapsed_agents):
+                self.expanded_agents.add(agent_id)
         agent_query=self.search_queries['agents'].casefold()
         scoped_agents=[item for item in agents if self.scope_value=='all' or item['id']==self.scope_value]
-        visible_agents=[item for item in scoped_agents if
-                        (not agent_query or agent_query in (' '.join(str(item.get(key) or '') for key in ('runtime','service','project','working_directory','branch','task','model','session_id','id','state','waiting_for'))+' '+task_preview(item)).casefold())]
+
+        def searchable(item):
+            return (' '.join(str(item.get(key) or '') for key in
+                ('runtime','service','project','working_directory','branch','task','model',
+                 'session_id','id','state','waiting_for'))+' '+task_preview(item)).casefold()
+        searched=[item for item in scoped_agents if not agent_query or agent_query in searchable(item)]
         finished_states={'Completed','Interrupted','Error','Failed','Incomplete'}
         finished=sorted((item for item in scoped_agents if item.get('state') in finished_states),
                         key=lambda item:(-item['stamp'],item['id']))
@@ -1594,43 +1902,170 @@ class ObservatoryApp(App):
                         (f'Active {counts["active"]}','active'),
                         (f'All {counts["all"]}','all')]
         picker=self.query_one('#agent-filter',Select)
-        if filter_options!=self.agent_filter_options:
-            picker.set_options(filter_options)
-            self.agent_filter_options=filter_options
-        if str(picker.value)!=self.agent_filter:
-            picker.value=self.agent_filter
-        visible_agents=[item for item in visible_agents if self.agent_filter=='all' or
-                        (item['id'] in recent_ids if self.agent_filter=='recent' else bool(item.get('active')))]
-        visible_agents.sort(key=lambda item:(not (attention_required(item) and
-            attention_key(item) not in self.dismissed_attention),not item.get('active'),-item['stamp'],item['id']))
-        order_key=(self.scope_value,agent_query)
-        desired_order=[item['id'] for item in visible_agents]
+        with picker.prevent(Select.Changed):
+            if filter_options!=self.agent_filter_options:
+                picker.set_options(filter_options)
+                self.agent_filter_options=filter_options
+            if str(picker.value)!=self.agent_filter:
+                picker.value=self.agent_filter
+
+        def filter_match(item):
+            if self.agent_filter=='all':return True
+            if self.agent_filter=='active':return bool(item.get('active'))
+            return item['id'] in recent_ids
+        matching=[item for item in searched if filter_match(item)]
+        match_ids={item['agent_id'] for item in matching}
+        if tree_mode:
+            actual_parents={}
+            for agent_id,node in graph.nodes.items():
+                parent=node.get('parent_agent_id')
+                actual_parents[agent_id]=(parent if node.get('relationship_state')=='confirmed'
+                    and node.get('relationship_kind')=='delegated' and parent in graph.nodes
+                    else None)
+            visual=dict(self.agent_visual_parents)
+            reparent_pending=False
+            for agent_id,parent in actual_parents.items():
+                previous=visual.get(agent_id)
+                if previous is None:
+                    visual[agent_id]=parent
+                elif parent!=previous:
+                    old_exists=previous in graph.nodes
+                    if parent is not None and old_exists and \
+                            graph.nodes[agent_id].get('relationship_state')=='confirmed' and \
+                            graph.nodes[agent_id].get('relationship_kind')=='delegated':
+                        # Keep the last applied placement until explicit Reorder.
+                        reparent_pending=True
+                    else:
+                        visual[agent_id]=parent
+            visual={agent_id:parent for agent_id,parent in visual.items()
+                    if agent_id in graph.nodes}
+            overrides={agent_id:parent for agent_id,parent in visual.items()
+                       if parent!=actual_parents.get(agent_id)}
+            self.hierarchy_reparent_pending=reparent_pending
+            allowed=(set(graph.nodes) if not agent_query and self.agent_filter=='all'
+                     else graph.context_for_matches(match_ids))
+            expanded=set(self.expanded_agents)
+            if agent_query or self.agent_filter!='all':
+                # Search and Recent/Active filters temporarily reveal every
+                # required path without destroying the saved expansion choice.
+                expanded |= graph.context_for_matches(match_ids)
+            if overrides:
+                # A frozen visual placement also needs its old ancestor path.
+                for agent_id in list(allowed):
+                    parent=overrides.get(agent_id,actual_parents.get(agent_id))
+                    visited=set()
+                    while parent and parent in graph.nodes and parent not in visited:
+                        visited.add(parent)
+                        allowed.add(parent)
+                        if agent_query or self.agent_filter!='all':
+                            expanded.add(parent)
+                        parent=overrides.get(parent,actual_parents.get(parent))
+            hint=None
+            if self.agent_order_ids:
+                hint={agent_id:index for index,agent_id in enumerate(self.agent_order_ids)}
+            def tree_sort_key(agent_id):
+                return agent_order_key(graph.nodes.get(agent_id) or {},
+                                       newest_first=self.agent_sort_desc)
+            natural=graph.flatten(expanded,allowed,sort_key=tree_sort_key)
+            frozen=graph.flatten(expanded,allowed,order_hint=hint,
+                                 parent_overrides=overrides,
+                                 sort_key=tree_sort_key) if (hint or overrides) else natural
+            if overrides:
+                self.agent_visual_parents=visual
+            else:
+                self.agent_visual_parents=visual
+            prior_known=set(hint or ())
+            natural_known=[row['agent_id'] for row in natural if row['agent_id'] in prior_known]
+            frozen_known=[row['agent_id'] for row in frozen if row['agent_id'] in prior_known]
+            if prior_known and natural_known!=frozen_known:
+                self.agent_order_pending=True
+            if reparent_pending:
+                self.agent_order_pending=True
+            rows=frozen if (hint or overrides) else natural
+            visible_agents=[]
+            self.agent_row_meta={}
+            for position,row in enumerate(rows):
+                item=self.hierarchy_entries.get(row['agent_id'])
+                if item is None:continue
+                summary=graph.summary(row['agent_id'])
+                node_meta=graph.nodes.get(row['agent_id'],{})
+                parent_unavailable=bool(node_meta.get('parent_agent_id') and
+                                        not node_meta.get('parent_available'))
+                parent_retained=bool(parent_unavailable and item.get('parent_context'))
+                unlinked=(node_meta.get('relationship_state') in {'unresolved','conflicted','invalid'} or
+                          parent_unavailable)
+                shown=dict(item)
+                shown.update(_expanded=row['expanded'],_has_children=row['has_children'],
+                             _tree_depth=row['depth'],_subtree=summary,_unlinked=unlinked,
+                             _parent_unavailable=parent_unavailable,
+                             _parent_retained=parent_retained)
+                shown['_prefix']=tree_prefix(row['depth'],last=row['last'],
+                    ancestor_last=row['ancestor_last'],ascii_only=self.ascii_tree)
+                self.agent_row_meta[item['id']]=shown
+                visible_agents.append((shown,item,row,summary,unlinked))
+            desired=[shown['agent_id'] for shown,_,_,_,_ in visible_agents]
+        else:
+            self.agent_visual_parents={
+                agent_id:(node.get('parent_agent_id') if node.get('relationship_state')=='confirmed'
+                          and node.get('relationship_kind')=='delegated' and
+                          node.get('parent_agent_id') in graph.nodes else None)
+                for agent_id,node in graph.nodes.items()}
+            self.hierarchy_reparent_pending=False
+            matching.sort(key=lambda item: agent_order_key(item, self.agent_sort_desc))
+            desired=[item['agent_id'] for item in matching]
+            visible_agents=[(item,item,None,None,False) for item in matching]
+            self.agent_row_meta={item['id']:item for item in matching}
+        order_key=(self.scope_value,agent_query,self.agent_filter,tree_mode,
+                   self.agent_sort_desc)
         if order_key!=self.agent_order_key:
             self.agent_order_key=order_key
-            self.agent_order=desired_order
+            self.agent_order=[shown['id'] for shown,_,_,_,_ in visible_agents]
+            self.agent_order_ids=list(desired)
             self.agent_order_pending=False
+        elif tree_mode:
+            # The tree projection already froze root/sibling order; applying a
+            # second global row freeze would place a new child after unrelated
+            # roots instead of under its parent.
+            self.agent_order=[shown['id'] for shown,_,_,_,_ in visible_agents]
+            self.agent_order_ids=[shown['agent_id'] for shown,_,_,_,_ in visible_agents]
         else:
-            by_id={item['id']:item for item in visible_agents}
-            stable_order=[source_id for source_id in self.agent_order if source_id in by_id]
-            stable_order.extend(source_id for source_id in desired_order if source_id not in stable_order)
-            if desired_order!=stable_order:
+            by_id={shown['id']:(shown,item,row,summary,unlinked)
+                   for shown,item,row,summary,unlinked in visible_agents}
+            stable=[source_id for source_id in self.agent_order if source_id in by_id]
+            stable.extend(shown['id'] for shown,_,_,_,_ in visible_agents
+                          if shown['id'] not in stable)
+            if stable!=[shown['id'] for shown,_,_,_,_ in visible_agents]:
                 self.agent_order_pending=True
-            self.agent_order=stable_order
-            visible_agents=[by_id[source_id] for source_id in stable_order]
+            self.agent_order=stable
+            visible_agents=[by_id[source_id] for source_id in stable]
+            self.agent_order_ids=[shown['agent_id'] for shown,_,_,_,_ in visible_agents]
         self.query_one('#refresh-order',Button).display=self.agent_order_pending
-        if self.selected_source not in {item['id'] for item in visible_agents}:self.selected_source=visible_agents[0]['id'] if visible_agents else None
-        self.fill('agent-table',[(item['id'],[
-            agent_list_text(item,item['id']==self.selected_source),
-            agent_status(item),
-            cell(age(item['stamp']),'#abb4a5')],item) for item in visible_agents],preserve=self.selected_source)
-        self.search_status('agents',len(visible_agents),'session')
-        title=f'Sessions · {len(visible_agents)}'
+        self.visible_agent_rows=[shown['id'] for shown,_,_,_,_ in visible_agents]
+        if self.selected_source not in self.visible_agent_rows:
+            self.selected_source=self.visible_agent_rows[0] if self.visible_agent_rows else None
+        rows=[]
+        for shown,item,row,summary,unlinked in visible_agents:
+            announced=shown.get('discovery_state')=='announced'
+            rows.append((shown['id'],[
+                agent_list_text(shown,shown['id']==self.selected_source,
+                    prefix=shown.get('_prefix',''),summary=summary,announced=announced,
+                    unlinked=unlinked,depth=shown.get('_tree_depth',0),
+                    ascii_only=self.ascii_tree,
+                    parent_unavailable=shown.get('_parent_unavailable',False),
+                    parent_retained=shown.get('_parent_retained',False)),
+                agent_status(shown),
+                cell(age(shown['stamp']),'#abb4a5')],shown))
+        self.fill('agent-table',rows,preserve=self.selected_source)
         if agent_query:
-            title+=f' matches · {counts["all"]} in scope'
-            self.query_one('#search-status-agents',Static).update(
-                'No matching sessions · Clear to remove this filter' if not visible_agents else '')
-        elif visible_agents:
-            self.query_one('#search-status-agents',Static).update('')
+            context=max(0,len(visible_agents)-len(match_ids))
+            status=f"{quantity(len(match_ids),'matching session')}"
+            if context:status+=f" · {quantity(context,'ancestor context row')}"
+            if not match_ids:status='No matching sessions · Clear to remove this filter'
+            self.query_one('#search-status-agents',Static).update(status)
+            title=f"Sessions · {len(match_ids)} matches · {len(visible_agents)} rows"
+        else:
+            self.search_status('agents',len(visible_agents),'session')
+            title=f"Sessions · {len(visible_agents)}"
         self.query_one('#results-agents').border_title=title
         self.show_agent()
 
@@ -1641,7 +2076,15 @@ class ObservatoryApp(App):
         for key in {previous,source_id}:
             if key not in table.full_rows:continue
             values=list(table.full_rows[key])
-            values[0]=themed_text(table,agent_list_text(self.source_map[key],key==source_id))
+            item=getattr(self,'agent_row_meta',{}).get(key,self.source_map[key])
+            summary=item.get('_subtree')
+            values[0]=themed_text(table,agent_list_text(item,key==source_id,
+                prefix=item.get('_prefix',''),summary=summary,
+                announced=item.get('discovery_state')=='announced',
+                unlinked=item.get('_unlinked',False),depth=item.get('_tree_depth',0),
+                ascii_only=self.ascii_tree,
+                parent_unavailable=item.get('_parent_unavailable',False),
+                parent_retained=item.get('_parent_retained',False)))
             table.full_rows[key]=values
             if 0 in table.visible_columns:table.update_cell(key,'0',values[0])
         self.show_agent()
@@ -1851,7 +2294,12 @@ class ObservatoryApp(App):
 
     def scope_label(self):
         item=getattr(self,'source_map',{}).get(self.scope_value)
-        return f"{item['runtime']} / {item.get('project') or 'SDK'}" if item else 'all agent sessions'
+        if not item:return 'all agent sessions'
+        label=f"{item['runtime']} / {item.get('project') or 'SDK'}"
+        page=self.query_one('#pages',TabbedContent).active
+        if item.get('agent_id') and page in {'activity','mcp','traces','findings'}:
+            label+=' · subtree' if self.evidence_scope_subtree else ' · this agent'
+        return label
 
     def hold_selected(self,page,items,selected,key):
         """Keep the event being read when new arrivals push it off the live page."""
@@ -1960,6 +2408,69 @@ class ObservatoryApp(App):
             log.write(evidence_syntax(str(value),lexer,self.theme))
         else:log.write(Text(str(value)))
 
+    def hierarchy_sections(self,item):
+        graph=self.hierarchy_graph
+        if not graph or not item or not item.get('agent_id'):return [], []
+        node=graph.nodes.get(item['agent_id'])
+        if not node:return [], []
+        if not any(related.get('parent_agent_id') or related.get('discovery_state')=='announced'
+                   or related.get('relationship_state')=='conflicted'
+                   for related in graph.nodes.values()):
+            # A flat inventory with no relationship evidence stays as concise as
+            # before; absence of parent metadata is already visible in list rows.
+            return [], []
+        fields=[]
+        sections=[]
+        path=graph.path_to(item['agent_id'])
+        if len(path)>1:
+            labels=[]
+            for agent_id in path:
+                related=graph.nodes[agent_id]
+                labels.append(task_preview(related) or 'Untitled session')
+            fields.append(('Breadcrumb',' → '.join(labels)))
+        parent_id=node.get('parent_agent_id')
+        if parent_id and node.get('parent_available'):
+            parent=graph.nodes.get(parent_id,{})
+            fields.append(('Parent agent',task_preview(parent) or 'Parent agent'))
+        if node.get('relationship_kind')=='forked':
+            sections.append(('Relationship','Fork/continuation recorded. A fork is not counted as a delegated worker.'))
+        elif parent_id and not node.get('parent_available'):
+            context=item.get('parent_context') or {}
+            if context.get('retained'):
+                sections.append(('Parent relationship',
+                    'Parent identity is retained from hierarchy history but is outside the current source window. '
+                    'It is not shown or counted as a monitored row; the child remains independently inspectable.'))
+            else:
+                sections.append(('Parent relationship',
+                    'Parent relationship was reported, but parent evidence is not in the current retained or visible set. This child remains a monitored observation, not a working descendant of a placeholder.'))
+        elif node.get('relationship_state')=='unresolved':
+            sections.append(('Parent relationship','Parent relationship not reported. This session is shown as unlinked rather than assumed to be a root.'))
+        elif node.get('relationship_state')=='conflicted':
+            sections.append(('Parent relationship',
+                'Conflicting parent claims were recorded. The child is shown as unlinked until the relationship is resolved.'))
+        elif node.get('relationship_state')=='invalid':
+            sections.append(('Parent relationship','Invalid or cyclic relationship metadata was rejected; this agent is shown unlinked.'))
+        if node.get('relationship_provenance'):
+            sections.append(('Delegation provenance',clean(node['relationship_provenance'])))
+        if node.get('discovery_state')=='announced':
+            sections.append(('Child telemetry','Child telemetry not yet captured. The spawn was recorded; status is unavailable and this node is not counted as working.'))
+        children=graph.children_of(item['agent_id'])
+        summary=graph.summary(item['agent_id'])
+        if children:
+            lines=[]
+            for child_id in children:
+                child=graph.nodes[child_id]
+                lines.append(f"{task_preview(child) or 'Untitled session'} · {child.get('state') or 'Unknown'}")
+            sections.append(('Direct children', '\n'.join(lines[:20]) + ('\n…' if len(lines)>20 else '')))
+        if summary['observed'] or summary['announced']:
+            sections.append(('Subtree summary',
+                f"{summary['working']} working · {summary['waiting']} waiting · {summary['failed']} failed · "
+                f"{summary['attention']} need attention · coverage {summary['coverage']}"))
+        sections.append(('Hierarchy actions',
+            'Alt+Up inspect parent · Alt+Down first child · Alt+Right next descendant needing attention · '
+            'f switches tree/flat'))
+        return fields, sections
+
     def show_agent(self):
         item=getattr(self,'source_map',{}).get(self.selected_source)
         button=self.query_one('#agent-summary',Button)
@@ -1989,7 +2500,12 @@ class ObservatoryApp(App):
                 self.inspect('agent-detail','No agent sessions found',[],[('Next step',FIRST_RUN),('Diagnostics / retention','Press d for source paths, read health, and retention instructions.')])
             return
         self.query_one('#agent-open',Button).disabled=False
-        summary=next((entry for entry in self.data.sessions if item.get('session_id') and entry.get('session_id')==item.get('session_id')),{})
+        summary=next((entry for entry in self.data.sessions
+                      if item.get('agent_id') and entry.get('agent_id')==item.get('agent_id')),None)
+        if summary is None:
+            summary=next((entry for entry in self.data.sessions
+                if item.get('session_id') and entry.get('session_id')==item.get('session_id')
+                and (not entry.get('agent_id') or not item.get('agent_id'))),{})
         trace_button=self.query_one('#agent-trace',Button)
         trace_button.disabled=not bool(self.linked_agent_trace())
         reviewed_button=self.query_one('#agent-reviewed',Button)
@@ -2011,7 +2527,19 @@ class ObservatoryApp(App):
             stamp,text=generated
             label='AI summary · earlier snapshot' if stamp!=item.get('stamp') else 'AI summary · provider generated'
             ai_sections=[(label,text)]
-        actions=[event for event in self.data.activity if event.get('session_id')==item.get('session_id')] if item.get('session_id') else [event for event in self.data.activity if event.get('service')==item.get('service')]
+        if item.get('agent_id'):
+            actions=[event for event in self.data.activity
+                     if event.get('agent_id')==item.get('agent_id')]
+            if not actions:
+                actions=[event for event in self.data.activity
+                         if item.get('session_id') and event.get('session_id')==item.get('session_id')
+                         and not event.get('agent_id')]
+        elif item.get('session_id'):
+            actions=[event for event in self.data.activity
+                     if event.get('session_id')==item.get('session_id')]
+        else:
+            actions=[event for event in self.data.activity
+                     if event.get('service')==item.get('service')]
         meaningful=[event for event in actions if event.get('domain') in {'shell','file','mcp','browser','model','message'}]
         actions=sorted(meaningful or actions,key=lambda event:event.get('time_unix_nano',0),reverse=True)
         recorded=next((event for event in actions if event.get('domain')!='message'),actions[0] if actions else latest)
@@ -2063,7 +2591,10 @@ class ObservatoryApp(App):
                 sections.append(('Next step',wait_summary(item)))
             elif item['state'] in {'Possibly stalled','Unconfirmed','Monitor delayed','Catching up','Error','Failed'}:
                 sections[-2 if reviewed else -1]=('What happened',attention_evidence(item,summary,error_event)[:400])
-            self.inspect('agent-detail',title,fields,sections+ai_sections,overview=True)
+            hierarchy_fields,hierarchy_sections=self.hierarchy_sections(item)
+            fields.extend(hierarchy_fields)
+            self.inspect('agent-detail',title,fields,
+                hierarchy_sections+sections+ai_sections,overview=True)
             return
         progress=recorded_progress(item,actions,summary)
         preview=''
@@ -2127,8 +2658,10 @@ class ObservatoryApp(App):
             activity_lines.append(f"{age(stamp) if stamp else 'Time not reported'} · {brief_activity(event)}{recorded_result}\n  {description}"+
                                   (f'\n  {detail}' if detail else ''))
         activity_history='\n'.join(activity_lines) if activity_lines else 'No non-message actions were captured for this session.'
+        hierarchy_fields,hierarchy_sections=self.hierarchy_sections(item)
+        fields.extend(hierarchy_fields)
         self.inspect('agent-detail',clean(task_preview(item) or f"Untitled session · {item.get('runtime') or 'agent'}"),fields,
-            [('Latest recorded event',preview),('Progress summary · recorded activity',progress),
+            hierarchy_sections+[('Latest recorded event',preview),('Progress summary · recorded activity',progress),
              ('Recorded user prompts',prompt_history),('Recent recorded activity',activity_history)]+ai_sections+[
               ('Session details',session_details),
               ('Analysis coverage',analysis_coverage(summary)),
@@ -2323,16 +2856,52 @@ class ObservatoryApp(App):
             [('Analysis coverage',analysis_coverage(self.data.detail.get('summary') or {}))]+
             [(key,value) for key,value in attrs.items()])
 
+    def sync_evidence_scope(self):
+        page=self.query_one('#pages',TabbedContent).active
+        active=page in {'activity','mcp','traces','findings'} and self.scope_value!='all'
+        self.query_one('#controls').set_class(active,'evidence-active')
+        self.query_one('#controls').set_class(page=='agents','agents-active')
+        item=getattr(self,'source_map',{}).get(self.scope_value)
+        scoped=bool(item) and self.scope_value!='all'
+        self.feed.scope_agent_id=(item.get('agent_id') or '') if scoped else ''
+        self.feed.scope_subtree=bool(self.evidence_scope_subtree) if scoped else False
+        if scoped and self.evidence_scope_subtree:
+            # Canonical subtree membership replaces exact-session filtering;
+            # keeping both would intersect child evidence with the root session.
+            self.feed.session_id=''
+            self.feed.service=''
+        elif scoped:
+            self.feed.session_id=item.get('session_id') or ''
+            self.feed.service=item.get('service') or ''
+        else:
+            self.feed.session_id=''
+            self.feed.service=''
+
     @on(Select.Changed,'#scope')
     def scope_changed(self,event):
         if event.value==Select.BLANK or event.value==self.scope_value:return
         self.scope_value=str(event.value);item=getattr(self,'source_map',{}).get(self.scope_value)
-        self.selected_activity=self.selected_mcp=None
+        self.selected_activity=self.selected_mcp=self.selected_finding=None
         self.feed.session_id=item.get('session_id') or '' if item else ''
         self.feed.service=item.get('service') or '' if item else ''
-        self.feed.selected_trace=None;self.feed.pinned_trace=False;self.feed.request_refresh()
+        self.feed.scope_agent_id=(item.get('agent_id') or '') if item else ''
+        self.sync_evidence_scope()
+        self.feed.selected_trace=None;self.feed.pinned_trace=False
+        self.query_one('#controls').set_class(self.scope_value!='all','evidence-active')
+        self.feed.request_refresh()
         self.feed.selected_span_id=None
         self.last_update=-1;self.refresh_data()
+
+    @on(Select.Changed,'#evidence-scope')
+    def evidence_scope_changed(self,event):
+        if event.value==Select.BLANK:return
+        subtree=str(event.value)=='subtree'
+        if subtree==self.evidence_scope_subtree:return
+        self.evidence_scope_subtree=subtree
+        self.sync_evidence_scope()
+        self.selected_activity=self.selected_mcp=self.selected_finding=None
+        self.feed.selected_trace=None;self.feed.pinned_trace=False
+        self.feed.request_refresh();self.last_update=-1;self.refresh_data()
 
     @on(Select.Changed,'#agent-filter')
     def agent_filter_changed(self,event):
@@ -2379,7 +2948,11 @@ class ObservatoryApp(App):
         self.preference_view=event.pane.id
         self.screen.set_class(event.pane.has_class('expanded'),'inspecting')
         self.query_one('#controls').set_class(event.pane.id=='agents','agents-active')
+        self.query_one('#controls').set_class(
+            event.pane.id in {'activity','mcp','traces','findings'} and self.scope_value!='all',
+            'evidence-active')
         self.sync_more_view(event.pane.id)
+        self.sync_evidence_scope()
         if event.pane.id=='agents':
             self.agent_order_key=None
             self.agent_order_pending=False
@@ -2407,6 +2980,8 @@ class ObservatoryApp(App):
         if event.button.id=='pause':self.action_pause()
         elif event.button.id=='refresh-order':
             self.refresh_agent_order()
+        elif event.button.id=='agent-sort':
+            self.action_toggle_sort()
         elif event.button.id and event.button.id.startswith('filter-'):
             self.set_agent_filter(event.button.id.removeprefix('filter-'))
         elif event.button.id=='history-back':self.action_history_back()
@@ -2468,7 +3043,11 @@ class ObservatoryApp(App):
         self.query_one('#agent-summary',Button).label='Summarizing…'
         self.show_agent()
         aggregate=next((dict(row) for row in self.data.sessions
-                        if item.get('session_id') and row.get('session_id')==item.get('session_id')),{})
+                        if item.get('agent_id') and row.get('agent_id')==item.get('agent_id')),None)
+        if aggregate is None:
+            aggregate=next((dict(row) for row in self.data.sessions
+                if item.get('session_id') and row.get('session_id')==item.get('session_id')
+                and (not row.get('agent_id') or not item.get('agent_id'))),{})
         summary_item=dict(item)
         summary_item['telemetry_totals']=aggregate
         self.summarize_agent(summary_item,config)
@@ -2523,7 +3102,11 @@ class ObservatoryApp(App):
             record=self.table_data.get(table,{}).get(selected)
         if not record:
             self.notify('Select session, event, call, trace, metric, or finding evidence to export.');return
-        self.push_screen(ExportScreen(page,record),self.resume_cockpit)
+        scope=None
+        if page in {'activity','mcp','traces','findings'} and self.feed.scope_agent_id:
+            scope={'mode':'subtree' if self.feed.scope_subtree else 'exact',
+                   'root_agent_id':self.feed.scope_agent_id}
+        self.push_screen(ExportScreen(page,record,scope),self.resume_cockpit)
 
     def action_search(self):
         page=self.query_one('#pages',TabbedContent).active
@@ -2544,15 +3127,36 @@ class ObservatoryApp(App):
         page=self.query_one('#pages',TabbedContent).active
         self.navigation_history.append({'page':page,'expanded':self.query_one('#'+page).has_class('expanded'),
             'focus':self.focused.id if self.focused else None,
+            'tree_mode':self.tree_mode,'expanded_agents':set(self.expanded_agents),
+            'collapsed_agents':set(self.collapsed_agents),'agent_filter':self.agent_filter,
+            'scope_value':self.scope_value,'selected_source':self.selected_source,
+            'evidence_scope_subtree':self.evidence_scope_subtree,
             'scroll':{widget.id:widget.scroll_offset for widget in self.query('#'+page+' RichLog, #'+page+' DataTable')}})
         self.query_one('#history-back',Button).disabled=False
 
     def action_history_back(self):
         if not self.navigation_history:return
         location=self.navigation_history.pop()
+        self.tree_mode=location.get('tree_mode',self.tree_mode)
+        self.expanded_agents=set(location.get('expanded_agents',self.expanded_agents))
+        self.collapsed_agents=set(location.get('collapsed_agents',self.collapsed_agents))
+        self.agent_filter=location.get('agent_filter',self.agent_filter)
+        self.evidence_scope_subtree=location.get('evidence_scope_subtree',self.evidence_scope_subtree)
+        self.scope_value=location.get('scope_value',self.scope_value)
+        self.selected_source=location.get('selected_source',self.selected_source)
         self.action_page(location['page'])
         if location['expanded']:self.action_expand()
         def restore():
+            picker=self.query_one('#scope',Select)
+            if any(value==self.scope_value for _,value in self.scope_options or ()):
+                with picker.prevent(Select.Changed):
+                    picker.value=self.scope_value
+            evidence=self.query_one('#evidence-scope',Select)
+            with evidence.prevent(Select.Changed):
+                evidence.value='subtree' if self.evidence_scope_subtree else 'exact'
+            self.sync_evidence_scope()
+            self.last_update=-1
+            self.refresh_data()
             if location['focus']:self.query_one('#'+location['focus']).focus()
             for name,position in location['scroll'].items():
                 self.query_one('#'+name).scroll_to(x=position.x,y=position.y,animate=False)
@@ -2632,6 +3236,7 @@ class ObservatoryApp(App):
         self.notify('Expanded detail · Esc to return',timeout=2)
     def action_focus_agent(self):
         if self.selected_source:
+            self.remember_location()
             self.selected_activity=getattr(self,'agent_primary_event_id',None)
             self.query_one('#scope',Select).value=self.selected_source
             self.action_page('activity')
@@ -2653,6 +3258,141 @@ class ObservatoryApp(App):
         self.query_one('#pages',TabbedContent).active=page
         target={'agents':'agent-table','activity':'activity-table','mcp':'mcp-table','traces':'trace-table','host':'host-table','metrics':'metrics-table','findings':'finding-table'}[page]
         self.query_one('#'+target).focus()
+
+    def _selected_agent_node(self):
+        item=getattr(self,'agent_row_meta',{}).get(self.selected_source)
+        if not item:return None
+        graph=self.hierarchy_graph
+        agent_id=item.get('agent_id')
+        return graph.nodes.get(agent_id) if graph and agent_id else None
+
+    def _focus_source_row(self,source_id):
+        table=self.query_one('#agent-table',ResultsTable)
+        try:
+            index=[key.value for key in table.rows].index(source_id)
+        except ValueError:
+            return
+        with table.prevent(DataTable.RowHighlighted):
+            table.move_cursor(row=index,scroll=True)
+        self.select_agent(source_id)
+
+    def _select_agent_id(self,agent_id):
+        item=getattr(self,'hierarchy_entries',{}).get(agent_id)
+        if item:
+            self._focus_source_row(item['id'])
+            return True
+        return False
+
+    def action_toggle_tree(self):
+        self.tree_mode=not self.tree_mode
+        self.agent_order_key=None
+        self.agent_order_ids=[]
+        self.agent_order=[]
+        self.last_update=-1
+        self.refresh_data()
+        self.notify('Agent tree' if self.tree_mode else 'Flat agent list')
+
+    def action_tree_right(self):
+        if self.query_one('#pages',TabbedContent).active!='agents':
+            return
+        node=self._selected_agent_node()
+        if not node:
+            return
+        agent_id=node['agent_id']
+        graph=self.hierarchy_graph
+        if not graph.children_of(agent_id):
+            return
+        if agent_id not in self.expanded_agents:
+            self.collapsed_agents.discard(agent_id)
+            self.expanded_agents.add(agent_id)
+            self.last_update=-1
+            self.refresh_data()
+            return
+        children=graph.children_of(agent_id)
+        first=children[0] if children else None
+        if first:
+            self._select_agent_id(first)
+
+    def action_tree_left(self):
+        if self.query_one('#pages',TabbedContent).active!='agents':
+            return
+        node=self._selected_agent_node()
+        if not node:
+            return
+        agent_id=node['agent_id']
+        graph=self.hierarchy_graph
+        if graph.children_of(agent_id) and agent_id in self.expanded_agents:
+            self.expanded_agents.discard(agent_id)
+            self.collapsed_agents.add(agent_id)
+            # The collapsing ancestor remains selected and visible; detail and
+            # row title are rebuilt together by refresh_data.
+            self.last_update=-1
+            self.refresh_data()
+            return
+        parent=graph.parent_of(agent_id)
+        if parent:
+            self._select_agent_id(parent)
+
+    def action_inspect_parent(self):
+        node=self._selected_agent_node()
+        graph=self.hierarchy_graph
+        if not node or not graph:return
+        parent=graph.parent_of(node['agent_id'])
+        if parent:
+            self._select_agent_id(parent)
+        else:
+            item=getattr(self,'agent_row_meta',{}).get(self.selected_source) or {}
+            if (item.get('parent_context') or {}).get('retained'):
+                self.notify('Parent identity is retained outside the current source window; it has no live row to inspect.')
+            else:
+                self.notify('No retained parent relationship for this agent.')
+
+    def action_inspect_first_child(self):
+        node=self._selected_agent_node()
+        graph=self.hierarchy_graph
+        if not node or not graph:return
+        children=graph.children_of(node['agent_id'])
+        if children:
+            self._select_agent_id(children[0])
+        else:
+            self.notify('No observed direct children for this agent.')
+
+    def action_inspect_next_attention(self):
+        node=self._selected_agent_node()
+        graph=self.hierarchy_graph
+        if not node or not graph:return
+        candidates=[item for item in graph.descendants(node['agent_id'])
+                    if node_attention(graph.nodes[item]) or graph.summary(item)['attention']]
+        if not candidates:
+            self.notify('No descendant needs attention in the retained tree.')
+            return
+        target=next((item for item in candidates if item!=node['agent_id']),candidates[0])
+        # Prefer a directly attention-requiring node; ancestors are navigation.
+        target=next((item for item in candidates if node_attention(graph.nodes[item])),target)
+        self._select_agent_id(target)
+
+    def toggle_agent_branch(self,source_id):
+        item=getattr(self,'agent_row_meta',{}).get(source_id) or self.source_map.get(source_id)
+        graph=self.hierarchy_graph
+        if not item or not graph:
+            return
+        agent_id=item.get('agent_id')
+        if not agent_id or not graph.children_of(agent_id):
+            return
+        if agent_id in self.expanded_agents:
+            self.expanded_agents.discard(agent_id)
+            self.collapsed_agents.add(agent_id)
+            selected=graph.nodes.get((self.agent_row_meta.get(self.selected_source) or {}).get('agent_id'))
+            if selected and (agent_id==selected['agent_id'] or agent_id in graph.ancestors(selected['agent_id'])):
+                self.last_update=-1
+                self.refresh_data()
+                self._select_agent_id(agent_id)
+                return
+        else:
+            self.collapsed_agents.discard(agent_id)
+            self.expanded_agents.add(agent_id)
+        self.last_update=-1
+        self.refresh_data()
     def linked_agent_trace(self):
         """The trace recorded for the selected session, when one is linked.
 
@@ -2669,11 +3409,16 @@ class ObservatoryApp(App):
             if trace_id and trace_id in known:
                 return {'trace_id':trace_id,'span_id':event.get('span_id')}
         trace_id=session.get('latest_trace_id')
+        agent_id=session.get('agent_id')
+        if agent_id:
+            match=next((item for item in traces if item.get('agent_id')==agent_id),None)
+            if match:return {'trace_id':match['trace_id']}
         if trace_id:
             return {'trace_id':trace_id}
         session_id=session.get('session_id')
         if session_id:
-            match=next((item for item in traces if item.get('session_id')==session_id),None)
+            match=next((item for item in traces if item.get('session_id')==session_id
+                        and (not agent_id or not item.get('agent_id'))),None)
             if match:return {'trace_id':match['trace_id']}
         task=str(session.get('task') or '').strip().casefold()
         if task:

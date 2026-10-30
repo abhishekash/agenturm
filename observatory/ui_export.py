@@ -13,9 +13,11 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, RichLog, Static
 
 FIELDS = {
-    'agents': ('runtime', 'service', 'session_id', 'project', 'model', 'task', 'state', 'waiting_for'),
-    'activity': ('id', 'service', 'session_id', 'trace_id', 'span_id', 'time_unix_nano', 'domain', 'action', 'subject', 'result', 'detail', 'duration_ms'),
-    'mcp': ('id', 'service', 'session_id', 'trace_id', 'span_id', 'time_unix_nano', 'server', 'tool', 'method', 'status', 'arguments', 'output', 'duration_ms'),
+    'agents': ('runtime', 'service', 'session_id', 'project', 'model', 'task', 'state', 'waiting_for',
+               'agent_id', 'parent_agent_id', 'relationship_kind', 'relationship_state',
+               'relationship_provenance', 'discovery_state', 'coverage'),
+    'activity': ('id', 'service', 'agent_id', 'session_id', 'trace_id', 'span_id', 'time_unix_nano', 'domain', 'action', 'subject', 'result', 'detail', 'duration_ms'),
+    'mcp': ('id', 'service', 'agent_id', 'session_id', 'trace_id', 'span_id', 'time_unix_nano', 'server', 'tool', 'method', 'status', 'arguments', 'output', 'duration_ms'),
     'traces': ('trace_id', 'summary', 'spans', 'logs', 'span_page', 'pagination',
                'evidence_window', 'findings', 'progress', 'outcome'),
     'metrics': ('service', 'name', 'kind', 'temporality', 'scope_name', 'unit', 'description', 'point_count'),
@@ -23,12 +25,19 @@ FIELDS = {
 }
 
 
-def investigation_json(view, record):
+def investigation_json(view, record, scope=None):
     """Freeze the exact selected payload before showing the confirmation."""
     evidence = {key: record[key] for key in FIELDS.get(view, ()) if key in record}
-    return json.dumps({'format': 'agenturm-investigation-v1', 'view': view,
-                       'coverage': 'Selected record and currently loaded evidence only; not a complete history export.',
-                       'evidence': evidence}, ensure_ascii=False, indent=2) + '\n'
+    payload = {'format': 'agenturm-investigation-v1', 'view': view,
+               'coverage': 'Selected record and currently loaded evidence only; not a complete history export.',
+               'evidence': evidence}
+    if scope:
+        payload['hierarchy_scope'] = {
+            'mode': scope.get('mode') or 'exact',
+            'root_agent_id': scope.get('root_agent_id'),
+            'note': 'Descendant evidence is included only when loaded by the active scoped query; this is not a family-wide export.',
+        }
+    return json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
 
 
 def write_investigation(path, content):
@@ -63,9 +72,9 @@ class ExportScreen(ModalScreen):
     '''
     BINDINGS = [('escape', 'dismiss', 'Cancel')]
 
-    def __init__(self, view, record):
+    def __init__(self, view, record, scope=None):
         super().__init__()
-        self.content = investigation_json(view, record)
+        self.content = investigation_json(view, record, scope)
 
     def compose(self) -> ComposeResult:
         with Vertical(id='export-dialog'):

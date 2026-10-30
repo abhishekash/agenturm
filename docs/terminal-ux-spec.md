@@ -323,6 +323,7 @@ query and reading position by semantic anchor, not stale line offsets.
 | Alt+Left | Return to the previous investigation location |
 | s | From Agents, open selected session's Activity |
 | t | Open an exact linked trace when available |
+| o | Toggle updated-time sort; working stays first, terminated stays last |
 | 1–7 | Preserve existing view mappings, including views under More |
 | p | Freeze display updates; collection continues; show “Display paused” |
 | c | Copy selected text, otherwise current evidence; show concise success/failure |
@@ -540,7 +541,8 @@ The initial implementation keeps Textual and adds the website-aligned Observatio
 theme, a compact status header, task-first two-line rows with title fallback,
 All/Attention/Working/Finished filters, primary recorded-evidence actions,
 four primary tabs with a More picker, and stable row ordering with explicit
-refresh. Responsive list/detail layouts and the existing evidence-preserving
+refresh. Exact recorded delegations are shown as an expandable tree with a
+flat fallback and separate subtree summaries. Responsive list/detail layouts and the existing evidence-preserving
 navigation remain in place. The original design phases and release gates below
 remain acceptance criteria, not claims that all of them have passed.
 

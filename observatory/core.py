@@ -13,6 +13,8 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
+from .agent_hierarchy import (AGENT_ID, HierarchyGraph, canonical_agent_id, normalize_node,
+                              provenance)
 from .findings import _safe_text, analyze, mcp_result_error
 
 TRACE_ID = re.compile(r"^[0-9a-fA-F]{32}$")
@@ -62,6 +64,68 @@ def _session_value(value):
         return None
     value = value.strip()
     return value if value and len(value) <= 512 else None
+
+
+def _agent_id_from_attributes(attrs, resource=None, service=None):
+    if not isinstance(attrs, dict):
+        return None
+    raw = attrs.get("agent.id")
+    if not raw and isinstance(resource, dict):
+        raw = resource.get("agent.id")
+    if isinstance(raw, str) and AGENT_ID.fullmatch(raw):
+        return raw.lower()
+    node = _agent_node_from_attributes(attrs, resource, service, 0, None)
+    return node["agent_id"] if node else None
+
+
+def _agent_node_from_attributes(attrs, resource, service, observed_ns, reference):
+    """Read the additive SDK/OTLP agent hierarchy convention."""
+    if not isinstance(attrs, dict):
+        return None
+    resource = resource if isinstance(resource, dict) else {}
+    native = attrs.get("agent.id") or resource.get("agent.id")
+    if not isinstance(native, str) or not native.strip() or len(native) > 256:
+        return None
+    runtime = str(attrs.get("agent.runtime") or resource.get("service.name") or service or "SDK")
+    namespace = str(attrs.get("agent.namespace") or resource.get("service.name") or service or runtime)
+    worker = attrs.get("agent.worker_id") or resource.get("agent.worker_id")
+    worker = str(worker)[:256] if worker else None
+    parent_native = attrs.get("agent.parent_id") or resource.get("agent.parent_id")
+    parent_native = str(parent_native)[:256] if isinstance(parent_native, str) and parent_native else None
+    try:
+        agent_id = (native.lower() if AGENT_ID.fullmatch(native)
+                    else canonical_agent_id(runtime, namespace, native))
+        parent_id = None
+        if parent_native:
+            parent_id = (parent_native.lower() if AGENT_ID.fullmatch(parent_native)
+                         else canonical_agent_id(runtime, namespace, parent_native))
+    except ValueError:
+        return None
+    kind = str(attrs.get("agent.relationship.kind") or "unknown").casefold()
+    if kind not in {"delegated", "forked", "unknown"}:
+        kind = "unknown"
+    state = str(attrs.get("agent.relationship.state") or "").casefold()
+    if state not in {"confirmed", "unresolved", "conflicted", "invalid"}:
+        state = "confirmed" if parent_native else "unresolved"
+    if parent_native:
+        kind = "delegated" if kind == "unknown" else kind
+    native_session = next((attrs.get(key) or resource.get(key) for key in SESSION_KEYS
+                           if isinstance(attrs.get(key) or resource.get(key), str)), None)
+    observed_ns = _nonnegative_int(observed_ns)
+    return {
+        "agent_id": agent_id, "runtime": runtime, "source_namespace": namespace,
+        "source_id": str(attrs.get("observatory.source_id") or
+                         resource.get("observatory.source_id") or reference or "")[:128] or None,
+        "native_session_id": native_session, "native_worker_id": worker,
+        "parent_agent_id": parent_id, "relationship_kind": kind,
+        "relationship_state": state,
+        "relationship_provenance": provenance(
+            "sdk-otlp", "agent.id/agent.parent_id telemetry attributes"),
+        "discovery_state": "observed",
+        "coverage": str(attrs.get("agent.coverage") or "complete"),
+        "review": bool(attrs.get("agent.review") or resource.get("agent.review")),
+        "observed_ns": observed_ns,
+    }
 
 
 def _nonnegative_int(value):
@@ -152,6 +216,7 @@ def _activity_row(attrs, time_ns, source, source_id, span_id=None, service="unkn
                              "activity.subject", "activity.target"),
             "result": value("agent.activity.result", "activity.result") or "unknown",
             "actor": value("agent.activity.actor", "agent.actor"),
+            "agent_id": value("agent.id") or (resource_attributes or {}).get("agent.id"),
             "service": str(service), "source": source, "source_id": str(source_id),
             "span_id": span_id, "detail": body if isinstance(body, str) else "",
             "mcp_server": value("mcp.server.name"), "mcp_tool": value("mcp.tool.name"),
@@ -454,6 +519,7 @@ class Store:
                     links TEXT NOT NULL DEFAULT '[]',
                     resource_attributes TEXT NOT NULL DEFAULT '{}',
                     scope_name TEXT NOT NULL DEFAULT '',
+                    agent_id TEXT,
                     PRIMARY KEY (trace_id, span_id));
                 CREATE INDEX IF NOT EXISTS spans_time ON spans(end_ns DESC);
                 CREATE INDEX IF NOT EXISTS spans_service_time ON spans(service,end_ns);
@@ -474,7 +540,7 @@ class Store:
                     severity_number INTEGER NOT NULL, severity_text TEXT NOT NULL,
                     event_name TEXT NOT NULL, body TEXT NOT NULL,
                     attributes TEXT NOT NULL, resource_attributes TEXT NOT NULL,
-                    scope_name TEXT NOT NULL);
+                    scope_name TEXT NOT NULL, agent_id TEXT);
                 CREATE INDEX IF NOT EXISTS logs_trace ON logs(trace_id,time_ns);
                 CREATE INDEX IF NOT EXISTS logs_time ON logs(time_ns DESC);
                 CREATE INDEX IF NOT EXISTS logs_native_record ON logs(json_extract(attributes,'$."observatory.record_id"'))
@@ -511,7 +577,7 @@ class Store:
                 CREATE INDEX IF NOT EXISTS endpoint_traces_recent ON endpoint_traces(endpoint_id,last_ns DESC);
                 CREATE TABLE IF NOT EXISTS trace_summaries (
                     trace_id TEXT PRIMARY KEY, session_id TEXT, summary_json TEXT NOT NULL,
-                    activity_json TEXT NOT NULL DEFAULT '[]');
+                    activity_json TEXT NOT NULL DEFAULT '[]', agent_id TEXT);
                 CREATE TABLE IF NOT EXISTS finding_cache (
                     finding_id TEXT PRIMARY KEY, trace_id TEXT NOT NULL,
                     time_ns INTEGER NOT NULL, finding_json TEXT NOT NULL);
@@ -522,6 +588,37 @@ class Store:
                     json_extract(finding_json,'$.detail'),json_extract(finding_json,'$.severity'),trace_id);
                 CREATE TABLE IF NOT EXISTS schema_meta (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS agent_nodes (
+                    agent_id TEXT PRIMARY KEY,
+                    runtime TEXT NOT NULL,
+                    source_namespace TEXT NOT NULL,
+                    source_id TEXT,
+                    native_session_id TEXT,
+                    native_worker_id TEXT NOT NULL DEFAULT '',
+                    parent_agent_id TEXT,
+                    relationship_kind TEXT NOT NULL,
+                    relationship_state TEXT NOT NULL,
+                    relationship_provenance TEXT NOT NULL,
+                    parent_claims TEXT NOT NULL DEFAULT '[]',
+                    discovery_state TEXT NOT NULL,
+                    coverage TEXT NOT NULL,
+                    is_review INTEGER NOT NULL DEFAULT 0,
+                    observed_ns INTEGER NOT NULL,
+                    first_seen_ns INTEGER NOT NULL,
+                    updated_ns INTEGER NOT NULL);
+                CREATE INDEX IF NOT EXISTS agent_nodes_parent ON agent_nodes(parent_agent_id);
+                CREATE INDEX IF NOT EXISTS agent_nodes_native
+                    ON agent_nodes(runtime,source_namespace,native_session_id,native_worker_id);
+                CREATE INDEX IF NOT EXISTS agent_nodes_observed
+                    ON agent_nodes(observed_ns DESC,agent_id);
+                CREATE TABLE IF NOT EXISTS agent_identity (
+                    runtime TEXT NOT NULL,
+                    source_namespace TEXT NOT NULL,
+                    native_session_id TEXT NOT NULL,
+                    native_worker_id TEXT NOT NULL DEFAULT '',
+                    agent_id TEXT NOT NULL,
+                    updated_ns INTEGER NOT NULL,
+                    PRIMARY KEY(runtime,source_namespace,native_session_id,native_worker_id));
             """)
             from .storage_derived import initialize
             initialize(db)
@@ -532,17 +629,44 @@ class Store:
             columns = {row[1] for row in db.execute("PRAGMA table_info(spans)")}
             for name, declaration in (("links", "TEXT NOT NULL DEFAULT '[]'"),
                                       ("resource_attributes", "TEXT NOT NULL DEFAULT '{}'"),
-                                      ("scope_name", "TEXT NOT NULL DEFAULT ''")):
+                                      ("scope_name", "TEXT NOT NULL DEFAULT ''"),
+                                      ("agent_id", "TEXT")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE spans ADD COLUMN {name} {declaration}")
+            log_columns = {row[1] for row in db.execute("PRAGMA table_info(logs)")}
+            if "agent_id" not in log_columns:
+                db.execute("ALTER TABLE logs ADD COLUMN agent_id TEXT")
+            db.execute("CREATE INDEX IF NOT EXISTS logs_agent_id ON logs(agent_id,time_ns DESC)")
+            agent_node_columns = {row[1] for row in db.execute("PRAGMA table_info(agent_nodes)")}
+            if "is_review" not in agent_node_columns:
+                db.execute("ALTER TABLE agent_nodes ADD COLUMN is_review INTEGER NOT NULL DEFAULT 0")
             for table, name in (("progress", "session_id"), ("progress", "service"), ("trace_summaries", "session_id")):
                 table_columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
                 if name not in table_columns:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN {name} TEXT")
             summary_columns = {row[1] for row in db.execute("PRAGMA table_info(trace_summaries)")}
-            if "activity_json" not in summary_columns:
-                db.execute("ALTER TABLE trace_summaries ADD COLUMN activity_json TEXT NOT NULL DEFAULT '[]'")
+            for name, declaration in (("activity_json", "TEXT NOT NULL DEFAULT '[]'"),
+                                      ("agent_id", "TEXT")):
+                if name not in summary_columns:
+                    db.execute(f"ALTER TABLE trace_summaries ADD COLUMN {name} {declaration}")
             db.execute("CREATE INDEX IF NOT EXISTS trace_summaries_session ON trace_summaries(session_id,trace_id)")
+            db.execute("CREATE INDEX IF NOT EXISTS trace_summaries_agent ON trace_summaries(agent_id,trace_id)")
+            db.execute("CREATE INDEX IF NOT EXISTS spans_agent_id ON spans(agent_id)")
+            if not db.execute("SELECT 1 FROM schema_meta WHERE key='agent_hierarchy_v1'").fetchone():
+                db.execute("""UPDATE spans SET agent_id=json_extract(attributes,'$."agent.id"')
+                    WHERE agent_id IS NULL
+                      AND json_extract(attributes,'$."agent.id"') GLOB 'ag1_[0-9a-f]*'""")
+                db.execute("""UPDATE logs SET agent_id=json_extract(attributes,'$."agent.id"')
+                    WHERE agent_id IS NULL
+                      AND json_extract(attributes,'$."agent.id"') GLOB 'ag1_[0-9a-f]*'""")
+                db.execute("""UPDATE trace_summaries SET agent_id=json_extract(summary_json,'$.agent_id')
+                    WHERE agent_id IS NULL
+                      AND json_extract(summary_json,'$.agent_id') GLOB 'ag1_[0-9a-f]*'""")
+                db.execute("""UPDATE trace_summaries SET agent_id=(
+                        SELECT s.agent_id FROM spans s WHERE s.trace_id=trace_summaries.trace_id
+                          AND s.agent_id IS NOT NULL LIMIT 1)
+                    WHERE agent_id IS NULL""")
+                db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('agent_hierarchy_v1','1')")
             if not db.execute("SELECT 1 FROM schema_meta WHERE key='trace_activity_v1'").fetchone():
                 db.execute("""INSERT INTO trace_activity(trace_id,last_ns)
                     SELECT trace_id,MAX(activity_ns) FROM (
@@ -606,6 +730,270 @@ class Store:
                 state=excluded.state,service=excluded.service,runtime=excluded.runtime,integrations=excluded.integrations,
                 capture_content=excluded.capture_content,process_id=excluded.process_id""", (source_id, service.strip(), runtime,
                 json.dumps(integrations), int(capture_content), process_id, now, now, state))
+
+    @staticmethod
+    def _bump_hierarchy_revision(db):
+        row = db.execute("SELECT value FROM schema_meta WHERE key='agent_hierarchy_revision'").fetchone()
+        try:
+            current = int(row[0]) if row else 0
+        except (TypeError, ValueError, OverflowError):
+            current = 0
+        db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('agent_hierarchy_revision',?)",
+                   (str(current + 1),))
+
+    def upsert_agent_nodes(self, nodes):
+        """Idempotently persist normalized identities and bounded evidence.
+
+        The canonical child identity is the conflict key.  A later observation
+        cannot silently overwrite an existing confirmed parent with a different
+        one: both bounded claims are retained and the node is marked conflicted.
+        Raw arguments, environments, and transcript content are never stored.
+        """
+        nodes = list(nodes or ())
+        if len(nodes) > 5000:
+            raise ValueError("too many agent nodes")
+        now = time.time_ns()
+        changed = 0
+        with self._connect() as db:
+            for raw in nodes:
+                try:
+                    node = normalize_node(raw)
+                except (ValueError, TypeError):
+                    continue
+                agent_id = node["agent_id"]
+                runtime = str(node.get("runtime") or "unknown")[:80]
+                namespace = str(node.get("source_namespace") or runtime)[:256]
+                source_id = str(node.get("source_id") or "")[:128] or None
+                native_session = str(node.get("native_session_id") or "")[:256] or None
+                native_worker = str(node.get("native_worker_id") or "")[:256]
+                existing = db.execute("SELECT * FROM agent_nodes WHERE agent_id=?", (agent_id,)).fetchone()
+                row = self._merge_agent_node(existing, node, runtime, namespace, source_id,
+                                              native_session, native_worker, now)
+                structural = (existing is None or
+                              existing["parent_agent_id"] != row[6] or
+                              existing["relationship_kind"] != row[7] or
+                              existing["relationship_state"] != row[8] or
+                              existing["relationship_provenance"] != row[9] or
+                              existing["parent_claims"] != row[10] or
+                              existing["discovery_state"] != row[11] or
+                              existing["is_review"] != row[13] or
+                              existing["source_namespace"] != namespace or
+                              existing["native_session_id"] != native_session or
+                              existing["native_worker_id"] != native_worker)
+                db.execute("""INSERT INTO agent_nodes
+                    (agent_id,runtime,source_namespace,source_id,native_session_id,native_worker_id,
+                     parent_agent_id,relationship_kind,relationship_state,relationship_provenance,
+                     parent_claims,discovery_state,coverage,is_review,observed_ns,first_seen_ns,updated_ns)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(agent_id) DO UPDATE SET
+                     runtime=excluded.runtime,source_namespace=excluded.source_namespace,
+                     source_id=excluded.source_id,native_session_id=excluded.native_session_id,
+                     native_worker_id=excluded.native_worker_id,parent_agent_id=excluded.parent_agent_id,
+                     relationship_kind=excluded.relationship_kind,relationship_state=excluded.relationship_state,
+                     relationship_provenance=excluded.relationship_provenance,parent_claims=excluded.parent_claims,
+                     discovery_state=excluded.discovery_state,coverage=excluded.coverage,
+                     is_review=excluded.is_review,
+                     observed_ns=excluded.observed_ns,updated_ns=excluded.updated_ns""", row)
+                changed += int(structural)
+                if structural:
+                    self._bump_hierarchy_revision(db)
+                if native_session:
+                    identity_ns = (int(node.get("observed_ns") or 0) or now)
+                    db.execute("""INSERT INTO agent_identity
+                        (runtime,source_namespace,native_session_id,native_worker_id,agent_id,updated_ns)
+                        VALUES(?,?,?,?,?,?)
+                        ON CONFLICT(runtime,source_namespace,native_session_id,native_worker_id)
+                        DO UPDATE SET agent_id=excluded.agent_id,
+                          updated_ns=MAX(updated_ns,excluded.updated_ns)""",
+                        (runtime, namespace, native_session, native_worker, agent_id, identity_ns))
+        return changed
+
+    @staticmethod
+    def _merge_agent_node(existing, node, runtime, namespace, source_id, native_session,
+                          native_worker, now):
+        claims = []
+        if existing:
+            try:
+                claims = json.loads(existing["parent_claims"] or "[]")
+            except (TypeError, ValueError):
+                claims = []
+        claims = [claim for claim in claims if isinstance(claim, dict)][-4:]
+        new_parent = node.get("parent_agent_id")
+        new_state = node.get("relationship_state") or "unresolved"
+        new_kind = node.get("relationship_kind") or "unknown"
+        new_provenance = node.get("relationship_provenance") or ""
+        if new_parent and new_state == "confirmed":
+            claims.append({"parent_agent_id": new_parent, "provenance": new_provenance,
+                           "observed_ns": int(node.get("observed_ns") or 0)})
+        parent = new_parent
+        state = new_state
+        kind = new_kind
+        relationship_provenance = new_provenance
+        discovery = node.get("discovery_state") or "observed"
+        coverage = node.get("coverage") or "unknown"
+        observed_ns = int(node.get("observed_ns") or 0)
+        first_seen = min(now, existing["first_seen_ns"]) if existing else now
+        if existing:
+            old_parent = existing["parent_agent_id"]
+            old_state = existing["relationship_state"]
+            old_kind = existing["relationship_kind"]
+            old_discovery = existing["discovery_state"]
+            old_coverage = existing["coverage"]
+            old_observed = int(existing["observed_ns"] or 0)
+            old_provenance = existing["relationship_provenance"] or ""
+            discovery = "observed" if "observed" in {old_discovery, discovery} else "announced"
+            if old_discovery == "observed" and node.get("discovery_state") != "observed":
+                # A stale announcement does not downgrade observed coverage.
+                coverage = old_coverage
+            elif discovery == "observed":
+                # Coverage describes the latest observed window; a recovered
+                # reader may upgrade partial/unknown, and a new schema error may
+                # downgrade it.  It never changes the identity or edge.
+                coverage = node.get("coverage") or coverage
+            else:
+                coverage = "unknown"
+            observed_ns = max(old_observed, observed_ns)
+            source_id = source_id or existing["source_id"]
+            native_session = native_session or existing["native_session_id"]
+            if existing["relationship_state"] in {"conflicted", "invalid"}:
+                state = existing["relationship_state"]
+                parent = None
+                kind = old_kind
+                relationship_provenance = old_provenance
+            elif new_state in {"conflicted", "invalid"}:
+                state = new_state
+                parent = None if new_state in {"conflicted", "invalid"} else parent
+                relationship_provenance = new_provenance
+            elif (old_state == "confirmed" and old_parent and new_state == "confirmed" and
+                  new_parent and old_parent != new_parent):
+                state = "conflicted"
+                parent = None
+                relationship_provenance = (
+                    f"conflicting parents: {old_parent} vs {new_parent}; " +
+                    (old_provenance or new_provenance))[:512]
+                kind = "delegated"
+            elif old_state == "confirmed" and old_parent and not (new_state == "confirmed" and new_parent):
+                # An unresolved/announced observation must not erase an exact claim.
+                parent, state, kind = old_parent, "confirmed", old_kind
+                relationship_provenance = old_provenance
+            elif new_state == "confirmed" and new_parent:
+                parent, state, kind = new_parent, "confirmed", new_kind
+            elif old_state == "confirmed" and new_state != "confirmed":
+                parent, state, kind = old_parent, "confirmed", old_kind
+                relationship_provenance = old_provenance
+            elif old_state == "unresolved" and new_state == "unresolved":
+                parent, state, kind = old_parent, old_state, old_kind
+            if existing["discovery_state"] == "observed":
+                discovery = "observed"
+        # Deduplicate claims by parent while retaining the newest provenance.
+        unique = []
+        for claim in claims:
+            parent_claim = claim.get("parent_agent_id")
+            if not isinstance(parent_claim, str) or not AGENT_ID.fullmatch(parent_claim):
+                continue
+            existing_claim = next((item for item in unique
+                                   if item.get("parent_agent_id") == parent_claim), None)
+            if existing_claim:
+                existing_claim.update(claim)
+            else:
+                unique.append(dict(claim))
+        unique = unique[-4:]
+        review = (int(bool(node.get("review"))) if "review" in node
+                  else (existing["is_review"] if existing else 0))
+        return (node["agent_id"], runtime, namespace, source_id, native_session, native_worker,
+                parent, kind, state, str(relationship_provenance)[:512],
+                json.dumps(unique, separators=(",", ":")), discovery, coverage,
+                review, observed_ns, first_seen, now)
+
+    def hierarchy_revision(self):
+        with self._connect() as db:
+            row = db.execute("SELECT value FROM schema_meta WHERE key='agent_hierarchy_revision'").fetchone()
+        return "h" + (str(row[0]) if row else "0")
+
+    def agent_nodes(self, limit=2000, include_reviews=True):
+        limit = max(1, min(10000, int(limit)))
+        where = "" if include_reviews else " WHERE is_review=0"
+        with self._connect() as db:
+            rows = db.execute("SELECT * FROM agent_nodes" + where +
+                              " ORDER BY observed_ns DESC,agent_id LIMIT ?",
+                              (limit,)).fetchall()
+            known = {row["agent_id"] for row in rows}
+        nodes = []
+        for row in rows:
+            try:
+                claims = json.loads(row["parent_claims"] or "[]")
+            except (TypeError, ValueError):
+                claims = []
+            nodes.append({
+                "agent_id": row["agent_id"], "runtime": row["runtime"],
+                "source_namespace": row["source_namespace"], "source_id": row["source_id"],
+                "native_session_id": row["native_session_id"],
+                "native_worker_id": row["native_worker_id"] or None,
+                "parent_agent_id": row["parent_agent_id"],
+                "relationship_kind": row["relationship_kind"],
+                "relationship_state": row["relationship_state"],
+                "relationship_provenance": row["relationship_provenance"],
+                "parent_claims": claims if isinstance(claims, list) else [],
+                "parent_available": bool(row["parent_agent_id"] in known),
+                "discovery_state": row["discovery_state"], "coverage": row["coverage"],
+                "review": bool(row["is_review"]),
+                "observed_ns": row["observed_ns"], "first_seen_ns": row["first_seen_ns"],
+                "updated_ns": row["updated_ns"]})
+        return nodes
+
+    def agent_node_contexts(self, agent_ids):
+        """Exact, bounded identity lookup for parents outside the live window."""
+        ids = []
+        for agent_id in agent_ids or ():
+            if isinstance(agent_id, str) and AGENT_ID.fullmatch(agent_id) and agent_id not in ids:
+                ids.append(agent_id)
+        ids = ids[:100]
+        if not ids:
+            return {}
+        marks = ','.join('?' for _ in ids)
+        with self._connect() as db:
+            rows = db.execute(f"SELECT * FROM agent_nodes WHERE agent_id IN ({marks})",
+                              ids).fetchall()
+        result = {}
+        for row in rows:
+            result[row["agent_id"]] = {
+                "agent_id": row["agent_id"], "runtime": row["runtime"],
+                "relationship_state": row["relationship_state"],
+                "relationship_kind": row["relationship_kind"],
+                "relationship_provenance": row["relationship_provenance"],
+                "discovery_state": row["discovery_state"],
+                "observed_ns": row["observed_ns"], "retained": True,
+                "outside_current_window": True,
+            }
+        return result
+
+    def resolve_agent_scope(self, agent_id, include_subagents=True):
+        """Resolve canonical subtree membership for evidence queries.
+
+        This is the only backend scope resolver.  It never guesses from service
+        names, projects, or path prefixes.
+        """
+        if not isinstance(agent_id, str) or not AGENT_ID.fullmatch(agent_id):
+            raise ValueError("invalid agent_id")
+        if not isinstance(include_subagents, bool):
+            raise ValueError("invalid subtree scope")
+        nodes = self.agent_nodes(limit=10000)
+        graph = HierarchyGraph(nodes)
+        ids = graph.scope_ids(agent_id, include_subagents=include_subagents)
+        by_id = {node["agent_id"]: node for node in nodes}
+        session_ids = []
+        for item in ids:
+            node = by_id.get(item) or {}
+            # A shared Claude/Codex root session ID must never pull sibling
+            # workers into an exact evidence scope.  Worker IDs win when present.
+            native = node.get("native_worker_id") or node.get("native_session_id")
+            if native and native not in session_ids:
+                session_ids.append(native)
+        return {"agent_id": agent_id, "agent_ids": ids, "session_ids": session_ids,
+                "include_subagents": include_subagents,
+                "revision": self.hierarchy_revision(),
+                "nodes": len(ids), "known": agent_id in by_id,
+                "coverage": "partial" if not ids or len(nodes) >= 10000 else "complete"}
 
     def redact_internal_source(self, source_id):
         """Keep internal approval reviews as metadata, including older captures."""
@@ -717,11 +1105,12 @@ class Store:
                     db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
                     continue
                 summary, activity, findings, timestamp = derived
-                db.execute("INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json) VALUES(?,?,?,?) "
+                db.execute("INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id) VALUES(?,?,?,?,?) "
                            "ON CONFLICT(trace_id) DO UPDATE SET session_id=excluded.session_id,"
-                           "summary_json=excluded.summary_json,activity_json=excluded.activity_json",
+                           "summary_json=excluded.summary_json,activity_json=excluded.activity_json,"
+                           "agent_id=excluded.agent_id",
                            (trace_id, summary.get("session_id"), json.dumps(summary, separators=(",", ":")),
-                            json.dumps(activity, separators=(",", ":"))))
+                            json.dumps(activity, separators=(",", ":")), summary.get("agent_id")))
                 db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
                 db.executemany("INSERT INTO finding_cache(finding_id,trace_id,time_ns,finding_json) VALUES(?,?,?,?)",
                                ((item["id"], trace_id, timestamp,
@@ -999,26 +1388,42 @@ class Store:
         with self._connect() as db:
             db.executemany("""INSERT INTO spans
                 (trace_id,span_id,parent_span_id,name,start_ns,end_ns,status,service,
-                 attributes,events,links,resource_attributes,scope_name)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 attributes,events,links,resource_attributes,scope_name,agent_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(trace_id,span_id) DO UPDATE SET
                 parent_span_id=excluded.parent_span_id, name=excluded.name,
                 start_ns=excluded.start_ns, end_ns=excluded.end_ns,
                 status=excluded.status, service=excluded.service,
                 attributes=excluded.attributes, events=excluded.events,
                 links=excluded.links, resource_attributes=excluded.resource_attributes,
-                scope_name=excluded.scope_name""",
+                scope_name=excluded.scope_name,agent_id=excluded.agent_id""",
                 [(s["trace_id"], s["span_id"], s["parent_span_id"], s["name"],
                   s["start_unix_nano"], s["end_unix_nano"], s["status"], s["service"],
                   json.dumps(s["attributes"]), json.dumps(s["events"]),
                   json.dumps(s.get("links", [])), json.dumps(s.get("resource_attributes", {})),
-                  s.get("scope_name", "")) for s in spans])
+                  s.get("scope_name", ""), _agent_id_from_attributes(s.get("attributes"),
+                      s.get("resource_attributes"), s.get("service"))) for s in spans])
             db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
                 ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
                 [(s["trace_id"], s["end_unix_nano"]) for s in spans])
             self._update_endpoints(db, spans)
+        self._ingest_agent_nodes_from_spans(spans)
         self._refresh_after_write(s["trace_id"] for s in spans)
         return len(spans)
+
+    def _ingest_agent_nodes_from_spans(self, spans):
+        nodes = []
+        for span in spans:
+            if span.get("scope_name") in {"observatory.local_agents", "observatory.opencode"}:
+                continue
+            node = _agent_node_from_attributes(
+                span.get("attributes"), span.get("resource_attributes"),
+                span.get("service"), span.get("end_unix_nano"),
+                span.get("span_id"))
+            if node:
+                nodes.append(node)
+        if nodes:
+            self.upsert_agent_nodes(nodes[:5000])
 
     def add_progress(self, trace_id, stage, message, percent=None, session_id=None, service=None):
         trace_id = _id(trace_id, TRACE_ID, "trace_id")
@@ -1087,6 +1492,12 @@ class Store:
             deleted["endpoints"] = cursor.rowcount
             cursor = db.execute("DELETE FROM agent_connections WHERE last_seen_ns < ?", (cutoff_ns,))
             deleted["agent_connections"] = cursor.rowcount
+            cursor = db.execute("DELETE FROM agent_nodes WHERE observed_ns < ?", (cutoff_ns,))
+            deleted["agent_nodes"] = cursor.rowcount
+            cursor = db.execute("DELETE FROM agent_identity WHERE updated_ns < ?", (cutoff_ns,))
+            deleted["agent_identity"] = cursor.rowcount
+            if deleted["agent_nodes"] or deleted["agent_identity"]:
+                self._bump_hierarchy_revision(db)
         deleted["cutoff_unix_nano"] = cutoff_ns
         return deleted
 
@@ -1108,7 +1519,8 @@ class Store:
                          log["service"], log["severity_number"], log["severity_text"],
                          log["event_name"], json.dumps(log["body"]),
                          json.dumps(log["attributes"]), json.dumps(log["resource_attributes"]),
-                         log["scope_name"]))
+                         log["scope_name"], _agent_id_from_attributes(
+                             log.get("attributes"), log.get("resource_attributes"), log.get("service"))))
         with self._connect() as db:
             db.executemany("""DELETE FROM logs WHERE scope_name='observatory.local_agents'
                 AND json_extract(attributes,'$."observatory.record_id"')=? AND digest<>?""", native_ids)
@@ -1122,17 +1534,26 @@ class Store:
                         (log['trace_id'],log['time_unix_nano'],attrs['mcp.server.name'],attrs.get('mcp.tool.name')))
             db.executemany("""INSERT INTO logs
                 (digest,trace_id,span_id,time_ns,service,severity_number,severity_text,
-                 event_name,body,attributes,resource_attributes,scope_name)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(digest) DO UPDATE SET
+                 event_name,body,attributes,resource_attributes,scope_name,agent_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(digest) DO UPDATE SET
                 trace_id=excluded.trace_id,span_id=excluded.span_id,time_ns=excluded.time_ns,
                 service=excluded.service,severity_number=excluded.severity_number,
                 severity_text=excluded.severity_text,event_name=excluded.event_name,
                 body=excluded.body,attributes=excluded.attributes,
-                resource_attributes=excluded.resource_attributes,scope_name=excluded.scope_name""", rows)
+                resource_attributes=excluded.resource_attributes,scope_name=excluded.scope_name,
+                agent_id=excluded.agent_id""", rows)
             db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
                 ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
                 [(log["trace_id"], log["time_unix_nano"]) for log in records if log["trace_id"]])
             self._update_endpoints(db, records)
+        nodes = [_agent_node_from_attributes(log.get("attributes"), log.get("resource_attributes"),
+                                             log.get("service"), log.get("time_unix_nano"),
+                                             log.get("digest"))
+                 for log in records
+                 if log.get("scope_name") not in {"observatory.local_agents", "observatory.opencode"}]
+        nodes = [node for node in nodes if node]
+        if nodes:
+            self.upsert_agent_nodes(nodes[:5000])
         self._refresh_after_write(log["trace_id"] for log in records if log["trace_id"])
         return len(rows)
 
@@ -1171,11 +1592,23 @@ class Store:
         return self.activity_page(limit, service, domain, query, session_id, action=action)["activity"]
 
     def activity_page(self, limit=100, service=None, domain=None, query=None, session_id=None,
-                      cursor=None, include_reviews=True, errors_only=False, action=None):
+                      cursor=None, include_reviews=True, errors_only=False, action=None,
+                      agent_id=None, subtree=False, scope_revision=None):
         """Browse saved activity, including logs older than the trace preview window."""
         limit = max(1, min(500, int(limit)))
         before = self._event_cursor(cursor)
         conditions, params = [], []
+        scope = None
+        if agent_id:
+            scope = self.resolve_agent_scope(agent_id, include_subagents=bool(subtree))
+            if scope_revision and scope_revision != scope["revision"]:
+                raise ValueError("hierarchy scope changed")
+            if not scope["agent_ids"]:
+                return {'activity': [], 'next_cursor': None, 'scope': 'agent subtree',
+                        'agent_scope': scope}
+            marks = ','.join('?' for _ in scope["agent_ids"])
+            conditions.append(f"s.agent_id IN ({marks})")
+            params.extend(scope["agent_ids"])
         for expression, value in (("s.session_id", session_id),
                                   ("json_extract(s.value,'$.service')", service),
                                   ("json_extract(s.value,'$.domain')", domain)):
@@ -1214,6 +1647,8 @@ class Store:
             'mcp_server':attr('mcp.server.name'), 'mcp_tool':attr('mcp.tool.name'),
             'duration_ms':"json_extract(l.attributes,'$.duration_ms')",
             'detail':"CASE WHEN json_type(l.body)='text' THEN json_extract(l.body,'$') ELSE '' END",
+            'agent_id':"COALESCE(NULLIF(json_extract(l.attributes,'$.\"agent.id\"'),''),"
+                "NULLIF(json_extract(l.resource_attributes,'$.\"agent.id\"'),''))",
             'metadata':"json_patch(COALESCE((SELECT json_group_object(key,value) FROM json_each(l.resource_attributes) "
                 "WHERE key LIKE 'cursor.%' AND key NOT LIKE 'cursor.user.%' AND key!='cursor.team.id'),json('{}')),"
                 "COALESCE((SELECT json_group_object(key,value) FROM json_each(l.attributes) "
@@ -1222,10 +1657,10 @@ class Store:
         log_value='json_object(' + ','.join(f"'{key}',{value}" for key,value in fields.items()) + ')'
         session=attr(*SESSION_KEYS,default='NULL')
         activity_sql=f"""WITH activity AS (
-            SELECT cached.trace_id,cached.session_id,e.value FROM trace_summaries cached,
+            SELECT cached.trace_id,cached.session_id,cached.agent_id,e.value FROM trace_summaries cached,
                 json_each(cached.activity_json) e WHERE json_extract(e.value,'$.source')!='log'
             UNION ALL
-            SELECT l.trace_id,COALESCE(cached.session_id,{session}),{log_value}
+            SELECT l.trace_id,COALESCE(cached.session_id,{session}),l.agent_id,{log_value}
                 FROM logs l LEFT JOIN trace_summaries cached ON cached.trace_id=l.trace_id
                 WHERE l.event_name='agent.activity'
         )"""
@@ -1236,16 +1671,20 @@ class Store:
         items = [{**json.loads(row['value']), 'id': row['event_key'],
                   'trace_id': row['trace_id'], 'session_id': row['session_id']} for row in rows[:limit]]
         next_cursor = self._next_event_cursor(rows[limit-1]['stamp'],rows[limit-1]['event_key']) if len(rows)>limit else None
-        return {'activity': items, 'next_cursor': next_cursor, 'scope': 'stored activity'}
+        result = {'activity': items, 'next_cursor': next_cursor, 'scope': 'stored activity'}
+        if scope is not None:
+            result.update(scope='agent subtree' if subtree else 'this agent', agent_scope=scope)
+        return result
 
     def mcp_calls(self, limit=100, service=None, session_id=None, query=None):
         return self.mcp_page(limit, service, session_id, query)['calls']
 
     def mcp_page(self, limit=100, service=None, session_id=None, query=None, cursor=None,
-                 include_reviews=True):
+                 include_reviews=True, agent_id=None, subtree=False, scope_revision=None):
         """Page complete MCP calls, keeping all evidence for each call together."""
         limit = max(1, min(200, int(limit)))
         before = self._event_cursor(cursor)
+        scope = None
         mcp_method = "json_extract(attributes,'$.\"mcp.method.name\"')"
         # Keep all MCP protocol methods, not only tool execution. Discovery,
         # prompts, and resource reads are useful agent activity too.
@@ -1267,6 +1706,16 @@ class Store:
                 "(SELECT trace_id FROM trace_summaries WHERE session_id=?))"
             )
             params.extend((session_id, session_id))
+        if agent_id:
+            scope = self.resolve_agent_scope(agent_id, include_subagents=bool(subtree))
+            if scope_revision and scope_revision != scope["revision"]:
+                raise ValueError("hierarchy scope changed")
+            if not scope["agent_ids"]:
+                return {'calls': [], 'next_cursor': None, 'summary': {}, 'agent_scope': scope}
+            marks = ','.join('?' for _ in scope["agent_ids"])
+            clauses.append(f"(agent_id IN ({marks}) OR trace_id IN "
+                           f"(SELECT trace_id FROM trace_summaries WHERE agent_id IN ({marks})))")
+            params.extend([*scope["agent_ids"], *scope["agent_ids"]])
         if not include_reviews:
             clauses.append("service!='codex-review'")
         where = ' AND '.join(clauses)
@@ -1341,7 +1790,7 @@ class Store:
         with self._connect() as db:
             inventory = [dict(row) for row in db.execute(summary_sql, [*params, *params])]
             metric_servers = []
-            if not session_id:
+            if not session_id and not agent_id:
                 metric_filter = "" if not service else " AND service=?"
                 metric_params = [] if not service else [service]
                 metric_rows = db.execute(f"""SELECT digest,time_ns,temporality,attributes,
@@ -1411,7 +1860,10 @@ class Store:
             ) SELECT * FROM calls {cursor_filter} ORDER BY stamp DESC,call_key DESC LIMIT ?""", values).fetchall()
             selected_keys = [row['call_key'] for row in candidates[:limit]]
             if not selected_keys:
-                return {'calls': [], 'next_cursor': None, 'summary': summary}
+                result = {'calls': [], 'next_cursor': None, 'summary': summary}
+                if scope is not None:
+                    result.update(scope='agent subtree' if subtree else 'this agent', agent_scope=scope)
+                return result
             placeholders = ','.join('?' for _ in selected_keys)
             spans = db.execute(f"SELECT * FROM spans WHERE {span_key} IN ({placeholders})",selected_keys).fetchall()
             logs = db.execute(f"SELECT * FROM logs WHERE {log_key} IN ({placeholders}) ORDER BY time_ns DESC,digest DESC",selected_keys).fetchall()
@@ -1559,7 +2011,10 @@ class Store:
         by_id = {item['id']: item for item in items}
         items = [by_id[key] for key in selected_keys if key in by_id]
         next_cursor = self._next_event_cursor(candidates[limit-1]['stamp'],candidates[limit-1]['call_key']) if len(candidates)>limit else None
-        return {'calls': items, 'next_cursor': next_cursor, 'summary': summary}
+        result = {'calls': items, 'next_cursor': next_cursor, 'summary': summary}
+        if scope is not None:
+            result.update(scope='agent subtree' if subtree else 'this agent', agent_scope=scope)
+        return result
 
     def ingest_metrics(self, points):
         # We traverse points again to update endpoint inventory; accept one-shot
@@ -1864,9 +2319,18 @@ class Store:
     def findings(self, limit=100):
         return self.finding_page(limit=limit)["findings"]
 
-    def finding_page(self, limit=100, cursor=None):
+    def finding_page(self, limit=100, cursor=None, agent_id=None, subtree=False,
+                     scope_revision=None):
         if not 1 <= int(limit) <= 500:
             raise ValueError("limit must be between 1 and 500")
+        agent_scope = None
+        if agent_id:
+            agent_scope = self.resolve_agent_scope(agent_id, include_subagents=bool(subtree))
+            if scope_revision and scope_revision != agent_scope["revision"]:
+                raise ValueError("hierarchy scope changed")
+            if not agent_scope["agent_ids"]:
+                return {"findings": [], "next_cursor": None, "has_more": False,
+                        "agent_scope": agent_scope}
         before = None
         if cursor:
             try:
@@ -1879,9 +2343,17 @@ class Store:
                 raise ValueError("invalid cursor") from exc
         sql = "SELECT finding_id,time_ns,finding_json FROM finding_cache"
         params = []
+        filters = []
         if before:
-            sql += " WHERE time_ns < ? OR (time_ns = ? AND finding_id < ?)"
+            filters.append("(time_ns < ? OR (time_ns = ? AND finding_id < ?))")
             params.extend((before[0], before[0], before[1]))
+        if agent_scope is not None:
+            marks = ','.join('?' for _ in agent_scope["agent_ids"])
+            filters.append(f"trace_id IN (SELECT trace_id FROM trace_summaries "
+                           f"WHERE agent_id IN ({marks}))")
+            params.extend(agent_scope["agent_ids"])
+        if filters:
+            sql += " WHERE " + " AND ".join(filters)
         sql += " ORDER BY time_ns DESC,finding_id DESC LIMIT ?"
         params.append(int(limit) + 1)
         with self._connect() as db:
@@ -1912,6 +2384,13 @@ class Store:
                         trace_ids,
                     ).fetchall()
                 }
+                group_scope = ""
+                group_params = []
+                if agent_scope is not None:
+                    marks = ','.join('?' for _ in agent_scope["agent_ids"])
+                    group_scope = (f" AND fc.trace_id IN (SELECT trace_id FROM trace_summaries "
+                                   f"WHERE agent_id IN ({marks}))")
+                    group_params = list(agent_scope["agent_ids"])
                 grouped = db.execute(
                     f"""WITH wanted(kind,title,detail,severity) AS (VALUES {values_sql})
                         SELECT wanted.kind,wanted.title,wanted.detail,wanted.severity,
@@ -1923,9 +2402,10 @@ class Store:
                          AND json_extract(fc.finding_json,'$.title')=wanted.title
                          AND json_extract(fc.finding_json,'$.detail')=wanted.detail
                          AND json_extract(fc.finding_json,'$.severity')=wanted.severity
+                         {group_scope}
                         LEFT JOIN trace_summaries ts ON ts.trace_id=fc.trace_id
                         GROUP BY wanted.kind,wanted.title,wanted.detail,wanted.severity""",
-                    signature_params,
+                    [*signature_params, *group_params],
                 ).fetchall()
                 group_stats = {
                     (row["kind"], row["title"], row["detail"], row["severity"]): {
@@ -1951,8 +2431,11 @@ class Store:
             row = visible[-1]
             next_cursor = base64.urlsafe_b64encode(
                 f"{row['time_ns']},{row['finding_id']}".encode()).decode().rstrip("=")
-        return {"findings": findings,
-                "next_cursor": next_cursor, "has_more": has_more}
+        result = {"findings": findings,
+                  "next_cursor": next_cursor, "has_more": has_more}
+        if agent_scope is not None:
+            result["agent_scope"] = agent_scope
+        return result
 
     def _trace_findings(self, trace_id):
         with self._connect() as db:
@@ -1964,7 +2447,7 @@ class Store:
         if not 1 <= int(limit) <= 500:
             raise ValueError("limit must be between 1 and 500")
         with self._connect() as db:
-            rows = db.execute("""SELECT s.session_id,s.trace_id,s.summary_json,a.last_ns
+            rows = db.execute("""SELECT s.session_id,s.trace_id,s.summary_json,s.agent_id AS agent_id,a.last_ns
                 FROM trace_summaries AS s JOIN trace_activity AS a USING(trace_id)
                 WHERE s.session_id IN (
                     SELECT s2.session_id FROM trace_summaries AS s2
@@ -2012,8 +2495,12 @@ class Store:
                     (session["session_id"],)).fetchall())
         grouped = {}
         for row in rows:
-            item = grouped.setdefault(row["session_id"], {
-                "session_id": row["session_id"], "trace_count": 0, "errors": 0,
+            summary = json.loads(row["summary_json"])
+            agent_key = row["agent_id"] or summary.get("agent_id")
+            key = (row["session_id"], agent_key)
+            item = grouped.setdefault(key, {
+                "session_id": row["session_id"], "agent_id": agent_key,
+                "trace_count": 0, "errors": 0,
                 "failed": 0, "incomplete": 0, "issues": 0,
                 "input_tokens": 0, "output_tokens": 0, "span_count": 0,
                 "cache_read_input_tokens": 0, "cache_write_input_tokens": 0,
@@ -2026,7 +2513,6 @@ class Store:
                 "services": set(), "models": set(), "latest_trace_id": row["trace_id"],
                 "last_unix_nano": row["last_ns"], "latest_status": "UNKNOWN",
                 "latest_task": None, "latest_waiting_for": None, "project": None})
-            summary = json.loads(row["summary_json"])
             item["usage_complete"] = item.get("usage_complete", True) and summary.get("usage_complete", True)
             item["status_complete"] = item.get("status_complete", True) and summary.get("status_complete", True)
             if item["trace_count"] == 0:
@@ -2034,6 +2520,11 @@ class Store:
                 item["latest_task"] = summary.get("task")
                 item["latest_waiting_for"] = summary.get("waiting_for")
                 item["project"] = summary.get("project")
+                for key in ("agent_id", "agent_native_id", "parent_agent_native_id",
+                            "agent_namespace", "agent_worker_id", "relationship_kind",
+                            "relationship_state", "relationship_provenance"):
+                    if summary.get(key):
+                        item[key] = summary[key]
             item["trace_count"] += 1
             item["span_count"] += int(summary.get("span_count") or 0)
             status = summary.get("status")
@@ -2071,10 +2562,20 @@ class Store:
                 body = json.loads(row["body"])
             except (TypeError, ValueError):
                 body = ""
-            item = grouped.get(session_id)
+            log_agent_id = _agent_id_from_attributes(attrs, resource, row["service"])
+            key = (session_id, log_agent_id)
+            item = grouped.get(key)
             if item is None:
-                item = grouped[session_id] = {
+                item = grouped[key] = {
                     "session_id": session_id, "trace_count": 0, "errors": 0,
+                    "agent_id": log_agent_id,
+                    "agent_native_id": attrs.get("agent.id"),
+                    "parent_agent_native_id": attrs.get("agent.parent_id"),
+                    "agent_namespace": attrs.get("agent.namespace"),
+                    "agent_worker_id": attrs.get("agent.worker_id"),
+                    "relationship_kind": attrs.get("agent.relationship.kind"),
+                    "relationship_state": attrs.get("agent.relationship.state"),
+                    "relationship_provenance": attrs.get("agent.relationship.provenance"),
                     "failed": 0, "incomplete": 0, "issues": 0,
                     "input_tokens": 0, "output_tokens": 0, "span_count": 0,
                     "cache_read_input_tokens": 0, "cache_write_input_tokens": 0,
@@ -2153,9 +2654,17 @@ class Store:
         # is intentionally bounded to 50 rows per session and must not cap the
         # session's cumulative token totals.
         for usage in log_usage_rows:
-            item = grouped.get(usage["session_id"])
-            if item is None or item["trace_count"]:
+            candidates = [item for key, item in grouped.items()
+                          if key[0] == usage["session_id"] and item["trace_count"] == 0]
+            if not candidates:
                 continue
+            if len(candidates) > 1:
+                # Shared session IDs are not sufficient to split log-only usage
+                # across workers. Do not invent a division.
+                for item in candidates:
+                    item["usage_complete"] = False
+                continue
+            item = candidates[0]
             for field in ("input_tokens", "output_tokens", "cache_read_input_tokens",
                           "cache_write_input_tokens", "reasoning_output_tokens"):
                 item[field] += int(usage[field] or 0)
@@ -2200,13 +2709,22 @@ class Store:
                 for (target, direction), edges in sorted(relations.items())]
 
     def trace_page(self, limit=100, service=None, status=None, cursor=None, session_id=None,
-                   search=None, endpoint_id=None, include_reviews=True):
+                   search=None, endpoint_id=None, include_reviews=True, agent_id=None,
+                   subtree=False, scope_revision=None):
         if not 1 <= int(limit) <= 500:
             raise ValueError("limit must be between 1 and 500")
         if session_id is not None:
             session_id = _session_value(session_id)
             if session_id is None:
                 raise ValueError("invalid session_id")
+        agent_scope = None
+        if agent_id:
+            agent_scope = self.resolve_agent_scope(agent_id, include_subagents=bool(subtree))
+            if scope_revision and scope_revision != agent_scope["revision"]:
+                raise ValueError("hierarchy scope changed")
+            if not agent_scope["agent_ids"]:
+                return {"traces": [], "next_cursor": None, "has_more": False,
+                        "agent_scope": agent_scope}
         search = str(search or "").strip()[:200].casefold()
         if endpoint_id is not None:
             if not isinstance(endpoint_id, str) or not re.fullmatch(r"[0-9a-fA-F]{32}", endpoint_id):
@@ -2236,6 +2754,10 @@ class Store:
             if session_id is not None:
                 conditions.append("s.session_id=?")
                 params.append(session_id)
+            if agent_scope is not None:
+                marks = ','.join('?' for _ in agent_scope["agent_ids"])
+                conditions.append(f"s.agent_id IN ({marks})")
+                params.extend(agent_scope["agent_ids"])
             if endpoint_id is not None:
                 conditions.append("EXISTS (SELECT 1 FROM endpoint_traces et "
                                   "WHERE et.trace_id=a.trace_id AND et.endpoint_id=?)")
@@ -2296,8 +2818,11 @@ class Store:
         if has_more and visible:
             ns, trace_id = visible[-1][1]
             next_cursor = base64.urlsafe_b64encode(f"{ns},{trace_id}".encode()).decode().rstrip("=")
-        return {"traces": [item[0] for item in visible],
-                "next_cursor": next_cursor, "has_more": has_more or not exhausted}
+        result = {"traces": [item[0] for item in visible],
+                  "next_cursor": next_cursor, "has_more": has_more or not exhausted}
+        if agent_scope is not None:
+            result["agent_scope"] = agent_scope
+        return result
 
     def traces(self, limit=100, service=None, status=None, cursor=None, session_id=None,
                search=None, endpoint_id=None):
@@ -2531,7 +3056,32 @@ def summarize(spans):
                             mcp_result_error(s["attributes"]) for s in spans) else
              "INCOMPLETE" if outcome and outcome != "completed" else
              "RUNNING" if any(s["name"] == "agent.run" and s["attributes"].get("agent.run.state") == "running" for s in spans) else "OK")
+    def hierarchy_attr(key):
+        for span in (root, *spans):
+            value = span["attributes"].get(key) or span.get("resource_attributes", {}).get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:256]
+        return None
+    native_agent = hierarchy_attr("agent.id")
+    agent_id = native_agent if native_agent and AGENT_ID.fullmatch(native_agent) else None
+    if native_agent and not agent_id:
+        try:
+            agent_id = canonical_agent_id(
+                hierarchy_attr("agent.runtime") or root["service"],
+                hierarchy_attr("agent.namespace") or
+                root.get("resource_attributes", {}).get("service.name") or root["service"],
+                native_agent)
+        except ValueError:
+            agent_id = None
     return {"trace_id": root["trace_id"], "name": root["name"],
+            "agent_id": agent_id,
+            "agent_native_id": hierarchy_attr("agent.id"),
+            "parent_agent_native_id": hierarchy_attr("agent.parent_id"),
+            "agent_namespace": hierarchy_attr("agent.namespace"),
+            "agent_worker_id": hierarchy_attr("agent.worker_id"),
+            "relationship_kind": hierarchy_attr("agent.relationship.kind"),
+            "relationship_state": hierarchy_attr("agent.relationship.state"),
+            "relationship_provenance": hierarchy_attr("agent.relationship.provenance"),
             "active": any(s['name']=='agent.run' and s['attributes'].get('agent.run.state')=='running' for s in spans),
             "task": root["attributes"].get("agent.task"),
             "waiting_for": waiting_for,

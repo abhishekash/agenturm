@@ -69,6 +69,8 @@ Start with your recent supported agent sessions. Select a record, inspect the ev
 
 Recent supported Codex, Claude Code, OpenCode, and Pi records are discovered locally—without restarting your agents. Other supported tools can send telemetry through OpenTelemetry to the local receiver.
 
+When a runtime records an exact delegation, Agents shows an expandable tree and keeps every child independently inspectable. A completed parent stays completed while its workers continue, and a collapsed branch carries descendant activity and attention counts. Press `f` to switch to the flat list. See [agent hierarchy support and limits](docs/agent-hierarchy.md).
+
 Agenturm is a monitor, not a controller. Reply to agents and approve requests in their own terminals.
 
 ### Keyboard first
@@ -77,6 +79,9 @@ Agenturm is a monitor, not a controller. Reply to agents and approve requests in
 | --- | --- |
 | `1`–`7` | Switch views |
 | `↑` / `↓`, `Enter` | Select and inspect a record |
+| `→` / `←` | Expand a branch / collapse or move to the parent |
+| `f` | Switch the Agents tree and flat list |
+| `o` | Toggle updated-time sort direction |
 | `/` | Search the current view |
 | `e` | Expand details |
 | `t` | Follow the linked trace |
