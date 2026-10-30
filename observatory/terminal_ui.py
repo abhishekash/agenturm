@@ -792,6 +792,12 @@ def evidence_syntax(content, lexer, theme='Current'):
 
 class SelectableRichLog(RichLog):
     """Selectable evidence with visible highlighting and plain-text extraction."""
+    def on_show(self):
+        # Hidden widgets have no content region, but keep their previous size
+        # internally. Revealing one at the same width may not trigger reflow
+        # through our width-change guard below.
+        self.app.schedule_inspector_reflow()
+
     def on_resize(self,event):
         # App resize precedes child layout. Rewrap only after the log itself
         # has its new width, rather than caching strips for the old sidebar.
@@ -1855,11 +1861,16 @@ class ObservatoryApp(App):
         return items
 
     def inspect(self,name,title,fields,sections,*,overview=False):
-        signature=(title,str(fields),str(sections),overview)
+        log=self.query_one('#'+name,RichLog)
+        width=log.scrollable_content_region.width
+        # Live/selection callbacks can run after a pane has been hidden. RichLog
+        # would render at min_width=1 and retain those strips after it is shown.
+        # Don't cache an unrendered update; on_show rebuilds the latest evidence.
+        if not width:return
+        signature=(title,str(fields),str(sections),overview,width)
         if self.inspector_signatures.get(name)==signature:return
         previous=self.inspector_signatures.get(name)
         self.inspector_signatures[name]=signature
-        log=self.query_one('#'+name,RichLog)
         scroll=log.scroll_offset
         log.clear();log.write(Text(title,style='bold #f6f0e8'))
         if overview:log.write('')
