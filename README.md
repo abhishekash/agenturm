@@ -34,23 +34,22 @@
 
 ## Start here. Stay in your terminal.
 
-Requires **Python 3.11+**, Git, and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Requires **Python 3.11+** and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
-On macOS or Linux, install and launch:
+Run it once without installing:
 
 ```bash
-curl -fsSL https://www.agenturm.dev/install.sh | bash
+uvx agenturm
+```
+
+Or install the command:
+
+```bash
+uv tool install agenturm
 agenturm
 ```
 
-[Review the installer](https://www.agenturm.dev/install.sh) before running it. On Windows—or if you prefer to install with uv directly:
-
-```bash
-uv tool install --force git+https://github.com/abhishekash/agenturm
-agenturm
-```
-
-Or try it once without installing the command:
+`agenturm` is published on [PyPI](https://pypi.org/project/agenturm/). The [installer](https://www.agenturm.dev/install.sh) wraps the same `uv tool install` for macOS and Linux. To run the latest unreleased source instead:
 
 ```bash
 uvx --from git+https://github.com/abhishekash/agenturm agenturm

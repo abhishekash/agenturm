@@ -32,14 +32,14 @@ describe the emitted signals and optional content capture.
 
 ## Install and launch the terminal cockpit
 
-Python 3.11+ is required. Install the CLI in an isolated environment with [uv tools](https://docs.astral.sh/uv/guides/tools/):
+Python 3.11+ is required. Install the published CLI in an isolated environment with [uv tools](https://docs.astral.sh/uv/guides/tools/):
 
 ```bash
-uv tool install --force git+https://github.com/abhishekash/agenturm
+uv tool install --force agenturm
 agenturm
 ```
 
-If uv is not installed, use its [official installation instructions](https://docs.astral.sh/uv/getting-started/installation/). If the installed command is missing from your PATH, run `uv tool update-shell` and open a new terminal. You can also install into an active Python environment with `python -m pip install "agenturm @ git+https://github.com/abhishekash/agenturm"`.
+To try it without installing, run `uvx agenturm`. If uv is not installed, use its [official installation instructions](https://docs.astral.sh/uv/getting-started/installation/). If the installed command is missing from your PATH, run `uv tool update-shell` and open a new terminal. You can also install into an active Python environment with `python -m pip install agenturm`.
 
 The cockpit opens Agents, Activity, MCP Calls, and Traces as primary views; use **More** or **5–7** for Host, Metrics, and Findings. Agents opens to **Recent**: working sessions (including explicit waits) and the most recently finished session. The compact filter can switch to **Active** only or **All** history. Task-first rows have an evidence inspector. Its website-aligned **Observation** palette is the default; change themes with **Ctrl+P**. Findings provides a searchable, paged review queue with occurrence counts, evidence links, and direct navigation to the source trace. Session counts and live process counts are separate; approval reviews are hidden by default. The cockpit attaches to a receiver on **127.0.0.1:14318**, or starts one there. Run `agenturm` for full-screen panels in your current terminal. From this checkout, `python3 -m observatory` also works without installation.
 
@@ -124,7 +124,7 @@ for a stable cross-version integration. Inactivity does not imply an approval wa
 Native session discovery is automatic for supported local agents. For another Python agent, automatic SDK capture is a separate command-line workflow; the monitoring cockpit itself does not launch agents. Install the capture extra into the agent's environment:
 
 ```bash
-uv pip install --python .venv/bin/python 'agenturm[auto] @ git+https://github.com/abhishekash/agenturm'
+uv pip install --python .venv/bin/python 'agenturm[auto]'
 agenturm run --endpoint http://127.0.0.1:14318 --service my-agent agent.py
 ```
 
@@ -323,7 +323,7 @@ Nested spans follow asynchronous execution context, including spans started insi
 For automatic callback capture in LangChain and LangGraph, install the optional adapter:
 
 ```bash
-pip install 'agenturm[langchain] @ git+https://github.com/abhishekash/agenturm'
+pip install 'agenturm[langchain]'
 ```
 
 Attach the handler inside an Goechala run and pass it through the runnable config. It records nested chain, model, tool, and retriever spans; captures standardized token usage when the model supplies it; records errors; and maps LangChain custom callbacks named `progress`, `agent.progress`, or `langgraph.progress` into the run timeline. LangGraph applications that use custom stream output can call `run.aprogress(...)` as they consume those events. Prompts, tool inputs, and outputs stay out of telemetry unless `capture_content=True` is set.
@@ -342,7 +342,7 @@ with telemetry.trace(task="Research a question", session_id="thread-42") as run:
 For the OpenAI Agents SDK, install its optional exporter and add the batching processor to the SDK tracing provider:
 
 ```bash
-pip install 'agenturm[openai-agents] @ git+https://github.com/abhishekash/agenturm'
+pip install 'agenturm[openai-agents]'
 ```
 
 ```python

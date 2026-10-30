@@ -5,7 +5,7 @@
 Python 3.11+ and [uv](https://docs.astral.sh/uv/getting-started/installation/) are required. Install the published CLI:
 
 ```bash
-uv tool install --force git+https://github.com/abhishekash/agenturm
+uv tool install --force agenturm
 agenturm
 ```
 
@@ -20,7 +20,7 @@ Start `agenturm`. Recent local sessions are discovered automatically on the same
 Install the automatic capture extra into the same environment as your agent:
 
 ```bash
-uv pip install --python .venv/bin/python 'agenturm[auto] @ git+https://github.com/abhishekash/agenturm'
+uv pip install --python .venv/bin/python agenturm[auto]
 ```
 
 Run your script with the separate capture command:
