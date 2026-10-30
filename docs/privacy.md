@@ -15,6 +15,8 @@ does not inspect process arguments, environment variables, or file contents, and
 does not infer a match from a shared project directory. Process observations are
 in-memory health metadata, not additional stored telemetry.
 
+Hierarchy capture stores only opaque canonical identities, native session/worker IDs, relationship kind/state, and bounded provenance (adapter and record reference). It does not store spawn arguments, environments, sidecar descriptions, or extra transcript content. Metadata-only mode retains structural relationships when a session header or sidecar supplies them; it still omits task text, prompts, arguments, and outputs. Hidden approval-review relationships are filtered out of visible cockpit rows, counts, and exports.
+
 Recognizable credentials and selected sensitive structured fields are redacted before storage on a best-effort basis. Private reasoning text, opaque encrypted reasoning, binary payloads, process environments, and credential files are excluded. Upstream schemas and truncation can leave gaps. Treat the local database as sensitive because normal agent activity may itself contain private project information.
 
 Native activity content can be limited for new ingestion with:

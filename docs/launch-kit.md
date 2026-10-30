@@ -8,7 +8,7 @@ logs, and metrics from instrumented agents. It shows sessions, tasks, MCP calls,
 recorded tool inputs/results, tokens, errors, and host processes.
 
 ```bash
-uvx --from git+https://github.com/abhishekash/agenturm agenturm
+uvx agenturm
 ```
 
 Requires uv and Python 3.11+. A machine with no supported session records needs
@@ -36,7 +36,7 @@ It reads local Codex and Claude Code session records as they change and also
 accepts OpenTelemetry from instrumented agents. The data is stored in local
 SQLite, with a keyboard-first terminal interface. A small HTTP receiver accepts telemetry locally.
 
-Try it with `uvx --from git+https://github.com/abhishekash/agenturm agenturm`. It works best
+Try it with `uvx agenturm`. It works best
 on a machine where you already use Codex or Claude Code. The README animation uses synthetic example data; your terminal view
 shows what your local records or telemetry actually contain.
 
@@ -55,7 +55,7 @@ Agenturm shows what coding agents are doing in a terminal: sessions, tasks, MCP 
 It discovers Codex and Claude Code session records and accepts OpenTelemetry
 from instrumented agents.
 
-Try: `uvx --from git+https://github.com/abhishekash/agenturm agenturm`
+Try: `uvx agenturm`
 https://github.com/abhishekash/agenturm
 
 SpanHound (formerly MCP Trace Inspector) lets an MCP client investigate local

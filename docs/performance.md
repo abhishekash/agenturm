@@ -33,6 +33,21 @@ the size of persisted telemetry.
 Peak observed RSS is the larger of the OS high-water counter and the sampled
 current RSS; those OS accounting mechanisms can differ slightly.
 
+## Agent hierarchy benchmark
+
+`tests/test_agent_hierarchy.py` builds a synthetic 1,010-node forest (ten roots,
+ten children per root, nine grandchildren per child) and exercises the same
+adjacency/projection code as the cockpit. On the development Linux host used for
+this change (Python 3.13, warm process), three local runs measured approximately:
+
+- graph construction and cycle validation: 112–117 ms;
+- flattening the fully expanded forest: 3.5–6.9 ms;
+- reusing cached subtree summaries for all roots: under 0.1 ms.
+
+These are descriptive measurements, not a promised latency target. The fixture
+is separate from the production 50-source discovery limit; it verifies bounded
+projection cost without increasing real discovery windows.
+
 ## Native-reader microbenchmark
 
 ```bash

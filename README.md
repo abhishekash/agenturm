@@ -34,23 +34,22 @@
 
 ## Start here. Stay in your terminal.
 
-Requires **Python 3.11+**, Git, and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Requires **Python 3.11+** and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
-On macOS or Linux, install and launch:
+Run it once without installing:
 
 ```bash
-curl -fsSL https://www.agenturm.dev/install.sh | bash
+uvx agenturm
+```
+
+Or install the command:
+
+```bash
+uv tool install agenturm
 agenturm
 ```
 
-[Review the installer](https://www.agenturm.dev/install.sh) before running it. On Windows—or if you prefer to install with uv directly:
-
-```bash
-uv tool install --force git+https://github.com/abhishekash/agenturm
-agenturm
-```
-
-Or try it once without installing the command:
+`agenturm` is published on [PyPI](https://pypi.org/project/agenturm/). The [installer](https://www.agenturm.dev/install.sh) wraps the same `uv tool install` for macOS and Linux. To run the latest unreleased source instead:
 
 ```bash
 uvx --from git+https://github.com/abhishekash/agenturm agenturm
@@ -70,6 +69,8 @@ Start with your recent supported agent sessions. Select a record, inspect the ev
 
 Recent supported Codex, Claude Code, OpenCode, and Pi records are discovered locally—without restarting your agents. Other supported tools can send telemetry through OpenTelemetry to the local receiver.
 
+When a runtime records an exact delegation, Agents shows an expandable tree and keeps every child independently inspectable. A completed parent stays completed while its workers continue, and a collapsed branch carries descendant activity and attention counts. Press `f` to switch to the flat list. See [agent hierarchy support and limits](docs/agent-hierarchy.md).
+
 Agenturm is a monitor, not a controller. Reply to agents and approve requests in their own terminals.
 
 ### Keyboard first
@@ -78,6 +79,9 @@ Agenturm is a monitor, not a controller. Reply to agents and approve requests in
 | --- | --- |
 | `1`–`7` | Switch views |
 | `↑` / `↓`, `Enter` | Select and inspect a record |
+| `→` / `←` | Expand a branch / collapse or move to the parent |
+| `f` | Switch the Agents tree and flat list |
+| `o` | Toggle updated-time sort direction |
 | `/` | Search the current view |
 | `e` | Expand details |
 | `t` | Follow the linked trace |
