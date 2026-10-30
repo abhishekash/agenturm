@@ -40,9 +40,9 @@ ten children per root, nine grandchildren per child) and exercises the same
 adjacency/projection code as the cockpit. On the development Linux host used for
 this change (Python 3.13, warm process), three local runs measured approximately:
 
-- graph construction and cycle validation: 112–117 ms;
-- flattening the fully expanded forest: 3.5–6.9 ms;
-- reusing cached subtree summaries for all roots: under 0.1 ms.
+- graph construction and cycle validation: 6.1–6.6 ms;
+- flattening the fully expanded forest: 5.1–5.7 ms;
+- first-pass subtree summaries for all roots: 1.2 ms; repeated cached lookups are faster.
 
 These are descriptive measurements, not a promised latency target. The fixture
 is separate from the production 50-source discovery limit; it verifies bounded
