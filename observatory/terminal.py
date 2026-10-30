@@ -15,7 +15,7 @@ import textwrap
 import unicodedata
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
@@ -133,6 +133,7 @@ class Snapshot:
     queries: dict = field(default_factory=dict)
     pagination: dict = field(default_factory=dict)
     activity_prompts: bool = False
+    hierarchy: dict = field(default_factory=dict)
 
 
 class Feed:
@@ -153,6 +154,10 @@ class Feed:
         self.session_id = ''
         self.include_reviews = False
         self.pinned_trace = False
+        self.scope_agent_id = ''
+        self.scope_subtree = False
+        self.hierarchy_revision = ''
+        self.generation = 0
         self.extra_cache = None
         self.extra_updated = 0
         self.extra_scope = None
@@ -176,8 +181,11 @@ class Feed:
         activity_prompts = requested_scope.activity_prompts
         requested_span = requested_scope.selected_span_id
         session_id, include_reviews = requested_scope.session_id, requested_scope.include_reviews
-        for page, text in (('activity',activity_query),('mcp',mcp_query),('traces',query)):
-            scope=(service,session_id,text,include_reviews)
+        scope_agent, scope_subtree = requested_scope.scope_agent_id, requested_scope.scope_subtree
+        for page, text in (('activity',activity_query),('mcp',mcp_query),('traces',query),
+                           ('findings','')):
+            scope=(service,session_id,text,include_reviews,scope_agent,scope_subtree,
+                   requested_scope.hierarchy_revision)
             if page=='activity':
                 scope+=(activity_prompts,)
             elif page=='traces':
@@ -193,17 +201,34 @@ class Feed:
         requests = RequestBatch(self.api, self.stop)
         self._requests = requests
         get = requests.get
+        scope_revisions = []
         try:
             activity_params = {"limit": 200, "service": service, "session_id": session_id,
                                "include_reviews":int(include_reviews)}
             params = {"limit": 100, "service": service, "session_id": session_id, "q": query,
                       "cursor":history['traces'][-1] or '', 'include_reviews':int(include_reviews)}
+            if scope_agent:
+                activity_params.update(agent_id=scope_agent, subtree=int(scope_subtree))
+                params.update(agent_id=scope_agent, subtree=int(scope_subtree))
+                if requested_scope.hierarchy_revision:
+                    activity_params['scope_revision']=requested_scope.hierarchy_revision
+                    params['scope_revision']=requested_scope.hierarchy_revision
             if errors_only:
                 params["status"] = "ERROR"
             trace_path = "/api/traces?" + urlencode(params)
             requests.prefetch(("/api/health", "/api/metrics", "/api/connections",
                                "/api/activity?" + urlencode(activity_params), trace_path))
-            local_status = get("/api/health").get("local_agents", {})
+            health = get("/api/health")
+            local_status = health.get("local_agents", {})
+            new_revision = str((local_status.get("hierarchy") or {}).get("revision") or "")
+            if new_revision and self.hierarchy_revision and new_revision != self.hierarchy_revision:
+                # Descendant membership changed.  Never mix a pre-change page
+                # with a new hierarchy revision; restart the bounded read.
+                self.hierarchy_revision = new_revision
+                self.wake.set()
+                return
+            if new_revision:
+                self.hierarchy_revision = new_revision
             totals = get("/api/metrics")
             agents = get("/api/connections")["connections"]
             try:
@@ -216,6 +241,8 @@ class Feed:
                     activity_page = get("/api/activity?" + urlencode({**result_params,
                         "q":activity_query,"cursor":history['activity'][-1] or ''}))
                 activity_results = activity_page['activity']
+                if isinstance(activity_page.get('agent_scope'),dict):
+                    scope_revisions.append(activity_page['agent_scope'].get('revision'))
                 page_result('activity',activity_page)
             except urllib.error.HTTPError as exc:
                 if exc.code != 404:
@@ -225,6 +252,10 @@ class Feed:
             if self.extra_cache is None or scope != self.extra_scope or time.monotonic()-self.extra_updated>self.EXTRA_POLL_SECONDS:
                 mcp_params = {'limit':100,'service':service,'session_id':session_id,
                               'include_reviews':int(include_reviews)}
+                if scope_agent:
+                    mcp_params.update(agent_id=scope_agent, subtree=int(scope_subtree))
+                    if requested_scope.hierarchy_revision:
+                        mcp_params['scope_revision']=requested_scope.hierarchy_revision
                 metric_params = {'limit': 500, 'latest': 1}
                 if service:
                     metric_params['service'] = service
@@ -245,6 +276,8 @@ class Feed:
                         mcp_page = get('/api/mcp?'+urlencode({**mcp_params,'q':mcp_query,
                             'cursor':history['mcp'][-1] or ''}))
                     mcp_results = mcp_page['calls']
+                    if isinstance(mcp_page.get('agent_scope'),dict):
+                        scope_revisions.append(mcp_page['agent_scope'].get('revision'))
                     mcp_available = True
                 except urllib.error.HTTPError as exc:
                     if exc.code!=404:
@@ -278,6 +311,8 @@ class Feed:
             metric_history=[]
             trace_page = get(trace_path)
             traces = trace_page['traces']
+            if isinstance(trace_page.get('agent_scope'),dict):
+                scope_revisions.append(trace_page['agent_scope'].get('revision'))
             page_result('traces',trace_page)
             if not include_reviews:
                 traces = [item for item in traces if 'codex-review' not in item.get('services',[])]
@@ -306,7 +341,13 @@ class Feed:
             if (self.findings_cache is None or self.findings_scope!=findings_scope or
                     time.monotonic()-self.findings_updated>self.EXTRA_POLL_SECONDS):
                 finding_params={'limit':100,'cursor':findings_scope[-1] or ''}
+                if scope_agent:
+                    finding_params.update(agent_id=scope_agent, subtree=int(scope_subtree))
+                    if requested_scope.hierarchy_revision:
+                        finding_params['scope_revision']=requested_scope.hierarchy_revision
                 finding_page=get('/api/findings?'+urlencode(finding_params))
+                if isinstance(finding_page.get('agent_scope'),dict):
+                    scope_revisions.append(finding_page['agent_scope'].get('revision'))
                 self.findings_cache=finding_page
                 self.findings_scope=findings_scope
                 self.findings_updated=time.monotonic()
@@ -315,8 +356,29 @@ class Feed:
             page_result('findings',finding_page)
             if self.stop.is_set():
                 return
+            revisions = [revision for revision in scope_revisions if revision]
+            if not requested_scope.hierarchy_revision and revisions:
+                # A receiver without a local monitor can still report the
+                # durable hierarchy revision through scoped API responses.
+                self.hierarchy_revision = revisions[0]
+                self.wake.set()
+                return
+            newer = next((revision for revision in revisions
+                          if requested_scope.hierarchy_revision and
+                          revision != requested_scope.hierarchy_revision), None)
+            if newer:
+                self.hierarchy_revision = newer
+                self.wake.set()
+                return
             # A filter changed while the HTTP reads were in flight; discard the older view.
-            if requested_scope != FeedScope.capture(self):
+            current_scope=FeedScope.capture(self)
+            if not requested_scope.hierarchy_revision and current_scope.hierarchy_revision:
+                # The first read learns the durable revision from health. Keep
+                # that first useful snapshot; the next poll will reset paging
+                # because the revision differs from the bootstrap request.
+                requested_scope=replace(requested_scope,
+                    hierarchy_revision=current_scope.hierarchy_revision)
+            if requested_scope != current_scope:
                 self.wake.set()
                 return
             if history!={page:tuple(cursors) for page,cursors in self.history.items()}:
@@ -333,7 +395,8 @@ class Feed:
                                      activity_results=activity_results[:200],mcp_results=mcp_results,
                                      finding_results=finding_page.get('findings',[]),
                                       queries={'activity':activity_query,'mcp':mcp_query,'traces':query},pagination=pagination,
-                                      activity_prompts=activity_prompts)
+                                      activity_prompts=activity_prompts,
+                                      hierarchy=local_status.get('hierarchy',{}))
         except Exception as exc:
             if self.stop.is_set():
                 return
@@ -342,7 +405,6 @@ class Feed:
             else:
                 message = "Receiver unavailable. Retrying: " + clean(str(exc))
             old = self.snapshot
-            from dataclasses import replace
             self.snapshot = replace(old,error=message)
         finally:
             requests.close()
@@ -356,6 +418,9 @@ class Feed:
         return self.api.get('/api/measurements?'+urlencode(params))['points']
 
     def request_refresh(self):
+        # Invalidate any in-flight read so an A -> B -> A selection sequence
+        # cannot publish the earlier A response over newer context.
+        self.generation += 1
         self.refresh_once = True
         self.wake.set()
 
