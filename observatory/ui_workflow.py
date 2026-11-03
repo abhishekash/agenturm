@@ -120,6 +120,8 @@ def workflow_report(item, items, snapshot):
     lines+=['Last recorded activity: '+(f"{max(0,int(time.time()-item['stamp']/1e9))}s ago" if item.get('stamp') else 'not reported'),
             'Exact observed process IDs: '+(', '.join(map(str,process.get('pids',[]))) or 'not reported'),
             'Collector backlog bytes: '+str(diagnostics.get('backlog_bytes','not reported')),
+            'Process CPU seconds / I/O chars: '+str(process.get('cpu_seconds','not reported'))+' / '+str(process.get('io_chars','not reported')),
+            'State evidence: '+str(item.get('status_evidence') or 'not reported'),
             'A quiet process is evidence, not proof of a stall.','', 'WORKSPACE']
     cwd=item.get('working_directory');lines+=['Directory: '+str(cwd or 'not reported'),'Branch: '+str(item.get('branch') or 'not reported')]
     overlap=[x for x in items if x['id']!=item['id'] and cwd and x.get('working_directory')==cwd and x.get('active')]
@@ -167,7 +169,7 @@ class WorkflowScreen(ModalScreen):
     def __init__(self,owner):super().__init__();self.owner=owner
     def compose(self):
         with Vertical(id='workflow-dialog'):
-            yield Label('Workflow · Enter selects attention · Esc returns')
+            yield Label('Workflow · Enter selects · Tab review · Esc returns')
             yield DataTable(id='workflow-inbox',cursor_type='row')
             yield RichLog(id='workflow-log',wrap=True,markup=False,min_width=1,auto_scroll=False)
             yield Checkbox('Desktop attention alerts · omit task text',value=self.owner.workflow_notify,id='workflow-notify')
@@ -192,6 +194,8 @@ class WorkflowScreen(ModalScreen):
         if self.is_mounted:self.call_after_refresh(self.render_report)
     def render_report(self):
         owner=self.owner;table=self.query_one(DataTable);table.clear()
+        table.display=bool(owner.workflow_ledger.rows)
+        self.query_one(Label).update('Workflow · '+('Attention inbox · Enter selects' if table.display else 'No attention items')+' · Esc returns')
         for item,reasons,since in owner.workflow_ledger.rows:
             table.add_row(str(item.get('task') or item['id'])[:80],'; '.join(reasons),f'{int((time.time()-since)/60)}m',key=item['id'])
         items=owner.workflow_items()
@@ -200,6 +204,7 @@ class WorkflowScreen(ModalScreen):
         log=self.query_one(RichLog)
         if not log.content_size.width:return
         log.clear();log.write(Text(text+'\n\nNotifications: '+owner.workflow_delivery),width=max(1,log.content_size.width-1))
+        if not table.display and self.focused is table:log.focus()
     @on(DataTable.RowSelected,'#workflow-inbox')
     def select_attention(self,event):
         self.owner.selected_source=event.row_key.value;self.render_report()

@@ -872,7 +872,7 @@ def agent_order_key(item, newest_first=True, mode='working'):
 
 def navigation_hints(width):
     if width >= 120:
-        return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  Ctrl+P Palette  u Usage  d Diagnostics  q Quit'
+        return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  Ctrl+P Palette  w Workflow  d Diagnostics  q Quit'
     if width >= 80:
         return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  q Quit'
     return '↑↓ Move  Enter Inspect  / Search  ? Help'
@@ -3334,7 +3334,7 @@ class ObservatoryApp(App):
             self.workflow_alert(projects,str(len(alerts))+' agent(s) need attention. Open Workflow (w) for recorded evidence.')
 
     def action_workflow(self):
-        self.push_screen(WorkflowScreen(self))
+        self.push_screen(WorkflowScreen(self),self.resume_cockpit)
 
     @work(thread=True,group='workflow-alerts',exit_on_error=False)
     def workflow_alert(self,project,reasons):
@@ -3353,7 +3353,7 @@ class ObservatoryApp(App):
         self.push_screen(UsageScreen(details=task_usage_summary(usage,title,scope=scope,identity=identity)[1]),self.resume_cockpit)
 
     def action_help(self):
-        self.notify('↑/↓ move · Enter inspect · / search · e expand · Ctrl+P palette · u usage · d diagnostics · x export · p pause/follow · q quit',timeout=8)
+        self.notify('↑/↓ move · Enter inspect · / search · e expand · Ctrl+P palette · w workflow · u usage · d diagnostics · x export · p pause/follow · q quit',timeout=8)
 
     def action_diagnostics(self):
         self.push_screen(DiagnosticsScreen(self.feed.snapshot.local_status),self.resume_cockpit)
