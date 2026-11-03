@@ -2839,6 +2839,7 @@ class Store:
                   "reasoning_output_tokens_reported": False,
                   "input_tokens_reported": False, "output_tokens_reported": False,
                   "known_cost_usd": 0.0, "unknown_cost_runs": 0,
+                  "completed_tasks": 0, "costed_tasks": 0, "completed_task_cost_usd": 0.0,
                   "usage_complete": True, "status_complete": True}
         cursor = None
         while True:
@@ -2862,10 +2863,20 @@ class Store:
                 totals["output_tokens_reported"] |= bool(run.get("output_tokens_reported"))
                 totals["known_cost_usd"] += run["known_cost_usd"] or 0
                 totals["unknown_cost_runs"] += not run["cost_complete"]
+                # One recorded run (trace) is the accounting unit. Include
+                # finished failures, but never unfinished runs in the average.
+                if not run.get("active") and run["status"] not in {"RUNNING", "UNKNOWN"}:
+                    totals["completed_tasks"] += 1
+                    if run["cost_complete"] and run.get("known_cost_usd") is not None:
+                        totals["costed_tasks"] += 1
+                        totals["completed_task_cost_usd"] += run["known_cost_usd"]
             cursor = page["next_cursor"]
             if not cursor:
                 break
         totals["known_cost_usd"] = round(totals["known_cost_usd"], 8)
+        totals["completed_task_cost_usd"] = round(totals["completed_task_cost_usd"], 8)
+        totals["average_task_cost_usd"] = (round(totals["completed_task_cost_usd"] / totals["costed_tasks"], 8)
+                                           if totals["costed_tasks"] else None)
         with self._connect() as db:
             totals["failed_outcomes"] = db.execute(
                 "SELECT COUNT(*) FROM outcomes WHERE passed=0").fetchone()[0]

@@ -13,6 +13,7 @@ class FeedScope:
     errors_only: bool
     include_reviews: bool
     activity_prompts: bool
+    activity_errors: bool
     selected_trace: str | None
     selected_span_id: str | None
     detail_enabled: bool

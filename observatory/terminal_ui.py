@@ -39,6 +39,8 @@ from .ui_preferences import Preferences
 from .ui_export import ExportScreen
 from .ui_render import update_status_text
 from .ui_coverage import analysis_coverage
+from .ui_monitoring import (UsageScreen, usage_summary, changed_records, failed,
+                            failure_groups, event_id)
 
 
 def cell(value, style=''):
@@ -818,7 +820,7 @@ def agent_order_key(item, newest_first=True):
 
 def navigation_hints(width):
     if width >= 120:
-        return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  Ctrl+P Palette  d Diagnostics  q Quit'
+        return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  Ctrl+P Palette  u Usage  d Diagnostics  q Quit'
     if width >= 80:
         return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  q Quit'
     return '↑↓ Move  Enter Inspect  / Search  ? Help'
@@ -1081,7 +1083,7 @@ class ObservatoryApp(App):
     Button:hover { background: $agent-hover; border-bottom: solid $agent-secondary; }
     Button:focus { border-bottom: heavy $agent-primary; background: $agent-focus; color: $agent-primary; text-style: bold; }
     Button:disabled { color: $agent-disabled; border-bottom: solid $agent-border-disabled; background: $agent-surface; }
-    #pause { width: 12; height: 1; padding: 0; border: none; background: $agent-surface; }
+    #pause { width: 15; height: 1; padding: 0; border: none; background: $agent-surface; }
     #pages { height: 1fr; margin: 0 2; }
     #more-views { display: none; dock: right; layer: above; width: 21; height: 1; margin: 1 2 0 1; }
     Tabs { height: 1; padding-top: 0; margin-top: 0; }
@@ -1167,6 +1169,7 @@ class ObservatoryApp(App):
     #span-tree { height: 1fr; min-height: 4; background: $agent-surface; scrollbar-size: 1 1; }
     #span-info { height: 10; border-top: solid $agent-border-subtle; }
     #health { height: 1; padding: 0 2; color: $agent-muted; text-wrap: nowrap; text-overflow: ellipsis; }
+    #usage-summary { height: 2; margin: 0 2; color: $agent-secondary; text-wrap: nowrap; text-overflow: ellipsis; }
     .narrow #masthead { padding: 0 1; }
     .narrow #summary { grid-gutter: 0 1; }
     .narrow .stat { padding: 0 1; }
@@ -1177,7 +1180,7 @@ class ObservatoryApp(App):
     .narrow #evidence-scope-label { display: none !important; }
     .small #evidence-scope { width: 8; }
     .narrow #reviews { display: none; }
-    .narrow #pause { width: 8; }
+    .narrow #pause { width: 15; }
     .narrow #agent-sort { width: 11; margin-right: 1; }
     .small #agent-sort { width: 11; }
     .menu-navigation #controls.agents-active { height: 2; }
@@ -1196,9 +1199,10 @@ class ObservatoryApp(App):
     .narrow .detail, .narrow #trace-detail { width: 100%; min-width: 0; height: 1fr; }
     .small Tab { padding: 0 1 0 0; }
     .small #agent-bottom { height: 9; }
-    .small #pause { width: 9; }
+    .small #pause { width: 15; }
     .compact #mcp-servers { display: none; }
     .compact #agent-bottom, .compact .detail, .compact #trace-detail, .compact #host-detail { display: none; }
+    .compact.inspecting #usage-summary { display: none; }
     .compact .list { width: 100%; height: 1fr; margin: 0; }
     .compact .inspector-heading { height: 1; border: none; margin-bottom: 0; }
     .compact .inspector-actions { margin: 0; }
@@ -1221,6 +1225,7 @@ class ObservatoryApp(App):
               Binding('l','history("latest")','Latest',show=False),
               Binding('p','pause','Pause'),Binding('a','all','Reset',show=False),Binding('v','reviews','Reviews',show=False),
               Binding('d','diagnostics','Diagnostics'),Binding('x','export','Export'),
+              Binding('u','usage','Usage',show=False),
               Binding('q','quit','Quit'),Binding('escape','back','Back',show=False),
               Binding('s','focus_agent','Focus agent',show=False),Binding('r','review_attention','Mark reviewed',show=False),
               Binding('f','toggle_tree','Tree or flat agents',show=False),
@@ -1252,6 +1257,8 @@ class ObservatoryApp(App):
         self.inspector_reflow_pending=False
         self.selected_source=None
         self.selected_activity=None
+        self.activity_fallback_trace=None
+        self.activity_fallback_scope=None
         self.selected_mcp=None
         self.selected_metric=None
         self.selected_finding=None
@@ -1290,6 +1297,9 @@ class ObservatoryApp(App):
         self.errors_only=set()
         self.prompts_only=False
         self.navigation_history=[]
+        self.paused_views={}
+        self.pause_change_key=None
+        self.pause_change_count=0
         self.ai_summaries={}
         self.reviewed_attention=set()
         self.dismissed_attention=set()
@@ -1359,6 +1369,7 @@ class ObservatoryApp(App):
             with Grid(id='summary'):
                 for name in ('sessions','attention','mcp-count','usage'):
                     yield Static('',id='stat-'+name,classes='stat'+(' -quiet' if name in {'mcp-count','usage'} else ''),markup=False)
+        yield Static('',id='usage-summary',markup=False)
         with CockpitTabs(initial='agents',id='pages'):
             with TabPane('1  Agents',id='agents'):
                 with Horizontal(id='agent-split',classes='split'):
@@ -1457,7 +1468,8 @@ class ObservatoryApp(App):
             ('Inspect first child agent','Open the first observed delegated child',self.action_inspect_first_child),
             ('Inspect next descendant needing attention','Navigate to the next descendant evidence',self.action_inspect_next_attention),
             ('Scope evidence to this agent or subtree','Switch related Activity, MCP, Traces and Findings scope',lambda:self.query_one('#evidence-scope',Select).toggle()),
-            ('Pause or resume display','Freeze or resume the cockpit display; collection continues',self.action_pause),
+            ('Pause or follow live','Freeze the view or catch up with incoming records; collection continues',self.action_pause),
+            ('Show tokens and spend','Inspect stored token totals, reported cost, and the per-task average',self.action_usage),
             ('Open diagnostics','Inspect local collection health',self.action_diagnostics),
             ('Copy selected evidence','Copy selected evidence or the current record',self.action_copy),
             ('Open linked trace','Follow an exact recorded trace link',self.action_open_trace),
@@ -1514,6 +1526,7 @@ class ObservatoryApp(App):
         self.prompts_only=preferences.get('prompts',False)
         self.dismissed_attention=set(preferences.get('dismissed_attention',[]))
         self.feed.activity_prompts=self.prompts_only
+        self.feed.activity_errors='activity' in self.errors_only
         for page in self.errors_only:
             button=self.query_one('#errors-'+page,Button)
             button.add_class('-on');button.label='Errors ●'
@@ -1690,6 +1703,7 @@ class ObservatoryApp(App):
         query=self.search_queries[page]
         waiting=page in {'activity','mcp','traces'} and self.data.queries.get(page,'')!=query
         if page=='activity' and self.data.activity_prompts!=self.prompts_only:waiting=True
+        if page=='activity' and self.data.activity_errors!=('activity' in self.errors_only):waiting=True
         text='Filtering…' if waiting else quantity(count,('matching '+noun) if query else noun,
                                                     ('matching '+plural) if query and plural else plural)
         if not waiting and query and not count:text+=' · Clear to remove this filter'
@@ -1701,32 +1715,66 @@ class ObservatoryApp(App):
         self.query_one('#search-status-'+page,Static).update(text)
 
     def visible_results(self,page,items):
+        if self.data.view_scope and self.data.view_scope[:5]!=self.current_evidence_scope():return []
         if self.data.queries.get(page,'')!=self.search_queries[page]:return []
         if page=='activity' and self.data.activity_prompts!=self.prompts_only:return []
+        if page=='activity' and self.data.activity_errors!=('activity' in self.errors_only):return []
         if page in self.errors_only:
             return [item for item in items if str(item.get('status') or item.get('result') or '').lower() in {'error','failed','denied','blocked','policy_denied','incomplete'}]
         return items
+
+    def current_evidence_scope(self):
+        return (self.feed.service,self.feed.session_id,self.feed.scope_agent_id,
+                self.feed.scope_subtree,self.feed.include_reviews)
+
+    def paused_view_key(self,data):
+        page=self.query_one('#pages',TabbedContent).active
+        trace=(data.detail.get('trace_id'),self.feed.selected_span_id) if page=='traces' else None
+        return page,data.view_scope,trace
+
+    def display_snapshot(self,live):
+        if not self.feed.paused:return live
+        page=self.query_one('#pages',TabbedContent).active
+        # Never freeze an intermediate loading result after explicit navigation.
+        if page=='traces' and live.detail.get('trace_id')!=self.feed.selected_trace:return live
+        if (page=='traces' and self.feed.selected_span_id and
+                not any(span['span_id']==self.feed.selected_span_id for span in live.detail.get('spans',[]))):return live
+        if live.view_scope and live.view_scope[:5]!=self.current_evidence_scope():return live
+        if (live.queries.get('activity','')!=self.feed.activity_query or
+                live.activity_prompts!=self.feed.activity_prompts or
+                live.activity_errors!=self.feed.activity_errors):return live
+        key=self.paused_view_key(live)
+        if key not in self.paused_views:
+            if len(self.paused_views)>=4:self.paused_views.pop(next(iter(self.paused_views)))
+            self.paused_views[key]=live
+        frozen=self.paused_views[key]
+        change_key=(key,id(frozen),id(live))
+        if change_key!=self.pause_change_key:
+            self.pause_change_key=change_key
+            self.pause_change_count=changed_records(frozen,live,page)
+        return frozen
 
     def refresh_data(self):
         # Timer messages can already be queued when child widgets unmount.
         if not self.query('#health'):return
         if not isinstance(self.screen,ObservatoryScreen):return
-        data=self.feed.snapshot
-        state='Reconnecting' if data.error else 'Connected'
-        state_color='#ff8799' if data.error else '#86e3b5'
+        live=self.feed.snapshot
+        data=self.display_snapshot(live)
+        state='Reconnecting' if live.error else 'Connected'
+        state_color='#ff8799' if live.error else '#86e3b5'
         endpoint=self.feed.api.endpoint.removeprefix('http://').removeprefix('https://')
         connection_widget=self.query_one('#connection',Static)
         connection_widget.tooltip=state+' · '+endpoint
         pause_button=self.query_one('#pause',Button)
-        pause_button.label='Resume' if self.feed.paused else 'Pause'
-        pause_button.tooltip='Paused display; collection continues' if self.feed.paused else 'Pause display updates; collection continues'
+        pause_button.label='Follow live' if self.feed.paused else 'Pause'
+        pause_button.tooltip='Resume current data and live sorting · p' if self.feed.paused else 'Freeze this view; collection continues · p'
         connection=Text()
         connection.append('● ', style='bold '+state_color)
         local=urlsplit(self.feed.api.endpoint).hostname in {'localhost','127.0.0.1','::1'}
-        connection.append('Reconnecting' if data.error else 'Live', style=state_color)
+        connection.append('Reconnecting' if live.error else 'Paused' if self.feed.paused else 'Live', style=state_color)
         update_status_text(connection_widget,themed_text(connection_widget,connection))
-        health_text=(data.error if data.error else
-            f"{'Display paused' if self.feed.paused else 'Updated '+age(int(data.updated*1e9))}  ·  {self.scope_label()}  ·  {'Reviews included' if self.feed.include_reviews else 'Reviews hidden'}")
+        health_text=(live.error if live.error else
+            f"{'Paused · '+str(self.pause_change_count)+' changed records · p Follow live' if self.feed.paused else 'Updated '+age(int(data.updated*1e9))}  ·  {self.scope_label()}  ·  {'Reviews included' if self.feed.include_reviews else 'Reviews hidden'}")
         source_diagnostics=[entry.get('diagnostics') or {} for entry in data.local_status.get('sessions',[])]
         backlog_sources=sum(bool(item.get('backlog_bytes',0)) for item in source_diagnostics)
         def collector_stale(item):
@@ -1742,6 +1790,7 @@ class ObservatoryApp(App):
         health_text+='  ·  d Diagnostics / retention'
         health=Text(health_text,style='#c5adff' if collection_note else '#ffbd69' if coverage and not data.error else '#ff8799' if data.error else '#abb4a5')
         health_widget=self.query_one('#health',Static)
+        health_widget.tooltip='While paused, counts are distinct new or changed records in the loaded view, not all database events. Collection continues.'
         if self.screen.selections:
             health=Text('Text selected · Ctrl+C to copy · click to clear selection and resume display updates',style='#b9afc5')
         update_status_text(health_widget,themed_text(health_widget,health))
@@ -1749,6 +1798,9 @@ class ObservatoryApp(App):
             return
         if data.updated==self.last_update:return
         self.last_update=data.updated;self.data=data
+        usage_text,usage_details=usage_summary(data.totals)
+        self.query_one('#usage-summary',Static).update(usage_text+' · u Details')
+        self.query_one('#usage-summary').tooltip=usage_details
         agents=sources(data,self.feed.include_reviews)
         work=[item for item in agents if not item['review']]
         observed_work=[item for item in work if item.get('discovery_state')!='announced']
@@ -1790,7 +1842,7 @@ class ObservatoryApp(App):
         self.stat('attention',needs_attention,'Needs attention',
                   f'{replies} need input · {stalled} may be stalled · {failures} failures' if needs_attention else 'No action needed')
         self.query_one('#stat-attention').tooltip=(f'{replies} explicit approval/reply requests · {stalled} possible stalls · {failures} recorded failures. '
-            f'Open a session and press r to acknowledge it for this run or x to dismiss it from Recent and Needs attention. Dismissed sessions remain in All history and Traces. Ordinary tool calls do not need action. {live} live host processes are listed in Host.')
+            f'Open a session and press r to acknowledge it for this run or Shift+X to dismiss it from Recent and Needs attention. Dismissed sessions remain in All history and Traces. Ordinary tool calls do not need action. {live} live host processes are listed in Host.')
         servers={item.get('server') for item in data.mcp if item.get('server') and item.get('server')!='Not reported'}
         operations={(item.get('server'),item.get('tool')) for item in data.mcp if item.get('tool') and item.get('tool')!='Not reported'}
         mcp_errors=sum(str(item.get('status','')).upper() in {'ERROR','FAILED'} for item in data.mcp)
@@ -2094,10 +2146,20 @@ class ObservatoryApp(App):
         data=self.data
         activity_items=self.visible_results('activity',data.activity_results if data.activity_results is not None else data.activity)
         activity_items=self.hold_selected('activity',activity_items,self.selected_activity,'source_id')
-        activity=[(item.get('id') or item['source_id'],[cell(table_when(item['time_unix_nano'])),cell(item['domain'].upper(),'#c5adff'),status(item.get('result')),cell(headline(item))],item) for item in activity_items]
-        self.query_one('#results-activity').border_title='User prompts · newest first' if self.prompts_only else 'Activity stream'
-        self.fill('activity-table',activity)
-        self.search_status('activity',len(activity),'prompt' if self.prompts_only else 'event')
+        if 'activity' in self.errors_only:
+            activity_items=failure_groups(activity_items,data.activity)
+            # Keep the exact failure selected even if a newer occurrence groups it.
+            selected=next((item for item in activity_items
+                           if any(event_id(e)==self.selected_activity for e in item['_failures'])),None)
+            if selected and event_id(selected)!=self.selected_activity:
+                exact=next(e for e in selected['_failures'] if event_id(e)==self.selected_activity)
+                activity_items[activity_items.index(selected)]={**exact,'_failures':selected['_failures'],
+                                                               '_later_success':selected['_later_success']}
+        activity=[(event_id(item),[cell(table_when(item['time_unix_nano'])),cell(item['domain'].upper(),'#c5adff'),status(item.get('result')),cell((f"{len(item['_failures'])}× " if len(item.get('_failures',[]))>1 else '')+headline(item))],item) for item in activity_items]
+        self.query_one('#results-activity').border_title=('Failures · grouped in loaded page' if 'activity' in self.errors_only
+                                                         else 'User prompts · newest first' if self.prompts_only else 'Activity stream')
+        self.fill('activity-table',activity,preserve=self.selected_activity)
+        self.search_status('activity',len(activity),'failure group' if 'activity' in self.errors_only else 'prompt' if self.prompts_only else 'event')
         if self.selected_activity not in self.table_data.get('activity-table',{}):self.selected_activity=activity[0][0] if activity else None
         self.show_activity()
 
@@ -2515,6 +2577,8 @@ class ObservatoryApp(App):
             summary=next((entry for entry in self.data.sessions
                 if item.get('session_id') and entry.get('session_id')==item.get('session_id')
                 and (not entry.get('agent_id') or not item.get('agent_id'))),{})
+        self.agent_has_failures=(item.get('state') in {'Error','Failed','Incomplete'} or
+                                 any(item.get(key) or summary.get(key) for key in ('errors','failed','incomplete')))
         trace_button=self.query_one('#agent-trace',Button)
         trace_button.disabled=not bool(self.linked_agent_trace())
         reviewed_button=self.query_one('#agent-reviewed',Button)
@@ -2568,9 +2632,11 @@ class ObservatoryApp(App):
         self.agent_primary_event_id=((error_event or request_event or recorded or {}).get('id')
                                      or (error_event or request_event or recorded or {}).get('source_id'))
         primary_label=('Failed call · s' if error_event else
+                       'Failures · s' if self.agent_has_failures else
                        'Request · s' if input_required(item) and request_event else
                        'Activity · s')
         primary_tip=('Open the exact recorded failed event' if error_event else
+                     'Find recorded failures in this session, including older history' if self.agent_has_failures else
                      'Open the recorded user request; reply in the agent terminal' if request_event and input_required(item) else
                      'Read all recorded activity for this session')
         self.query_one('#agent-open',Button).label=Text(primary_label)
@@ -2681,17 +2747,42 @@ class ObservatoryApp(App):
 
     def show_activity(self):
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
-        self.query_one('#activity-trace',Button).disabled=not bool(item and item.get('trace_id'))
+        fallback=self.activity_trace_fallback()
+        self.query_one('#activity-trace',Button).disabled=not bool((item or fallback or {}).get('trace_id'))
         if not item:
-            if self.data.activity_prompts!=self.prompts_only or self.data.queries.get('activity','')!=self.search_queries['activity']:
+            if (self.data.activity_prompts!=self.prompts_only or self.data.queries.get('activity','')!=self.search_queries['activity']
+                    or self.data.activity_errors!=('activity' in self.errors_only)
+                    or (self.data.view_scope and self.data.view_scope[:5]!=self.current_evidence_scope())):
                 self.inspect('activity-detail','Filtering activity',[],[('Status','Waiting for matching events from the receiver.')]);return
             if 'activity' in self.errors_only:
-                self.inspect('activity-detail','No failed events',[],[('Errors filter','No failures in the current results. Turn off Errors to see all activity.')]);return
+                self.inspect('activity-detail','No failed activity events',[],[
+                    ('Errors filter','No failed activity events captured in these results; this does not clear a recorded trace-level failure.'),
+                    ('Inspect the trace','Press t or Trace to inspect the session’s linked trace.' if fallback else
+                     'Turn off Errors to see all activity, or return to the session to inspect its linked trace.')]);return
             if self.prompts_only:
                 self.inspect('activity-detail','No user prompts in this scope',[],[('Prompts','No user prompts were recorded for this agent in the selected history. Choose another session or turn off Prompts to see all activity.')]);return
             self.inspect('activity-detail','No activity in this scope',[],[('Scope','Choose another agent session or clear the search to view recent activity.')]);return
         details=decode(item.get('detail') or '')
         sections=list(details.items()) if isinstance(details,dict) else [('Recorded content',details)]
+        if failed(item):
+            group=next(iter(failure_groups([item],self.data.activity)),item)
+            later=item.get('_later_success') or group.get('_later_success')
+            occurrences=item.get('_failures') or [item]
+            sections.insert(0,('Failure history',
+                f"{len(occurrences)} matching failure(s) in this loaded page. "
+                +('Later success observed at '+when(later['time_unix_nano'])+'. This does not prove a retry or resolution.'
+                  if later else 'No later success observed in loaded activity; resolution is unknown.')
+                +'\n'+'\n'.join(when(e['time_unix_nano'])+' · '+str(event_id(e)) for e in occurrences)))
+        related=sorted((event for event in self.data.activity
+                        if (item.get('agent_id') or item.get('session_id'))
+                        and (event.get('agent_id')==item.get('agent_id') if item.get('agent_id') else
+                            event.get('session_id')==item.get('session_id') and event.get('service')==item.get('service'))
+                        and event_id(event)!=event_id(item)),key=lambda e:e.get('time_unix_nano',0))
+        before=[e for e in related if e.get('time_unix_nano',0)<=item['time_unix_nano']][-3:]
+        after=[e for e in related if e.get('time_unix_nano',0)>item['time_unix_nano']][:3]
+        sections.append(('Nearby recorded activity (loaded window)', '\n'.join(
+            when(e['time_unix_nano'])+' · '+str(e.get('result') or '')+' · '+headline(e) for e in before+after)
+            or 'No surrounding events loaded. Use Older / Newer to browse retained history.'))
         if item.get('metadata'):
             sections.append(('Runtime metadata',item['metadata']))
         self.inspect('activity-detail',headline(item),[('Agent',item.get('service')),('Type',item.get('domain')),('Result',str(status(item.get('result')))),
@@ -3022,6 +3113,7 @@ class ObservatoryApp(App):
             button.label='Prompts ●' if self.prompts_only else 'Prompts'
             if self.prompts_only and 'activity' in self.errors_only:
                 self.errors_only.remove('activity')
+                self.feed.activity_errors=False
                 errors=self.query_one('#errors-activity',Button)
                 errors.remove_class('-on');errors.label='Errors'
             self.last_update=-1;self.feed.request_refresh();self.refresh_data()
@@ -3038,6 +3130,9 @@ class ObservatoryApp(App):
             else:self.errors_only.add(page)
             event.button.set_class(page in self.errors_only,'-on')
             event.button.label='Errors ●' if page in self.errors_only else 'Errors'
+            if page=='activity':
+                self.feed.activity_errors='activity' in self.errors_only
+                self.feed.request_refresh()
             self.last_update=-1;self.refresh_data()
         elif event.button.id.startswith('clear-'):
             field=self.query_one('#search-'+event.button.id.removeprefix('clear-'),Input)
@@ -3098,11 +3193,20 @@ class ObservatoryApp(App):
 
     def action_pause(self):
         self.feed.paused=not self.feed.paused
-        self.query_one('#pause',Button).label='Resume' if self.feed.paused else 'Pause'
-        self.feed.request_refresh();self.refresh_data()
+        self.paused_views.clear()
+        self.pause_change_key=None
+        self.pause_change_count=0
+        if self.feed.paused:
+            self.paused_views[self.paused_view_key(self.data)]=self.data
+        self.last_update=-1
+        self.refresh_data()
+        if not self.feed.paused:self.feed.request_refresh()
+
+    def action_usage(self):
+        self.push_screen(UsageScreen(self.data.totals),self.resume_cockpit)
 
     def action_help(self):
-        self.notify('↑/↓ move · Enter inspect · / search · e expand · Tab controls · Ctrl+P palette · d diagnostics · x export · p pause · q quit',timeout=8)
+        self.notify('↑/↓ move · Enter inspect · / search · e expand · Ctrl+P palette · u usage · d diagnostics · x export · p pause/follow · q quit',timeout=8)
 
     def action_diagnostics(self):
         self.push_screen(DiagnosticsScreen(self.feed.snapshot.local_status),self.resume_cockpit)
@@ -3156,7 +3260,17 @@ class ObservatoryApp(App):
             'agent_filter_before_errors':self.agent_filter_before_errors,
             'scope_value':self.scope_value,'selected_source':self.selected_source,
             'evidence_scope_subtree':self.evidence_scope_subtree,
+            'selected_activity':self.selected_activity,'selected_mcp':self.selected_mcp,
+            'selected_finding':self.selected_finding,'selected_metric':self.selected_metric,
+            'selected_trace':self.feed.selected_trace,'selected_span_id':self.feed.selected_span_id,
+            'pinned_trace':self.feed.pinned_trace,'search_queries':dict(self.search_queries),
+            'errors_only':set(self.errors_only),'prompts_only':self.prompts_only,
+            'history':{name:list(cursors) for name,cursors in self.feed.history.items()},
+            'history_scopes':dict(self.feed.history_scopes),
+            'activity_record':self.table_data.get('activity-table',{}).get(self.selected_activity),
+            'activity_fallback_trace':self.activity_fallback_trace,'activity_fallback_scope':self.activity_fallback_scope,
             'scroll':{widget.id:widget.scroll_offset for widget in self.query('#'+page+' RichLog, #'+page+' DataTable')}})
+        self.navigation_history=self.navigation_history[-32:]
         self.query_one('#history-back',Button).disabled=False
 
     def action_history_back(self):
@@ -3170,6 +3284,30 @@ class ObservatoryApp(App):
         self.evidence_scope_subtree=location.get('evidence_scope_subtree',self.evidence_scope_subtree)
         self.scope_value=location.get('scope_value',self.scope_value)
         self.selected_source=location.get('selected_source',self.selected_source)
+        for name in ('selected_activity','selected_mcp','selected_finding','selected_metric'):
+            setattr(self,name,location.get(name))
+        self.activity_fallback_trace=location['activity_fallback_trace']
+        self.activity_fallback_scope=location['activity_fallback_scope']
+        self.search_queries=dict(location['search_queries'])
+        for page,value in self.search_queries.items():
+            if page in self.search_timers:self.search_timers.pop(page).stop()
+            field=self.query_one('#search-'+page,Input)
+            with field.prevent(Input.Changed):field.value=value
+            self.query_one('#clear-'+page,Button).disabled=not value
+        self.errors_only=set(location['errors_only'])
+        self.prompts_only=location['prompts_only']
+        self.sync_activity_controls()
+        for name in ('selected_trace','selected_span_id','pinned_trace'):
+            setattr(self.feed,name,location[name])
+        self.feed.query=self.search_queries['traces']
+        self.feed.activity_query=self.search_queries['activity']
+        self.feed.mcp_query=self.search_queries['mcp']
+        self.feed.history={name:list(cursors) for name,cursors in location['history'].items()}
+        self.feed.history_scopes=dict(location['history_scopes'])
+        if location['activity_record']:
+            self.table_data.setdefault('activity-table',{})[self.selected_activity]=location['activity_record']
+        self.sync_evidence_scope()
+        self.feed.request_refresh()
         self.action_page(location['page'])
         if location['expanded']:self.action_expand()
         def restore():
@@ -3197,7 +3335,7 @@ class ObservatoryApp(App):
         if page=='activity':self.selected_activity=None
         if page=='mcp':self.selected_mcp=None
         if page=='findings':self.selected_finding=None
-        if not self.feed.navigate_history(page,direction):
+        if not self.feed.navigate_history(page,direction,snapshot=self.data):
             self.selected_activity,self.selected_mcp,self.selected_finding=old
             return
         self.last_update=-1;self.refresh_data()
@@ -3280,17 +3418,54 @@ class ObservatoryApp(App):
         self.query_one('#'+target).focus()
         self.notify('Expanded detail · Esc to return',timeout=2)
     def action_focus_agent(self):
-        if self.selected_source:
+        if self.selected_source and self.query_one('#pages',TabbedContent).active=='agents':
             self.remember_location()
-            self.selected_activity=getattr(self,'agent_primary_event_id',None)
-            self.query_one('#scope',Select).value=self.selected_source
+            target=getattr(self,'agent_primary_event_id',None)
+            record=self.table_data.get('agent-actions',{}).get(target)
+            self.activity_fallback_trace=self.linked_agent_trace()
+            # Apply scope synchronously: an asynchronous Select.Changed used to
+            # clear the exact failed event after we had already selected it.
+            self.scope_value=self.selected_source
+            picker=self.query_one('#scope',Select)
+            with picker.prevent(Select.Changed):picker.value=self.scope_value
+            self.evidence_scope_subtree=False
+            evidence=self.query_one('#evidence-scope',Select)
+            with evidence.prevent(Select.Changed):evidence.value='exact'
+            self.sync_evidence_scope()
+            self.activity_fallback_scope=self.current_evidence_scope()
+            self.prompts_only=False
+            if self.agent_filter=='errors' or self.agent_has_failures or (record and failed(record)):
+                self.errors_only.add('activity')
+            else:self.errors_only.discard('activity')
+            self.search_queries['activity']=''
+            if 'activity' in self.search_timers:self.search_timers.pop('activity').stop()
+            field=self.query_one('#search-activity',Input)
+            with field.prevent(Input.Changed):field.value=''
+            self.query_one('#clear-activity',Button).disabled=True
+            self.feed.activity_query=''
+            self.feed.history['activity']=[None]
+            self.sync_activity_controls()
+            self.selected_activity=target if record and (not self.feed.activity_errors or failed(record)) else None
+            self.table_data['activity-table']={target:record} if self.selected_activity else {}
+            self.feed.request_refresh()
             self.action_page('activity')
+            self.last_update=-1;self.refresh_data()
+
+    def sync_activity_controls(self):
+        self.feed.activity_prompts=self.prompts_only
+        self.feed.activity_errors='activity' in self.errors_only
+        for button in self.query('.error-filter'):
+            enabled=button.id.removeprefix('errors-') in self.errors_only
+            button.set_class(enabled,'-on');button.label='Errors ●' if enabled else 'Errors'
+        button=self.query_one('#prompts-activity',Button)
+        button.set_class(self.prompts_only,'-on');button.label='Prompts ●' if self.prompts_only else 'Prompts'
     def action_reviews(self):self.query_one('#reviews',Checkbox).toggle()
     def action_all(self):
         self.selected_activity=self.selected_mcp=self.selected_finding=None
         if self.agent_filter=='errors':self.agent_filter=self.agent_filter_before_errors
         self.query_one('#scope',Select).value='all'
         self.errors_only.clear()
+        self.feed.activity_errors=False
         self.prompts_only=False;self.feed.activity_prompts=False
         for button in self.query('.error-filter'):
             button.remove_class('-on');button.label='Errors'
@@ -3497,6 +3672,7 @@ class ObservatoryApp(App):
             item=(self.table_data.get('mcp-table',{}).get(self.selected_mcp) if page=='mcp' else
                   self.table_data.get('activity-table',{}).get(self.selected_activity) if page=='activity' else
                   self.table_data.get('finding-table',{}).get(self.selected_finding))
+            if page=='activity' and item is None:item=self.activity_trace_fallback()
             if page=='findings' and item:
                 span_id=next((entry.get('id') for entry in item.get('evidence',[])
                               if entry.get('type')=='span'),None)
@@ -3508,6 +3684,11 @@ class ObservatoryApp(App):
         self.jump_span=item.get('span_id')
         self.feed.selected_span_id=self.jump_span
         self.feed.selected_trace=item['trace_id'];self.feed.pinned_trace=True;self.feed.request_refresh();self.action_page('traces')
+
+    def activity_trace_fallback(self):
+        if 'activity' in self.errors_only and self.activity_fallback_scope==self.current_evidence_scope():
+            return self.activity_fallback_trace
+        return None
 
     def action_review_attention(self):
         item=getattr(self,'source_map',{}).get(self.selected_source)
