@@ -38,7 +38,7 @@ from .ui_preferences import Preferences
 from .ui_export import ExportScreen
 from .ui_render import update_status_text
 from .ui_coverage import analysis_coverage
-from .ui_monitoring import (UsageScreen, SortScreen, usage_summary, changed_records, failed,
+from .ui_monitoring import (UsageScreen, SortScreen, task_usage_summary, session_usage, changed_records, failed,
                             failure_groups, event_id, connection_feedback)
 
 
@@ -1529,7 +1529,7 @@ class ObservatoryApp(App):
             ('Inspect next descendant needing attention','Navigate to the next descendant evidence',self.action_inspect_next_attention),
             ('Scope evidence to this agent or subtree','Switch related Activity, MCP, Traces and Findings scope',lambda:self.query_one('#evidence-scope',Select).toggle()),
             ('Pause or follow live','Freeze the view or catch up with incoming records; collection continues',self.action_pause),
-            ('Show tokens and spend','Inspect stored token totals, reported cost, and the per-task average',self.action_usage),
+            ('Show tokens and spend','Inspect the selected task’s cost, tokens, and cache usage',self.action_usage),
             ('Open diagnostics','Inspect local collection health',self.action_diagnostics),
             ('Retry connection now','Retry the receiver without waiting for the next poll',self.action_retry_connection),
             ('Copy selected evidence','Copy selected evidence or the current record',self.action_copy),
@@ -1879,9 +1879,6 @@ class ObservatoryApp(App):
             return
         if data.updated==self.last_update:return
         self.last_update=data.updated;self.data=data
-        usage_text,usage_details=usage_summary(data.totals)
-        self.query_one('#usage-summary',Static).update(usage_text+' · u Details')
-        self.query_one('#usage-summary').tooltip=usage_details
         agents=sources(data,self.feed.include_reviews)
         work=[item for item in agents if not item['review']]
         observed_work=[item for item in work if item.get('discovery_state')!='announced']
@@ -1942,7 +1939,6 @@ class ObservatoryApp(App):
         self.query_one('#mcp-servers').tooltip=(
             'Calls are individual calls with operation details. Metric calls are Cursor aggregate counts; '
             'they cannot be opened or attributed to a session. Calls without a reported server are listed separately.')
-        self.stat('usage',observed_count(data.totals,'input_tokens')+' / '+observed_count(data.totals,'output_tokens'),'Tokens in / out','Includes cached input')
         self.query_one('#stat-sessions').tooltip=(
             f'{len(active)} working · {len(observed_work)} observed agents · {recent} recently updated\n'
             f'{groups} task groups · {workers} delegated workers · {unlinked} unlinked/unresolved\n'
@@ -1950,12 +1946,6 @@ class ObservatoryApp(App):
             +' · '.join(f'{name}: {count} working' for name,count in runtimes.items())
             +'\nWorking includes quiet unfinished turns and exact process CPU / I/O progress, not every open terminal. '
              'Spawn announcements are not counted as working.')
-        self.query_one('#stat-usage').tooltip=(
-            'Recorded token totals; repeated and cached input is included. '
-            f"Cache read {observed_count(data.totals,'cache_read_input_tokens')} · "
-            f"cache write {observed_count(data.totals,'cache_write_input_tokens')} · "
-            f"reasoning output {observed_count(data.totals,'reasoning_output_tokens')}. "
-            'Breakdowns are already included in headline totals. This is not a billable cost estimate.')
         options=[('All agent sessions','all')]+[(f"{item['runtime']} · {item.get('project') or 'SDK'} · {(item.get('session_id') or item['id'])[-6:]}",item['id']) for item in agents]
         if options!=self.scope_options:
             picker=self.query_one('#scope',Select);old=self.scope_value
@@ -1973,6 +1963,30 @@ class ObservatoryApp(App):
         render=getattr(self,'render_'+page,None)
         if render:render()
         if page in {'activity','mcp','traces','findings'}:self.render_paging(page)
+        self.refresh_task_usage()
+
+    def selected_task_usage(self):
+        page=self.query_one('#pages',TabbedContent).active
+        if page=='traces':
+            identity=self.feed.selected_trace
+            detail=self.data.detail
+            usage=(detail.get('summary') or {}) if identity and detail.get('trace_id')==identity else next(
+                (row for row in self.data.traces if identity and row.get('trace_id')==identity),{})
+            return usage,usage.get('task') or 'Selected trace', 'trace',identity or ''
+        key=self.selected_source if page=='agents' or self.scope_value=='all' else self.scope_value
+        item=getattr(self,'source_map',{}).get(key) or {}
+        return session_usage(self.data.sessions,item),task_preview(item),'session',item.get('session_id') or ''
+
+    def refresh_task_usage(self):
+        if not self.query('#usage-summary'):return
+        usage,title,scope,identity=self.selected_task_usage()
+        summary,details=task_usage_summary(usage,title,scope=scope,identity=identity,compact=self.size.width<100)
+        lines=summary.splitlines();lines[0]+=' · u Details'
+        self.query_one('#usage-summary',Static).update('\n'.join(lines))
+        self.query_one('#usage-summary').tooltip=details
+        self.stat('usage',observed_count(usage,'input_tokens')+' / '+observed_count(usage,'output_tokens'),
+                  'Task tokens in / out','Cache included · u Details')
+        self.query_one('#stat-usage').tooltip=details
 
     def hierarchy_for(self,agents):
         """Reuse one adjacency index until structural relationships change."""
@@ -2619,6 +2633,7 @@ class ObservatoryApp(App):
         return fields, sections
 
     def show_agent(self):
+        self.refresh_task_usage()
         item=getattr(self,'source_map',{}).get(self.selected_source)
         button=self.query_one('#agent-summary',Button)
         button.display=self.ai_summary_available and bool(item)
@@ -2652,12 +2667,8 @@ class ObservatoryApp(App):
                 self.inspect('agent-detail','No agent sessions found',[],[('Next step',FIRST_RUN),('Diagnostics / retention','Press d for source paths, read health, and retention instructions.')])
             return
         self.query_one('#agent-open',Button).disabled=False
-        summary=next((entry for entry in self.data.sessions
-                      if item.get('agent_id') and entry.get('agent_id')==item.get('agent_id')),None)
-        if summary is None:
-            summary=next((entry for entry in self.data.sessions
-                if item.get('session_id') and entry.get('session_id')==item.get('session_id')
-                and (not entry.get('agent_id') or not item.get('agent_id'))),{})
+        summary=session_usage(self.data.sessions,item)
+        usage_text,_=task_usage_summary(summary,task_preview(item),identity=item.get('session_id') or '',compact=self.size.width<100)
         self.agent_has_failures=(item.get('state') in {'Error','Failed','Incomplete'} or
                                  any(item.get(key) or summary.get(key) for key in ('errors','failed','incomplete')))
         trace_button=self.query_one('#agent-trace',Button)
@@ -2734,6 +2745,7 @@ class ObservatoryApp(App):
             if item['stamp']:
                 fields.append(('Updated',age(item['stamp'])))
             sections=[('Latest recorded action',brief_activity(recorded) if recorded else 'No activity captured yet.')]
+            sections.insert(0,('Task usage',usage_text))
             if failure_detail:
                 sections.insert(0,('Failure details',failure_detail))
             if request_text:
@@ -2753,17 +2765,11 @@ class ObservatoryApp(App):
                 hierarchy_sections+sections+ai_sections,overview=True)
             return
         preview=session_event_preview(recorded)
-        work_detail=(f"{reported_number(summary.get('trace_count'))} traces · {reported_number(item.get('spans'))} spans · "
-                     f"{observed_count(summary,'input_tokens')} in / {observed_count(summary,'output_tokens')} out")
-        token_detail=(f"Cache read {observed_count(summary,'cache_read_input_tokens')} · "
-                      f"cache write {observed_count(summary,'cache_write_input_tokens')} · "
-                      f"reasoning output {observed_count(summary,'reasoning_output_tokens')}")
-        cost_detail=('Not reported' if not summary or summary.get('unknown_cost_runs') or summary.get('known_cost_usd') is None
-                     else f"${summary.get('known_cost_usd',0):.4f} known")
+        work_detail=f"{reported_number(summary.get('trace_count'))} traces · {reported_number(item.get('spans'))} spans"
         detail_fields=[('Session ID',item.get('session_id') or item['id']),
             ('Repo / project',item.get('project')),('Branch',item.get('branch')),('Model',item.get('model'))]
         if summary:
-            detail_fields.extend([('Work',work_detail),('Token breakdown',token_detail),('Cost',cost_detail)])
+            detail_fields.append(('Work',work_detail))
         session_details='\n'.join(f'{label}: {value}' for label,value in detail_fields if value)
         fields=[('Agent',item['runtime']),('Status',item['state'])]
         if item['state']=='Waiting' or item.get('waiting_for'):
@@ -2806,7 +2812,7 @@ class ObservatoryApp(App):
         hierarchy_fields,hierarchy_sections=self.hierarchy_sections(item)
         fields.extend(hierarchy_fields)
         self.inspect('agent-detail',clean(task_preview(item) or f"Untitled session · {item.get('runtime') or 'agent'}"),fields,
-            [('Recorded user prompts',prompt_history),('Latest recorded event',preview),
+            [('Task usage',usage_text),('Recorded user prompts',prompt_history),('Latest recorded event',preview),
              ('Status evidence',session_excerpt(wait_summary(item),lines=3)),
              ('Recorded failures',f"{int(summary['errors'])} across observed runs · open Failures below"
                 if summary.get('errors') else brief_activity(error_event)+' · open Failed call below' if error_event else None),
@@ -2915,6 +2921,7 @@ class ObservatoryApp(App):
              ('Evidence',evidence),('Trace ID',item.get('trace_id') or 'Not linked')])
 
     def show_spans(self):
+        self.refresh_task_usage()
         detail=self.data.detail
         if not detail.get('trace_id'):
             tree=self.query_one('#span-tree',Tree);tree.clear()
@@ -2985,7 +2992,9 @@ class ObservatoryApp(App):
         elif name=='trace-table':
             if self.feed.pinned_trace and self.data.detail.get('trace_id')!=self.feed.selected_trace:return
             if self.feed.selected_trace!=item['trace_id']:
-                self.feed.selected_trace=item['trace_id'];self.feed.pinned_trace=True;self.feed.request_refresh()
+                self.feed.selected_trace=item['trace_id'];self.feed.pinned_trace=True
+                self.refresh_task_usage()
+                self.feed.request_refresh()
                 self.feed.selected_span_id=None
                 self.query_one('#span-tree',Tree).root.set_label(Text('Loading selected trace…'))
 
@@ -3281,7 +3290,8 @@ class ObservatoryApp(App):
         self.refresh_data()
 
     def action_usage(self):
-        self.push_screen(UsageScreen(self.data.totals),self.resume_cockpit)
+        usage,title,scope,identity=self.selected_task_usage()
+        self.push_screen(UsageScreen(details=task_usage_summary(usage,title,scope=scope,identity=identity)[1]),self.resume_cockpit)
 
     def action_help(self):
         self.notify('↑/↓ move · Enter inspect · / search · e expand · Ctrl+P palette · u usage · d diagnostics · x export · p pause/follow · q quit',timeout=8)

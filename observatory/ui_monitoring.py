@@ -137,6 +137,59 @@ def usage_summary(totals):
     return '\n'.join(lines), details
 
 
+def session_usage(sessions, item):
+    """Match one agent's session, never another worker sharing its session ID."""
+    if not item:return {}
+    if item.get('agent_id'):
+        exact=next((row for row in sessions if row.get('agent_id')==item['agent_id']),None)
+        if exact is not None:return exact
+    return next((row for row in sessions if item.get('session_id')
+                 and row.get('session_id')==item['session_id']
+                 and not row.get('agent_id')), {})
+
+
+def task_usage_summary(usage, title='', *, scope='session', identity='', compact=False):
+    known=lambda key: usage.get(key) is not None and usage.get(key+'_reported') is not False
+    partial=usage.get('usage_complete') is False
+    token=lambda key: f"{int(usage[key]):,}"+('+' if partial else '') if known(key) else 'Not reported'
+    tokens=(f"{int(usage['input_tokens'])+int(usage['output_tokens']):,}"+('+' if partial else '')
+            if known('input_tokens') and known('output_tokens') else 'Not reported')
+    runs=usage.get('trace_count',1 if scope=='trace' and usage else 0)
+    missing=usage.get('unknown_cost_runs',int(usage.get('cost_complete') is False))
+    cost=usage.get('known_cost_usd')
+    priced=max(0,runs-missing)
+    cost_known=cost is not None and (priced>0 or cost>0)
+    complete=usage.get('cost_complete') is not False and not missing
+    money=f'${cost:,.4f}'+('+' if not complete else '') if cost_known else 'Not reported'
+    ratio=(f"{100*usage['cache_read_input_tokens']/usage['input_tokens']:.0f}%"
+           if not partial and known('input_tokens') and known('cache_read_input_tokens')
+           and usage['input_tokens']>0 and 0<=usage['cache_read_input_tokens']<=usage['input_tokens'] else 'Not reported')
+    def short(value):
+        if not compact:return f'{value:,}'
+        return f'{value/1_000_000:.1f}m' if value>=1_000_000 else f'{value/1000:.1f}k' if value>=1000 else str(value)
+    screen_token=lambda key: short(int(usage[key]))+('+' if partial else '') if known(key) else 'Not reported'
+    screen_total=(short(int(usage['input_tokens'])+int(usage['output_tokens']))+('+' if partial else '')
+                  if known('input_tokens') and known('output_tokens') else 'Not reported')
+    lines=[f'Task cost {money} · Tokens {screen_total}',
+           f"Cache read {screen_token('cache_read_input_tokens')} · write {screen_token('cache_write_input_tokens')}"+
+           (f' · hit {ratio}' if ratio!='Not reported' else '')]
+    details='\n'.join([
+        'SELECTED TASK USAGE',title or 'No task selected','',
+        f'Cost: {money}',f'Tokens used: {tokens}',
+        f"Input: {token('input_tokens')}",f"Output: {token('output_tokens')}",
+        f"Cache read: {token('cache_read_input_tokens')}",f"Cache write: {token('cache_write_input_tokens')}",
+        f'Cache hit: {ratio} of input tokens',f"Reasoning output: {token('reasoning_output_tokens')}",'',
+        ('Scope: this recorded run (trace).' if scope=='trace' else
+         'Scope: this agent session across its recorded runs; excludes other agents and sessions.'),
+        ('Trace: ' if scope=='trace' else 'Session: ')+(identity or 'Not reported'),'',
+        'Cache reads/writes are input breakdowns; reasoning is an output breakdown. Do not add them to total tokens.',
+        'Cache hit means cached input divided by reported input tokens, not a request hit rate.',
+        'A + marks a partial reported subtotal. Missing telemetry is not zero.',
+        'Cost is reported USD for this task, not an all-history total or a subscription bill estimate.',
+        'Press Esc to return.'])
+    return '\n'.join(lines),details
+
+
 class UsageScreen(ModalScreen):
     DEFAULT_CSS = '''
     UsageScreen { align: center middle; background: $background 70%; }
@@ -146,17 +199,19 @@ class UsageScreen(ModalScreen):
     '''
     BINDINGS = [('escape', 'dismiss', 'Close')]
 
-    def __init__(self, totals):
+    def __init__(self, totals=None, *, details=None):
         super().__init__()
-        self.details = usage_summary(totals)[1]
+        self.details = details if details is not None else usage_summary(totals or {})[1]
 
     def compose(self):
         with Vertical(id='usage-dialog'):
-            yield RichLog(id='usage-log', wrap=True, markup=False)
+            yield RichLog(id='usage-log', wrap=True, markup=False, min_width=1, auto_scroll=False)
             yield Button('Close · Esc', id='usage-close')
 
     def on_mount(self):
-        self.query_one(RichLog).write(Text(self.details))
+        log=self.query_one(RichLog)
+        log.write(Text(self.details))
+        log.focus()
 
     @on(Button.Pressed, '#usage-close')
     def close_dialog(self):
