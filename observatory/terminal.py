@@ -134,6 +134,8 @@ class Snapshot:
     pagination: dict = field(default_factory=dict)
     activity_prompts: bool = False
     hierarchy: dict = field(default_factory=dict)
+    activity_errors: bool = False
+    view_scope: tuple = ()
 
 
 class Feed:
@@ -147,6 +149,7 @@ class Feed:
         self.query = ""
         self.activity_query = ""
         self.activity_prompts = False
+        self.activity_errors = False
         self.mcp_query = ""
         self.errors_only = False
         self.selected_trace = None
@@ -182,6 +185,7 @@ class Feed:
                                                 requested_scope.errors_only, requested_scope.selected_trace)
         activity_query, mcp_query = requested_scope.activity_query, requested_scope.mcp_query
         activity_prompts = requested_scope.activity_prompts
+        activity_errors = requested_scope.activity_errors
         requested_span = requested_scope.selected_span_id
         session_id, include_reviews = requested_scope.session_id, requested_scope.include_reviews
         scope_agent, scope_subtree = requested_scope.scope_agent_id, requested_scope.scope_subtree
@@ -190,7 +194,7 @@ class Feed:
             scope=(service,session_id,text,include_reviews,scope_agent,scope_subtree,
                    requested_scope.hierarchy_revision)
             if page=='activity':
-                scope+=(activity_prompts,)
+                scope+=(activity_prompts,activity_errors)
             elif page=='traces':
                 scope+=(errors_only,)
             if self.history_scopes.get(page)!=scope:
@@ -240,7 +244,9 @@ class Feed:
                 result_params = dict(activity_params)
                 if activity_prompts:
                     result_params.update(domain='message', action='user')
-                if activity_query or history['activity'][-1] or activity_prompts:
+                if activity_errors:
+                    result_params['errors_only']=1
+                if activity_query or history['activity'][-1] or activity_prompts or activity_errors:
                     activity_page = get("/api/activity?" + urlencode({**result_params,
                         "q":activity_query,"cursor":history['activity'][-1] or ''}))
                 activity_results = activity_page['activity']
@@ -399,6 +405,10 @@ class Feed:
                                      finding_results=finding_page.get('findings',[]),
                                       queries={'activity':activity_query,'mcp':mcp_query,'traces':query},pagination=pagination,
                                       activity_prompts=activity_prompts,
+                                      activity_errors=activity_errors,
+                                      view_scope=(service,session_id,scope_agent,scope_subtree,include_reviews,
+                                          activity_query,mcp_query,query,activity_prompts,activity_errors,
+                                          tuple((page,cursors) for page,cursors in history.items())),
                                       hierarchy=local_status.get('hierarchy',{}))
         except Exception as exc:
             if self.stop.is_set():
@@ -427,9 +437,9 @@ class Feed:
         self.refresh_once = True
         self.wake.set()
 
-    def navigate_history(self, page, direction):
+    def navigate_history(self, page, direction, *, snapshot=None):
         cursors=self.history[page]
-        next_cursor=self.snapshot.pagination.get(page,{}).get('next_cursor')
+        next_cursor=(snapshot or self.snapshot).pagination.get(page,{}).get('next_cursor')
         if direction=='older' and next_cursor:
             self.history[page]=[*cursors,next_cursor]
         elif direction=='newer' and len(cursors)>1:
@@ -445,9 +455,10 @@ class Feed:
 
     def _loop(self):
         while not self.stop.is_set():
-            if not self.paused or self.refresh_once:
-                self.refresh_once = False
-                self.refresh()
+            # Pause freezes the cockpit's view, not collection or its knowledge
+            # of arriving records. Explicit navigation still gets fresh evidence.
+            self.refresh_once = False
+            self.refresh()
             self.wake.wait(self.POLL_SECONDS)
             self.wake.clear()
 
