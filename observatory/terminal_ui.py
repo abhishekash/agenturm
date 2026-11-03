@@ -1846,14 +1846,16 @@ class ObservatoryApp(App):
         self.screen.set_class(connecting,'connecting')
         state_color='#ffbd69' if state=='Loading delayed' else '#ff8799' if live.error else '#ffbd69' if connecting else '#86e3b5'
         notice=self.query_one('#connection-notice')
-        notice.display=connecting
+        # Background polls must never insert/remove rows above the workspace.
+        # After the first snapshot, the fixed header/footer own connection feedback.
+        notice.display=connecting and not live.updated
         progress=self.query_one('#connection-progress',Static)
         update_status_text(progress,Text(feedback))
         progress.tooltip=feedback+'\n'+self.feed.api.endpoint
         self.query_one('#retry-connection',Button).disabled=self.feed.retry_requested
         endpoint=self.feed.api.endpoint.removeprefix('http://').removeprefix('https://')
         connection_widget=self.query_one('#connection',Static)
-        connection_widget.tooltip=state+' · '+endpoint
+        connection_widget.tooltip=(feedback+'\n' if feedback else state+' · ')+endpoint
         pause_button=self.query_one('#pause',Button)
         pause_button.label='Follow live' if self.feed.paused else 'Pause'
         pause_button.tooltip='Resume current data and live sorting · p' if self.feed.paused else 'Freeze this view; collection continues · p'
@@ -1862,7 +1864,7 @@ class ObservatoryApp(App):
         local=urlsplit(self.feed.api.endpoint).hostname in {'localhost','127.0.0.1','::1'}
         connection.append(state if connecting else 'Paused' if self.feed.paused else 'Live', style=state_color)
         update_status_text(connection_widget,themed_text(connection_widget,connection))
-        health_text=(live.error if live.error else feedback.split('\n')[0]+' · R Retry now' if connecting else
+        health_text=((feedback.split('\n')[0]+' · R Retry now' if self.feed.retry_requested else live.error+' · R Retry now') if live.error else feedback.split('\n')[0]+' · R Retry now' if connecting else
             f"{'Paused · '+str(self.pause_change_count)+' changed records · p Follow live' if self.feed.paused else 'Updated '+age(int(data.updated*1e9))}  ·  {self.scope_label()}  ·  {'Reviews included' if self.feed.include_reviews else 'Reviews hidden'}")
         source_diagnostics=[entry.get('diagnostics') or {} for entry in data.local_status.get('sessions',[])]
         backlog_sources=sum(bool(item.get('backlog_bytes',0)) for item in source_diagnostics)
