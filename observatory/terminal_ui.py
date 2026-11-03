@@ -1114,7 +1114,11 @@ class ObservatoryApp(App):
     Input > .input--selection { background: $agent-selection; color: $agent-on-selection; }
     .clear-search { width: 9; }
     .clear-search:disabled { display: none; }
-    .error-filter { width: 12; margin-right: 1; }
+    .error-filter { width: 12; margin-right: 1; color: $agent-error; background: $agent-error-surface; }
+    #agent-errors { display: none; height: 1; min-width: 0; width: 12; padding: 0; margin-right: 1; border: none; color: $agent-error; background: $agent-error-surface; text-style: bold; }
+    #controls.agents-active #agent-errors { display: block; }
+    #agent-errors:hover, #agent-errors:focus { color: $agent-primary; background: $agent-error; }
+    #agent-errors.-on { color: $agent-canvas; background: $agent-error; }
     .error-filter.-on { color: $agent-error; border: none; background: $agent-error-surface; text-style: bold; }
     .prompt-filter { width: 12; margin-right: 1; }
     .prompt-filter.-on { color: $agent-primary; border: none; background: $agent-focus; text-style: bold; }
@@ -1251,6 +1255,7 @@ class ObservatoryApp(App):
         self.scope_options=None
         self.scope_value='all'
         self.agent_filter='recent'
+        self.agent_filter_before_errors='recent'
         self.agent_sort_desc=True
         self.agent_order=[]
         self.agent_order_ids=[]
@@ -1320,8 +1325,9 @@ class ObservatoryApp(App):
         return Horizontal(
             Button('← Back',id='history-back',disabled=True,tooltip='Return to the event you opened · Alt+Left'),
             Static('Show:',classes='control-label'),
-            Select([('Recent','recent'),('Active','active'),('All','all')],
+            Select([('Recent','recent'),('Active','active'),('All','all'),('Errors','errors')],
                    value='recent',allow_blank=False,id='agent-filter',tooltip='Recent shows working sessions and the last finished session'),
+            Button('Errors 0',id='agent-errors',tooltip='Show sessions with recorded failures or incomplete runs, including older sessions'),
             Button('Reorder',id='refresh-order',tooltip='List changed; apply queued ordering without losing your selected session'),
             Button('Updated ↓',id='agent-sort',tooltip='Sort by updated time. Working stays on top; terminated stays at the bottom.'),
             Static('Session',id='scope-label'),
@@ -1435,6 +1441,7 @@ class ObservatoryApp(App):
             ('Show recent sessions','Show working sessions and the most recently finished session',lambda:self.set_agent_filter('recent')),
             ('Show active sessions','Show only working sessions',lambda:self.set_agent_filter('active')),
             ('Show all sessions','Show the full session history',lambda:self.set_agent_filter('all')),
+            ('Show session errors','Show failed or incomplete sessions, including older history',lambda:self.set_agent_filter('errors')),
             ('Sort sessions by newest update','Newest updated first inside fixed status groups',lambda:self.set_agent_sort(True)),
             ('Sort sessions by oldest update','Oldest updated first inside fixed status groups',lambda:self.set_agent_sort(False)),
             ('Switch sort direction','Toggle newest/oldest update ordering',self.action_toggle_sort),
@@ -1454,7 +1461,6 @@ class ObservatoryApp(App):
 
     def set_agent_filter(self,value):
         self.agent_filter=value
-        self.selected_source=None
         self.agent_order_key=None
         self.agent_order_pending=False
         self.last_update=-1
@@ -1681,7 +1687,8 @@ class ObservatoryApp(App):
         text='Filtering…' if waiting else quantity(count,('matching '+noun) if query else noun,
                                                     ('matching '+plural) if query and plural else plural)
         if not waiting and query and not count:text+=' · Clear to remove this filter'
-        if page=='agents' and not query and not count and self.scope_value=='all':
+        if page=='agents' and self.agent_filter=='errors':text+=' · errors only'
+        if page=='agents' and not query and not count and self.scope_value=='all' and self.agent_filter!='errors':
             text+=' · Start an agent in its terminal · d Setup / diagnostics'
         if page=='activity' and self.prompts_only:text+=' · user prompts only'
         if page in self.errors_only:text+=' · errors only'
@@ -1899,9 +1906,23 @@ class ObservatoryApp(App):
             recent_ids.add(latest_finished['id'])
         counts={'recent':len(recent_ids),'active':sum(bool(item.get('active')) for item in scoped_agents),
                 'all':len(scoped_agents)}
+        aggregates={row.get('agent_id'):row for row in self.data.sessions if row.get('agent_id')}
+        legacy={row.get('session_id'):row for row in self.data.sessions if not row.get('agent_id')}
+        def has_errors(item):
+            aggregate=aggregates.get(item.get('agent_id')) or legacy.get(item.get('session_id')) or {}
+            return (item.get('state') in {'Error','Failed','Incomplete'} or
+                    any(item.get(key) or aggregate.get(key) for key in ('errors','failed','incomplete')) or
+                    str((item.get('last_activity') or {}).get('result','')).casefold() in
+                    {'error','failed','denied','blocked','policy_denied','incomplete'})
+        error_ids={item['id'] for item in scoped_agents if has_errors(item)}
+        counts['errors']=len(error_ids)
+        error_button=self.query_one('#agent-errors',Button)
+        error_button.label=f"Errors {'● ' if self.agent_filter=='errors' else ''}{counts['errors']}"
+        error_button.set_class(self.agent_filter=='errors','-on')
         filter_options=[(f'Recent {counts["recent"]}','recent'),
                         (f'Active {counts["active"]}','active'),
-                        (f'All {counts["all"]}','all')]
+                        (f'All {counts["all"]}','all'),
+                        (f'Errors {counts["errors"]}','errors')]
         picker=self.query_one('#agent-filter',Select)
         with picker.prevent(Select.Changed):
             if filter_options!=self.agent_filter_options:
@@ -1911,6 +1932,7 @@ class ObservatoryApp(App):
                 picker.value=self.agent_filter
 
         def filter_match(item):
+            if self.agent_filter=='errors':return item['id'] in error_ids
             if self.agent_filter=='all':return True
             if self.agent_filter=='active':return bool(item.get('active'))
             return item['id'] in recent_ids
@@ -1961,28 +1983,18 @@ class ObservatoryApp(App):
                         if agent_query or self.agent_filter!='all':
                             expanded.add(parent)
                         parent=overrides.get(parent,actual_parents.get(parent))
-            hint=None
-            if self.agent_order_ids:
-                hint={agent_id:index for index,agent_id in enumerate(self.agent_order_ids)}
             def tree_sort_key(agent_id):
-                return agent_order_key(graph.nodes.get(agent_id) or {},
-                                       newest_first=self.agent_sort_desc)
-            natural=graph.flatten(expanded,allowed,sort_key=tree_sort_key)
-            frozen=graph.flatten(expanded,allowed,order_hint=hint,
-                                 parent_overrides=overrides,
-                                 sort_key=tree_sort_key) if (hint or overrides) else natural
-            if overrides:
-                self.agent_visual_parents=visual
-            else:
-                self.agent_visual_parents=visual
-            prior_known=set(hint or ())
-            natural_known=[row['agent_id'] for row in natural if row['agent_id'] in prior_known]
-            frozen_known=[row['agent_id'] for row in frozen if row['agent_id'] in prior_known]
-            if prior_known and natural_known!=frozen_known:
-                self.agent_order_pending=True
-            if reparent_pending:
-                self.agent_order_pending=True
-            rows=frozen if (hint or overrides) else natural
+                node=graph.nodes.get(agent_id) or {}
+                summary=graph.summary(agent_id)
+                # Keep a completed parent with live workers near the top without
+                # changing the parent's displayed lifecycle state.
+                branch={**node,'active':bool(node.get('active') or summary['working']),
+                        'stamp':max(node.get('stamp') or 0,summary['last_activity'])}
+                return agent_order_key(branch,newest_first=self.agent_sort_desc)
+            rows=graph.flatten(expanded,allowed,parent_overrides=overrides,
+                               sort_key=tree_sort_key)
+            self.agent_visual_parents=visual
+            self.agent_order_pending=reparent_pending
             visible_agents=[]
             self.agent_row_meta={}
             for position,row in enumerate(rows):
@@ -2018,28 +2030,10 @@ class ObservatoryApp(App):
             self.agent_row_meta={item['id']:item for item in matching}
         order_key=(self.scope_value,agent_query,self.agent_filter,tree_mode,
                    self.agent_sort_desc)
-        if order_key!=self.agent_order_key:
-            self.agent_order_key=order_key
-            self.agent_order=[shown['id'] for shown,_,_,_,_ in visible_agents]
-            self.agent_order_ids=list(desired)
-            self.agent_order_pending=False
-        elif tree_mode:
-            # The tree projection already froze root/sibling order; applying a
-            # second global row freeze would place a new child after unrelated
-            # roots instead of under its parent.
-            self.agent_order=[shown['id'] for shown,_,_,_,_ in visible_agents]
-            self.agent_order_ids=[shown['agent_id'] for shown,_,_,_,_ in visible_agents]
-        else:
-            by_id={shown['id']:(shown,item,row,summary,unlinked)
-                   for shown,item,row,summary,unlinked in visible_agents}
-            stable=[source_id for source_id in self.agent_order if source_id in by_id]
-            stable.extend(shown['id'] for shown,_,_,_,_ in visible_agents
-                          if shown['id'] not in stable)
-            if stable!=[shown['id'] for shown,_,_,_,_ in visible_agents]:
-                self.agent_order_pending=True
-            self.agent_order=stable
-            visible_agents=[by_id[source_id] for source_id in stable]
-            self.agent_order_ids=[shown['agent_id'] for shown,_,_,_,_ in visible_agents]
+        self.agent_order_key=order_key
+        self.agent_order=[shown['id'] for shown,_,_,_,_ in visible_agents]
+        self.agent_order_ids=list(desired)
+        if not tree_mode:self.agent_order_pending=False
         self.query_one('#refresh-order',Button).display=self.agent_order_pending
         self.visible_agent_rows=[shown['id'] for shown,_,_,_,_ in visible_agents]
         if self.selected_source not in self.visible_agent_rows:
@@ -2487,6 +2481,11 @@ class ObservatoryApp(App):
             self.fill('agent-actions',[])
             if self.search_queries['agents']:
                 self.inspect('agent-detail','No matching agent sessions',[],[('Search','Clear the filter in Agent sessions to show all sessions in this scope.')])
+            elif self.agent_filter=='errors':
+                self.inspect('agent-detail','No session errors',[],[
+                    ('Errors','No failed or incomplete sessions in this scope.'),
+                    ('Show sessions','Click Errors again or choose Recent, Active, or All.'),
+                ])
             elif self.agent_filter=='recent':
                 self.inspect('agent-detail','No recent sessions',[],[
                     ('Show all history','Choose All in the session filter to include older sessions.'),
@@ -2990,6 +2989,12 @@ class ObservatoryApp(App):
         if event.button.id=='pause':self.action_pause()
         elif event.button.id=='refresh-order':
             self.refresh_agent_order()
+        elif event.button.id=='agent-errors':
+            if self.agent_filter=='errors':
+                self.set_agent_filter(self.agent_filter_before_errors)
+            else:
+                self.agent_filter_before_errors=self.agent_filter
+                self.set_agent_filter('errors')
         elif event.button.id=='agent-sort':
             self.action_toggle_sort()
         elif event.button.id and event.button.id.startswith('filter-'):
@@ -3139,6 +3144,7 @@ class ObservatoryApp(App):
             'focus':self.focused.id if self.focused else None,
             'tree_mode':self.tree_mode,'expanded_agents':set(self.expanded_agents),
             'collapsed_agents':set(self.collapsed_agents),'agent_filter':self.agent_filter,
+            'agent_filter_before_errors':self.agent_filter_before_errors,
             'scope_value':self.scope_value,'selected_source':self.selected_source,
             'evidence_scope_subtree':self.evidence_scope_subtree,
             'scroll':{widget.id:widget.scroll_offset for widget in self.query('#'+page+' RichLog, #'+page+' DataTable')}})
@@ -3151,6 +3157,7 @@ class ObservatoryApp(App):
         self.expanded_agents=set(location.get('expanded_agents',self.expanded_agents))
         self.collapsed_agents=set(location.get('collapsed_agents',self.collapsed_agents))
         self.agent_filter=location.get('agent_filter',self.agent_filter)
+        self.agent_filter_before_errors=location.get('agent_filter_before_errors','recent')
         self.evidence_scope_subtree=location.get('evidence_scope_subtree',self.evidence_scope_subtree)
         self.scope_value=location.get('scope_value',self.scope_value)
         self.selected_source=location.get('selected_source',self.selected_source)
@@ -3253,6 +3260,7 @@ class ObservatoryApp(App):
     def action_reviews(self):self.query_one('#reviews',Checkbox).toggle()
     def action_all(self):
         self.selected_activity=self.selected_mcp=self.selected_finding=None
+        if self.agent_filter=='errors':self.agent_filter=self.agent_filter_before_errors
         self.query_one('#scope',Select).value='all'
         self.errors_only.clear()
         self.prompts_only=False;self.feed.activity_prompts=False
