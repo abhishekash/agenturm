@@ -25,7 +25,8 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             tabs = app.query_one('#pages > Tabs')
             self.assertGreaterEqual(controls.region.y, tabs.region.bottom)
             self.assertGreaterEqual(results.region.y, controls.region.bottom)
-            self.assertEqual(results.region.y,9)
+            self.assertEqual(app.query_one('#usage-summary').size.height,2)
+            self.assertEqual(results.region.y,11)
             self.assertEqual(app.query_one('#search-agents').size.height,1)
             self.assertEqual(controls.size.height,1)
             self.assertEqual([str(c.label) for c in app.query_one('#agent-table', DataTable).columns.values()],
@@ -413,12 +414,16 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.click('#agent-sort')
             await pilot.pause()
+            await pilot.press('2')
+            await pilot.pause()
             self.assertIn('Updated ↑',str(app.query_one('#agent-sort',Button).label))
             self.assertEqual([key.value for key in table.rows],
                              ['source-1','source-2','source-4','source-3'])
             self.assertEqual(app.selected_source,'source-3')
             self.assertEqual(table.cursor_row,3)
             await pilot.press('o')
+            await pilot.pause()
+            await pilot.press('1')
             await pilot.pause()
             self.assertIn('Updated ↓',str(app.query_one('#agent-sort',Button).label))
             self.assertEqual([key.value for key in table.rows],
@@ -590,7 +595,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             results=app.query_one('#results-agents')
             self.assertEqual(table.row_count,12,'The view retains all agents in its scrollable list')
             inspector=app.query_one('#agent-bottom')
-            self.assertEqual(results.region.y,10)
+            self.assertEqual(results.region.y,12)
             self.assertEqual(results.region.y,inspector.region.y)
             self.assertEqual(results.region.bottom,inspector.region.bottom)
             self.assertEqual(results.region.bottom,app.query_one('#shortcuts').region.y)
@@ -606,7 +611,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             # just the agent list. All 12 sessions remain in the table.
             await pilot.resize_terminal(180,40)
             await pilot.pause()
-            self.assertEqual(results.region.y,8)
+            self.assertEqual(results.region.y,10)
             self.assertEqual(results.region.bottom,inspector.region.bottom)
             self.assertEqual(table.row_count,12)
 

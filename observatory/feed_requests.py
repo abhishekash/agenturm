@@ -4,6 +4,26 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class ConnectionProgress:
+    phase: str = 'connecting'
+    stage: str = 'Checking local receiver'
+    attempt: int = 1
+    started: float = 0
+    retry_at: float = 0
+
+
+def request_stage(path):
+    if path=='/api/health?probe=1':return 'Checking receiver'
+    path=path.split('?',1)[0]
+    return {'/api/health':'Loading local collection status', '/api/metrics':'Loading usage totals',
+            '/api/connections':'Loading agents', '/api/activity':'Loading activity',
+            '/api/sessions':'Loading sessions', '/api/mcp':'Loading tool calls',
+            '/api/traces':'Loading traces', '/api/findings':'Loading findings',
+            '/api/metric-catalog':'Loading metrics', '/api/measurements':'Loading measurements',
+            '/api/usage-series':'Loading usage history'}.get(path,'Loading trace evidence')
+
+
+@dataclass(frozen=True)
 class FeedScope:
     service: str
     session_id: str
@@ -37,8 +57,9 @@ class RequestBatch:
     MAX_WORKERS = 4
     MAX_PREFETCH = 16
 
-    def __init__(self, api, stop):
+    def __init__(self, api, stop, progress=None):
         self.api, self.stop = api, stop
+        self.progress = progress
         self.executor = None
         self.pending = {}
 
@@ -58,6 +79,7 @@ class RequestBatch:
     def get(self, path):
         if self.stop.is_set():
             raise InterruptedError('feed stopped')
+        if self.progress:self.progress(request_stage(path))
         future = self.pending.get(path)
         return future.result() if future is not None else self.api.get(path)
 

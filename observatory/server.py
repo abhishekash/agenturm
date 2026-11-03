@@ -87,6 +87,9 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                 self.end_headers()
                 self.wfile.write(data)
             elif path == "/api/health":
+                if parse_qs(route.query).get('probe')==['1']:
+                    self._json(200, {"ok": True})
+                    return
                 local = getattr(store, "local_agent_monitor", None)
                 self._json(200, {"ok": True, "local_agents": local.status() if local else {"enabled": False}})
             elif path == "/api/connections":
