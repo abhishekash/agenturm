@@ -37,9 +37,12 @@ class BrandingTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(masthead.region.height,max(4,(size[1]//4-2)//2))
                 tabs=app.query_one('#pages > Tabs')
                 self.assertEqual(tabs.region.height,3)
-                self.assertEqual(tabs.region.y,masthead.region.bottom)
+                usage=app.query_one('#usage-summary')
+                self.assertEqual(usage.region.y,masthead.region.bottom)
+                self.assertEqual(usage.size.height,2)
+                self.assertEqual(tabs.region.y,usage.region.bottom)
                 self.assertEqual(tabs.border_title,'Views · 1–7 to switch')
-                self.assertEqual(app.query_one('#results-agents').region.y,masthead.region.height+4)
+                self.assertEqual(app.query_one('#results-agents').region.y,masthead.region.height+6)
                 self.assertEqual(app.query_one('#brand').size.height, 1)
                 for name in ('brand','summary','connection','pause'):
                     self.assertTrue(masthead.region.contains_region(app.query_one('#'+name).region))
@@ -50,7 +53,7 @@ class BrandingTest(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertEqual(app.query_one('#pages',TabbedContent).active,page)
                 self.assertEqual(app.focused,app.query_one('#'+table))
-                self.assertEqual(app.query_one('#results-'+page).region.y,8)
+                self.assertEqual(app.query_one('#results-'+page).region.y,10)
                 self.assertTrue(app.query_one('#summary').display)
 
     async def test_keyboard_hints_are_a_compact_bottom_footer(self):

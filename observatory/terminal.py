@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
-from .feed_requests import FeedScope, RequestBatch
+from .feed_requests import ConnectionProgress, FeedScope, RequestBatch
 from .shutdown import complete_cleanup
 
 
@@ -62,6 +62,8 @@ def trace_name(trace):
 
 class Api:
     MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+    HEALTH_TIMEOUT = 1
+    REQUEST_TIMEOUT = 3
 
     def __init__(self, endpoint, token=None):
         parsed = urlsplit(endpoint)
@@ -73,7 +75,8 @@ class Api:
     def get(self, path):
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         request = urllib.request.Request(self.endpoint + path, headers=headers)
-        with urllib.request.urlopen(request, timeout=3) as response:
+        timeout=self.HEALTH_TIMEOUT if path=='/api/health?probe=1' else self.REQUEST_TIMEOUT
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read(self.MAX_RESPONSE_BYTES + 1)
         if len(raw) > self.MAX_RESPONSE_BYTES:
             raise CockpitError('Receiver response exceeded the 16 MiB limit. Narrow the selected scope.')
@@ -178,8 +181,21 @@ class Feed:
         self.wake = threading.Event()
         self.thread = threading.Thread(target=self._loop, name="observatory-terminal-feed", daemon=True)
         self._requests = None
+        self.connection = ConnectionProgress(started=time.monotonic())
+        self.connection_failures = 0
+        self.retry_requested = False
+
+    def connection_stage(self, stage):
+        self.connection=replace(self.connection,stage=stage)
+
+    def retry_delay(self):
+        return min(2.0, .5 * max(1,self.connection_failures))
 
     def refresh(self):
+        self.retry_requested=False
+        self.connection=ConnectionProgress(
+            phase='reconnecting' if self.snapshot.error else 'loading' if self.snapshot.updated else 'connecting',
+            attempt=self.connection_failures+1,started=time.monotonic())
         requested_scope = FeedScope.capture(self)
         service, query, errors_only, selected = (requested_scope.service, requested_scope.query,
                                                 requested_scope.errors_only, requested_scope.selected_trace)
@@ -205,7 +221,7 @@ class Feed:
         def page_result(page, response):
             pagination[page]={'page':len(history[page]), 'next_cursor':response.get('next_cursor'),
                               'supported':'next_cursor' in response}
-        requests = RequestBatch(self.api, self.stop)
+        requests = RequestBatch(self.api, self.stop, self.connection_stage)
         self._requests = requests
         get = requests.get
         scope_revisions = []
@@ -223,9 +239,13 @@ class Feed:
             if errors_only:
                 params["status"] = "ERROR"
             trace_path = "/api/traces?" + urlencode(params)
-            requests.prefetch(("/api/health", "/api/metrics", "/api/connections",
-                               "/api/activity?" + urlencode(activity_params), trace_path))
-            health = get("/api/health")
+            # During startup/outage, fail fast on one short health probe instead
+            # of launching a whole batch and waiting for every timeout to drain.
+            recovering=bool(self.snapshot.error) or not self.snapshot.updated
+            if recovering:get('/api/health?probe=1')
+            requests.prefetch(('/api/health', '/api/metrics', '/api/connections',
+                               '/api/activity?' + urlencode(activity_params), trace_path))
+            health=get('/api/health')
             local_status = health.get("local_agents", {})
             new_revision = str((local_status.get("hierarchy") or {}).get("revision") or "")
             if new_revision and self.hierarchy_revision and new_revision != self.hierarchy_revision:
@@ -410,18 +430,29 @@ class Feed:
                                           activity_query,mcp_query,query,activity_prompts,activity_errors,
                                           tuple((page,cursors) for page,cursors in history.items())),
                                       hierarchy=local_status.get('hierarchy',{}))
+            self.connection_failures=0
+            self.connection=replace(self.connection,phase='live',stage='Connected',retry_at=0)
         except Exception as exc:
             if self.stop.is_set():
                 return
-            if isinstance(exc, urllib.error.HTTPError) and exc.code == 401:
+            if isinstance(exc, urllib.error.HTTPError) and exc.code in {401,403}:
                 message = "Receiver requires authentication. Set OBSERVATORY_TOKEN and restart."
             else:
                 message = "Receiver unavailable. Retrying: " + clean(str(exc))
             old = self.snapshot
             self.snapshot = replace(old,error=message)
+            self.extra_cache=None
+            self.findings_cache=None
+            self.connection_failures+=1
+            self.connection=replace(self.connection,phase='auth' if isinstance(exc,urllib.error.HTTPError) and exc.code in {401,403}
+                                    else 'reconnecting',stage='Finishing pending requests')
         finally:
             requests.close()
             self._requests = None
+            if self.snapshot.error:
+                self.connection=replace(self.connection,
+                    phase='auth' if self.connection.phase=='auth' else 'waiting',
+                    stage='Waiting to retry',retry_at=time.monotonic()+self.retry_delay())
 
     def metric_history(self, metric, limit=100):
         params={'limit':max(1,min(500,int(limit)))}
@@ -436,6 +467,10 @@ class Feed:
         self.generation += 1
         self.refresh_once = True
         self.wake.set()
+
+    def retry_now(self):
+        self.retry_requested=True
+        self.request_refresh()
 
     def navigate_history(self, page, direction, *, snapshot=None):
         cursors=self.history[page]
@@ -455,12 +490,14 @@ class Feed:
 
     def _loop(self):
         while not self.stop.is_set():
+            # Clear before work: a wake raised during a request must survive so
+            # navigation and Retry now do not incur another polling interval.
+            self.wake.clear()
             # Pause freezes the cockpit's view, not collection or its knowledge
             # of arriving records. Explicit navigation still gets fresh evidence.
             self.refresh_once = False
             self.refresh()
-            self.wake.wait(self.POLL_SECONDS)
-            self.wake.clear()
+            self.wake.wait(self.retry_delay() if self.snapshot.error else self.POLL_SECONDS)
 
     def close(self):
         self.stop.set()
@@ -624,10 +661,13 @@ def run_cockpit(*, db_path="observatory.db", port=14318, endpoint=None,
     receiver = feed = None
     api = Api(endpoint or f"http://127.0.0.1:{port}", token)
     try:
+        if not once:
+            print('Connecting to receiver '+api.endpoint+'…',file=sys.stderr,flush=True)
         try:
-            health = api.get("/api/health")
+            health = api.get("/api/health?probe=1")
             if not health.get("ok"):
                 raise CockpitError("The endpoint is not a ready Agenturm receiver.")
+            if metadata_only:health=api.get('/api/health')
             if metadata_only and health.get("local_agents", {}).get("capture_content"):
                 raise CockpitError("The existing receiver captures session content. Restart it with serve --metadata-only, then reconnect.")
         except urllib.error.HTTPError as exc:
@@ -635,12 +675,15 @@ def run_cockpit(*, db_path="observatory.db", port=14318, endpoint=None,
                 raise CockpitError("Receiver requires authentication. Set OBSERVATORY_TOKEN before starting.") from exc
             raise CockpitError(f"The endpoint returned HTTP {exc.code}. Check the receiver address.") from exc
         except (urllib.error.URLError, OSError) as exc:
-            if endpoint:
+            if endpoint and (once or metadata_only):
                 raise CockpitError("Cannot connect to the receiver at " + api.endpoint) from exc
-            try:
-                receiver = LocalReceiver(db_path, port, token, local_agents=local_agents, metadata_only=metadata_only)
-            except OSError as bind_error:
-                raise CockpitError(f"Cannot start a local receiver on port {port}: {bind_error}") from bind_error
+            if not endpoint:
+                if not once:
+                    print('Starting local receiver and loading stored sessions…',file=sys.stderr,flush=True)
+                try:
+                    receiver = LocalReceiver(db_path, port, token, local_agents=local_agents, metadata_only=metadata_only)
+                except OSError as bind_error:
+                    raise CockpitError(f"Cannot start a local receiver on port {port}: {bind_error}") from bind_error
         feed = Feed(api)
         if once:
             print_snapshot(feed)

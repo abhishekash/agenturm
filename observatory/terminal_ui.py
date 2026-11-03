@@ -14,7 +14,6 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
 from rich.cells import cell_len, get_character_cell_size
-from rich.panel import Panel
 from rich.segment import Segment
 from rich.syntax import Syntax
 from rich.table import Table
@@ -39,8 +38,8 @@ from .ui_preferences import Preferences
 from .ui_export import ExportScreen
 from .ui_render import update_status_text
 from .ui_coverage import analysis_coverage
-from .ui_monitoring import (UsageScreen, usage_summary, changed_records, failed,
-                            failure_groups, event_id)
+from .ui_monitoring import (UsageScreen, SortScreen, usage_summary, changed_records, failed,
+                            failure_groups, event_id, connection_feedback)
 
 
 def cell(value, style=''):
@@ -428,6 +427,14 @@ def recorded_message_text(event):
     return '\n'.join(clean(line) for line in text.replace('\r\n','\n').split('\n')).strip()
 
 
+def readable_output(value,limit=8000):
+    """Preserve indentation and line boundaries while stripping terminal controls."""
+    if isinstance(value,(dict,list)):
+        value=json.dumps(value,ensure_ascii=False,indent=2)
+    text='\n'.join(clean(line.expandtabs(4)) for line in str(value).replace('\r\n','\n').replace('\r','\n').split('\n')).strip('\n')
+    return text[:limit]+('\n… Preview clipped; press s for recorded activity.' if len(text)>limit else '')
+
+
 def review_session(entry):
     """Recognize internal reviews in native, connection, and stored summaries."""
     services=[entry.get('service'),*(entry.get('services') or [])]
@@ -811,11 +818,17 @@ def agent_status_group(item):
     return 2
 
 
-def agent_order_key(item, newest_first=True):
-    """Sort by updated time inside a fixed status group."""
+def agent_order_key(item, newest_first=True, mode='working'):
+    """Order sessions by working priority, update time, or lifecycle state."""
     stamp=int(item.get('stamp') or 0)
-    return (agent_status_group(item), -stamp if newest_first else stamp,
-            str(item.get('agent_id') or item.get('id') or ''))
+    identity=str(item.get('agent_id') or item.get('id') or '')
+    updated=-stamp if newest_first else stamp
+    if mode=='updated':return (updated,identity)
+    if mode=='status':
+        group=agent_status_group(item)
+        if group and attention_required(item):group=1
+        return (group,str(item.get('state') or ''),updated,identity)
+    return (agent_status_group(item),updated,identity)
 
 
 def navigation_hints(width):
@@ -1170,6 +1183,10 @@ class ObservatoryApp(App):
     #span-info { height: 10; border-top: solid $agent-border-subtle; }
     #health { height: 1; padding: 0 2; color: $agent-muted; text-wrap: nowrap; text-overflow: ellipsis; }
     #usage-summary { height: 2; margin: 0 2; color: $agent-secondary; text-wrap: nowrap; text-overflow: ellipsis; }
+    #connection-notice { height: 2; margin: 0 2; background: $agent-surface; }
+    #connection-progress { width: 1fr; height: 2; color: $agent-primary; text-wrap: nowrap; text-overflow: ellipsis; }
+    #retry-connection { width: 16; height: 1; padding: 0; border: none; color: $agent-primary; }
+    #sort-dialog Button { height: 1; padding: 0; border: none; }
     .narrow #masthead { padding: 0 1; }
     .narrow #summary { grid-gutter: 0 1; }
     .narrow .stat { padding: 0 1; }
@@ -1203,6 +1220,8 @@ class ObservatoryApp(App):
     .compact #mcp-servers { display: none; }
     .compact #agent-bottom, .compact .detail, .compact #trace-detail, .compact #host-detail { display: none; }
     .compact.inspecting #usage-summary { display: none; }
+    .compact.connecting #usage-summary { display: none; }
+    .compact.inspecting #masthead, .compact.inspecting #controls { display: none; }
     .compact .list { width: 100%; height: 1fr; margin: 0; }
     .compact .inspector-heading { height: 1; border: none; margin-bottom: 0; }
     .compact .inspector-actions { margin: 0; }
@@ -1226,10 +1245,11 @@ class ObservatoryApp(App):
               Binding('p','pause','Pause'),Binding('a','all','Reset',show=False),Binding('v','reviews','Reviews',show=False),
               Binding('d','diagnostics','Diagnostics'),Binding('x','export','Export'),
               Binding('u','usage','Usage',show=False),
+              Binding('R','retry_connection','Retry connection',show=False),
               Binding('q','quit','Quit'),Binding('escape','back','Back',show=False),
               Binding('s','focus_agent','Focus agent',show=False),Binding('r','review_attention','Mark reviewed',show=False),
               Binding('f','toggle_tree','Tree or flat agents',show=False),
-              Binding('o','toggle_sort','Sort by updated',show=False),
+              Binding('o','sort_menu','Sort sessions',show=False),
               Binding('alt+up','inspect_parent','Inspect parent',show=False),
               Binding('alt+down','inspect_first_child','Inspect child',show=False),
               Binding('alt+right','inspect_next_attention','Next descendant needing attention',show=False),
@@ -1270,6 +1290,7 @@ class ObservatoryApp(App):
         self.agent_filter='recent'
         self.agent_filter_before_errors='recent'
         self.agent_sort_desc=True
+        self.agent_sort_mode='working'
         self.agent_order=[]
         self.agent_order_ids=[]
         self.agent_order_key=None
@@ -1345,7 +1366,7 @@ class ObservatoryApp(App):
                    value='recent',allow_blank=False,id='agent-filter',tooltip='Recent shows working sessions and the last finished session'),
             Button('Errors 0',id='agent-errors',tooltip='Show sessions with recorded failures or incomplete runs, including older sessions'),
             Button('Reorder',id='refresh-order',tooltip='List changed; apply queued ordering without losing your selected session'),
-            Button('Updated ↓',id='agent-sort',tooltip='Sort by updated time. Working stays on top; terminated stays at the bottom.'),
+            Button('Updated ↓',id='agent-sort',tooltip='Choose Working first, Updated, or Status sorting · o'),
             Static('Session',id='scope-label'),
             Select([('All agent sessions','all')],value='all',allow_blank=False,id='scope'),
             Static('Evidence',id='evidence-scope-label'),
@@ -1370,6 +1391,9 @@ class ObservatoryApp(App):
                 for name in ('sessions','attention','mcp-count','usage'):
                     yield Static('',id='stat-'+name,classes='stat'+(' -quiet' if name in {'mcp-count','usage'} else ''),markup=False)
         yield Static('',id='usage-summary',markup=False)
+        with Horizontal(id='connection-notice'):
+            yield Static('Connecting to receiver…',id='connection-progress',markup=False)
+            yield Button('Retry now · R',id='retry-connection')
         with CockpitTabs(initial='agents',id='pages'):
             with TabPane('1  Agents',id='agents'):
                 with Horizontal(id='agent-split',classes='split'):
@@ -1471,6 +1495,7 @@ class ObservatoryApp(App):
             ('Pause or follow live','Freeze the view or catch up with incoming records; collection continues',self.action_pause),
             ('Show tokens and spend','Inspect stored token totals, reported cost, and the per-task average',self.action_usage),
             ('Open diagnostics','Inspect local collection health',self.action_diagnostics),
+            ('Retry connection now','Retry the receiver without waiting for the next poll',self.action_retry_connection),
             ('Copy selected evidence','Copy selected evidence or the current record',self.action_copy),
             ('Open linked trace','Follow an exact recorded trace link',self.action_open_trace),
         )
@@ -1502,12 +1527,23 @@ class ObservatoryApp(App):
         except Exception:
             button=None
         if button is not None:
-            button.label='Updated ↓' if self.agent_sort_desc else 'Updated ↑'
-            button.tooltip=(
-                'Sort by updated time, newest first. Working stays on top; terminated stays at the bottom.'
-                if self.agent_sort_desc else
-                'Sort by updated time, oldest first. Working stays on top; terminated stays at the bottom.')
+            button.label=('Status' if self.agent_sort_mode=='status' else
+                          ('Newest ↓' if self.agent_sort_desc else 'Oldest ↑') if self.agent_sort_mode=='updated' else
+                          'Updated ↓' if self.agent_sort_desc else 'Updated ↑')
+            button.tooltip='Choose Working first, Updated, or Status sorting · o'
         self.refresh_agent_order()
+
+    def action_sort_menu(self):
+        if self.query_one('#pages',TabbedContent).active=='agents':
+            current='status' if self.agent_sort_mode=='status' else self.agent_sort_mode+('_new' if self.agent_sort_desc else '_old')
+            self.push_screen(SortScreen(current),self.choose_agent_sort)
+
+    def choose_agent_sort(self,choice):
+        if choice is None:return
+        self.agent_sort_mode='status' if choice=='status' else choice.split('_')[0]
+        self.collapse('agents')
+        self.set_agent_sort(not choice.endswith('_old'))
+        self.query_one('#agent-table',DataTable).focus()
 
     def action_toggle_sort(self):
         self.set_agent_sort(not self.agent_sort_desc)
@@ -1558,7 +1594,8 @@ class ObservatoryApp(App):
         self.query_one('#reviews').tooltip='Include internal approval review sessions'
         self.query_one('#pause').tooltip='Pause display updates · collection continues'
         for log in self.query(SelectableRichLog):
-            log.tooltip='Drag to select text · Ctrl+C copies selection · c copies details'
+            # Hovering over evidence must not cover it with a copy-help popup.
+            log.tooltip=None
         self.query_one('#host-detail').styles.height=8
         self.update_layout()
         if not self.feed.thread.is_alive():self.feed.thread.start()
@@ -1630,7 +1667,8 @@ class ObservatoryApp(App):
         for brand in self.query('#brand'):
             brand.update(themed_text(brand,masthead(demo=getattr(self,'demo_mode',False),compact=True)))
         for hints in self.query('#shortcuts'):
-            hints.update(navigation_hints(size.width))
+            hints.update('e Back  o Sort  PgDn Scroll  c Copy  ? Help' if self.screen.has_class('inspecting')
+                         and self.query_one('#pages',TabbedContent).active=='agents' else navigation_hints(size.width))
         if self.query('#more-views') and self.query('#pages'):
             self.sync_more_view(self.query_one('#pages',TabbedContent).active or 'agents')
         if getattr(self,'summary_values',None):
@@ -1760,8 +1798,15 @@ class ObservatoryApp(App):
         if not isinstance(self.screen,ObservatoryScreen):return
         live=self.feed.snapshot
         data=self.display_snapshot(live)
-        state='Reconnecting' if live.error else 'Connected'
-        state_color='#ff8799' if live.error else '#86e3b5'
+        state,feedback,connecting=connection_feedback(self.feed)
+        self.screen.set_class(connecting,'connecting')
+        state_color='#ff8799' if live.error else '#ffbd69' if connecting else '#86e3b5'
+        notice=self.query_one('#connection-notice')
+        notice.display=connecting
+        progress=self.query_one('#connection-progress',Static)
+        update_status_text(progress,Text(feedback))
+        progress.tooltip=feedback+'\n'+self.feed.api.endpoint
+        self.query_one('#retry-connection',Button).disabled=self.feed.retry_requested
         endpoint=self.feed.api.endpoint.removeprefix('http://').removeprefix('https://')
         connection_widget=self.query_one('#connection',Static)
         connection_widget.tooltip=state+' · '+endpoint
@@ -1769,11 +1814,11 @@ class ObservatoryApp(App):
         pause_button.label='Follow live' if self.feed.paused else 'Pause'
         pause_button.tooltip='Resume current data and live sorting · p' if self.feed.paused else 'Freeze this view; collection continues · p'
         connection=Text()
-        connection.append('● ', style='bold '+state_color)
+        if not connecting:connection.append('● ', style='bold '+state_color)
         local=urlsplit(self.feed.api.endpoint).hostname in {'localhost','127.0.0.1','::1'}
-        connection.append('Reconnecting' if live.error else 'Paused' if self.feed.paused else 'Live', style=state_color)
+        connection.append(state if connecting else 'Paused' if self.feed.paused else 'Live', style=state_color)
         update_status_text(connection_widget,themed_text(connection_widget,connection))
-        health_text=(live.error if live.error else
+        health_text=(live.error if live.error else feedback.split('\n')[0]+' · R Retry now' if connecting else
             f"{'Paused · '+str(self.pause_change_count)+' changed records · p Follow live' if self.feed.paused else 'Updated '+age(int(data.updated*1e9))}  ·  {self.scope_label()}  ·  {'Reviews included' if self.feed.include_reviews else 'Reviews hidden'}")
         source_diagnostics=[entry.get('diagnostics') or {} for entry in data.local_status.get('sessions',[])]
         backlog_sources=sum(bool(item.get('backlog_bytes',0)) for item in source_diagnostics)
@@ -2048,7 +2093,7 @@ class ObservatoryApp(App):
                 # changing the parent's displayed lifecycle state.
                 branch={**node,'active':bool(node.get('active') or summary['working']),
                         'stamp':max(node.get('stamp') or 0,summary['last_activity'])}
-                return agent_order_key(branch,newest_first=self.agent_sort_desc)
+                return agent_order_key(branch,newest_first=self.agent_sort_desc,mode=self.agent_sort_mode)
             rows=graph.flatten(expanded,allowed,parent_overrides=overrides,
                                sort_key=tree_sort_key)
             self.agent_visual_parents=visual
@@ -2082,18 +2127,21 @@ class ObservatoryApp(App):
                           node.get('parent_agent_id') in graph.nodes else None)
                 for agent_id,node in graph.nodes.items()}
             self.hierarchy_reparent_pending=False
-            matching.sort(key=lambda item: agent_order_key(item, self.agent_sort_desc))
+            matching.sort(key=lambda item: agent_order_key(item, self.agent_sort_desc,self.agent_sort_mode))
             desired=[item['agent_id'] for item in matching]
             visible_agents=[(item,item,None,None,False) for item in matching]
             self.agent_row_meta={item['id']:item for item in matching}
         order_key=(self.scope_value,agent_query,self.agent_filter,tree_mode,
-                   self.agent_sort_desc)
+                   self.agent_sort_desc,self.agent_sort_mode)
         self.agent_order_key=order_key
         self.agent_order=[shown['id'] for shown,_,_,_,_ in visible_agents]
         self.agent_order_ids=list(desired)
         if not tree_mode:self.agent_order_pending=False
         self.query_one('#refresh-order',Button).display=self.agent_order_pending
         self.visible_agent_rows=[shown['id'] for shown,_,_,_,_ in visible_agents]
+        self.query_one('#results-agents').border_subtitle=(
+            ('Working first · ' if self.agent_sort_mode=='working' else 'Status · ' if self.agent_sort_mode=='status' else '')
+            +('newest' if self.agent_sort_desc else 'oldest')+' updated · o Sort')
         if self.selected_source not in self.visible_agent_rows:
             self.selected_source=self.visible_agent_rows[0] if self.visible_agent_rows else None
         rows=[]
@@ -2400,10 +2448,7 @@ class ObservatoryApp(App):
                 log.write(Text('\n\n'+label.upper(),style='#b9afc5'))
                 log.write(Text(str(value),style='#f6f0e8'))
             elif label=='Latest recorded event' and value:
-                log.write(Panel(Text(value,style=themed_style(log,'#ffbd69')),
-                    title=Text('LATEST RECORDED EVENT',style=themed_style(log,'#b9afc5')),
-                    title_align='left',border_style=themed_style(log,PALETTES['Current']['border-subtle']),
-                    style='on '+PALETTES[self.theme]['canvas'],padding=(0,1)))
+                for part,content in value.items():self.write_evidence(log,part,content)
             else:
                 self.write_evidence(log,label,value)
         if previous and previous[0]==title and previous[2]==signature[2]:
@@ -2679,9 +2724,10 @@ class ObservatoryApp(App):
                 content=next((content[key] for key in ('output','response','result') if content.get(key)),content)
             if isinstance(content,(dict,list)):
                 content=json.dumps(content,ensure_ascii=False,indent=2)
-            preview=clean(headline(recorded))[:500]
+            preview={'Command' if recorded.get('domain')=='shell' else 'Action':
+                     readable_output(recorded.get('subject') or headline(recorded),2000)}
             if content:
-                preview+='\n'+clean(str(content))[:8000]
+                preview['Output']=readable_output(content)
         work_detail=(f"{reported_number(summary.get('trace_count'))} traces · {reported_number(item.get('spans'))} spans · "
                      f"{observed_count(summary,'input_tokens')} in / {observed_count(summary,'output_tokens')} out")
         token_detail=(f"Cache read {observed_count(summary,'cache_read_input_tokens')} · "
@@ -2716,7 +2762,7 @@ class ObservatoryApp(App):
             prompt_history='No user prompts were captured for this session.'
         activity_events=[event for event in actions if event.get('domain')!='message']
         activity_limit=15
-        shown_activity=activity_events[-activity_limit:]
+        shown_activity=activity_events[:activity_limit]
         activity_lines=[]
         if len(activity_events)>activity_limit:
             activity_lines.append(f'Showing the latest {activity_limit} of {len(activity_events)} recorded actions; see Activity for the full history.\n')
@@ -2727,12 +2773,8 @@ class ObservatoryApp(App):
                 description=clipped(description,197)+'…'
             result=event.get('result') or event.get('status')
             recorded_result=f' · {clean(str(result))}' if result else ''
-            detail='\n'.join(clean(line) for line in str(event.get('detail') or '').splitlines()).strip()
-            if detail:
-                detail=detail[:2000]+('… [detail clipped]' if len(detail)>2000 else '')
-            activity_lines.append(f"{age(stamp) if stamp else 'Time not reported'} · {brief_activity(event)}{recorded_result}\n  {description}"+
-                                  (f'\n  {detail}' if detail else ''))
-        activity_history='\n'.join(activity_lines) if activity_lines else 'No non-message actions were captured for this session.'
+            activity_lines.append(f"{age(stamp) if stamp else 'Time not reported'} · {brief_activity(event)}{recorded_result}\n  {description}")
+        activity_history='\n\n'.join(activity_lines) if activity_lines else 'No non-message actions were captured for this session.'
         hierarchy_fields,hierarchy_sections=self.hierarchy_sections(item)
         fields.extend(hierarchy_fields)
         self.inspect('agent-detail',clean(task_preview(item) or f"Untitled session · {item.get('runtime') or 'agent'}"),fields,
@@ -3086,7 +3128,8 @@ class ObservatoryApp(App):
 
     @on(Button.Pressed)
     def button_pressed(self,event):
-        if event.button.id=='pause':self.action_pause()
+        if event.button.id=='retry-connection':self.action_retry_connection()
+        elif event.button.id=='pause':self.action_pause()
         elif event.button.id=='refresh-order':
             self.refresh_agent_order()
         elif event.button.id=='agent-errors':
@@ -3096,7 +3139,7 @@ class ObservatoryApp(App):
                 self.agent_filter_before_errors=self.agent_filter
                 self.set_agent_filter('errors')
         elif event.button.id=='agent-sort':
-            self.action_toggle_sort()
+            self.action_sort_menu()
         elif event.button.id and event.button.id.startswith('filter-'):
             self.set_agent_filter(event.button.id.removeprefix('filter-'))
         elif event.button.id=='history-back':self.action_history_back()
@@ -3201,6 +3244,11 @@ class ObservatoryApp(App):
         self.last_update=-1
         self.refresh_data()
         if not self.feed.paused:self.feed.request_refresh()
+
+    def action_retry_connection(self):
+        if self.feed.retry_requested:return
+        self.feed.retry_now()
+        self.refresh_data()
 
     def action_usage(self):
         self.push_screen(UsageScreen(self.data.totals),self.resume_cockpit)
@@ -3402,6 +3450,7 @@ class ObservatoryApp(App):
     def collapse(self,page):
         self.query_one('#'+page,TabPane).remove_class('expanded')
         self.screen.remove_class('inspecting')
+        for hints in self.query('#shortcuts'):hints.update(navigation_hints(self.size.width))
         for button in self.query('#'+page+' .expand-button'):button.label=Text('Expand · e')
         self.call_after_refresh(self.reflow_inspectors)
     def action_expand(self):
@@ -3412,6 +3461,8 @@ class ObservatoryApp(App):
             self.action_back();return
         pane.add_class('expanded')
         self.screen.add_class('inspecting')
+        if page=='agents':
+            self.query_one('#shortcuts',Static).update('e Back  o Sort  PgDn Scroll  c Copy  ? Help')
         self.call_after_refresh(self.reflow_inspectors)
         for button in self.query('#'+page+' .expand-button'):button.label=Text('Back · e')
         target={'agents':'agent-detail','activity':'activity-detail','mcp':'mcp-detail','traces':'span-tree','host':'host-detail','metrics':'metrics-detail','findings':'finding-detail'}[page]

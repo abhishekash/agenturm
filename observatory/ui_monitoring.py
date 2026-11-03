@@ -1,11 +1,37 @@
 """Small, bounded view models for local monitoring and investigations."""
+import math
+import time
 from rich.text import Text
 from textual import on
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, RichLog
+from textual.widgets import Button, RichLog, Static
 
 FAILURES = {'error', 'failed', 'denied', 'blocked', 'policy_denied', 'incomplete'}
+
+
+def connection_feedback(feed):
+    progress=feed.connection
+    elapsed=max(0,int(time.monotonic()-progress.started))
+    snapshot=feed.snapshot
+    slow=progress.phase=='loading' and elapsed>=1
+    visible=bool(snapshot.error or not snapshot.updated or slow)
+    label=('Authentication' if progress.phase=='auth' else 'Reconnecting' if snapshot.error
+           else 'Connecting' if not snapshot.updated else 'Updating' if slow else 'Live')
+    if not visible:return label,'',False
+    if feed.retry_requested:
+        heading='Retry requested · waiting for current request'
+    elif progress.phase=='waiting':
+        remaining=max(0,math.ceil(progress.retry_at-time.monotonic()))
+        heading=f'Reconnecting · attempt {progress.attempt} · retry in {remaining}s'
+    elif progress.phase=='auth':
+        heading='Authentication required · check receiver credentials'
+    else:
+        heading=f'{label} · {progress.stage} · {elapsed}s'
+    stale=(f'Showing saved data · {max(0,int(time.time()-snapshot.updated))}s old'
+           if snapshot.updated else 'Waiting for the first snapshot')
+    detail=stale+(' · '+snapshot.error if snapshot.error else '')
+    return label,heading+'\n'+detail,True
 
 
 def failed(event):
@@ -135,3 +161,41 @@ class UsageScreen(ModalScreen):
     @on(Button.Pressed, '#usage-close')
     def close_dialog(self):
         self.dismiss()
+
+
+class SortScreen(ModalScreen):
+    DEFAULT_CSS = '''
+    SortScreen { align: center middle; background: $background 70%; }
+    #sort-dialog { width: 54; max-width: 95%; height: auto; border: round $primary; background: $surface; padding: 1 2; }
+    #sort-title { height: 2; }
+    #sort-dialog Button { width: 100%; height: 1; padding: 0; margin-bottom: 1; border: none; }
+    #sort-hint { height: 1; }
+    '''
+    OPTIONS=(('working_new','Working first · newest updated'),
+             ('working_old','Working first · oldest updated'),
+             ('updated_new','Updated · newest first'),
+             ('updated_old','Updated · oldest first'),
+             ('status','Status · then newest updated'))
+    BINDINGS=[('escape','dismiss','Cancel')]+[(str(i),f'choose("{key}")',label)
+                                            for i,(key,label) in enumerate(OPTIONS,1)]
+
+    def __init__(self,selected='working_new'):
+        super().__init__()
+        self.selected=selected
+
+    def compose(self):
+        with Vertical(id='sort-dialog'):
+            yield Static('Sort agent sessions',id='sort-title')
+            for i,(key,label) in enumerate(self.OPTIONS,1):
+                yield Button(f'{i}  {label}'+(' ✓' if key==self.selected else ''),id='sort-'+key)
+            yield Static('1–5 choose · Esc cancel',id='sort-hint')
+
+    def on_mount(self):
+        self.query_one('#sort-'+self.selected,Button).focus()
+
+    def action_choose(self,key):
+        self.dismiss(key)
+
+    @on(Button.Pressed)
+    def choose_button(self,event):
+        self.dismiss(event.button.id.removeprefix('sort-'))

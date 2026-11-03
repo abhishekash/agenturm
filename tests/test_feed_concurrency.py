@@ -80,12 +80,12 @@ class FeedConcurrencyTests(unittest.TestCase):
 
         class BlockingApi(ExampleApi):
             def get(self, path):
-                if path == '/api/health':
+                if path == '/api/metrics':
                     blocked.set()
                     if not release.wait(5):
-                        raise TimeoutError('test did not release health')
+                        raise TimeoutError('test did not release metrics')
                 result = super().get(path)
-                if path == '/api/metrics':
+                if path == '/api/connections':
                     other_finished.set()
                 return result
 
