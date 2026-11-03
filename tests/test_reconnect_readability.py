@@ -1,4 +1,5 @@
 import io
+import json
 import threading
 import time
 import tempfile
@@ -9,13 +10,35 @@ from unittest.mock import MagicMock, patch
 
 from textual.widgets import Button, Static
 from observatory.feed_requests import ConnectionProgress
-from observatory.terminal import Api, Feed, LocalReceiver, run_cockpit
-from observatory.terminal_ui import ObservatoryApp, readable_output
+from observatory.terminal import Api, Feed, LocalReceiver, Snapshot, run_cockpit
+from observatory.terminal_ui import ObservatoryApp, readable_output, session_event_preview, session_excerpt
 from observatory.ui_monitoring import connection_feedback, SortScreen
 from tests.test_terminal_search import ExampleApi, ManualFeed
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_session_preview_formats_usage_and_bounds_large_payloads(self):
+        preview=session_event_preview({'domain':'model','detail':json.dumps({
+            'input_tokens':'89289','cached_input_tokens':'88960','output_tokens':'116','total_tokens':'89405'})})
+        usage=preview['Latest token report']
+        self.assertIn('89,289',usage)
+        self.assertIn('88,960',usage)
+        self.assertNotIn('{',usage)
+        self.assertNotIn('input_tokens',usage)
+        preview=session_event_preview({'domain':'shell','subject':'bash -lc "python check.py"',
+            'detail':json.dumps({'command':'wrapper','output':'\n'.join(f'    line {i}' for i in range(200))})})
+        self.assertEqual(preview['Command'],'python check.py')
+        self.assertIn('    line 0',preview['Output'])
+        self.assertNotIn('line 8',preview['Output'])
+        self.assertIn('Open Activity',preview['Output'])
+        self.assertLessEqual(len(preview['Output'].splitlines()),9)
+        self.assertLess(len(session_excerpt('x'*100000)),200)
+
+    def test_empty_shell_output_does_not_render_transport_envelope(self):
+        preview=session_event_preview({'domain':'shell','subject':'true',
+            'detail':json.dumps({'command':'/bin/sh -c true','output':'','cwd':'/tmp','exit_code':'0'})})
+        self.assertEqual(preview,{'Command':'true'})
+
     def test_offline_explicit_endpoint_opens_ui_with_startup_feedback(self):
         stderr=io.StringIO()
         with patch('sys.stdin.isatty',return_value=True),patch('sys.stdout.isatty',return_value=True), \
@@ -104,6 +127,45 @@ class RecoveryTests(unittest.TestCase):
 
 
 class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
+    async def test_startup_never_says_live_before_a_successful_snapshot(self):
+        feed=ManualFeed();feed.snapshot=Snapshot()
+        feed.connection=ConnectionProgress(started=time.monotonic())
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(80,24)) as pilot:
+            await pilot.pause()
+            label=lambda:app.query_one('#connection',Static).render_line(0).text
+            self.assertIn('Connecting',label());self.assertNotIn('Live',label())
+            feed.snapshot=replace(feed.snapshot,error='Connection refused')
+            feed.connection=replace(feed.connection,phase='waiting',retry_at=time.monotonic()+1)
+            app.refresh_data();await pilot.pause()
+            self.assertIn('Reconnecting',label());self.assertNotIn('Live',label())
+            feed.refresh();app.refresh_data();await pilot.pause()
+            self.assertIn('Live',label())
+
+    async def test_busy_session_is_a_bounded_summary_with_full_evidence_in_activity(self):
+        feed=ManualFeed();now=time.time_ns();base=feed.api.activity[0]
+        output='\n'.join(f'    output line {i}' for i in range(200))
+        feed.api.activity=[{**base,'source_id':f'event-{i}','time_unix_nano':now+i,
+                            'subject':f'python task_{i}.py','detail':json.dumps({'output':output})}
+                           for i in range(20)]
+        feed.api.activity.append({**base,'source_id':'prompt','time_unix_nano':now+30,
+                                  'domain':'message','action':'user','subject':'Make the inspector readable','detail':''})
+        feed.refresh()
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(120,40)) as pilot:
+            await pilot.pause();app.set_agent_filter('all');app.select_agent('source-1')
+            await pilot.press('e');await pilot.pause()
+            text=app.query_one('#agent-detail').plain_text
+            self.assertLess(text.index('Make the inspector readable'),text.index('Command'))
+            self.assertIn('latest 5 of 20',text)
+            self.assertNotIn('task_0.py',text)
+            self.assertNotIn('output line 199',text)
+            self.assertNotIn('Progress Summary',text)
+            await pilot.press('s');await pilot.pause()
+            # Summarizing the session must never truncate the stored event.
+            self.assertTrue(any('output line 199' in str(e.get('detail'))
+                                for e in app.table_data['activity-table'].values()))
+
     async def test_reconnect_notice_and_retry_are_visible_on_narrow_terminal(self):
         feed=ManualFeed()
         app=ObservatoryApp(feed,persist_preferences=False)
