@@ -123,12 +123,12 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.press('e')
                     await pilot.pause()
                     detail = app.query_one('#agent-detail').plain_text
-                    self.assertIn('Progress Summary · Recorded Activity', detail)
-                    self.assertIn('Current: Waiting', detail)
+                    self.assertNotIn('Progress Summary · Recorded Activity', detail)
+                    self.assertIn('Waiting', detail)
                     self.assertIn('answer in the Codex terminal', ' '.join(detail.split()))
                     self.assertIn('Agenturm is read-only', ' '.join(detail.split()))
                     self.assertIn('Status Evidence',detail)
-                    self.assertIn('Progress Summary · Recorded Activity',detail)
+                    self.assertIn('Recorded Failures',detail)
                     # Mounting and refreshes never trigger paid API calls.
                     generate.assert_not_called()
                     await pilot.click('#agent-summary')
@@ -167,7 +167,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(actions.display)
                 await pilot.press('e')
                 await pilot.pause()
-                self.assertIn('Progress Summary · Recorded Activity',app.query_one('#agent-detail').plain_text)
+                self.assertIn('Status Evidence',app.query_one('#agent-detail').plain_text)
                 self.assertEqual(len(app.query('#agent-output')), 0)
                 self.assertFalse(any(binding.key == 'b' for binding in app.BINDINGS))
 

@@ -435,6 +435,42 @@ def readable_output(value,limit=8000):
     return text[:limit]+('\n… Preview clipped; press s for recorded activity.' if len(text)>limit else '')
 
 
+def session_excerpt(value,lines=8,width=100):
+    """A bounded reading preview; full captured evidence belongs in Activity."""
+    text=readable_output(value,limit=16000)
+    source=text.splitlines()
+    shown=[clipped(line,width)+'…' if cell_len(line)>width else line for line in source[:lines]]
+    truncated=len(source)>lines or any(cell_len(line)>width for line in source[:lines])
+    if truncated:shown.append('… Open Activity for the full record.')
+    return '\n'.join(shown)
+
+
+def session_event_preview(event):
+    if not event:return {}
+    content=decode_nested(event.get('detail') or '')
+    if event.get('domain')=='model' and isinstance(content,dict):
+        labels=(('input_tokens','Input'),('output_tokens','Output'),
+                ('cached_input_tokens','Cached input'),('cache_read_input_tokens','Cached input'),
+                ('cache_write_input_tokens','Cache write'),
+                ('reasoning_output_tokens','Reasoning'),('total_tokens','Total'))
+        rows=[];seen=set()
+        for key,label in labels:
+            if key not in content or label in seen:continue
+            try:value=f'{int(content[key]):,}'
+            except (ValueError,TypeError,OverflowError):continue
+            rows.append(f'{label:<14} {value:>12}');seen.add(label)
+        if rows:return {'Latest token report':'\n'.join(rows)}
+    command=event.get('subject') or headline(event)
+    if event.get('domain')=='shell':command=shell_command(command)
+    preview={'Command' if event.get('domain')=='shell' else 'Action':session_excerpt(command,lines=3)}
+    if isinstance(content,dict):
+        # A shell envelope with empty output is not useful output itself.
+        keys=('output','response','result')
+        content=next((content[key] for key in keys if key in content),content)
+    if content:preview['Output']=session_excerpt(content)
+    return preview
+
+
 def review_session(entry):
     """Recognize internal reviews in native, connection, and stored summaries."""
     services=[entry.get('service'),*(entry.get('services') or [])]
@@ -2716,18 +2752,7 @@ class ObservatoryApp(App):
             self.inspect('agent-detail',title,fields,
                 hierarchy_sections+sections+ai_sections,overview=True)
             return
-        progress=recorded_progress(item,actions,summary)
-        preview=''
-        if recorded:
-            content=decode_nested(recorded.get('detail') or '')
-            if isinstance(content,dict):
-                content=next((content[key] for key in ('output','response','result') if content.get(key)),content)
-            if isinstance(content,(dict,list)):
-                content=json.dumps(content,ensure_ascii=False,indent=2)
-            preview={'Command' if recorded.get('domain')=='shell' else 'Action':
-                     readable_output(recorded.get('subject') or headline(recorded),2000)}
-            if content:
-                preview['Output']=readable_output(content)
+        preview=session_event_preview(recorded)
         work_detail=(f"{reported_number(summary.get('trace_count'))} traces · {reported_number(item.get('spans'))} spans · "
                      f"{observed_count(summary,'input_tokens')} in / {observed_count(summary,'output_tokens')} out")
         token_detail=(f"Cache read {observed_count(summary,'cache_read_input_tokens')} · "
@@ -2748,42 +2773,47 @@ class ObservatoryApp(App):
         prompt_events=sorted((event for event in actions
                               if event.get('domain')=='message' and event.get('action')=='user'),
                              key=lambda event:event.get('time_unix_nano') or 0)
-        prompt_limit=10
+        prompt_limit=3
+        earlier_prompts=''
         if prompt_events:
-            shown_prompts=prompt_events[-prompt_limit:]
+            shown_prompts=list(reversed(prompt_events[-prompt_limit:]))
             prompt_lines=[]
-            if len(prompt_events)>prompt_limit:
-                prompt_lines.append(f'Showing the latest {prompt_limit} of {len(prompt_events)} recorded prompts; see Activity for the full history.\n')
             for event in shown_prompts:
                 stamp=event.get('time_unix_nano')
-                prompt_lines.extend([age(stamp) if stamp else 'Time not reported',recorded_message_text(event),''])
-            prompt_history='\n'.join(prompt_lines).strip()
+                prompt_lines.append((age(stamp) if stamp else 'Time not reported')+'\n'+session_excerpt(recorded_message_text(event),lines=4))
+            prompt_history=prompt_lines[0]
+            earlier_prompts='\n\n'.join(prompt_lines[1:])
+            if len(prompt_events)>prompt_limit:
+                earlier_prompts+='\n\nOlder requests are available in Activity.'
         else:
             prompt_history='No user prompts were captured for this session.'
         activity_events=[event for event in actions if event.get('domain')!='message']
-        activity_limit=15
+        activity_limit=5
         shown_activity=activity_events[:activity_limit]
         activity_lines=[]
         if len(activity_events)>activity_limit:
             activity_lines.append(f'Showing the latest {activity_limit} of {len(activity_events)} recorded actions; see Activity for the full history.\n')
         for event in shown_activity:
             stamp=event.get('time_unix_nano')
-            description=headline(event)
-            if cell_len(description)>200:
-                description=clipped(description,197)+'…'
+            description=' '.join(shell_command(event.get('subject') or headline(event)).split())
+            if cell_len(description)>88:
+                description=clipped(description,85)+'…'
             result=event.get('result') or event.get('status')
             recorded_result=f' · {clean(str(result))}' if result else ''
-            activity_lines.append(f"{age(stamp) if stamp else 'Time not reported'} · {brief_activity(event)}{recorded_result}\n  {description}")
+            activity_lines.append(f"{age(stamp) if stamp else 'Time not reported'} · {brief_activity(event)}{recorded_result}"+
+                                  (f'\n  {description}' if event.get('domain')!='model' else ''))
         activity_history='\n\n'.join(activity_lines) if activity_lines else 'No non-message actions were captured for this session.'
         hierarchy_fields,hierarchy_sections=self.hierarchy_sections(item)
         fields.extend(hierarchy_fields)
         self.inspect('agent-detail',clean(task_preview(item) or f"Untitled session · {item.get('runtime') or 'agent'}"),fields,
-            hierarchy_sections+[('Latest recorded event',preview),('Progress summary · recorded activity',progress),
-             ('Recorded user prompts',prompt_history),('Recent recorded activity',activity_history)]+ai_sections+[
+            [('Recorded user prompts',prompt_history),('Latest recorded event',preview),
+             ('Status evidence',session_excerpt(wait_summary(item),lines=3)),
+             ('Recorded failures',f"{int(summary['errors'])} across observed runs · open Failures below"
+                if summary.get('errors') else brief_activity(error_event)+' · open Failed call below' if error_event else None),
+             ('Recent recorded activity',activity_history),('Earlier requests',earlier_prompts)]+hierarchy_sections+ai_sections+[
               ('Session details',session_details),
               ('Analysis coverage',analysis_coverage(summary)),
               ('Working directory',item.get('working_directory')),
-              ('Status evidence',attention_evidence(item,summary,error_event)),
               ('Review state','Marked reviewed for this run; status and evidence are unchanged.' if reviewed else None),
               ('Attention state','Dismissed from Recent and Needs attention. Still available in All history and Traces.' if dismissed else None)])
 
