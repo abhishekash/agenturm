@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -19,9 +20,13 @@ def safe_preferences(value):
         result['theme'] = value['theme']
     if value.get('view') in VIEWS:
         result['view'] = value['view']
-    for key in ('reviews', 'prompts'):
+    for key in ('reviews', 'prompts', 'workflow_notify'):
         if isinstance(value.get(key), bool):
             result[key] = value[key]
+    if isinstance(value.get('workflow_limits'),dict):
+        result['workflow_limits']={k:float(v) for k,v in value['workflow_limits'].items()
+            if k in {'tokens','cost','minutes'} and isinstance(v,(int,float)) and not isinstance(v,bool)
+            and math.isfinite(v) and v>=0}
     if isinstance(value.get('errors'), list):
         result['errors'] = [page for page in ('activity', 'mcp') if page in value['errors']]
     if isinstance(value.get('dismissed_attention'), list):

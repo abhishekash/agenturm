@@ -34,6 +34,7 @@ from .branding import NAME, AMBER, LAVENDER, MINT, ICE, masthead
 from .themes import PALETTES, supported_themes, themed_style, themed_text
 from .ui_layout import column_layout
 from .ui_diagnostics import DiagnosticsScreen, FIRST_RUN
+from .ui_workflow import AttentionLedger, WorkflowScreen, desktop_notify, terminal_handoff
 from .ui_preferences import Preferences
 from .ui_export import ExportScreen
 from .ui_render import update_status_text
@@ -1282,7 +1283,7 @@ class ObservatoryApp(App):
               Binding('l','history("latest")','Latest',show=False),
               Binding('p','pause','Pause'),Binding('a','all','Reset',show=False),Binding('v','reviews','Reviews',show=False),
               Binding('d','diagnostics','Diagnostics'),Binding('x','export','Export'),
-              Binding('u','usage','Usage',show=False),
+              Binding('u','usage','Usage',show=False),Binding('w','workflow','Workflow'),
               Binding('R','retry_connection','Retry connection',show=False),
               Binding('q','quit','Quit'),Binding('escape','back','Back',show=False),
               Binding('s','focus_agent','Focus agent',show=False),Binding('r','review_attention','Mark reviewed',show=False),
@@ -1307,6 +1308,12 @@ class ObservatoryApp(App):
         self.feed=feed
         self.agent=None
         self.data=feed.snapshot
+        self.workflow_updated=None
+        self.workflow_ledger=AttentionLedger()
+        self.workflow_notify=False
+        self.workflow_limits={}
+        self.workflow_snooze=0
+        self.workflow_delivery="Disabled"
         self.last_update=0
         self.table_data={}
         self.table_signatures={}
@@ -1532,6 +1539,7 @@ class ObservatoryApp(App):
             ('Scope evidence to this agent or subtree','Switch related Activity, MCP, Traces and Findings scope',lambda:self.query_one('#evidence-scope',Select).toggle()),
             ('Pause or follow live','Freeze the view or catch up with incoming records; collection continues',self.action_pause),
             ('Show tokens and spend','Inspect the selected task’s cost, tokens, and cache usage',self.action_usage),
+            ('Open local workflow','Attention inbox, completion review, workspace and task alerts',self.action_workflow),
             ('Open diagnostics','Inspect local collection health',self.action_diagnostics),
             ('Retry connection now','Retry the receiver without waiting for the next poll',self.action_retry_connection),
             ('Copy selected evidence','Copy selected evidence or the current record',self.action_copy),
@@ -1592,6 +1600,8 @@ class ObservatoryApp(App):
         if self.is_headless and self.persist_preferences is None and self.preferences_path is None:
             self.preferences.enabled=False
         preferences=self.preferences.load()
+        self.workflow_notify=preferences.get('workflow_notify',False)
+        self.workflow_limits=preferences.get('workflow_limits',{})
         self.theme=preferences.get('theme','Observation')
         self.preference_view=preferences.get('view','agents')
         self.feed.detail_enabled=self.preference_view=='traces'
@@ -1648,7 +1658,7 @@ class ObservatoryApp(App):
         for timer in self.search_timers.values():timer.stop()
 
     def save_preferences(self):
-        self.preferences.save({'theme':self.theme,'view':self.preference_view,
+        self.preferences.save({'workflow_notify':self.workflow_notify,'workflow_limits':self.workflow_limits,'theme':self.theme,'view':self.preference_view,
             'reviews':self.feed.include_reviews,'prompts':self.prompts_only,
             'errors':sorted(self.errors_only),
             'dismissed_attention':sorted(self.dismissed_attention)})
@@ -1839,6 +1849,7 @@ class ObservatoryApp(App):
     def refresh_data(self):
         # Timer messages can already be queued when child widgets unmount.
         if not self.query('#health'):return
+        self.update_workflow()
         if not isinstance(self.screen,ObservatoryScreen):return
         live=self.feed.snapshot
         data=self.display_snapshot(live)
@@ -3309,6 +3320,33 @@ class ObservatoryApp(App):
         if self.feed.retry_requested:return
         self.feed.retry_now()
         self.refresh_data()
+
+    def workflow_items(self):
+        return sources(self.feed.snapshot,self.feed.include_reviews)
+
+    def update_workflow(self):
+        snapshot=self.feed.snapshot
+        if not snapshot.updated or snapshot.updated==self.workflow_updated:return
+        self.workflow_updated=snapshot.updated
+        alerts=self.workflow_ledger.update(sources(snapshot,self.feed.include_reviews),snapshot,self.workflow_limits)
+        if alerts and self.workflow_notify and time.time()>=self.workflow_snooze and not self.is_headless:
+            projects=', '.join(dict.fromkeys(str(item.get('project') or item.get('runtime') or 'Local agent')[:40] for item,_ in alerts))[:120]
+            self.workflow_alert(projects,str(len(alerts))+' agent(s) need attention. Open Workflow (w) for recorded evidence.')
+
+    def action_workflow(self):
+        self.push_screen(WorkflowScreen(self))
+
+    @work(thread=True,group='workflow-alerts',exit_on_error=False)
+    def workflow_alert(self,project,reasons):
+        # Task text/commands never leave the app in desktop notifications.
+        result=desktop_notify('Agenturm · '+project,reasons)
+        self.call_from_thread(setattr,self,'workflow_delivery',result)
+
+    @work(thread=True,group='workflow-terminal',exclusive=True,exit_on_error=False)
+    def workflow_terminal(self,item):
+        item=dict(item)
+        result=terminal_handoff(item)
+        self.call_from_thread(self.notify,result)
 
     def action_usage(self):
         usage,title,scope,identity=self.selected_task_usage()
