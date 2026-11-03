@@ -15,6 +15,7 @@ class FeedScope:
     activity_prompts: bool
     selected_trace: str | None
     selected_span_id: str | None
+    detail_enabled: bool
     pinned_trace: bool
     scope_agent_id: str
     scope_subtree: bool

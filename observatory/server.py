@@ -17,6 +17,7 @@ from .logs import normalize_otlp_logs, decode_log_request
 from .metrics import normalize_otlp_metrics, decode_metric_request
 from .watch import start_watchers
 from .receiver import BoundedHTTPServer, DeadlineHandler
+from .response_cache import ResponseCache
 
 # Preserve the historical server import while exposing the explicit bounded name.
 ThreadingHTTPServer = BoundedHTTPServer
@@ -25,9 +26,17 @@ MAX_BODY = 8 * 1024 * 1024
 
 
 def handler_for(store: Store, token: str | None = None, quiet=False):
+    cache = ResponseCache(store.path)
     class Handler(DeadlineHandler, BaseHTTPRequestHandler):
+        response_cache = cache
+
         def _json(self, code, value):
             data = json.dumps(value, ensure_ascii=False).encode()
+            if code == 200 and getattr(self, '_cache_version', None) is not None:
+                cache.put(self.path, self._cache_version, data)
+            self._json_bytes(code, data)
+
+        def _json_bytes(self, code, data):
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
@@ -58,10 +67,16 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
             return route
 
         def do_GET(self):
+            self._cache_version = None
             route = self._route()
             if route is None:
                 return
             path = route.path
+            if cache.eligible(path):
+                self._cache_version, cached = cache.get(self.path)
+                if cached is not None:
+                    self._json_bytes(200, cached)
+                    return
             if path == "/":
                 data = ("Agenturm is terminal-first. Run `agenturm` in a terminal "
                         "to monitor local sessions. This HTTP service receives OTLP and serves the local API.\n").encode()

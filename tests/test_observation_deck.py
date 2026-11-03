@@ -357,7 +357,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(table.row_count,2)
 
-    async def test_live_priority_changes_queue_order_until_explicit_refresh(self):
+    async def test_live_priority_changes_sort_immediately_and_preserve_selection(self):
         feed=ManualFeed()
         now=time.time_ns()
         sessions=feed.snapshot.local_status['sessions']
@@ -373,18 +373,15 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             table=app.query_one('#agent-table')
             before=[key.value for key in table.rows]
             self.assertEqual(before,['source-1','source-2'])
-            # A terminated session must stay below working work even when its
-            # timestamp is newer.  When it starts again, the list freezes until
-            # the operator applies the queued order.
+            app.select_agent('source-1')
+            # A newly working session moves into updated-time order immediately.
             sessions[1].update(run_state='running',waiting_for='',last_record_ns=now+3)
             app.last_update=-1
             app.refresh_data()
             await pilot.pause()
-            self.assertEqual([key.value for key in table.rows],before)
-            self.assertTrue(app.query_one('#refresh-order').display)
-            await pilot.click('#refresh-order')
-            await pilot.pause()
             self.assertEqual(list(table.rows)[0].value,'source-2')
+            self.assertEqual(app.selected_source,'source-1')
+            self.assertEqual(table.cursor_row,1)
             self.assertFalse(app.query_one('#refresh-order').display)
 
     async def test_updated_sort_keeps_working_first_and_terminated_last(self):

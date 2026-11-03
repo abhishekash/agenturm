@@ -17,6 +17,10 @@ def column_layout(table_id, specs, width):
     """Return original column indices and widths within the available cells."""
     visible = list(range(len(specs)))
     for index in DROP_ORDER.get(table_id, ()):
+        # Updated is the agent list's sort key, so keep it in ordinary split
+        # panels and shrink the task preview before hiding the timestamp.
+        if table_id == 'agent-table' and width >= 48:
+            break
         required = sum(specs[i][1] + 2 for i in visible) + 1
         if required <= width:
             break

@@ -1110,14 +1110,28 @@ class LocalAgents:
             for root, runtime in roots:
                 if not root.is_dir():
                     continue
-                for path in root.rglob("*.jsonl"):
+                # One directory pass; DirEntry reuses directory type metadata.
+                # Path.rglob traverses directories separately from matching files
+                # and constructs Paths for the entire (mostly old) history.
+                pending = [root]
+                while pending:
                     if self.stop.is_set():
                         return
                     try:
-                        modified = path.stat().st_mtime
-                        if modified >= cutoff:
-                            self.discovered_sources += 1
-                            yield modified, path, runtime
+                        with os.scandir(pending.pop()) as entries:
+                            for entry in entries:
+                                if self.stop.is_set():
+                                    return
+                                try:
+                                    if entry.is_dir(follow_symlinks=False):
+                                        pending.append(entry.path)
+                                    elif entry.name.endswith('.jsonl') and entry.is_file():
+                                        modified = entry.stat().st_mtime
+                                        if modified >= cutoff:
+                                            self.discovered_sources += 1
+                                            yield modified, Path(entry.path), runtime
+                                except OSError:
+                                    self.errors += 1
                     except OSError:
                         self.errors += 1
         selected = heapq.nlargest(MAX_SOURCES, recent(), key=lambda row: row[0])

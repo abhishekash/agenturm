@@ -75,6 +75,9 @@ class BoundedHTTPServer(_ThreadingHTTPServer):
         self._interrupt_connections()
         # Non-daemon workers are joined before the caller closes the Store.
         super().server_close()
+        cache = getattr(self.RequestHandlerClass, 'response_cache', None)
+        if cache is not None:
+            cache.close()
 
 
 class _DeadlineReader(io.RawIOBase):

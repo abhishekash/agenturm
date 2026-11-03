@@ -151,6 +151,9 @@ class Feed:
         self.errors_only = False
         self.selected_trace = None
         self.selected_span_id = None
+        # Non-UI consumers retain full snapshots. The cockpit opts into
+        # fetching trace payloads only while its trace inspector is visible.
+        self.detail_enabled = True
         self.session_id = ''
         self.include_reviews = False
         self.pinned_trace = False
@@ -323,8 +326,8 @@ class Feed:
             traces,activity = traces[:100],activity[:200]
             if not requested_scope.pinned_trace and selected not in {item["trace_id"] for item in traces}:
                 selected = traces[0]["trace_id"] if traces else None
-            detail = get("/api/traces/" + selected + "?span_limit=100") if selected else {}
-            if selected and requested_span:
+            detail = get("/api/traces/" + selected + "?span_limit=100") if selected and requested_scope.detail_enabled else {}
+            if selected and requested_span and requested_scope.detail_enabled:
                 wanted=requested_span
                 known={span['span_id'] for span in detail.get('spans',[])}
                 for _ in range(8):

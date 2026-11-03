@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm usage</title><style>
+:root{color-scheme:light dark;--bg:#f6f8fb;--fg:#172336;--muted:#e4eaf1;--link:#135ba3}
+@media(prefers-color-scheme:dark){:root{--bg:#131a24;--fg:#e2eaf5;--muted:#2c384b;--link:#8fc4ff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,sans-serif}
+main{max-width:1000px;margin:auto;padding:40px 24px 80px}h1{line-height:1.2;font-size:clamp(28px,5vw,42px)}h2{margin-top:2em;line-height:1.3}
+a{color:var(--link)}pre{overflow:auto;padding:18px;background:var(--muted);border-radius:8px}code{font-size:.9em}
+table{display:block;overflow:auto;border-collapse:collapse;width:100%;font-size:14px}th,td{padding:12px;text-align:left;border-bottom:1px solid var(--muted)}th{white-space:nowrap}li{margin:.5em 0}
+@media(max-width:600px){main{padding:24px 16px}th,td{min-width:130px;padding:8px}}
+</style></head><body><main><h2>0.1.2 · Native session status, MCP inventory, optional AI summary</h2>
+<p>Shows agent and session IDs, repo/project, lifecycle status, update age, pending wait, and task details. MCP server calls now link across start/result events, expose qualified Claude Code and Codex tool names, report completion/error status, and include all stored history in server counts. Optional provider-backed session summaries run only when requested. DuckDB guidance is in <a href="decisions/duckdb.md">the storage evaluation</a>.</p>
+<h1>Agenturm</h1>
+<p>A terminal-first monitor and local telemetry receiver for AI agents. It discovers supported local agent sessions, then accepts <strong>OTLP/HTTP traces, logs, and metrics in protobuf or JSON</strong> from instrumented runtimes and the existing <strong>agent-harness JSONL</strong> format. The terminal cockpit shows agents, activity, MCP calls, traces, host processes, and metrics. Data lives in SQLite. The receiver uses Python's standard library (3.11+); the terminal UI uses Textual.</p>
+<h2>GitHub Copilot CLI telemetry</h2>
+<p>Copilot CLI can send its built-in OpenTelemetry traces and metrics directly to
+the cockpit receiver. Start <code>agenturm</code> in one terminal, then launch
+Copilot CLI from the project in another:</p>
+<pre><code class="language-bash">export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:14318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_SERVICE_NAME=github-copilot
+copilot
+</code></pre>
+<p>Setting the endpoint enables Copilot telemetry. The CLI defaults to
+<code>http/json</code>; the protocol is shown explicitly here. The cockpit groups spans
+into sessions when Copilot supplies <code>gen_ai.conversation.id</code> and reports model
+usage, tool activity, and recognized hook, skill, compaction, truncation, and
+session lifecycle events. Tool records contain only fields the CLI exports;
+the MCP Calls view can identify a server or tool only when those identities are
+present in telemetry. Prompt and response capture is off by default in Copilot
+CLI; keep it disabled unless you intend to collect that content. Copilot's
+<a href="https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#opentelemetry-monitoring">OTel settings and span/event schema</a>
+describe the emitted signals and optional content capture.</p>
+<h2>Install and launch the terminal cockpit</h2>
+<p>Python 3.11+ is required. Install the published CLI in an isolated environment with <a href="https://docs.astral.sh/uv/guides/tools/">uv tools</a>:</p>
+<pre><code class="language-bash">uv tool install --force agenturm
+agenturm
+</code></pre>
+<p>To try it without installing, run <code>uvx agenturm</code>. If uv is not installed, use its <a href="https://docs.astral.sh/uv/getting-started/installation/">official installation instructions</a>. If the installed command is missing from your PATH, run <code>uv tool update-shell</code> and open a new terminal. You can also install into an active Python environment with <code>python -m pip install agenturm</code>.</p>
+<p>The cockpit opens Agents, Activity, MCP Calls, and Traces as primary views; use <strong>More</strong> or <strong>5–7</strong> for Host, Metrics, and Findings. Agents opens to <strong>Recent</strong>: working sessions (including explicit waits) and the most recently finished session. The compact filter can switch to <strong>Active</strong> only or <strong>All</strong> history. Task-first rows have an evidence inspector. Its website-aligned <strong>Observation</strong> palette is the default; change themes with <strong>Ctrl+P</strong>. Findings provides a searchable, paged review queue with occurrence counts, evidence links, and direct navigation to the source trace. Session counts and live process counts are separate; approval reviews are hidden by default. The cockpit attaches to a receiver on <strong>127.0.0.1:14318</strong>, or starts one there. Run <code>agenturm</code> for full-screen panels in your current terminal. From this checkout, <code>python3 -m observatory</code> also works without installation.</p>
+<h3>Existing Codex and Claude Code agents</h3>
+<p>Local receivers automatically discover recent session files under <code>~/.codex/sessions</code> and <code>~/.claude/projects</code> (<code>CODEX_HOME</code> and <code>CLAUDE_CONFIG_DIR</code> are respected). Start the monitor with no agent filename or Python environment flags:</p>
+<pre><code class="language-bash">agenturm
+</code></pre>
+<p>It reads actual logged activity as files update, including already running sessions. Agents need no restart or configuration change. Source logs stay untouched. Select an agent for its status and latest action; press <code>e</code> for the zero-setup recorded-progress summary or <code>s</code> for its activity. When a session explicitly asks for a user reply or approval, the monitor points you to that agent's own terminal; it cannot submit the answer or approve actions for the agent.</p>
+<table>
+<thead>
+<tr>
+<th>Observed data</th>
+<th>What appears</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tasks and messages</td>
+<td>User requests, assistant updates and answers, current task per session</td>
+</tr>
+<tr>
+<td>Model calls</td>
+<td>Model/provider, reported input/output/cache tokens, linked turn, known cost when reported</td>
+</tr>
+<tr>
+<td>Tools</td>
+<td>Tool names, inputs, results, MCP server, errors and available duration</td>
+</tr>
+<tr>
+<td>Commands</td>
+<td>Shell command, working directory, exit code, captured stdout/stderr</td>
+</tr>
+<tr>
+<td>Files</td>
+<td>Changed paths, operation, recorded patch/diff</td>
+</tr>
+<tr>
+<td>Browser</td>
+<td>Searches, URLs, actions, recorded result metadata</td>
+</tr>
+<tr>
+<td>Agent lifecycle</td>
+<td>Turn start/completion/interruption, context compaction, processing markers</td>
+</tr>
+<tr>
+<td>Context</td>
+<td>Project, selected model, reasoning effort and recorded sandbox/approval settings</td>
+</tr>
+<tr>
+<td>Runtime</td>
+<td>Host/OS/architecture, load average, known local agent PIDs, state, RAM and cumulative CPU on Linux</td>
+</tr>
+</tbody>
+</table>
+<p>Native session capture includes bounded text and content by default. Recognizable credentials and sensitive structured fields are redacted before storage; this is best effort. Opaque/encrypted reasoning, private reasoning text, binary payloads, process environments and credential files are excluded. Content is limited to 8,000 characters per activity record, with nested fields bounded to 2,000 characters and at most 60 entries. Source schemas and upstream truncation can leave gaps. Use <code>serve --metadata-only</code> or <code>cockpit --metadata-only</code> for a receiver that omits native message text, commands and results. This setting controls future ingestion and does not erase previously stored content.</p>
+<p>The <strong>Working agents</strong> headline counts unfinished, actively observed turns and names their runtimes; total sessions and open host processes are separate. A quiet model/tool call does not become idle after 35 seconds. On Linux, exact open session-file matches provide process/child CPU and I/O evidence; shared working directories are never used to guess a session-to-process match. Token usage comes from records; input counts include repeated/cached context and are not a billable-cost estimate. Costs remain unknown when not reported. Model-call latency is marked unknown when the log has no start time.</p>
+<p>Discovery scans every 10 seconds and tails discovered files every second. It selects up to 50 Codex/Claude Code/Pi files modified within the past 24 hours and up to 50 OpenCode sessions with recent session or message activity, importing at most the last 8 MiB initially per file. Pi sessions are read from <code>$PI_CODING_AGENT_DIR/sessions</code> (default <code>~/.pi/agent/sessions</code>). OpenCode supports both the legacy <code>message</code>/<code>part</code> tables and current <code>session_message</code> records, including recent records whose parent session row is absent. Claude Code subagent transcripts under a selected session's <code>subagents/</code> directory and Codex subagent rollouts use the same limits; linking never triggers an unbounded historical scan. If a limit is reached, the terminal health line reports how many sessions are outside the visible window. Summaries may cover only part of a long session. Codex response IDs, Claude message IDs, and Pi message IDs prevent duplicate usage entries on reread; older Codex cumulative token snapshots are handled separately. A version with a different log schema may expose less activity. <code>GET /api/health</code> reports discovery status, session/task snapshots, runtime metadata, source count, read errors, and skipped malformed records. <code>GET /api/activity?limit=100&amp;service=codex&amp;domain=shell&amp;q=...</code> exposes a bounded, searchable activity view from the latest 100 observed traces. The terminal shows up to 100 recent events, with full trace investigation available separately.</p>
+<p>Local discovery runs in the receiver. If you installed an earlier version, reinstall the CLI and restart that receiver to enable it. A cockpit attached to an older receiver cannot enable discovery there. Add <code>--no-local-agents</code> to <code>serve</code> or <code>cockpit</code> to disable discovery in a receiver started by that command. Receivers bound to non-loopback addresses do not discover local sessions automatically. Other agent products still need an adapter or OTLP export.</p>
+<h3>Resource usage</h3>
+<p>The terminal fetches live data every two seconds; session inventory, MCP,
+metrics, usage and findings are cached for five seconds. Filter and selection
+actions can wake the feed immediately. Collection continues independently, even
+when display updates are paused. Tables update changed cells instead of
+invalidating an entire row.</p>
+<p>OpenCode polling skips unchanged databases between a 30-second lookback refresh;
+that periodic refresh ages old sessions out even when OpenCode writes nothing.
+When a database changes, unchanged messages are not normalized or written again.
+On schemas with part update timestamps, unchanged tool payloads are not loaded
+again; older schemas fall back to content comparison. Revision caches contain
+only fixed-size digests within the 50-session / 30-message import window, not
+retained tool outputs. Payloads are capped at 2 MiB per record and 16 MiB per
+poll; deferred records resume on later polls.
+Initial import still costs more than steady-state monitoring, and large
+histories or sustained telemetry can increase CPU, memory and database size.</p>
+<p>Run <code>python scripts/benchmark_resources.py</code> for a repeatable synthetic reader
+benchmark (idle, unrelated database writes, and one changed tool). It uses a
+temporary database, not personal sessions. Results measure reader CPU, logical
+reads and span write counts; they exclude terminal rendering and derived Store
+work. Regression tests in <code>tests/test_resource_usage.py</code> and
+<code>tests/test_opencode.py</code> enforce polling, cache and redundant-write behavior
+without relying on hardware-dependent CPU thresholds.</p>
+<h3>OpenCode local database</h3>
+<p>On loopback, the receiver checks OpenCode's local SQLite database in read-only
+mode and lists recent sessions with their project, task title, model, and
+assistant-turn token counts. Recorded tool parts appear as trace spans; persisted
+todo checklists appear as progress events with completion percentages. MCP names
+are attributed when OpenCode records an explicit qualified server/tool name.
+The usual database path is <code>~/.local/share/opencode/opencode.db</code>; <code>XDG_DATA_HOME</code>
+and <code>OPENCODE_DB</code> are honored. Reasoning parts are never read. Inputs and results
+follow the same bounded, redacted content policy as other native sources; pass
+<code>--metadata-only</code> to omit those payloads and task text. Discovery covers the 50
+most recently updated sessions from the last 24 hours, up to 30 assistant
+messages per session, 200 tool parts per message, and 100 checklist items per
+session. Both legacy session metadata and V2 <code>session_v2</code> metadata are supported,
+with V2 taking precedence for migrated IDs. User/assistant and idle-outcome records
+determine running, completed, interrupted, and failed status independently of
+the bounded transcript window. OpenCode's internal schema can change; use OTLP
+for a stable cross-version integration. Inactivity does not imply an approval wait.</p>
+<h3>Optional Python SDK capture</h3>
+<p>Native session discovery is automatic for supported local agents. For another Python agent, automatic SDK capture is a separate command-line workflow; the monitoring cockpit itself does not launch agents. Install the capture extra into the agent's environment:</p>
+<pre><code class="language-bash">uv pip install --python .venv/bin/python 'agenturm[auto]'
+agenturm run --endpoint http://127.0.0.1:14318 --service my-agent agent.py
+</code></pre>
+<p>Replace the environment path, service name, and agent filename with your own. Arguments after <code>agent.py</code> go to the script; <code>--module</code> runs a Python module. If Goechala is already installed in the active agent environment, use <code>python -m observatory run --endpoint http://127.0.0.1:14318 --service my-agent agent.py</code>.</p>
+<p>This launcher runs the selected script in that terminal and is intended for SDKs not already captured from local session records. Existing processes can send OTLP telemetry to the receiver. Python SDK prompts and responses are omitted unless you add <code>--capture-content</code>. Native session capture has its own <code>--metadata-only</code> receiver setting.</p>
+<p>Use the mouse or <strong>1–7</strong> to switch views. <strong>↑/↓</strong> selects a table row; its inspector updates automatically. <strong>Enter</strong> opens the inspector; <strong>e</strong> expands it to use the full workspace and <strong>Esc</strong> returns to the list. On Agents, a recorded delegation is shown as an expandable tree: <strong>→</strong> expands a branch or moves to its first child, <strong>←</strong> collapses it or moves to its parent, and <strong>f</strong> switches to the flat list. A collapsed parent keeps its own state while showing descendant working/attention counts. On Activity, MCP, Traces, and Findings, choose a session in the Session picker and use the Evidence picker to switch between that agent only and the agent plus its canonical subagents. See <a href="agent-hierarchy.md">agent hierarchy</a> for which runtimes provide exact evidence and their limits. On compact terminals, Enter expands the inspector automatically. Expanded session details include captured user prompts and a recent action trail; these are recorded evidence, not a live transcript. OpenCode prompt text appears after the local receiver imports the session database; metadata-only mode omits it. If prompt text was not captured, the inspector says so. <strong>Tab</strong> moves between controls and scrollable panels. On Agents, use the session-filter dropdown or <strong>s</strong> to open the selected session's activity. Live updates automatically re-sort the list while keeping your selected session and inspector. The red <strong>Errors</strong> button shows sessions with recorded failures or incomplete runs, including older sessions; click it again to return to the previous filter. Activity and MCP also have red Errors filters. A <strong>Reorder</strong> control appears only when a newly discovered parent relationship would move a session to another branch. The <strong>Updated ↓/↑</strong> control sorts by recorded update time inside fixed groups: working sessions stay on top and terminated sessions stay at the bottom. Press <strong>o</strong> to toggle the direction; the same rule applies inside tree siblings. Branches with working descendants rise above finished branches without changing the parent’s displayed state. <strong>t</strong> opens the selected activity, MCP operation, finding, or metric exemplar's related trace when one is linked. <strong>Alt+Left</strong> or the <strong>Back</strong> button returns to the original event and scroll position; <strong>Esc</strong> first clears a text selection or closes an expanded inspector, then returns from a linked trace. <strong>/</strong> focuses the current view's search, <strong>Ctrl+P</strong> opens the command/theme palette, <strong>Esc</strong> returns to its table, <strong>a</strong> resets session and search filters, <strong>v</strong> toggles approval reviews, <strong>p</strong> pauses updates, and <strong>q</strong> quits. When search has focus, printable keys enter text; press <strong>Esc</strong> before using shortcuts.</p>
+<p>Press <strong>d</strong> for local collection diagnostics: source paths, last successful
+reads, backlog, skipped records, schema errors, first-run guidance, and retention
+commands. Diagnostics do not show receiver credentials or raw events. Source
+paths can still identify projects or users. Older receivers may not report all
+diagnostic fields.</p>
+<p>Press <strong>x</strong> to export selected evidence. A frozen privacy preview shows the exact
+JSON before anything is written. Choose a new destination and explicitly select
+<strong>Write reviewed export</strong>. Existing files are never overwritten; new files are
+owner-only. Exports contain only the selected record and currently loaded
+evidence, not complete history. They may contain private prompts, outputs,
+paths, or producer-recorded secrets: review before sharing.</p>
+<p>Theme (Observation by default), active view, Reviews, Prompts, and Activity/MCP error-filter flags are
+saved in <code>$XDG_CONFIG_HOME/agenturm/ui.json</code> (or
+<code>~/.config/agenturm/ui.json</code>). Searches, session IDs, selected records, endpoint
+addresses, and credentials are not persisted. Set <code>AGENTURM_UI_PREFERENCES=0</code> to
+disable preference reads and writes. Headless tests do not access personal
+preferences unless explicitly given a test preference path.</p>
+<p>Each view has its own search field and result count directly above its rows. Search in Agents filters sessions by task, project, model, runtime, or session ID. Activity, MCP Calls, and Traces query their own records; Host filters the process list; Metrics filters OTLP instruments by name, service, kind, unit, or description; Findings searches severity, finding type, task, and evidence text in the current page. Findings are global across sessions and can be paged with <strong>Older</strong>, <strong>Newer</strong>, and <strong>Latest</strong>.</p>
+<p>The Metrics view shows the latest stored point for each instrument with its value, unit, point attributes, resource attributes, and data. Select an instrument to load its latest 100 points; points with OTLP exemplars can open the linked trace with <strong>t</strong> or <strong>Open exemplar</strong>. The overview loads up to 500 catalog entries and 500 latest points, with inventory cached for five seconds. The session Scope control filters Metrics by the selected session's service; metric points are not attributed to individual sessions unless the telemetry itself includes that association.</p>
+<p>Filters stay with their view when switching tabs. A task search in Agents does not hide MCP calls or reduce the selected agent's recent-work feed. <strong>Clear</strong> resets that view's query; the session Scope control applies across views. Overview counters retain the inventory for the selected session scope. The <strong>Errors</strong> button in Activity and MCP Calls filters failures within the current results; it does not change the inventory counts. <strong>a</strong> also resets these error filters. Tables prioritize subject and status columns in narrow terminals; lower-priority metadata returns when widened, and complete records remain available in the inspector. Inspectors wrap long text to the panel width.</p>
+<p>MCP shows reported servers, tools or methods, state, duration, arguments/results and trace/span IDs. It includes protocol methods such as <code>tools/call</code>, <code>tools/list</code>, <code>resources/read</code>, and <code>prompts/get</code> when telemetry records them. Calls without a reported server remain visible under <strong>Not reported</strong>; Goechala does not guess their server. Tool execution spans are joined to transport calls to fill in arguments or results when the transport span omits them. Explicit MCP <code>isError</code> results mark the run and call as failed, appear in error filters, and create an evidence-linked finding even when the producing span has no error status. The trace view shows a parent-linked span tree; unknown durations remain “not reported”. “Error” describes recorded errors within a trace; “Active · errors” means a logged active turn also contains an error. Live host process counts exclude zombie/exited states and do not imply that every open terminal is working on a turn.</p>
+<p>The feed waits two seconds between refreshes and preserves the event being read as new records arrive. Independent reads use at most four workers; inventory and findings are cached for five seconds unless their scope changes. Only the visible view is rendered; hidden views refresh when activated. Activity, MCP Calls, and Traces have <strong>Older</strong>, <strong>Newer</strong>, and <strong>Latest</strong> controls (shortcuts <strong>]</strong>, <strong>[</strong>, and <strong>l</strong>) to browse saved records in pages of 200 events, 100 MCP calls, or 100 traces. Search and scope changes return that view to its latest matching page. Activity history includes saved logs beyond a trace's preview window. The selected trace initially shows 100 spans; related-trace navigation also loads its exact target span and up to eight missing ancestors. MCP overview counts cover the latest loaded operations in scope. Global token totals include stored history and repeated/cached context; costs remain unreported when telemetry has no price. History controls require the updated receiver; if a separate receiver is already running, restart it after updating.</p>
+<p>Drag across inspector text to highlight it, then press <strong>Ctrl+C</strong> (or <strong>Cmd+C</strong> where the terminal forwards it) to copy the selected plain text. Display updates are held while text is selected; click or press <strong>Esc</strong> to clear the selection and resume. <strong>c</strong> copies the selection, or the current event/call/details when nothing is selected. The Activity and MCP inspectors also have copy buttons. Clipboard commands run in the background and use Wayland, X11, macOS, or Windows tools when available, falling back to a terminal clipboard request. When using a remote terminal, clipboard behavior depends on that terminal's support. Narrow terminals stack the list and inspector; <strong>e</strong> expands the inspector for reading.</p>
+<p><code>GET /api/activity?limit=200&amp;cursor=...&amp;q=...</code> and <code>GET /api/mcp?limit=100&amp;cursor=...&amp;service=codex&amp;session_id=...&amp;q=...</code> return <code>next_cursor</code> for older pages. Keep the same filters when following a cursor. The MCP endpoint returns recorded protocol operations with server, tool or method, duration, arguments/results and related trace/span IDs. This includes non-tool methods such as <code>tools/list</code>, <code>resources/read</code>, and <code>prompts/get</code> when provided by telemetry. Linked logs and spans are joined; older unlinked duplicates for the same event are omitted when a linked record exists. Distinct explicit spans remain separate, including concurrent calls sharing a timestamp.</p>
+<p>Quitting closes only the cockpit and any receiver it started. Agents and separately started receivers stay running. To keep a receiver running between cockpit sessions, start <code>python -m observatory serve --port 14318</code> separately.</p>
+<pre><code class="language-bash"># Connect to an existing receiver without starting one:
+agenturm cockpit --endpoint http://127.0.0.1:14318
+# Print a snapshot for shell use:
+agenturm cockpit --endpoint http://127.0.0.1:14318 --once
+# Reinstall after updating this checkout:
+uv tool install --reinstall ./agenturm
+</code></pre>
+<p>The current terminal is the default. Add <code>--new-window</code> only when you want a separate graphical terminal (Terminal on macOS; GNOME Terminal, Konsole, or x-terminal-emulator/xterm on Linux; Windows Terminal on Windows). In SSH or headless sessions, use the default. The Textual interface supports Linux, macOS and Windows terminals without a curses dependency.</p>
+<h2>Capture an agent without changing its code</h2>
+<p>For Python agents that use supported model SDKs, install the automatic capture extra and run <code>agenturm run</code> from the agent's own environment. This is a separate terminal command; the monitoring cockpit remains read-only and does not start or control an agent.</p>
+<p>For example, start a persistent local receiver on port 14318:</p>
+<pre><code class="language-bash">python3 -m observatory --db ./observatory.db serve --port 14318
+</code></pre>
+<p>Activate the Python environment your agent uses. From this checkout, install the automatic capture extra once:</p>
+<pre><code class="language-bash">python -m pip install '.[auto]'
+</code></pre>
+<p>From your agent's folder, replace <code>python agent.py</code> with:</p>
+<pre><code class="language-bash">python -m observatory run --endpoint http://127.0.0.1:14318 --service my-agent agent.py
+</code></pre>
+<p>Your script and its SDK calls run normally. The launcher detects installed OpenAI, Anthropic, and LangChain SDKs, attaches <a href="https://github.com/Arize-ai/openinference/tree/main/python">OpenInference instrumentation</a>, and sends completed spans through OpenTelemetry to the local receiver. SDK versions must match the installed instrumentors; the launcher reports dependency mismatches before starting an unsupported setup. OpenAI-compatible endpoints such as local model servers are supported when your agent calls them through the OpenAI Python SDK. LangChain / LangGraph callbacks provide framework activity, and SDK calls inside a chain are linked to its trace when the framework does not attach runtime context.</p>
+<p>Arguments after the filename are passed to your agent. Use <code>--module</code> before the target to run a package instead of a file. The launcher uses the active Python environment; install the auto extra in that environment. Restart existing agents through the launcher to enable capture. For other runtimes, use their OpenTelemetry export support or the manual clients below.</p>
+<p>By default, automatic capture includes model metadata, reported tokens, duration, and errors. Select <strong>Include prompts and responses</strong> in the guide, or add <code>--capture-content</code>, to capture content too. Captured string attributes are limited to 4,000 characters. Token usage depends on what the model SDK returns; OpenAI chat streams need <code>stream_options={&quot;include_usage&quot;: True}</code> for token counts. Costs remain unknown unless telemetry reports a cost.</p>
+<p>Set <code>OBSERVATORY_TOKEN</code> in the agent's terminal when the receiver requires bearer authentication. The launcher checks the receiver before starting, sends a heartbeat while the agent runs, reports model-call start/finish progress, and flushes completed spans before marking the agent finished. Active model calls appear as RUNNING before their completed spans arrive, including when filtering by agent service. Each process has its own source ID, so connection counters distinguish agents even when they share a service name. An abrupt process exit becomes disconnected after its heartbeat expires.</p>
+<p>To try automatic capture without API keys or paid model calls, the local replay example uses real SDK clients with in-memory responses:</p>
+<pre><code class="language-bash">python -m pip install '.[auto]' 'openai&gt;=3' 'anthropic&gt;=1.8' langchain-core
+python -m observatory run --endpoint http://127.0.0.1:14318 --service local-capture-demo examples/automatic_capture_demo.py
+</code></pre>
+<p>The replay uses the current SDKs' <code>httpx2</code> mock transport and records an OpenAI call inside a LangChain runnable, an async OpenAI stream, an Anthropic message, and an expected error. All model responses are local replay data. Telemetry goes only to your selected Goechala receiver.</p>
+<h2>Run</h2>
+<pre><code class="language-bash">cd agenturm
+python3 -m observatory --db ./observatory.db serve
+# The root address is a plain-text receiver status page; use the terminal cockpit to inspect activity.
+</code></pre>
+<p>Set a retention window for long-running local deployments. The server prunes at startup and hourly; complete trace data is removed together, while unlinked logs, metric points, and endpoint inventory rows use their own timestamps:</p>
+<pre><code class="language-bash">python3 -m observatory --db ./observatory.db serve --retention-days 30
+# Or run a one-time cleanup:
+python3 -m observatory --db ./observatory.db prune --older-than-days 30
+</code></pre>
+<p>Import an existing harness trace:</p>
+<pre><code class="language-bash">python3 -m observatory --db ./observatory.db import-jsonl ../agent-harness/examples/demo_trace.jsonl
+</code></pre>
+<p>Join evaluation outcomes to their trace IDs:</p>
+<pre><code class="language-bash">python3 -m observatory --db ./observatory.db import-evals /path/to/results.json
+</code></pre>
+<p>The importer reads the <code>results</code> array written by <code>agent-evals</code>, including the offline LangGraph control in this workspace. An outcome that fails its scorer appears as <code>FAILED</code> even when every execution span has status <code>OK</code>. Other runtimes can post the same fields (<code>trace_id</code>, boolean <code>passed</code>, optional <code>task_id</code>, <code>scores</code>, and <code>error</code>) to <code>/api/outcomes</code>.</p>
+<p>To watch a live harness run, pass its trace file to the server. New finished spans appear in the terminal cockpit within about five seconds:</p>
+<pre><code class="language-bash">python3 -m observatory --db ./observatory.db serve --watch-jsonl /path/to/live-trace.jsonl
+</code></pre>
+<p>For a shared local relay, start the <a href="https://github.com/open-telemetry/opentelemetry-collector-contrib">OpenTelemetry Collector Contrib</a> distribution with <code>otelcol-contrib --config ./examples/otel-collector-config.yaml</code>. This sample accepts OTLP/gRPC on <code>127.0.0.1:4317</code> and OTLP/HTTP on <code>127.0.0.1:4319</code>, detects host name, architecture, and OS attributes, then batches traces, logs, and metrics to Goechala on port 4318. Point SDKs at the relay with <code>OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317</code> and <code>OTEL_EXPORTER_OTLP_PROTOCOL=grpc</code>, or use the HTTP listener with <code>OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4319</code> and <code>OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf</code>. The sample binds to loopback; change the receiver endpoints only when the network path is protected.</p>
+<p>Send OTLP/HTTP traces from another agent runtime to <code>http://127.0.0.1:4318/v1/traces</code>, logs to <code>/v1/logs</code>, and metrics to <code>/v1/metrics</code>. Standard HTTP/protobuf exporters use <code>Content-Type: application/x-protobuf</code>; HTTP/JSON exporters use <code>application/json</code>. Gzip request bodies are accepted. For a typical SDK, set <code>OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318</code> and <code>OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf</code>. The receiver keeps trace parent IDs, attributes, events, links, resource attributes, instrumentation scope name, and status. Its endpoint inventory groups spans, logs, and metrics by <code>host.id</code>, <code>host.name</code>, <code>device.id</code>, or <code>service.instance.id</code> when producers include those resource attributes; it reports OS, architecture, user, environment, services, last seen time, and linked trace counts. Logs with a valid trace ID appear alongside that trace; <code>agent.progress</code> log events with <code>agent.progress.stage</code> and optional <code>agent.progress.percent</code> attributes also appear in its progress list; <code>event.name</code> and the equivalent <code>progress.*</code> fields are accepted as aliases. Gauge, sum, histogram, exponential histogram, and summary metric points retain their type, timestamp, attributes, unit, and available value or distribution fields, including the sum monotonicity flag that distinguishes counters from up/down sums; no-recorded-value points remain visible as missing readings and are excluded from charts. Cursor MCP aggregate metrics stay separate from recorded calls: delta counts are summed, while cumulative counters use the latest point per attribute/resource series, including after resets. <code>service.name</code> identifies each producer. Token counts use <code>gen_ai.usage.input_tokens</code> and <code>gen_ai.usage.output_tokens</code>, the harness's <code>llm.usage.*</code> fields, and OpenInference <code>llm.token_count.prompt</code> / <code>llm.token_count.completion</code>; OpenInference LLM and embedding model names, indexed chat messages, and embedding input/vector summaries are also recognized. Cache read/write input counts and reasoning output counts are retained as breakdowns when reported; these are subsets of headline totals and are not added a second time. Cost totals accept <code>llm.cost.total</code>, the prompt/completion cost components, and the existing harness aliases. Unknown prices are shown as unknown, rather than zero cost. See the <a href="https://opentelemetry.io/docs/languages/sdk-configuration/otlp-exporter/">OTLP exporter protocol configuration</a> for SDK settings.</p>
+<p>Tool spans with <code>gen_ai.operation.name=execute_tool</code> and <code>gen_ai.tool.name</code> (or common <code>tool.name</code> attributes) appear automatically in the activity ledger. OpenInference spans with <code>openinference.span.kind=TOOL</code> are included as tool activity too. For file, Git, shell, network, browser, or other actions that are not already spans, emit an OpenTelemetry span event named <code>agent.activity</code> or a correlated log with event name <code>agent.activity</code>. Set <code>agent.activity.domain</code>, <code>agent.activity.action</code>, <code>agent.activity.subject</code>, and <code>agent.activity.result</code>; optionally add <code>agent.activity.actor</code>. The trace view groups the activity ledger by subject, filters events by changes or errors, and links each item back to its source span or log. Activities with result <code>blocked</code>, <code>denied</code>, or <code>policy_denied</code> also create a review finding that opens at its evidence. For example, an instrumented tool can record <code>span.addEvent(&quot;agent.activity&quot;, {&quot;agent.activity.domain&quot;:&quot;file&quot;, &quot;agent.activity.action&quot;:&quot;write&quot;, &quot;agent.activity.subject&quot;:&quot;src/app.py&quot;, &quot;agent.activity.result&quot;:&quot;success&quot;})</code>. Keep credentials and sensitive content out of subjects and event details unless you intend to retain them.</p>
+<p>For Python agents that need manual instrumentation, the package includes a small synchronous and asynchronous client. Nested spans inherit their parent, progress is posted while the run is active, and completed spans are sent when the run exits. Pass <code>resource_attributes</code> to identify the host in the endpoint inventory; host identity collection is opt in:</p>
+<pre><code class="language-python">import platform
+import socket
+
+from observatory import Client
+
+telemetry = Client(
+    service=&quot;research-agent&quot;,
+    token=&quot;optional-bearer-token&quot;,
+    resource_attributes={&quot;host.name&quot;: socket.gethostname(), &quot;os.type&quot;: platform.system().lower(),
+                         &quot;os.version&quot;: platform.release(), &quot;host.arch&quot;: platform.machine()},
+)
+
+async def run_agent():
+    async with telemetry.trace(task=&quot;Find current guidance&quot;, session_id=&quot;thread-42&quot;) as run:
+        await run.aprogress(&quot;planning&quot;, &quot;Choosing a search strategy&quot;, 10)
+        async with run.span(&quot;tool.search&quot;, attributes={&quot;tool.name&quot;: &quot;search&quot;}):
+            await search_web()
+        async with run.span(&quot;llm.call&quot;, attributes={&quot;gen_ai.request.model&quot;: &quot;my-model&quot;}) as call:
+            answer = await ask_model()
+            call.set_attribute(&quot;gen_ai.usage.input_tokens&quot;, 320)
+            call.set_attribute(&quot;gen_ai.usage.output_tokens&quot;, 85)
+        return answer
+</code></pre>
+<p>The client uses the standard library, splits large traces into requests below the receiver 8 MiB limit, and is best effort by default, so telemetry delivery errors do not interrupt the agent. Set <code>strict=True</code> to raise delivery errors, or inspect <code>telemetry.last_error</code>. Exception messages are omitted by default; <code>capture_exception_message=True</code> opts in to recording them.</p>
+<p>Node.js agents can install the dependency-free package from this repository (Node.js 18 or newer):</p>
+<pre><code class="language-bash">npm install ./clients/javascript
+</code></pre>
+<pre><code class="language-js">import { Client } from '@agenturm/client';
+
+const telemetry = new Client({
+  service: 'javascript-research-agent',
+  resourceAttributes: { 'host.name': 'worker-7', 'os.type': 'linux', 'host.arch': 'x86_64' },
+});
+const answer = await telemetry.trace(
+  { task: 'Find current guidance', sessionId: 'thread-42' },
+  async run =&gt; {
+    await run.progress('planning', 'Choosing a search strategy', 10);
+    return run.span('llm.call', { attributes: { 'gen_ai.request.model': 'my-model' } }, async call =&gt; {
+      const result = await askModel();
+      call.setAttribute('gen_ai.usage.input_tokens', 320);
+      call.setAttribute('gen_ai.usage.output_tokens', 85);
+      return result;
+    });
+  },
+);
+</code></pre>
+<p>Nested spans follow asynchronous execution context, including spans started inside child callbacks. Completed spans are posted when the trace callback exits, split into requests below the receiver 8 MiB limit. As with the Python client, delivery is best effort unless <code>strict: true</code>; inspect <code>telemetry.lastError</code> to diagnose failures.</p>
+<p>For automatic callback capture in LangChain and LangGraph, install the optional adapter:</p>
+<pre><code class="language-bash">pip install 'agenturm[langchain]'
+</code></pre>
+<p>Attach the handler inside an Goechala run and pass it through the runnable config. It records nested chain, model, tool, and retriever spans; captures standardized token usage when the model supplies it; records errors; and maps LangChain custom callbacks named <code>progress</code>, <code>agent.progress</code>, or <code>langgraph.progress</code> into the run timeline. LangGraph applications that use custom stream output can call <code>run.aprogress(...)</code> as they consume those events. Prompts, tool inputs, and outputs stay out of telemetry unless <code>capture_content=True</code> is set.</p>
+<pre><code class="language-python">from observatory import Client
+from observatory.integrations.langchain import LangChainCallbackHandler
+
+telemetry = Client(service=&quot;langgraph-research-agent&quot;)
+
+with telemetry.trace(task=&quot;Research a question&quot;, session_id=&quot;thread-42&quot;) as run:
+    callbacks = LangChainCallbackHandler().attach(run)
+    result = graph.invoke(question, config={&quot;callbacks&quot;: [callbacks]})
+</code></pre>
+<p>For the OpenAI Agents SDK, install its optional exporter and add the batching processor to the SDK tracing provider:</p>
+<pre><code class="language-bash">pip install 'agenturm[openai-agents]'
+</code></pre>
+<pre><code class="language-python">from agents import Runner
+from agents.tracing import flush_traces, set_trace_processors
+from observatory import Client
+from observatory.integrations.openai_agents import create_processor
+
+telemetry = Client(service=&quot;support-agent&quot;)
+set_trace_processors([create_processor(telemetry)])
+
+result = await Runner.run(agent, &quot;Help me find my order&quot;)
+flush_traces()  # optional: make the spans visible immediately
+</code></pre>
+<p>The adapter keeps parent/child relationships and model or token metadata when available, including cache read/write and reasoning usage details. It maps SDK IDs to stable Goechala IDs, maps trace <code>group_id</code> to Goechala session grouping, and records original trace/span IDs as attributes for correlation. Prompt, tool input/output, and arbitrary trace metadata are omitted by default. To collect span input/output, opt in with <code>create_processor(telemetry, capture_content=True)</code>; content is truncated to 4,000 characters per field by default and can be adjusted with <code>max_content_chars</code>. Token totals come from generation spans, avoiding double counting the SDK's aggregate turn usage. The SDK batching processor exports in the background; call <code>flush_traces()</code> when a job needs immediate visibility. <code>set_trace_processors</code> replaces the SDK's default OpenAI exporter. If you use <code>add_trace_processor</code> to keep that exporter too, the SDK also sends its full trace payloads to OpenAI.</p>
+<p>For custom runtimes that cannot export OTLP yet, POST an array to <code>/api/spans</code> using the harness fields <code>trace_id</code>, <code>span_id</code>, <code>parent_span_id</code>, <code>name</code>, <code>start_unix_nano</code>, <code>end_unix_nano</code>, <code>status</code>, <code>attributes</code>, and <code>events</code>. Wrap it in <code>{&quot;service&quot;:&quot;my-agent&quot;,&quot;spans&quot;:[...]}</code> to label the producer. Repeated <code>(trace_id, span_id)</code> pairs update the stored span.</p>
+<p>Report live progress separately:</p>
+<pre><code class="language-bash">curl -X POST http://127.0.0.1:4318/api/progress \
+  -H 'Content-Type: application/json' \
+  -d '{&quot;trace_id&quot;:&quot;aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&quot;,&quot;stage&quot;:&quot;retrieving&quot;,&quot;message&quot;:&quot;Found 2 documents&quot;,&quot;percent&quot;:50,&quot;session_id&quot;:&quot;conversation-42&quot;}'
+</code></pre>
+<p>Read API: <code>GET /api/metrics</code> (derived run totals), <code>GET /api/usage-series?days=7&amp;step=day&amp;service=...&amp;session_id=...</code> (token trends from traces and log-only sessions, trace cost, and separate log event/error counts; pass <code>session_id</code> to narrow the series to one agent session), <code>GET /api/measurements</code> (native OTLP points, filterable by instrument identity), <code>GET /api/metric-catalog</code> (available metric instruments), <code>GET /api/logs</code>, <code>GET /api/findings?limit=100&amp;cursor=...</code> (cursor-paginated review queue), <code>GET /api/outcomes</code>, <code>GET /api/sessions</code> (per-session trace, token, cost, and status totals), <code>GET /api/endpoints</code> (observed host inventory), <code>GET /api/traces?service=...&amp;status=ERROR&amp;session_id=...&amp;endpoint_id=...&amp;q=model-name&amp;limit=100</code>, <code>GET /api/traces/&lt;trace_id&gt;</code>, <code>GET /api/traces/&lt;trace_id&gt;/spans?limit=200&amp;q=...&amp;filter=...&amp;cursor=...</code>, and <code>GET /api/traces/&lt;trace_id&gt;/related</code>. Trace search matches trace IDs, workflow/task and span names, service names, sessions, model and tool names, provider and operation names, exception types, correlated log event/severity names, and structured agent activity domains, actions, subjects, and actors. Hierarchy reads use <code>GET /api/hierarchy?limit=...</code>; add <code>agent_id=ag1_...&amp;subtree=0|1</code> to activity, MCP, traces, and findings queries to scope them to one canonical agent or its exact subtree. Legacy calls without these parameters keep exact-session behavior. Trace list responses include <code>next_cursor</code>; pass it back with the same filters to load the next page. The terminal cockpit pages traces, exposes observed run outcomes and usage totals, and links model interactions to their source spans. It groups traces only when the producer supplies a shared <code>gen_ai.conversation.id</code>, <code>session.id</code>, <code>agent.session_id</code>, <code>session_id</code>, <code>conversation_id</code>, <code>thread_id</code>, <code>langgraph.thread_id</code>, <code>langchain.session_id</code>, or <code>cursor.conversation.id</code>. See the <a href="https://opentelemetry.io/docs/specs/semconv/general/session/">OpenTelemetry session conventions</a> and <a href="https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-spans.md">GenAI agent span conventions</a>. A per-trace activity index and persisted run summary keep listing and metric totals away from repeated trace detail reads. A persisted findings index updates when a trace receives spans, correlated error logs, progress, or an evaluation outcome; existing databases backfill the derived records once. Findings report recorded span/tool errors, incomplete harness runs, repeated identical tool failures, blocked agent activity, error-severity logs, failed task outcomes, and possible credential material in captured span attributes, events, log content, or evaluation outcomes. Credential findings contain source links and field/provider labels but omit matched values; recognizable credentials are also redacted from finding titles and details. The original telemetry remains available in the trace detail view. Each finding names its source span, log, or outcome; these are observations, not causal diagnoses. The related endpoint resolves incoming and outgoing OTLP span links. The receiver stores raw telemetry immediately and coalesces summary/finding index refreshes per trace with a one-second maximum coalescing window. Progress-only runs appear as <code>RUNNING</code>; a harness run stopped by a step budget appears as <code>INCOMPLETE</code>. A recorded tool error is visible under <code>ERROR</code> even if its OpenTelemetry span status was unset.</p>
+<p>Trace and session summaries include <code>input_tokens_reported</code> and
+<code>output_tokens_reported</code> booleans. A false value means the producer did not
+send that token attribute; the numeric total remains <code>0</code> for aggregation, while
+the terminal UI displays <strong>Not reported</strong>. A reported numeric zero remains a
+real zero. Summaries also expose <code>cache_read_input_tokens</code>,
+<code>cache_write_input_tokens</code>, and <code>reasoning_output_tokens</code>, each with a matching
+<code>*_reported</code> flag for the breakdown.</p>
+<p>By default the server binds only to loopback and the SQLite file is set to user-only permissions. For a shared deployment, set <code>OBSERVATORY_TOKEN</code> in the server environment and send <code>Authorization: Bearer VALUE</code> on API requests; set the same token in the terminal before starting the cockpit. Put the service behind TLS and a trusted reverse proxy. Trace attributes can contain prompts, tool outputs, or secrets, so choose what the producer emits. This local receiver does not redact or enforce multiuser access control.</p>
+<h2>Verify</h2>
+<pre><code class="language-bash">python3 -m unittest discover -s tests -v
+</code></pre>
+<h2>Current boundaries</h2>
+<p>This is a working local vertical slice, not an Origin equivalent. Automatic capture covers the supported Python SDKs run through the separate <code>run</code> command; existing processes need OTLP export or restart through that launcher. Other runtimes can send OTLP or use the clients. Managed endpoint collector deployment remains manual, and endpoint inventory depends on host identity resource attributes. It also does not provide team access controls. Session grouping depends on IDs emitted by the producer. Retention is optional and local; it needs operational validation under sustained ingestion. Findings use a small deterministic ruleset and need broader validation before operational use. Run counters are derived from stored spans; native metric points are shown separately without unsafe aggregation across metric kinds or temporalities. Progress can come from an explicit API event or a correlated <code>agent.progress</code> OTLP log. Summary metrics have no OTLP temporality field; Goechala marks their count and sum as implicitly cumulative. The protobuf decoder supports the OTLP fields displayed or stored here and skips unknown fields; it is not a general protobuf decoder. Metric exemplars link measurements back to their source trace and span when those IDs are present; histogram bucket charts show one latest distribution point for the selected instrument, with its source attributes shown.</p>
+<h2>Workspace integration check</h2>
+<p>The offline LangGraph retrieval control was run and imported alongside the harness demo. The resulting database contained 3 runs and 23 spans across <code>agent-harness</code> and <code>langgraph</code>; joining the control's <code>results.json</code> correctly marked its failed baseline <code>FAILED</code> and its passing control <code>OK</code>. This verifies ingestion and outcome correlation for those two local producers, not automatic instrumentation of arbitrary applications.</p>
+<h2>Agent session overview</h2>
+<p>The terminal's <strong>Agents</strong> view puts <strong>Agent / project</strong>, <strong>Current task</strong>, <strong>Status</strong>,
+and <strong>Updated</strong> in a task-focused list. Task previews stay on one line; agent/project
+rows use two lines. On wide terminals the session inspector is on the right with
+only status and a short latest-action label, not command arguments or output. On narrower
+terminals it stacks below; compact terminals prioritize the list until you inspect.
+Full session IDs, working directories, branches (when recorded), models, and usage
+remain available in the expanded inspector rather than taking up table columns.
+Press <strong>Enter</strong> to inspect; <strong>e</strong> expands the details and <strong>s</strong> opens session activity.
+Raw output and long values remain available in the selectable, copyable expanded
+detail pane and Activity. The default view does not repeat the activity table or
+show an unconfigured AI-summary button. Internal reviews are hidden from native
+sessions and stored session summaries alike unless Reviews is enabled.</p>
+<p>The compact framed overview sits above a separate <strong>Views</strong> frame and scope
+controls. <strong>Working agents</strong> and <strong>Needs attention</strong> have separate summary
+areas; attention includes explicit input requests, possible stalls, and recorded
+failures, not ordinary tool waits. Press <strong>1</strong> for Agents, <strong>2</strong> for Activity,
+<strong>3</strong> for MCP Calls, or <strong>4</strong> for Traces. MCP details, token usage, and process
+inventory remain in their dedicated views. Wide terminals show all seven view
+tabs; narrower terminals expose <strong>5 Host</strong>, <strong>6 Metrics</strong>, and <strong>7 Findings</strong> in
+the highlighted <strong>Other views</strong> selector. Very narrow terminals use a single
+labelled view selector for all seven destinations. Search stays with its evidence view,
+and keyboard hints stay at the bottom. The agent list has no fixed row or height
+cap: it and the inspector fill the remaining workspace, with additional sessions
+reachable by scrolling. Short terminals use a compact summary to preserve room
+for evidence.</p>
+<p>Square, single-line panel edges and aligned headers separate the workspace without
+extra toolbars. An amber <strong>▸</strong> marks the selected session. Status uses shape and
+wording as well as color: <strong>●</strong> working, <strong>◌</strong> quiet work, <strong>✓</strong> completed, and <strong>!</strong>
+for input requests or status warnings. Completed rows keep a muted status rather
+than competing with live work. Selection retains these colors in every theme.</p>
+<p>In <strong>Activity</strong>, select an agent with the Scope control (or press <strong>s</strong> on its row
+in Agents), then click <strong>Prompts</strong> beside Errors. This shows only recorded user
+messages for that agent, newest first; use <strong>]</strong> to page backward through older
+prompts. Turn Prompts off to return to the full activity stream.</p>
+<p>Status comes from native lifecycle records: <strong>Working</strong>, <strong>Waiting</strong>, <strong>Completed</strong>,
+or <strong>Interrupted</strong>. A known input request shows <strong>User input</strong>; a pending tool shows
+<strong>Tool response</strong> and its name. Unfinished turns with quiet logs show <strong>Quiet work</strong>
+(<strong>Working (quiet)</strong> in the expanded inspector);
+CPU/I/O progress from an exactly matched session process or its children can support
+<strong>Processing</strong> or <strong>Tool running</strong>. These are activity signals, not proof that a model
+request is making useful progress. Explicit approval/input waits persist until resolved.</p>
+<p>After at least five minutes without records or observed process progress, a matched
+live session shows <strong>May be stalled</strong> (<strong>Possibly stalled</strong> in the expanded inspector), not a definitive hang. Without a process match,
+the status is <strong>Unconfirmed</strong> instead. <strong>Monitor delayed</strong> or <strong>Catching up</strong> identifies
+collector delay/unread data, not an agent failure. Details explain the status evidence.
+New transcript headers without started work are not counted as working. Completed
+turns stay completed even if their terminal process remains open. Unrecognized/missing
+lifecycle records remain <strong>Unknown</strong>. SDK connections report connection state separately.</p>
+<p>The <strong>MCP Calls</strong> view includes configured server names discovered in known local
+Codex, Claude Code, Cursor, Gemini CLI, GitHub Copilot CLI, OpenCode, and VS Code configuration files, alongside
+servers with calls in the stored scope. Configured-only entries are labeled
+<strong>Configured</strong>; this is a name inventory and does not check whether a server is
+reachable or running. Only server names, client, and scope are retained or returned;
+commands, arguments, URLs, headers, and environment values are discarded. Select a server
+and press <strong>Enter</strong> to search its calls. Counters include older calls beyond the
+current page; the table's count describes the displayed page. The view reports a
+count when a known configuration file is unreadable, malformed, or over the 1 MiB
+scan limit; it does not expose the path or contents of that file.
+OpenCode project <code>opencode.json</code> and <code>opencode.jsonc</code> files support both the
+top-level <code>mcp</code> layout and the nested <code>mcp.servers</code> layout. For a running local
+OpenCode process, the monitor checks its working directory for project config.
+Claude Code and Codex qualified names (<code>mcp__server__tool</code>) and Codex explicit MCP
+completion records carry server/tool identity. Restart the receiver after upgrading
+to re-read discoverable local session files; the existing 24-hour discovery window
+and bounded file reading limits still apply.</p>
+<h2>Optional AI summaries</h2>
+<p>Every session first shows a local <strong>Progress summary · recorded activity</strong>. It needs no
+provider, key, or extra setup and never guesses the agent's remaining tasks. If
+<code>OPENAI_API_KEY</code> is already set in the terminal environment, optional AI summaries use
+that key with OpenAI's Chat Completions endpoint and <code>gpt-4.1-mini</code> by default. In
+<strong>Agents</strong>, select a session and click <strong>AI summary</strong> to request one. Otherwise, the
+local summary stays available without setup. The request sends its task, project, reported state, waiting reason,
+observed trace/span totals, token counts, error counts, cost coverage, and up to 30 recent action headlines to your chosen provider. It uses your API quota.
+Unavailable totals are sent as unknown rather than zero. Raw tool payloads, working directories, hidden reasoning, and environment values are
+excluded. Recognizable secrets are redacted, but task/headline text may still contain
+private project information. Only enable this with a provider appropriate for that data.</p>
+<p>For another OpenAI-compatible provider, set these in the terminal that launches Goechala:</p>
+<pre><code class="language-sh">export OBSERVATORY_SUMMARY_URL='https://api.openai.com/v1/chat/completions'
+export OBSERVATORY_SUMMARY_MODEL='YOUR_MODEL_ID'
+# The existing OPENAI_API_KEY is reused unless OBSERVATORY_SUMMARY_KEY_ENV selects another variable.
+agenturm
+</code></pre>
+<p>The URL is the full <strong>Chat Completions</strong> endpoint, and the model must be available to
+your account. Other compatible providers can use their endpoint, model, and API key
+variable. The default key variable is <code>OBSERVATORY_SUMMARY_API_KEY</code>. A compatible local
+server can use an HTTP localhost URL without an API key. <code>OPENAI_BASE_URL</code> and
+<code>OPENAI_MODEL</code> are also respected when reusing <code>OPENAI_API_KEY</code>. No key is saved to the database.
+The request uses <code>max_completion_tokens</code> and <code>store: false</code>; compatible providers must
+support those fields. See the <a href="https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create">API request schema</a>.</p>
+<p>Summaries run only on request, in the background, with a 12-second timeout. An unchanged
+snapshot reuses its summary for the lifetime of the UI; new session activity marks it as
+an earlier snapshot. Provider failures leave the local progress summary available.
+Generated text is labeled and does
+not override recorded status. Internal approval reviews are excluded.</p>
+</main></body></html>
