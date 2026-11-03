@@ -36,10 +36,11 @@ class TaskUsageTests(unittest.TestCase):
         text,details=task_usage_summary(usage,'Fix checkout',identity='session-a')
         self.assertIn('Task cost $0.2500',text)
         self.assertIn('Tokens 2,500',text)
-        self.assertIn('read 1,500 · write 100 · hit 75%',text)
+        self.assertIn('Cached input 1,500 · 75% of input · Cache write 100',text)
         self.assertIn('Session: session-a',details)
         self.assertNotIn('Avg/task',text)
         self.assertIn('Input: 2,000',details)
+        self.assertIn('Input 2,000 · Output 500',text)
 
     def test_zero_unknown_partial_and_log_only_are_distinct(self):
         text,_=task_usage_summary({'trace_count':1,'cost_complete':True,'known_cost_usd':0,
@@ -47,8 +48,17 @@ class TaskUsageTests(unittest.TestCase):
                                    'cache_read_input_tokens_reported':False})
         self.assertIn('cost $0.0000',text)
         self.assertIn('Tokens 0',text)
-        self.assertIn('Cache read Not reported',text)
-        self.assertNotIn('hit 0%',text)
+        self.assertIn('Cached input Not reported',text)
+        self.assertNotIn('Cache write',text)
+        self.assertNotIn('% of input',text)
+        text,details=task_usage_summary({'input_tokens':10,'output_tokens':0,
+            'cache_write_input_tokens':0,'cache_write_input_tokens_reported':True})
+        self.assertIn('Cache write 0',text)
+        self.assertIn('Cache write: 0',details)
+        text,details=task_usage_summary({'cache_write_input_tokens':0,
+                                       'cache_write_input_tokens_reported':False})
+        self.assertNotIn('Cache write',text)
+        self.assertNotIn('Cache write:',details)
         text,_=task_usage_summary({'trace_count':0,'cost_complete':True,'known_cost_usd':0})
         self.assertIn('cost Not reported',text)
         text,_=task_usage_summary({'trace_count':3,'unknown_cost_runs':2,'cost_complete':False,
@@ -56,7 +66,7 @@ class TaskUsageTests(unittest.TestCase):
                                    'output_tokens':5,'cache_read_input_tokens':5})
         self.assertIn('$0.2000+',text)
         self.assertIn('Tokens 15+',text)
-        self.assertNotIn('hit ',text)
+        self.assertNotIn('% of input',text)
 
     def test_shared_session_id_does_not_mix_workers(self):
         rows=[{'agent_id':'a','session_id':'shared','input_tokens':1},
@@ -90,7 +100,9 @@ class TaskUsageJourney(unittest.IsolatedAsyncioTestCase):
             await pilot.pause();app.set_agent_filter('all');app.select_agent('source-1');await pilot.pause()
             bar=lambda:app.query_one('#agent-detail').plain_text
             self.assertFalse(app.query_one('#usage-summary').display)
-            self.assertIn('Cost $0.2500',app.query_one('#agent-table').get_row('source-1')[0].plain)
+            row=app.query_one('#agent-table').get_row('source-1')[0].plain
+            self.assertIn('Tokens 2.5k · Cost $0.2500',row)
+            self.assertNotIn('cache',row.lower())
             self.assertIn('$0.2500',bar());self.assertIn('2,500',bar());self.assertIn('75%',bar())
             app.select_agent('source-2');await pilot.pause()
             self.assertIn('$1.0000',bar());self.assertIn('Tokens 900',bar());self.assertIn('45%',bar())
@@ -105,8 +117,8 @@ class TaskUsageJourney(unittest.IsolatedAsyncioTestCase):
             self.assertIn('Cache write: 20',app.screen.details)
             await pilot.press('escape','escape');await pilot.resize_terminal(60,20);await pilot.pause()
             await pilot.press('e');await pilot.pause()
-            self.assertIn('Task cost $1.0000',bar());self.assertIn('Cache read 360',bar())
-            self.assertIn('hit 45%',bar())
+            self.assertIn('Task cost $1.0000',bar());self.assertIn('Cached input 360',bar())
+            self.assertIn('45% of input',bar())
             await pilot.press('escape');await pilot.pause()
             await pilot.press('4');await pilot.pause()
             await pilot.press('u');await pilot.pause()

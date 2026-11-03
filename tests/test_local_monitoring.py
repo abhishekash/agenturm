@@ -217,7 +217,7 @@ class LocalMonitoringJourneys(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('Follow live',button.render_line(0).text)
                 self.assertFalse(app.query_one('#usage-summary').display)
                 row=app.query_one('#agent-table').get_row('source-1')[0].plain
-                self.assertIn('— · — tok',row)
+                self.assertIn('— tok · —',row)
             await pilot.press('p');await pilot.pause()
             self.assertFalse(feed.paused)
             self.assertEqual(app.visible_agent_rows,list(reversed(original)))

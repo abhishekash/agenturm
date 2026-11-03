@@ -157,17 +157,15 @@ def task_run_usage(sessions, item, traces=()):
 
 def task_usage_label(usage, *, compact=False):
     text,_=task_usage_summary(usage,scope='trace',compact=True)
-    first,cache=text.splitlines()
+    first=text.splitlines()[0]
+    money,tokens=first.removeprefix('Task cost ').split(' · Tokens ')
     if compact:
-        money,tokens=first.removeprefix('Task cost ').split(' · Tokens ')
         if money.startswith('$'):
             suffix='+' if money.endswith('+') else ''
             money=money.rstrip('+').rstrip('0').rstrip('.')+suffix
         tokens=tokens.replace('.0k','k').replace('.0m','m')
-        return money.replace('Not reported','—')+' · '+tokens.replace('Not reported','—')+' tok'
-    label=first.replace('Task cost ','Cost ').replace('Not reported','—')
-    if ' · hit ' in cache:label+=' · cache '+cache.rsplit(' · hit ',1)[1]
-    return label
+        return tokens.replace('Not reported','—')+' tok · '+money.replace('Not reported','—')
+    return f'Tokens {tokens} · Cost {money}'.replace('Not reported','—')
 
 
 def task_usage_summary(usage, title='', *, scope='session', identity='', compact=False):
@@ -192,20 +190,24 @@ def task_usage_summary(usage, title='', *, scope='session', identity='', compact
     screen_token=lambda key: short(int(usage[key]))+('+' if partial else '') if known(key) else 'Not reported'
     screen_total=(short(int(usage['input_tokens'])+int(usage['output_tokens']))+('+' if partial else '')
                   if known('input_tokens') and known('output_tokens') else 'Not reported')
+    cached_suffix=f' · {ratio} of input' if ratio!='Not reported' else ''
     lines=[f'Task cost {money} · Tokens {screen_total}',
-           f"Cache read {screen_token('cache_read_input_tokens')} · write {screen_token('cache_write_input_tokens')}"+
-           (f' · hit {ratio}' if ratio!='Not reported' else '')]
+           f"Input {screen_token('input_tokens')} · Output {screen_token('output_tokens')}",
+           f"Cached input {screen_token('cache_read_input_tokens')}"+cached_suffix]
+    if known('cache_write_input_tokens'):
+        lines[-1]+=f" · Cache write {screen_token('cache_write_input_tokens')}"
     details='\n'.join([
         'SELECTED TASK USAGE',title or 'No task selected','',
         f'Cost: {money}',f'Tokens used: {tokens}',
         f"Input: {token('input_tokens')}",f"Output: {token('output_tokens')}",
-        f"Cache read: {token('cache_read_input_tokens')}",f"Cache write: {token('cache_write_input_tokens')}",
-        f'Cache hit: {ratio} of input tokens',f"Reasoning output: {token('reasoning_output_tokens')}",'',
+        f"Cached input: {token('cache_read_input_tokens')}"+cached_suffix,
+        *([f"Cache write: {token('cache_write_input_tokens')}"] if known('cache_write_input_tokens') else []),
+        f"Reasoning output: {token('reasoning_output_tokens')}",'',
         ('Scope: this recorded run (trace).' if scope=='trace' else
          'Scope: this agent session across its recorded runs; excludes other agents and sessions.'),
         ('Trace: ' if scope=='trace' else 'Session: ')+(identity or 'Not reported'),'',
         'Cache reads/writes are input breakdowns; reasoning is an output breakdown. Do not add them to total tokens.',
-        'Cache hit means cached input divided by reported input tokens, not a request hit rate.',
+        'Cached percentage means cached input divided by reported input tokens, not a request hit rate.',
         'A + marks a partial reported subtotal. Missing telemetry is not zero.',
         'Cost is reported USD for this task, not an all-history total or a subscription bill estimate.',
         'Press Esc to return.'])
