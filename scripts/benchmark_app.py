@@ -111,6 +111,8 @@ async def scenario(name, idle_seconds):
                 'payload_bytes_per_span': payload_bytes,
                 'ingestion_and_derived_seconds': round(ingestion_seconds, 3),
                 'refresh_samples': len(latencies),
+                'refresh_first_ms': round(latencies[0], 3),
+                'refresh_warm_median_ms': round(percentile(latencies[1:], .5), 3),
                 'refresh_median_ms': round(percentile(latencies, .5), 3),
                 'refresh_p95_ms': round(percentile(latencies, .95), 3),
                 'headless_idle_cpu_percent': round(cpu_seconds / wall_seconds * 100, 2),

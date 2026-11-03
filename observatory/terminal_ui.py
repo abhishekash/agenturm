@@ -1496,6 +1496,7 @@ class ObservatoryApp(App):
         preferences=self.preferences.load()
         self.theme=preferences.get('theme','Observation')
         self.preference_view=preferences.get('view','agents')
+        self.feed.detail_enabled=self.preference_view=='traces'
         self.query_one('#pages',TabbedContent).active=self.preference_view
         self.errors_only=set(preferences.get('errors',[]))
         self.prompts_only=preferences.get('prompts',False)
@@ -1632,7 +1633,7 @@ class ObservatoryApp(App):
             secondary.truncate(width,overflow='ellipsis')
             text.append('\n')
             text.append_text(secondary)
-        widget.update(themed_text(widget,text))
+        update_status_text(widget,themed_text(widget,text))
 
     def refresh_summary(self):
         for name,values in self.summary_values.items():
@@ -2745,7 +2746,8 @@ class ObservatoryApp(App):
     def show_spans(self):
         detail=self.data.detail
         if not detail.get('trace_id'):
-            tree=self.query_one('#span-tree',Tree);tree.clear();tree.root.set_label('No trace selected')
+            tree=self.query_one('#span-tree',Tree);tree.clear()
+            tree.root.set_label('Loading trace…' if self.feed.selected_trace else 'No trace selected')
             self.query_one('#span-info',RichLog).clear();self.span_signature=None
             return
         if detail.get('trace_id')!=self.feed.selected_trace:return
@@ -2910,6 +2912,7 @@ class ObservatoryApp(App):
 
     @on(Select.Changed,'#more-views')
     def more_view_changed(self,event):
+        if not self.query('#pages') or event.value!=event.select.value:return
         if event.value and event.value!=Select.BLANK and event.value!=self.query_one('#pages',TabbedContent).active:
             self.action_page(str(event.value))
 
@@ -2946,6 +2949,10 @@ class ObservatoryApp(App):
     @on(TabbedContent.TabActivated,'#pages')
     def page_activated(self,event):
         self.preference_view=event.pane.id
+        detail_enabled=event.pane.id=='traces'
+        if self.feed.detail_enabled!=detail_enabled:
+            self.feed.detail_enabled=detail_enabled
+            self.feed.request_refresh()
         self.screen.set_class(event.pane.has_class('expanded'),'inspecting')
         self.query_one('#controls').set_class(event.pane.id=='agents','agents-active')
         self.query_one('#controls').set_class(
@@ -2972,7 +2979,10 @@ class ObservatoryApp(App):
                 picker.value=page if menu_navigation or page in {'host','metrics','findings'} else ''
             self.view_menu_mode=menu_navigation
         else:
-            picker.value=page if menu_navigation or page in {'host','metrics','findings'} else ''
+            # Synchronization must not enqueue another navigation command.
+            # Stale Changed messages can otherwise bounce between tabs forever.
+            with picker.prevent(Select.Changed):
+                picker.value=page if menu_navigation or page in {'host','metrics','findings'} else ''
         picker.set_class(page in {'host','metrics','findings'},'secondary-active')
 
     @on(Button.Pressed)

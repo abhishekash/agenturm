@@ -10,6 +10,34 @@ from tests.test_terminal_search import ExampleApi
 
 
 class FeedConcurrencyTests(unittest.TestCase):
+    def test_hidden_trace_payload_is_not_loaded_and_reopens_on_demand(self):
+        api = ExampleApi()
+        feed = Feed(api)
+        feed.detail_enabled = False
+        feed.refresh()
+        self.assertFalse(feed.snapshot.error)
+        self.assertTrue(feed.snapshot.traces)
+        self.assertEqual(feed.snapshot.detail, {})
+        self.assertFalse(any(path.startswith('/api/traces/') for path in api.requests))
+        feed.detail_enabled = True
+        feed.refresh()
+        self.assertFalse(feed.snapshot.error)
+        self.assertTrue(feed.snapshot.detail)
+        self.assertTrue(any(path.startswith('/api/traces/') for path in api.requests))
+
+    def test_hiding_inspector_discards_inflight_detail_snapshot(self):
+        api = ExampleApi()
+        feed = Feed(api)
+        original = api.get
+        def get(path):
+            if path.startswith('/api/traces/'):
+                feed.detail_enabled = False
+            return original(path)
+        with patch.object(api, 'get', side_effect=get):
+            feed.refresh()
+        self.assertEqual(feed.snapshot.updated, 0)
+        self.assertTrue(feed.wake.is_set())
+
     def test_prefetch_is_parallel_bounded_and_deduplicated(self):
         started = threading.Event()
         release = threading.Event()
