@@ -187,7 +187,9 @@ class WorkflowScreen(ModalScreen):
         self.query_one('#workflow-limits').display=False
         for key,title in (('tokens','Tokens'),('cost','USD'),('minutes','Minutes')):
             self.query_one('#workflow-'+key,Input).border_title=title
-        self.render_report()
+        self.call_after_refresh(self.render_report)
+    def on_resize(self):
+        if self.is_mounted:self.call_after_refresh(self.render_report)
     def render_report(self):
         owner=self.owner;table=self.query_one(DataTable);table.clear()
         for item,reasons,since in owner.workflow_ledger.rows:
@@ -195,7 +197,9 @@ class WorkflowScreen(ModalScreen):
         items=owner.workflow_items()
         item=next((x for x in items if x['id']==owner.selected_source),None)
         text=workflow_report(item,items,owner.feed.snapshot) if item else 'Select a session in Agents to inspect its workflow.'
-        log=self.query_one(RichLog);log.clear();log.write(Text(text+'\n\nNotifications: '+owner.workflow_delivery),width=max(1,log.content_size.width-1))
+        log=self.query_one(RichLog)
+        if not log.content_size.width:return
+        log.clear();log.write(Text(text+'\n\nNotifications: '+owner.workflow_delivery),width=max(1,log.content_size.width-1))
     @on(DataTable.RowSelected,'#workflow-inbox')
     def select_attention(self,event):
         self.owner.selected_source=event.row_key.value;self.render_report()
