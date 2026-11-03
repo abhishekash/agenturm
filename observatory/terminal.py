@@ -573,7 +573,7 @@ def open_terminal(command):
     if os.name == "nt":
         terminal = shutil.which("wt.exe")
         if terminal:
-            subprocess.Popen([terminal, "--title", "Goechala", "--startingDirectory", os.getcwd(), *command])
+            subprocess.Popen([terminal, "--title", "Agenturm", "--startingDirectory", os.getcwd(), *command])
             return
     elif os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
         for executable, prefix in (("gnome-terminal", ["--working-directory", os.getcwd(), "--"]),
@@ -616,7 +616,7 @@ def run_cockpit(*, db_path="observatory.db", port=14318, endpoint=None,
         try:
             health = api.get("/api/health")
             if not health.get("ok"):
-                raise CockpitError("The endpoint is not a ready Goechala receiver.")
+                raise CockpitError("The endpoint is not a ready Agenturm receiver.")
             if metadata_only and health.get("local_agents", {}).get("capture_content"):
                 raise CockpitError("The existing receiver captures session content. Restart it with serve --metadata-only, then reconnect.")
         except urllib.error.HTTPError as exc:

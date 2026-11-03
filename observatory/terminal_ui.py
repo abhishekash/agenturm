@@ -573,9 +573,9 @@ def wait_summary(item):
     folded=reason.casefold()
     runtime=item.get('runtime') or 'agent'
     if 'approval' in folded or 'permission' in folded:
-        return f'Approval needed · review it in the {runtime} terminal; Goechala is read-only.'
+        return f'Approval needed · review it in the {runtime} terminal; Agenturm is read-only.'
     if 'user input' in folded or 'input request' in folded:
-        return f'Your reply is needed · answer in the {runtime} terminal; Goechala is read-only.'
+        return f'Your reply is needed · answer in the {runtime} terminal; Agenturm is read-only.'
     if reason.lower().startswith('tool response:'):
         return f'{reason} · tool response is pending; no user action was reported.'
     if item.get('state')=='Waiting':
@@ -1160,6 +1160,8 @@ class ObservatoryApp(App):
     .inspector-actions { height: 1; margin: 1 0; }
     .inspector-actions Button { width: 1fr; height: 1; padding: 0; border: none; color: $agent-secondary; background: $agent-surface; }
     .inspector-actions Button:focus { color: $agent-primary; background: $agent-focus; }
+    #agent-bottom .inspector-actions { layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 1; height: auto; }
+    #agent-reviewed, #agent-dismissed, #agent-summary { column-span: 2; }
     .expand-button { min-width: 12; }
     #trace-detail { width: 1fr; border: solid $agent-border-subtle; }
     #span-tree { height: 1fr; min-height: 4; background: $agent-surface; scrollbar-size: 1 1; }
@@ -1177,7 +1179,10 @@ class ObservatoryApp(App):
     .narrow #reviews { display: none; }
     .narrow #pause { width: 8; }
     .narrow #agent-sort { width: 11; margin-right: 1; }
-    .small #agent-sort { width: 10; }
+    .small #agent-sort { width: 11; }
+    .menu-navigation #controls.agents-active { height: 2; }
+    .menu-navigation #controls.agents-active #scope-label { display: none; }
+    .menu-navigation #controls.agents-active #scope { dock: bottom; width: 100%; margin: 0; }
     .minimal #agent-sort { display: none; }
     .narrow #shortcuts { height: 1; max-height: 1; margin: 0 1; padding: 0; }
     .narrow #pages { margin: 0 1; }
@@ -1223,7 +1228,7 @@ class ObservatoryApp(App):
               Binding('alt+up','inspect_parent','Inspect parent',show=False),
               Binding('alt+down','inspect_first_child','Inspect child',show=False),
               Binding('alt+right','inspect_next_attention','Next descendant needing attention',show=False),
-              Binding('x','dismiss_attention','Dismiss attention',show=False),
+              Binding('X','dismiss_attention','Dismiss attention',show=False),
               Binding('1','page("agents")','Agents',show=False),
               Binding('2','page("activity")','Activity',show=False),Binding('3','page("mcp")','MCP',show=False),
               Binding('4','page("traces")','Traces',show=False),Binding('5','page("host")','Host',show=False),
@@ -1243,6 +1248,7 @@ class ObservatoryApp(App):
         self.table_data={}
         self.table_signatures={}
         self.inspector_signatures={}
+        self.inspector_payloads={}
         self.inspector_reflow_pending=False
         self.selected_source=None
         self.selected_activity=None
@@ -1367,7 +1373,7 @@ class ObservatoryApp(App):
                                 yield Button(Text('Activity · s'),id='agent-open',tooltip='Read all recorded activity for this session')
                                 yield Button('Trace · t',id='agent-trace',tooltip='Inspect the latest linked trace for this session')
                                 yield Button('Mark reviewed · r',id='agent-reviewed',tooltip='Acknowledge this attention item for this run; does not change the recorded session status')
-                                yield Button('Dismiss · x',id='agent-dismissed',tooltip='Hide this failure from Recent and Needs attention; it remains in All history and Traces')
+                                yield Button('Dismiss · Shift+X',id='agent-dismissed',tooltip='Hide this failure from Recent and Needs attention; it remains in All history and Traces')
                                 yield Button('AI summary',id='agent-summary',tooltip='Uses OPENAI_API_KEY when available. Runs only when requested; the recorded progress summary needs no setup.')
                         yield ResultsTable(id='agent-actions',cursor_type='row',zebra_stripes=False)
             with TabPane('2  Activity',id='activity'):
@@ -2304,6 +2310,9 @@ class ObservatoryApp(App):
         return items
 
     def inspect(self,name,title,fields,sections,*,overview=False):
+        # Keep the semantic content current even while a compact/hidden pane
+        # skips rendering. Copy must never depend on old terminal strips.
+        self.inspector_payloads[name]=(title,fields,sections)
         log=self.query_one('#'+name,RichLog)
         width=log.scrollable_content_region.width
         # Live/selection callbacks can run after a pane has been hidden. RichLog
@@ -2517,7 +2526,7 @@ class ObservatoryApp(App):
         dismissed=attention_key(item) in self.dismissed_attention
         dismissed_button=self.query_one('#agent-dismissed',Button)
         dismissed_button.display=attention_required(item)
-        dismissed_button.label='Restore · x' if dismissed else 'Dismiss · x'
+        dismissed_button.label='Restore · Shift+X' if dismissed else 'Dismiss · Shift+X'
         dismissed_button.tooltip=('Restore this failure to Recent and Needs attention.' if dismissed else
                                   'Hide this failure from Recent and Needs attention; keep it in All history and Traces.')
         latest=item.get('last_activity') or {}
@@ -2558,8 +2567,8 @@ class ObservatoryApp(App):
             request_text=''
         self.agent_primary_event_id=((error_event or request_event or recorded or {}).get('id')
                                      or (error_event or request_event or recorded or {}).get('source_id'))
-        primary_label=('Inspect failed call · s' if error_event else
-                       'View recorded request · s' if input_required(item) and request_event else
+        primary_label=('Failed call · s' if error_event else
+                       'Request · s' if input_required(item) and request_event else
                        'Activity · s')
         primary_tip=('Open the exact recorded failed event' if error_event else
                      'Open the recorded user request; reply in the agent terminal' if request_event and input_required(item) else
@@ -3227,7 +3236,26 @@ class ObservatoryApp(App):
             self.notify('Select a metric instrument to copy.');return
         else:
             name={'agents':'agent-detail','traces':'span-info','host':'host-detail'}[page]
-            self.copy_to_clipboard(self.query_one('#'+name,SelectableRichLog).plain_text)
+            if page=='agents':
+                if not getattr(self,'source_map',{}).get(self.selected_source):
+                    self.notify('Select an agent session to copy.');return
+                self.show_agent()
+            elif page=='traces':
+                tree=self.query_one('#span-tree',Tree)
+                span=tree.cursor_node.data if tree.cursor_node else None
+                if not span or self.data.detail.get('trace_id')!=self.feed.selected_trace:
+                    self.notify('Select a loaded trace span to copy.');return
+                self.show_span(span)
+            else:self.render_host()
+            title,fields,sections=self.inspector_payloads.get(name,('',[],[]))
+            def plain(value):
+                if isinstance(value,(dict,list)):
+                    return json.dumps(value,ensure_ascii=False,indent=2,default=str)
+                return str(value) if value is not None else 'Not reported'
+            content=[str(title),*(f'{label}: {plain(value)}' for label,value in fields)]
+            for label,value in sections:
+                if value:content.extend(('',str(label),plain(value)))
+            self.copy_to_clipboard('\n'.join(clean(line) for line in '\n'.join(content).splitlines()))
             return
         if not item:
             self.notify('Select an activity, MCP operation, or finding to copy.')
@@ -3495,6 +3523,8 @@ class ObservatoryApp(App):
         self.refresh_data()
 
     def action_dismiss_attention(self):
+        if self.query_one('#pages',TabbedContent).active!='agents':
+            self.notify('Open Agents to dismiss or restore a session attention item.');return
         item=getattr(self,'source_map',{}).get(self.selected_source)
         if not item or not attention_required(item):
             return

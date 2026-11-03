@@ -126,7 +126,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn('Progress Summary · Recorded Activity', detail)
                     self.assertIn('Current: Waiting', detail)
                     self.assertIn('answer in the Codex terminal', ' '.join(detail.split()))
-                    self.assertIn('Goechala is read-only', ' '.join(detail.split()))
+                    self.assertIn('Agenturm is read-only', ' '.join(detail.split()))
                     self.assertIn('Status Evidence',detail)
                     self.assertIn('Progress Summary · Recorded Activity',detail)
                     # Mounting and refreshes never trigger paid API calls.
