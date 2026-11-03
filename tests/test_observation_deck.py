@@ -25,8 +25,8 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             tabs = app.query_one('#pages > Tabs')
             self.assertGreaterEqual(controls.region.y, tabs.region.bottom)
             self.assertGreaterEqual(results.region.y, controls.region.bottom)
-            self.assertEqual(app.query_one('#usage-summary').size.height,2)
-            self.assertEqual(results.region.y,11)
+            self.assertFalse(app.query_one('#usage-summary').display)
+            self.assertEqual(results.region.y,9)
             self.assertEqual(app.query_one('#search-agents').size.height,1)
             self.assertEqual(controls.size.height,1)
             self.assertEqual([str(c.label) for c in app.query_one('#agent-table', DataTable).columns.values()],
@@ -212,7 +212,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertIn(title,' '.join(line.text.rstrip() for line in log.lines))
             self.assertIn('Shell command · git',log.plain_text)
-            self.assertLessEqual(len(log.lines),log.scrollable_content_region.height)
+            self.assertLessEqual(len(log.lines),log.scrollable_content_region.height+4)  # Task usage may scroll.
             await pilot.resize_terminal(180,48)
             await pilot.pause()
             self.assertNotIn(title,[line.text.rstrip() for line in log.lines])
@@ -252,6 +252,9 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         feed.snapshot.sessions=[{'session_id':'failed-session','latest_status':'ERROR',
             'latest_task':'Best reliable mini PC under €300 in Germany',
             'last_unix_nano':time.time_ns(),'errors':1,'trace_count':1}]
+        get=feed.api.get
+        session_rows=list(feed.snapshot.sessions)
+        feed.api.get=lambda path: {'sessions':session_rows} if path.startswith('/api/sessions?') else get(path)
         app=ObservatoryApp(feed,persist_preferences=False)
         async with app.run_test(size=(180,48)) as pilot:
             await pilot.pause()
@@ -292,7 +295,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('Shell command · curl',text)
             self.assertNotIn('--secret-argument',text)
             self.assertNotIn('RAW_RESPONSE_MARKER',text)
-            self.assertLessEqual(len(log.lines),16)
+            self.assertLessEqual(len(log.lines),22)  # Includes the task token/cache summary.
             self.assertFalse(app.query_one('#agent-actions').display)
             self.assertFalse(app.query_one('#agent-summary').display)
             await pilot.press('e')
@@ -315,7 +318,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.theme,'Observation')
             self.assertIn('Untitled session · Codex',app.query_one('#agent-table').get_row('source-1')[0].plain)
             self.assertIn('Repair keyboard navigation',app.query_one('#agent-table').get_row('source-2')[0].plain)
-            self.assertEqual(app.query_one('#agent-table').get_row('source-1')[0].plain.count('\n'),1)
+            self.assertEqual(app.query_one('#agent-table').get_row('source-1')[0].plain.count('\n'),2)
             app.query_one('#agent-filter',Select).value='active'
             await pilot.pause()
             self.assertEqual(app.agent_filter,'active')
@@ -531,6 +534,8 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             })
         feed.snapshot.mcp_summary.update(calls=3,tools=3,errors=0)
         feed.snapshot.mcp_results=list(feed.snapshot.mcp)
+        feed.api.mcp=list(feed.snapshot.mcp)
+        feed.api.mcp_summary=dict(feed.snapshot.mcp_summary)
         feed.snapshot.updated+=1
 
         app=ObservatoryApp(feed,persist_preferences=False)
@@ -595,7 +600,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             results=app.query_one('#results-agents')
             self.assertEqual(table.row_count,12,'The view retains all agents in its scrollable list')
             inspector=app.query_one('#agent-bottom')
-            self.assertEqual(results.region.y,12)
+            self.assertEqual(results.region.y,10)
             self.assertEqual(results.region.y,inspector.region.y)
             self.assertEqual(results.region.bottom,inspector.region.bottom)
             self.assertEqual(results.region.bottom,app.query_one('#shortcuts').region.y)
@@ -611,7 +616,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             # just the agent list. All 12 sessions remain in the table.
             await pilot.resize_terminal(180,40)
             await pilot.pause()
-            self.assertEqual(results.region.y,10)
+            self.assertEqual(results.region.y,8)
             self.assertEqual(results.region.bottom,inspector.region.bottom)
             self.assertEqual(table.row_count,12)
 

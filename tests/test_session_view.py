@@ -269,7 +269,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_server_inventory_includes_older_servers_and_filters_calls(self):
         feed = ManualFeed()
-        feed.snapshot.mcp_summary = {'calls': 140, 'tools': 5, 'errors': 2,
+        feed.api.mcp_summary = {'calls': 140, 'tools': 5, 'errors': 2,
             'servers': [{'server': 'github', 'calls': 139, 'tools': 4, 'errors': 1},
                         {'server': 'older-server', 'calls': 1, 'tools': 1, 'errors': 1}],
             'metric_calls': 68, 'metric_servers': [

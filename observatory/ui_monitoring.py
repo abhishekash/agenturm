@@ -16,14 +16,14 @@ def connection_feedback(feed):
     snapshot=feed.snapshot
     slow=progress.phase=='loading' and elapsed>=1
     visible=bool(snapshot.error or not snapshot.updated or slow)
-    label=('Authentication' if progress.phase=='auth' else 'Reconnecting' if snapshot.error
+    label=('Authentication' if progress.phase=='auth' else 'Loading delayed' if snapshot.error.startswith('Loading delayed:') else 'Reconnecting' if snapshot.error
            else 'Connecting' if not snapshot.updated else 'Updating' if slow else 'Live')
     if not visible:return label,'',False
     if feed.retry_requested:
         heading='Retry requested · waiting for current request'
     elif progress.phase=='waiting':
         remaining=max(0,math.ceil(progress.retry_at-time.monotonic()))
-        heading=f'Reconnecting · attempt {progress.attempt} · retry in {remaining}s'
+        heading=f'{label} · attempt {progress.attempt} · retry in {remaining}s'
     elif progress.phase=='auth':
         heading='Authentication required · check receiver credentials'
     else:
@@ -146,6 +146,28 @@ def session_usage(sessions, item):
     return next((row for row in sessions if item.get('session_id')
                  and row.get('session_id')==item['session_id']
                  and not row.get('agent_id')), {})
+
+
+def task_run_usage(sessions, item, traces=()):
+    session=session_usage(sessions,item)
+    if session.get('latest_run'):return session['latest_run']
+    trace_id=session.get('latest_trace_id')
+    return next((row for row in traces if trace_id and row.get('trace_id')==trace_id),{})
+
+
+def task_usage_label(usage, *, compact=False):
+    text,_=task_usage_summary(usage,scope='trace',compact=True)
+    first,cache=text.splitlines()
+    if compact:
+        money,tokens=first.removeprefix('Task cost ').split(' · Tokens ')
+        if money.startswith('$'):
+            suffix='+' if money.endswith('+') else ''
+            money=money.rstrip('+').rstrip('0').rstrip('.')+suffix
+        tokens=tokens.replace('.0k','k').replace('.0m','m')
+        return money.replace('Not reported','—')+' · '+tokens.replace('Not reported','—')+' tok'
+    label=first.replace('Task cost ','Cost ').replace('Not reported','—')
+    if ' · hit ' in cache:label+=' · cache '+cache.rsplit(' · hit ',1)[1]
+    return label
 
 
 def task_usage_summary(usage, title='', *, scope='session', identity='', compact=False):

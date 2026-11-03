@@ -135,6 +135,8 @@ class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             label=lambda:app.query_one('#connection',Static).render_line(0).text
             self.assertIn('Connecting',label());self.assertNotIn('Live',label())
+            self.assertEqual(app.inspector_payloads['agent-detail'][0],'Waiting for receiver data')
+            self.assertNotIn('Start an agent',app.query_one('#search-status-agents',Static).render_line(0).text)
             feed.snapshot=replace(feed.snapshot,error='Connection refused')
             feed.connection=replace(feed.connection,phase='waiting',retry_at=time.monotonic()+1)
             app.refresh_data();await pilot.pause()

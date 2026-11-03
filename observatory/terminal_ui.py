@@ -38,7 +38,7 @@ from .ui_preferences import Preferences
 from .ui_export import ExportScreen
 from .ui_render import update_status_text
 from .ui_coverage import analysis_coverage
-from .ui_monitoring import (UsageScreen, SortScreen, task_usage_summary, session_usage, changed_records, failed,
+from .ui_monitoring import (UsageScreen, SortScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, changed_records, failed,
                             failure_groups, event_id, connection_feedback)
 
 
@@ -783,6 +783,8 @@ def agent_list_text(item,selected=False,*,prefix='',summary=None,announced=False
     text.append(prefix+marker,style='#abb4a5')
     text.append(title,style='bold #edf1e7' if item.get('active') or input_required(item) else '#dedce5')
     text.append('\n  '+metadata,style='#abb4a5')
+    if item.get('_task_usage_label'):
+        text.append('\n  '+item['_task_usage_label'],style='#c5adff')
     return text
 
 
@@ -1218,7 +1220,7 @@ class ObservatoryApp(App):
     #span-tree { height: 1fr; min-height: 4; background: $agent-surface; scrollbar-size: 1 1; }
     #span-info { height: 10; border-top: solid $agent-border-subtle; }
     #health { height: 1; padding: 0 2; color: $agent-muted; text-wrap: nowrap; text-overflow: ellipsis; }
-    #usage-summary { height: 2; margin: 0 2; color: $agent-secondary; text-wrap: nowrap; text-overflow: ellipsis; }
+    #usage-summary, #stat-usage { display: none; }
     #connection-notice { height: 2; margin: 0 2; background: $agent-surface; }
     #connection-progress { width: 1fr; height: 2; color: $agent-primary; text-wrap: nowrap; text-overflow: ellipsis; }
     #retry-connection { width: 16; height: 1; padding: 0; border: none; color: $agent-primary; }
@@ -1593,6 +1595,8 @@ class ObservatoryApp(App):
         self.theme=preferences.get('theme','Observation')
         self.preference_view=preferences.get('view','agents')
         self.feed.detail_enabled=self.preference_view=='traces'
+        self.feed.include_global_totals=False
+        self.feed.active_page=self.preference_view
         self.query_one('#pages',TabbedContent).active=self.preference_view
         self.errors_only=set(preferences.get('errors',[]))
         self.prompts_only=preferences.get('prompts',False)
@@ -1713,7 +1717,8 @@ class ObservatoryApp(App):
 
     def stat(self,name,value,label,detail):
         self.summary_values[name]=(value,label,detail)
-        accent='#ffbd69' if name=='attention' and value else '#edf1e7'
+        attention=name=='attention' and isinstance(value,(int,float)) and value>0
+        accent='#ffbd69' if attention else '#edf1e7'
         text=Text(style='#abb4a5',no_wrap=True,overflow='ellipsis')
         text.append(str(value),style='bold '+accent)
         visible_label=label.lower()
@@ -1723,7 +1728,7 @@ class ObservatoryApp(App):
         widget=self.query_one('#stat-'+name,Static)
         widget.tooltip=detail or None
         widget.border_title=''
-        widget.set_class(name=='attention' and bool(value),'needs-attention')
+        widget.set_class(attention,'needs-attention')
         terminal_width=getattr(self,'layout_size',self.size).width
         width=max(1,min(widget.content_size.width,(terminal_width-4)//2-3))
         text.truncate(width,overflow='ellipsis')
@@ -1774,6 +1779,9 @@ class ObservatoryApp(App):
                 table.scroll_to(x=scroll.x,y=max(0,scroll.y+index-old_index),animate=False)
 
     def search_status(self,page,count,noun,plural=None):
+        if not self.data.updated:
+            self.query_one('#search-status-'+page,Static).update('Waiting for receiver data · R Retry now')
+            return
         query=self.search_queries[page]
         waiting=page in {'activity','mcp','traces'} and self.data.queries.get(page,'')!=query
         if page=='activity' and self.data.activity_prompts!=self.prompts_only:waiting=True
@@ -1836,7 +1844,7 @@ class ObservatoryApp(App):
         data=self.display_snapshot(live)
         state,feedback,connecting=connection_feedback(self.feed)
         self.screen.set_class(connecting,'connecting')
-        state_color='#ff8799' if live.error else '#ffbd69' if connecting else '#86e3b5'
+        state_color='#ffbd69' if state=='Loading delayed' else '#ff8799' if live.error else '#ffbd69' if connecting else '#86e3b5'
         notice=self.query_one('#connection-notice')
         notice.display=connecting
         progress=self.query_one('#connection-progress',Static)
@@ -1912,12 +1920,13 @@ class ObservatoryApp(App):
         stat_width=(self.size.width-(4 if self.size.width>=140 else 2))//(2 if self.size.width<100 else 4)
         if cell_len(session_detail)>stat_width-(5 if self.size.width>=140 else 3):
             session_detail=f'{len(work)} sessions · {replies} action'
-        self.stat('sessions',len(active),'Working agents',session_detail)
+        self.stat('sessions',len(active) if data.updated else '—','Working agents',session_detail if data.updated else 'Waiting for receiver data')
         stalled=sum(item.get('state')=='Possibly stalled' for item in work)
         failures=sum(item.get('state') in {'Error','Failed','Incomplete'} for item in work)
         needs_attention=sum(attention_required(item) and item['id'] not in self.reviewed_attention
                             and attention_key(item) not in self.dismissed_attention for item in work)
-        self.stat('attention',needs_attention,'Needs attention',
+        self.stat('attention',needs_attention if data.updated else '—','Needs attention',
+                  'Waiting for receiver data' if not data.updated else
                   f'{replies} need input · {stalled} may be stalled · {failures} failures' if needs_attention else 'No action needed')
         self.query_one('#stat-attention').tooltip=(f'{replies} explicit approval/reply requests · {stalled} possible stalls · {failures} recorded failures. '
             f'Open a session and press r to acknowledge it for this run or Shift+X to dismiss it from Recent and Needs attention. Dismissed sessions remain in All history and Traces. Ordinary tool calls do not need action. {live} live host processes are listed in Host.')
@@ -1975,7 +1984,8 @@ class ObservatoryApp(App):
             return usage,usage.get('task') or 'Selected trace', 'trace',identity or ''
         key=self.selected_source if page=='agents' or self.scope_value=='all' else self.scope_value
         item=getattr(self,'source_map',{}).get(key) or {}
-        return session_usage(self.data.sessions,item),task_preview(item),'session',item.get('session_id') or ''
+        usage=task_run_usage(self.data.sessions,item,self.data.traces)
+        return usage,usage.get('task') or task_preview(item),'trace',usage.get('trace_id') or ''
 
     def refresh_task_usage(self):
         if not self.query('#usage-summary'):return
@@ -2197,6 +2207,7 @@ class ObservatoryApp(App):
         rows=[]
         for shown,item,row,summary,unlinked in visible_agents:
             announced=shown.get('discovery_state')=='announced'
+            shown['_task_usage_label']=task_usage_label(task_run_usage(self.data.sessions,shown,self.data.traces),compact=self.size.width<100)
             rows.append((shown['id'],[
                 agent_list_text(shown,shown['id']==self.selected_source,
                     prefix=shown.get('_prefix',''),summary=summary,announced=announced,
@@ -2217,7 +2228,7 @@ class ObservatoryApp(App):
         else:
             self.search_status('agents',len(visible_agents),'session')
             title=f"Sessions · {len(visible_agents)}"
-        self.query_one('#results-agents').border_title=title
+        self.query_one('#results-agents').border_title=title if self.data.updated else 'Sessions · loading'
         self.show_agent()
 
     def select_agent(self,source_id):
@@ -2646,7 +2657,11 @@ class ObservatoryApp(App):
             self.query_one('#agent-reviewed',Button).display=False
             self.query_one('#agent-dismissed',Button).display=False
             self.fill('agent-actions',[])
-            if self.search_queries['agents']:
+            if not self.data.updated:
+                self.inspect('agent-detail','Waiting for receiver data',[],[
+                    ('Loading sessions','No snapshot has arrived yet. Session counts and usage are not known.'),
+                    ('Connection','See the loading stage above · R Retry now.')])
+            elif self.search_queries['agents']:
                 self.inspect('agent-detail','No matching agent sessions',[],[('Search','Clear the filter in Agent sessions to show all sessions in this scope.')])
             elif self.agent_filter=='errors':
                 self.inspect('agent-detail','No session errors',[],[
@@ -2668,7 +2683,9 @@ class ObservatoryApp(App):
             return
         self.query_one('#agent-open',Button).disabled=False
         summary=session_usage(self.data.sessions,item)
-        usage_text,_=task_usage_summary(summary,task_preview(item),identity=item.get('session_id') or '',compact=self.size.width<100)
+        run_usage=task_run_usage(self.data.sessions,item,self.data.traces)
+        usage_text,_=task_usage_summary(run_usage,run_usage.get('task') or task_preview(item),scope='trace',
+                                      identity=run_usage.get('trace_id') or '',compact=self.size.width<100)
         self.agent_has_failures=(item.get('state') in {'Error','Failed','Incomplete'} or
                                  any(item.get(key) or summary.get(key) for key in ('errors','failed','incomplete')))
         trace_button=self.query_one('#agent-trace',Button)
@@ -3129,8 +3146,10 @@ class ObservatoryApp(App):
     @on(TabbedContent.TabActivated,'#pages')
     def page_activated(self,event):
         self.preference_view=event.pane.id
+        page_changed=self.feed.active_page!=event.pane.id
+        self.feed.active_page=event.pane.id
         detail_enabled=event.pane.id=='traces'
-        if self.feed.detail_enabled!=detail_enabled:
+        if self.feed.detail_enabled!=detail_enabled or page_changed:
             self.feed.detail_enabled=detail_enabled
             self.feed.request_refresh()
         self.screen.set_class(event.pane.has_class('expanded'),'inspecting')

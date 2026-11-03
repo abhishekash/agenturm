@@ -10,6 +10,34 @@ from tests.test_terminal_search import ExampleApi
 
 
 class FeedConcurrencyTests(unittest.TestCase):
+    def test_cockpit_does_not_request_global_totals_or_hidden_views(self):
+        api=ExampleApi();feed=Feed(api)
+        feed.active_page='agents';feed.include_global_totals=False;feed.detail_enabled=False
+        original=api.get
+        def get(path):
+            if path=='/api/metrics':raise TimeoutError('expensive all-history totals')
+            return original(path)
+        with patch.object(api,'get',side_effect=get):feed.refresh()
+        self.assertFalse(feed.snapshot.error)
+        self.assertTrue(feed.snapshot.updated)
+        self.assertNotIn('/api/metrics',api.requests)
+        self.assertFalse(any(path.startswith(('/api/mcp','/api/metric-','/api/measurements','/api/usage-series','/api/findings')) for path in api.requests))
+        api.requests.clear();feed.active_page='mcp';feed.refresh()
+        self.assertTrue(any(path.startswith('/api/mcp?') for path in api.requests))
+        self.assertTrue(feed.snapshot.mcp)
+        api.requests.clear();feed.active_page='metrics';feed.refresh()
+        self.assertTrue(any(path.startswith('/api/usage-series?') for path in api.requests))
+
+    def test_data_timeout_names_the_request_without_claiming_disconnection(self):
+        api=ExampleApi();feed=Feed(api);feed.active_page='agents';feed.include_global_totals=False
+        original=api.get
+        def get(path):
+            if path.startswith('/api/sessions'):raise TimeoutError('timed out')
+            return original(path)
+        with patch.object(api,'get',side_effect=get):feed.refresh()
+        self.assertIn('Loading delayed',feed.snapshot.error)
+        self.assertIn('/api/sessions',feed.snapshot.error)
+
     def test_hidden_trace_payload_is_not_loaded_and_reopens_on_demand(self):
         api = ExampleApi()
         feed = Feed(api)
