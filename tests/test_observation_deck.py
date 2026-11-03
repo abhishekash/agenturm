@@ -536,6 +536,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         feed.snapshot.mcp_results=list(feed.snapshot.mcp)
         feed.api.mcp=list(feed.snapshot.mcp)
         feed.api.mcp_summary=dict(feed.snapshot.mcp_summary)
+        feed.api.activity=list(feed.snapshot.activity)
         feed.snapshot.updated+=1
 
         app=ObservatoryApp(feed,persist_preferences=False)
