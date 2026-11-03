@@ -88,6 +88,7 @@ Agenturm is a monitor, not a controller. Reply to agents and approve requests in
 | `Esc` / `Alt+←` | Return or navigate back |
 | `c` | Copy details |
 | `d` | Open collection diagnostics |
+| `w` | Attention inbox, completion review, task alerts, and terminal handoff |
 | `x` | Preview and export selected evidence |
 | `q` | Quit |
 
