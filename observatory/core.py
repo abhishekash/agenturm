@@ -633,6 +633,7 @@ class Store:
                                       ("agent_id", "TEXT")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE spans ADD COLUMN {name} {declaration}")
+            db.execute('CREATE INDEX IF NOT EXISTS spans_source ON spans(service,json_extract(resource_attributes,\'$."observatory.source_id"\'))')
             log_columns = {row[1] for row in db.execute("PRAGMA table_info(logs)")}
             if "agent_id" not in log_columns:
                 db.execute("ALTER TABLE logs ADD COLUMN agent_id TEXT")
@@ -1024,7 +1025,7 @@ class Store:
         with self._connect() as db:
             rows = db.execute("""SELECT c.*,
                 (SELECT COUNT(*) FROM spans s WHERE s.service=c.service
-                 AND instr(s.resource_attributes,c.source_id)>0) AS span_count
+                 AND json_extract(s.resource_attributes,'$."observatory.source_id"')=c.source_id) AS span_count
                 FROM agent_connections c ORDER BY c.last_seen_ns DESC LIMIT 50""").fetchall()
         return [{"source_id": r["source_id"], "service": r["service"], "runtime": r["runtime"],
                  "integrations": json.loads(r["integrations"]), "capture_content": bool(r["capture_content"]),
@@ -2516,6 +2517,13 @@ class Store:
             item["usage_complete"] = item.get("usage_complete", True) and summary.get("usage_complete", True)
             item["status_complete"] = item.get("status_complete", True) and summary.get("status_complete", True)
             if item["trace_count"] == 0:
+                usage_fields=("trace_id","task","input_tokens","output_tokens",
+                              "cache_read_input_tokens","cache_write_input_tokens","reasoning_output_tokens",
+                              "input_tokens_reported","output_tokens_reported","cache_read_input_tokens_reported",
+                              "cache_write_input_tokens_reported","reasoning_output_tokens_reported",
+                              "known_cost_usd","cost_complete","usage_complete")
+                item["latest_run"]={key:summary[key] for key in usage_fields if key in summary}
+                item["latest_run"]["trace_id"]=row["trace_id"]
                 item["latest_status"] = summary.get("status") or "UNKNOWN"
                 item["latest_task"] = summary.get("task")
                 item["latest_waiting_for"] = summary.get("waiting_for")

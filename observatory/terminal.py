@@ -160,6 +160,8 @@ class Feed:
         # Non-UI consumers retain full snapshots. The cockpit opts into
         # fetching trace payloads only while its trace inspector is visible.
         self.detail_enabled = True
+        self.include_global_totals = True
+        self.active_page = None
         self.session_id = ''
         self.include_reviews = False
         self.pinned_trace = False
@@ -197,6 +199,9 @@ class Feed:
             phase='reconnecting' if self.snapshot.error else 'loading' if self.snapshot.updated else 'connecting',
             attempt=self.connection_failures+1,started=time.monotonic())
         requested_scope = FeedScope.capture(self)
+        load_mcp=requested_scope.active_page in {None,'mcp'}
+        load_metrics=requested_scope.active_page in {None,'metrics'}
+        load_findings=requested_scope.active_page in {None,'findings'}
         service, query, errors_only, selected = (requested_scope.service, requested_scope.query,
                                                 requested_scope.errors_only, requested_scope.selected_trace)
         activity_query, mcp_query = requested_scope.activity_query, requested_scope.mcp_query
@@ -243,8 +248,11 @@ class Feed:
             # of launching a whole batch and waiting for every timeout to drain.
             recovering=bool(self.snapshot.error) or not self.snapshot.updated
             if recovering:get('/api/health?probe=1')
-            requests.prefetch(('/api/health', '/api/metrics', '/api/connections',
-                               '/api/activity?' + urlencode(activity_params), trace_path))
+            initial_paths=['/api/health', '/api/connections',
+                           '/api/activity?' + urlencode(activity_params), trace_path]
+            if requested_scope.include_global_totals:initial_paths.append('/api/metrics')
+            if self.extra_cache is None:initial_paths.append('/api/sessions?limit=500')
+            requests.prefetch(initial_paths)
             health=get('/api/health')
             local_status = health.get("local_agents", {})
             new_revision = str((local_status.get("hierarchy") or {}).get("revision") or "")
@@ -256,7 +264,7 @@ class Feed:
                 return
             if new_revision:
                 self.hierarchy_revision = new_revision
-            totals = get("/api/metrics")
+            totals = get('/api/metrics') if requested_scope.include_global_totals else {}
             agents = get("/api/connections")["connections"]
             try:
                 activity_page = get("/api/activity?" + urlencode(activity_params))
@@ -277,7 +285,7 @@ class Feed:
                 if exc.code != 404:
                     raise
                 activity, activity_results = [], []
-            scope = (service, session_id, mcp_query, include_reviews, history['mcp'])
+            scope = (service, session_id, mcp_query, include_reviews, history['mcp'],requested_scope.active_page)
             if self.extra_cache is None or scope != self.extra_scope or time.monotonic()-self.extra_updated>self.EXTRA_POLL_SECONDS:
                 mcp_params = {'limit':100,'service':service,'session_id':session_id,
                               'include_reviews':int(include_reviews)}
@@ -293,42 +301,49 @@ class Feed:
                     usage_params['service'] = service
                 if session_id:
                     usage_params['session_id'] = session_id
-                requests.prefetch(('/api/sessions?limit=500', '/api/mcp?'+urlencode(mcp_params),
-                    '/api/metric-catalog?limit=500', '/api/measurements?'+urlencode(metric_params),
-                    '/api/usage-series?'+urlencode(usage_params)))
+                extra_paths=['/api/sessions?limit=500']
+                if load_mcp:extra_paths.append('/api/mcp?'+urlencode(mcp_params))
+                if load_metrics:extra_paths.extend(('/api/metric-catalog?limit=500',
+                    '/api/measurements?'+urlencode(metric_params),'/api/usage-series?'+urlencode(usage_params)))
+                requests.prefetch(extra_paths)
                 sessions = get('/api/sessions?limit=500')['sessions']
-                try:
-                    mcp_page = get('/api/mcp?'+urlencode(mcp_params))
-                    mcp = mcp_page['calls']
-                    mcp_summary = mcp_page.get('summary', {})
-                    if mcp_query or history['mcp'][-1]:
-                        mcp_page = get('/api/mcp?'+urlencode({**mcp_params,'q':mcp_query,
-                            'cursor':history['mcp'][-1] or ''}))
-                    mcp_results = mcp_page['calls']
-                    if isinstance(mcp_page.get('agent_scope'),dict):
-                        scope_revisions.append(mcp_page['agent_scope'].get('revision'))
-                    mcp_available = True
-                except urllib.error.HTTPError as exc:
-                    if exc.code!=404:
-                        raise
-                    mcp,mcp_results,mcp_available,mcp_page,mcp_summary=[],[],False,{},{}
-                try:
-                    metric_catalog = get('/api/metric-catalog?limit=500')['metrics']
-                    metric_points = get('/api/measurements?' + urlencode(metric_params))['points']
-                    metrics_available = True
-                except urllib.error.HTTPError as exc:
-                    if exc.code != 404:
-                        raise
-                    metric_catalog, metric_points, metrics_available = [], [], False
-                try:
-                    usage = get('/api/usage-series?' + urlencode(usage_params))
-                    usage_series = usage.get('points', [])
-                    usage_service = usage.get('service')
-                    usage_session_id = usage.get('session_id')
-                except urllib.error.HTTPError as exc:
-                    if exc.code != 404:
-                        raise
-                    usage_series, usage_service, usage_session_id = [], None, None
+                mcp,mcp_results,mcp_available,mcp_page,mcp_summary=[],[],True,{},{}
+                metric_catalog,metric_points,metrics_available=[],[],True
+                usage_series,usage_service,usage_session_id=[],None,None
+                if load_mcp:
+                    try:
+                        mcp_page = get('/api/mcp?'+urlencode(mcp_params))
+                        mcp = mcp_page['calls']
+                        mcp_summary = mcp_page.get('summary', {})
+                        if mcp_query or history['mcp'][-1]:
+                            mcp_page = get('/api/mcp?'+urlencode({**mcp_params,'q':mcp_query,
+                                'cursor':history['mcp'][-1] or ''}))
+                        mcp_results = mcp_page['calls']
+                        if isinstance(mcp_page.get('agent_scope'),dict):
+                            scope_revisions.append(mcp_page['agent_scope'].get('revision'))
+                        mcp_available = True
+                    except urllib.error.HTTPError as exc:
+                        if exc.code!=404:
+                            raise
+                        mcp,mcp_results,mcp_available,mcp_page,mcp_summary=[],[],False,{},{}
+                if load_metrics:
+                    try:
+                        metric_catalog = get('/api/metric-catalog?limit=500')['metrics']
+                        metric_points = get('/api/measurements?' + urlencode(metric_params))['points']
+                        metrics_available = True
+                    except urllib.error.HTTPError as exc:
+                        if exc.code != 404:
+                            raise
+                        metric_catalog, metric_points, metrics_available = [], [], False
+                    try:
+                        usage = get('/api/usage-series?' + urlencode(usage_params))
+                        usage_series = usage.get('points', [])
+                        usage_service = usage.get('service')
+                        usage_session_id = usage.get('session_id')
+                    except urllib.error.HTTPError as exc:
+                        if exc.code != 404:
+                            raise
+                        usage_series, usage_service, usage_session_id = [], None, None
                 self.extra_cache = (sessions,mcp,mcp_results,mcp_available,mcp_page,mcp_summary,
                                     metric_catalog,metric_points,metrics_available,usage_series,usage_service,
                                     usage_session_id)
@@ -364,24 +379,26 @@ class Feed:
                     detail['spans'].append(span);known.add(wanted)
                     wanted=span.get('parent_span_id')
             findings = detail.get("findings", [])
-            if not selected:
+            if not selected and load_findings:
                 findings = get("/api/findings?limit=8")["findings"]
-            findings_scope=history['findings']
-            if (self.findings_cache is None or self.findings_scope!=findings_scope or
-                    time.monotonic()-self.findings_updated>self.EXTRA_POLL_SECONDS):
-                finding_params={'limit':100,'cursor':findings_scope[-1] or ''}
-                if scope_agent:
-                    finding_params.update(agent_id=scope_agent, subtree=int(scope_subtree))
-                    if requested_scope.hierarchy_revision:
-                        finding_params['scope_revision']=requested_scope.hierarchy_revision
-                finding_page=get('/api/findings?'+urlencode(finding_params))
-                if isinstance(finding_page.get('agent_scope'),dict):
-                    scope_revisions.append(finding_page['agent_scope'].get('revision'))
-                self.findings_cache=finding_page
-                self.findings_scope=findings_scope
-                self.findings_updated=time.monotonic()
-            else:
-                finding_page=self.findings_cache
+            finding_page={}
+            if load_findings:
+                findings_scope=history['findings']
+                if (self.findings_cache is None or self.findings_scope!=findings_scope or
+                        time.monotonic()-self.findings_updated>self.EXTRA_POLL_SECONDS):
+                    finding_params={'limit':100,'cursor':findings_scope[-1] or ''}
+                    if scope_agent:
+                        finding_params.update(agent_id=scope_agent, subtree=int(scope_subtree))
+                        if requested_scope.hierarchy_revision:
+                            finding_params['scope_revision']=requested_scope.hierarchy_revision
+                    finding_page=get('/api/findings?'+urlencode(finding_params))
+                    if isinstance(finding_page.get('agent_scope'),dict):
+                        scope_revisions.append(finding_page['agent_scope'].get('revision'))
+                    self.findings_cache=finding_page
+                    self.findings_scope=findings_scope
+                    self.findings_updated=time.monotonic()
+                else:
+                    finding_page=self.findings_cache
             page_result('findings',finding_page)
             if self.stop.is_set():
                 return
@@ -437,6 +454,8 @@ class Feed:
                 return
             if isinstance(exc, urllib.error.HTTPError) and exc.code in {401,403}:
                 message = "Receiver requires authentication. Set OBSERVATORY_TOKEN and restart."
+            elif isinstance(exc,TimeoutError) and self.connection.stage!='Checking receiver':
+                message = 'Loading delayed: '+clean(str(exc))+'. Retrying.'
             else:
                 message = "Receiver unavailable. Retrying: " + clean(str(exc))
             old = self.snapshot

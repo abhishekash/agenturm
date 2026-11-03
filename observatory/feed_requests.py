@@ -37,6 +37,8 @@ class FeedScope:
     selected_trace: str | None
     selected_span_id: str | None
     detail_enabled: bool
+    include_global_totals: bool
+    active_page: str | None
     pinned_trace: bool
     scope_agent_id: str
     scope_subtree: bool
@@ -81,7 +83,10 @@ class RequestBatch:
             raise InterruptedError('feed stopped')
         if self.progress:self.progress(request_stage(path))
         future = self.pending.get(path)
-        return future.result() if future is not None else self.api.get(path)
+        try:
+            return future.result() if future is not None else self.api.get(path)
+        except TimeoutError as exc:
+            raise TimeoutError(request_stage(path)+' timed out ('+path.split('?',1)[0]+')') from exc
 
     def cancel(self):
         for future in tuple(self.pending.values()):
