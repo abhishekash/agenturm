@@ -1,5 +1,16 @@
 # Changelog
 
+## Agenturm 0.1.7
+
+- Reduce local monitoring resource usage, load expensive view data on demand, and index source lookups to avoid startup timeouts.
+- Show truthful connection/loading progress, retry feedback, and a Retry now action without claiming an empty session list before data arrives.
+- Make session inspectors readable with bounded, indented previews and full recorded evidence available in Activity.
+- Add working-first, updated-time, and status sorting, red error filters, and clearer failure investigation.
+- Show tokens and cost for each task's latest recorded run; keep input/output and cached-input breakdowns in the inspector, with exact values under `u`.
+- Improve compact layouts, keyboard navigation, copying, and pausing live updates without losing the selected session.
+
+Restart Agenturm after upgrading. Restart any separately running receiver as well so it serves the new task-usage fields.
+
 ## Agenturm 0.1.6
 
 - Show exact recorded delegations as an expandable agent tree, with a flat fallback, subtree activity/attention summaries, and canonical child inspection.
