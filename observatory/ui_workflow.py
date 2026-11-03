@@ -27,10 +27,10 @@ def events_for(item, events):
 def workflow_reasons(item, usage, snapshot, limits, now=None):
     now=now or time.time(); reasons=[]
     waiting=str(item.get('waiting_for') or '').lower()
-    if item.get('state')=='Waiting' and any(x in waiting for x in ('approval','permission','user input','input request')):
+    if not item.get('_workflow_reviewed') and item.get('state')=='Waiting' and any(x in waiting for x in ('approval','permission','user input','input request')):
         reasons.append('Approval requested' if 'approval' in waiting or 'permission' in waiting else 'Reply requested')
-    if item.get('state') in {'Error','Failed','Incomplete'}:reasons.append('Recorded failure')
-    if item.get('state')=='Possibly stalled':reasons.append('Possible stall · inspect activity and collector health')
+    if not item.get('_workflow_reviewed') and item.get('state') in {'Error','Failed','Incomplete'}:reasons.append('Recorded failure')
+    if not item.get('_workflow_reviewed') and item.get('state')=='Possibly stalled':reasons.append('Possible stall · inspect activity and collector health')
     # Limits apply to this recorded run, never session lifetime or inferred prices.
     total=sum(usage.get(k,0) or 0 for k in ('input_tokens','output_tokens') if usage.get(k+'_reported') is not False)
     if limits.get('tokens',0)>0 and total>=limits['tokens']:reasons.append('Task token threshold reached')

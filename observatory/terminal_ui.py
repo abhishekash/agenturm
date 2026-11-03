@@ -3328,7 +3328,9 @@ class ObservatoryApp(App):
         snapshot=self.feed.snapshot
         if not snapshot.updated or snapshot.updated==self.workflow_updated:return
         self.workflow_updated=snapshot.updated
-        alerts=self.workflow_ledger.update(sources(snapshot,self.feed.include_reviews),snapshot,self.workflow_limits)
+        items=[{**item,'_workflow_reviewed':item['id'] in self.reviewed_attention or attention_key(item) in self.dismissed_attention}
+               for item in self.workflow_items()]
+        alerts=self.workflow_ledger.update(items,snapshot,self.workflow_limits)
         if alerts and self.workflow_notify and time.time()>=self.workflow_snooze and not self.is_headless:
             projects=', '.join(dict.fromkeys(str(item.get('project') or item.get('runtime') or 'Local agent')[:40] for item,_ in alerts))[:120]
             self.workflow_alert(projects,str(len(alerts))+' agent(s) need attention. Open Workflow (w) for recorded evidence.')

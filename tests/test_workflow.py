@@ -17,6 +17,9 @@ class WorkflowEvidenceTests(unittest.TestCase):
         ledger.update([],feed.snapshot,{},300)
         self.assertEqual(len(ledger.update([item],feed.snapshot,{},400)),1)
         self.assertEqual(ledger.rows[0][2],400)
+        item['_workflow_reviewed']=True
+        self.assertEqual(workflow_reasons(item,{},feed.snapshot,{}),[])
+        item['_workflow_reviewed']=False
         item['waiting_for']='Tool response';self.assertEqual(workflow_reasons(item,{},feed.snapshot,{}),[])
 
     def test_thresholds_use_current_run_and_report_missing_cost(self):
