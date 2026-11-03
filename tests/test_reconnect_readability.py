@@ -168,29 +168,31 @@ class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any('output line 199' in str(e.get('detail'))
                                 for e in app.table_data['activity-table'].values()))
 
-    async def test_reconnect_notice_and_retry_are_visible_on_narrow_terminal(self):
+    async def test_background_refresh_and_reconnect_keep_workspace_still(self):
         feed=ManualFeed()
         app=ObservatoryApp(feed,persist_preferences=False)
-        async with app.run_test(size=(60,20)) as pilot:
+        async with app.run_test(size=(120,40)) as pilot:
             await pilot.pause()
             original=app.selected_source
-            feed.snapshot=replace(feed.snapshot,error='Connection refused')
-            feed.connection=ConnectionProgress(phase='waiting',attempt=2,started=time.monotonic()-3,retry_at=time.monotonic()+2)
-            app.refresh_data();await pilot.pause()
-            self.assertTrue(app.query_one('#connection-notice').display)
-            retry=app.query_one('#retry-connection',Button)
-            self.assertTrue(app.screen.region.contains_region(retry.region))
-            self.assertIn('Retry now',retry.render_line(0).text)
-            progress=app.query_one('#connection-progress',Static)
-            self.assertIn('Reconnecting',progress.render_line(0).text)
-            self.assertIn('Showing saved data',progress.render_line(1).text)
-            with patch.object(feed,'request_refresh',side_effect=lambda:Feed.request_refresh(feed)):
-                await pilot.click('#retry-connection');await pilot.pause()
-                self.assertTrue(feed.retry_requested)
-                self.assertIn('Retry requested',progress.render_line(0).text)
-            self.assertEqual(app.selected_source,original)
-            feed.refresh();app.refresh_data();await pilot.pause()
-            self.assertFalse(app.query_one('#connection-notice').display)
+            for size in ((120,40),(80,24),(60,20)):
+                await pilot.resize_terminal(*size);await pilot.pause()
+                region=app.query_one('#results-agents').region
+                for phase,error in (('loading',''),('waiting','Connection refused'),('live','')):
+                    feed.snapshot=replace(feed.snapshot,error=error)
+                    feed.connection=ConnectionProgress(phase=phase,attempt=2,started=time.monotonic()-3,retry_at=time.monotonic()+2)
+                    app.refresh_data();await pilot.pause()
+                    self.assertFalse(app.query_one('#connection-notice').display)
+                    self.assertEqual(app.query_one('#results-agents').region,region)
+                    label=app.query_one('#connection',Static).render_line(0).text
+                    self.assertIn({'loading':'Updating','waiting':'Reconnecting','live':'Live'}[phase],label)
+                    if error:
+                        self.assertIn('R Retry now',app.query_one('#health',Static).render().plain)
+                        with patch.object(feed,'request_refresh',side_effect=lambda:Feed.request_refresh(feed)):
+                            await pilot.press('R');await pilot.pause()
+                            self.assertTrue(feed.retry_requested)
+                            self.assertIn('Retry requested',app.query_one('#health',Static).render().plain)
+                        feed.retry_requested=False
+                self.assertEqual(app.selected_source,original)
 
     async def test_sort_picker_from_inspector_returns_to_sorted_list(self):
         feed=ManualFeed();now=time.time_ns()
