@@ -250,6 +250,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         feed=ManualFeed()
         feed.snapshot.local_status['sessions']=[]
         feed.snapshot.sessions=[{'session_id':'failed-session','latest_status':'ERROR',
+            'latest_task_outcome':'failed',
             'latest_task':'Best reliable mini PC under €300 in Germany',
             'last_unix_nano':time.time_ns(),'errors':1,'trace_count':1}]
         get=feed.api.get
@@ -332,7 +333,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app.query_one('#more-views').value,'metrics')
 
-    async def test_recent_filter_shows_active_and_only_latest_finished_with_tab_navigation(self):
+    async def test_today_shows_all_current_completions_and_active_work_with_tab_navigation(self):
         feed=ManualFeed()
         now=time.time_ns()
         sessions=feed.snapshot.local_status['sessions']
@@ -342,7 +343,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(160,48)) as pilot:
             await pilot.pause()
             table=app.query_one('#agent-table',DataTable)
-            self.assertEqual(table.row_count,1)
+            self.assertEqual(table.row_count,2)
             expected=max(app.source_map.values(),key=lambda item:item['stamp'])['id']
             self.assertEqual(list(table.rows)[0].value,expected)
             sessions[0].update(run_state='running',last_record_ns=now)

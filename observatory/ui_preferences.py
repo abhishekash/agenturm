@@ -29,11 +29,12 @@ def safe_preferences(value):
             and math.isfinite(v) and v>=0}
     if isinstance(value.get('errors'), list):
         result['errors'] = [page for page in ('activity', 'mcp') if page in value['errors']]
-    if isinstance(value.get('dismissed_attention'), list):
-        result['dismissed_attention'] = list(dict.fromkeys(
-            key for key in value['dismissed_attention']
-            if isinstance(key, str) and re.fullmatch(r'[0-9a-f]{64}', key)
-        ))[-MAX_DISMISSED_ATTENTION:]
+    for field in ('dismissed_attention', 'reviewed_tasks'):
+        if isinstance(value.get(field), list):
+            result[field] = list(dict.fromkeys(
+                key for key in value[field]
+                if isinstance(key, str) and re.fullmatch(r'[0-9a-f]{64}', key)
+            ))[-MAX_DISMISSED_ATTENTION:]
     if result.get('prompts') and 'activity' in result.get('errors', []):
         result['errors'].remove('activity')
     return result

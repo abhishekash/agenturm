@@ -16,8 +16,14 @@ class ExperienceTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             app.set_agent_filter('all');app.select_agent('source-1')
             await pilot.pause()
+            self.assertFalse(app.query_one('#agent-reviewed',Button).display)
+            self.assertFalse(app.query_one('#agent-dismissed',Button).display)
+            await pilot.press('r');await pilot.pause()
+            self.assertTrue(app.reviewed_attention)
+            await pilot.press('e');await pilot.pause()
             for name in ('agent-open','agent-trace','agent-reviewed','agent-dismissed'):
                 button=app.query_one('#'+name,Button)
+                self.assertTrue(button.display)
                 rendered=' '.join(button.render_line(row).text for row in range(button.size.height))
                 self.assertIn(str(button.label),rendered,name)
 

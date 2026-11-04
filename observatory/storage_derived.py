@@ -272,6 +272,51 @@ def aggregate_spans(db, trace_id, summary):
     db.execute("DROP TABLE derived_usage")
 
 
+def task_outcome_for_trace(db, trace_id):
+    """Bounded root/lifecycle reads also upgrade old caches without replaying spans."""
+    from .session_status import task_outcome
+    from .core import _task_outcome_from_log
+    root = db.execute("""SELECT substr(name,1,256) AS name,status,end_ns,
+        CASE WHEN length(CAST(attributes AS BLOB))<=65536 THEN attributes ELSE '{}' END AS attributes
+        FROM spans WHERE trace_id=?
+        ORDER BY CASE WHEN parent_span_id IS NULL OR parent_span_id='' THEN 0 ELSE 1 END,
+        start_ns,span_id LIMIT 1""", (trace_id,)).fetchone()
+    state, stamp = 'unknown', 0
+    if root:
+        state = task_outcome({'name': root['name'], 'status': root['status'],
+                              'attributes': json.loads(root['attributes'])})
+        stamp = root['end_ns']
+    lifecycle = db.execute('''SELECT time_ns,
+        CASE WHEN length(CAST(attributes AS BLOB))<=65536 THEN attributes ELSE '{}' END AS payload,
+        COALESCE(NULLIF(trim(json_extract(attributes,'$."observatory.source.event_name"')),''),event_name) AS event
+        FROM logs WHERE trace_id=? AND (
+            event IN ('gemini_cli.agent.start','gemini_cli.agent.finish','cursor.grok_bot.routine_run')
+            OR json_type(attributes,'$."agent.run.state"')='text'
+            OR json_type(attributes,'$."agent.stopped_reason"')='text'
+            OR json_type(attributes,'$."agent.waiting_for"')='text'
+            OR json_type(attributes,'$."agent.wait.reason"')='text'
+            OR json_type(attributes,'$."waiting_for"')='text'
+            OR json_type(attributes,'$."wait_reason"')='text'
+            OR json_type(attributes,'$."agent.state"')='text'
+            OR json_type(attributes,'$."agent.progress.stage"')='text'
+            OR json_type(attributes,'$."progress.stage"')='text')
+        ORDER BY time_ns DESC,digest DESC''', (trace_id,))
+    # Candidate selection is only a coarse index filter. Normalization and
+    # signal detection share the full-trace/session helper; empty metadata must
+    # never shadow an earlier lifecycle event. Iterate without materializing.
+    for event in lifecycle:
+        if state != 'unknown' and event['time_ns'] < stamp:
+            break
+        signal = _task_outcome_from_log(json.loads(event['payload']), event['event'])
+        if signal:
+            state, stamp = signal, event['time_ns']
+            break
+    outcome = db.execute('SELECT passed,ingested_ns FROM outcomes WHERE trace_id=?', (trace_id,)).fetchone()
+    if outcome:
+        state, stamp = ('completed' if outcome['passed'] else 'failed'), outcome['ingested_ns']
+    return state, stamp
+
+
 def derive_trace(db, trace_id):
     # Lazy import keeps the existing public normalization/summary API unchanged.
     from .core import (summarize, summarize_progress, apply_outcome, _activity_for,
@@ -359,6 +404,7 @@ def derive_trace(db, trace_id):
         summary = apply_outcome(summary or summarize_progress(trace_id, [{"time_ns": outcome["ingested_ns"]}]), outcome)
     if summary is None:
         return None
+    summary["task_outcome"], summary["task_outcome_ns"] = task_outcome_for_trace(db, trace_id)
     lifecycle = db.execute('''SELECT json_extract(attributes,'$."observatory.source.event_name"')
         FROM logs WHERE trace_id=? AND json_extract(attributes,'$."observatory.source.event_name"')
         IN ('gemini_cli.agent.start','gemini_cli.agent.finish') ORDER BY time_ns DESC,digest DESC LIMIT 1''',
