@@ -2782,7 +2782,7 @@ class ObservatoryApp(App):
             if tokens!='Not reported':fields.append(('Tokens',tokens))
             if cost!='Not reported':fields.append(('Cost',cost))
             if run_usage.get('cache_read_input_tokens') is not None and run_usage.get('cache_read_input_tokens_reported') is not False:
-                fields.append(('Cached input',usage_lines[2].removeprefix('Cached input ').split(' · Cache write ',1)[0]))
+                fields.append(('Cached',usage_lines[2].removeprefix('Cached input ').split(' · Cache write ',1)[0]))
             sections=[]
             if request_text and request_event and recorded_message_text(request_event).strip()!=task_preview(item).strip():
                 sections.append(('Request',session_excerpt(recorded_message_text(request_event),lines=3)))
