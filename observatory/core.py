@@ -223,6 +223,25 @@ def _activity_row(attrs, time_ns, source, source_id, span_id=None, service="unkn
             "duration_ms": attrs.get("duration_ms"), "metadata": cursor_metadata}
 
 
+def _task_outcome_from_log(attrs, event_name):
+    from .session_status import task_outcome
+    state = task_outcome({'attributes': attrs})
+    if state != 'unknown':
+        return state
+    source_event = attrs.get('observatory.source.event_name')
+    event = (source_event.strip() if isinstance(source_event,str) else '') or event_name
+    if event == 'gemini_cli.agent.start':
+        return 'running'
+    if event == 'gemini_cli.agent.finish':
+        return 'completed'
+    if event == 'cursor.grok_bot.routine_run':
+        result = str(attrs.get('agent.activity.result') or '').casefold()
+        return ('failed' if result in {'error', 'failed'} else
+                'interrupted' if result in {'cancelled', 'canceled'} else
+                'completed' if result in {'success', 'completed', 'ok'} else 'unknown')
+    return 'waiting' if _waiting_for(attrs) else None
+
+
 def _progress_from_log(log):
     attrs = log.get("attributes") if isinstance(log.get("attributes"), dict) else {}
     event_name = log.get("event_name") or attrs.get("event.name")
@@ -679,6 +698,7 @@ class Store:
                 db.execute("INSERT INTO schema_meta(key,value) VALUES('trace_activity_v1','1')")
         os.chmod(self.path, 0o600)
         self._backfill_summaries()
+        self._backfill_task_outcomes()
         self._backfill_endpoints()
         if self._async_derived_refresh:
             self._derived_thread = threading.Thread(target=self._derived_refresh_worker,
@@ -1058,6 +1078,27 @@ class Store:
             with self._connect() as db:
                 db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v12','1')")
                 db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v11','1')")
+
+    def _backfill_task_outcomes(self):
+        # Upgrade only lifecycle metadata. Replaying all historical model/tool
+        # spans here would make the first launch after an upgrade expensive.
+        from .storage_derived import task_outcome_for_trace
+        with self._connect() as db:
+            if db.execute("SELECT 1 FROM schema_meta WHERE key='task_outcome_v1'").fetchone():
+                return
+            before = ''
+            while True:
+                rows = db.execute("SELECT trace_id FROM trace_summaries WHERE trace_id>? "
+                                  "ORDER BY trace_id LIMIT 100", (before,)).fetchall()
+                if not rows:
+                    break
+                for row in rows:
+                    state, stamp = task_outcome_for_trace(db, row['trace_id'])
+                    db.execute("UPDATE trace_summaries SET summary_json=json_set(summary_json, "
+                               "'$.task_outcome',?,'$.task_outcome_ns',?) WHERE trace_id=?",
+                               (state, stamp, row['trace_id']))
+                before = rows[-1]['trace_id']
+            db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('task_outcome_v1','1')")
 
     def _backfill_endpoints(self):
         with self._connect() as db:
@@ -2261,6 +2302,14 @@ class Store:
         if outcome:
             summary = apply_outcome(summary or summarize_progress(trace_id, [{"time_ns": outcome["ingested_ns"]}]), outcome)
         lifecycle = [event for event in progress if event.get("status") in {"RUNNING", "OK"}]
+        if summary and lifecycle and not outcome and lifecycle[-1]['time_ns'] >= summary.get('task_outcome_ns', 0):
+            summary['task_outcome'] = 'running' if lifecycle[-1]['status'] == 'RUNNING' else 'completed'
+            summary['task_outcome_ns'] = lifecycle[-1]['time_ns']
+        if summary and not outcome:
+            for log in sorted(logs, key=lambda event: (event['time_unix_nano'],event['id'])):
+                signal = _task_outcome_from_log(log.get('attributes') or {}, log.get('event_name'))
+                if signal and (summary.get('task_outcome') == 'unknown' or log['time_unix_nano'] >= summary.get('task_outcome_ns', 0)):
+                    summary.update(task_outcome=signal, task_outcome_ns=log['time_unix_nano'])
         if summary and lifecycle and summary.get("status") not in {"ERROR", "FAILED", "INCOMPLETE"}:
             summary["status"] = lifecycle[-1]["status"]
             summary["active"] = summary["status"] == "RUNNING"
@@ -2521,10 +2570,13 @@ class Store:
                               "cache_read_input_tokens","cache_write_input_tokens","reasoning_output_tokens",
                               "input_tokens_reported","output_tokens_reported","cache_read_input_tokens_reported",
                               "cache_write_input_tokens_reported","reasoning_output_tokens_reported",
-                              "known_cost_usd","cost_complete","usage_complete")
+                              "known_cost_usd","cost_complete","usage_complete","task_outcome","task_outcome_ns")
                 item["latest_run"]={key:summary[key] for key in usage_fields if key in summary}
                 item["latest_run"]["trace_id"]=row["trace_id"]
                 item["latest_status"] = summary.get("status") or "UNKNOWN"
+                item["latest_task_outcome"] = summary.get("task_outcome") or "unknown"
+                item["task_outcome_ns"] = summary.get("task_outcome_ns") or 0
+                item["task_waiting_for"] = summary.get("waiting_for")
                 item["latest_task"] = summary.get("task")
                 item["latest_waiting_for"] = summary.get("waiting_for")
                 item["project"] = summary.get("project")
@@ -2595,6 +2647,7 @@ class Store:
                     "known_cost_usd": 0.0, "unknown_cost_runs": 0, "cost_complete": True,
                     "services": set(), "models": set(), "latest_trace_id": row["trace_id"],
                     "last_unix_nano": row["time_ns"], "latest_status": "RUNNING",
+                    "latest_task_outcome": "unknown", "task_outcome_ns": 0,
                     "latest_task": None, "latest_waiting_for": None, "project": None,
                     "_latest_log_ns": row["time_ns"]}
             item.setdefault("_latest_log_ns", 0)
@@ -2636,6 +2689,16 @@ class Store:
                         {"error", "failed", "denied", "blocked"} or row["severity_number"] >= 17)
             is_lifecycle = source_event in {"gemini_cli.agent.start", "gemini_cli.agent.finish"}
             waiting_for = _waiting_for(attrs)
+            # Tool failures remain error evidence. Only lifecycle/explicit input
+            # signals can change the task outcome, including log-only sessions.
+            task_signal = _task_outcome_from_log(attrs, source_event)
+            if task_signal and (row["time_ns"] > item.get("task_outcome_ns", 0) or
+                                (row["time_ns"] == item.get("task_outcome_ns", 0) and
+                                 not item["trace_count"] and not item.get("_task_signal_seen"))):
+                item["latest_task_outcome"] = task_signal
+                item["task_outcome_ns"] = row["time_ns"]
+                item["task_waiting_for"] = waiting_for if task_signal == "waiting" else ""
+                item["_task_signal_seen"] = True
             if is_error and not item["trace_count"]:
                 item["_log_error"] = True
             if is_lifecycle or is_error or waiting_for or row["time_ns"] > item.get("_trace_last_ns", 0):
@@ -2686,7 +2749,11 @@ class Store:
             item.pop("_latest_signal_ns", None)
             item.pop("_trace_last_ns", None)
             item.pop("_latest_task_ns", None)
-            item["waiting_for"] = item.pop("latest_waiting_for", None) or ""
+            item.pop("_task_signal_seen", None)
+            latest_wait = item.pop("latest_waiting_for", None) or ""
+            task_wait = item.pop("task_waiting_for", None)
+            item["waiting_for"] = (task_wait or latest_wait
+                                   if item.get("latest_task_outcome") == "waiting" else latest_wait)
         result = []
         for item in grouped.values():
             item["known_cost_usd"] = round(item["known_cost_usd"], 8)
@@ -2954,6 +3021,8 @@ def summarize_progress(trace_id, progress):
     state = progress[-1].get("status") or "RUNNING"
     return {"trace_id": trace_id, "name": "agent.run", "task": None,
             "outcome": None, "steps": None, "summary": None,
+            "task_outcome": {"RUNNING": "running", "OK": "completed"}.get(progress[-1].get("status"), "unknown"),
+            "task_outcome_ns": end,
             "services": sorted({p["service"] for p in progress if p.get("service")}),
             "start_unix_nano": start, "end_unix_nano": end,
             "duration_ms": round((end - start) / 1e6, 3), "status": state,
@@ -2971,6 +3040,8 @@ def summarize_progress(trace_id, progress):
 def apply_outcome(summary, outcome):
     summary["task_id"] = outcome["task_id"]
     summary["outcome_passed"] = outcome["passed"]
+    summary["task_outcome"] = "completed" if outcome["passed"] else "failed"
+    summary["task_outcome_ns"] = outcome.get("ingested_ns") or summary.get("end_unix_nano") or 0
     if not outcome["passed"] and summary["status"] != "ERROR":
         summary["status"] = "FAILED"
     elif outcome["passed"] and summary["status"] == "RUNNING":
@@ -2979,6 +3050,7 @@ def apply_outcome(summary, outcome):
 
 
 def summarize(spans):
+    from .session_status import task_outcome
     roots = [s for s in spans if not s["parent_span_id"]]
     root = min(roots or spans, key=lambda s: s["start_unix_nano"])
     starts = [s["start_unix_nano"] for s in spans]
@@ -3113,6 +3185,7 @@ def summarize(spans):
             "start_unix_nano": min(starts), "end_unix_nano": max(ends),
             "duration_ms": round((max(ends) - min(starts)) / 1e6, 3),
             "status": state,
+            "task_outcome": task_outcome(root), "task_outcome_ns": root["end_unix_nano"],
             "span_count": len(spans), "input_tokens": int(input_tokens),
             "output_tokens": int(output_tokens),
             **token_breakdown_totals,

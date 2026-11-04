@@ -14,6 +14,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, DataTable, Input, Label, RichLog
 from rich.text import Text
 from .ui_monitoring import task_run_usage, task_usage_summary
+from .session_status import today_bucket
 
 
 def events_for(item, events):
@@ -29,7 +30,7 @@ def workflow_reasons(item, usage, snapshot, limits, now=None):
     waiting=str(item.get('waiting_for') or '').lower()
     if not item.get('_workflow_reviewed') and item.get('state')=='Waiting' and any(x in waiting for x in ('approval','permission','user input','input request')):
         reasons.append('Approval requested' if 'approval' in waiting or 'permission' in waiting else 'Reply requested')
-    if not item.get('_workflow_reviewed') and item.get('state') in {'Error','Failed','Incomplete'}:reasons.append('Recorded failure')
+    if today_bucket(item,int(now*1e9))=='attention' and item.get('state') in {'Error','Failed','Interrupted','Incomplete'}:reasons.append('Task interrupted' if item.get('state')=='Interrupted' else 'Reported task failure')
     if not item.get('_workflow_reviewed') and item.get('state')=='Possibly stalled':reasons.append('Possible stall · inspect activity and collector health')
     # Limits apply to this recorded run, never session lifetime or inferred prices.
     total=sum(usage.get(k,0) or 0 for k in ('input_tokens','output_tokens') if usage.get(k+'_reported') is not False)

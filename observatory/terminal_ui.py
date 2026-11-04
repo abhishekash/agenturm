@@ -29,7 +29,7 @@ from textual.widgets import Button, Checkbox, DataTable, Input, RichLog, Select,
 from .terminal import clean, clipped, number, trace_name
 from .agent_hierarchy import (AGENT_ID, HierarchyGraph, branch_marker, canonical_agent_id,
                               node_active, node_attention, tree_prefix)
-from .session_status import session_health
+from .session_status import session_health, today_bucket
 from .branding import NAME, AMBER, LAVENDER, MINT, ICE, masthead
 from .themes import PALETTES, supported_themes, themed_style, themed_text
 from .ui_layout import column_layout
@@ -551,9 +551,15 @@ def sources(snapshot, include_reviews=False):
         services=session.get('services') or []
         service=services[0] if len(services)==1 else ''
         stamp=session.get('last_unix_nano') or 0
-        reported=session.get('latest_status','UNKNOWN')
+        # Trace health counts tool failures; it is not the task's outcome.
+        reported=session.get('latest_task_outcome')
+        if reported is None:
+            reported={'RUNNING':'running','WAITING':'waiting','FAILED':'failed',
+                      'INCOMPLETE':'incomplete'}.get(session.get('latest_status'),'unknown')
         waiting_for=session.get('waiting_for') or ''
-        health=session_health({'run_state':'completed' if reported=='OK' else reported.casefold(),
+        if reported in {'completed','failed','interrupted','incomplete'}:waiting_for=''
+        if waiting_for and reported=='unknown':reported='waiting'
+        health=session_health({'run_state':reported,
             'waiting_for':waiting_for,'last_record_ns':stamp},time.time_ns())
         latest_activity=latest_by_session.get(session_id)
         runtime='Gemini CLI' if any('gemini' in name.casefold() for name in services) else 'OpenTelemetry'
@@ -562,7 +568,7 @@ def sources(snapshot, include_reviews=False):
             'working_directory':'','branch':'','model':', '.join(session.get('models') or []),
             'task':session.get('latest_task') or first_prompt_by_session.get(session_id,(0,''))[1],
             'task_source':'recorded user request' if not session.get('latest_task') and first_prompt_by_session.get(session_id) else '',
-             'run_state':reported.casefold(),
+             'run_state':reported,'task_outcome_ns':session.get('task_outcome_ns') or 0,
              'waiting_for':waiting_for,'last_activity':latest_activity,'capture_content':False,
              **health,'spans':session.get('span_count',0),
              'trace_count':session.get('trace_count',0),'errors':session.get('errors',0),
@@ -793,6 +799,8 @@ def agent_list_text(item,selected=False,*,prefix='',summary=None,announced=False
 def agent_status(item):
     """Status uses shape and wording as well as color; history stays subdued."""
     state=item.get('state')
+    if item.get('_today_bucket')=='review':
+        return cell('Ready for review','#b9afc5')
     if input_required(item):
         marker,style='!','bold #ff8799'
     elif state in {'Error','Failed'}:
@@ -824,7 +832,7 @@ def input_required(item):
 def attention_required(item):
     """Share the filter/header rule: explicit waits, possible stalls and failures."""
     return input_required(item) or item.get('state') in {
-        'Possibly stalled','Error','Failed','Incomplete'
+        'Possibly stalled','Error','Failed','Interrupted','Incomplete'
     }
 
 
@@ -833,6 +841,21 @@ def attention_key(item):
     identity='\0'.join(str(item.get(key) or '') for key in
                         ('id','state','latest_trace_id','stamp'))
     return hashlib.sha256(identity.encode('utf-8')).hexdigest()
+
+
+def review_key(item):
+    """Acknowledge one lifecycle transition, not every future turn of a session."""
+    identity='\0'.join(str(value or '') for value in (
+        item.get('id'),item.get('state'),item.get('latest_trace_id'),
+        item.get('task_outcome_ns') or item.get('state_since_ns') or item.get('stamp')))
+    return hashlib.sha256(identity.encode('utf-8')).hexdigest()
+
+
+def today_order_key(item,newest_first=True,mode='working'):
+    if mode in {'updated','status'}:return agent_order_key(item,newest_first,mode)
+    bucket=item.get('_today_bucket') or today_bucket(item)
+    return ({'running':0,'attention':1,'review':2,'unconfirmed':3}.get(bucket,4),
+            *agent_order_key(item,newest_first,'updated'))
 
 
 # Lifecycle outcomes that are finished.  These always sort below live work,
@@ -876,7 +899,7 @@ def navigation_hints(width):
         return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  Ctrl+P Palette  w Workflow  d Diagnostics  q Quit'
     if width >= 80:
         return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  q Quit'
-    return '↑↓ Move  Enter Inspect  / Search  ? Help'
+    return '↑↓ Move  Enter Inspect  / Search  ? Help  q Quit'
 
 
 def coverage_warning(local_status):
@@ -932,7 +955,7 @@ class ResultsTable(DataTable):
             return 1
         if len(values)>=3:
             # Leave one blank terminal row between task-first session records.
-            return 3
+            return 2 if self.app.size.height<=24 else 3
         task=values[-1]
         return min(2,max(1,len(task.wrap(self.app.console,self.column_widths[-1]))))
 
@@ -1278,6 +1301,12 @@ class ObservatoryApp(App):
     .single-pane #agent-filter { width: 14; }
     .minimal #masthead { padding: 0 1; }
     .minimal #pages { margin: 0; }
+    .short #masthead { border: none; }
+    .short #summary { display: none; }
+    .short #pages > Tabs { height: 1; border: none; }
+    .short #more-views { margin-top: 0; }
+    .short #search-status-agents { display: none; }
+    .short #search-status-agents.-empty { display: block; }
     '''
     BINDINGS=[Binding('/','search','Search'),Binding('e','expand','Expand'),Binding('?','help','Help'),Binding('t','open_trace','Trace'),
               Binding('c','copy','Copy'), Binding('alt+left','history_back','Back',show=False),
@@ -1334,8 +1363,8 @@ class ObservatoryApp(App):
         self.metric_history_points=[]
         self.scope_options=None
         self.scope_value='all'
-        self.agent_filter='recent'
-        self.agent_filter_before_errors='recent'
+        self.agent_filter='today'
+        self.agent_filter_before_errors='today'
         self.agent_sort_desc=True
         self.agent_sort_mode='working'
         self.agent_order=[]
@@ -1409,8 +1438,8 @@ class ObservatoryApp(App):
         return Horizontal(
             Button('← Back',id='history-back',disabled=True,tooltip='Return to the event you opened · Alt+Left'),
             Static('Show:',classes='control-label'),
-            Select([('Recent','recent'),('Active','active'),('All','all'),('Errors','errors')],
-                   value='recent',allow_blank=False,id='agent-filter',tooltip='Recent shows working sessions and the last finished session'),
+            Select([('Today','today'),('Running','active'),('History','all'),('Errors','errors')],
+                   value='today',allow_blank=False,id='agent-filter',tooltip='Today: current work and today’s outcomes. History includes earlier completions and failures.'),
             Button('Errors 0',id='agent-errors',tooltip='Show sessions with recorded failures or incomplete runs, including older sessions'),
             Button('Reorder',id='refresh-order',tooltip='List changed; apply queued ordering without losing your selected session'),
             Button('Updated ↓',id='agent-sort',tooltip='Choose Working first, Updated, or Status sorting · o'),
@@ -1455,7 +1484,7 @@ class ObservatoryApp(App):
                                 yield Button(Text('Activity · s'),id='agent-open',tooltip='Read all recorded activity for this session')
                                 yield Button('Trace · t',id='agent-trace',tooltip='Inspect the latest linked trace for this session')
                                 yield Button('Mark reviewed · r',id='agent-reviewed',tooltip='Acknowledge this attention item for this run; does not change the recorded session status')
-                                yield Button('Dismiss · Shift+X',id='agent-dismissed',tooltip='Hide this failure from Recent and Needs attention; it remains in All history and Traces')
+                                yield Button('Dismiss · Shift+X',id='agent-dismissed',tooltip='Hide this failure from Today and Needs attention; it remains in History and Traces')
                                 yield Button('AI summary',id='agent-summary',tooltip='Uses OPENAI_API_KEY when available. Runs only when requested; the recorded progress summary needs no setup.')
                         yield ResultsTable(id='agent-actions',cursor_type='row',zebra_stripes=False)
             with TabPane('2  Activity',id='activity'):
@@ -1527,9 +1556,9 @@ class ObservatoryApp(App):
             ('Go to Metrics','Inspect recorded telemetry metrics',lambda:self.action_page('metrics')),
             ('Go to Findings','Review recorded findings',lambda:self.action_page('findings')),
             ('Toggle internal review sessions','Include or hide internal approval reviews · v',self.action_reviews),
-            ('Show recent sessions','Show working sessions and the most recently finished session',lambda:self.set_agent_filter('recent')),
+            ('Show Today','Current work, needs you, and reported completions awaiting review',lambda:self.set_agent_filter('today')),
             ('Show active sessions','Show only working sessions',lambda:self.set_agent_filter('active')),
-            ('Show all sessions','Show the full session history',lambda:self.set_agent_filter('all')),
+            ('Show History','All sessions, including earlier unreviewed completions',lambda:self.set_agent_filter('all')),
             ('Show session errors','Show failed or incomplete sessions, including older history',lambda:self.set_agent_filter('errors')),
             ('Sort sessions by newest update','Newest updated first inside fixed status groups',lambda:self.set_agent_sort(True)),
             ('Sort sessions by oldest update','Oldest updated first inside fixed status groups',lambda:self.set_agent_sort(False)),
@@ -1552,6 +1581,7 @@ class ObservatoryApp(App):
             yield SystemCommand(name,help_text,callback)
 
     def set_agent_filter(self,value):
+        if value=='recent':value='today'  # Older palette/navigation callers.
         self.agent_filter=value
         self.agent_order_key=None
         self.agent_order_pending=False
@@ -1614,6 +1644,7 @@ class ObservatoryApp(App):
         self.errors_only=set(preferences.get('errors',[]))
         self.prompts_only=preferences.get('prompts',False)
         self.dismissed_attention=set(preferences.get('dismissed_attention',[]))
+        self.reviewed_attention=set(preferences.get('reviewed_tasks',[]))
         self.feed.activity_prompts=self.prompts_only
         self.feed.activity_errors='activity' in self.errors_only
         for page in self.errors_only:
@@ -1664,7 +1695,8 @@ class ObservatoryApp(App):
         self.preferences.save({'workflow_notify':self.workflow_notify,'workflow_limits':self.workflow_limits,'theme':self.theme,'view':self.preference_view,
             'reviews':self.feed.include_reviews,'prompts':self.prompts_only,
             'errors':sorted(self.errors_only),
-            'dismissed_attention':sorted(self.dismissed_attention)})
+            'dismissed_attention':sorted(self.dismissed_attention),
+            'reviewed_tasks':sorted(self.reviewed_attention)})
 
     def on_theme_changed(self, theme):
         # RichLog stores rendered strips; cached rows/inspectors must be rebuilt too.
@@ -1711,10 +1743,11 @@ class ObservatoryApp(App):
         self.screen.set_class(size.width<60 or size.height<18,'minimal')
         self.screen.set_class(size.width<80,'small')
         self.screen.set_class(size.height<30,'compact')
+        self.screen.set_class(size.height<=24,'short')
         self.screen.set_class(size.width<76,'menu-navigation')
         # Halve the old quarter-screen overview; navigation has its own frame.
         # Keep enough room for identity and counts on short terminals.
-        self.overview_height=max(4,(size.height//4-2)//2)
+        self.overview_height=1 if size.height<=24 else max(4,(size.height//4-2)//2)
         for header in self.query('#masthead'):
             header.styles.height=self.overview_height
         for brand in self.query('#brand'):
@@ -1937,15 +1970,15 @@ class ObservatoryApp(App):
         if cell_len(session_detail)>stat_width-(5 if self.size.width>=140 else 3):
             session_detail=f'{len(work)} sessions · {replies} action'
         self.stat('sessions',len(active) if data.updated else '—','Working agents',session_detail if data.updated else 'Waiting for receiver data')
-        stalled=sum(item.get('state')=='Possibly stalled' for item in work)
-        failures=sum(item.get('state') in {'Error','Failed','Incomplete'} for item in work)
-        needs_attention=sum(attention_required(item) and item['id'] not in self.reviewed_attention
-                            and attention_key(item) not in self.dismissed_attention for item in work)
+        actionable=[item for item in work if today_bucket(self.review_state(item))=='attention']
+        stalled=sum(item.get('state')=='Possibly stalled' for item in actionable)
+        failures=sum(item.get('state') in {'Error','Failed','Interrupted','Incomplete'} for item in actionable)
+        needs_attention=len(actionable)
         self.stat('attention',needs_attention if data.updated else '—','Needs attention',
                   'Waiting for receiver data' if not data.updated else
                   f'{replies} need input · {stalled} may be stalled · {failures} failures' if needs_attention else 'No action needed')
         self.query_one('#stat-attention').tooltip=(f'{replies} explicit approval/reply requests · {stalled} possible stalls · {failures} recorded failures. '
-            f'Open a session and press r to acknowledge it for this run or Shift+X to dismiss it from Recent and Needs attention. Dismissed sessions remain in All history and Traces. Ordinary tool calls do not need action. {live} live host processes are listed in Host.')
+            f'Open a session and press r to acknowledge it for this run or Shift+X to dismiss it from Today and Needs attention. Dismissed sessions remain in History and Traces. Ordinary tool calls do not need action. {live} live host processes are listed in Host.')
         servers={item.get('server') for item in data.mcp if item.get('server') and item.get('server')!='Not reported'}
         operations={(item.get('server'),item.get('tool')) for item in data.mcp if item.get('tool') and item.get('tool')!='Not reported'}
         mcp_errors=sum(str(item.get('status','')).upper() in {'ERROR','FAILED'} for item in data.mcp)
@@ -2073,17 +2106,9 @@ class ObservatoryApp(App):
                 ('runtime','service','project','working_directory','branch','task','model',
                  'session_id','id','state','waiting_for'))+' '+task_preview(item)).casefold()
         searched=[item for item in scoped_agents if not agent_query or agent_query in searchable(item)]
-        finished_states={'Completed','Interrupted','Error','Failed','Incomplete'}
-        finished=sorted((item for item in scoped_agents if item.get('state') in finished_states),
-                        key=lambda item:(-item['stamp'],item['id']))
-        recent_ids={item['id'] for item in scoped_agents
-                    if item.get('active') or attention_required(item)
-                    if attention_key(item) not in self.dismissed_attention}
-        latest_finished=next((item for item in finished
-                              if attention_key(item) not in self.dismissed_attention),None)
-        if latest_finished:
-            recent_ids.add(latest_finished['id'])
-        counts={'recent':len(recent_ids),'active':sum(bool(item.get('active')) for item in scoped_agents),
+        buckets={item['id']:today_bucket(self.review_state(item),now) for item in scoped_agents}
+        today_ids={identity for identity,bucket in buckets.items() if bucket}
+        counts={'today':len(today_ids),'active':sum(bool(item.get('active')) for item in scoped_agents),
                 'all':len(scoped_agents)}
         aggregates={row.get('agent_id'):row for row in self.data.sessions if row.get('agent_id')}
         legacy={row.get('session_id'):row for row in self.data.sessions if not row.get('agent_id')}
@@ -2098,9 +2123,9 @@ class ObservatoryApp(App):
         error_button=self.query_one('#agent-errors',Button)
         error_button.label=f"Errors {'● ' if self.agent_filter=='errors' else ''}{counts['errors']}"
         error_button.set_class(self.agent_filter=='errors','-on')
-        filter_options=[(f'Recent {counts["recent"]}','recent'),
-                        (f'Active {counts["active"]}','active'),
-                        (f'All {counts["all"]}','all'),
+        filter_options=[(f'Today {counts["today"]}','today'),
+                        (f'Running {counts["active"]}','active'),
+                        (f'History {counts["all"]}','all'),
                         (f'Errors {counts["errors"]}','errors')]
         picker=self.query_one('#agent-filter',Select)
         with picker.prevent(Select.Changed):
@@ -2114,7 +2139,7 @@ class ObservatoryApp(App):
             if self.agent_filter=='errors':return item['id'] in error_ids
             if self.agent_filter=='all':return True
             if self.agent_filter=='active':return bool(item.get('active'))
-            return item['id'] in recent_ids
+            return item['id'] in today_ids
         matching=[item for item in searched if filter_match(item)]
         match_ids={item['agent_id'] for item in matching}
         if tree_mode:
@@ -2148,7 +2173,7 @@ class ObservatoryApp(App):
                      else graph.context_for_matches(match_ids))
             expanded=set(self.expanded_agents)
             if agent_query or self.agent_filter!='all':
-                # Search and Recent/Active filters temporarily reveal every
+                # Search and Today/Running filters temporarily reveal every
                 # required path without destroying the saved expansion choice.
                 expanded |= graph.context_for_matches(match_ids)
             if overrides:
@@ -2169,7 +2194,8 @@ class ObservatoryApp(App):
                 # changing the parent's displayed lifecycle state.
                 branch={**node,'active':bool(node.get('active') or summary['working']),
                         'stamp':max(node.get('stamp') or 0,summary['last_activity'])}
-                return agent_order_key(branch,newest_first=self.agent_sort_desc,mode=self.agent_sort_mode)
+                ordering=today_order_key if self.agent_filter=='today' else agent_order_key
+                return ordering(branch,newest_first=self.agent_sort_desc,mode=self.agent_sort_mode)
             rows=graph.flatten(expanded,allowed,parent_overrides=overrides,
                                sort_key=tree_sort_key)
             self.agent_visual_parents=visual
@@ -2203,7 +2229,8 @@ class ObservatoryApp(App):
                           node.get('parent_agent_id') in graph.nodes else None)
                 for agent_id,node in graph.nodes.items()}
             self.hierarchy_reparent_pending=False
-            matching.sort(key=lambda item: agent_order_key(item, self.agent_sort_desc,self.agent_sort_mode))
+            ordering=today_order_key if self.agent_filter=='today' else agent_order_key
+            matching.sort(key=lambda item: ordering(item, self.agent_sort_desc,self.agent_sort_mode))
             desired=[item['agent_id'] for item in matching]
             visible_agents=[(item,item,None,None,False) for item in matching]
             self.agent_row_meta={item['id']:item for item in matching}
@@ -2222,6 +2249,9 @@ class ObservatoryApp(App):
             self.selected_source=self.visible_agent_rows[0] if self.visible_agent_rows else None
         rows=[]
         for shown,item,row,summary,unlinked in visible_agents:
+            if self.agent_filter=='today':
+                shown=dict(shown,_today_bucket=buckets.get(shown['id'],''))
+                self.agent_row_meta[shown['id']]=shown
             announced=shown.get('discovery_state')=='announced'
             shown['_task_usage_label']=task_usage_label(task_run_usage(self.data.sessions,shown,self.data.traces),compact=True)
             rows.append((shown['id'],[
@@ -2234,6 +2264,7 @@ class ObservatoryApp(App):
                 agent_status(shown),
                 cell(age(shown['stamp']),'#abb4a5')],shown))
         self.fill('agent-table',rows,preserve=self.selected_source)
+        self.query_one('#search-status-agents',Static).set_class(not rows,'-empty')
         if agent_query:
             context=max(0,len(visible_agents)-len(match_ids))
             status=f"{quantity(len(match_ids),'matching session')}"
@@ -2243,7 +2274,18 @@ class ObservatoryApp(App):
             title=f"Sessions · {len(match_ids)} matches · {len(visible_agents)} rows"
         else:
             self.search_status('agents',len(visible_agents),'session')
-            title=f"Sessions · {len(visible_agents)}"
+            title=f"{'Today' if self.agent_filter=='today' else 'History' if self.agent_filter=='all' else 'Sessions'} · {len(visible_agents)}"
+            if self.agent_filter=='today' and self.data.updated:
+                status_widget=self.query_one('#search-status-agents',Static)
+                compact=status_widget.size.width<80
+                labels=(('running','running'),('attention','need you'),
+                        ('review','review' if compact else 'ready for review'),
+                        ('unconfirmed','unknown' if compact else 'unconfirmed'))
+                parts=[]
+                for key,label in labels:
+                    count=sum(bucket==key for bucket in buckets.values())
+                    if count:parts.append(f'{count} '+('needs you' if key=='attention' and count==1 else label))
+                status_widget.update(' · '.join(parts) or 'Nothing pending today · History includes earlier work')
         self.query_one('#results-agents').border_title=title if self.data.updated else 'Sessions · loading'
         self.show_agent()
 
@@ -2683,17 +2725,17 @@ class ObservatoryApp(App):
             elif self.agent_filter=='errors':
                 self.inspect('agent-detail','No session errors',[],[
                     ('Errors','No failed or incomplete sessions in this scope.'),
-                    ('Show sessions','Click Errors again or choose Recent, Active, or All.'),
+                    ('Show sessions','Click Errors again or choose Today, Running, or History.'),
                 ])
-            elif self.agent_filter=='recent':
-                self.inspect('agent-detail','No recent sessions',[],[
-                    ('Show all history','Choose All in the session filter to include older sessions.'),
-                    ('Waiting for work','Working sessions appear here automatically.'),
+            elif self.agent_filter=='today':
+                self.inspect('agent-detail','Nothing pending today',[],[
+                    ('History','Choose History to see earlier work, including yesterday’s unreviewed completions.'),
+                    ('Today','Running agents and pending input appear here even when they started earlier.'),
                 ])
             elif self.agent_filter=='active':
                 self.inspect('agent-detail','No active sessions',[],[
-                    ('Show recent','Choose Recent to include the latest finished session.'),
-                    ('Show all history','Choose All to include older sessions.'),
+                    ('Today','Choose Today to include today’s reported outcomes.'),
+                    ('History','Choose History to include older sessions.'),
                 ])
             else:
                 self.inspect('agent-detail','No agent sessions found',[],[('Next step',FIRST_RUN),('Diagnostics / retention','Press d for source paths, read health, and retention instructions.')])
@@ -2708,9 +2750,9 @@ class ObservatoryApp(App):
         trace_button=self.query_one('#agent-trace',Button)
         trace_button.disabled=not bool(self.linked_agent_trace())
         reviewed_button=self.query_one('#agent-reviewed',Button)
-        reviewed= item['id'] in self.reviewed_attention
+        reviewed=review_key(item) in self.reviewed_attention
         expanded=self.query_one('#agents').has_class('expanded')
-        reviewed_button.display=attention_required(item) and expanded
+        reviewed_button.display=(attention_required(item) or item['state']=='Completed') and expanded
         reviewed_button.label='Reviewed ✓ · r' if reviewed else 'Mark reviewed · r'
         reviewed_button.tooltip=('Acknowledged for this run. Press r to restore it to Needs attention.' if reviewed else
                                  'Acknowledge this attention item for this run; does not change the recorded session status.')
@@ -2718,8 +2760,8 @@ class ObservatoryApp(App):
         dismissed_button=self.query_one('#agent-dismissed',Button)
         dismissed_button.display=attention_required(item) and expanded
         dismissed_button.label='Restore · Shift+X' if dismissed else 'Dismiss · Shift+X'
-        dismissed_button.tooltip=('Restore this failure to Recent and Needs attention.' if dismissed else
-                                  'Hide this failure from Recent and Needs attention; keep it in All history and Traces.')
+        dismissed_button.tooltip=('Restore this failure to Today and Needs attention.' if dismissed else
+                                  'Hide this failure from Today and Needs attention; keep it in History and Traces.')
         latest=item.get('last_activity') or {}
         generated=self.ai_summaries.get(item['id'])
         ai_sections=[]
@@ -2786,8 +2828,8 @@ class ObservatoryApp(App):
             sections=[]
             if request_text and request_event and recorded_message_text(request_event).strip()!=task_preview(item).strip():
                 sections.append(('Request',session_excerpt(recorded_message_text(request_event),lines=3)))
-            if failure_detail:
-                sections.append(('Failure',session_excerpt(failure_detail,lines=3)))
+            if failure_detail and attention_required(item):
+                sections.append(('Recorded error',session_excerpt(failure_detail,lines=3)))
             elif item['state'] in {'Error','Failed','Incomplete'}:
                 count=summary.get('errors') or item.get('errors')
                 sections.append(('Failure',f'{count} recorded failed run(s). Open Failures for evidence.' if count else 'The run recorded a failure. Open Failures for evidence.'))
@@ -2797,7 +2839,11 @@ class ObservatoryApp(App):
                 sections.append(('Waiting for',session_excerpt(wait_summary(item),lines=2)))
             elif item['state'] in {'Possibly stalled','Unconfirmed','Monitor delayed','Catching up'}:
                 sections.append(('Observation',session_excerpt(attention_evidence(item,summary,error_event),lines=2)))
-            if reviewed:fields.append(('Review','Reviewed for this run'))
+            if item['state']=='Completed' and not reviewed:
+                sections.append(('Review','Agent reported completion; checks are not verified here. r Mark reviewed.'))
+            elif reviewed:fields.append(('Review','Reviewed for this run'))
+            if self.agent_has_failures and not attention_required(item):
+                fields.append(('Errors','Recorded tool/run errors · s Inspect'))
             if dismissed:fields.append(('Attention','Dismissed'))
             hierarchy_fields,hierarchy_sections=self.hierarchy_sections(item)
             fields.extend(hierarchy_fields)
@@ -2861,7 +2907,7 @@ class ObservatoryApp(App):
               ('Analysis coverage',analysis_coverage(summary)),
               ('Working directory',item.get('working_directory')),
               ('Review state','Marked reviewed for this run; status and evidence are unchanged.' if reviewed else None),
-              ('Attention state','Dismissed from Recent and Needs attention. Still available in All history and Traces.' if dismissed else None)])
+              ('Attention state','Dismissed from Today and Needs attention. Still available in History and Traces.' if dismissed else None)])
 
     def show_activity(self):
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
@@ -3334,12 +3380,15 @@ class ObservatoryApp(App):
     def workflow_items(self):
         return sources(self.feed.snapshot,self.feed.include_reviews)
 
+    def review_state(self,item):
+        return {**item,'_workflow_reviewed':review_key(item) in self.reviewed_attention or
+                attention_key(item) in self.dismissed_attention}
+
     def update_workflow(self):
         snapshot=self.feed.snapshot
         if not snapshot.updated or snapshot.updated==self.workflow_updated:return
         self.workflow_updated=snapshot.updated
-        items=[{**item,'_workflow_reviewed':item['id'] in self.reviewed_attention or attention_key(item) in self.dismissed_attention}
-               for item in self.workflow_items()]
+        items=[self.review_state(item) for item in self.workflow_items()]
         alerts=self.workflow_ledger.update(items,snapshot,self.workflow_limits)
         if alerts and self.workflow_notify and time.time()>=self.workflow_snooze and not self.is_headless:
             projects=', '.join(dict.fromkeys(str(item.get('project') or item.get('runtime') or 'Local agent')[:40] for item,_ in alerts))[:120]
@@ -3439,7 +3488,7 @@ class ObservatoryApp(App):
         self.expanded_agents=set(location.get('expanded_agents',self.expanded_agents))
         self.collapsed_agents=set(location.get('collapsed_agents',self.collapsed_agents))
         self.agent_filter=location.get('agent_filter',self.agent_filter)
-        self.agent_filter_before_errors=location.get('agent_filter_before_errors','recent')
+        self.agent_filter_before_errors=location.get('agent_filter_before_errors','today')
         self.evidence_scope_subtree=location.get('evidence_scope_subtree',self.evidence_scope_subtree)
         self.scope_value=location.get('scope_value',self.scope_value)
         self.selected_source=location.get('selected_source',self.selected_source)
@@ -3854,14 +3903,16 @@ class ObservatoryApp(App):
 
     def action_review_attention(self):
         item=getattr(self,'source_map',{}).get(self.selected_source)
-        if not item or not attention_required(item):
+        if not item or not (attention_required(item) or item['state']=='Completed'):
             return
-        if item['id'] in self.reviewed_attention:
-            self.reviewed_attention.remove(item['id'])
-            self.notify('Returned to Needs attention.')
+        key=review_key(item)
+        if key in self.reviewed_attention:
+            self.reviewed_attention.remove(key)
+            self.notify('Review reopened for this run.')
         else:
-            self.reviewed_attention.add(item['id'])
+            self.reviewed_attention.add(key)
             self.notify('Marked reviewed for this run; recorded status is unchanged.')
+        self.save_preferences()
         self.last_update=-1
         self.refresh_data()
 
@@ -3874,11 +3925,11 @@ class ObservatoryApp(App):
         key=attention_key(item)
         if key in self.dismissed_attention:
             self.dismissed_attention.remove(key)
-            self.notify('Restored to Recent and Needs attention.')
+            self.notify('Restored to Today and Needs attention.')
         else:
             self.dismissed_attention.add(key)
-            self.reviewed_attention.discard(item['id'])
-            self.notify('Dismissed from attention. The session remains in All history and Traces.')
+            self.reviewed_attention.discard(review_key(item))
+            self.notify('Dismissed from attention. The session remains in History and Traces.')
         self.save_preferences()
         self.last_update=-1
         self.refresh_data()
