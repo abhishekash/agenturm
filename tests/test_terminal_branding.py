@@ -27,23 +27,27 @@ class BrandingTest(unittest.IsolatedAsyncioTestCase):
                                      app.query_one('#connection').region.x)
                 self.assertNotIn(TAGLINE, rendered)
 
-    async def test_half_size_overview_and_separately_framed_navigation(self):
+    async def test_overview_and_navigation_compact_at_short_terminal_heights(self):
         app = ObservatoryApp(ManualFeed())
         async with app.run_test(size=(160, 48)) as pilot:
             for size in ((160, 48), (120, 40), (80, 24)):
                 await pilot.resize_terminal(*size)
                 await pilot.pause()
                 masthead = app.query_one('#masthead')
-                self.assertEqual(masthead.region.height,max(4,(size[1]//4-2)//2))
+                short=size[1]<=24
+                self.assertEqual(masthead.region.height,1 if short else max(4,(size[1]//4-2)//2))
                 tabs=app.query_one('#pages > Tabs')
-                self.assertEqual(tabs.region.height,3)
+                self.assertEqual(tabs.region.height,1 if short else 3)
                 usage=app.query_one('#usage-summary')
                 self.assertFalse(usage.display)
                 self.assertEqual(tabs.region.y,masthead.region.bottom)
                 self.assertEqual(tabs.border_title,'Views · 1–7 to switch')
-                self.assertEqual(app.query_one('#results-agents').region.y,masthead.region.height+4)
+                self.assertEqual(app.query_one('#results-agents').region.y,masthead.region.height+tabs.region.height+1)
                 self.assertEqual(app.query_one('#brand').size.height, 1)
                 for name in ('brand','summary','connection','pause'):
+                    if name=='summary' and short:
+                        self.assertFalse(app.query_one('#summary').display)
+                        continue
                     self.assertTrue(masthead.region.contains_region(app.query_one('#'+name).region))
                 self.assertFalse(app.query('#view-guide'),'Switching help belongs in the Views frame only')
             for key,page,table in (('2','activity','activity-table'),('3','mcp','mcp-table'),
@@ -52,8 +56,8 @@ class BrandingTest(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertEqual(app.query_one('#pages',TabbedContent).active,page)
                 self.assertEqual(app.focused,app.query_one('#'+table))
-                self.assertEqual(app.query_one('#results-'+page).region.y,8)
-                self.assertTrue(app.query_one('#summary').display)
+                self.assertEqual(app.query_one('#results-'+page).region.y,3)
+                self.assertFalse(app.query_one('#summary').display)
 
     async def test_keyboard_hints_are_a_compact_bottom_footer(self):
         app = ObservatoryApp(ManualFeed())
