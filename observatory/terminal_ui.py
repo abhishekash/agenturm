@@ -896,7 +896,7 @@ def agent_order_key(item, newest_first=True, mode='working'):
 
 def navigation_hints(width):
     if width >= 120:
-        return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  Ctrl+P Palette  b Tasks  w Workflow  q Quit'
+        return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  Ctrl+P Palette  b Tasks  w Workflow  d Diagnostics  q Quit'
     if width >= 80:
         return '↑/↓ Move  Enter Inspect  / Search  e Expand  b Tasks  ? Help  q Quit'
     return '↑↓ Move  Enter Inspect  / Search  b Tasks  ? Help  q Quit'

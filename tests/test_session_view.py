@@ -169,7 +169,9 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertIn('Status Evidence',app.query_one('#agent-detail').plain_text)
                 self.assertEqual(len(app.query('#agent-output')), 0)
-                self.assertFalse(any(binding.key == 'b' for binding in app.BINDINGS))
+                # The retired browser-output shortcut stays removed; b now
+                # opens local saved tasks rather than a blank output panel.
+                self.assertEqual([binding.action for binding in app.BINDINGS if binding.key == 'b'], ['saved_tasks'])
 
     def test_wait_copy_and_reply_guidance_separate_user_input_from_tool_wait(self):
         reply = {'runtime': 'OpenCode', 'state': 'Waiting', 'waiting_for': 'User input'}

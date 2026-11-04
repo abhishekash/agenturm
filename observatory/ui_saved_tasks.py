@@ -50,7 +50,11 @@ def capture_selected_run(owner):
     if not item:
         return None
     data = owner.feed.snapshot
-    usage = task_run_usage(data.sessions, item, data.traces)
+    usage = deepcopy(task_run_usage(data.sessions, item, data.traces))
+    # Trace summaries use an empty cost sum as zero even when no prices exist.
+    # Keep that distinct from a complete, explicitly reported zero-cost run.
+    if usage.get('known_cost_usd') == 0 and usage.get('cost_complete') is False:
+        usage['known_cost_usd'] = None
     trace = str(usage.get('trace_id') or item.get('latest_trace_id') or '')
     trace = trace.lower() if re.fullmatch(r'[0-9a-fA-F]{32}', trace) else ''
     checks = []
@@ -489,7 +493,11 @@ class TaskEditor(TaskJobs, ModalScreen):
             self.dismiss(None)
 
     def action_save(self):
+        if self.busy:
+            return
         title, workspace, notes = self.values()
+        for field in self.query('Input, TextArea'):
+            field.disabled = True
         task, context = self.record, self.context
         def save(store):
             if task:
@@ -509,6 +517,12 @@ class TaskEditor(TaskJobs, ModalScreen):
                 self.owner.notify('Task saved. Capture again from the task: ' + task['_capture_warning'], severity='warning')
             self.dismiss(task)
         self.job(save, saved, 'Saving task and workspace…' if not task and workspace else 'Saving task…')
+
+    def finish_job(self, result, error, callback):
+        if self.is_mounted:
+            for field in self.query('Input, TextArea'):
+                field.disabled = False
+        super().finish_job(result, error, callback)
 
     @on(Input.Changed)
     @on(TextArea.Changed)

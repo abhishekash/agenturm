@@ -43,6 +43,11 @@ class SelectedRunTests(unittest.TestCase):
         self.assertEqual(result['local_workspace'], '')  # A remote path is not a local checkout.
         feed.api.endpoint = 'http://127.0.0.1:4318'
         self.assertEqual(capture_selected_run(owner)['local_workspace'], '/tmp/local repo')
+        feed.snapshot.sessions[0]['latest_run'].update(known_cost_usd=0, cost_complete=False)
+        self.assertIsNone(capture_selected_run(owner)['usage']['known_cost_usd'])
+        self.assertEqual(feed.snapshot.sessions[0]['latest_run']['known_cost_usd'], 0)
+        feed.snapshot.sessions[0]['latest_run']['cost_complete'] = True
+        self.assertEqual(capture_selected_run(owner)['usage']['known_cost_usd'], 0)
         feed.snapshot.sessions[0]['latest_run'] = {'input_tokens': 999999}
         result = capture_selected_run(owner)
         self.assertEqual(result['usage'], {})
@@ -204,6 +209,8 @@ class SavedTaskJourney(unittest.IsolatedAsyncioTestCase):
             await self.ready(pilot, lambda: not app.screen.busy)
             self.assertIsInstance(app.screen, TaskEditor)
             self.assertEqual(app.screen.query_one(TextArea).text, 'My unsaved decision')
+            self.assertFalse(app.screen.query_one(TextArea).disabled)
+            self.assertFalse(app.screen.query_one('#task-name', Input).disabled)
             self.assertIn('changed elsewhere', app.screen.query_one('#task-status', Static).render().plain)
             self.assertEqual(store.get(task['id'])['notes'], 'A concurrent decision')
 
@@ -268,3 +275,36 @@ class SavedTaskJourney(unittest.IsolatedAsyncioTestCase):
                 with patch.object(app, 'copy_to_clipboard') as copy:
                     await pilot.click('#handoff-copy')
                     copy.assert_called_once_with(app.screen.markdown)
+
+    async def test_saving_locks_fields_so_capture_cannot_discard_new_typing(self):
+        started, release = threading.Event(), threading.Event()
+        def capture(*args):
+            started.set()
+            release.wait(5)
+            return {'captured_ns': time.time_ns(), 'files': [], 'complete': True}
+        app = self.app()
+        async with app.run_test(size=(60, 20)) as pilot:
+            await pilot.pause()
+            app.refresh_timer.stop()
+            app.push_screen(TaskEditor(app))
+            await pilot.pause()
+            editor = app.screen
+            editor.query_one('#task-name', Input).value = 'Keep my decision'
+            editor.query_one('#task-workspace', Input).value = str(self.root)
+            editor.query_one(TextArea).load_text('Decision before save')
+            editor.query_one(TextArea).focus()
+            with patch('observatory.saved_tasks.capture_workspace', side_effect=capture):
+                try:
+                    await pilot.press('ctrl+s')
+                    await self.ready(pilot, started.is_set)
+                    self.assertTrue(editor.busy)
+                    for field in editor.query('Input, TextArea'):
+                        self.assertTrue(field.disabled)
+                    await pilot.press('z')
+                    self.assertEqual(editor.query_one(TextArea).text, 'Decision before save')
+                finally:
+                    release.set()
+                await self.ready(pilot, lambda: not isinstance(app.screen, TaskEditor))
+            store = TaskStore(self.path)
+            saved, = store.list()
+            self.assertEqual(store.get(saved['id'])['notes'], 'Decision before save')

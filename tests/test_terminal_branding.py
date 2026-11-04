@@ -62,14 +62,14 @@ class BrandingTest(unittest.IsolatedAsyncioTestCase):
     async def test_keyboard_hints_are_a_compact_bottom_footer(self):
         app = ObservatoryApp(ManualFeed())
         async with app.run_test(size=(160, 48)) as pilot:
-            for size in ((160, 48), (120, 40), (100, 40), (80, 24)):
+            for size in ((160, 48), (120, 40), (100, 40), (80, 24), (60, 20)):
                 await pilot.resize_terminal(*size)
                 await pilot.pause()
                 hints = app.query_one('#shortcuts')
                 self.assertTrue(hints.display, f'{size}: hints should be visible')
                 self.assertGreaterEqual(hints.region.y, app.query_one('#pages').region.bottom)
                 rendered = '\n'.join(hints.render_line(row).text for row in range(hints.size.height))
-                for label in ('Move', 'Inspect', 'Help', 'Quit', 'Search'):
+                for label in ('Move', 'Inspect', 'Help', 'Quit', 'Search', 'Tasks'):
                     self.assertIn(label, rendered, f'{size}: missing {label}')
                 if size[0] >= 140:
                     for label in ('Expand', 'Palette', 'Diagnostics'):
