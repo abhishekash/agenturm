@@ -3,18 +3,23 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+from io import StringIO
 import re
 import time
 from urllib.parse import unquote, urlsplit
 
 from rich.markdown import Markdown
 from rich.cells import cell_len
+from rich.console import Console
 from rich.text import Text
 from rich.theme import Theme
 from textual import on
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.geometry import Size
 from textual.screen import ModalScreen
+from textual.scroll_view import ScrollView
+from textual.strip import Strip
 from textual.widgets import Button, DataTable, Input, RichLog, Static, TextArea
 
 from .saved_tasks import TaskStore, export_handoff, render_handoff
@@ -582,17 +587,50 @@ class TaskRunsScreen(TaskScreen):
             self.job(lambda store: store.unlink(task_id, key, expected_revision=revision), changed)
 
 
+def prepare_handoff_lines(markdown, width):
+    """Format once in a worker; painting a frame only reads visible lines."""
+    theme = Theme({key: 'bold' for key in ('markdown.h1', 'markdown.h2', 'markdown.h3')})
+    console = Console(file=StringIO(), width=width, theme=theme)
+    lines = console.render_lines(Markdown(markdown), console.options, pad=False)
+    return [Strip(line) for line in lines]
+
+
+class HandoffPreview(ScrollView, can_focus=True):
+    DEFAULT_CSS = '''
+    HandoffPreview { background: $agent-surface; color: $agent-text; overflow-x: hidden; overflow-y: scroll; scrollbar-size: 1 1; }
+    '''
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.lines = []
+
+    def show_lines(self, lines, width):
+        scroll = self.scroll_offset.y
+        self.lines = lines
+        self.virtual_size = Size(width, len(lines))
+        self.scroll_to(y=scroll, animate=False, immediate=True)
+        self.refresh()
+
+    def render_line(self, y):
+        index = y + self.scroll_offset.y
+        width = self.scrollable_content_region.width
+        line = self.lines[index] if index < len(self.lines) else Strip.blank(width)
+        return line.crop_extend(0, width, self.rich_style).apply_style(self.rich_style)
+
+
 class HandoffScreen(TaskScreen):
     def __init__(self, owner, task):
         super().__init__(owner)
         self.record = deepcopy(task)
         self.markdown = ''
+        self.preview_width = None
+        self.preview_pending = False
 
     def compose(self):
         yield self.compose_floor()
         with Vertical(id='saved-root'):
             yield Static('Handoff preview · saved evidence', id='task-heading')
-            yield RichLog(id='task-body', wrap=True, markup=False, min_width=1, auto_scroll=False)
+            yield HandoffPreview(id='task-body')
             yield Input(placeholder='Export path, e.g. ~/handoff.md', id='handoff-path')
             yield Static('Review before sharing. This includes saved notes, paths, commands, and changes.', id='task-status', markup=False)
             with Horizontal(classes='task-actions'):
@@ -601,6 +639,7 @@ class HandoffScreen(TaskScreen):
             yield Static('PgUp/PgDn Read  Tab Actions  Esc Task', id='task-hints', markup=False)
 
     def on_mount(self):
+        self.query_one(HandoffPreview).focus()
         self.job(lambda _: render_handoff(self.record), self.loaded, 'Preparing the saved handoff…', needs_store=False)
 
     def loaded(self, markdown):
@@ -614,11 +653,27 @@ class HandoffScreen(TaskScreen):
             self.call_after_refresh(self.render_preview)
 
     def render_preview(self):
-        body = self.query_one(RichLog)
-        body.clear()
-        theme = Theme({key: 'bold' for key in ('markdown.h1', 'markdown.h2', 'markdown.h3')})
-        with self.app.console.use_theme(theme):
-            body.write(Markdown(self.markdown))
+        if self.has_class('too-small'):
+            return
+        if self.busy:
+            self.preview_pending = True
+            return
+        body = self.query_one(HandoffPreview)
+        width = max(1, body.scrollable_content_region.width)
+        self.preview_pending = False
+        if self.preview_width == width:
+            return
+        def ready(lines):
+            self.preview_width = width
+            body.show_lines(lines, width)
+            self.status('Review before sharing. This includes saved notes, paths, commands, and changes.')
+        self.job(lambda _: prepare_handoff_lines(self.markdown, width), ready,
+                 'Formatting the saved preview… Esc returns to the task.', needs_store=False)
+
+    def finish_job(self, result, error, callback):
+        super().finish_job(result, error, callback)
+        if self.is_mounted and not error and self.preview_pending:
+            self.call_after_refresh(self.render_preview)
 
     @on(Button.Pressed)
     def buttons(self, event):

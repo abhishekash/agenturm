@@ -12,8 +12,8 @@ from textual.widgets import Button, DataTable, Input, RichLog, Static, TextArea
 
 from observatory.saved_tasks import TaskStore
 from observatory.terminal_ui import ObservatoryApp
-from observatory.ui_saved_tasks import (HandoffScreen, SavedTasksScreen, TaskDetailScreen,
-    TaskEditor, TaskRunsScreen, capture_selected_run, task_overview)
+from observatory.ui_saved_tasks import (HandoffPreview, HandoffScreen, SavedTasksScreen, TaskDetailScreen,
+    TaskEditor, TaskRunsScreen, capture_selected_run, prepare_handoff_lines, task_overview)
 from tests.test_terminal_search import ManualFeed
 
 
@@ -233,3 +233,38 @@ class SavedTaskJourney(unittest.IsolatedAsyncioTestCase):
                 finally:
                     release.set()
                 await self.ready(pilot, lambda: bool(TaskStore(self.path).get(task['id'])['workspace_snapshot']))
+
+    async def test_preview_formats_off_thread_and_reflows_after_resize(self):
+        task = TaskStore(self.path).create('Readable large handoff', notes='Decision and next step.\n' * 100)
+        started, release = threading.Event(), threading.Event()
+        main_thread = threading.get_ident()
+        def prepare(markdown, width):
+            self.assertNotEqual(threading.get_ident(), main_thread)
+            started.set()
+            release.wait(5)
+            return prepare_handoff_lines(markdown, width)
+        app = self.app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.refresh_timer.stop()
+            with patch('observatory.ui_saved_tasks.prepare_handoff_lines', side_effect=prepare):
+                app.push_screen(HandoffScreen(app, task))
+                try:
+                    await self.ready(pilot, started.is_set)
+                    self.assertTrue(app.screen.busy)
+                    await pilot.resize_terminal(60, 20)
+                    await pilot.pause()
+                    self.assertEqual(app.screen.size.width, 60)
+                    self.assertTrue(app.screen.busy)
+                finally:
+                    release.set()
+                await self.ready(pilot, lambda: not app.screen.busy and bool(app.screen.query_one(HandoffPreview).lines)
+                                 and app.screen.preview_width == app.screen.query_one(HandoffPreview).scrollable_content_region.width)
+                preview = app.screen.query_one(HandoffPreview)
+                self.assertFalse(preview.show_horizontal_scrollbar)
+                await pilot.press('pagedown')
+                await pilot.pause()
+                self.assertGreater(preview.scroll_offset.y, 0)
+                with patch.object(app, 'copy_to_clipboard') as copy:
+                    await pilot.click('#handoff-copy')
+                    copy.assert_called_once_with(app.screen.markdown)
