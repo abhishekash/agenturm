@@ -183,9 +183,9 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             table = app.query_one("#agent-table", DataTable)
             self.assertEqual(table.row_count, 5)
-            header = app.query_one("#stat-sessions").render().plain
-            self.assertIn("working agents", header)
-            self.assertIn("task group", header)
+            self.assertFalse(app.query_one("#summary").display)
+            self.assertEqual(app.query_one("#masthead").region.height, 1)
+            self.assertLessEqual(table.region.bottom, app.size.height)
             app.selected_source = "s-root"
             app.refresh_data()
             await pilot.pause()

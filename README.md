@@ -59,6 +59,8 @@ uvx --from git+https://github.com/abhishekash/agenturm agenturm
 
 Start in **Today** with running work, sessions that need you, and reported completions awaiting your review. **History** keeps earlier work available. Ready for review means the agent reported completion; it does not verify the changes or tests. Select a task to inspect its evidence, and press `r` to mark that run reviewed. See the [daily workflow guide](docs/usage.html).
 
+Press **b** for **Saved tasks**: keep a brief across sessions, link specific runs, capture workspace changes, and prepare a handoff for your next agent. Saved tasks also work offline through `agenturm task`. See [saved tasks and handoffs](docs/saved-tasks.html).
+
 | Start with… | Then inspect… |
 | --- | --- |
 | **Agents** — sessions, projects, status, and last update | A session's task, recorded progress, current work, and reported waits |
@@ -89,6 +91,7 @@ Agenturm is a monitor, not a controller. Reply to agents and approve requests in
 | `c` | Copy details |
 | `d` | Open collection diagnostics |
 | `w` | Attention inbox, completion review, task alerts, and terminal handoff |
+| `b` | Saved tasks: notes, linked runs, workspace capture, and handoff |
 | `x` | Preview and export selected evidence |
 | `q` | Quit |
 

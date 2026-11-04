@@ -43,6 +43,14 @@ To try it without installing, run `uvx agenturm`. If uv is not installed, use it
 
 The cockpit opens Agents, Activity, MCP Calls, and Traces as primary views; use **More** or **5–7** for Host, Metrics, and Findings. Agents opens to **Today**: current work, sessions that need you, and reported completions awaiting human review. The filter also offers **Running**, **History**, and **Errors**. History includes earlier work, including yesterday’s unreviewed completions. Task-first rows have an evidence inspector. Its website-aligned **Observation** palette is the default; change themes with **Ctrl+P**. Findings provides a searchable, paged review queue with occurrence counts, evidence links, and direct navigation to the source trace. Session counts and live process counts are separate; approval reviews are hidden by default. The cockpit attaches to a receiver on **127.0.0.1:14318**, or starts one there. Run `agenturm` for full-screen panels in your current terminal. From this checkout, `python3 -m observatory` also works without installation.
 
+### Continue work across sessions
+
+Press **b** to open **Saved tasks**, then **n** to save the selected session as a task. Give it a title, workspace, and brief with your intent, decisions, and next step; **Ctrl+S** saves. A task keeps its ID and notes when you close Agenturm, change agents, or clear retained telemetry. You can also start a blank task without a connected receiver.
+
+Open a saved task to **Edit** notes, **Link** the selected monitoring run, **Capture** Git changes, or preview a **Handoff**. **Runs** shows the exact associations and lets you unlink one. Link again to refresh a run's saved evidence. Token and reported cost totals cover linked exact runs only; session-only links do not contribute totals. Missing values remain unknown, and incomplete coverage is labeled partial. Cache counts are input breakdowns, not additional tokens or estimated savings.
+
+Handoff previews the saved brief, workspace snapshot, linked runs, and recorded checks. **Copy brief** copies that exact preview. **Write MD + HTML** creates a new Markdown/HTML pair without overwriting existing files. Capturing Git reads the local repository only when requested; it does not run tests. Recorded check results do not prove the current changes pass. Read the [saved-task guide](saved-tasks.html) for CLI examples, storage, capture limits, and privacy details.
+
 ### Existing Codex and Claude Code agents
 
 Local receivers automatically discover recent session files under `~/.codex/sessions` and `~/.claude/projects` (`CODEX_HOME` and `CLAUDE_CONFIG_DIR` are respected). Start the monitor with no agent filename or Python environment flags:
