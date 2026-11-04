@@ -57,7 +57,7 @@ uvx --from git+https://github.com/abhishekash/agenturm agenturm
 
 ## Find what needs your attention
 
-Start with your recent supported agent sessions. Select a record, inspect the evidence, and follow its trace—all in a keyboard-first terminal interface.
+Start in **Today** with running work, sessions that need you, and reported completions awaiting your review. **History** keeps earlier work available. Ready for review means the agent reported completion; it does not verify the changes or tests. Select a task to inspect its evidence, and press `r` to mark that run reviewed. See the [daily workflow guide](docs/usage.html).
 
 | Start with… | Then inspect… |
 | --- | --- |
@@ -81,7 +81,7 @@ Agenturm is a monitor, not a controller. Reply to agents and approve requests in
 | `↑` / `↓`, `Enter` | Select and inspect a record |
 | `→` / `←` | Expand a branch / collapse or move to the parent |
 | `f` | Switch the Agents tree and flat list |
-| `o` | Toggle updated-time sort direction |
+| `o` | Choose Working first, Updated, or Status sorting |
 | `/` | Search the current view |
 | `e` | Expand details |
 | `t` | Follow the linked trace |

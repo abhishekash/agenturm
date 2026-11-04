@@ -2285,7 +2285,9 @@ class ObservatoryApp(App):
                 for key,label in labels:
                     count=sum(bucket==key for bucket in buckets.values())
                     if count:parts.append(f'{count} '+('needs you' if key=='attention' and count==1 else label))
-                status_widget.update(' · '.join(parts) or 'Nothing pending today · History includes earlier work')
+                empty=('Start an agent · d Setup / diagnostics' if not agents and self.scope_value=='all'
+                       else 'Nothing pending today · History includes earlier work')
+                status_widget.update(' · '.join(parts) or empty)
         self.query_one('#results-agents').border_title=title if self.data.updated else 'Sessions · loading'
         self.show_agent()
 
@@ -2727,6 +2729,9 @@ class ObservatoryApp(App):
                     ('Errors','No failed or incomplete sessions in this scope.'),
                     ('Show sessions','Click Errors again or choose Today, Running, or History.'),
                 ])
+            elif self.agent_filter=='today' and not self.source_map:
+                self.inspect('agent-detail','No agent sessions found',[],[
+                    ('Next step',FIRST_RUN),('Diagnostics','Press d for collection setup and source paths.')])
             elif self.agent_filter=='today':
                 self.inspect('agent-detail','Nothing pending today',[],[
                     ('History','Choose History to see earlier work, including yesterday’s unreviewed completions.'),
