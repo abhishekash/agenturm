@@ -116,12 +116,15 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             detail = app.query_one("#agent-detail").plain_text
             self.assertIn("NEEDS REPLY", detail)
             self.assertIn("Inspect API logs", detail)
-            self.assertIn("recorded request", " ".join(detail.split()).casefold())
+            self.assertIn("request", " ".join(detail.split()).casefold())
 
             # The completed parent keeps its own lifecycle outcome; the child is working.
             app.select_agent("s-c3")
             await pilot.pause()
             self.assertEqual(app.table_data["agent-table"]["s-c3"]["state"], "Completed")
+            detail = app.query_one("#agent-detail").plain_text
+            self.assertIn("1 working", detail.casefold())
+            await pilot.press("e");await pilot.pause()
             detail = app.query_one("#agent-detail").plain_text
             self.assertIn("direct children", detail.casefold())
             self.assertIn("Check retry cases", detail)
@@ -129,6 +132,7 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(health["active"])
             self.assertNotEqual(health["state"], app.table_data["agent-table"]["s-c3"]["state"])
 
+            await pilot.press("escape");await pilot.pause()
             # Selection, branch expansion and counts survive a resize.
             app.selected_source = "s-c1"
             app.refresh_data()

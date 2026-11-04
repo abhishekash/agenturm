@@ -159,7 +159,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(app.query_one('#agent-summary').disabled)
                 self.assertIn('works without setup', app.query_one('#agent-summary').tooltip)
                 detail = app.query_one('#agent-detail').plain_text
-                self.assertIn('LATEST RECORDED ACTION', detail)
+                self.assertIn('LATEST ACTION', detail)
                 self.assertIn('Shell command · git', detail)
                 self.assertNotIn('AI summary ·', detail)
                 actions = app.query_one('#agent-actions', DataTable)
@@ -196,7 +196,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
             row = ' '.join(str(value) for value in table.get_row_at(0))
             self.assertIn('NEEDS APPROVAL', row)
             detail=' '.join(app.query_one('#agent-detail').plain_text.split())
-            self.assertIn('An explicit approval or input wait remains pending',detail)
+            self.assertIn('Approval needed',detail)
             self.assertIn('Claude terminal',detail)
 
     async def test_three_working_agents_are_counted_named_and_prioritized_over_history(self):
