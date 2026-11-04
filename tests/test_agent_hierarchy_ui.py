@@ -116,7 +116,7 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             detail = app.query_one("#agent-detail").plain_text
             self.assertIn("NEEDS REPLY", detail)
             self.assertIn("Inspect API logs", detail)
-            self.assertIn("recorded request", " ".join(detail.split()).casefold())
+            self.assertIn("request", " ".join(detail.split()).casefold())
 
             # The completed parent keeps its own lifecycle outcome; the child is working.
             app.select_agent("s-c3")

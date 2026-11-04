@@ -266,7 +266,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
                 app.show_agent()
                 if height>=30:
                     self.assertIn('Best reliable mini PC',' '.join(line.text.rstrip() for line in log.lines))
-                    self.assertIn('Telemetry recorded 1 failed run(s)',log.plain_text)
+                    self.assertIn('1 recorded failed run(s)',log.plain_text)
                 await pilot.press('2','1')
                 await pilot.pause()
             self.assertIn('Best reliable mini PC under €300 in Germany',log.plain_text)
@@ -318,7 +318,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.theme,'Observation')
             self.assertIn('Untitled session · Codex',app.query_one('#agent-table').get_row('source-1')[0].plain)
             self.assertIn('Repair keyboard navigation',app.query_one('#agent-table').get_row('source-2')[0].plain)
-            self.assertEqual(app.query_one('#agent-table').get_row('source-1')[0].plain.count('\n'),2)
+            self.assertEqual(app.query_one('#agent-table').get_row('source-1')[0].plain.count('\n'),1)
             app.query_one('#agent-filter',Select).value='active'
             await pilot.pause()
             self.assertEqual(app.agent_filter,'active')
@@ -483,9 +483,9 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             app.select_agent('source-1')
             await pilot.pause()
             detail=app.query_one('#agent-detail').plain_text
-            self.assertIn('LATEST RECORDED REQUEST',detail)
+            self.assertIn('REQUEST',detail)
             self.assertIn('Implement a retry guard for the payment request',detail)
-            self.assertIn('LATEST RECORDED ACTION',detail)
+            self.assertIn('LATEST ACTION',detail)
             self.assertIn('Activity · s',app.query_one('#agent-open').label.plain)
             await pilot.press('e')
             await pilot.pause()

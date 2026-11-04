@@ -98,10 +98,10 @@ class TaskUsageJourney(unittest.IsolatedAsyncioTestCase):
         app=ObservatoryApp(feed,persist_preferences=False)
         async with app.run_test(size=(120,40)) as pilot:
             await pilot.pause();app.set_agent_filter('all');app.select_agent('source-1');await pilot.pause()
-            bar=lambda:app.query_one('#agent-detail').plain_text
+            bar=lambda:' '.join(app.query_one('#agent-detail').plain_text.split())
             self.assertFalse(app.query_one('#usage-summary').display)
             row=app.query_one('#agent-table').get_row('source-1')[0].plain
-            self.assertIn('Tokens 2.5k · Cost $0.2500',row)
+            self.assertIn('2.5k tok · $0.25',row)
             self.assertNotIn('cache',row.lower())
             self.assertIn('$0.2500',bar());self.assertIn('2,500',bar());self.assertIn('75%',bar())
             app.select_agent('source-2');await pilot.pause()

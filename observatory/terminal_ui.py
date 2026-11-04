@@ -742,13 +742,13 @@ def agent_identity(item,selected=False):
 
 
 def task_metadata(item, summary=None, *, announced=False, unlinked=False, depth=0,
-                  parent_unavailable=False, parent_retained=False):
+                  parent_unavailable=False, parent_retained=False, details=True):
     runtime=clean(item.get('runtime') or item.get('service') or 'Agent')
     project=clean(item.get('project') or 'SDK')
     action=brief_activity(item.get('last_activity') or {}) if item.get('last_activity') else 'No recent action recorded'
     if announced:
         return f"{runtime} · Spawn recorded · status unavailable"
-    parts=[runtime,project,action,age(item.get('stamp'))]
+    parts=[runtime]+([project] if details or item.get('project') else [])+([action,age(item.get('stamp'))] if details else [])
     if summary and summary.get('descendants'):
         count=summary.get('descendants',0)
         parts.insert(2,f"{quantity(count,'subagent')}")
@@ -779,13 +779,14 @@ def agent_list_text(item,selected=False,*,prefix='',summary=None,announced=False
     marker=branch_marker(bool(item.get('_expanded')),bool(item.get('_has_children')),ascii_only=ascii_only)
     metadata=task_metadata(item,summary,announced=announced,unlinked=unlinked,depth=depth,
                            parent_unavailable=parent_unavailable,
-                           parent_retained=parent_retained)
+                           parent_retained=parent_retained,details=False)
     text=Text('▸ ' if selected else '  ',style='#dceb5a',no_wrap=True,overflow='ellipsis')
     text.append(prefix+marker,style='#abb4a5')
     text.append(title,style='bold #edf1e7' if item.get('active') or input_required(item) else '#dedce5')
-    text.append('\n  '+metadata,style='#abb4a5')
+    text.append('\n  ',style='#abb4a5')
     if item.get('_task_usage_label'):
-        text.append('\n  '+item['_task_usage_label'],style='#c5adff')
+        text.append(item['_task_usage_label']+' · ',style='#b9afc5')
+    text.append(metadata,style='#abb4a5')
     return text
 
 
@@ -1105,7 +1106,7 @@ class ObservatoryApp(App):
     #controls.agents-active #agent-filter { display: block; }
     #agent-filter SelectCurrent { height: 1; border: none; background: $agent-canvas; padding: 0 1; }
     #scope-label { display: none; width: 8; }
-    #controls.agents-active #scope-label { display: block; }
+    #controls.agents-active #scope-label { display: none; }
     #scope { display: none; width: 22; height: 1; margin-right: 1; }
     #controls.agents-active #scope { display: block; }
     #scope SelectCurrent { height: 1; border: none; background: $agent-surface; padding: 0 1; }
@@ -1128,7 +1129,8 @@ class ObservatoryApp(App):
     #controls.agents-active #agent-sort { display: block; }
     #agent-sort:hover { background: $agent-hover; color: $agent-primary; }
     #agent-sort:focus { background: $agent-focus; color: $agent-primary; text-style: bold; }
-    #reviews { width: 14; height: 1; border: none; background: $agent-surface; margin-top: 0; color: $agent-muted; }
+    #reviews { display: none; width: 14; height: 1; border: none; background: $agent-surface; margin-top: 0; color: $agent-muted; }
+    #reviews.-on { display: block; }
     Checkbox > .toggle--button { color: $agent-disabled; background: $agent-panel; }
     Checkbox.-on > .toggle--button { color: $agent-primary; }
     Button { height: 3; min-width: 9; padding: 1 0 0 0; background: $agent-panel; color: $agent-label; border: none; border-bottom: solid $agent-border; text-style: none; }
@@ -1524,6 +1526,7 @@ class ObservatoryApp(App):
             ('Go to Host','Inspect known local processes',lambda:self.action_page('host')),
             ('Go to Metrics','Inspect recorded telemetry metrics',lambda:self.action_page('metrics')),
             ('Go to Findings','Review recorded findings',lambda:self.action_page('findings')),
+            ('Toggle internal review sessions','Include or hide internal approval reviews · v',self.action_reviews),
             ('Show recent sessions','Show working sessions and the most recently finished session',lambda:self.set_agent_filter('recent')),
             ('Show active sessions','Show only working sessions',lambda:self.set_agent_filter('active')),
             ('Show all sessions','Show the full session history',lambda:self.set_agent_filter('all')),
@@ -1876,7 +1879,7 @@ class ObservatoryApp(App):
         connection.append(state if connecting else 'Paused' if self.feed.paused else 'Live', style=state_color)
         update_status_text(connection_widget,themed_text(connection_widget,connection))
         health_text=((feedback.split('\n')[0]+' · R Retry now' if self.feed.retry_requested else live.error+' · R Retry now') if live.error else feedback.split('\n')[0]+' · R Retry now' if connecting else
-            f"{'Paused · '+str(self.pause_change_count)+' changed records · p Follow live' if self.feed.paused else 'Updated '+age(int(data.updated*1e9))}  ·  {self.scope_label()}  ·  {'Reviews included' if self.feed.include_reviews else 'Reviews hidden'}")
+            f"{'Paused · '+str(self.pause_change_count)+' changed records · p Follow live' if self.feed.paused else 'Updated '+age(int(data.updated*1e9))}"+(('  ·  '+self.scope_label()) if self.scope_value!='all' else '')+('  ·  Reviews included' if self.feed.include_reviews else ''))
         source_diagnostics=[entry.get('diagnostics') or {} for entry in data.local_status.get('sessions',[])]
         backlog_sources=sum(bool(item.get('backlog_bytes',0)) for item in source_diagnostics)
         def collector_stale(item):
@@ -1889,7 +1892,7 @@ class ObservatoryApp(App):
             health_text+='  ·  '+collection_note
         coverage=coverage_warning(data.local_status)
         if coverage:health_text+='  ·  '+coverage
-        health_text+='  ·  d Diagnostics / retention'
+        if collection_note or coverage or live.error:health_text+='  ·  d Diagnostics'
         health=Text(health_text,style='#c5adff' if collection_note else '#ffbd69' if coverage and not data.error else '#ff8799' if data.error else '#abb4a5')
         health_widget=self.query_one('#health',Static)
         health_widget.tooltip='While paused, counts are distinct new or changed records in the loaded view, not all database events. Collection continues.'
@@ -2220,7 +2223,7 @@ class ObservatoryApp(App):
         rows=[]
         for shown,item,row,summary,unlinked in visible_agents:
             announced=shown.get('discovery_state')=='announced'
-            shown['_task_usage_label']=task_usage_label(task_run_usage(self.data.sessions,shown,self.data.traces),compact=self.size.width<100)
+            shown['_task_usage_label']=task_usage_label(task_run_usage(self.data.sessions,shown,self.data.traces),compact=True)
             rows.append((shown['id'],[
                 agent_list_text(shown,shown['id']==self.selected_source,
                     prefix=shown.get('_prefix',''),summary=summary,announced=announced,
@@ -2510,7 +2513,8 @@ class ObservatoryApp(App):
         scroll=log.scroll_offset
         log.clear();log.write(Text(title,style='bold #f6f0e8'))
         if overview:log.write('')
-        table=Table.grid(padding=(0,2));table.add_column(style=themed_style(log,'#b9afc5'),no_wrap=True)
+        table=Table.grid(padding=(0,2));table.add_column(style=themed_style(log,'#b9afc5'),no_wrap=True,
+            width=min(max((cell_len(str(label)) for label,_ in fields),default=0),max(8,width//3)))
         table.add_column(no_wrap=overview,overflow='ellipsis')
         for label,value in fields:
             value=themed_text(log,value) if isinstance(value,Text) else Text(str('Not reported' if value is None or value=='' else value))
@@ -2519,7 +2523,7 @@ class ObservatoryApp(App):
         for label,value in sections:
             if overview:
                 if not value:continue
-                log.write(Text('\n\n'+label.upper(),style='#b9afc5'))
+                log.write(Text('\n'+label.upper(),style='#b9afc5'))
                 log.write(Text(str(value),style='#f6f0e8'))
             elif label=='Latest recorded event' and value:
                 for part,content in value.items():self.write_evidence(log,part,content)
@@ -2705,13 +2709,14 @@ class ObservatoryApp(App):
         trace_button.disabled=not bool(self.linked_agent_trace())
         reviewed_button=self.query_one('#agent-reviewed',Button)
         reviewed= item['id'] in self.reviewed_attention
-        reviewed_button.display=attention_required(item)
+        expanded=self.query_one('#agents').has_class('expanded')
+        reviewed_button.display=attention_required(item) and expanded
         reviewed_button.label='Reviewed ✓ · r' if reviewed else 'Mark reviewed · r'
         reviewed_button.tooltip=('Acknowledged for this run. Press r to restore it to Needs attention.' if reviewed else
                                  'Acknowledge this attention item for this run; does not change the recorded session status.')
         dismissed=attention_key(item) in self.dismissed_attention
         dismissed_button=self.query_one('#agent-dismissed',Button)
-        dismissed_button.display=attention_required(item)
+        dismissed_button.display=attention_required(item) and expanded
         dismissed_button.label='Restore · Shift+X' if dismissed else 'Dismiss · Shift+X'
         dismissed_button.tooltip=('Restore this failure to Recent and Needs attention.' if dismissed else
                                   'Hide this failure from Recent and Needs attention; keep it in All history and Traces.')
@@ -2770,29 +2775,34 @@ class ObservatoryApp(App):
             title=title[:71]+'…' if len(title)>72 else title
             agent=item['runtime']+(' / '+str(item['project']) if item.get('project') else '')
             fields=[('Agent',agent),('Status',agent_status(item))]
-            if not request_event:
-                fields.append(('Request','Not captured'))
-            if item['stamp']:
-                fields.append(('Updated',age(item['stamp'])))
-            sections=[('Latest recorded action',brief_activity(recorded) if recorded else 'No activity captured yet.')]
-            sections.insert(0,('Task usage',usage_text))
+            # Keep only the selected run's compact facts in the preview.
+            usage_lines=usage_text.splitlines()
+            first=usage_lines[0].removeprefix('Task cost ')
+            cost,tokens=first.split(' · Tokens ',1)
+            if tokens!='Not reported':fields.append(('Tokens',tokens))
+            if cost!='Not reported':fields.append(('Cost',cost))
+            if run_usage.get('cache_read_input_tokens') is not None and run_usage.get('cache_read_input_tokens_reported') is not False:
+                fields.append(('Cached input',usage_lines[2].removeprefix('Cached input ').split(' · Cache write ',1)[0]))
+            sections=[]
+            if request_text and request_event and recorded_message_text(request_event).strip()!=task_preview(item).strip():
+                sections.append(('Request',session_excerpt(recorded_message_text(request_event),lines=3)))
             if failure_detail:
-                sections.insert(0,('Failure details',failure_detail))
-            if request_text:
-                sections.insert(0,('Latest recorded request',request_text))
-            sections.append(('What happened',attention_evidence(item,summary,error_event)))
-            if reviewed:
-                sections.append(('Review state','Marked reviewed for this run. The session status and recorded evidence are unchanged.'))
-            if dismissed:
-                sections.append(('Attention state','Dismissed from Recent and Needs attention. Still available in All history and Traces.'))
+                sections.append(('Failure',session_excerpt(failure_detail,lines=3)))
+            elif item['state'] in {'Error','Failed','Incomplete'}:
+                count=summary.get('errors') or item.get('errors')
+                sections.append(('Failure',f'{count} recorded failed run(s). Open Failures for evidence.' if count else 'The run recorded a failure. Open Failures for evidence.'))
+            elif recorded:
+                sections.append(('Latest action',brief_activity(recorded)))
             if input_required(item):
-                sections.append(('Next step',wait_summary(item)))
-            elif item['state'] in {'Possibly stalled','Unconfirmed','Monitor delayed','Catching up','Error','Failed'}:
-                sections[-2 if reviewed else -1]=('What happened',attention_evidence(item,summary,error_event)[:400])
+                sections.append(('Waiting for',session_excerpt(wait_summary(item),lines=2)))
+            elif item['state'] in {'Possibly stalled','Unconfirmed','Monitor delayed','Catching up'}:
+                sections.append(('Observation',session_excerpt(attention_evidence(item,summary,error_event),lines=2)))
+            if reviewed:fields.append(('Review','Reviewed for this run'))
+            if dismissed:fields.append(('Attention','Dismissed'))
             hierarchy_fields,hierarchy_sections=self.hierarchy_sections(item)
             fields.extend(hierarchy_fields)
-            self.inspect('agent-detail',title,fields,
-                hierarchy_sections+sections+ai_sections,overview=True)
+            short_hierarchy=[(label,value) for label,value in hierarchy_sections if label=='Subtree summary']
+            self.inspect('agent-detail',title,fields,short_hierarchy+sections+ai_sections,overview=True)
             return
         preview=session_event_preview(recorded)
         work_detail=f"{reported_number(summary.get('trace_count'))} traces · {reported_number(item.get('spans'))} spans"
