@@ -14,6 +14,8 @@ def main():
         description="Start the terminal cockpit with no subcommand, or choose a command below.")
     parser.add_argument("--db", default="observatory.db")
     sub = parser.add_subparsers(dest="command")
+    from .task_cli import add_task_parser
+    task_parser = add_task_parser(sub)
     cockpit = sub.add_parser("cockpit", help="monitor agent sessions and telemetry in the terminal")
     cockpit.add_argument("--port", type=int, default=14318, help="local receiver port (default: 14318)")
     cockpit.add_argument("--endpoint", default=os.environ.get("OBSERVATORY_ENDPOINT"),
@@ -53,7 +55,12 @@ def main():
     prune = sub.add_parser("prune", help="delete telemetry older than the retention period")
     prune.add_argument("--older-than-days", type=float, required=True)
     args = parser.parse_args()
-    if args.command in {None, "cockpit"}:
+    if args.command == "task":
+        from .task_cli import run_task_command
+        status = run_task_command(args, task_parser)
+        if status:
+            parser.exit(status)
+    elif args.command in {None, "cockpit"}:
         from .terminal import CockpitError, run_cockpit
         options = {key: getattr(args, key) for key in ("port", "endpoint", "new_window", "once", "local_agents", "metadata_only")} if args.command else {
             "endpoint": os.environ.get("OBSERVATORY_ENDPOINT"),

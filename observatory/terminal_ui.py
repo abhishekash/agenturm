@@ -896,10 +896,10 @@ def agent_order_key(item, newest_first=True, mode='working'):
 
 def navigation_hints(width):
     if width >= 120:
-        return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  Ctrl+P Palette  w Workflow  d Diagnostics  q Quit'
+        return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  Ctrl+P Palette  b Tasks  w Workflow  d Diagnostics  q Quit'
     if width >= 80:
-        return '↑/↓ Move  Enter Inspect  / Search  e Expand  ? Help  q Quit'
-    return '↑↓ Move  Enter Inspect  / Search  ? Help  q Quit'
+        return '↑/↓ Move  Enter Inspect  / Search  e Expand  b Tasks  ? Help  q Quit'
+    return '↑↓ Move  Enter Inspect  / Search  b Tasks  ? Help  q Quit'
 
 
 def coverage_warning(local_status):
@@ -1315,6 +1315,7 @@ class ObservatoryApp(App):
               Binding('p','pause','Pause'),Binding('a','all','Reset',show=False),Binding('v','reviews','Reviews',show=False),
               Binding('d','diagnostics','Diagnostics'),Binding('x','export','Export'),
               Binding('u','usage','Usage',show=False),Binding('w','workflow','Workflow'),
+              Binding('b','saved_tasks','Saved tasks'),
               Binding('R','retry_connection','Retry connection',show=False),
               Binding('q','quit','Quit'),Binding('escape','back','Back',show=False),
               Binding('s','focus_agent','Focus agent',show=False),Binding('r','review_attention','Mark reviewed',show=False),
@@ -1329,7 +1330,7 @@ class ObservatoryApp(App):
               Binding('4','page("traces")','Traces',show=False),Binding('5','page("host")','Host',show=False),
               Binding('6','page("metrics")','Metrics',show=False),Binding('7','page("findings")','Findings',show=False)]
 
-    def __init__(self,feed,*,preferences_path=None,persist_preferences=None):
+    def __init__(self,feed,*,preferences_path=None,persist_preferences=None,task_store_path=None):
         super().__init__()
         for name in list(self.available_themes):
             self.unregister_theme(name)
@@ -1337,6 +1338,7 @@ class ObservatoryApp(App):
             self.register_theme(theme)
         self.theme = 'Observation'
         self.feed=feed
+        self.task_store_path=task_store_path
         self.agent=None
         self.data=feed.snapshot
         self.workflow_updated=None
@@ -1572,6 +1574,8 @@ class ObservatoryApp(App):
             ('Pause or follow live','Freeze the view or catch up with incoming records; collection continues',self.action_pause),
             ('Show tokens and spend','Inspect the selected task’s cost, tokens, and cache usage',self.action_usage),
             ('Open local workflow','Attention inbox, completion review, workspace and task alerts',self.action_workflow),
+            ('Open saved tasks','Continue a saved task or prepare a handoff · b',self.action_saved_tasks),
+            ('Save selected session as a task','Save its intent, workspace, and exact recorded run',self.action_save_task),
             ('Open diagnostics','Inspect local collection health',self.action_diagnostics),
             ('Retry connection now','Retry the receiver without waiting for the next poll',self.action_retry_connection),
             ('Copy selected evidence','Copy selected evidence or the current record',self.action_copy),
@@ -3402,6 +3406,14 @@ class ObservatoryApp(App):
     def action_workflow(self):
         self.push_screen(WorkflowScreen(self),self.resume_cockpit)
 
+    def action_saved_tasks(self):
+        from .ui_saved_tasks import SavedTasksScreen
+        self.push_screen(SavedTasksScreen(self),self.resume_cockpit)
+
+    def action_save_task(self):
+        from .ui_saved_tasks import SavedTasksScreen
+        self.push_screen(SavedTasksScreen(self,create=True),self.resume_cockpit)
+
     @work(thread=True,group='workflow-alerts',exit_on_error=False)
     def workflow_alert(self,project,reasons):
         # Task text/commands never leave the app in desktop notifications.
@@ -3419,7 +3431,7 @@ class ObservatoryApp(App):
         self.push_screen(UsageScreen(details=task_usage_summary(usage,title,scope=scope,identity=identity)[1]),self.resume_cockpit)
 
     def action_help(self):
-        self.notify('↑/↓ move · Enter inspect · / search · e expand · Ctrl+P palette · w workflow · u usage · d diagnostics · x export · p pause/follow · q quit',timeout=8)
+        self.notify('↑/↓ move · Enter inspect · / search · e expand · Ctrl+P palette · b saved tasks · w workflow · u usage · d diagnostics · x export · p pause/follow · q quit',timeout=8)
 
     def action_diagnostics(self):
         self.push_screen(DiagnosticsScreen(self.feed.snapshot.local_status),self.resume_cockpit)
