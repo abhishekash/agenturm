@@ -124,7 +124,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.pause()
                     detail = app.query_one('#agent-detail').plain_text
                     self.assertNotIn('Progress Summary · Recorded Activity', detail)
-                    self.assertIn('Waiting', detail)
+                    self.assertIn('Waiting', app.query_one('#agent-stats').plain_text)
                     self.assertIn('answer in the Codex terminal', ' '.join(detail.split()))
                     self.assertIn('Agenturm is read-only', ' '.join(detail.split()))
                     self.assertIn('Status Evidence',detail)

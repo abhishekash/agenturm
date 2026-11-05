@@ -421,13 +421,17 @@ class CockpitSearchTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(field.parent.parent, table.parent)
             self.assertLessEqual(table.region.y - field.region.bottom, 1)
             field.value = 'missing-server'
-            await pilot.pause(.4)
+            deadline=time.monotonic()+3
+            while 'No matching' not in str(app.query_one('#mcp-hint').render()) and time.monotonic()<deadline:
+                await pilot.pause(.05)
             self.assertEqual(table.row_count, 0)
             self.assertEqual(len(feed.snapshot.mcp), 1)
             self.assertIn('No matching', str(app.query_one('#mcp-hint').render()))
 
             await pilot.click('#clear-mcp')
-            await pilot.pause(.4)
+            deadline=time.monotonic()+3
+            while table.row_count!=1 and time.monotonic()<deadline:
+                await pilot.pause(.05)
             self.assertEqual(table.row_count, 1)
             self.assertEqual(field.value, '')
             self.assertEqual(app.query_one('#search-agents').value, 'release')
@@ -546,7 +550,7 @@ class TokenPresenceRenderingTest(unittest.IsolatedAsyncioTestCase):
                              'Detailed usage belongs in Metrics, not the compact workspace header')
             await pilot.press('e')
             await pilot.pause()
-            self.assertIn('Tokens Not reported', ' '.join(app.query_one('#agent-detail').plain_text.split()))
+            self.assertIn('Tokens Not reported', ' '.join(app.query_one('#agent-stats').plain_text.split()))
             app.action_page('traces')
             await pilot.pause()
             row = app.query_one('#trace-table').get_row_at(0)

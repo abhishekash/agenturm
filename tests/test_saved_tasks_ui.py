@@ -127,8 +127,10 @@ class SavedTaskJourney(unittest.IsolatedAsyncioTestCase):
             await self.ready(pilot, lambda: not app.screen.busy)
             self.assertEqual(destination.read_text(), preview)
             self.assertNotIn('Changed after preview', destination.with_suffix('.html').read_text())
+            # Textual ignores another click during the button's active effect.
+            await self.ready(pilot, lambda: not app.screen.query_one('#handoff-write', Button).has_class('-active'))
             await pilot.click('#handoff-write')
-            await self.ready(pilot, lambda: not app.screen.busy)
+            await self.ready(pilot, lambda: 'Could not finish' in app.screen.query_one('#task-status', Static).render().plain)
             self.assertIn('Could not finish', app.screen.query_one('#task-status', Static).render().plain)
             await pilot.press('escape')
             self.assertIsInstance(app.screen, TaskDetailScreen)

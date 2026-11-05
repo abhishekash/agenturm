@@ -30,6 +30,7 @@ from .terminal import clean, clipped, number, trace_name
 from .agent_hierarchy import (AGENT_ID, HierarchyGraph, branch_marker, canonical_agent_id,
                               node_active, node_attention, tree_prefix)
 from .session_status import session_health, today_bucket
+from .session_prompts import PromptHistory, prompt_scope
 from .branding import NAME, AMBER, LAVENDER, MINT, ICE, masthead
 from .themes import PALETTES, supported_themes, themed_style, themed_text
 from .ui_layout import column_layout
@@ -440,13 +441,13 @@ def session_excerpt(value,lines=8,width=100):
     """A bounded reading preview; full captured evidence belongs in Activity."""
     text=readable_output(value,limit=16000)
     source=text.splitlines()
-    shown=[clipped(line,width)+'…' if cell_len(line)>width else line for line in source[:lines]]
-    truncated=len(source)>lines or any(cell_len(line)>width for line in source[:lines])
+    shown=[clipped(line,width)+'…' if width and cell_len(line)>width else line for line in source[:lines]]
+    truncated=len(source)>lines or bool(width and any(cell_len(line)>width for line in source[:lines]))
     if truncated:shown.append('… Open Activity for the full record.')
     return '\n'.join(shown)
 
 
-def session_event_preview(event):
+def session_event_preview(event,*,expanded=False):
     if not event:return {}
     content=decode_nested(event.get('detail') or '')
     if event.get('domain')=='model' and isinstance(content,dict):
@@ -463,13 +464,27 @@ def session_event_preview(event):
         if rows:return {'Latest token report':'\n'.join(rows)}
     command=event.get('subject') or headline(event)
     if event.get('domain')=='shell':command=shell_command(command)
-    preview={'Command' if event.get('domain')=='shell' else 'Action':session_excerpt(command,lines=3)}
+    preview={'Command' if event.get('domain')=='shell' else 'Action':
+             session_excerpt(command,lines=20 if expanded else 3,width=None if expanded else 100)}
     if isinstance(content,dict):
         # A shell envelope with empty output is not useful output itself.
         keys=('output','response','result')
         content=next((content[key] for key in keys if key in content),content)
-    if content:preview['Output']=session_excerpt(content)
+    if content:preview['Output']=session_excerpt(content,lines=40 if expanded else 8,width=None if expanded else 100)
     return preview
+
+
+def usage_sidebar_fields(summary):
+    """Keep the same reported/partial values as the task usage dialog."""
+    labels=('Task cost','Tokens','Input','Output','Cached input','Cache write')
+    fields=[]
+    for part in summary.replace('\n',' · ').split(' · '):
+        label=next((label for label in labels if part.startswith(label+' ')),None)
+        if label:
+            fields.append((label,part[len(label)+1:]))
+        elif fields and part.endswith(' of input'):
+            fields[-1]=(fields[-1][0],fields[-1][1]+' ('+part+')')
+    return fields
 
 
 def review_session(entry):
@@ -590,6 +605,7 @@ def sources(snapshot, include_reviews=False):
         runtime=item.get('runtime') or item.get('service') or 'Agent'
         namespace=item.get('source_namespace') or item.get('source_id') or item.get('service') or runtime
         if not item.get('agent_id') or not AGENT_ID.fullmatch(str(item.get('agent_id'))):
+            item['agent_id_inferred']=True
             native=(item.get('agent_native_id') or item.get('native_worker_id') or
                     item.get('session_id') or item.get('id'))
             if native:
@@ -1043,6 +1059,10 @@ class SelectableRichLog(RichLog):
     def write(self, content, *args, **kwargs):
         if isinstance(content, Text):
             content = themed_text(self, content)
+        # Rich's measurement can be capped at the console's startup width.
+        # Expanded session reading must use this pane's current measured width.
+        if self.id in {'agent-detail','agent-stats'} and not args and self.scrollable_content_region.width:
+            kwargs.setdefault('width',self.scrollable_content_region.width)
         return super().write(content, *args, **kwargs)
 
     def render_line(self,y):
@@ -1223,7 +1243,18 @@ class ObservatoryApp(App):
     #agent-table { height: 1fr; min-height: 3; }
     #agent-bottom { height: 1fr; width: 38%; min-width: 40; }
     #agent-info { width: 100%; height: 1fr; }
+    #agent-reading { height: 1fr; }
+    #agent-record { width: 1fr; min-width: 0; height: 1fr; }
     #agent-detail { width: 100%; height: 1fr; }
+    #agent-stats { display: none; width: 40; height: 1fr; margin-left: 2; padding-left: 2; border-left: solid $agent-border-subtle; }
+    #agent-prompt-bar { display: none; height: 1; margin-top: 1; }
+    #agent-prompt-status { width: 1fr; color: $agent-muted; text-wrap: nowrap; text-overflow: ellipsis; }
+    #agent-earlier-prompts { width: 18; min-width: 18; height: 1; padding: 0; border: none; color: $agent-secondary; background: $agent-surface; }
+    #agent-earlier-prompts:focus { color: $agent-primary; background: $agent-focus; }
+    .expanded #agent-prompt-bar { display: block; }
+    .expanded #agent-stats { display: block; }
+    .narrow .expanded #agent-stats { display: none; }
+    .compact #agent-prompt-bar { margin-top: 0; }
     #agent-open { height: 1; width: 1fr; }
     #agent-actions { display: none; }
     .inspector-heading { height: 2; color: $agent-label; border-bottom: solid $agent-border-subtle; margin-bottom: 1; text-style: bold; }
@@ -1286,6 +1317,9 @@ class ObservatoryApp(App):
     .compact.inspecting #usage-summary { display: none; }
     .compact.connecting #usage-summary { display: none; }
     .compact.inspecting #masthead, .compact.inspecting #controls { display: none; }
+    .session-reading #masthead, .session-reading #controls { display: none; }
+    .session-reading #pages > Tabs { height: 1; border: none; }
+    .session-reading #more-views { margin-top: 0; }
     .compact .list { width: 100%; height: 1fr; margin: 0; }
     .compact .inspector-heading { height: 1; border: none; margin-bottom: 0; }
     .compact .inspector-actions { margin: 0; }
@@ -1352,6 +1386,8 @@ class ObservatoryApp(App):
         self.table_signatures={}
         self.inspector_signatures={}
         self.inspector_payloads={}
+        self.session_prompts=PromptHistory()
+        self.prompt_job=None
         self.inspector_reflow_pending=False
         self.selected_source=None
         self.selected_activity=None
@@ -1481,7 +1517,13 @@ class ObservatoryApp(App):
                             yield Static('Session inspector')
                             yield Button('Expand · e',id='expand-agents',classes='expand-button',compact=True)
                         with Vertical(id='agent-info'):
-                            yield SelectableRichLog(id='agent-detail',min_width=1,wrap=True,markup=False,auto_scroll=False)
+                            with Horizontal(id='agent-reading'):
+                                with Vertical(id='agent-record'):
+                                    yield SelectableRichLog(id='agent-detail',min_width=1,wrap=True,markup=False,auto_scroll=False)
+                                    with Horizontal(id='agent-prompt-bar'):
+                                        yield Static('',id='agent-prompt-status',markup=False)
+                                        yield Button('Earlier prompts',id='agent-earlier-prompts')
+                                yield SelectableRichLog(id='agent-stats',min_width=1,wrap=True,markup=False,auto_scroll=False)
                             with Horizontal(classes='inspector-actions'):
                                 yield Button(Text('Activity · s'),id='agent-open',tooltip='Read all recorded activity for this session')
                                 yield Button('Trace · t',id='agent-trace',tooltip='Inspect the latest linked trace for this session')
@@ -2544,7 +2586,7 @@ class ObservatoryApp(App):
             return [*items,current]
         return items
 
-    def inspect(self,name,title,fields,sections,*,overview=False):
+    def inspect(self,name,title,fields,sections,*,overview=False,identity=None):
         # Keep the semantic content current even while a compact/hidden pane
         # skips rendering. Copy must never depend on old terminal strips.
         self.inspector_payloads[name]=(title,fields,sections)
@@ -2554,7 +2596,7 @@ class ObservatoryApp(App):
         # would render at min_width=1 and retain those strips after it is shown.
         # Don't cache an unrendered update; on_show rebuilds the latest evidence.
         if not width:return
-        signature=(title,str(fields),str(sections),overview,width)
+        signature=(title,str(fields),str(sections),overview,width,identity)
         if self.inspector_signatures.get(name)==signature:return
         previous=self.inspector_signatures.get(name)
         self.inspector_signatures[name]=signature
@@ -2567,7 +2609,7 @@ class ObservatoryApp(App):
         for label,value in fields:
             value=themed_text(log,value) if isinstance(value,Text) else Text(str('Not reported' if value is None or value=='' else value))
             table.add_row(Text(label),value)
-        log.write(table)
+        if fields:log.write(table)
         for label,value in sections:
             if overview:
                 if not value:continue
@@ -2577,7 +2619,8 @@ class ObservatoryApp(App):
                 for part,content in value.items():self.write_evidence(log,part,content)
             else:
                 self.write_evidence(log,label,value)
-        if previous and previous[0]==title and previous[2]==signature[2]:
+        if previous and (previous[5]==identity if identity is not None else
+                         previous[0]==title and previous[2]==signature[2]):
             log.scroll_to(y=scroll.y,animate=False)
 
     def write_evidence(self,log,label,value,depth=0):
@@ -2708,15 +2751,87 @@ class ObservatoryApp(App):
             'f switches tree/flat'))
         return fields, sections
 
+    def sync_session_prompts(self,item,actions):
+        scope=prompt_scope(item)
+        if self.session_prompts.scope!=scope:
+            self.session_prompts=PromptHistory(scope=scope)
+        history=self.session_prompts
+        history.merge(actions)
+        if scope and not history.loaded and not history.error:
+            self.request_session_prompts()
+        button=self.query_one('#agent-earlier-prompts',Button)
+        button.display=bool(history.cursor or history.error)
+        button.disabled=history.busy
+        button.label='Retry prompts' if history.error else 'Earlier prompts'
+        if history.busy:
+            status='Loading prompt history…'
+        elif history.error:
+            status='Could not load prompts · retry'
+        elif not scope:
+            status='Prompt history needs a session or agent ID'
+        else:
+            status=f'{len(history.events)} loaded prompts · oldest first'
+            if history.cursor:status+=' · earlier available'
+        widget=self.query_one('#agent-prompt-status',Static)
+        update_status_text(widget,Text(status))
+        widget.tooltip=history.error or status
+        return history
+
+    def request_session_prompts(self,*,older=False):
+        history=self.session_prompts
+        # One network read at a time, even during rapid selection changes.
+        if self.prompt_job is not None or not history.scope:return
+        cursor=history.cursor if older else None
+        history.busy=True
+        self.prompt_job=history
+        self.load_session_prompts(history,cursor)
+
+    @work(group='session-prompts',thread=True,exit_on_error=False)
+    def load_session_prompts(self,history,cursor):
+        try:
+            response=self.feed.api.get(history.path(cursor))
+            error=''
+        except Exception as exc:
+            response=None
+            error=clean(str(exc)) or 'Receiver unavailable'
+        try:self.call_from_thread(self.finish_session_prompts,history,cursor,response,error)
+        except RuntimeError:pass
+
+    def finish_session_prompts(self,history,cursor,response,error):
+        self.prompt_job=None
+        history.busy=False
+        if history is self.session_prompts:
+            if error:history.error=error
+            else:
+                history.accept(response)
+                if cursor:
+                    # An explicit request for earlier prompts opens their start.
+                    self.inspector_signatures.pop('agent-detail',None)
+        # Respect the same text-selection hold as live snapshots. The next
+        # refresh publishes this history after the user releases the selection.
+        self.last_update=-1
+        self.refresh_data()
+
+    @on(Button.Pressed,'#agent-earlier-prompts')
+    def earlier_session_prompts(self):
+        self.request_session_prompts(older=bool(self.session_prompts.cursor))
+        self.show_agent()
+
     def show_agent(self):
         self.refresh_task_usage()
         item=getattr(self,'source_map',{}).get(self.selected_source)
+        expanded=self.query_one('#agents').has_class('expanded')
+        sidebar=expanded and self.size.width>=120 and bool(item)
+        self.query_one('#agent-stats').display=sidebar
+        self.query_one('#agent-prompt-bar').display=expanded and bool(item)
+        self.inspector_payloads.pop('agent-stats',None)
         button=self.query_one('#agent-summary',Button)
         button.display=self.ai_summary_available and bool(item)
         button.disabled=not bool(item) or self.summary_busy or not self.ai_summary_available
         if not self.ai_summary_available:
             button.tooltip='No compatible API key or provider is configured. The recorded progress summary below works without setup.'
         if not item:
+            self.session_prompts=PromptHistory()
             self.query_one('#agent-open',Button).disabled=True
             self.query_one('#agent-trace',Button).disabled=True
             self.query_one('#agent-reviewed',Button).display=False
@@ -2760,7 +2875,6 @@ class ObservatoryApp(App):
         trace_button.disabled=not bool(self.linked_agent_trace())
         reviewed_button=self.query_one('#agent-reviewed',Button)
         reviewed=review_key(item) in self.reviewed_attention
-        expanded=self.query_one('#agents').has_class('expanded')
         reviewed_button.display=(attention_required(item) or item['state']=='Completed') and expanded
         reviewed_button.label='Reviewed ✓ · r' if reviewed else 'Mark reviewed · r'
         reviewed_button.tooltip=('Acknowledged for this run. Press r to restore it to Needs attention.' if reviewed else
@@ -2859,7 +2973,7 @@ class ObservatoryApp(App):
             short_hierarchy=[(label,value) for label,value in hierarchy_sections if label=='Subtree summary']
             self.inspect('agent-detail',title,fields,short_hierarchy+sections+ai_sections,overview=True)
             return
-        preview=session_event_preview(recorded)
+        preview=session_event_preview(recorded,expanded=True)
         work_detail=f"{reported_number(summary.get('trace_count'))} traces · {reported_number(item.get('spans'))} spans"
         detail_fields=[('Session ID',item.get('session_id') or item['id']),
             ('Repo / project',item.get('project')),('Branch',item.get('branch')),('Model',item.get('model'))]
@@ -2871,23 +2985,19 @@ class ObservatoryApp(App):
             fields.append(('Waiting on',wait_label(item)))
         if item['stamp']:
             fields.append(('Updated',when(item['stamp'])+' · '+age(item['stamp'])))
-        prompt_events=sorted((event for event in actions
-                              if event.get('domain')=='message' and event.get('action')=='user'),
-                             key=lambda event:event.get('time_unix_nano') or 0)
-        prompt_limit=3
-        earlier_prompts=''
+        history=self.sync_session_prompts(item,actions)
+        prompt_events=history.ordered()
         if prompt_events:
-            shown_prompts=list(reversed(prompt_events[-prompt_limit:]))
             prompt_lines=[]
-            for event in shown_prompts:
+            for index,event in enumerate(prompt_events,1):
                 stamp=event.get('time_unix_nano')
-                prompt_lines.append((age(stamp) if stamp else 'Time not reported')+'\n'+session_excerpt(recorded_message_text(event),lines=4))
-            prompt_history=prompt_lines[0]
-            earlier_prompts='\n\n'.join(prompt_lines[1:])
-            if len(prompt_events)>prompt_limit:
-                earlier_prompts+='\n\nOlder requests are available in Activity.'
+                prompt_lines.append(f'{index:02d} · '+(when(stamp) if stamp else 'Time not reported')+
+                    '\n'+readable_output(recorded_message_text(event),limit=12000))
+            prompt_history='\n\n'.join(prompt_lines)
         else:
-            prompt_history='No user prompts were captured for this session.'
+            prompt_history=('Loading recorded prompts…' if history.busy else
+                            'Prompt history unavailable. Use Retry prompts below.' if history.error else
+                            'No user prompts were captured for this session.')
         activity_events=[event for event in actions if event.get('domain')!='message']
         activity_limit=5
         shown_activity=activity_events[:activity_limit]
@@ -2896,9 +3006,7 @@ class ObservatoryApp(App):
             activity_lines.append(f'Showing the latest {activity_limit} of {len(activity_events)} recorded actions; see Activity for the full history.\n')
         for event in shown_activity:
             stamp=event.get('time_unix_nano')
-            description=' '.join(shell_command(event.get('subject') or headline(event)).split())
-            if cell_len(description)>88:
-                description=clipped(description,85)+'…'
+            description=session_excerpt(shell_command(event.get('subject') or headline(event)),lines=3,width=None)
             result=event.get('result') or event.get('status')
             recorded_result=f' · {clean(str(result))}' if result else ''
             activity_lines.append(f"{age(stamp) if stamp else 'Time not reported'} · {brief_activity(event)}{recorded_result}"+
@@ -2906,17 +3014,30 @@ class ObservatoryApp(App):
         activity_history='\n\n'.join(activity_lines) if activity_lines else 'No non-message actions were captured for this session.'
         hierarchy_fields,hierarchy_sections=self.hierarchy_sections(item)
         fields.extend(hierarchy_fields)
-        self.inspect('agent-detail',clean(task_preview(item) or f"Untitled session · {item.get('runtime') or 'agent'}"),fields,
-            [('Task usage',usage_text),('Recorded user prompts',prompt_history),('Latest recorded event',preview),
-             ('Status evidence',session_excerpt(wait_summary(item),lines=3)),
+        facts=[('Session details',session_details),
+               ('Analysis coverage',analysis_coverage(summary)),
+               ('Working directory',item.get('working_directory')),
+               ('Review state','Marked reviewed for this run; status and evidence are unchanged.' if reviewed else None),
+               ('Attention state','Dismissed from Today and Needs attention. Still available in History and Traces.' if dismissed else None)]
+        if sidebar:
+            self.inspect('agent-stats','Task usage',usage_sidebar_fields(usage_text),
+                [('Session','\n'.join(f'{label}: {value}' for label,value in fields))]+facts,
+                identity=item['id'])
+        compact_reading=not sidebar and self.size.height<30
+        body_fields=([('Status',item['state'])] if compact_reading else fields)
+        body_usage=usage_text.splitlines()[0]+' · u Details' if compact_reading else usage_text
+        if compact_reading:
+            facts=[('Token breakdown','\n'.join(usage_text.splitlines()[1:])),
+                   ('Session','\n'.join(f'{label}: {value}' for label,value in fields if label!='Status'))]+facts
+        self.inspect('agent-detail',clean(task_preview(item) or f"Untitled session · {item.get('runtime') or 'agent'}"),
+            [] if sidebar else body_fields,
+            ([] if sidebar else [('Task usage',body_usage)])+
+            [('Prompt timeline · oldest first',prompt_history),('Latest recorded event',preview),
+             ('Status evidence',session_excerpt(wait_summary(item),lines=8,width=None)),
              ('Recorded failures',f"{int(summary['errors'])} across observed runs · open Failures below"
                 if summary.get('errors') else brief_activity(error_event)+' · open Failed call below' if error_event else None),
-             ('Recent recorded activity',activity_history),('Earlier requests',earlier_prompts)]+hierarchy_sections+ai_sections+[
-              ('Session details',session_details),
-              ('Analysis coverage',analysis_coverage(summary)),
-              ('Working directory',item.get('working_directory')),
-              ('Review state','Marked reviewed for this run; status and evidence are unchanged.' if reviewed else None),
-              ('Attention state','Dismissed from Today and Needs attention. Still available in History and Traces.' if dismissed else None)])
+             ('Recent recorded activity',activity_history)]+hierarchy_sections+ai_sections+
+            ([] if sidebar else facts),identity=item['id'])
 
     def show_activity(self):
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
@@ -3231,6 +3352,7 @@ class ObservatoryApp(App):
             self.feed.detail_enabled=detail_enabled
             self.feed.request_refresh()
         self.screen.set_class(event.pane.has_class('expanded'),'inspecting')
+        self.screen.set_class(event.pane.id=='agents' and event.pane.has_class('expanded'),'session-reading')
         self.query_one('#controls').set_class(event.pane.id=='agents','agents-active')
         self.query_one('#controls').set_class(
             event.pane.id in {'activity','mcp','traces','findings'} and self.scope_value!='all',
@@ -3611,6 +3733,10 @@ class ObservatoryApp(App):
                 self.show_span(span)
             else:self.render_host()
             title,fields,sections=self.inspector_payloads.get(name,('',[],[]))
+            if page=='agents' and 'agent-stats' in self.inspector_payloads:
+                stats_title,stats_fields,stats_sections=self.inspector_payloads['agent-stats']
+                sections=[*sections,(stats_title,'\n'.join(f'{label}: {value}' for label,value in stats_fields)),
+                          *stats_sections]
             def plain(value):
                 if isinstance(value,(dict,list)):
                     return json.dumps(value,ensure_ascii=False,indent=2,default=str)
@@ -3627,6 +3753,7 @@ class ObservatoryApp(App):
     def collapse(self,page):
         self.query_one('#'+page,TabPane).remove_class('expanded')
         self.screen.remove_class('inspecting')
+        self.screen.remove_class('session-reading')
         for hints in self.query('#shortcuts'):hints.update(navigation_hints(self.size.width))
         for button in self.query('#'+page+' .expand-button'):button.label=Text('Expand · e')
         self.call_after_refresh(self.reflow_inspectors)
@@ -3638,6 +3765,7 @@ class ObservatoryApp(App):
             self.action_back();return
         pane.add_class('expanded')
         self.screen.add_class('inspecting')
+        self.screen.set_class(page=='agents','session-reading')
         if page=='agents':
             self.query_one('#shortcuts',Static).update('e Back  o Sort  PgDn Scroll  c Copy  ? Help')
         self.call_after_refresh(self.reflow_inspectors)
