@@ -38,7 +38,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertFalse(app.query_one('#results-agents').display)
             self.assertTrue(inspector.display)
-            self.assertIn('session-1', app.query_one('#agent-detail').plain_text)
+            self.assertIn('session-1', app.query_one('#agent-stats').plain_text)
             await pilot.press('escape')
             await pilot.pause()
             self.assertTrue(app.query_one('#results-agents').display)
@@ -491,7 +491,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press('e')
             await pilot.pause()
             expanded=app.query_one('#agent-detail').plain_text
-            self.assertIn('Recorded User Prompts',expanded)
+            self.assertIn('Prompt Timeline · Oldest First',expanded)
             self.assertIn('preserve the original response',' '.join(expanded.split()))
             self.assertIn('Recent Recorded Activity',expanded)
             self.assertIn('git status --short',expanded)

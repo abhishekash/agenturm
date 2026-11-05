@@ -108,7 +108,7 @@ class TaskUsageJourney(unittest.IsolatedAsyncioTestCase):
             self.assertIn('$1.0000',bar());self.assertIn('Tokens 900',bar());self.assertIn('45%',bar())
             self.assertNotIn('$0.2500',bar())
             await pilot.press('e');await pilot.pause()
-            self.assertIn('Task cost $1.0000',app.query_one('#agent-detail').plain_text)
+            self.assertIn('Task cost $1.0000',' '.join(app.query_one('#agent-stats').plain_text.split()))
             await pilot.press('u');await pilot.pause()
             self.assertIsInstance(app.screen,UsageScreen)
             self.assertIn('Trace: run-2',app.screen.details)
