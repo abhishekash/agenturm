@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .local_activity import safe
+from .session_prompts import event_in_scope, prompt_scope
 
 
 class SummaryError(ValueError):
@@ -102,12 +103,8 @@ def summary_evidence(session, events):
     evidence['events'] = []
     # Scope before limiting: busy unrelated sessions must not crowd out this
     # session's evidence. Keep only 30 candidates, even for a streaming input.
-    def belongs(event):
-        if session.get('session_id'):
-            return event.get('session_id') == session['session_id']
-        return event.get('service') == session.get('service')
-
-    recent = heapq.nlargest(30, (event for event in events if belongs(event)),
+    scope = prompt_scope(session)
+    recent = heapq.nlargest(30, (event for event in events if event_in_scope(event, scope)),
                            key=lambda item: item.get('time_unix_nano', 0))
     for event in recent:
         evidence['events'].append({key: safe(event.get(key) or '', 400)

@@ -23,6 +23,20 @@ class NativeSessionTests(unittest.TestCase):
         path.touch()
         return Session(self.store, path, runtime, capture_details=details)
 
+    def test_native_title_keeps_meaningful_request_and_resets_on_rotation(self):
+        session=self.session('Codex')
+        def row(text,second):
+            return {'type':'event_msg','timestamp':f'2026-11-11T12:00:{second:02d}Z',
+                    'payload':{'type':'item_completed','item':{'type':'UserMessage','content':text}}}
+        raw='<environment_context>'+('Local workspace\n'*800)+'</environment_context>\n\nFix checkout retries.'
+        self.append(session,row(raw,1),row('go ahead',2))
+        self.assertEqual(session.task_description,'Fix checkout retries.')
+        self.assertNotIn('<environment_context>',session.tasks[session.turn])
+        session.path.write_text(json.dumps(row('<environment_context>New workspace</environment_context>',3))+'\n')
+        session.poll()
+        self.assertEqual(session.task_description,'')
+        self.assertFalse(session.tasks)
+
     def test_local_agent_shutdown_consumes_interrupt_during_thread_join(self):
         agents = LocalAgents(self.store)
 

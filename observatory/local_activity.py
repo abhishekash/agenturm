@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .findings import _safe_text, _SENSITIVE_FIELD, _TOKEN_FIELD
 from .native_json import loads
+from .session_text import remember_task
 
 CONTENT_LIMIT = 8000
 
@@ -203,7 +204,7 @@ def codex_activity(session, row, stamp):
             text = "" if session.internal else plaintext(item.get("content"))
             role = "user" if item_type == "UserMessage" else "assistant"
             if role == "user" and text and session.capture_details:
-                session.tasks[session.turn] = text[:4000]
+                remember_task(session, item.get("content"))
             out.append(emit(session, row, stamp, "message", role,
                 "Approval review" if session.internal else text.splitlines()[0][:300] if text and session.capture_details else role + " message", text,
                 "observed", {"message.role": role, "message.phase": item.get("phase") or ""}))
@@ -226,7 +227,7 @@ def claude_activity(session, row, stamp):
     if text and row.get("type") in {"assistant", "user"}:
         role = row["type"]
         if role == "user" and session.capture_details:
-            session.tasks[session.turn] = text[:4000]
+            remember_task(session, content)
         out.append(emit(session, row, stamp, "message", role, text.splitlines()[0][:300] if session.capture_details else role+" message", text))
     for block in blocks:
         if not isinstance(block, dict):
@@ -268,7 +269,7 @@ def pi_activity(session, row, stamp):
     if role == "user":
         text = plaintext(message.get("content")) if session.capture_details else ""
         if text:
-            session.tasks[session.turn] = text[:4000]
+            remember_task(session, message.get("content"))
         out.append(emit(session, row, stamp, "message", "user",
                         text.splitlines()[0][:300] if text else "user message", text,
                         "observed", {"message.role": "user"}, turn=session.turn))

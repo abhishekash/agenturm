@@ -81,6 +81,41 @@ Discovery scans every 10 seconds and tails discovered files every second. It sel
 
 Local discovery runs in the receiver. If you installed an earlier version, reinstall the CLI and restart that receiver to enable it. A cockpit attached to an older receiver cannot enable discovery there. Add `--no-local-agents` to `serve` or `cockpit` to disable discovery in a receiver started by that command. Receivers bound to non-loopback addresses do not discover local sessions automatically. Other agent products still need an adapter or OTLP export.
 
+### Read an agent's work
+
+Press **Enter** on an agent to open its inspector. **Overview** leads with its
+task, state, latest agent-reported update, recorded command/output, recent work,
+and delegated children. An agent's claim and a successful tool result are
+different evidence; neither verifies the entire objective. The footer states
+which recent records are loaded. A quiet session gets its own exact-scoped read,
+even when its events have left the global activity window.
+
+Use the **Overview / Prompts / Details** buttons, or **m** to cycle them.
+**Prompts** reads one request at a time, starting with the latest. Choose a
+request in the chronological index or the selector; **[** moves to the previous
+request, **]** to the next, and **l** to the latest loaded request. **Earlier
+prompts** loads an older page without moving the request you are reading.
+The reader retains up to 300 requests, preserving the selected request and
+newest arrivals; older history remains available in Activity.
+
+Known complete runtime context blocks are separated from the readable request,
+with a visible disclosure. **z** toggles original captured text for that request.
+Literal JSON, code, line breaks and indentation are retained. **c** copies the
+selected request in its current readable/original form; **x** previews an export
+of that same request. **s** opens the selected request in Activity. Original text
+means the stored, bounded, redacted record, with terminal control characters
+removed; it cannot restore content omitted upstream. **Details** holds IDs,
+model, reported usage, status evidence and relationship provenance.
+
+Agent rows prioritize task and current work. Collapsed parents retain both
+working and attention counts for their descendants. **←/→** collapse/expand
+branches in Today, Running and History; search temporarily reveals matching
+paths. Parent-only filter context is labeled. **Alt+Up**, **Alt+Down** and
+**Alt+Right** navigate to the parent, first visible child, or a descendant needing
+attention, revealing hidden targets. At 80×24 and in a 60-column terminal split,
+Enter opens the inspector as a single reading pane. The supported floor is
+60×18; smaller terminals show a resize message.
+
 ### Resource usage
 
 The terminal fetches live data every two seconds; session inventory, MCP,

@@ -74,6 +74,10 @@ class TaskUsageTests(unittest.TestCase):
         self.assertEqual(session_usage(rows,{'agent_id':'b','session_id':'shared'})['input_tokens'],2)
         self.assertEqual(session_usage(rows,{'agent_id':'c','session_id':'shared'}),{})
         self.assertEqual(session_usage(rows,{'session_id':'shared'}),{})
+        untagged=[{'session_id':'shared','input_tokens':99}]
+        self.assertEqual(session_usage(untagged,{'agent_id':'b','session_id':'shared'}),{})
+        self.assertEqual(session_usage(untagged,{'agent_id':'legacy','agent_id_inferred':True,
+                                               'session_id':'shared'})['input_tokens'],99)
 
 
 class TaskUsageJourney(unittest.IsolatedAsyncioTestCase):
@@ -101,14 +105,14 @@ class TaskUsageJourney(unittest.IsolatedAsyncioTestCase):
             bar=lambda:' '.join(app.query_one('#agent-detail').plain_text.split())
             self.assertFalse(app.query_one('#usage-summary').display)
             row=app.query_one('#agent-table').get_row('source-1')[0].plain
-            self.assertIn('2.5k tok · $0.25',row)
+            self.assertNotIn('tok ·',row)
             self.assertNotIn('cache',row.lower())
+            app.set_session_mode('details');await app.workers.wait_for_complete();await pilot.pause()
             self.assertIn('$0.2500',bar());self.assertIn('2,500',bar());self.assertIn('75%',bar())
             app.select_agent('source-2');await pilot.pause()
             self.assertIn('$1.0000',bar());self.assertIn('Tokens 900',bar());self.assertIn('45%',bar())
             self.assertNotIn('$0.2500',bar())
-            await pilot.press('e');await pilot.pause()
-            self.assertIn('Task cost $1.0000',' '.join(app.query_one('#agent-stats').plain_text.split()))
+            self.assertIn('Task cost $1.0000',bar())
             await pilot.press('u');await pilot.pause()
             self.assertIsInstance(app.screen,UsageScreen)
             self.assertIn('Trace: run-2',app.screen.details)

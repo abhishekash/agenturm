@@ -75,6 +75,13 @@ When a runtime records an exact delegation, Agents shows an expandable tree and 
 
 Agenturm is a monitor, not a controller. Reply to agents and approve requests in their own terminals.
 
+The session inspector opens on **Overview**: the latest agent-reported update,
+recorded work and results, and delegated children. **Prompts** lets you read one
+request at a time, with runtime context separated and original captured text
+always available. **Details** holds IDs, usage and provenance. Press `m` to cycle
+these views, `[` / `]` to move between requests, and `z` to toggle original text.
+See the [assessment, reviewed plan and validation report](docs/agents-experience-review.html).
+
 ### Keyboard first
 
 | Key | Action |

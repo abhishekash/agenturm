@@ -64,10 +64,10 @@ class SessionWorkBudgetTest(unittest.TestCase):
 
         now=time.time_ns()
         events=CountedEvents([
-            {'session_id':str(index),'time_unix_nano':now,'subject':'latest'}
+            {'session_id':str(index),'service':'demo','time_unix_nano':now,'subject':'latest'}
             for index in range(200)
         ]+[
-            {'session_id':str(index),'time_unix_nano':now-1,'subject':'older'}
+            {'session_id':str(index),'service':'demo','time_unix_nano':now-1,'subject':'older'}
             for index in range(200)
         ])
         snapshot=Snapshot(activity=events,sessions=[

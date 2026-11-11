@@ -286,6 +286,7 @@ class Session:
         self.calls = RecentMap(MAX_RECENT_CALLS)
         self.usage = RecentMap(MAX_RECENT_USAGE)
         self.tasks = RecentMap(MAX_RECENT_TURNS)
+        self.task_description = ''
         self.tool_inputs = RecentMap(MAX_RECENT_CALLS)
         self.modern_usage = False
         self.last_total = None
@@ -598,7 +599,8 @@ class Session:
             self.started[self.turn] = stamp
             text = plaintext(message.get("content")) if self.capture_details else ""
             if text:
-                self.tasks[self.turn] = text[:4000]
+                from .session_text import remember_task
+                remember_task(self, message.get("content"))
             return [self.root(stamp, "running")]
         if role == "assistant":
             self.model = message.get("model") or self.model
@@ -707,6 +709,7 @@ class Session:
                 self.capture_details = False
                 self.service = "codex-review"
                 self.tasks.clear()
+                self.task_description = ''
                 self.store.redact_internal_source(self.source_id)
             self.project = Path(payload["cwd"]).name if payload.get("cwd") else self.project
         elif kind == "token_usage_record":
@@ -884,6 +887,7 @@ class Session:
             self.calls.clear()
             self.usage.clear()
             self.tasks.clear()
+            self.task_description = ''
             self.tool_inputs.clear()
             self.pending_tools.clear()
             self.spawn_calls.clear()
@@ -1222,7 +1226,7 @@ class LocalAgents:
                      "working_directory": session.working_directory, "branch": session.branch,
                      "run_state": session.run_state, "state_since_ns": session.state_since,
                      "waiting_for": session.waiting_for,
-                     "task": "Approval review" if session.internal else (session.tasks.get(session.turn) or "")[:500],
+                     "task": "Approval review" if session.internal else (session.task_description or session.tasks.get(session.turn) or "")[:500],
                      "capture_content": session.capture_details,
                      "last_activity": session.last_activity,
                      "last_record_ns": session.last_record_ns,
