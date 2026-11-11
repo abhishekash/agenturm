@@ -84,9 +84,16 @@ class Api:
         timeout=self.HEALTH_TIMEOUT if path=='/api/health?probe=1' else self.REQUEST_TIMEOUT
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read(max_bytes + 1)
+            headers = getattr(response, 'headers', None)
+            receiver = headers.get('X-Agenturm-Receiver-ID') if headers is not None else None
         if len(raw) > max_bytes:
             raise CockpitError(f'Receiver response exceeded the {max_bytes // (1024 * 1024)} MiB limit. Narrow the selected scope.')
-        return json.loads(raw)
+        result = json.loads(raw)
+        if receiver and isinstance(result, dict):
+            if result.get('receiver_id') and result['receiver_id'] != receiver:
+                raise CockpitError('Receiver identity does not match the response body. Retry the request.')
+            result['receiver_id'] = receiver
+        return result
 
 
 class LocalReceiver:
@@ -251,10 +258,18 @@ class Feed:
                               'supported':'next_cursor' in response}
         requests = RequestBatch(self.api, self.stop, self.connection_stage)
         self._requests = requests
-        get = requests.get
+        raw_get = requests.get
         read_errors,read_updated = {},{}
         old=self.snapshot
         receiver_id=old.receiver_id
+        receiver_confirmed=False
+        def get(path):
+            response=raw_get(path)
+            if (receiver_confirmed and path.split('?',1)[0]!='/api/health' and
+                    isinstance(response,dict) and response.get('receiver_id') and
+                    response['receiver_id']!=receiver_id):
+                raise ValueError('Receiver identity changed during this refresh; retrying')
+            return response
         def evidence_get(path,kind,fallback):
             try:
                 response=get(path)
@@ -304,6 +319,7 @@ class Feed:
             requests.prefetch(initial_paths)
             health=get('/api/health')
             receiver_id=str(health.get('receiver_id') or '')
+            receiver_confirmed=True
             receiver_changed=self.cache_receiver_id is not None and self.cache_receiver_id!=receiver_id
             self.cache_receiver_id=receiver_id
             if receiver_changed:
