@@ -1,6 +1,54 @@
 """Bounded concurrent reads and immutable scope for a single feed refresh."""
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
+import threading
+
+
+_slots_lock = threading.Lock()
+
+def shared_get(api, path, *, review=False, cancelled=None):
+    """Share four active reads, and deduplicate overlapping identical reviews."""
+    if not review:return _bounded_get(api,path,review=False,cancelled=cancelled)
+    with _slots_lock:
+        pending=getattr(api,'_agenturm_review_pending',None)
+        if pending is None:
+            pending={};setattr(api,'_agenturm_review_pending',pending)
+        future=pending.get(path)
+        leader=future is None
+        if leader:
+            future=Future();pending[path]=future
+    if not leader:
+        while True:
+            if cancelled and cancelled():raise InterruptedError('Evidence request cancelled')
+            try:return future.result(timeout=.1)
+            except FutureTimeout:
+                if future.done():raise
+    try:
+        result=_bounded_get(api,path,review=True,cancelled=cancelled)
+        future.set_result(result)
+        return result
+    except BaseException as exc:
+        future.set_exception(exc)
+        raise
+    finally:
+        with _slots_lock:
+            if pending.get(path) is future:pending.pop(path,None)
+
+
+def _bounded_get(api,path,*,review,cancelled):
+    """The leader alone holds a network slot; waiting readers cannot deadlock it."""
+    with _slots_lock:
+        slots = getattr(api, '_agenturm_read_slots', None)
+        if slots is None:
+            slots = threading.BoundedSemaphore(4)
+            setattr(api, '_agenturm_read_slots', slots)
+    while not slots.acquire(timeout=.1):
+        if cancelled and cancelled():raise InterruptedError('Evidence request cancelled')
+    try:
+        if cancelled and cancelled():raise InterruptedError('Evidence request cancelled')
+        return (api.get_review if review and callable(getattr(api, 'get_review', None)) else api.get)(path)
+    finally:
+        slots.release()
 
 
 @dataclass(frozen=True)
@@ -76,7 +124,7 @@ class RequestBatch:
             if self.executor is None:
                 self.executor = ThreadPoolExecutor(max_workers=self.MAX_WORKERS,
                                                    thread_name_prefix='agenturm-read')
-            self.pending[path] = self.executor.submit(self.api.get, path)
+            self.pending[path] = self.executor.submit(shared_get, self.api, path, cancelled=self.stop.is_set)
 
     def get(self, path):
         if self.stop.is_set():
@@ -84,7 +132,7 @@ class RequestBatch:
         if self.progress:self.progress(request_stage(path))
         future = self.pending.get(path)
         try:
-            return future.result() if future is not None else self.api.get(path)
+            return future.result() if future is not None else shared_get(self.api, path, cancelled=self.stop.is_set)
         except TimeoutError as exc:
             raise TimeoutError(request_stage(path)+' timed out ('+path.split('?',1)[0]+')') from exc
 

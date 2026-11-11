@@ -317,7 +317,7 @@ def task_outcome_for_trace(db, trace_id):
     return state, stamp
 
 
-def derive_trace(db, trace_id):
+def derive_trace(db, trace_id, workflow_patterns=False):
     # Lazy import keeps the existing public normalization/summary API unchanged.
     from .core import (summarize, summarize_progress, apply_outcome, _activity_for,
                        _progress_from_log)
@@ -438,6 +438,10 @@ def derive_trace(db, trace_id):
     timestamp = db.execute("SELECT last_ns FROM trace_activity WHERE trace_id=?", (trace_id,)).fetchone()
     timestamp = timestamp[0] if timestamp else summary["end_unix_nano"]
     findings = analyze(spans, logs, outcome)
+    if workflow_patterns:
+        from .workflow_patterns import analyze_patterns
+        findings = [item for item in findings if item['kind'] != 'repeated_tool_error']
+        findings.extend(analyze_patterns(spans, logs, outcome))
     for finding in findings:
         finding["evidence_complete"] = summary["evidence_window"]["complete"]
         if not finding["evidence_complete"]:

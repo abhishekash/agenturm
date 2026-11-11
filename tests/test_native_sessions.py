@@ -23,6 +23,58 @@ class NativeSessionTests(unittest.TestCase):
         path.touch()
         return Session(self.store, path, runtime, capture_details=details)
 
+    def test_exact_request_and_run_references_survive_poll_and_clear_on_resolution(self):
+        from observatory.local_agents import identity
+        session=self.session('Codex',details=False)
+        self.append(session,
+            {'type':'event_msg','timestamp':'2026-11-11T12:00:00Z','payload':{'type':'task_started','turn_id':'one'}},
+            {'type':'event_msg','timestamp':'2026-11-11T12:00:01Z','payload':{
+                'type':'approval_request','request_id':'approval-one','prompt':'private secret'}})
+        first=session.request_id;stamp=session.request_time_ns
+        self.assertEqual(first,identity(session.source_id,'one','request','approval-one'))
+        self.assertEqual(session.run_state,'waiting')
+        session.poll();self.assertEqual((session.request_id,session.request_time_ns),(first,stamp))
+        self.append(session,{'type':'event_msg','timestamp':'2026-11-11T12:00:02Z','payload':{
+            'type':'approval_request','request_id':'approval-two'}})
+        self.assertNotEqual(session.request_id,first)
+        with self.store._connect() as db:
+            logs=db.execute("SELECT body,attributes,trace_id FROM logs WHERE event_name='agent.activity'").fetchall()
+        self.assertTrue(any(json.loads(log[1]).get('agent.activity.action')=='approval_request' for log in logs))
+        self.assertNotIn('private secret',str([tuple(log) for log in logs]))
+        self.assertTrue(all(log[2]==identity(session.source_id,'one') for log in logs))
+        self.append(session,{'type':'event_msg','timestamp':'2026-11-11T12:00:03Z','payload':{
+            'type':'task_complete','turn_id':'one'}})
+        self.assertEqual(session.request_id,'');self.assertEqual(session.request_time_ns,0)
+        self.assertTrue(session.outcome_id);self.assertGreater(session.outcome_time_ns,stamp)
+        session.path.write_text('{}\n');session.poll()
+        self.assertEqual(session.turn,'session');self.assertFalse(session.request_id or session.outcome_id)
+
+    def test_request_missing_timestamp_preserves_observed_wait_and_no_file_mtime_anchor(self):
+        session=self.session('Codex',details=False)
+        self.append(session,{'type':'turn_context','payload':{'turn_id':'run'}},
+            {'type':'event_msg','payload':{'type':'request_user_input','request_id':'request'}})
+        self.assertTrue(session.request_id);self.assertEqual(session.request_time_ns,0)
+        self.assertEqual(session.run_state,'waiting')
+
+    def test_question_tool_request_identity_does_not_move_with_unrelated_records(self):
+        session=self.session('Codex')
+        self.append(session,{'type':'event_msg','timestamp':'2026-11-11T12:00:00Z',
+            'payload':{'type':'task_started','turn_id':'one'}},
+            {'type':'response_item','timestamp':'2026-11-11T12:00:01Z','payload':{
+                'type':'function_call','call_id':'question','name':'request_user_input','arguments':'{}'}})
+        first=(session.request_id,session.request_time_ns)
+        self.append(session,{'type':'response_item','timestamp':'2026-11-11T12:00:02Z','payload':{
+            'type':'function_call','call_id':'question-two','name':'request_user_input','arguments':'{}'}},
+            {'type':'turn_context','timestamp':'2026-11-11T12:00:10Z','payload':{'turn_id':'one'}})
+        self.assertEqual((session.request_id,session.request_time_ns),first)
+        self.append(session,{'type':'response_item','timestamp':'2026-11-11T12:00:11Z',
+            'payload':{'type':'function_call_output','call_id':'question','output':'answer'}})
+        self.assertNotEqual(session.request_id,first[0])
+        self.assertEqual(session.request_time_ns,first[1]+1_000_000_000)
+        self.append(session,{'type':'response_item','timestamp':'2026-11-11T12:00:12Z',
+            'payload':{'type':'function_call_output','call_id':'question-two','output':'answer'}})
+        self.assertEqual(session.request_id,'')
+
     def test_native_title_keeps_meaningful_request_and_resets_on_rotation(self):
         session=self.session('Codex')
         def row(text,second):

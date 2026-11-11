@@ -15,10 +15,10 @@ class WorkflowEvidenceTests(unittest.TestCase):
         self.assertEqual(ledger.update([item],feed.snapshot,{},200),[])
         self.assertEqual(ledger.rows[0][2],100)
         ledger.update([],feed.snapshot,{},300)
-        self.assertEqual(len(ledger.update([item],feed.snapshot,{},400)),1)
-        self.assertEqual(ledger.rows[0][2],400)
+        self.assertEqual(ledger.update([item],feed.snapshot,{},400),[])
+        self.assertEqual(ledger.rows[0][2],100)
         item['_workflow_reviewed']=True
-        self.assertEqual(workflow_reasons(item,{},feed.snapshot,{}),[])
+        self.assertEqual(workflow_reasons(item,{},feed.snapshot,{}),['Approval requested'])
         item['_workflow_reviewed']=False
         item['waiting_for']='Tool response';self.assertEqual(workflow_reasons(item,{},feed.snapshot,{}),[])
 
@@ -33,11 +33,12 @@ class WorkflowEvidenceTests(unittest.TestCase):
         self.assertEqual(safe_preferences({'workflow_limits':{'tokens':float('nan'),'cost':-1,'minutes':5}})['workflow_limits'],{'minutes':5})
 
     def test_review_does_not_claim_checks_verify_later_edits_or_other_agents(self):
-        feed=ManualFeed();item={'id':'a','agent_id':'a','session_id':'s','state':'Completed','working_directory':'/repo'}
+        feed=ManualFeed();item={'id':'a','service':'codex','agent_id':'a','session_id':'s','state':'Completed','working_directory':'/repo'}
         events=[{'agent_id':'b','session_id':'s','domain':'shell','subject':'pytest secret','result':'success','time_unix_nano':10},
                 {'agent_id':'a','domain':'shell','subject':'pytest','result':'error','time_unix_nano':20},
                 {'agent_id':'a','domain':'file','subject':'edit a.py','time_unix_nano':30}]
         snapshot=replace(feed.snapshot,activity=events)
+        for event in events:event.update(service='codex',session_id='s')
         report=workflow_report(item,[item,{'id':'b','active':True,'working_directory':'/repo','task':'other task'}],snapshot)
         self.assertIn('before latest recorded file operation',report)
         self.assertIn('other task',report)
@@ -79,11 +80,48 @@ class WorkflowEvidenceTests(unittest.TestCase):
             self.assertEqual(call.call_args.kwargs['timeout'],3)
             self.assertNotIn('shell',call.call_args.kwargs)
         snapshot=replace(ManualFeed().snapshot,traces=[{'trace_id':'r','start_unix_nano':1_000_000_000}])
-        usage={'trace_id':'r','input_tokens':999,'input_tokens_reported':False}
+        usage={'trace_id':'r','start_unix_nano':1_000_000_000,'input_tokens':999,'input_tokens_reported':False}
         self.assertEqual(workflow_reasons({'active':False},usage,snapshot,{'minutes':1,'tokens':1},now=100),[])
         self.assertEqual(workflow_reasons({'active':True},usage,snapshot,{'minutes':1},now=100),['Task elapsed-time threshold reached'])
 
 class WorkflowJourney(unittest.IsolatedAsyncioTestCase):
+    async def test_queue_floor_preserves_incident_cursor_scroll_and_keyboard_drilldown(self):
+        from observatory.attention import AttentionLedger as PureLedger
+        from tests.test_attention import item,snapshot
+        from textual.widgets import DataTable,RichLog
+        app=ObservatoryApp(ManualFeed(),persist_preferences=False)
+        async with app.run_test(size=(60,20)) as pilot:
+            await pilot.pause();app.refresh_timer.stop();app.workflow_controller.close()
+            ledger=PureLedger();now=time.time()
+            ledger.update([item(id=str(i),agent_id=str(i),task='Task '+str(i)) for i in range(25)],snapshot(now),{},now)
+            app.workflow_ledger.rows=ledger.rows
+            app.action_workflow();await pilot.pause()
+            screen=app.screen;table=screen.query_one(DataTable)
+            self.assertGreaterEqual(table.size.height,14)
+            self.assertFalse(screen.query_one(RichLog).display)
+            table.focus();await pilot.press(*(['down']*20));await pilot.pause()
+            key=table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+            position=table.scroll_y
+            app.workflow_ledger.rows=[(dict(it,task=it['task']+' refreshed'),reason,since) for it,reason,since in ledger.rows]
+            screen.render_report();await pilot.pause()
+            self.assertEqual(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value,key)
+            self.assertEqual(table.scroll_y,position)
+            await pilot.press('enter');await pilot.pause()
+            self.assertEqual(screen.selected_incident,key)
+            self.assertTrue(screen.query_one(RichLog).display)
+            self.assertFalse(table.display)
+            await pilot.press('escape');await pilot.pause()
+            self.assertIs(app.screen,screen);self.assertTrue(table.display)
+            self.assertEqual(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value,key)
+            await pilot.resize_terminal(45,15);await pilot.pause()
+            self.assertTrue(screen.query_one('#workflow-too-small').display)
+            await pilot.resize_terminal(60,18);await pilot.pause()
+            self.assertFalse(screen.query_one('#workflow-too-small').display)
+            self.assertGreaterEqual(table.size.height,12)
+            with patch.object(app,'action_review_work') as review:
+                await pilot.click('#workflow-review');await pilot.pause()
+                self.assertEqual(review.call_args.args[0]['_attention_id'],key)
+
     async def test_modal_settings_and_attention_selection_at_floor(self):
         app=ObservatoryApp(ManualFeed(),persist_preferences=False)
         async with app.run_test(size=(120,40)) as pilot:

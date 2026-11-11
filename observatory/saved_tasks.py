@@ -19,6 +19,9 @@ from .task_workspace import capture_workspace, display_text
 MAX_NOTES = 32000
 MAX_LINKS = 64
 MAX_TASK_BYTES = 512 * 1024
+MAX_DECISIONS = 128
+BRIEF_FIELDS = ('intent', 'acceptance_criteria', 'constraints', 'open_questions', 'next_action')
+DECISION_KINDS = ('accepted', 'rejected')
 TOKEN_FIELDS = ('input_tokens', 'output_tokens', 'cache_read_input_tokens',
                 'cache_write_input_tokens', 'reasoning_output_tokens')
 
@@ -35,6 +38,25 @@ def default_path():
     override = os.environ.get('AGENTURM_TASKS_DB')
     return Path(override).expanduser() if override else Path(
         os.environ.get('XDG_STATE_HOME', Path.home() / '.local' / 'state')) / 'agenturm' / 'tasks.sqlite3'
+
+
+def backup_task_database(path, destination):
+    """SQLite backup API works before initialization or migration of side tables."""
+    source_path = Path(path).expanduser().resolve()
+    target = Path(destination).expanduser()
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
+    try:
+        source = sqlite3.connect(source_path.as_uri() + '?mode=ro', uri=True, timeout=3)
+        try:
+            with sqlite3.connect(target) as backup:
+                source.backup(backup)
+        finally:
+            source.close()
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+    return str(target)
 
 
 def _text(value, name, limit, *, required=False, multiline=False):
@@ -73,6 +95,7 @@ def _link(evidence):
         raise TaskError('Linked evidence must be an object.')
     result = {}
     for key, limit in (('session_id', 512), ('agent_id', 512), ('runtime', 120),
+                       ('receiver', 2000), ('producer', 512),
                        ('task', 500), ('state', 120), ('working_directory', 4096),
                        ('branch', 512), ('resume_command', 2000)):
         value = evidence.get(key)
@@ -82,10 +105,29 @@ def _link(evidence):
     if trace and (not isinstance(trace, str) or not re.fullmatch(r'[0-9a-fA-F]{32}', trace)):
         raise TaskError('trace_id must contain 32 hexadecimal characters.')
     result['trace_id'] = trace.lower()
+    start = evidence.get('run_start_ns')
+    if start is not None:
+        start = _timestamp(start, 'Run lifecycle start')
+        if not start:
+            raise TaskError('Run lifecycle start must be a positive recorded timestamp.')
+        if not result.get('receiver') or not result.get('producer'):
+            raise TaskError('A native lifecycle run needs its receiver and producer namespace.')
+        result['run_start_ns'] = start
+    end = evidence.get('run_end_ns')
+    if end is not None:
+        end = _timestamp(end, 'Run lifecycle end')
+        if not start or end < start:
+            raise TaskError('Run lifecycle end must follow its recorded start.')
+        result['run_end_ns'] = end
     if not (trace or result.get('session_id') or result.get('agent_id')):
         raise TaskError('Link a recorded trace or an identified session.')
     identity = '\0'.join(result.get(key, '') for key in ('runtime', 'session_id', 'agent_id'))
-    result['key'] = 'trace:' + trace.lower() if trace else 'session:' + hashlib.sha256(identity.encode()).hexdigest()[:24]
+    result['key'] = ('trace:' + trace.lower() if trace else
+        'native-run:' + hashlib.sha256(('\0'.join(result.get(key, '') for key in ('session_id', 'agent_id'))+'\0'+str(start)).encode()).hexdigest()[:24] if start else
+        'session:' + hashlib.sha256(identity.encode()).hexdigest()[:24])
+    if result.get('receiver'):
+        namespace = hashlib.sha256((result['receiver'] + '\0' + result.get('producer', '')).encode()).hexdigest()[:24]
+        result['key'] += '@' + namespace
     result['captured_ns'] = _timestamp(evidence.get('captured_ns', time.time_ns()), 'captured_ns')
     usage = evidence.get('usage')
     if usage is None:
@@ -122,17 +164,53 @@ def _link(evidence):
             continue
         command = _text(check.get('command', ''), 'Check command', 2000, multiline=True)
         if command:
+            check_time = _timestamp(check.get('time_ns') or check.get('time_unix_nano') or 0, 'Check time')
+            if start and not trace and (end is None or not start <= check_time <= end):
+                continue
             result['checks'].append({'command': command,
                 'result': _text(str(check.get('result') or 'not reported'), 'Check result', 200),
-                'time_ns': _timestamp(check.get('time_ns') or check.get('time_unix_nano') or 0, 'Check time'),
+                'time_ns': check_time,
                 'trace_id': _text(check_trace, 'Check trace', 64),
-                'scope': 'linked run' if trace and check_trace else 'session activity; run assignment unverified'})
+                'scope': 'linked run' if trace and check_trace else 'native lifecycle run; captured interval may be partial' if start else 'session activity; run assignment unverified'})
+    if evidence.get('review_snapshot') is not None:
+        projection = evidence['review_snapshot']
+        if not isinstance(projection, dict):
+            raise TaskError('Review snapshot must be an object.')
+        scope = projection.get('scope') or {}
+        if (not (trace or start) or (scope.get('run_id') != trace if trace else scope.get('run_start_ns') != start) or
+                result.get('receiver') and scope.get('receiver') != result['receiver'] or
+                result.get('producer') and scope.get('producer') != result['producer'] or
+                result.get('agent_id') and scope.get('agent_id') != result['agent_id'] or
+                result.get('session_id') and scope.get('session_id') != result['session_id']):
+            raise TaskError('Review snapshot must match the exact linked run and agent.')
+        try:
+            serialized = json.dumps(projection, ensure_ascii=False, allow_nan=False)
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise TaskError('Review snapshot must contain bounded JSON evidence.') from exc
+        if len(serialized.encode()) > 256 * 1024:
+            raise TaskError('Review snapshot exceeds 256 KiB. Save a smaller explicit evidence selection or create the task without this link.')
+        try:
+            from .workflow_evidence import render_review
+            if projection.get('format') != 'agenturm-review-v1':
+                raise ValueError('Unsupported review format')
+            render_review(projection)
+            if (not trace and not scope.get('run_end_ns') and
+                    any(projection[key] for key in ('checks', 'edits', 'errors', 'context_events'))):
+                raise ValueError('Native review needs a recorded lifecycle end')
+            if ('Metadata-only capture' in projection['window']['reasons'] and
+                    any(projection[key] for key in ('checks', 'edits', 'errors', 'context_events'))):
+                raise ValueError('Metadata-only capture cannot contain review payloads')
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise TaskError('Review snapshot is malformed or exceeds its capture permissions.') from exc
+        result['review_snapshot'] = json.loads(serialized)
     return result
 
 
 def usage_summary(links):
-    runs = {link['trace_id']: link for link in links if link.get('trace_id')}
-    unscoped = sum(not link.get('trace_id') for link in links)
+    runs = {(link.get('receiver', ''), link.get('producer', ''), link.get('agent_id', '') if not link.get('trace_id') else '',
+             link.get('session_id', '') if not link.get('trace_id') else '', link.get('trace_id') or link.get('run_start_ns')): link
+            for link in links if link.get('trace_id') or link.get('run_start_ns')}
+    unscoped = sum(not (link.get('trace_id') or link.get('run_start_ns')) for link in links)
     result = {'scope': 'Recorded linked runs only; snapshots update when linked evidence is refreshed.',
               'linked_runs': len(runs), 'unscoped_links': unscoped}
     for field in TOKEN_FIELDS:
@@ -165,6 +243,7 @@ class TaskStore:
             os.close(fd)
         os.chmod(self.path, 0o600)
         with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
             db.execute('''CREATE TABLE IF NOT EXISTS saved_tasks_v1 (
                 id TEXT PRIMARY KEY, title TEXT NOT NULL, workspace TEXT NOT NULL,
                 notes TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
@@ -172,6 +251,16 @@ class TaskStore:
                 revision INTEGER NOT NULL, links_json TEXT NOT NULL,
                 snapshot_json TEXT NOT NULL)''')
             db.execute('CREATE INDEX IF NOT EXISTS saved_tasks_recent ON saved_tasks_v1(archived,updated_ns DESC,id)')
+            db.execute('CREATE TABLE IF NOT EXISTS task_schema_v1 (version INTEGER NOT NULL)')
+            version = db.execute('SELECT version FROM task_schema_v1').fetchone()
+            if version and version[0] != 1:
+                raise TaskError('Unsupported task schema version. Use a compatible Agenturm build.')
+            if not version:
+                db.execute('INSERT INTO task_schema_v1 VALUES(1)')
+            db.execute('CREATE TABLE IF NOT EXISTS task_briefs_v1 (task_id TEXT PRIMARY KEY, brief_json TEXT NOT NULL)')
+            db.execute('''CREATE TABLE IF NOT EXISTS task_decisions_v1 (
+                id TEXT PRIMARY KEY, task_id TEXT NOT NULL, decision_json TEXT NOT NULL)''')
+            db.execute('CREATE INDEX IF NOT EXISTS task_decisions_task ON task_decisions_v1(task_id)')
 
     @contextmanager
     def _connect(self):
@@ -215,6 +304,13 @@ class TaskStore:
         except (ValueError, RecursionError) as exc:
             raise TaskError('Saved task data is damaged. Restore the task database from a backup.') from exc
         result['usage_summary'] = usage_summary(result['links'])
+        try:
+            brief = db.execute('SELECT brief_json FROM task_briefs_v1 WHERE task_id=?', (task_id,)).fetchone()
+            result['brief'] = json.loads(brief[0]) if brief else dict.fromkeys(BRIEF_FIELDS, '')
+            result['decisions'] = [json.loads(row[0]) for row in db.execute(
+                'SELECT decision_json FROM task_decisions_v1 WHERE task_id=? ORDER BY rowid', (task_id,))]
+        except (ValueError, RecursionError) as exc:
+            raise TaskError('Structured task data is damaged. Restore a task database backup.') from exc
         return result
 
     def get(self, task_id):
@@ -224,7 +320,7 @@ class TaskStore:
     @staticmethod
     def _check_size(task):
         if len(json.dumps(task, ensure_ascii=False).encode()) > MAX_TASK_BYTES:
-            raise TaskError('Saved task exceeds the 512 KiB limit. Shorten notes or unlink older evidence.')
+            raise TaskError('Saved task exceeds the 512 KiB limit. Shorten this draft, unlink older evidence, or export it and start a new task; no saved decisions were removed.')
 
     def create(self, title, workspace='', notes='', link=None):
         now = time.time_ns()
@@ -254,7 +350,67 @@ class TaskStore:
                 (task['title'], task['workspace'], task['notes'], int(task['archived']),
                  task['updated_ns'], task['revision'], json.dumps(task['links']),
                  json.dumps(task['workspace_snapshot']), task_id))
+            db.execute('INSERT OR REPLACE INTO task_briefs_v1 VALUES(?,?)',
+                       (task_id, json.dumps(task.get('brief', {}), ensure_ascii=False)))
+            for decision in task.get('decisions', []):
+                # Decisions are immutable; an edit appends a superseding version.
+                db.execute('INSERT OR IGNORE INTO task_decisions_v1 VALUES(?,?,?)',
+                           (decision['id'], task_id, json.dumps(decision, ensure_ascii=False)))
         return self.get(task_id)
+
+    def update_brief(self, task_id, brief, *, expected_revision=None):
+        if not isinstance(brief, dict) or set(brief) - set(BRIEF_FIELDS):
+            raise TaskError('Brief must contain only: ' + ', '.join(BRIEF_FIELDS))
+        values = {key: _text(value, key, 4000, multiline=True) for key, value in brief.items()}
+        return self._edit(task_id, lambda task: task['brief'].update(values), expected_revision)
+
+    def add_decision(self, task_id, *, kind, text, rationale='', scope='', source=None,
+                     supersedes_id=None, expected_revision=None):
+        if kind not in DECISION_KINDS:
+            raise TaskError('Decision kind must be accepted or rejected.')
+        if not isinstance(text, str) or not text.strip():
+            raise TaskError('Decision text is required.')
+        if supersedes_id is not None and (not isinstance(supersedes_id, str) or not supersedes_id or len(supersedes_id) > 80):
+            raise TaskError('Supersedes must be an existing decision ID in this task.')
+        decision = {'id': str(uuid.uuid4()), 'kind': kind,
+                    'text': _text(text, 'Decision', 4000, required=True, multiline=True),
+                    'rationale': _text(rationale, 'Rationale', 4000, multiline=True),
+                    'scope': _text(scope, 'Scope', 4000, multiline=True),
+                    'created_ns': time.time_ns(), 'author_kind': 'user',
+                    'supersedes_id': supersedes_id or None, 'source': None}
+        if source is not None:
+            if not isinstance(source, dict):
+                raise TaskError('Decision source must be an object.')
+            allowed = ('receiver', 'producer', 'agent_id', 'session_id', 'trace_id', 'event_id', 'coverage')
+            if set(source) - set(allowed) - {'captured_ns', 'content_available', 'run_start_ns'}:
+                raise TaskError('Unsupported decision source fields.')
+            if source.get('content_available') is False:
+                raise TaskError('Metadata-only evidence cannot supply a decision excerpt. Enter a manual decision without a source.')
+            decision['source'] = {key: _text(source[key], 'Source '+key, 2000) for key in allowed if key in source}
+            decision['source']['captured_ns'] = _timestamp(source.get('captured_ns', time.time_ns()), 'Source capture time')
+            if source.get('run_start_ns') is not None:
+                value = _timestamp(source['run_start_ns'], 'Source lifecycle start')
+                if not value:
+                    raise TaskError('Source lifecycle start must be positive.')
+                decision['source']['run_start_ns'] = value
+            decision['source']['availability'] = 'Reference saved; retained source has not been revalidated'
+        def modify(task):
+            decisions = task['decisions']
+            if len(decisions) >= MAX_DECISIONS:
+                raise TaskError('A task can retain at most 128 decision versions. Export the task and start a new task to continue; no decisions were removed.')
+            if supersedes_id:
+                if not isinstance(supersedes_id, str) or not any(item['id'] == supersedes_id for item in decisions):
+                    raise TaskError('A superseded decision must belong to this saved task.')
+                if any(item.get('supersedes_id') == supersedes_id for item in decisions):
+                    raise TaskError('That decision already has a newer version. Supersede its current version instead.')
+            # The new UUID can reference only an existing version, so a cycle
+            # or a reference into another task cannot be introduced.
+            decisions.append(decision)
+        return self._edit(task_id, modify, expected_revision)
+
+    def backup(self, destination):
+        """Make an explicit consistent private backup without overwriting a file."""
+        return backup_task_database(self.path, destination)
 
     def update(self, task_id, *, title=None, workspace=None, notes=None, archived=None, expected_revision=None):
         def modify(task):
@@ -316,7 +472,7 @@ def _md(text):
     return re.sub(r'([\\`*_{}\[\]<>()#+.!|~-])', r'\\\1', display_text(text))
 
 
-def render_handoff(task, format='markdown'):
+def render_handoff(task, format='markdown', *, include_decision_history=False):
     """Render an already captured record without refreshing or mutating anything."""
     if format == 'json':
         return json.dumps({'format': 'agenturm-task-v1', 'task': task}, ensure_ascii=True, indent=2) + '\n'
@@ -328,6 +484,36 @@ def render_handoff(task, format='markdown'):
              f"Updated: {_iso(task['updated_ns'])}", '', '## Intent, decisions, and next steps', '',
              _fence(task['notes']) if task.get('notes') else 'Add your intent, decisions, and next steps before handing this task over.',
              '', '## Workspace', '', _fence(task.get('workspace') or 'No workspace selected')]
+    structured = []
+    for key in BRIEF_FIELDS:
+        value = task.get('brief', {}).get(key)
+        if value:
+            structured += ['', '### ' + key.replace('_', ' ').title(), '', _fence(value)]
+    decisions = task.get('decisions', [])
+    replaced = {item.get('supersedes_id') for item in decisions}
+    if decisions:
+        structured += ['', '### Decisions and rejected approaches', '',
+                       'User-owned decisions; recorded agent statements are not promoted automatically.']
+        for decision in decisions:
+            if decision['id'] in replaced and not include_decision_history:
+                continue
+            structured += ['', '#### ' + decision['kind'].title() + (' · superseded' if decision['id'] in replaced else ''),
+                           '', _fence(decision['text']), '', 'Decision: ' + decision['id'],
+                           'Created: ' + _iso(decision['created_ns'])]
+            if decision.get('rationale'):
+                structured += ['', 'Rationale:', _fence(decision['rationale'])]
+            if decision.get('scope'):
+                structured += ['', 'Scope:', _fence(decision['scope'])]
+            if decision.get('supersedes_id'):
+                structured += ['', 'Supersedes: ' + decision['supersedes_id']]
+            if decision.get('source'):
+                structured += ['', 'Saved source reference (availability not revalidated):',
+                               _fence(json.dumps(decision['source'], ensure_ascii=False, indent=2))]
+        if replaced and not include_decision_history:
+            structured += ['', f'{len(replaced)} superseded decision version(s) retained; use Decisions or --include-decision-history to read history.']
+    if structured:
+        index = lines.index('## Workspace')
+        lines[index:index] = ['## Structured brief', *structured, '']
     if snapshot:
         lines += ['', f"- Captured: {_iso(snapshot.get('captured_ns'))}",
                   '- Branch: ' + _md(snapshot.get('branch') or 'Not available'),
@@ -358,15 +544,21 @@ def render_handoff(task, format='markdown'):
     lines.append('- Reported cost: ' + ('Not reported' if cost is None else f'${cost:,.4f}' + ('' if usage['cost_complete'] else ' (partial)')))
     for link in task.get('links', []):
         lines += ['', '### ' + _md(link.get('runtime') or 'Recorded agent'), '',
+                  '- Receiver: ' + _md(link.get('receiver') or 'Legacy association; namespace not recorded'),
+                  '- Producer: ' + _md(link.get('producer') or 'Legacy association; producer not recorded'),
                   '- Session: ' + _md(link.get('session_id') or 'Not reported'),
-                  '- Run: ' + _md(link.get('trace_id') or 'Unscoped; excluded from usage totals'),
+                  '- Run: ' + _md(link.get('trace_id') or ('Recorded native lifecycle start: '+_iso(link['run_start_ns'])
+                      if link.get('run_start_ns') else 'Unscoped; excluded from usage totals')),
                   '- Reported state: ' + _md(link.get('state') or 'Unknown'),
                   '- Evidence captured: ' + _iso(link.get('captured_ns'))]
         if link.get('task'):
             lines += ['- Recorded request: ' + _md(link['task'])]
         if link.get('resume_command'):
             lines += ['', 'Native resume command (check for an existing active session first):', '', _fence(link['resume_command'], 'sh')]
-        for check in link.get('checks', []):
+        if link.get('review_snapshot'):
+            from .workflow_evidence import render_review
+            lines += ['', 'Captured review · exact preview at link time', '', _fence(render_review(link['review_snapshot']))]
+        for check in ([] if link.get('review_snapshot') else link.get('checks', [])):
             lines += ['', 'Recorded check: ' + _md(check['result']) + ' · ' + _iso(check['time_ns']),
                       _md(check['scope']) + '; freshness against the current workspace is unverified.',
                       '', _fence(check['command'], 'sh')]
@@ -390,7 +582,7 @@ code{font-family:ui-monospace,monospace;font-size:.9em}p,li{overflow-wrap:anywhe
     return '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + escape(task['title']) + '</title><style>' + style + '</style></head><body><main>' + body + '</main></body></html>\n'
 
 
-def export_handoff(task, path):
+def export_handoff(task, path, *, include_decision_history=False):
     """Write the exact previewed task as a new Markdown/HTML pair (and optional JSON)."""
     target = Path(path).expanduser()
     if target.suffix.lower() not in {'.md', '.html', '.json'}:
@@ -399,7 +591,8 @@ def export_handoff(task, path):
                ('html', target if target.suffix.lower() == '.html' else target.with_suffix('.html'))]
     if target.suffix.lower() == '.json':
         formats.append(('json', target))
-    contents = [(destination, render_handoff(task, format).encode()) for format, destination in formats]
+    contents = [(destination, render_handoff(task, format,
+        include_decision_history=include_decision_history).encode()) for format, destination in formats]
     from tempfile import NamedTemporaryFile
     staged = []
     written = []

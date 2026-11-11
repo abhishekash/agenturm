@@ -1,0 +1,685 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RFC Agenturm attention review and task continuity</title><style>
+:root{color-scheme:light dark;--bg:#f5f5ef;--paper:#fff;--text:#202923;--muted:#526158;--line:#d3dbd3;--accent:#315b42}
+@media(prefers-color-scheme:dark){:root{--bg:#111814;--paper:#1a241e;--text:#e8eee9;--muted:#acb9ae;--line:#3a4b3e;--accent:#b4d6a7}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:17px/1.65 system-ui,sans-serif}main{max-width:1100px;margin:2rem auto;padding:2.5rem;background:var(--paper);border:1px solid var(--line);border-radius:14px}h1,h2,h3{line-height:1.25}h2{margin-top:2.5rem;border-top:1px solid var(--line);padding-top:1rem}a{color:var(--accent)}li{margin:.7rem 0}table{display:block;overflow:auto;border-collapse:collapse;max-width:100%}td,th{border:1px solid var(--line);padding:.6rem;text-align:left;vertical-align:top}pre{overflow:auto;padding:1rem;border:1px solid var(--line);font-size:13px}figure{margin:2rem 0;padding:.8rem;border:1px solid var(--line)}img{display:block;width:100%;height:auto}figcaption{font-size:.9rem;color:var(--muted)}code{overflow-wrap:anywhere}pre code{overflow-wrap:normal}@media(max-width:650px){body{font-size:16px}main{margin:0;padding:1.2rem;border:0;border-radius:0}figure{padding:.3rem}}@media print{main{border:0;margin:0}figure{break-inside:avoid}}
+</style></head><body><main><h1 id="rfc-agenturm-attention-review-and-task-continuity">RFC Agenturm attention review and task continuity</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Status</td>
+<td>Accepted for implementation by user instruction; validation in progress</td>
+</tr>
+<tr>
+<td>Date</td>
+<td>11 November 2026</td>
+</tr>
+<tr>
+<td>Scope</td>
+<td>Local terminal workflows for monitoring, reviewing and continuing agent work</td>
+</tr>
+<tr>
+<td>Implementation</td>
+<td><a href="joint-implementation-plan.html">Joint implementation plan and execution record</a></td>
+</tr>
+<tr>
+<td>Basis</td>
+<td><a href="../research/2026-11-11-terminal-agent-research.html">User research</a> and the current repository checkout</td>
+</tr>
+</tbody>
+</table>
+<h2 id="1-summary">1 Summary</h2>
+<p>Make Agenturm the place engineers check to answer three questions: <strong>Which agent needs me? What evidence should I review? What must the next session know?</strong></p>
+<p>Build on the existing Today view, Workflow inbox, recorded activity, saved tasks and handoffs. Consolidate their state and evidence rules before adding more features. Ship in three milestones: reliable attention and review; structured task continuity; then bounded diagnostics for repeated failures and wasted work.</p>
+<p>The key architectural change is a shared, exactly scoped evidence projection used by the session inspector, Workflow, review exports and saved-task capture. User-owned task decisions remain separate from observed agent activity. Agenturm continues to observe agents; approvals and replies happen in their native terminals.</p>
+<h2 id="2-problem-and-rationale">2 Problem and rationale</h2>
+<p>The research identifies verification, context loss and missed requests as recurring problems. The largest broad problem is the effort of checking plausible output. Agenturm's strongest initial fit is attention management because it can reveal a recorded request and help an engineer return to the relevant terminal. Preserving decisions and assembling review evidence extend that same workflow.</p>
+<p>The <a href="../research/2026-11-11-terminal-agent-research.html">research report</a> contains the public source register and ranking limits. These findings establish a product hypothesis, not measured market prevalence or willingness to pay. Existing alternatives already cover process dashboards, usage reports and cross-tool handoffs, so the proposal connects those jobs around a durable task.</p>
+<p>Example: an engineer starts a Codex implementation and a Claude Code investigation. The investigation requests input; Agenturm surfaces the reason and returns the engineer to its verified terminal. The implementation later reports completion. Its review shows recorded checks, an edit made afterward, and a missing check result. The engineer saves the task with a rejected approach and a next step, then previews a brief for a fresh session.</p>
+<h2 id="3-goals-and-boundaries">3 Goals and boundaries</h2>
+<table>
+<thead>
+<tr>
+<th>Goal</th>
+<th>Completion criterion</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Reduce manual status checking</td>
+<td>Explicit requests appear with stable identity, reason, freshness and a native-terminal return path where supported</td>
+</tr>
+<tr>
+<td>Reduce evidence reconstruction</td>
+<td>Review shows the selected run's recorded edits, check outcomes, subsequent edits, errors and coverage together</td>
+</tr>
+<tr>
+<td>Preserve task decisions</td>
+<td>A saved task carries intent, constraints, decisions, rejected approaches and next actions across explicitly linked sessions</td>
+</tr>
+<tr>
+<td>Keep monitoring trustworthy</td>
+<td>Unknown, partial, stale and unverified information remain visible; observations never become correctness claims</td>
+</tr>
+<tr>
+<td>Keep the terminal usable</td>
+<td>Stable selection, bounded background work, keyboard access and a usable 60-column layout</td>
+</tr>
+</tbody>
+</table>
+<p>This proposal does not add an execution orchestrator, automatic approvals, agent-to-agent messaging, a cloud team dashboard, semantic correctness scoring, automatic context injection, or provider quota enforcement. It does not expand automatic runtime discovery. AI-based decision extraction and a headless notification daemon are deferred; neither is required for the proposed daily workflow.</p>
+<h2 id="4-current-implementation-and-integration-constraints">4 Current implementation and integration constraints</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Current implementation</th>
+<th>Proposed change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agent status</td>
+<td><code>session_status.py</code> separates lifecycle, process evidence, collector delay and possible stalls</td>
+<td>Preserve classification; supply structured reasons rather than reinterpreting state in each screen</td>
+</tr>
+<tr>
+<td>Attention</td>
+<td><code>ui_workflow.py</code> contains <code>workflow_reasons</code>, <code>AttentionLedger</code>, desktop delivery and a report</td>
+<td>Separate pure rules, persisted user state and UI rendering; stabilize incident identity</td>
+</tr>
+<tr>
+<td>Review state</td>
+<td><code>terminal_ui.py</code> and <code>ui_preferences.py</code> retain bounded reviewed/dismissed hashes</td>
+<td>Move new exact-run acknowledgements into a dedicated local workflow store; retain legacy compatibility</td>
+</tr>
+<tr>
+<td>Review evidence</td>
+<td><code>workflow_report</code> scans the loaded activity slice for files, checks and context events</td>
+<td>Use selected-run evidence with explicit paging and coverage</td>
+</tr>
+<tr>
+<td>Saved work</td>
+<td><code>saved_tasks.py</code>, <code>task_cli.py</code>, <code>ui_saved_tasks.py</code>, <code>task_workspace.py</code></td>
+<td>Add structured briefs and decisions while preserving notes, link deduplication and optimistic revisions</td>
+</tr>
+<tr>
+<td>Evidence reads</td>
+<td><code>session_prompts.py</code>, <code>terminal.py</code>, <code>feed_requests.py</code>, existing activity API</td>
+<td>Reuse exact scoping and generation guards; separate run evidence from prompt history</td>
+</tr>
+<tr>
+<td>Findings</td>
+<td><code>findings.py</code> and stored derived findings</td>
+<td>Reuse recorded errors; add bounded pattern observations later</td>
+</tr>
+</tbody>
+</table>
+<p>Two concrete issues require attention. First, <code>events_for</code> currently permits untagged same-session fallback even when an explicit agent identity exists; that can mix worker evidence. Second, the attention ledger uses the entire reason tuple in its key, so an additional threshold can create another notification identity for the same request. The proposed shared contracts address both.</p>
+<p>The inspector/readability prerequisite described in <a href="../agents-experience-review.html">the experience review</a> landed in PRs 50–51 before RFC implementation. The joint plan preserves its overview, prompt selection, hierarchy navigation, keyboard and exact-scope contracts.</p>
+<h2 id="5-product-workflow">5 Product workflow</h2>
+<p>The dominant loop remains <strong>scan Today → inspect a request or completion → examine evidence → return to the terminal or save a handoff</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Entry point</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Scan work</td>
+<td>Existing Agents Today view</td>
+<td>Task, source, state and latest recorded work remain visible</td>
+</tr>
+<tr>
+<td>Inspect attention</td>
+<td>Existing <code>w</code> workflow entry and command palette</td>
+<td>Actionable queue with reasons and observed age</td>
+</tr>
+<tr>
+<td>Review completion</td>
+<td>Select a reported completion and open its review</td>
+<td>Exactly scoped evidence; completion remains agent-reported</td>
+</tr>
+<tr>
+<td>Return to execution</td>
+<td>Existing Terminal action</td>
+<td>Select a uniquely verified tmux pane, or explain why unavailable</td>
+</tr>
+<tr>
+<td>Acknowledge</td>
+<td>Existing <code>r</code>, with state-specific wording</td>
+<td>Mark a completion reviewed, or mark an attention incident seen; never resolve a native approval</td>
+</tr>
+<tr>
+<td>Save continuity</td>
+<td>Existing <code>b</code> saved-task entry</td>
+<td>Create or update a task, with explicit run association</td>
+</tr>
+<tr>
+<td>Continue elsewhere</td>
+<td>Handoff preview, copy or export</td>
+<td>A reviewed brief with source timestamps and coverage</td>
+</tr>
+</tbody>
+</table>
+<p>Use existing keys and palette entries. Do not add global single-letter bindings until checking conflicts with prompt reading, text entry and existing views. Every new action has a visible button or menu path as well as keyboard access.</p>
+<h3 id="wide-layout-at-150-by-40">Wide layout at 150 by 40</h3>
+<pre><code class="language-text">Agents  Today   Running   History                  Collection updated 2s ago
+Task and latest work                 State         Selected task
+Fix refresh expiry                   Needs reply   Fix refresh expiry
+  Claude Code · payments                           Reply requested · observed 4m
+Add retry regression tests           Review         Latest agent update: ...
+  Codex · payments                                 Evidence: 14:32–14:46 · partial
+                                                   2 checks · 1 later edit
+                                                   Open review / Return to terminal
+
+Enter Inspect   w Attention   b Saved tasks   r Mark seen/reviewed   q Quit
+</code></pre>
+<p>The attention queue replaces the primary list while open; it does not become a third persistent panel. The expanded inspector retains Overview, Prompts and Details from the inspector work. Review is a focused drill-down from Overview, not another copy of the full transcript.</p>
+<h3 id="narrow-layout-at-60-by-20">Narrow layout at 60 by 20</h3>
+<pre><code class="language-text">Agents / Today                          Collection fresh
+Task and latest work                         State
+Fix refresh expiry                     Needs reply
+  Claude Code · payments · reply requested
+Add retry regression tests                  Review
+  Codex · payments · updated 2m ago
+
+Enter Inspect   w Attention   b Saved tasks   q Quit
+
+Review opens as a separate full-screen reading view:
+Fix refresh expiry / Review                    Esc Back
+Agent reported completion · recorded evidence partial
+Checks: 1 passed, 1 result unknown
+Later recorded edit: retry.py
+Open checks / Open edits / Save task
+</code></pre>
+<p>At 120 columns and sufficient height, retain list plus preview. At 80×24 and 60-column splits, the list wins and Enter opens detail. Monitor and review support a 60×18 floor; structured editors use the saved-task floor of 60×20. Below the relevant floor, show the required size and retain unsaved data. Escape returns to the previous screen; resizing never discards edits.</p>
+<p><strong>Clutter budget:</strong> at most one enclosing content border; one text status and optional semantic color per state; no marker on every leaf row; no missing-cost placeholders in task rows; no repeated full IDs or stacked permanent action bars. At 60×20, list header, navigation and hints consume at most six rows, leaving at least fourteen rows for the list body, including its column heading. Validate actual rendered frames rather than relying on the sketch.</p>
+<h3 id="screen-states">Screen states</h3>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Required behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Initial/loading</td>
+<td>Show the frame immediately; name the requested scope; distinguish waiting for data from an empty queue</td>
+</tr>
+<tr>
+<td>Empty</td>
+<td>Explain that no actionable requests were observed, or that no evidence was captured for this run</td>
+</tr>
+<tr>
+<td>Partial</td>
+<td>Retain available evidence and name truncation, missing identity, metadata-only capture or failed pages</td>
+</tr>
+<tr>
+<td>Error</td>
+<td>Keep previous evidence; show retry for the failed operation</td>
+</tr>
+<tr>
+<td>Stale/disconnected</td>
+<td>Keep the last snapshot with its age; do not announce fresh agent failures from it</td>
+</tr>
+<tr>
+<td>Saved</td>
+<td>Confirm which task revision was saved; do not silently refresh a different selection</td>
+</tr>
+<tr>
+<td>Conflict</td>
+<td>Keep the user's edits and offer reload/copy; never overwrite a newer revision</td>
+</tr>
+</tbody>
+</table>
+<h2 id="6-shared-identity-and-evidence-contract">6 Shared identity and evidence contract</h2>
+<p>Introduce a pure evidence module, proposed as <code>observatory/workflow_evidence.py</code>, consumed by UI and CLI renderers. No Textual widgets, network requests or database writes belong in its projection functions.</p>
+<table>
+<thead>
+<tr>
+<th>Record</th>
+<th>Required fields and semantics</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Execution scope</td>
+<td>Receiver namespace, producer namespace, canonical agent identity when available, native session, exact trace/run when available; scope kind is <code>run</code>, <code>agent</code> or <code>legacy_session</code></td>
+</tr>
+<tr>
+<td>Evidence reference</td>
+<td>Native/stored event or span ID, producer, timestamp, exact available scope, content availability and capture revision</td>
+</tr>
+<tr>
+<td>Evidence window</td>
+<td>Earliest/latest loaded timestamps, paging cursor, loaded count, scope revision, truncation reasons and coverage state</td>
+</tr>
+<tr>
+<td>Check observation</td>
+<td>Source reference, command, recognized check kind, recorded result, exit code when present, start/end times when recorded</td>
+</tr>
+<tr>
+<td>Review projection</td>
+<td>Reported outcome, edits, checks, unresolved recorded errors, context events, usage and the evidence window</td>
+</tr>
+</tbody>
+</table>
+<p>An explicit agent identity constrains every read and projection. Do not substitute another agent's untagged session records. With no exact agent, legacy session evidence is allowed only under the same producer and receiver namespace. If the scope remains ambiguous, show unavailable evidence rather than widening to a service. A selected parent and its subtree are different scopes; subtree inclusion is explicit and labeled.</p>
+<p>Receiver namespaces must distinguish two receivers containing the same native IDs. Prefer a persisted opaque receiver identifier exposed additively through health metadata. Older receivers use an endpoint-scoped fallback labeled as such; do not reconcile acknowledgements between fallback and stable namespaces without exact evidence. Credentials never enter the namespace.</p>
+<p>A durable run key uses a recorded run/trace identity or exact native lifecycle start reference. Do not derive it from a title, working directory, latest timestamp or cumulative usage. If no stable run anchor exists, persistent review is unavailable and the UI explains that limitation. Exact agent identity alone is not proof that two turns are the same run.</p>
+<h2 id="7-evidence-loading-and-review-semantics">7 Evidence loading and review semantics</h2>
+<p>Reuse the activity endpoint and its existing scoped paging wherever possible. Add an exact trace filter to activity reads only if required by the current server contract; implement it additively in <code>server.py</code> and <code>core.py</code>. Do not filter a global recent slice in the client and call it complete run history.</p>
+<p>Proposed selected-run loading defaults are pages of 200 events, at most 1,000 loaded events and a 2 MiB decoded-payload budget per selection. Fetch only when review opens; additional pages require explicit loading. The first page must show its own window as partial whenever earlier or omitted records may exist. Prompt history remains independently lazy and bounded. Cache at most four selections and 8 MiB total; evicted cached evidence can be reloaded.</p>
+<p>Cache keys include receiver, execution scope, scope revision, capture revision and request generation. Deduplicate concurrent identical reads. On a selection change, cancel where supported and discard stale results regardless of cancellation. Existing feed concurrency remains capped at four workers across these reads; new review requests must share that budget. No SQLite, Git, HTTP or terminal subprocess work runs on the UI thread.</p>
+<p>Check classification recognizes a bounded allowlist of common validation commands. An unrecognized shell command remains available in activity rather than being declared a test. A check has <code>passed</code>, <code>failed</code> or <code>unknown</code> based on recorded process/tool results. Assistant prose saying tests passed is a reported statement, not a passing check.</p>
+<p>Compare a check's recorded completion with later recorded file operations within the same scope. Show “later recorded edits” or “freshness unknown” rather than “verified.” Missing timestamps, unfinished commands, incomplete history and concurrent workspace writers weaken freshness. Even a fully loaded captured interval does not establish that the runtime recorded every edit or that the current worktree matches it.</p>
+<p>The first release preserves the existing preview limits for Git capture and does not execute validation commands. Review exports include their scope, capture time and coverage. Copy/export use the exact previewed projection; a refresh changes the preview explicitly before a different export is produced.</p>
+<h2 id="8-attention-state-and-notifications">8 Attention state and notifications</h2>
+<p>Extract pure reason classification to proposed <code>observatory/attention.py</code>. Keep <code>session_status.py</code> authoritative for observed lifecycle and health. Model each incident separately from its presentation text.</p>
+<table>
+<thead>
+<tr>
+<th>Incident kind</th>
+<th>Identity anchor</th>
+<th>Queue and alert behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Approval or reply request</td>
+<td>Exact request event, scoped to agent/run</td>
+<td>Highest priority; notify once per observed request transition</td>
+</tr>
+<tr>
+<td>Reported failure/interruption</td>
+<td>Exact run outcome</td>
+<td>Queue below explicit requests; a new run is a new incident</td>
+</tr>
+<tr>
+<td>Possible stall</td>
+<td>Run anchor and contiguous period of fresh observations meeting stall criteria</td>
+<td>Advisory; suppress while the collector is delayed; reset when progress returns</td>
+</tr>
+<tr>
+<td>Usage/time threshold</td>
+<td>Run anchor plus threshold kind and policy revision</td>
+<td>Advisory; once on crossing, rather than once per refresh</td>
+</tr>
+<tr>
+<td>Reported completion</td>
+<td>Exact run outcome</td>
+<td>Review queue; no desktop alert by default</td>
+</tr>
+</tbody>
+</table>
+<p>Sort by priority, then earliest observed incident time, then stable ID. Preserve selected incident and viewport during refresh. An acknowledgement changes local user state only. Marking an approval incident seen may silence its alert, but the unresolved request remains visible until native evidence resolves it. A new request in the same run must surface again. Marking a completion reviewed remains reversible.</p>
+<p>Retain separate <code>source_time</code> and <code>first_observed_time</code>. If native request time is absent, label age as observed wait; never reconstruct historical wait from file modification time.</p>
+<p>Use a dedicated local <code>workflow.sqlite3</code> with versioned tables for acknowledgements, observed incidents and notification claims. Keep display settings in <code>ui.json</code>; do not add another growing list of event hashes there. Include namespace and stable scope in primary keys. Use owner-only file permissions and bounded transactions.</p>
+<p>Initial inventory remains silent. On restart, unresolved requests reappear in the queue, but no backlog of desktop notifications is sent. After initialization, an exact new request may notify; missing intervals never imply a resolution followed by a new request. Persisted notification claims prevent two open cockpits from sending duplicates for the same incident. Prefer at-most-once attempted delivery for a claimed incident; record delivery failure visibly and offer an explicit retry. A crash between claim and delivery may miss an alert, while the queue still retains the request.</p>
+<p>Desktop alerts remain opt-in, coalesced and snoozable. They contain project and generic reason, with commands and prompts omitted. No notification runs while capture is known stale. Preserve the current Linux/macOS delivery paths and report unsupported systems. Alerts still require an open cockpit in this RFC.</p>
+<h2 id="9-structured-task-continuity">9 Structured task continuity</h2>
+<p>Keep a saved task independent from native sessions. Add a structured brief alongside existing freeform notes:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Intent</td>
+<td>User-owned statement of the desired outcome</td>
+</tr>
+<tr>
+<td>Acceptance criteria</td>
+<td>Observable requirements for calling the task complete</td>
+</tr>
+<tr>
+<td>Constraints</td>
+<td>Current boundaries and their scope</td>
+</tr>
+<tr>
+<td>Decisions</td>
+<td>Accepted approaches with rationale and source references</td>
+</tr>
+<tr>
+<td>Rejected approaches</td>
+<td>Options tried or ruled out, including why</td>
+</tr>
+<tr>
+<td>Open questions</td>
+<td>Explicit unresolved decisions</td>
+</tr>
+<tr>
+<td>Next action</td>
+<td>A concrete starting point for the next session</td>
+</tr>
+</tbody>
+</table>
+<p>A decision has an ID, kind, text, rationale, scope, creation time, author kind, optional source reference and optional <code>supersedes_id</code>. Only decisions in the same saved task may supersede one another. Reject cycles. Record a changed decision as a new version with a supersession link; do not silently rewrite history. The active handoff includes current decisions and references superseded history on request.</p>
+<p>Use additive tables in <code>tasks.sqlite3</code>, proposed as <code>task_briefs_v1</code> and <code>task_decisions_v1</code>, leaving the columns of <code>saved_tasks_v1</code> intact. Structured updates and task revision increments commit in one <code>BEGIN IMMEDIATE</code> transaction. Preserve <code>TaskConflict</code> and CLI exit code 3 for stale revisions. Freeform notes remain readable and editable; migration must not attempt to infer structured decisions from them.</p>
+<p>Use a maximum of 128 decision versions per task and 4,000 characters per text/rationale field, with the existing 512 KiB aggregate task limit extended to cover structured fields. Keep the existing 32,000-character notes and 64-link limits. Refuse an over-budget edit with a recovery message; never silently evict user decisions. These proposed limits are adjustable after fixture and pilot review.</p>
+<p>The UI adds focused Brief and Decisions screens inside Saved tasks, following its existing drill-down layout. Manual entry is the default. A user can explicitly copy a selected recorded excerpt into a draft decision; it remains unsaved until reviewed and saved. Agent statements do not automatically become accepted decisions.</p>
+<p>Extend the existing task CLI with proposed commands such as <code>task brief show/update</code> and <code>task decision add/list/supersede</code>, supporting <code>--json</code>, <code>--expected-revision</code> and bounded file input. Retain argparse and the current stdout/stderr and exit-code conventions. Exact subcommand syntax is finalized in the implementation PR; introduce no new CLI framework.</p>
+<p>Handoffs lead with intent, current constraints and decisions, rejected approaches and next action, followed by linked-run evidence and workspace capture. Show missing or stale references explicitly. No automatic launch, prompt injection or cross-provider replay is added. Handoff content is useful task context; it is not a guarantee that the next agent will follow it.</p>
+<h2 id="10-diagnostics-and-usage-after-the-first-release">10 Diagnostics and usage after the first release</h2>
+<p>Add deterministic observations only after shared scoping and review are stable. Reuse existing recorded-error findings before introducing new rule kinds.</p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Proposed initial rule</th>
+<th>Qualification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Repeated tool failures</td>
+<td>Three failures with the same scoped tool and sanitized error fingerprint in five minutes</td>
+<td>A retry may be intentional; show all linked evidence</td>
+</tr>
+<tr>
+<td>Repeated compaction</td>
+<td>Three recorded compaction events within ten minutes in the same run</td>
+<td>Do not infer that context was lost or that no useful work occurred</td>
+</tr>
+<tr>
+<td>Repeated equivalent calls</td>
+<td>Five consecutive calls with the same canonical tool/argument fingerprint</td>
+<td>Exclude known streaming/polling patterns; keep in Findings during the pilot</td>
+</tr>
+<tr>
+<td>Completion with recorded unresolved errors</td>
+<td>Reported completion and an error without a later matching successful operation in the loaded window</td>
+<td>Label recovery as unobserved, not disproven</td>
+</tr>
+</tbody>
+</table>
+<p>Do not add a generic “agent is wrong” detector. Canonicalize bounded arguments without storing additional raw payloads; persist safe fingerprints and source references. Rules operate incrementally on at most 500 recent scoped events per run and a bounded active-run set. Mark analysis partial when the budget excludes data. New heuristic findings do not trigger desktop alerts by default.</p>
+<p>Continue existing exact-run usage totals and saved-task link deduplication. Separate task-linked runs, session totals, current context and provider quota. Publish context occupancy only with an authoritative numerator, denominator, source time and adapter capability; otherwise show unavailable. Reported USD stays distinct from subscription billing. Do not sum parent and child usage unless adapter semantics establish non-overlapping accounting; default to separate values.</p>
+<h2 id="11-storage-compatibility-and-recovery">11 Storage compatibility and recovery</h2>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Retention and recovery</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>User brief and decisions</td>
+<td>User-owned; retained with saved tasks independently of telemetry retention; archive does not delete</td>
+</tr>
+<tr>
+<td>Review acknowledgements</td>
+<td>Retain 90 days by default; expose cleanup; expiry may make an old run unreviewed again and must be documented</td>
+</tr>
+<tr>
+<td>Incident and notification records</td>
+<td>Retain resolved unacknowledged records and claims for 30 days; retain minimal execution references supporting a valid acknowledgement for 90 days; preserve open incidents; cap stored incidents at 10,000 with a visible capacity warning</td>
+</tr>
+<tr>
+<td>Cached review projection</td>
+<td>Memory only, bounded; reload from retained evidence</td>
+</tr>
+<tr>
+<td>Evidence references</td>
+<td>Survive as identifiers even if source telemetry is removed; show source unavailable</td>
+</tr>
+</tbody>
+</table>
+<p>At workflow-store capacity, retain existing unresolved records and stop persisting new incidents rather than dropping them silently. Show new incidents in memory with a notice that acknowledgement and cross-cockpit notification deduplication are unavailable. Suppress desktop delivery for those unpersisted incidents.</p>
+<p>Migrations are idempotent and transactional, with a local schema version and explicit unsupported-version errors in new builds. Test opening an existing task database, interrupted initialization and a read-only state directory. A workflow-store failure must not prevent basic monitoring; show its impact on acknowledgements and delivery.</p>
+<p>Legacy reviewed/dismissed hashes remain recognized only through their existing exact matching rules; do not expand them into guessed run mappings. New records use the new namespace contract. Leave the legacy preference keys readable during transition.</p>
+<p>Older binaries will ignore the new task side tables and cannot display structured decisions. Retaining the original columns avoids breaking their positional inserts. Structured data must survive an older notes-only update, with the new client exposing the changed task revision. Mixed-version editing is not recommended and must be documented. Before migration, provide an explicit backup procedure using SQLite's backup API; restoration requires stopped writers. Do not promise that a schema marker can prevent an already released binary from writing.</p>
+<h2 id="12-privacy-and-operational-behavior">12 Privacy and operational behavior</h2>
+<p>No new cloud service or model call is required. Metadata-only capture cannot be bypassed by a review fetch, excerpt action or handoff. New exports preserve explicit previews, escaped HTML, owner-only files and existing no-overwrite behavior. User notes and Git snapshots can contain sensitive information; they are not implicitly redacted by a structured schema.</p>
+<p>Use bounded background workers for storage, exports, Git capture and notifications. Stop scheduling work on shutdown, bound subprocess duration and discard results after the owning screen closes. Preserve framework-managed terminal cleanup and existing suspend/interrupt behavior. No interactive subprocess is introduced by this RFC.</p>
+<h2 id="13-implementation-plan">13 Implementation plan</h2>
+<p>Each change below should be independently reviewable and keep existing workflows working. Estimates are planning ranges for one engineer familiar with this repository, excluding participant recruitment, review queues and unexpected adapter changes.</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Work and principal files</th>
+<th>Dependency</th>
+<th>Acceptance gate</th>
+<th>Effort</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>Reconcile inspector work; record current rendered frames and evidence behavior. <code>terminal_ui.py</code>, <code>session_prompts.py</code>, existing experience review</td>
+<td>None</td>
+<td>Identify landed versus outstanding scope fixes; agree on shared loader ownership; preserve unrelated edits</td>
+<td>1–2 days</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Introduce pure execution scope and evidence projection. New <code>workflow_evidence.py</code>; reuse <code>agent_hierarchy.py</code> and current readers</td>
+<td>0</td>
+<td>Explicit workers cannot receive sibling or untagged evidence; legacy scope remains labeled</td>
+<td>2–3 days</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Add lazy selected-run loader and additive trace filtering if needed. <code>terminal.py</code>, <code>feed_requests.py</code>, <code>server.py</code>, <code>core.py</code></td>
+<td>1</td>
+<td>Paging and byte limits; bounded cache; selection-race and older-receiver behavior verified</td>
+<td>2–4 days</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Extract attention rules and incident transitions. New <code>attention.py</code>; <code>session_status.py</code>, <code>ui_workflow.py</code></td>
+<td>1</td>
+<td>Stable requests survive refresh; threshold changes do not duplicate request alerts; stale capture does not imply a stall</td>
+<td>2–3 days</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Persist acknowledgements and notification claims. New <code>workflow_store.py</code>; <code>ui_preferences.py</code>, notification integration</td>
+<td>3</td>
+<td>Restart remains silent; two cockpits claim one notification; failures and capacity are visible</td>
+<td>2–4 days</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Integrate queue and completion review. <code>ui_workflow.py</code>, <code>terminal_ui.py</code>, <code>ui_export.py</code></td>
+<td>2, 4</td>
+<td>Review matches selected run and export preview; keyboard and narrow layouts pass</td>
+<td>3–4 days</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Add structured brief and decision storage plus CLI. <code>saved_tasks.py</code>, <code>task_cli.py</code></td>
+<td>1</td>
+<td>Transactional revisions, supersession, limits, old-database compatibility and JSON behavior pass</td>
+<td>3–4 days</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Add Brief/Decisions UI and handoff content. <code>ui_saved_tasks.py</code>, handoff rendering, <code>task_workspace.py</code> where needed</td>
+<td>2, 6</td>
+<td>Offline editing, conflict recovery, source expiry and copy/export parity pass</td>
+<td>3–4 days</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Add bounded repeated-work findings and scoped usage presentation. <code>findings.py</code>, <code>storage_derived.py</code>, <code>ui_monitoring.py</code></td>
+<td>2, 5</td>
+<td>Deterministic patterns, false-positive fixtures, no cross-agent totals; heuristics opt-in for review</td>
+<td>3–5 days</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Document, benchmark and run a pilot; update <code>usage.md</code>, <code>saved-tasks.md</code>, <code>privacy.md</code>, <code>performance.md</code></td>
+<td>5, 7; 8 optional</td>
+<td>Release checklist, observed workflow benefit and remaining limitations recorded</td>
+<td>2–3 engineering days plus pilot</td>
+</tr>
+</tbody>
+</table>
+<p>The full proposal is approximately <strong>23–36 engineering days</strong> before external waiting time. Milestone 1 consists of steps 0–5 and can ship without structured decisions or heuristic diagnostics. Milestone 2 adds steps 6–7. Milestone 3 adds step 8 only after initial pilot feedback. Step 9 runs at each milestone rather than delaying all feedback until the end.</p>
+<h2 id="14-verification-and-release-gates">14 Verification and release gates</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Required cases</th>
+<th>Existing test homes to extend</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Identity</td>
+<td>Workers sharing sessions; same native IDs on different receivers; unknown identity; parent versus subtree</td>
+<td><code>test_agent_hierarchy_api.py</code>, <code>test_session_view.py</code>, new evidence projection tests</td>
+</tr>
+<tr>
+<td>Attention</td>
+<td>New request, seen-but-unresolved request, new request in same run, progress after stall, delayed collector, threshold change</td>
+<td><code>test_workflow.py</code>, <code>test_session_status.py</code>, <code>test_today_outcomes.py</code></td>
+</tr>
+<tr>
+<td>Persistence</td>
+<td>Restart, competing cockpits, crash after notification claim, failed delivery, storage full/read-only, legacy preferences</td>
+<td>New workflow-store tests; <code>test_ui_review_polish.py</code> where relevant</td>
+</tr>
+<tr>
+<td>Review</td>
+<td>Passing command then later edit; missing result; assistant claim only; partial paging; expired telemetry; scope change during read</td>
+<td><code>test_terminal_review.py</code>, <code>test_feed_concurrency.py</code>, <code>test_export_coverage.py</code></td>
+</tr>
+<tr>
+<td>Decisions</td>
+<td>Supersession, cycles, stale revision, bounds, old task database, older notes-only writer, unlinked/expired sources</td>
+<td><code>test_saved_tasks.py</code>, <code>test_task_cli.py</code>, <code>test_saved_tasks_ui.py</code></td>
+</tr>
+<tr>
+<td>Rendering</td>
+<td>150×40, 120×40, 80×24, 60×20 and relevant floor; CJK/combining text, ASCII, monochrome, disconnected state</td>
+<td>Existing headless Textual tests and pinned render fixtures</td>
+</tr>
+<tr>
+<td>Resource behavior</td>
+<td>Idle unchanged database, rapid selection, large captured output, bounded request counts and shutdown</td>
+<td><code>test_resource_usage.py</code>, <code>test_shutdown.py</code>, benchmark scripts</td>
+</tr>
+</tbody>
+</table>
+<p>Test business transitions and scope rules before UI integration. Use Textual's existing headless harness for focus, keys, scroll and rendered layout. Add at most a small PTY smoke path for changed terminal behavior; do not build a parallel testing framework. No paid models or private transcripts belong in regression fixtures.</p>
+<p>Run focused tests per change, then the repository suite using <code>uv run python -m unittest discover -s tests -v</code> for each releasable milestone. Compare the existing small, large and payload benchmarks on the same machine. Proposed regression gates are no more than 10% increase in warm median refresh latency or 10%/15 MiB increase in steady RSS, whichever memory allowance is larger. These are starting review thresholds, not published performance guarantees. Investigate any sustained idle-work increase; functional bounds on requests and retained payloads are mandatory even when timings are noisy.</p>
+<p>Before release, verify installation from the built package, existing task commands, metadata-only behavior, missing notification helpers, an older receiver and a fresh state directory. Render documentation HTML in light/dark mode at desktop and mobile widths. Update examples to distinguish reported completion from observed check results.</p>
+<h2 id="15-rollout-and-success-measures">15 Rollout and success measures</h2>
+<p>Ship reliable evidence loading and manual attention first. Preserve existing preferences and leave desktop notifications opt-in. Add structured tasks next; keep legacy notes fully usable. Introduce heuristic findings behind an explicit setting and keep them out of desktop alerts during the first pilot. Disable new heuristic kinds without removing raw evidence or saved decisions if false positives are high.</p>
+<p>Recruit 10–15 engineers, including single-session users as a comparison and users of multiple agent brands. This is a proposed pilot, not completed validation. Gather baseline workflows before showing the changes. Use consent-based observation or participant records; no automatic product telemetry is introduced.</p>
+<table>
+<thead>
+<tr>
+<th>Measure</th>
+<th>Definition</th>
+<th>Proposed success signal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Approval response delay</td>
+<td>Native request time to native response time when both are available; otherwise observed wait reported separately</td>
+<td>Lower paired median for users with repeated request events</td>
+</tr>
+<tr>
+<td>Status checking effort</td>
+<td>Participant-counted terminal checks during comparable work periods</td>
+<td>Fewer checks without more missed requests</td>
+</tr>
+<tr>
+<td>Review preparation</td>
+<td>Time to locate relevant edits, checks and failures before substantive review</td>
+<td>Lower paired time; no increase in mistaken verification claims</td>
+</tr>
+<tr>
+<td>Continuation effort</td>
+<td>Time and corrections needed to resume a saved task in another session</td>
+<td>Less re-explanation and fewer repeated rejected approaches</td>
+</tr>
+<tr>
+<td>Alert quality</td>
+<td>Participant-rated actionable alerts divided by delivered alerts; missed known requests counted separately</td>
+<td>At least 90% actionable explicit-request alerts in the pilot; investigate every known miss</td>
+</tr>
+<tr>
+<td>Repeat use</td>
+<td>Participants using attention/review and saved-task handoffs in a second week</td>
+<td>Repeated voluntary use rather than screenshot approval</td>
+</tr>
+</tbody>
+</table>
+<p>Record denominators and individual results; a small self-selected pilot cannot establish market-wide savings. Useful evidence includes a participant retiring a maintained script or regularly choosing Agenturm to reconstruct work. Willingness to pay remains a separate discovery question.</p>
+<h2 id="16-alternatives-and-tradeoffs">16 Alternatives and tradeoffs</h2>
+<table>
+<thead>
+<tr>
+<th>Alternative</th>
+<th>Benefit</th>
+<th>Reason for the proposed choice</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Keep improving each screen independently</td>
+<td>Small local changes</td>
+<td>Divergent scope and review semantics would remain; shared pure projections reduce this risk</td>
+</tr>
+<tr>
+<td>Build an orchestrator with approval forwarding</td>
+<td>More control in one interface</td>
+<td>Much larger permission, execution and recovery surface than the observed workflow requires</td>
+</tr>
+<tr>
+<td>Add automatic memory extraction first</td>
+<td>Less manual note-taking</td>
+<td>Risks promoting stale or incorrect statements into durable decisions; explicit user-owned decisions are easier to validate</td>
+</tr>
+<tr>
+<td>Focus on usage reports</td>
+<td>Concrete and measurable</td>
+<td>Established alternatives already serve reporting; task evidence and continuity provide a stronger combined proposition</td>
+</tr>
+<tr>
+<td>Store all workflow state in telemetry</td>
+<td>One database</td>
+<td>Telemetry retention and remote receivers should not own local decisions and acknowledgements</td>
+</tr>
+<tr>
+<td>Start with a notification daemon</td>
+<td>Alerts without an open TUI</td>
+<td>Requires another lifecycle and migration surface; validate attention quality before making delivery persistent</td>
+</tr>
+</tbody>
+</table>
+<h2 id="17-questions-for-reviewers">17 Questions for reviewers</h2>
+<p>These are design choices for RFC review, not blockers to preparing the plan.</p>
+<ol>
+<li><strong>Should an acknowledged request disappear?</strong> Recommended: keep unresolved approvals/replies visible with a seen marker; acknowledgement only silences the local alert.</li>
+<li><strong>Should decisions be extracted automatically?</strong> Recommended: manual entry and explicit excerpt capture in the first release; extraction may later propose drafts.</li>
+<li><strong>Should Agenturm launch a destination agent?</strong> Recommended: retain preview/copy/export; launch and injection require a separate RFC.</li>
+<li><strong>Should review include descendants by default?</strong> Recommended: exact selected agent/run; provide explicit subtree review with independently labeled evidence and usage.</li>
+<li><strong>Should heuristics notify?</strong> Recommended: Findings only until measured precision justifies opt-in alerts for specific rule kinds.</li>
+<li><strong>What happens without stable run identity?</strong> Recommended: inspect labeled session evidence, but disable persistent exact-run review rather than invent an anchor.</li>
+<li><strong>Are the proposed bounds and retention suitable?</strong> Recommended: begin with the stated limits, expose coverage/capacity honestly, and adjust using synthetic workloads and pilot evidence.</li>
+</ol>
+<h2 id="18-decision-and-follow-up">18 Decision and follow-up</h2>
+<p>Acceptance of this RFC would authorize the implementation sequence and its default choices, beginning with reconciliation of current inspector work and the exact-scope evidence contract. Each milestone still requires its acceptance gates and validation. Record reviewer comments and any changes to scope here before implementation; this draft does not imply implementation approval or completed work.</p>
+<p>Implementation was authorized by the user on 11 November 2026. The <a href="joint-implementation-plan.html">joint plan</a> records reconciliation, review and actual validation. Participant pilot measures remain proposed until a real pilot is conducted.</p></main></body></html>

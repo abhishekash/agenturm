@@ -30,6 +30,8 @@ from .terminal import clean, clipped, number, trace_name
 from .agent_hierarchy import (AGENT_ID, HierarchyGraph, branch_marker, canonical_agent_id,
                               node_active, node_attention, tree_prefix)
 from .session_status import session_health, today_bucket
+from .feed_requests import shared_get
+from .workflow_evidence import ReviewCache, ReviewHistory, scope_for
 from .session_prompts import (MAX_PROMPTS, PromptHistory, SessionEvidence, prompt_key,
                               prompt_scope, scoped_events, scoped_prompts)
 from .session_text import message_text, request_text, request_title, task_description
@@ -37,7 +39,7 @@ from .branding import NAME, AMBER, LAVENDER, MINT, ICE, masthead
 from .themes import PALETTES, supported_themes, themed_style, themed_text
 from .ui_layout import column_layout
 from .ui_diagnostics import DiagnosticsScreen, FIRST_RUN
-from .ui_workflow import AttentionLedger, WorkflowScreen, desktop_notify, terminal_handoff
+from .ui_workflow import AttentionLedger, WorkflowScreen, WorkflowController, desktop_notify, terminal_handoff
 from .ui_preferences import Preferences
 from .ui_export import ExportScreen
 from .ui_render import update_status_text
@@ -1437,6 +1439,7 @@ class ObservatoryApp(App):
         self.inspector_payloads={}
         self.session_prompts=PromptHistory()
         self.session_evidence=SessionEvidence()
+        self.review_cache=ReviewCache()
         self.evidence_job=None
         self.session_mode='overview'
         self.session_reading_positions={}
@@ -1495,6 +1498,7 @@ class ObservatoryApp(App):
         self.dismissed_attention=set()
         self.summary_busy=False
         self.preferences=Preferences(preferences_path,enabled=persist_preferences is not False)
+        self.workflow_controller=WorkflowController(self)
         self.persist_preferences=persist_preferences
         self.preferences_path=preferences_path
         self.preference_view='agents'
@@ -1596,6 +1600,7 @@ class ObservatoryApp(App):
                             yield Static('',id='agent-evidence-status',markup=False)
                             yield Button('Retry evidence',id='agent-retry')
                             with Horizontal(classes='inspector-actions'):
+                                yield Button('Review work',id='agent-review-work',tooltip='Read scoped recorded checks, edits and errors')
                                 yield Button(Text('Activity · s'),id='agent-open',tooltip='Read all recorded activity for this session')
                                 yield Button('Trace · t',id='agent-trace',tooltip='Inspect the latest linked trace for this session')
                                 yield Button('Mark reviewed · r',id='agent-reviewed',tooltip='Acknowledge this attention item for this run; does not change the recorded session status')
@@ -1686,6 +1691,7 @@ class ObservatoryApp(App):
             ('Session overview','Read recorded progress and the latest agent update · m cycles views',lambda:self.open_session_mode('overview')),
             ('Session prompts','Read one recorded request at a time',lambda:self.open_session_mode('prompts')),
             ('Session details','Inspect identifiers, usage and collection evidence',lambda:self.open_session_mode('details')),
+            ('Review recorded work','Load exactly scoped checks, edits and errors',self.action_review_work),
             ('Original prompt text','Toggle original/readable text for this request · z',self.action_prompt_original),
             ('Previous prompt','Select the preceding captured request · [',lambda:self.navigate_prompt('older')),
             ('Next prompt','Select the following captured request · ]',lambda:self.navigate_prompt('newer')),
@@ -1812,6 +1818,7 @@ class ObservatoryApp(App):
         self.action_page(self.preference_view)
 
     def on_unmount(self):
+        self.workflow_controller.close()
         self.save_preferences()
         if self.refresh_timer:self.refresh_timer.stop()
         for timer in self.search_timers.values():timer.stop()
@@ -2911,7 +2918,7 @@ class ObservatoryApp(App):
     @work(group='session-prompts',thread=True,exit_on_error=False)
     def load_session_prompts(self,history,cursor):
         try:
-            response=self.feed.api.get(history.path(cursor))
+            response=shared_get(self.feed.api,history.path(cursor))
             error=''
         except Exception as exc:
             response=None
@@ -2958,7 +2965,7 @@ class ObservatoryApp(App):
     @work(group='session-evidence',thread=True,exit_on_error=False)
     def load_session_evidence(self,evidence):
         try:
-            response=self.feed.api.get(evidence.path())
+            response=shared_get(self.feed.api,evidence.path())
             error=''
         except Exception as exc:
             response=None;error=clean(str(exc)) or 'Receiver unavailable'
@@ -3099,6 +3106,7 @@ class ObservatoryApp(App):
         self.query_one('#agent-prompts').display=prompts and self.size.width>=120
         self.query_one('#agent-evidence-status').display=expanded and not prompts and bool(item)
         self.query_one('#agent-retry').display=False
+        self.query_one('#agent-review-work').display=expanded and self.session_mode=='overview' and bool(item)
         scope=prompt_scope(item) if item else None
         if self.session_prompts.scope!=scope:
             self.session_prompts=PromptHistory(scope=scope)
@@ -3163,15 +3171,15 @@ class ObservatoryApp(App):
         trace_button=self.query_one('#agent-trace',Button)
         trace_button.disabled=not bool(self.linked_agent_trace())
         reviewed_button=self.query_one('#agent-reviewed',Button)
-        reviewed=review_key(item) in self.reviewed_attention
+        reviewed=(self.workflow_controller.seen(item) if item.get('state')=='Waiting' else self.workflow_controller.reviewed(item)) or (item.get('state')!='Waiting' and review_key(item) in self.reviewed_attention)
         reviewed_button.display=(attention_required(item) or item['state']=='Completed') and expanded and not prompts
-        reviewed_button.label='Reviewed ✓ · r' if reviewed else 'Mark reviewed · r'
+        reviewed_button.label=('Seen ✓ · r' if reviewed else 'Mark seen · r') if item.get('state')=='Waiting' else ('Reviewed ✓ · r' if reviewed else 'Mark reviewed · r')
         reviewed_button.tooltip=('Acknowledged for this run. Press r to restore it to Needs attention.' if reviewed else
                                  'Acknowledge this attention item for this run; does not change the recorded session status.')
-        dismissed=attention_key(item) in self.dismissed_attention
+        dismissed=(self.workflow_controller.seen(item) if item.get('state')=='Waiting' else self.workflow_controller.reviewed(item)) or (item.get('state')!='Waiting' and attention_key(item) in self.dismissed_attention)
         dismissed_button=self.query_one('#agent-dismissed',Button)
-        dismissed_button.display=attention_required(item) and expanded and not prompts
-        dismissed_button.label='Restore · Shift+X' if dismissed else 'Dismiss · Shift+X'
+        dismissed_button.display=attention_required(item) and expanded and not prompts and item.get('state')!='Waiting'
+        dismissed_button.label=('Unsee · Shift+X' if dismissed else 'Mark seen · Shift+X') if item.get('state')=='Waiting' else ('Restore · Shift+X' if dismissed else 'Dismiss · Shift+X')
         dismissed_button.tooltip=('Restore this failure to Today and Needs attention.' if dismissed else
                                   'Hide this failure from Today and Needs attention; keep it in History and Traces.')
         latest=item.get('last_activity') or {}
@@ -3269,6 +3277,7 @@ class ObservatoryApp(App):
         self.query_one('#agent-evidence-status',Static).update(coverage)
         self.query_one('#agent-evidence-status').tooltip=evidence.error or coverage
         self.query_one('#agent-retry').display=bool(evidence.error)
+        self.query_one('#agent-review-work').display=self.session_mode=='overview'
         if self.session_mode=='details':
             details=[('Task',task_preview(item) or title),('Session ID',item.get('session_id') or item['id']),
                 ('Agent ID',item.get('agent_id')),('Project',item.get('project')),('Branch',item.get('branch')),
@@ -3310,6 +3319,18 @@ class ObservatoryApp(App):
                 lines.append(f"{when(event.get('time_unix_nano'))}  {result}  {brief_activity(event)}")
             sections.append((f'Recent work · latest {min(6,len(work))} of {len(work)} loaded actions','\n'.join(lines)))
         sections+=short_hierarchy
+        review_scope=scope_for(item,self.data,getattr(self.feed.api,'endpoint',''))
+        review_history=ReviewHistory(review_scope,events={str(index):event for index,event in enumerate(actions)
+            if review_scope.matches(event)},loaded=evidence.loaded,cursor='earlier' if evidence.partial else None)
+        review_projection=review_history.projection({**item,'_review_usage':run_usage})
+        if review_projection['checks']:
+            checks=review_projection['checks']
+            counts={state:sum(check['result']==state for check in checks) for state in ('passed','failed','unknown')}
+            later=sum(bool(check['later_edits']) for check in checks)
+            sections.append(('Loaded review evidence',
+                ' · '.join(str(counts[state])+' '+state for state in counts)+
+                (' · '+str(later)+' checks have later recorded edits' if later else '')+
+                '\nPartial preview · Open Review work for scoped paging and source references.'))
         if item['state']=='Completed':
             sections.append(('Review','Agent reported completion; changes and checks are not independently verified here.'+
                              (' Reviewed for this run.' if reviewed else ' r Mark reviewed.')))
@@ -3801,18 +3822,32 @@ class ObservatoryApp(App):
         return sources(self.feed.snapshot,self.feed.include_reviews)
 
     def review_state(self,item):
-        return {**item,'_workflow_reviewed':review_key(item) in self.reviewed_attention or
-                attention_key(item) in self.dismissed_attention}
+        acknowledged=self.workflow_controller.reviewed(item)
+        legacy=review_key(item) in self.reviewed_attention or attention_key(item) in self.dismissed_attention
+        return {**item,'_workflow_reviewed':bool((acknowledged or legacy) and item.get('state') not in {'Waiting','Possibly stalled'})}
 
     def update_workflow(self):
         snapshot=self.feed.snapshot
         if not snapshot.updated or snapshot.updated==self.workflow_updated:return
         self.workflow_updated=snapshot.updated
-        items=[self.review_state(item) for item in self.workflow_items()]
-        alerts=self.workflow_ledger.update(items,snapshot,self.workflow_limits)
-        if alerts and self.workflow_notify and time.time()>=self.workflow_snooze and not self.is_headless:
-            projects=', '.join(dict.fromkeys(str(item.get('project') or item.get('runtime') or 'Local agent')[:40] for item,_ in alerts))[:120]
-            self.workflow_alert(projects,str(len(alerts))+' agent(s) need attention. Open Workflow (w) for recorded evidence.')
+        self.workflow_controller.update(self.workflow_items(),snapshot,self.workflow_limits)
+
+    @on(Button.Pressed,'#agent-review-work')
+    def open_review_work(self):
+        self.action_review_work()
+
+    def action_review_work(self,item=None):
+        from .ui_review import ReviewScreen
+        if any(isinstance(screen,ReviewScreen) for screen in self.screen_stack):
+            self.notify('Close the current review before opening another.');return
+        item=item or getattr(self,'source_map',{}).get(self.selected_source) or self.agent_row_meta.get(self.selected_source)
+        if not item:
+            self.notify('Select an agent to review its recorded work.');return
+        usage=task_run_usage(self.feed.snapshot.sessions,item,self.feed.snapshot.traces)
+        selected=dict(item)
+        if usage.get('trace_id') and not selected.get('trace_id'):selected['trace_id']=usage['trace_id']
+        selected['_review_usage']=dict(usage)
+        self.push_screen(ReviewScreen(self,selected),self.resume_cockpit)
 
     def action_workflow(self):
         self.push_screen(WorkflowScreen(self),self.resume_cockpit)
@@ -4385,34 +4420,17 @@ class ObservatoryApp(App):
 
     def action_review_attention(self):
         item=getattr(self,'source_map',{}).get(self.selected_source)
-        if not item or not (attention_required(item) or item['state']=='Completed'):
-            return
-        key=review_key(item)
-        if key in self.reviewed_attention:
-            self.reviewed_attention.remove(key)
-            self.notify('Review reopened for this run.')
-        else:
-            self.reviewed_attention.add(key)
-            self.notify('Marked reviewed for this run; recorded status is unchanged.')
-        self.save_preferences()
+        if not item or not (attention_required(item) or item['state']=='Completed'):return
+        self.workflow_controller.acknowledge(item,action='reviewed' if item.get('state')=='Completed' else 'seen')
         self.last_update=-1
         self.refresh_data()
 
     def action_dismiss_attention(self):
         if self.query_one('#pages',TabbedContent).active!='agents':
-            self.notify('Open Agents to dismiss or restore a session attention item.');return
+            self.notify('Open Agents to mark an attention item seen.');return
         item=getattr(self,'source_map',{}).get(self.selected_source)
-        if not item or not attention_required(item):
-            return
-        key=attention_key(item)
-        if key in self.dismissed_attention:
-            self.dismissed_attention.remove(key)
-            self.notify('Restored to Today and Needs attention.')
-        else:
-            self.dismissed_attention.add(key)
-            self.reviewed_attention.discard(review_key(item))
-            self.notify('Dismissed from attention. The session remains in History and Traces.')
-        self.save_preferences()
+        if not item or not attention_required(item):return
+        self.workflow_controller.acknowledge(item,action='seen')
         self.last_update=-1
         self.refresh_data()
 

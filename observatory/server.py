@@ -91,7 +91,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                     self._json(200, {"ok": True})
                     return
                 local = getattr(store, "local_agent_monitor", None)
-                self._json(200, {"ok": True, "local_agents": local.status() if local else {"enabled": False}})
+                self._json(200, {"ok": True, "receiver_id": store.receiver_namespace() if hasattr(store,"receiver_namespace") else None, "review_trace_filter": True, "local_agents": local.status() if local else {"enabled": False}})
             elif path == "/api/connections":
                 self._json(200, {"connections": store.connections()})
             elif path == "/api/hierarchy":
@@ -125,7 +125,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                         action=query.get("action", [None])[0],
                         agent_id=query.get("agent_id", [None])[0],
                         subtree=query.get("subtree", ["0"])[0]=="1",
-                        scope_revision=query.get("scope_revision", [None])[0])
+                        scope_revision=query.get("scope_revision", [None])[0],
+                        trace_id=query.get("trace_id", [None])[0])
                     self._json(200, page)
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})

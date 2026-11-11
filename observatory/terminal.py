@@ -73,13 +73,19 @@ class Api:
         self.token = token
 
     def get(self, path):
+        return self._get(path, self.MAX_RESPONSE_BYTES)
+
+    def get_review(self, path):
+        return self._get(path, 2 * 1024 * 1024)
+
+    def _get(self, path, max_bytes):
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         request = urllib.request.Request(self.endpoint + path, headers=headers)
         timeout=self.HEALTH_TIMEOUT if path=='/api/health?probe=1' else self.REQUEST_TIMEOUT
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read(self.MAX_RESPONSE_BYTES + 1)
-        if len(raw) > self.MAX_RESPONSE_BYTES:
-            raise CockpitError('Receiver response exceeded the 16 MiB limit. Narrow the selected scope.')
+            raw = response.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            raise CockpitError(f'Receiver response exceeded the {max_bytes // (1024 * 1024)} MiB limit. Narrow the selected scope.')
         return json.loads(raw)
 
 
@@ -143,6 +149,8 @@ class Snapshot:
     sessions_updated: float = 0
     read_errors: dict = field(default_factory=dict)
     read_updated: dict = field(default_factory=dict)
+    receiver_id: str = ""
+    review_trace_filter: bool = False
 
 
 class Feed:
@@ -182,6 +190,7 @@ class Feed:
         self.sessions_attempted = None
         self.sessions_updated = 0
         self.sessions_error = ''
+        self.cache_receiver_id = None
         self.paused = False
         self.history = {page: [None] for page in ('activity','mcp','traces','findings')}
         self.history_scopes = {}
@@ -245,6 +254,7 @@ class Feed:
         get = requests.get
         read_errors,read_updated = {},{}
         old=self.snapshot
+        receiver_id=old.receiver_id
         def evidence_get(path,kind,fallback):
             try:
                 response=get(path)
@@ -254,11 +264,13 @@ class Feed:
                 if requested_scope.active_page!='agents' or not transient:
                     raise
                 read_errors[kind]=clean(str(exc))
-                same_scope=(kind=='connections' or
+                same_scope=(old.receiver_id==receiver_id and (kind=='connections' or
                             (old.view_scope==view_scope and
-                             str(old.hierarchy.get('revision') or '')==self.hierarchy_revision))
+                             str(old.hierarchy.get('revision') or '')==self.hierarchy_revision)))
                 read_updated[kind]=old.read_updated.get(kind,0) if same_scope else 0
                 return fallback if same_scope else {kind:[]}
+            if isinstance(response,dict) and response.get('receiver_id') and response['receiver_id']!=receiver_id:
+                raise ValueError('Receiver identity changed during '+kind+' read; retrying')
             values=response.get(kind) if isinstance(response,dict) else None
             if not isinstance(values,list) or any(not isinstance(row,dict) for row in values):
                 raise ValueError('Invalid '+kind+' response')
@@ -291,6 +303,30 @@ class Feed:
             if history_due:initial_paths.append('/api/sessions?limit=500')
             requests.prefetch(initial_paths)
             health=get('/api/health')
+            receiver_id=str(health.get('receiver_id') or '')
+            receiver_changed=self.cache_receiver_id is not None and self.cache_receiver_id!=receiver_id
+            self.cache_receiver_id=receiver_id
+            if receiver_changed:
+                # Nothing cached under the preceding receiver namespace may be
+                # relabelled with the new health identity, even during timeouts.
+                self.sessions_cache=None;self.sessions_attempted=None
+                self.sessions_updated=0;self.sessions_error=''
+                self.extra_cache=None;self.extra_scope=None;self.extra_updated=0
+                self.findings_cache=None;self.findings_scope=None;self.findings_updated=0
+                self.history_scopes.clear()
+                self.selected_trace=None;self.selected_span_id=None;self.pinned_trace=False
+                selected=None;requested_span=None
+                requested_scope=replace(requested_scope,selected_trace=None,selected_span_id=None,pinned_trace=False)
+                # Discard reads begun before the identity was confirmed. They
+                # may still finish, but their results cannot enter this snapshot.
+                for path,future in tuple(requests.pending.items()):
+                    if path!='/api/health':
+                        future.cancel();requests.pending.pop(path,None)
+                if any(cursors!=(None,) for cursors in history.values()):
+                    self.history={page:[None] for page in self.history}
+                    self.wake.set();return
+                history_due=True
+                requests.prefetch([path for path in initial_paths if path!='/api/health']+['/api/sessions?limit=500'])
             local_status = health.get("local_agents", {})
             new_revision = str((local_status.get("hierarchy") or {}).get("revision") or "")
             if new_revision and self.hierarchy_revision and new_revision != self.hierarchy_revision:
@@ -493,7 +529,9 @@ class Feed:
                 return
             self.selected_trace = selected
             self.snapshot = Snapshot(totals, agents, traces, detail, findings, updated=time.time(), local_status=local_status, activity=activity,
-                                     sessions=sessions,sessions_error=self.sessions_error,
+                                     sessions=sessions,receiver_id=health.get("receiver_id") or "",
+                                     review_trace_filter=health.get("review_trace_filter") is True,
+                                     sessions_error=self.sessions_error,
                                      sessions_updated=self.sessions_updated,
                                      mcp=mcp,mcp_available=mcp_available,mcp_summary=mcp_summary,
                                      metric_catalog=metric_catalog,metric_points=metric_points,

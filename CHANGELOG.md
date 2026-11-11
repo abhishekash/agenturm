@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add exactly scoped, lazy recorded-work review with check outcomes, later edits, bounded paging and frozen copy/export.
+- Persist local attention acknowledgements and desktop delivery claims with stable request/run identities, silent restart inventory and seen-but-pending requests.
+- Add structured saved-task briefs, immutable decision versions, explicit excerpt drafts, native lifecycle links and continuity CLI commands.
+- Keep saved links and usage separate across receivers/producers, preserve old notes-only databases, and provide an explicit pre-migration SQLite backup command.
+- Offer opt-in bounded repeated-work observations in Findings, with polling exclusions and captured-window qualifications.
+
 - Reorganize the session inspector into Overview, Prompts, and Details, with recent agent-reported progress before history and a selectable, wrapped prompt reader.
 - Separate known runtime context from requests, preserve the original captured text, and keep meaningful task descriptions through short follow-up replies.
 - Correct worker evidence and usage attribution, load bounded history for quiet sessions, and preserve prompt selection and reading position during updates.

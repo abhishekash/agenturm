@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import asdict
 from datetime import datetime
 from io import StringIO
 import re
@@ -20,9 +21,9 @@ from textual.geometry import Size
 from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
-from textual.widgets import Button, DataTable, Input, RichLog, Static, TextArea
+from textual.widgets import Button, DataTable, Input, RichLog, Select, Static, TextArea
 
-from .saved_tasks import TaskStore, export_handoff, render_handoff
+from .saved_tasks import BRIEF_FIELDS, TaskStore, export_handoff, render_handoff
 from .ui_monitoring import task_run_usage
 from .ui_workflow import events_for, resume_command
 
@@ -43,33 +44,58 @@ def local_workspace(value):
     return value
 
 
-def capture_selected_run(owner):
+def capture_selected_run(owner, *, item_override=None, review_snapshot=None):
     """Freeze only the chosen identity and exact-run evidence already loaded."""
-    item = next((item for item in owner.workflow_items()
+    item = deepcopy(item_override) if item_override is not None else next((item for item in owner.workflow_items()
                  if item['id'] == owner.selected_source), None)
     if not item:
         return None
     data = owner.feed.snapshot
     usage = deepcopy(task_run_usage(data.sessions, item, data.traces))
+    if review_snapshot is not None:
+        usage = deepcopy((review_snapshot.get('usage') or {}).get('values') or {})
     # Trace summaries use an empty cost sum as zero even when no prices exist.
     # Keep that distinct from a complete, explicitly reported zero-cost run.
     if usage.get('known_cost_usd') == 0 and usage.get('cost_complete') is False:
         usage['known_cost_usd'] = None
-    trace = str(usage.get('trace_id') or item.get('latest_trace_id') or '')
+    trace = str(review_snapshot['scope'].get('run_id') or '') if review_snapshot is not None else str(usage.get('trace_id') or item.get('latest_trace_id') or '')
     trace = trace.lower() if re.fullmatch(r'[0-9a-fA-F]{32}', trace) else ''
+    from .workflow_evidence import ExecutionScope, scope_for
+    scope = scope_for({**item, 'latest_trace_id': trace}, data, getattr(owner.feed.api, 'endpoint', ''))
+    if review_snapshot is not None:
+        captured_scope = ExecutionScope(**review_snapshot['scope'])
+        if (captured_scope.agent_id != scope.agent_id or captured_scope.session_id != scope.session_id
+                or captured_scope.producer != scope.producer
+                or item.get('run_start_ns') and captured_scope.run_start_ns != item['run_start_ns']
+                or (item.get('trace_id') or item.get('latest_trace_id')) and captured_scope.run_id
+                    and captured_scope.run_id != (item.get('trace_id') or item.get('latest_trace_id'))):
+            raise ValueError('Frozen review does not belong to this selected agent.')
+        scope = captured_scope
     checks = []
-    if trace:
+    frozen_review = None
+    if (trace or scope.run_start_ns and getattr(scope, 'run_end_ns', None)) and item.get('capture_content') is not False:
+        from .workflow_evidence import check_observation
         for event in events_for(item, data.activity):
-            command = str(event.get('subject') or '')
-            if (event.get('trace_id') == trace and event.get('domain') == 'shell'
-                    and re.search(r'\b(pytest|unittest|test|check|lint|tsc)\b', command)):
-                checks.append({'command': plain(command)[:2000],
-                    'result': one_line(event.get('result') or event.get('status') or 'not reported', 200),
-                    'time_ns': event.get('time_unix_nano') or 0, 'trace_id': trace})
+            exact = event.get('trace_id') == trace if trace else scope.matches(event)
+            check = check_observation(event) if exact else None
+            if check:
+                checks.append({'command': plain(check['command'])[:2000],
+                    'result': check['result'], 'time_ns': check.get('completed_ns') or 0, 'trace_id': trace})
+        last = {'item_id':item['id'], 'projection':review_snapshot} if review_snapshot is not None else getattr(owner, 'last_review', None) or {}
+        projection = last.get('projection') or {}
+        if (last.get('item_id') == item['id'] and projection.get('scope') == asdict(scope)
+                and item.get('capture_content') is not False):
+            frozen_review = deepcopy(projection)
+            checks = [{'command': check['command'], 'result': check['result'],
+                       'time_ns': check.get('completed_ns') or 0, 'trace_id': trace}
+                      for check in projection.get('checks', [])][-32:]
     endpoint = urlsplit(getattr(owner.feed.api, 'endpoint', '')).hostname
     workspace = local_workspace(item.get('working_directory'))
-    return {'session_id': str(item.get('session_id') or ''),
-            'agent_id': str(item.get('agent_id') or ''),
+    result = {'session_id': str(item.get('session_id') or ''),
+            'receiver': scope.receiver, 'producer': scope.producer,
+            'run_start_ns': scope.run_start_ns,
+            'run_end_ns': getattr(scope, 'run_end_ns', None),
+            'agent_id': scope.agent_id,
             'runtime': one_line(item.get('runtime'), 120), 'trace_id': trace,
             'task': one_line(item.get('task')), 'state': one_line(item.get('state'), 120),
             'working_directory': workspace,
@@ -77,6 +103,9 @@ def capture_selected_run(owner):
             'branch': one_line(item.get('branch'), 512),
             'captured_ns': time.time_ns(), 'usage': deepcopy(usage) if trace else {},
             'checks': checks[-8:], 'resume_command': resume_command({**item, 'working_directory': workspace})}
+    if frozen_review is not None:
+        result['review_snapshot'] = frozen_review
+    return result
 
 
 def stamp(value):
@@ -93,11 +122,20 @@ def task_overview(task):
         token_label += ' (partial)'
     cost = usage.get('known_cost_usd')
     cost_label = 'Not reported' if cost is None else f'${cost:,.4f}' + ('' if usage.get('cost_complete') else ' (partial)')
-    lines = [f'Tokens {token_label} · Reported cost {cost_label}',
-             f"{usage.get('linked_runs', 0)} linked runs · {usage.get('unscoped_links', 0)} session-only links", '',
-             'NOTES', plain(task.get('notes')) or 'Add the intent, decisions, and next step with Edit.', '',
+    lines = ['NOTES', plain(task.get('notes')) or 'Add the intent, decisions, and next step with Edit.', '',
              'WORKSPACE', plain(task.get('workspace')) or 'No workspace selected',
              'Snapshot: ' + stamp(snapshot.get('captured_ns'))]
+    brief_lines = []
+    for field, value in task.get('brief', {}).items():
+        if value:
+            brief_lines += [field.replace('_', ' ').title(), plain(value), '']
+    decisions = task.get('decisions', [])
+    replaced = {item.get('supersedes_id') for item in decisions}
+    current = [item for item in decisions if item['id'] not in replaced]
+    if brief_lines or current:
+        insertion = lines.index('NOTES')
+        summary = [f'{len(current)} current decisions · {len(decisions)} retained versions · open Decisions for rationale and history', ''] if decisions else []
+        lines[insertion:insertion] = ['STRUCTURED BRIEF', *brief_lines, *summary]
     if snapshot:
         lines += ['Branch: ' + plain(snapshot.get('branch') or 'Not available'),
                   'Base: ' + str(snapshot.get('base_commit') or 'Not available')[:16]]
@@ -112,11 +150,15 @@ def task_overview(task):
                   'Capture again to update this saved view.']
     else:
         lines.append('Capture saves the current Git changes for your next handoff.')
-    lines += ['', 'USAGE DETAILS',
-              'Only explicitly linked runs are counted. Link again to refresh a run.']
-    cached = usage.get('cache_read_input_tokens')
-    if cached is not None:
-        lines.append('Cached input: ' + f'{cached:,}' + ('' if usage.get('cache_read_input_tokens_complete') else ' (partial)'))
+    has_usage = (bool(task.get('links')) or usage.get('linked_runs') or usage.get('unscoped_links')
+                 or any(value is not None for value in tokens) or cost is not None)
+    if has_usage:
+        lines += ['', 'USAGE DETAILS', f'Tokens {token_label} · Reported cost {cost_label}',
+                  f"{usage.get('linked_runs', 0)} linked runs · {usage.get('unscoped_links', 0)} session-only links",
+                  'Only explicitly linked runs are counted. Link again to refresh a run.']
+        cached = usage.get('cache_read_input_tokens')
+        if cached is not None:
+            lines.append('Cached input: ' + f'{cached:,}' + ('' if usage.get('cache_read_input_tokens_complete') else ' (partial)'))
     lines += ['', 'CONTINUE', 'Handoff previews your notes, saved changes, and recorded checks.',
               'Recorded checks do not verify the current workspace.']
     return '\n'.join(lines)
@@ -227,13 +269,15 @@ class TaskScreen(TaskJobs, ModalScreen):
 class SavedTasksScreen(TaskScreen):
     BINDINGS = [Binding('n', 'new', 'New task'), Binding('a', 'archived', 'Include archived')]
 
-    def __init__(self, owner, create=False):
+    def __init__(self, owner, create=False, decision_excerpt=None, capture_context=None):
         super().__init__(owner)
         self.rows = []
         self.total = 0
         self.include_archived = False
         self.create_on_mount = create
         self.preferred = None
+        self.decision_excerpt = deepcopy(decision_excerpt)
+        self.capture_context = deepcopy(capture_context)
 
     def compose(self):
         yield self.compose_floor()
@@ -318,13 +362,26 @@ class SavedTasksScreen(TaskScreen):
     def open_selected(self):
         identity = self.selected_id()
         if identity:
-            self.job(lambda store: store.get(identity),
-                     lambda task: self.app.push_screen(TaskDetailScreen(self.owner, task), lambda _: self.reload(identity)))
+            def opened(task):
+                if self.decision_excerpt:
+                    self.app.push_screen(TaskDecisionEditor(self.owner, task,
+                        source=self.decision_excerpt['source'], excerpt=self.decision_excerpt['text']),
+                        lambda _: self.reload(identity))
+                else:
+                    self.app.push_screen(TaskDetailScreen(self.owner, task), lambda _: self.reload(identity))
+            self.job(lambda store: store.get(identity), opened)
 
     def action_new(self):
         if not self.busy:
-            self.app.push_screen(TaskEditor(self.owner, context=capture_selected_run(self.owner)),
-                                 lambda task: self.reload(task['id']) if task else None)
+            def created(task):
+                if not task:
+                    return
+                self.reload(task['id'])
+                if self.decision_excerpt:
+                    self.app.push_screen(TaskDecisionEditor(self.owner, task,
+                        source=self.decision_excerpt['source'], excerpt=self.decision_excerpt['text']))
+            context = deepcopy(self.capture_context) if self.capture_context is not None else capture_selected_run(self.owner)
+            self.app.push_screen(TaskEditor(self.owner, context=context), created)
 
     def action_archived(self):
         if not self.busy:
@@ -341,7 +398,13 @@ class SavedTasksScreen(TaskScreen):
 class TaskDetailScreen(TaskScreen):
     BINDINGS = [Binding('e', 'edit', 'Edit'), Binding('l', 'link', 'Link selected run'),
                 Binding('ctrl+r', 'reload', 'Reload saved task'),
-                Binding('r', 'capture', 'Capture workspace'), Binding('h', 'handoff', 'Handoff')]
+                Binding('r', 'capture', 'Capture workspace'), Binding('h', 'handoff', 'Handoff'),
+                Binding('p', 'brief', 'Brief'), Binding('d', 'decisions', 'Decisions')]
+    DEFAULT_CSS = '''
+    #task-title-row { height: 1; }
+    #task-title-row #task-heading { width: 1fr; }
+    #task-title-row Button { min-width: 8; width: auto; color: $agent-secondary; }
+    '''
 
     def __init__(self, owner, task):
         super().__init__(owner)
@@ -350,7 +413,10 @@ class TaskDetailScreen(TaskScreen):
     def compose(self):
         yield self.compose_floor()
         with Vertical(id='saved-root'):
-            yield Static('', id='task-heading', markup=False)
+            with Horizontal(id='task-title-row'):
+                yield Static('', id='task-heading', markup=False)
+                yield Button('Brief', id='task-brief')
+                yield Button('Decisions', id='task-decisions')
             yield RichLog(id='task-body', wrap=True, markup=False, min_width=1, auto_scroll=False)
             yield Static('', id='task-status', markup=False)
             with Horizontal(classes='task-actions'):
@@ -360,6 +426,9 @@ class TaskDetailScreen(TaskScreen):
             yield Static('e Edit  r Capture  h Handoff  Esc Tasks', id='task-hints', markup=False)
 
     def on_mount(self):
+        # Inline styles take precedence over the app's three-row Button rule.
+        for button in self.query('#task-title-row Button'):
+            button.set_styles('height: 1; padding: 0 1; border: none;')
         self.call_after_refresh(self.render_task)
 
     def on_resize(self):
@@ -374,7 +443,7 @@ class TaskDetailScreen(TaskScreen):
         title = plain(self.record['title'])
         content = (title + '\n\n' if cell_len(title) > body.scrollable_content_region.width else '') + task_overview(self.record)
         text = Text(content)
-        text.highlight_regex(r'(?m)^(NOTES|WORKSPACE|USAGE DETAILS|CONTINUE)$', 'bold')
+        text.highlight_regex(r'(?m)^(STRUCTURED BRIEF|NOTES|WORKSPACE|USAGE DETAILS|CONTINUE)$', 'bold')
         body.write(text)
         self.query_one('#task-archive', Button).label = 'Restore' if self.record['archived'] else 'Archive'
         self.query_one('#task-link', Button).tooltip = 'Link the session currently selected in the monitor. Re-linking an exact run updates its evidence.'
@@ -394,6 +463,14 @@ class TaskDetailScreen(TaskScreen):
     def action_edit(self):
         if not self.busy:
             self.app.push_screen(TaskEditor(self.owner, task=self.record), self.changed)
+
+    def action_brief(self):
+        if not self.busy:
+            self.app.push_screen(TaskBriefEditor(self.owner, self.record), self.changed)
+
+    def action_decisions(self):
+        if not self.busy:
+            self.app.push_screen(TaskDecisionsScreen(self.owner, self.record), self.changed)
 
     def action_link(self):
         context = capture_selected_run(self.owner)
@@ -417,6 +494,8 @@ class TaskDetailScreen(TaskScreen):
     def buttons(self, event):
         key = event.button.id
         if key == 'task-edit': self.action_edit()
+        elif key == 'task-brief': self.action_brief()
+        elif key == 'task-decisions': self.action_decisions()
         elif key == 'task-link': self.action_link()
         elif key == 'task-capture': self.action_capture()
         elif key == 'task-handoff': self.action_handoff()
@@ -469,6 +548,8 @@ class TaskEditor(TaskJobs, ModalScreen):
                 yield Button('Cancel', id='task-cancel')
 
     def on_mount(self):
+        if not self.query('#task-name'):
+            return  # Structured editors supply their own focused field.
         self.query_one('#task-name', Input).border_title = 'Task title'
         self.query_one('#task-workspace', Input).border_title = 'Local workspace'
         self.query_one(TextArea).border_title = 'Your brief · decisions and next steps'
@@ -535,6 +616,213 @@ class TaskEditor(TaskJobs, ModalScreen):
         elif event.button.id == 'task-cancel': self.action_cancel()
 
 
+class TaskBriefEditor(TaskEditor):
+    """One field at a time keeps structured editing usable at 60×20."""
+    fields = BRIEF_FIELDS
+    heading = 'Structured brief · user-owned intent and next steps'
+
+    def __init__(self, owner, task):
+        super().__init__(owner, task=task)
+        self.draft = {key: task.get('brief', {}).get(key, '') for key in self.fields}
+        self.initial = deepcopy(self.draft)
+        self.field = self.fields[0]
+
+    def compose(self):
+        yield Static('Task editing needs 60 columns × 20 rows. Enlarge the terminal; your edits are preserved.',
+                     id='task-too-small', markup=False)
+        with Vertical(id='task-editor'):
+            yield Static(self.heading, id='task-editor-heading', markup=False)
+            yield from self.extra_fields()
+            yield Select([(key.replace('_', ' ').title(), key) for key in self.fields],
+                         value=self.field, allow_blank=False, id='brief-field')
+            yield TextArea(self.draft[self.field], id='task-notes', soft_wrap=True)
+            yield Static('Ctrl+S saves all fields · Tab controls · Esc back', id='task-status', markup=False)
+            with Horizontal(classes='task-actions'):
+                yield Button('Save · Ctrl+S', id='task-save')
+                yield Button('Copy draft', id='brief-copy')
+                yield Button('Cancel', id='task-cancel')
+
+    def extra_fields(self):
+        return iter(())
+
+    def on_mount(self):
+        self.query_one(TextArea).border_title = self.field.replace('_', ' ').title()
+        self.query_one(TextArea).focus()
+        self.on_resize()
+
+    def values(self):
+        self.draft[self.field] = self.query_one(TextArea).text
+        return deepcopy(self.draft)
+
+    @on(Select.Changed, '#brief-field')
+    def choose_field(self, event):
+        if not self.is_mounted or event.value not in self.fields or event.value == self.field:
+            return
+        self.draft[self.field] = self.query_one(TextArea).text
+        self.field = event.value
+        self.query_one(TextArea).load_text(self.draft[self.field])
+        self.query_one(TextArea).border_title = self.field.replace('_', ' ').title()
+
+    def action_save(self):
+        if self.busy:
+            return
+        values = self.values()
+        task = self.record
+        self.lock_fields()
+        self.job(lambda store: store.update_brief(task['id'], values, expected_revision=task['revision']),
+                 self.dismiss, 'Saving structured brief…')
+
+    def lock_fields(self):
+        for field in self.query('Select, TextArea'):
+            field.disabled = True
+
+    def finish_job(self, result, error, callback):
+        if self.is_mounted:
+            for field in self.query(Select):
+                field.disabled = False
+        super().finish_job(result, error, callback)
+
+    @on(Button.Pressed, '#brief-copy')
+    def copy_draft(self, event):
+        import json
+        self.owner.copy_to_clipboard(json.dumps(self.values(), ensure_ascii=False, indent=2))
+        self.status('Copied the unsaved draft. On a conflict, cancel and reload the task before applying it.')
+        event.stop()
+
+
+class TaskDecisionEditor(TaskBriefEditor):
+    fields = ('text', 'rationale', 'scope')
+    heading = 'Decision · append an accepted or rejected approach'
+
+    def __init__(self, owner, task, *, supersedes=None, source=None, excerpt=''):
+        super().__init__(owner, task)
+        self.supersedes = supersedes
+        self.source = deepcopy(source)
+        self.draft = {key: (supersedes or {}).get(key, '') for key in self.fields}
+        if excerpt:
+            self.draft['text'] = excerpt
+        self.initial = {**deepcopy(self.draft), 'kind': (supersedes or {}).get('kind', 'accepted')}
+
+    def extra_fields(self):
+        yield Select([('Accepted approach', 'accepted'), ('Rejected approach', 'rejected')],
+                     value=self.initial['kind'], allow_blank=False, id='decision-kind')
+        if self.supersedes:
+            yield Static('New version of ' + self.supersedes['id'][:12] + ' · previous version retained', markup=False)
+        if self.source:
+            yield Static('Explicit excerpt · review the text and its saved source before saving', markup=False)
+
+    def values(self):
+        return {**super().values(), 'kind': self.query_one('#decision-kind', Select).value}
+
+    @on(Select.Changed, '#decision-kind')
+    def kind_changed(self):
+        self.discard_armed = False
+
+    def action_save(self):
+        if self.busy:
+            return
+        values = self.values()
+        task = self.record
+        self.lock_fields()
+        self.job(lambda store: store.add_decision(task['id'], **values, source=self.source,
+            supersedes_id=self.supersedes['id'] if self.supersedes else None,
+            expected_revision=task['revision']), self.dismiss, 'Saving new decision version…')
+
+
+class TaskDecisionsScreen(TaskScreen):
+    BINDINGS = [Binding('n', 'new', 'New decision'), Binding('s', 'supersede', 'Supersede')]
+    DEFAULT_CSS = '''
+    #decision-version { height: 3; }
+    TaskDecisionsScreen .task-actions Button { margin-right: 1; }
+    '''
+
+    def __init__(self, owner, task):
+        super().__init__(owner)
+        self.record = deepcopy(task)
+
+    def compose(self):
+        yield self.compose_floor()
+        with Vertical(id='saved-root'):
+            yield Static('Decisions · immutable versions and source references', id='task-heading', markup=False)
+            yield Select([], id='decision-version', prompt='No decisions saved')
+            yield RichLog(id='task-body', wrap=True, markup=False, min_width=1, auto_scroll=False)
+            yield Static('', id='task-status', markup=False)
+            with Horizontal(classes='task-actions'):
+                yield Button('Add', id='decision-add')
+                yield Button('Supersede', id='decision-supersede')
+                yield Button('Copy version', id='decision-copy')
+                yield Button('Back', id='decision-back')
+            yield Static('n Add  s Supersede  Tab Controls  Esc Task', id='task-hints', markup=False)
+
+    def on_mount(self):
+        self.render_decisions()
+        self.update_floor()
+
+    def render_decisions(self):
+        decisions = self.record.get('decisions', [])
+        replaced = {item.get('supersedes_id') for item in decisions}
+        selector = self.query_one('#decision-version', Select)
+        selector.set_options([(str(i+1) + ' · ' + item['kind'] +
+            (' · superseded' if item['id'] in replaced else ' · current') + ' · ' + one_line(item['text'], 60), item['id'])
+            for i, item in enumerate(decisions)])
+        if decisions:
+            selector.value = decisions[-1]['id']
+        self.show_decision()
+
+    def selected(self):
+        value = self.query_one('#decision-version', Select).value
+        return next((item for item in self.record.get('decisions', []) if item['id'] == value), None)
+
+    @on(Select.Changed, '#decision-version')
+    def show_decision(self):
+        body = self.query_one(RichLog)
+        body.clear()
+        selected = self.selected()
+        if selected:
+            import json
+            body.write(Text(selected['text'] + '\n\nRationale\n' + selected['rationale'] +
+                '\n\nScope\n' + (selected['scope'] or 'Not specified') +
+                '\n\nVersion ' + selected['id'] + ' · ' + stamp(selected['created_ns']) +
+                ('\nSupersedes ' + selected['supersedes_id'] if selected.get('supersedes_id') else '') +
+                ('\n\nSaved source · availability not revalidated\n' + json.dumps(selected['source'], ensure_ascii=False, indent=2)
+                 if selected.get('source') else '\n\nManual decision · no source reference')))
+        else:
+            body.write('No decisions saved. Add an accepted or rejected approach with its rationale.')
+        replaced = {item.get('supersedes_id') for item in self.record.get('decisions', [])}
+        self.query_one('#decision-supersede', Button).disabled = not selected or selected['id'] in replaced
+        self.status(f"{len(self.record.get('decisions', []))} of 128 retained versions · no automatic extraction")
+
+    def changed(self, task):
+        if task:
+            self.record = task
+            self.render_decisions()
+
+    def action_new(self):
+        if not self.busy:
+            self.app.push_screen(TaskDecisionEditor(self.owner, self.record), self.changed)
+
+    def action_supersede(self):
+        selected = self.selected()
+        if selected and not self.busy:
+            if any(item.get('supersedes_id') == selected['id'] for item in self.record.get('decisions', [])):
+                self.status('This version was superseded. Choose its current version to append another change.')
+                return
+            self.app.push_screen(TaskDecisionEditor(self.owner, self.record, supersedes=selected), self.changed)
+
+    def action_back(self):
+        self.dismiss(self.record)
+
+    @on(Button.Pressed)
+    def buttons(self, event):
+        if event.button.id == 'decision-add': self.action_new()
+        elif event.button.id == 'decision-supersede': self.action_supersede()
+        elif event.button.id == 'decision-back': self.action_back()
+        elif event.button.id == 'decision-copy' and self.selected():
+            import json
+            self.owner.copy_to_clipboard(json.dumps(self.selected(), ensure_ascii=False, indent=2))
+            self.status('Copied exactly the selected decision version and its saved source reference.')
+
+
 class TaskRunsScreen(TaskScreen):
     def __init__(self, owner, task):
         super().__init__(owner)
@@ -572,7 +860,7 @@ class TaskRunsScreen(TaskScreen):
         table.clear()
         for link in self.record['links']:
             table.add_row(Text((link.get('runtime') or 'Agent') + ' · ' + (link.get('task') or link.get('session_id') or 'Recorded run')),
-                          'Run' if link.get('trace_id') else 'Session only', link.get('state') or 'Unknown', key=link['key'])
+                          'Run' if link.get('trace_id') or link.get('run_start_ns') else 'Session only', link.get('state') or 'Unknown', key=link['key'])
         if not self.record['links']:
             self.status('No linked runs. Return to the task and Link a selected monitoring session.')
         table.focus()

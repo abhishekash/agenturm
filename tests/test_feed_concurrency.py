@@ -11,6 +11,50 @@ from tests.test_terminal_search import ExampleApi
 
 
 class FeedConcurrencyTests(unittest.TestCase):
+    def test_receiver_replacement_drops_all_old_optional_evidence_and_history_budget(self):
+        api=ExampleApi();feed=Feed(api);feed.active_page='agents';feed.detail_enabled=False
+        original=api.get;receiver=['old'];history_reads=[]
+        def get(path):
+            if path.startswith('/api/health'):
+                return {**original(path),'receiver_id':receiver[0]}
+            if path.startswith('/api/sessions'):
+                history_reads.append(receiver[0])
+                if receiver[0]=='new':raise TimeoutError('new receiver history busy')
+                return {'sessions':[{'session_id':'old-private','latest_task':'Old receiver only'}]}
+            if receiver[0]=='new' and path.startswith(('/api/activity','/api/connections','/api/traces')):
+                raise TimeoutError('new receiver stored reads busy')
+            return original(path)
+        with patch.object(api,'get',side_effect=get):
+            feed.refresh()
+            self.assertEqual(feed.snapshot.receiver_id,'old')
+            self.assertTrue(feed.snapshot.sessions);self.assertTrue(feed.snapshot.activity)
+            old_attempt=feed.sessions_attempted
+            receiver[0]='new';api.sessions=[{**api.sessions[0],'task':'New receiver live agent'}]
+            feed.refresh()
+        snapshot=feed.snapshot
+        self.assertEqual(snapshot.receiver_id,'new');self.assertFalse(snapshot.error)
+        self.assertEqual(snapshot.local_status['sessions'][0]['task'],'New receiver live agent')
+        self.assertEqual(snapshot.sessions,[]);self.assertEqual(snapshot.sessions_updated,0)
+        self.assertTrue(snapshot.sessions_error);self.assertIn('new',history_reads)
+        self.assertGreaterEqual(feed.sessions_attempted,old_attempt)
+        for rows in (snapshot.agents,snapshot.activity,snapshot.activity_results,snapshot.traces):self.assertFalse(rows)
+        self.assertTrue(all(stamp==0 for stamp in snapshot.read_updated.values()))
+
+    def test_receiver_replacement_resets_paging_and_hidden_view_caches(self):
+        api=ExampleApi();feed=Feed(api);feed.detail_enabled=False;original=api.get;receiver=['old']
+        def get(path):
+            result=original(path)
+            if path.startswith('/api/health'):result={**result,'receiver_id':receiver[0]}
+            return result
+        with patch.object(api,'get',side_effect=get):
+            feed.refresh();self.assertIsNotNone(feed.extra_cache)
+            feed.history['activity']=[None,'old-cursor'];feed.findings_cache={'findings':[{'id':'old'}]}
+            receiver[0]='new';feed.refresh()
+            self.assertEqual(feed.history['activity'],[None]);self.assertIsNone(feed.extra_cache)
+            self.assertIsNone(feed.findings_cache);self.assertIsNone(feed.sessions_cache)
+            feed.refresh();self.assertEqual(feed.snapshot.receiver_id,'new')
+            self.assertNotIn('old-cursor',str(feed.snapshot.pagination))
+
     def test_busy_database_does_not_hide_native_roster_and_recovers(self):
         api=ExampleApi();feed=Feed(api);feed.active_page='agents';feed.detail_enabled=False
         feed.include_global_totals=False;original=api.get

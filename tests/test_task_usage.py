@@ -79,6 +79,17 @@ class TaskUsageTests(unittest.TestCase):
         self.assertEqual(session_usage(untagged,{'agent_id':'legacy','agent_id_inferred':True,
                                                'session_id':'shared'})['input_tokens'],99)
 
+    def test_explicit_agent_usage_requires_producer_session_and_selected_run(self):
+        selected=dict(service='codex',agent_id='same',session_id='wanted',trace_id='current')
+        rows=[dict(service='claude',agent_id='same',session_id='wanted',latest_run={'trace_id':'wrong','input_tokens':999}),
+              dict(service='codex',agent_id='same',session_id='other',latest_run={'trace_id':'wrong2'}),
+              dict(service='codex',agent_id='same',session_id='wanted',latest_run={'trace_id':'old','input_tokens':888})]
+        self.assertEqual(session_usage(rows,selected),rows[2])
+        self.assertEqual(task_run_usage(rows,selected),{})
+        exact=dict(service='codex',agent_id='same',session_id='wanted',trace_id='current',input_tokens=10)
+        self.assertEqual(task_run_usage(rows,selected,[exact]),exact)
+        self.assertEqual(task_run_usage(rows,selected,[{**exact,'agent_id':'sibling'}]),{})
+
 
 class TaskUsageJourney(unittest.IsolatedAsyncioTestCase):
     async def test_selection_inspector_modal_and_trace_use_the_same_task(self):
@@ -90,6 +101,7 @@ class TaskUsageJourney(unittest.IsolatedAsyncioTestCase):
                     'cache_read_input_tokens':360,'cache_write_input_tokens':20,
                     'known_cost_usd':1,'cost_complete':True}]
         for index,row in enumerate(summaries,1):
+            row['services']=['codex' if index==1 else 'claude']
             row['latest_run']={k:v for k,v in row.items() if k not in {'trace_count','session_id'}}
             row['latest_run']['trace_id']=f'run-{index}'
             row['known_cost_usd']=99

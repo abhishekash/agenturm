@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 import hashlib
 import math
 import os
@@ -507,8 +508,10 @@ def normalize_otlp(body):
 
 
 class Store:
-    def __init__(self, path, async_derived_refresh=False):
+    def __init__(self, path, async_derived_refresh=False, workflow_patterns=None):
         self.path = str(path)
+        self.workflow_patterns = (os.environ.get("AGENTURM_WORKFLOW_PATTERNS", "0") == "1"
+                                  if workflow_patterns is None else bool(workflow_patterns))
         self._async_derived_refresh = bool(async_derived_refresh)
         self._derived_condition = threading.Condition()
         # Refresh reads and cache writes must not straddle a retention delete.
@@ -657,6 +660,10 @@ class Store:
             if "agent_id" not in log_columns:
                 db.execute("ALTER TABLE logs ADD COLUMN agent_id TEXT")
             db.execute("CREATE INDEX IF NOT EXISTS logs_agent_id ON logs(agent_id,time_ns DESC)")
+            db.execute("INSERT OR IGNORE INTO schema_meta(key,value) VALUES('receiver_id',?)", (uuid.uuid4().hex,))
+            self.receiver_id = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+            info = os.stat(self.path)
+            self._receiver_file_identity = (info.st_dev, info.st_ino)
             agent_node_columns = {row[1] for row in db.execute("PRAGMA table_info(agent_nodes)")}
             if "is_review" not in agent_node_columns:
                 db.execute("ALTER TABLE agent_nodes ADD COLUMN is_review INTEGER NOT NULL DEFAULT 0")
@@ -700,10 +707,27 @@ class Store:
         self._backfill_summaries()
         self._backfill_task_outcomes()
         self._backfill_endpoints()
+        if self.workflow_patterns:
+            with self._connect() as db:
+                recent = [r[0] for r in db.execute("SELECT trace_id FROM trace_activity ORDER BY last_ns DESC LIMIT 20")]
+            self._refresh_summaries(recent)
         if self._async_derived_refresh:
             self._derived_thread = threading.Thread(target=self._derived_refresh_worker,
                                                    name="observatory-derived-refresh", daemon=True)
             self._derived_thread.start()
+
+    def receiver_namespace(self):
+        """Keep health cheap; refresh identity after atomic database replacement."""
+        info = os.stat(self.path)
+        identity = (info.st_dev, info.st_ino)
+        if identity != getattr(self, '_receiver_file_identity', None):
+            with self._connect() as db:
+                row = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
+            if not row:
+                raise ValueError('Receiver database has no stable identity')
+            self.receiver_id = row[0]
+            self._receiver_file_identity = identity
+        return self.receiver_id
 
     @contextmanager
     def _connect(self):
@@ -1143,13 +1167,19 @@ class Store:
     def _refresh_summaries_locked(self, trace_ids):
         from .storage_derived import derive_trace
 
+        active_pattern_runs = set()
+        if self.workflow_patterns:
+            with self._connect() as db:
+                active_pattern_runs = {r[0] for r in db.execute(
+                    "SELECT trace_id FROM trace_activity ORDER BY last_ns DESC,trace_id DESC LIMIT 20")}
         for trace_id in set(trace_ids):
             with self._connect() as db:
                 # A process-local lock cannot protect against another Store or
                 # collector process. Serialize source reads and cache replacement
                 # with retention (and ingestion) using SQLite's writer lock.
                 db.execute("BEGIN IMMEDIATE")
-                derived = derive_trace(db, trace_id)
+                derived = (derive_trace(db, trace_id, workflow_patterns=True) if trace_id in active_pattern_runs
+                           else derive_trace(db, trace_id))
                 if derived is None:
                     db.execute("DELETE FROM trace_summaries WHERE trace_id=?", (trace_id,))
                     db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
@@ -1643,7 +1673,7 @@ class Store:
 
     def activity_page(self, limit=100, service=None, domain=None, query=None, session_id=None,
                       cursor=None, include_reviews=True, errors_only=False, action=None,
-                      agent_id=None, subtree=False, scope_revision=None):
+                      agent_id=None, subtree=False, scope_revision=None, trace_id=None):
         """Browse saved activity, including logs older than the trace preview window."""
         limit = max(1, min(500, int(limit)))
         before = self._event_cursor(cursor)
@@ -1654,7 +1684,9 @@ class Store:
                 raise ValueError("hierarchy scope changed")
             if not scope["agent_ids"]:
                 return {'activity': [], 'next_cursor': None, 'scope': 'agent subtree',
-                        'agent_scope': scope}
+                        'receiver_id': self.receiver_namespace(), 'agent_scope': scope}
+        if trace_id is not None:
+            trace_id = _id(trace_id, TRACE_ID, 'trace_id')
         # Trace summaries contain span-derived activity. Read log activity from
         # its source table so a busy trace's preview limit cannot hide history.
         def attr(*keys, default="''"):
@@ -1682,6 +1714,9 @@ class Store:
         session=attr(*SESSION_KEYS,default='NULL')
         def filters(columns):
             conditions, params = [], []
+            if trace_id:
+                conditions.append(columns['trace_id']+'=?')
+                params.append(trace_id)
             if scope is not None:
                 marks = ','.join('?' for _ in scope['agent_ids'])
                 conditions.append(columns['agent_id']+f' IN ({marks})')
@@ -1709,12 +1744,12 @@ class Store:
         span_key="COALESCE(cached.trace_id,'log') || ':' || json_extract(e.value,'$.source_id')"
         span_where, span_params=filters({
             **{name:f"json_extract(e.value,'$.{name}')" for name in ('service','domain','action','result')},
-            'session_id':'cached.session_id','agent_id':'cached.agent_id',
+            'session_id':'cached.session_id','agent_id':'cached.agent_id','trace_id':'cached.trace_id',
             'value':'e.value','stamp':span_stamp,'key':span_key})
         log_session=f'COALESCE(cached.session_id,{session})'
         log_key="COALESCE(l.trace_id,'log') || ':' || l.digest"
         log_where, log_params=filters({**fields,'session_id':log_session,'agent_id':'l.agent_id',
-            'value':log_value,'stamp':'l.time_ns','key':log_key})
+            'value':log_value,'stamp':'l.time_ns','key':log_key,'trace_id':'l.trace_id'})
         # Select ordered candidates before constructing payloads. Extracting the
         # timestamp from a full json_object forced every historical log's body
         # and metadata through JSON serialization on every cockpit refresh.
@@ -1737,10 +1772,12 @@ class Store:
             ORDER BY stamp DESC,event_key DESC LIMIT ?"""
         with self._connect() as db:
             rows = db.execute(activity_sql, [*span_params,limit+1,*log_params,limit+1,limit+1]).fetchall()
+            receiver = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
         items = [{**json.loads(row['value']), 'id': row['event_key'],
                   'trace_id': row['trace_id'], 'session_id': row['session_id']} for row in rows[:limit]]
         next_cursor = self._next_event_cursor(rows[limit-1]['stamp'],rows[limit-1]['event_key']) if len(rows)>limit else None
-        result = {'activity': items, 'next_cursor': next_cursor, 'scope': 'stored activity'}
+        result = {'activity': items, 'next_cursor': next_cursor, 'scope': 'stored activity',
+                  'receiver_id': receiver}
         if scope is not None:
             result.update(scope='agent subtree' if subtree else 'this agent', agent_scope=scope)
         return result
@@ -2421,14 +2458,18 @@ class Store:
         sql = "SELECT finding_id,time_ns,finding_json FROM finding_cache"
         params = []
         filters = []
+        if not self.workflow_patterns:
+            filters.append("COALESCE(json_extract(finding_json,'$.workflow_pattern'),0)!=1")
         if before:
             filters.append("(time_ns < ? OR (time_ns = ? AND finding_id < ?))")
             params.extend((before[0], before[0], before[1]))
         if agent_scope is not None:
             marks = ','.join('?' for _ in agent_scope["agent_ids"])
-            filters.append(f"trace_id IN (SELECT trace_id FROM trace_summaries "
-                           f"WHERE agent_id IN ({marks}))")
-            params.extend(agent_scope["agent_ids"])
+            filters.append(f"((json_extract(finding_json,'$.workflow_pattern')=1 "
+                           f"AND json_extract(finding_json,'$.agent_id') IN ({marks})) OR "
+                           f"(COALESCE(json_extract(finding_json,'$.workflow_pattern'),0)!=1 "
+                           f"AND trace_id IN (SELECT trace_id FROM trace_summaries WHERE agent_id IN ({marks}))))")
+            params.extend([*agent_scope["agent_ids"], *agent_scope["agent_ids"]])
         if filters:
             sql += " WHERE " + " AND ".join(filters)
         sql += " ORDER BY time_ns DESC,finding_id DESC LIMIT ?"
@@ -2465,15 +2506,18 @@ class Store:
                 group_params = []
                 if agent_scope is not None:
                     marks = ','.join('?' for _ in agent_scope["agent_ids"])
-                    group_scope = (f" AND fc.trace_id IN (SELECT trace_id FROM trace_summaries "
-                                   f"WHERE agent_id IN ({marks}))")
-                    group_params = list(agent_scope["agent_ids"])
+                    group_scope = (f" AND ((json_extract(fc.finding_json,'$.workflow_pattern')=1 "
+                        f"AND json_extract(fc.finding_json,'$.agent_id') IN ({marks})) OR "
+                        f"(COALESCE(json_extract(fc.finding_json,'$.workflow_pattern'),0)!=1 "
+                        f"AND fc.trace_id IN (SELECT trace_id FROM trace_summaries WHERE agent_id IN ({marks}))))")
+                    group_params = [*agent_scope["agent_ids"], *agent_scope["agent_ids"]]
                 grouped = db.execute(
                     f"""WITH wanted(kind,title,detail,severity) AS (VALUES {values_sql})
                         SELECT wanted.kind,wanted.title,wanted.detail,wanted.severity,
                                COUNT(*) AS occurrence_count,
                                COUNT(DISTINCT fc.trace_id) AS trace_count,
-                               COUNT(DISTINCT ts.session_id) AS session_count
+                               COUNT(DISTINCT CASE WHEN json_extract(fc.finding_json,'$.workflow_pattern')=1
+                                    THEN json_extract(fc.finding_json,'$.session_id') ELSE ts.session_id END) AS session_count
                         FROM wanted JOIN finding_cache fc
                           ON json_extract(fc.finding_json,'$.kind')=wanted.kind
                          AND json_extract(fc.finding_json,'$.title')=wanted.title
@@ -2494,10 +2538,16 @@ class Store:
                 }
         for finding in findings:
             session_id, summary = context.get(finding["trace_id"], (None, {}))
-            finding["session_id"] = session_id
-            finding["task"] = _safe_text(summary.get("task") or "")[:300]
-            finding["services"] = summary.get("services") or []
-            finding["run_status"] = summary.get("status") or "UNKNOWN"
+            if finding.get('workflow_pattern'):
+                # A trace can contain multiple workers. Its root task/outcome is
+                # not evidence about the pattern's explicitly recorded owner.
+                session_id = finding.get('session_id')
+                finding.update(task='', services=[finding['producer']], run_status='UNKNOWN')
+            else:
+                finding["session_id"] = session_id
+                finding["task"] = _safe_text(summary.get("task") or "")[:300]
+                finding["services"] = summary.get("services") or []
+                finding["run_status"] = summary.get("status") or "UNKNOWN"
             finding.update(group_stats.get(
                 (finding.get("kind", ""), finding.get("title", ""),
                  finding.get("detail", ""), finding.get("severity", "")),
@@ -2517,6 +2567,7 @@ class Store:
     def _trace_findings(self, trace_id):
         with self._connect() as db:
             rows = db.execute("SELECT finding_json FROM finding_cache WHERE trace_id=? "
+                              + ("" if self.workflow_patterns else "AND COALESCE(json_extract(finding_json,'$.workflow_pattern'),0)!=1 ") +
                               "ORDER BY time_ns DESC,finding_id", (trace_id,)).fetchall()
         return [json.loads(row["finding_json"]) for row in rows]
 

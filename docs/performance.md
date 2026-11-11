@@ -125,3 +125,26 @@ Regression tests enforce work limits rather than machine-dependent timings:
 These are component budgets, not a fixed whole-process RSS ceiling. Before
 changing defaults, compare all workloads, inspect database growth, and check
 that the optimization has not changed counts, correlation, or error semantics.
+
+## Workflow review and attention budgets
+
+Review loads only when opened, in pages of 200 records. Retention is bounded to
+1,000 records and 2 MiB of serialized decoded content per selection, four cached
+selections and 8 MiB total. HTTP review responses are capped at 2 MiB before JSON
+decoding. Paging is explicit; prompt history retains its independent limits.
+Polling, prompts and review share a four-request active HTTP budget. Generation
+guards discard obsolete screen results. Frozen exports do not fetch more history.
+
+Optional workflow diagnostics inspect at most 500 observations per trace and
+refresh at most 20 existing traces when enabled. Existing derived trace payload
+budgets also apply. They are disabled by default. User-owned task briefs and
+128 decision versions share the existing 512 KiB task limit, with hard refusal
+instead of silent eviction. Persistent workflow incidents have a 10,000-record capacity;
+unresolved records are retained and capacity limits are disclosed. Overflow
+requests remain visible as minimal memory-only observations with durable
+acknowledgement and desktop delivery disabled. This preserves unresolved work;
+it is not a fixed heap ceiling under unlimited outstanding requests.
+
+The joint implementation report records comparative small, large and payload
+benchmarks from the same machine. Serialized review budgets are not Python heap
+ceilings; decoded objects and rendering require additional memory.
