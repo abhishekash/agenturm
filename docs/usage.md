@@ -113,7 +113,10 @@ means the stored, bounded, redacted record, with terminal control characters
 removed; it cannot restore content omitted upstream. **Details** holds IDs,
 model, reported usage, status evidence and relationship provenance.
 
-Agent rows prioritize task and current work. Collapsed parents retain both
+Agent rows prioritize task and current work. Alternating backgrounds group each
+agent's two content lines. At 120×30 or larger, a third line adds space between
+agents; smaller layouts retain two lines. Selection remains visible through
+resize, and only a branch's first line is its disclosure target. Collapsed parents retain both
 working and attention counts for their descendants. **←/→** collapse/expand
 branches in Today, Running and History; search temporarily reveals matching
 paths. Parent-only filter context is labeled. **Alt+Up**, **Alt+Down** and
@@ -478,9 +481,10 @@ The offline LangGraph retrieval control was run and imported alongside the harne
 
 ## Agent session overview
 
-The terminal's **Agents** view puts **Agent / project**, **Current task**, **Status**,
-and **Updated** in a task-focused list. Task previews stay on one line; agent/project
-rows use two lines. On wide terminals the session inspector is on the right with
+The terminal's **Agents** view puts **Task / source**, **State**, and **Updated** in
+a task-focused list. Task previews stay on one line; runtime, project, and current
+work occupy the second. Alternating backgrounds separate agents, with an extra
+line of space on roomy terminals. On wide terminals the session inspector is on the right with
 only status and a short latest-action label, not command arguments or output. On narrower
 terminals it stacks below; compact terminals prioritize the list until you inspect.
 Full session IDs, working directories, branches (when recorded), models, and usage

@@ -73,6 +73,11 @@ Recent supported Codex, Claude Code, OpenCode, and Pi records are discovered loc
 
 When a runtime records an exact delegation, Agents shows an expandable tree and keeps every child independently inspectable. A completed parent stays completed while its workers continue, and a collapsed branch carries descendant activity and attention counts. Press `f` to switch to the flat list. See [agent hierarchy support and limits](docs/agent-hierarchy.md).
 
+Each agent has a task line and a muted source/current-work line, grouped by an
+alternating background. Roomy terminals add a line of space between agents;
+compact terminals keep the two content lines. Selection stays distinct from the
+alternating rows.
+
 Agenturm is a monitor, not a controller. Reply to agents and approve requests in their own terminals.
 
 The session inspector opens on **Overview**: the latest agent-reported update,

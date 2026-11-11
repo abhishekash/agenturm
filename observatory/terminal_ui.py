@@ -960,18 +960,23 @@ class ResultsTable(DataTable):
                     source_id=None
                 item=getattr(self.app,'agent_row_meta',{}).get(source_id,{})
                 disclosure_end=5+cell_len(item.get('_prefix',''))
-                if item.get('_has_children') and 0<=event.x<=disclosure_end:
+                row_start=sum(row.height for row in self.ordered_rows[:meta['row']])
+                row_line=event.y-(self.header_height if self.show_header else 0)+int(self.scroll_y)-row_start
+                if item.get('_has_children') and row_line==0 and 0<=event.x<=disclosure_end:
                     self.app.toggle_agent_branch(source_id)
                     event.prevent_default()
                     event.stop()
                     return
         await super()._on_click(event)
 
+    def agent_row_height(self):
+        return 3 if self.app.size.width>=120 and self.app.size.height>=30 else 2
+
     def preview_height(self,values):
         if self.id!='agent-table' or not self.column_widths or not values:
             return 1
         if len(values)>=3:
-            return 2
+            return self.agent_row_height()
         task=values[-1]
         return min(2,max(1,len(task.wrap(self.app.console,self.column_widths[-1]))))
 
@@ -1002,7 +1007,9 @@ class ResultsTable(DataTable):
         specs=getattr(self,'column_specs',None)
         if not specs:return
         visible,widths=column_layout(self.id,specs,self.scrollable_content_region.width)
-        if widths==self.column_widths and visible==self.visible_columns:return
+        density=self.agent_row_height() if self.id=='agent-table' else 1
+        density_changed=density!=getattr(self,'_row_density',density)
+        if widths==self.column_widths and visible==self.visible_columns and not density_changed:return
         rows=list(self.full_rows.items())
         selected=self.cursor_row
         scroll=self.scroll_offset
@@ -1012,9 +1019,11 @@ class ResultsTable(DataTable):
         # Row previews must wrap against the new width, not the previous layout.
         self.column_widths=widths
         self.visible_columns=visible
+        self._row_density=density
         for key,values in rows:self.add_row(*values,key=key)
         if rows:self.move_cursor(row=min(selected,len(rows)-1),scroll=False)
         self.scroll_to(x=0,y=scroll.y,animate=False)
+        if rows and density_changed:self.move_cursor(row=min(selected,len(rows)-1),scroll=True)
 
 
 class SearchInput(Input):
@@ -1244,6 +1253,7 @@ class ObservatoryApp(App):
     DataTable > .datatable--hover { background: $agent-row-hover; }
     DataTable > .datatable--odd-row { background: $agent-row-alt; }
     DataTable > .datatable--even-row { background: $agent-surface; }
+    #agent-table > .datatable--odd-row { background: $agent-panel; }
     RichLog { background: $agent-surface; color: $agent-text; scrollbar-size: 1 1; }
     RichLog:focus { background-tint: transparent; }
     #mcp-servers { height: 7; margin-bottom: 1; }
@@ -1513,7 +1523,7 @@ class ObservatoryApp(App):
         return Vertical(
             Horizontal(*controls,classes='searchbar'),
             Static('Loading…',id='mcp-hint' if page=='mcp' else 'search-status-'+page,classes='search-status',markup=False),
-            ResultsTable(id=table,cursor_type='row',zebra_stripes=False,cursor_foreground_priority='renderable'),
+            ResultsTable(id=table,cursor_type='row',zebra_stripes=page=='agents',cursor_foreground_priority='renderable'),
             *footer,
             id='results-'+page,classes='box results '+classes)
 
@@ -3260,7 +3270,7 @@ class ObservatoryApp(App):
         self.query_one('#agent-evidence-status').tooltip=evidence.error or coverage
         self.query_one('#agent-retry').display=bool(evidence.error)
         if self.session_mode=='details':
-            details=[('Session ID',item.get('session_id') or item['id']),
+            details=[('Task',task_preview(item) or title),('Session ID',item.get('session_id') or item['id']),
                 ('Agent ID',item.get('agent_id')),('Project',item.get('project')),('Branch',item.get('branch')),
                 ('Model',item.get('model')),('Updated',when(item.get('stamp'))),
                 ('Capture','Metadata only' if item.get('capture_content') is False else 'Recorded content when available')]
