@@ -78,8 +78,8 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 table=app.query_one('#agent-table',DataTable)
                 self.assertNotIn('Waiting on',[str(column.label) for column in table.columns.values()])
                 self.assertGreater(table.column_widths[0],table.column_widths[1])
-                self.assertEqual(table.rows['source-1'].height,2)
-                self.assertEqual(table.rows['source-2'].height,2)
+                self.assertEqual(table.rows['source-1'].height,3)
+                self.assertEqual(table.rows['source-2'].height,3)
                 task_cell=table.get_row('source-1')[0]
                 self.assertTrue(task_cell.no_wrap)
                 rendered='\n'.join(table.render_line(row).text for row in range(table.size.height))
@@ -87,7 +87,9 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('payments',rendered)
                 await pilot.press('e')
                 await pilot.pause()
-                self.assertIn(task,app.query_one('#agent-detail').plain_text.replace('\n',' '))
+                self.assertEqual(app.query_one('#agent-heading').tooltip,task)
+                app.set_session_mode('details');await pilot.pause()
+                self.assertIn(task,' '.join(app.query_one('#agent-detail').plain_text.split()))
                 await pilot.press('escape')
                 await pilot.pause()
                 self.assertIn('Untitled session',table.get_row('source-2')[0].plain)
@@ -96,7 +98,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
             app.last_update=-1
             app.refresh_data()
             await pilot.pause()
-            self.assertEqual(table.rows['source-1'].height,2)
+            self.assertEqual(table.rows['source-1'].height,3)
             self.assertEqual(table.get_row('source-1')[0].plain.splitlines()[0].strip(), '▸ Fix checkout')
 
     async def test_columns_waiting_and_summary_are_bound_to_selected_session(self):
@@ -124,7 +126,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.pause()
                     detail = app.query_one('#agent-detail').plain_text
                     self.assertNotIn('Progress Summary · Recorded Activity', detail)
-                    self.assertIn('NEEDS REPLY', detail)
+                    self.assertIn('NEEDS REPLY', app.query_one('#agent-context').render().plain)
                     self.assertIn('answer in the Codex terminal', ' '.join(detail.split()))
                     self.assertIn('Agenturm is read-only', ' '.join(detail.split()))
                     self.assertIn('Status Evidence',detail)

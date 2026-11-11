@@ -2,6 +2,7 @@
 import io
 import threading
 import unittest
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 from observatory.feed_requests import FeedScope, RequestBatch
@@ -10,6 +11,70 @@ from tests.test_terminal_search import ExampleApi
 
 
 class FeedConcurrencyTests(unittest.TestCase):
+    def test_busy_database_does_not_hide_native_roster_and_recovers(self):
+        api=ExampleApi();feed=Feed(api);feed.active_page='agents';feed.detail_enabled=False
+        feed.include_global_totals=False;original=api.get
+        def busy(path):
+            if path.startswith(('/api/connections','/api/activity','/api/traces','/api/sessions')):
+                raise TimeoutError('database busy')
+            return original(path)
+        with patch.object(api,'get',side_effect=busy):
+            feed.refresh()
+            self.assertTrue(feed.snapshot.updated);self.assertFalse(feed.snapshot.error)
+            self.assertEqual(set(feed.snapshot.read_errors),{'connections','activity','traces'})
+            self.assertEqual(feed.snapshot.local_status['sessions'],api.sessions)
+            self.assertFalse(feed.snapshot.activity);self.assertFalse(feed.snapshot.traces)
+            api.sessions=[{**api.sessions[0],'task':'Live task advanced'}]
+            feed.refresh()
+            self.assertEqual(feed.snapshot.local_status['sessions'][0]['task'],'Live task advanced')
+        feed.retry_now();feed.refresh()
+        self.assertFalse(feed.snapshot.error);self.assertFalse(feed.snapshot.read_errors)
+        self.assertFalse(feed.snapshot.sessions_error)
+        self.assertTrue(feed.snapshot.activity);self.assertTrue(feed.snapshot.traces)
+
+    def test_partial_evidence_retains_same_scope_and_never_leaks_across_scope(self):
+        api=ExampleApi();feed=Feed(api);feed.active_page='agents';feed.detail_enabled=False
+        feed.refresh();old=feed.snapshot;original=api.get
+        def busy(path):
+            if path.startswith(('/api/connections','/api/activity','/api/traces')):
+                raise TimeoutError('database busy')
+            return original(path)
+        with patch.object(api,'get',side_effect=busy):
+            feed.refresh()
+            self.assertEqual(feed.snapshot.activity,old.activity)
+            self.assertEqual(feed.snapshot.traces,old.traces)
+            self.assertEqual(feed.snapshot.read_updated,old.read_updated)
+            feed.errors_only=True;feed.refresh()
+            self.assertEqual(feed.snapshot.traces,[])
+            self.assertEqual(feed.snapshot.read_updated['traces'],0)
+        feed.errors_only=False;feed.refresh()
+        self.assertTrue(feed.snapshot.activity);self.assertTrue(feed.snapshot.traces)
+        with patch.object(api,'get',side_effect=busy):
+            feed.session_id='session-2';feed.refresh()
+            self.assertEqual(feed.snapshot.activity,[])
+            self.assertEqual(feed.snapshot.activity_results,[])
+            self.assertEqual(feed.snapshot.traces,[])
+            self.assertEqual(feed.snapshot.agents,old.agents)  # Global inventory.
+            self.assertEqual(feed.snapshot.read_updated['activity'],0)
+            self.assertEqual(feed.snapshot.read_updated['traces'],0)
+
+    def test_partial_roster_does_not_hide_auth_schema_or_other_view_failures(self):
+        for route in ('connections','activity','traces'):
+            for failure in ('auth','schema','other-view'):
+                with self.subTest(route=route,failure=failure):
+                    api=ExampleApi();feed=Feed(api);feed.detail_enabled=False
+                    feed.active_page='activity' if failure=='other-view' else 'agents'
+                    original=api.get
+                    def get(path):
+                        if path.startswith('/api/'+route):
+                            if failure=='auth':raise urllib.error.HTTPError(path,401,'denied',{},None)
+                            if failure=='schema':return {route:'broken'}
+                            raise TimeoutError('busy')
+                        return original(path)
+                    with patch.object(api,'get',side_effect=get):feed.refresh()
+                    self.assertFalse(feed.snapshot.updated)
+                    self.assertTrue(feed.snapshot.error)
+
     def test_cockpit_does_not_request_global_totals_or_hidden_views(self):
         api=ExampleApi();feed=Feed(api)
         feed.active_page='agents';feed.include_global_totals=False;feed.detail_enabled=False
@@ -28,15 +93,80 @@ class FeedConcurrencyTests(unittest.TestCase):
         api.requests.clear();feed.active_page='metrics';feed.refresh()
         self.assertTrue(any(path.startswith('/api/usage-series?') for path in api.requests))
 
-    def test_data_timeout_names_the_request_without_claiming_disconnection(self):
+    def test_session_timeout_publishes_live_agents_and_retries_without_poll_storm(self):
         api=ExampleApi();feed=Feed(api);feed.active_page='agents';feed.include_global_totals=False
         original=api.get
+        attempts=[]
         def get(path):
-            if path.startswith('/api/sessions'):raise TimeoutError('timed out')
+            if path.startswith('/api/sessions'):
+                attempts.append(path)
+                raise TimeoutError('timed out')
+            return original(path)
+        with patch.object(api,'get',side_effect=get):
+            feed.refresh()
+            self.assertFalse(feed.snapshot.error)
+            self.assertTrue(feed.snapshot.updated)
+            self.assertEqual(feed.snapshot.local_status['sessions'],api.sessions)
+            self.assertTrue(feed.snapshot.activity)
+            self.assertIn('/api/sessions',feed.snapshot.sessions_error)
+            self.assertEqual(feed.snapshot.sessions_updated,0)
+            feed.session_id='session-1';feed.active_page='activity';feed.refresh()
+            self.assertEqual(len(attempts),1)  # Global history is independent of navigation.
+            feed.retry_now();feed.refresh()
+            self.assertEqual(len(attempts),2)
+        feed.sessions_attempted-=feed.EXTRA_POLL_SECONDS+1
+        feed.refresh()
+        self.assertFalse(feed.snapshot.sessions_error)
+        self.assertGreater(feed.snapshot.sessions_updated,0)
+
+    def test_session_history_retains_last_success_but_live_data_advances(self):
+        api=ExampleApi();feed=Feed(api);feed.active_page='agents'
+        original=api.get
+        stored=[{'session_id':'stored','services':['codex'],'latest_task':'Earlier work'}]
+        with patch.object(api,'get',side_effect=lambda path: {'sessions':stored}
+                          if path.startswith('/api/sessions') else original(path)):
+            feed.refresh()
+        old=feed.snapshot
+        api.sessions=[{**api.sessions[0],'task':'Current live work'}]
+        def unavailable(path):
+            if path.startswith('/api/sessions'):
+                raise urllib.error.HTTPError(path,503,'busy',{},None)
+            return original(path)
+        feed.sessions_attempted-=feed.EXTRA_POLL_SECONDS+1
+        with patch.object(api,'get',side_effect=unavailable):feed.refresh()
+        self.assertFalse(feed.snapshot.error)
+        self.assertIs(feed.snapshot.sessions,old.sessions)
+        self.assertEqual(feed.snapshot.sessions_updated,old.sessions_updated)
+        self.assertIn('503',feed.snapshot.sessions_error)
+        self.assertEqual(feed.snapshot.local_status['sessions'][0]['task'],'Current live work')
+        feed.retry_now();feed.refresh()
+        self.assertFalse(feed.snapshot.sessions_error)
+        self.assertEqual(feed.snapshot.sessions,[])
+
+    def test_session_auth_and_schema_failures_are_not_hidden_as_partial_success(self):
+        for failure in (401,403,400,'schema'):
+            with self.subTest(failure=failure):
+                api=ExampleApi();feed=Feed(api);feed.active_page='agents';original=api.get
+                def get(path):
+                    if path.startswith('/api/sessions'):
+                        if failure=='schema':return {'sessions':'invalid'}
+                        raise urllib.error.HTTPError(path,failure,'failed',{},None)
+                    return original(path)
+                with patch.object(api,'get',side_effect=get):feed.refresh()
+                self.assertFalse(feed.snapshot.updated)
+                self.assertTrue(feed.snapshot.error)
+                if failure in (401,403):self.assertEqual(feed.connection.phase,'auth')
+
+    def test_partial_history_still_obeys_scope_generation_guard(self):
+        api=ExampleApi();feed=Feed(api);feed.active_page='agents';original=api.get
+        def get(path):
+            if path.startswith('/api/sessions'):
+                feed.request_refresh()
+                raise TimeoutError('timed out')
             return original(path)
         with patch.object(api,'get',side_effect=get):feed.refresh()
-        self.assertIn('Loading delayed',feed.snapshot.error)
-        self.assertIn('/api/sessions',feed.snapshot.error)
+        self.assertFalse(feed.snapshot.updated)
+        self.assertTrue(feed.wake.is_set())
 
     def test_hidden_trace_payload_is_not_loaded_and_reopens_on_demand(self):
         api = ExampleApi()

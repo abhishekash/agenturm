@@ -90,7 +90,13 @@ different evidence; neither verifies the entire objective. The footer states
 which recent records are loaded. A quiet session gets its own exact-scoped read,
 even when its events have left the global activity window.
 
-Use the **Overview / Prompts / Details** buttons, or **m** to cycle them.
+The inspector opens with its **Overview / Prompts / Details** tab strip focused.
+Use **←/→** to choose a section and **Enter** or **↓** to read it. From the reader,
+**Ctrl+←/→** switches sections; **m** also cycles them. **Tab** and **Shift+Tab**
+move between the inspector's visible controls. **↑/↓**, **Page Up/Down**, and
+**Home/End** scroll the content. **Esc** closes an open selector first, then
+returns to the selected agent. The task, runtime and status remain visible above
+the content; switching sections preserves the reading position.
 **Prompts** reads one request at a time, starting with the latest. Choose a
 request in the chronological index or the selector; **[** moves to the previous
 request, **]** to the next, and **l** to the latest loaded request. **Earlier
@@ -107,7 +113,10 @@ means the stored, bounded, redacted record, with terminal control characters
 removed; it cannot restore content omitted upstream. **Details** holds IDs,
 model, reported usage, status evidence and relationship provenance.
 
-Agent rows prioritize task and current work. Collapsed parents retain both
+Agent rows prioritize task and current work. Alternating backgrounds group each
+agent's two content lines. At 120×30 or larger, a third line adds space between
+agents; smaller layouts retain two lines. Selection remains visible through
+resize, and only a branch's first line is its disclosure target. Collapsed parents retain both
 working and attention counts for their descendants. **←/→** collapse/expand
 branches in Today, Running and History; search temporarily reveals matching
 paths. Parent-only filter context is labeled. **Alt+Up**, **Alt+Down** and
@@ -118,11 +127,20 @@ Enter opens the inspector as a single reading pane. The supported floor is
 
 ### Resource usage
 
-The terminal fetches live data every two seconds; session inventory, MCP,
+The terminal fetches live data every two seconds; stored session inventory, MCP,
 metrics, usage and findings are cached for five seconds. Filter and selection
 actions can wake the feed immediately. Collection continues independently, even
 when display updates are paused. Tables update changed cells instead of
-invalidating an entire row.
+invalidating an entire row. Stored session inventory has its own five-second
+budget, so changing views does not reload the same global history.
+
+When the receiver is reachable but stored reads time out, **Agents** keeps the
+available native roster and labels the view **Partial data** or **History delayed**.
+Previous activity and traces are retained only for the identical filters and
+hierarchy scope. Missing evidence is unknown, and stale totals are disclosed in
+Details. Other evidence views retain their existing reconnect behavior. Reads
+retry automatically; **R** retries immediately. Restart the cockpit and any
+separately running receiver after upgrading to use the optimized queries.
 
 OpenCode polling skips unchanged databases between a 30-second lookback refresh;
 that periodic refresh ages old sessions out even when OpenCode writes nothing.
@@ -463,9 +481,10 @@ The offline LangGraph retrieval control was run and imported alongside the harne
 
 ## Agent session overview
 
-The terminal's **Agents** view puts **Agent / project**, **Current task**, **Status**,
-and **Updated** in a task-focused list. Task previews stay on one line; agent/project
-rows use two lines. On wide terminals the session inspector is on the right with
+The terminal's **Agents** view puts **Task / source**, **State**, and **Updated** in
+a task-focused list. Task previews stay on one line; runtime, project, and current
+work occupy the second. Alternating backgrounds separate agents, with an extra
+line of space on roomy terminals. On wide terminals the session inspector is on the right with
 only status and a short latest-action label, not command arguments or output. On narrower
 terminals it stacks below; compact terminals prioritize the list until you inspect.
 Full session IDs, working directories, branches (when recorded), models, and usage

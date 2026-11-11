@@ -5,8 +5,10 @@
 - Reorganize the session inspector into Overview, Prompts, and Details, with recent agent-reported progress before history and a selectable, wrapped prompt reader.
 - Separate known runtime context from requests, preserve the original captured text, and keep meaningful task descriptions through short follow-up replies.
 - Correct worker evidence and usage attribution, load bounded history for quiet sessions, and preserve prompt selection and reading position during updates.
-- Compact agent rows, prioritize working and attention counts, honor collapsed branches, and reveal hidden children during navigation.
+- Separate agents with alternating row backgrounds and extra spacing on roomy terminals; keep compact rows, prioritize working and attention counts, honor collapsed branches, and reveal hidden children during navigation.
 - Support a usable 60×18 inspector with a clear resize message below that minimum.
+- Give the inspector a native keyboard tab strip, visible focus, scoped Tab/Shift+Tab navigation, and preserved reading positions between sections.
+- Reduce startup history-query work and keep available live agents visible when stored reads are delayed, with explicit missing/stale evidence and safe filter-scoped retention.
 
 ## Agenturm 0.1.7
 

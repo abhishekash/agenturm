@@ -77,6 +77,25 @@ class HierarchyFeed(Feed):
 
 
 class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_agent_blocks_adapt_spacing_preserve_selection_and_keep_distinct_bands(self):
+        app=ObservatoryApp(HierarchyFeed(),persist_preferences=False)
+        async with app.run_test(size=(150,40)) as pilot:
+            await pilot.pause();app.refresh_timer.stop();app.set_agent_filter('all')
+            table=app.query_one('#agent-table',DataTable)
+            self.assertTrue(table.zebra_stripes)
+            app.select_agent('s-c1')
+            table.move_cursor(row=[key.value for key in table.rows].index('s-c1'))
+            for theme in ('Current','Observation','Bright','Dark','Solarized'):
+                app.theme=theme;await pilot.pause()
+                styles=[table.get_component_rich_style(name).bgcolor for name in
+                        ('datatable--odd-row','datatable--even-row','datatable--cursor')]
+                self.assertEqual(len(set(styles)),3,theme)
+            for size,height in (((150,40),3),((150,24),2),((150,40),3),((80,24),2),((60,18),2)):
+                await pilot.resize_terminal(*size);await pilot.pause()
+                self.assertTrue(all(row.height==height for row in table.rows.values()),size)
+                self.assertEqual(app.selected_source,'s-c1')
+                self.assertEqual(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value,'s-c1')
+
     async def test_today_collapse_honors_intent_and_child_navigation_reveals_target(self):
         app=ObservatoryApp(HierarchyFeed(),persist_preferences=False)
         async with app.run_test(size=(120,40)) as pilot:
@@ -223,7 +242,8 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await pilot.pause()
             self.assertTrue(app.query_one("#agent-bottom").display)
-            self.assertIn("Fix checkout regression", app.query_one("#agent-detail").plain_text)
+            self.assertIn("Fix checkout regression", app.query_one("#agent-heading").render().plain)
+            self.assertIn('Direct Children',app.query_one('#agent-detail').plain_text)
             await pilot.press("escape")
             await pilot.pause()
             await pilot.resize_terminal(60, 18)
@@ -232,7 +252,8 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await pilot.pause()
             self.assertTrue(app.query_one("#agent-bottom").display)
-            self.assertIn("Fix checkout regression", app.query_one("#agent-detail").plain_text)
+            self.assertIn("Fix checkout regression", app.query_one("#agent-heading").render().plain)
+            self.assertIn('Direct Children',app.query_one('#agent-detail').plain_text)
 
     async def test_search_reveals_ancestor_context_and_flat_mode_is_reversible(self):
         feed = HierarchyFeed()
@@ -294,23 +315,33 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             table = app.query_one("#agent-table", DataTable)
             self.assertEqual(table.row_count, 5)
             selected = app.selected_source
-            await pilot.click("#agent-table", offset=(2, 2))
+            await pilot.click("#agent-table", offset=(2, table.header_height))
             await pilot.pause()
             self.assertEqual(table.row_count, 1)
             self.assertFalse(app.query_one("#agents").has_class("expanded"))
             self.assertEqual(app.selected_source, selected)
-            await pilot.click("#agent-table", offset=(2, 2))
+            await pilot.click("#agent-table", offset=(2, table.header_height))
             await pilot.pause()
             self.assertEqual(table.row_count, 5)
             self.assertFalse(app.query_one("#agents").has_class("expanded"))
 
+            # Metadata and breathing room belong to the same logical row, but
+            # are not an invisible second/third disclosure target.
+            for line in (1,2):
+                app.select_agent('s-c2')
+                await pilot.click('#agent-table',offset=(2,table.header_height+line));await pilot.pause()
+                self.assertEqual(app.selected_source,'s-root')
+                self.assertEqual(table.row_count,5)
+                await pilot.press('escape');await pilot.pause()
+
             # Nested disclosures are indented past the root's hit area.
             keys=[key.value for key in table.rows]
             row=keys.index('s-c3')
-            await pilot.click('#agent-table',offset=(7,1+2*row));await pilot.pause()
+            y=table.header_height+sum(item.height for item in table.ordered_rows[:row])-int(table.scroll_y)
+            await pilot.click('#agent-table',offset=(7,y));await pilot.pause()
             self.assertNotIn('s-g1',app.visible_agent_rows)
             self.assertEqual(table.row_count,4)
-            await pilot.click('#agent-table',offset=(7,1+2*row));await pilot.pause()
+            await pilot.click('#agent-table',offset=(7,y));await pilot.pause()
             self.assertIn('s-g1',app.visible_agent_rows)
 
     async def test_reparenting_waits_for_explicit_reorder_and_preserves_selection(self):

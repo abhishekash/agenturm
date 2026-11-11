@@ -31,7 +31,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(controls.size.height,1)
             self.assertEqual([str(c.label) for c in app.query_one('#agent-table', DataTable).columns.values()],
                              ['Task / source', 'State', 'Updated'])
-            self.assertFalse(app.query_one('#agent-table').zebra_stripes)
+            self.assertTrue(app.query_one('#agent-table').zebra_stripes)
             self.assertNotIn('session-1', app.query_one('#agent-detail').plain_text)
             self.assertNotIn('LATEST RECORDED EVENT', app.query_one('#agent-detail').plain_text)
             await pilot.click('#expand-agents')
@@ -258,6 +258,9 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         get=feed.api.get
         session_rows=list(feed.snapshot.sessions)
         feed.api.get=lambda path: {'sessions':session_rows} if path.startswith('/api/sessions?') else get(path)
+        # A global history refresh now has its own budget; changing views must
+        # not bypass it. Seed this fixture through the public immediate retry.
+        feed.retry_now()
         app=ObservatoryApp(feed,persist_preferences=False)
         async with app.run_test(size=(180,48)) as pilot:
             await pilot.pause()
