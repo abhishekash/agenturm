@@ -36,7 +36,8 @@ def workflow_reasons(item, usage, snapshot, limits, now=None):
         return []
     if usage.get('trace_id') and not selected.get('trace_id'):selected['trace_id']=usage['trace_id']
     return [incident.reason for incident in classify(selected,scope_for(selected,snapshot),usage,limits,now=now,
-        stall_anchor='preview' if fresh_observation(item,snapshot,now) else '',events=snapshot.activity)]
+        stall_anchor='preview' if fresh_observation(item,snapshot,now) else '',events=snapshot.activity)
+        if incident.kind!='completion']
 
 
 class AttentionLedger(PureAttentionLedger):
