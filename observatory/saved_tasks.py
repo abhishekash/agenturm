@@ -94,7 +94,7 @@ def _link(evidence):
     if not isinstance(evidence, dict):
         raise TaskError('Linked evidence must be an object.')
     result = {}
-    for key, limit in (('session_id', 512), ('agent_id', 512), ('runtime', 120),
+    for key, limit in (('session_id', 512), ('agent_id', 512), ('parent_agent_id', 512), ('runtime', 120),
                        ('receiver', 2000), ('producer', 512),
                        ('task', 500), ('state', 120), ('working_directory', 4096),
                        ('branch', 512), ('resume_command', 2000)):
@@ -126,7 +126,8 @@ def _link(evidence):
         'native-run:' + hashlib.sha256(('\0'.join(result.get(key, '') for key in ('session_id', 'agent_id'))+'\0'+str(start)).encode()).hexdigest()[:24] if start else
         'session:' + hashlib.sha256(identity.encode()).hexdigest()[:24])
     if result.get('receiver'):
-        namespace = hashlib.sha256((result['receiver'] + '\0' + result.get('producer', '')).encode()).hexdigest()[:24]
+        namespace = hashlib.sha256('\0'.join(result.get(key, '') for key in
+            ('receiver', 'producer', 'agent_id', 'session_id')).encode()).hexdigest()[:24]
         result['key'] += '@' + namespace
     result['captured_ns'] = _timestamp(evidence.get('captured_ns', time.time_ns()), 'captured_ns')
     usage = evidence.get('usage')
@@ -207,22 +208,40 @@ def _link(evidence):
 
 
 def usage_summary(links):
-    runs = {(link.get('receiver', ''), link.get('producer', ''), link.get('agent_id', '') if not link.get('trace_id') else '',
-             link.get('session_id', '') if not link.get('trace_id') else '', link.get('trace_id') or link.get('run_start_ns')): link
+    runs = {(link.get('receiver', ''), link.get('producer', ''), link.get('agent_id', ''),
+             link.get('session_id', ''), link.get('trace_id') or link.get('run_start_ns')): link
             for link in links if link.get('trace_id') or link.get('run_start_ns')}
+    shared = {}
+    for identity, link in runs.items():
+        if link.get('trace_id'):
+            shared.setdefault((link.get('receiver', ''), link['trace_id']), set()).add(identity)
+    overlapping = sum(len(scopes) > 1 for scopes in shared.values())
+    recorded_agents = {(link.get('receiver', ''), link.get('agent_id')) for link in runs.values() if link.get('agent_id')}
+    related = sum(bool(link.get('parent_agent_id')) and
+                  (link.get('receiver', ''), link['parent_agent_id']) in recorded_agents
+                  for link in runs.values())
+    ambiguous = bool(overlapping or related)
     unscoped = sum(not (link.get('trace_id') or link.get('run_start_ns')) for link in links)
     result = {'scope': 'Recorded linked runs only; snapshots update when linked evidence is refreshed.',
-              'linked_runs': len(runs), 'unscoped_links': unscoped}
+              'linked_runs': len(runs), 'unscoped_links': unscoped,
+              'ambiguous_shared_traces': overlapping, 'related_run_scopes': related,
+              'aggregation_ambiguous': ambiguous,
+              'relationship_coverage': 'Recorded parent links only; missing relationships remain unknown.'}
+    if overlapping:
+        result['scope'] += ' Multiple agent/session scopes share a trace; aggregate usage is unavailable because their accounting may overlap. Review each linked scope separately.'
+    elif related:
+        result['scope'] += ' Recorded parent and child agents are linked; aggregate usage is unavailable because their accounting may overlap. Review each linked scope separately.'
+    result['scope'] += ' Relationship coverage includes recorded parent links only; missing relationships remain unknown.'
     for field in TOKEN_FIELDS:
         reported = [link['usage'][field] for link in runs.values()
                     if link.get('usage', {}).get(field + '_reported') and field in link['usage']]
-        result[field] = sum(reported) if reported else None
-        result[field + '_complete'] = bool(runs) and len(reported) == len(runs) and not unscoped and all(
+        result[field] = sum(reported) if reported and not ambiguous else None
+        result[field + '_complete'] = bool(runs) and not ambiguous and len(reported) == len(runs) and not unscoped and all(
             link.get('usage', {}).get('usage_complete') for link in runs.values())
     costs = [link['usage']['known_cost_usd'] for link in runs.values()
              if link.get('usage', {}).get('known_cost_usd') is not None]
-    result['known_cost_usd'] = round(sum(costs), 8) if costs else None
-    result['cost_complete'] = bool(runs) and not unscoped and len(costs) == len(runs) and all(
+    result['known_cost_usd'] = round(sum(costs), 8) if costs and not ambiguous else None
+    result['cost_complete'] = bool(runs) and not ambiguous and not unscoped and len(costs) == len(runs) and all(
         link.get('usage', {}).get('cost_complete') for link in runs.values())
     result['usage_complete'] = result['input_tokens_complete'] and result['output_tokens_complete'] and all(
         link.get('usage', {}).get('usage_complete') for link in runs.values())
@@ -432,12 +451,24 @@ class TaskStore:
     def link(self, task_id, evidence, *, expected_revision=None):
         entry = _link(evidence)
         def modify(task):
-            index = next((i for i, link in enumerate(task['links']) if link['key'] == entry['key']), None)
+            def same_scope(link):
+                # Recognize an older namespaced key only through all of its
+                # recorded scope fields. Unnamespaced legacy keys stay exact.
+                return (bool(entry.get('receiver')) and bool(link.get('receiver')) and
+                    all(link.get(key) == entry.get(key) for key in
+                        ('receiver','producer','agent_id','session_id','trace_id','run_start_ns')))
+            index = next((i for i, link in enumerate(task['links']) if link['key'] == entry['key'] or same_scope(link)), None)
             if index is None:
                 if len(task['links']) >= MAX_LINKS:
                     raise TaskError(f'A task can link at most {MAX_LINKS} runs or sessions. Unlink older evidence first.')
                 task['links'].append(entry)
             elif task['links'][index]['captured_ns'] <= entry['captured_ns']:
+                previous = task['links'][index]
+                if previous.get('parent_agent_id') and not entry.get('parent_agent_id'):
+                    # Missing metadata in a refresh is not evidence that a
+                    # recorded relationship or possible accounting overlap ended.
+                    entry['parent_agent_id'] = previous['parent_agent_id']
+                    entry['parent_identity_retained'] = True
                 task['links'][index] = entry
         return self._edit(task_id, modify, expected_revision)
 
@@ -547,10 +578,26 @@ def render_handoff(task, format='markdown', *, include_decision_history=False):
                   '- Receiver: ' + _md(link.get('receiver') or 'Legacy association; namespace not recorded'),
                   '- Producer: ' + _md(link.get('producer') or 'Legacy association; producer not recorded'),
                   '- Session: ' + _md(link.get('session_id') or 'Not reported'),
+                  '- Agent: ' + _md(link.get('agent_id') or 'Legacy session scope; worker not recorded'),
                   '- Run: ' + _md(link.get('trace_id') or ('Recorded native lifecycle start: '+_iso(link['run_start_ns'])
                       if link.get('run_start_ns') else 'Unscoped; excluded from usage totals')),
                   '- Reported state: ' + _md(link.get('state') or 'Unknown'),
                   '- Evidence captured: ' + _iso(link.get('captured_ns'))]
+        if link.get('parent_agent_id'):
+            lines += ['- Recorded parent' + (' (retained from an earlier capture)' if link.get('parent_identity_retained') else '')
+                      + ': ' + _md(link['parent_agent_id'])]
+        if usage['aggregation_ambiguous'] and link.get('trace_id'):
+            individual = link.get('usage', {})
+            values = []
+            for field, label in (('input_tokens','Input tokens'),('output_tokens','Output tokens'),
+                                 ('cache_read_input_tokens','Cached input'),('cache_write_input_tokens','Cache writes')):
+                if individual.get(field + '_reported') and individual.get(field) is not None:
+                    values.append('- ' + label + ': ' + f'{individual[field]:,}')
+            if individual.get('known_cost_usd') is not None:
+                values.append('- Reported cost: ' + f"${individual['known_cost_usd']:,.4f}" +
+                              ('' if individual.get('cost_complete') else ' (partial)'))
+            lines += ['', 'Recorded usage for this scope only (excluded from an overlapping aggregate):',
+                      *values] if values else ['', 'No usage was reported for this linked scope.']
         if link.get('task'):
             lines += ['- Recorded request: ' + _md(link['task'])]
         if link.get('resume_command'):

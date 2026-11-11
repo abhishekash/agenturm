@@ -320,7 +320,7 @@ def task_outcome_for_trace(db, trace_id):
 def derive_trace(db, trace_id, workflow_patterns=False):
     # Lazy import keeps the existing public normalization/summary API unchanged.
     from .core import (summarize, summarize_progress, apply_outcome, _activity_for,
-                       _progress_from_log)
+                       _progress_from_log, _recorded_activity_agents)
     from .findings import analyze
 
     spans = []
@@ -433,6 +433,13 @@ def derive_trace(db, trace_id, workflow_patterns=False):
         "spans_returned": len(spans), "logs_returned": len(logs),
         "complete": payload_complete and counts["spans"] <= len(spans) and counts["logs"] <= len(logs)
                     and counts["progress"] <= EVIDENCE_LIMIT}
+    indexed_agents = {row[0] for row in db.execute(
+        "SELECT agent_id FROM spans WHERE trace_id=? AND agent_id IS NOT NULL UNION "
+        "SELECT agent_id FROM logs WHERE trace_id=? AND agent_id IS NOT NULL", (trace_id, trace_id))}
+    summary["agent_count"] = len(indexed_agents | _recorded_activity_agents(spans, logs))
+    # Indexed owners cover every record, but event-level owners may be outside
+    # the bounded payload window. A sampled single owner is not allocation proof.
+    summary["agent_count_complete"] = summary["evidence_window"]["complete"]
     summary["findings_complete"] = summary["evidence_window"]["complete"]
     summary["search_terms_complete"] = summary["evidence_window"]["complete"]
     timestamp = db.execute("SELECT last_ns FROM trace_activity WHERE trace_id=?", (trace_id,)).fetchone()

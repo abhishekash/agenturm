@@ -84,7 +84,7 @@ class EvidenceTests(unittest.TestCase):
         history=ReviewHistory(self.scope)
         projection=history.projection({'_review_usage':{'trace_id':'other','input_tokens':999}})
         self.assertEqual(projection['usage']['values'],{})
-        projection=history.projection({'_review_usage':{'trace_id':'run','input_tokens':10,'known_cost_usd':0,'cost_complete':False}})
+        projection=history.projection({'_review_usage':{'trace_id':'run','input_tokens':10,'known_cost_usd':0,'cost_complete':False,'agent_count':1,'agent_count_complete':True}})
         self.assertEqual(projection['usage']['values']['input_tokens'],10)
         self.assertFalse(projection['usage']['values']['cost_complete'])
 

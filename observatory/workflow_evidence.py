@@ -214,8 +214,10 @@ class ReviewHistory:
             note='Captured records do not establish complete runtime capture or the current worktree state.')
         candidate=item.get('_review_usage') or {}
         exact_usage=bool(self.scope.run_id and candidate.get('trace_id')==self.scope.run_id and
+            type(candidate.get('agent_count')) is int and candidate['agent_count']==1 and candidate.get('agent_count_complete') is True and
             (not candidate.get('agent_id') or candidate.get('agent_id')==self.scope.agent_id))
         usage=dict(scope='exact run' if exact_usage else 'unavailable',trace_id=self.scope.run_id or None,
+            agent_count=candidate.get('agent_count'),allocation=candidate.get('usage_allocation') or ('single recorded agent' if exact_usage else 'agent allocation unverified'),
             values={key:candidate[key] for key in ('input_tokens','output_tokens','cache_read_input_tokens',
                 'cache_write_input_tokens','cost_usd','known_cost_usd','input_tokens_reported','output_tokens_reported',
                 'cost_reported','cost_coverage','cost_complete','usage_complete','unknown_cost_runs',
@@ -260,6 +262,7 @@ def render_review(projection):
     lines += [e['subject'] for e in projection['errors']] or ['None in the loaded interval.']
     usage=projection.get('usage') or {};values=usage.get('values') or {}
     lines += ['', 'RECORDED USAGE · '+usage.get('scope','unavailable')]
+    if usage.get('scope')=='unavailable':lines.append(usage.get('allocation') or 'Per-agent allocation unavailable.')
     labels={'input_tokens':'Input tokens','output_tokens':'Output tokens','cache_read_input_tokens':'Cached input tokens','cache_write_input_tokens':'Cache write tokens','known_cost_usd':'Recorded USD','cost_usd':'Recorded USD'}
     for key,label in labels.items():
         if key in values and values.get(key+'_reported') is not False:

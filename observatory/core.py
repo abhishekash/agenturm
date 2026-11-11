@@ -382,6 +382,23 @@ def _span_activity_identity(span):
             'agent.namespace', 'agent.worker_id') if key in attrs}
 
 
+def _recorded_activity_agents(spans, logs=()):
+    """Canonical recorded owners, including explicit owners on span events."""
+    agents=set()
+    for record in (*spans,*logs):
+        attrs=record.get('attributes') or {};resource=record.get('resource_attributes') or {}
+        agent=_agent_id_from_attributes(attrs,resource,record.get('service'))
+        if agent:agents.add(agent)
+    for span in spans:
+        for event in span.get('events') or ():
+            attrs=event.get('attributes') if isinstance(event,dict) else None
+            if not isinstance(attrs,dict) or not isinstance(attrs.get('agent.id'),str):continue
+            agent=_agent_id_from_attributes({**_span_activity_identity(span),**attrs},
+                span.get('resource_attributes'),span.get('service'))
+            if agent:agents.add(agent)
+    return agents
+
+
 def _activity_for(spans, logs):
     activity = []
     explicit_span_ids = set()
@@ -2384,6 +2401,9 @@ class Store:
         spans = self._spans(trace_id)
         with self._connect() as db:
             rows = db.execute("SELECT time_ns,stage,message,percent,session_id,service FROM progress WHERE trace_id=? ORDER BY time_ns,id", (trace_id,)).fetchall()
+            indexed_agents={row[0] for row in db.execute(
+                "SELECT agent_id FROM spans WHERE trace_id=? AND agent_id IS NOT NULL UNION "
+                "SELECT agent_id FROM logs WHERE trace_id=? AND agent_id IS NOT NULL",(trace_id,trace_id))}
         progress = [dict(r) for r in rows]
         logs = self.logs(trace_id, limit=1000)
         activity = _activity_for(spans, logs)
@@ -2413,6 +2433,8 @@ class Store:
             summary["active"] = summary["status"] == "RUNNING"
         session_id = _session_for(spans, progress, logs)
         if summary:
+            summary['agent_count']=len(indexed_agents | _recorded_activity_agents(spans,logs))
+            summary['agent_count_complete']=True
             summary["session_id"] = session_id
             summary["activity_terms"] = sorted({str(value)[:200] for item in activity
                 for value in (item["domain"], item["action"], item["subject"], item["actor"]) if value})
@@ -2617,6 +2639,20 @@ class Store:
                     WHERE s2.session_id IS NOT NULL GROUP BY s2.session_id
                     ORDER BY MAX(a2.last_ns) DESC,s2.session_id DESC LIMIT ?)
                 ORDER BY a.last_ns DESC,s.session_id DESC""", (int(limit),)).fetchall()
+            legacy_latest=[];seen_sessions=set()
+            for row in rows:
+                key=(row['session_id'],row['agent_id'])
+                if key in seen_sessions:continue
+                seen_sessions.add(key)
+                if len(legacy_latest)<500 and 'agent_count' not in json.loads(row['summary_json']):legacy_latest.append(row['trace_id'])
+            legacy_agent_counts={trace:0 for trace in legacy_latest}
+            for offset in range(0,len(legacy_latest),200):
+                selected=legacy_latest[offset:offset+200];marks=','.join('?' for _ in selected)
+                counts=db.execute(f"SELECT trace_id,COUNT(DISTINCT agent_id) FROM ("
+                    f"SELECT trace_id,agent_id FROM spans WHERE trace_id IN ({marks}) UNION ALL "
+                    f"SELECT trace_id,agent_id FROM logs WHERE trace_id IN ({marks})) GROUP BY trace_id",
+                    [*selected,*selected]).fetchall()
+                legacy_agent_counts.update((row[0],row[1]) for row in counts)
             session_expr = _session_sql_expression("l")
             log_sessions = db.execute(f"""SELECT {session_expr} AS session_id,MAX(l.time_ns) AS last_ns
                 FROM logs l WHERE {session_expr} IS NOT NULL
@@ -2682,9 +2718,12 @@ class Store:
                               "cache_read_input_tokens","cache_write_input_tokens","reasoning_output_tokens",
                               "input_tokens_reported","output_tokens_reported","cache_read_input_tokens_reported",
                               "cache_write_input_tokens_reported","reasoning_output_tokens_reported",
-                              "known_cost_usd","cost_complete","usage_complete","task_outcome","task_outcome_ns")
+                              "known_cost_usd","cost_complete","usage_complete","task_outcome","task_outcome_ns",
+                              "agent_id","agent_count","agent_count_complete")
                 item["latest_run"]={key:summary[key] for key in usage_fields if key in summary}
                 item["latest_run"]["trace_id"]=row["trace_id"]
+                if row['trace_id'] in legacy_agent_counts:
+                    item['latest_run'].update(agent_count=legacy_agent_counts[row['trace_id']],agent_count_complete=False)
                 item["latest_status"] = summary.get("status") or "UNKNOWN"
                 item["latest_task_outcome"] = summary.get("task_outcome") or "unknown"
                 item["task_outcome_ns"] = summary.get("task_outcome_ns") or 0
@@ -3278,6 +3317,7 @@ def summarize(spans):
             agent_id = None
     return {"trace_id": root["trace_id"], "name": root["name"],
             "agent_id": agent_id,
+            "agent_count": len(_recorded_activity_agents(spans)), "agent_count_complete": True,
             "agent_native_id": hierarchy_attr("agent.id"),
             "parent_agent_native_id": hierarchy_attr("agent.parent_id"),
             "agent_namespace": hierarchy_attr("agent.namespace"),

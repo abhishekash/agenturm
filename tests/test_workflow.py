@@ -24,7 +24,7 @@ class WorkflowEvidenceTests(unittest.TestCase):
 
     def test_thresholds_use_current_run_and_report_missing_cost(self):
         feed=ManualFeed();item={'id':'a','session_id':'s','state':'Working'}
-        feed.snapshot=replace(feed.snapshot,sessions=[{'session_id':'s','input_tokens':999999,'known_cost_usd':99,'latest_run':{'trace_id':'r','input_tokens':20,'output_tokens':5}}])
+        feed.snapshot=replace(feed.snapshot,sessions=[{'session_id':'s','input_tokens':999999,'known_cost_usd':99,'latest_run':{'trace_id':'r','input_tokens':20,'output_tokens':5,'agent_count':1,'agent_count_complete':True}}])
         ledger=AttentionLedger();ledger.update([item],feed.snapshot,{'tokens':100,'cost':1})
         self.assertEqual(ledger.rows,[])
         ledger.update([item],feed.snapshot,{'tokens':25,'cost':1})

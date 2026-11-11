@@ -96,6 +96,7 @@ def capture_selected_run(owner, *, item_override=None, review_snapshot=None):
             'run_start_ns': scope.run_start_ns,
             'run_end_ns': getattr(scope, 'run_end_ns', None),
             'agent_id': scope.agent_id,
+            'parent_agent_id': str(item.get('parent_agent_id') or ''),
             'runtime': one_line(item.get('runtime'), 120), 'trace_id': trace,
             'task': one_line(item.get('task')), 'state': one_line(item.get('state'), 120),
             'working_directory': workspace,
@@ -156,6 +157,8 @@ def task_overview(task):
         lines += ['', 'USAGE DETAILS', f'Tokens {token_label} · Reported cost {cost_label}',
                   f"{usage.get('linked_runs', 0)} linked runs · {usage.get('unscoped_links', 0)} session-only links",
                   'Only explicitly linked runs are counted. Link again to refresh a run.']
+        if usage.get('aggregation_ambiguous'):
+            lines.append('Aggregate unavailable: linked scopes share a trace or a recorded parent relationship and may overlap. Handoff retains each scope separately.')
         cached = usage.get('cache_read_input_tokens')
         if cached is not None:
             lines.append('Cached input: ' + f'{cached:,}' + ('' if usage.get('cache_read_input_tokens_complete') else ' (partial)'))

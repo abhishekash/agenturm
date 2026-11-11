@@ -40,7 +40,7 @@ class SelectedRunTests(unittest.TestCase):
         item = {'id': 'worker', 'session_id': 'shared', 'agent_id': 'worker', 'service': 'codex',
                 'runtime': 'Codex', 'task': 'Fix refresh expiry', 'state': 'Completed',
                 'working_directory': 'file:///tmp/local%20repo'}
-        usage = {'trace_id': TRACE, 'input_tokens': 200, 'output_tokens': 20}
+        usage = {'trace_id': TRACE, 'input_tokens': 200, 'output_tokens': 20,'agent_count':1,'agent_count_complete':True}
         event = {'session_id': 'shared', 'agent_id': 'worker', 'service': 'codex', 'trace_id': TRACE,
                  'domain': 'shell', 'subject': 'python -m unittest', 'result': 'success',
                  'time_unix_nano': time.time_ns()}
