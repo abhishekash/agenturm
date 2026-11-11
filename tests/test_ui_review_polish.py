@@ -63,7 +63,7 @@ class LocalHelpersTest(unittest.TestCase):
         visible, widths = column_layout('agent-table', specs, 60)
         self.assertIn(0, visible)
         self.assertIn(1, visible)
-        self.assertIn(2, visible)
+        self.assertNotIn(2, visible)
         self.assertNotIn(2, column_layout('agent-table', specs, 40)[0])
         self.assertLessEqual(sum(widths) + 2 * len(widths) + 1, 60)
         self.assertEqual(column_layout('agent-table', specs, 180)[0], tuple(range(3)))
@@ -166,7 +166,7 @@ class CockpitPolishTest(unittest.IsolatedAsyncioTestCase):
             key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
             await pilot.resize_terminal(70, 30)
             await pilot.pause()
-            self.assertIn(2, table.visible_columns)
+            self.assertNotIn(2, table.visible_columns)
             await pilot.resize_terminal(45, 30)
             await pilot.pause()
             self.assertNotIn(2, table.visible_columns)

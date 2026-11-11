@@ -548,9 +548,9 @@ class TokenPresenceRenderingTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertFalse(app.query_one('#stat-usage').display,
                              'Detailed usage belongs in Metrics, not the compact workspace header')
-            await pilot.press('e')
+            app.set_session_mode('details')
             await pilot.pause()
-            self.assertIn('Tokens Not reported', ' '.join(app.query_one('#agent-stats').plain_text.split()))
+            self.assertIn('Tokens Not reported', ' '.join(app.query_one('#agent-detail').plain_text.split()))
             app.action_page('traces')
             await pilot.pause()
             row = app.query_one('#trace-table').get_row_at(0)

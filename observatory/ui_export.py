@@ -16,7 +16,7 @@ FIELDS = {
     'agents': ('runtime', 'service', 'session_id', 'project', 'model', 'task', 'state', 'waiting_for',
                'agent_id', 'parent_agent_id', 'relationship_kind', 'relationship_state',
                'relationship_provenance', 'discovery_state', 'coverage'),
-    'activity': ('id', 'service', 'agent_id', 'session_id', 'trace_id', 'span_id', 'time_unix_nano', 'domain', 'action', 'subject', 'result', 'detail', 'duration_ms'),
+    'activity': ('id', 'service', 'agent_id', 'session_id', 'trace_id', 'span_id', 'time_unix_nano', 'domain', 'action', 'subject', 'result', 'detail', 'duration_ms', 'presentation', 'context_blocks'),
     'mcp': ('id', 'service', 'agent_id', 'session_id', 'trace_id', 'span_id', 'time_unix_nano', 'server', 'tool', 'method', 'status', 'arguments', 'output', 'duration_ms'),
     'traces': ('trace_id', 'summary', 'spans', 'logs', 'span_page', 'pagination',
                'evidence_window', 'findings', 'progress', 'outcome'),

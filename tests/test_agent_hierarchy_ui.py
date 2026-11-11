@@ -46,13 +46,13 @@ def hierarchy_snapshot():
                             active=True, stamp=now - 4_000_000)
     activity = [{
         "id": "request-c1", "source_id": "request-c1", "service": "codex",
-        "session_id": "c1", "time_unix_nano": now, "domain": "message", "action": "user",
+        "session_id": "c1", "agent_id": waiting["agent_id"], "time_unix_nano": now, "domain": "message", "action": "user",
         "subject": "Inspect API logs and decide whether retries should be bounded",
         "detail": "Inspect API logs and decide whether retries should be bounded",
         "result": "observed",
     }, {
         "id": "mcp-c1", "source_id": "mcp-c1", "service": "codex", "session_id": "c1",
-        "time_unix_nano": now, "domain": "mcp", "action": "call", "subject": "github / search_issues",
+        "agent_id": waiting["agent_id"], "time_unix_nano": now, "domain": "mcp", "action": "call", "subject": "github / search_issues",
         "mcp_server": "github", "mcp_tool": "search_issues", "result": "success",
         "trace_id": "1" * 32, "span_id": "1" * 16,
     }]
@@ -77,6 +77,31 @@ class HierarchyFeed(Feed):
 
 
 class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_today_collapse_honors_intent_and_child_navigation_reveals_target(self):
+        app=ObservatoryApp(HierarchyFeed(),persist_preferences=False)
+        async with app.run_test(size=(120,40)) as pilot:
+            await pilot.pause();app.refresh_timer.stop()
+            self.assertEqual(app.agent_filter,'today')
+            app.select_agent('s-root')
+            app.action_tree_left();await pilot.pause()
+            self.assertEqual(app.visible_agent_rows,['s-root'])
+            root=app.query_one('#agent-table').get_row('s-root')[0].plain
+            self.assertIn('2 working',root)
+            self.assertIn('1 needs you',root)
+            self.assertNotIn('— tok',root)
+            for size in ((150,40),(60,18)):
+                await pilot.resize_terminal(*size);await pilot.pause()
+                table=app.query_one('#agent-table')
+                rendered='\n'.join(table.render_line(y).text for y in range(table.size.height))
+                self.assertIn('2 working',rendered)
+                self.assertIn('1 needs you',rendered)
+            app.action_inspect_first_child();await pilot.pause()
+            self.assertEqual(app.selected_source,'s-c2')
+            self.assertIn('s-c2',app.visible_agent_rows)
+            app.action_inspect_parent();app.action_tree_left();await pilot.pause()
+            app.action_inspect_next_attention();await pilot.pause()
+            self.assertEqual(app.selected_source,'s-c1')
+
     async def test_core_acceptance_tree_collapse_expand_inspect_and_stable_counts(self):
         feed = HierarchyFeed()
         app = ObservatoryApp(feed, persist_preferences=False)
@@ -102,7 +127,7 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(table.row_count, 1)
             self.assertIn("4 subagents", table.get_row("s-root")[0].plain)
-            self.assertIn("1 needs attention", table.get_row("s-root")[0].plain)
+            self.assertIn("1 needs you", table.get_row("s-root")[0].plain)
             self.assertEqual(app.query_one("#stat-sessions").render().plain, counts_before)
             self.assertEqual(app.query_one("#stat-attention").render().plain, attention_before)
 
@@ -201,7 +226,7 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Fix checkout regression", app.query_one("#agent-detail").plain_text)
             await pilot.press("escape")
             await pilot.pause()
-            await pilot.resize_terminal(50, 18)
+            await pilot.resize_terminal(60, 18)
             await pilot.pause()
             self.assertEqual(table.row_count, 5)
             await pilot.press("enter")
@@ -278,6 +303,15 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(table.row_count, 5)
             self.assertFalse(app.query_one("#agents").has_class("expanded"))
+
+            # Nested disclosures are indented past the root's hit area.
+            keys=[key.value for key in table.rows]
+            row=keys.index('s-c3')
+            await pilot.click('#agent-table',offset=(7,1+2*row));await pilot.pause()
+            self.assertNotIn('s-g1',app.visible_agent_rows)
+            self.assertEqual(table.row_count,4)
+            await pilot.click('#agent-table',offset=(7,1+2*row));await pilot.pause()
+            self.assertIn('s-g1',app.visible_agent_rows)
 
     async def test_reparenting_waits_for_explicit_reorder_and_preserves_selection(self):
         feed = HierarchyFeed()

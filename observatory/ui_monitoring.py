@@ -143,8 +143,11 @@ def session_usage(sessions, item):
     if item.get('agent_id'):
         exact=next((row for row in sessions if row.get('agent_id')==item['agent_id']),None)
         if exact is not None:return exact
+        if not item.get('agent_id_inferred'):return {}
     return next((row for row in sessions if item.get('session_id')
                  and row.get('session_id')==item['session_id']
+                 and (not item.get('service') or not (row.get('services') or row.get('service'))
+                      or item['service'] in (row.get('services') or [row.get('service')]))
                  and not row.get('agent_id')), {})
 
 

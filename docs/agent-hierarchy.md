@@ -135,8 +135,12 @@ Up/Down selects visible rows. Right expands a branch, or moves to its first
 child when already expanded. Left collapses a branch, or moves to its visible
 parent. Enter and `e` keep their existing inspect/expand-evidence behavior.
 Clicking the disclosure area toggles children; clicking elsewhere selects the
-row as before. Search and Recent/Active filters reveal required ancestor paths
-without rewriting the user's saved expansion state.
+row as before. Search reveals matching ancestor paths without rewriting saved
+expansion state. Today/Running filters include required ancestor context but
+honor manually collapsed branches. Parent/child/attention navigation expands
+the target's ancestor path before selecting it; an explicitly targeted filtered
+child is made visible. Branch summaries prioritize both working and attention
+counts over optional runtime/project metadata.
 
 Every row's State column describes that node only. Descendant work and attention
 appear as a separate subtree summary, so a completed parent never becomes

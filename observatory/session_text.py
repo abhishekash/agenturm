@@ -1,0 +1,103 @@
+"""Readable projections of captured messages; the original record is never edited.
+
+Only complete, leading runtime context envelopes are separated. Arbitrary XML,
+code fences and text discussing an envelope are user content, not scaffolding.
+"""
+from __future__ import annotations
+
+import json
+import re
+import unicodedata
+from dataclasses import dataclass
+
+_ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
+_CONTEXT = re.compile(
+    r'^<(?P<tag>environment_context|environment_details|skills_instructions|'
+    r'user_instructions|developer_instructions|system_instructions|'
+    r'system-reminder|INSTRUCTIONS|skill)\b[^>]*>.*?</(?P=tag)>', re.S)
+_AGENTS = re.compile(r'^# AGENTS\.md instructions for [^\n]+\n\s*(?=<INSTRUCTIONS>)')
+_STEERING = {'yes', 'no', 'ok', 'okay', 'thanks', 'thank you', 'go ahead',
+             'continue', 'please continue', 'proceed', 'do it', 'sure', 'sounds good'}
+_MISSING = {'task not reported', 'user message', 'assistant message', 'user prompt'}
+
+
+def message_text(value, depth=0):
+    """Unwrap recorded text blocks without flattening their line breaks."""
+    if depth > 12:
+        return ''
+    if isinstance(value, str):
+        # A captured string can itself be JSON instructions. Parsing it would
+        # lose fields and make the "original" view an inaccurate reconstruction.
+        text = _ANSI.sub('', value).replace('\r\n', '\n').replace('\r', '\n')
+        return ''.join(c for c in text if c in '\n\t' or unicodedata.category(c) not in {'Cc','Cf'})
+    if isinstance(value, dict):
+        if (value.get('type') in {'text','input_text','output_text'} or
+                set(value)<= {'role','content','text','message','prompt','recorded_content'}):
+            for key in ('text', 'content', 'message', 'prompt', 'recorded_content'):
+                if key in value:
+                    text = message_text(value[key], depth + 1)
+                    if text:
+                        return text
+        return message_text(json.dumps(value,ensure_ascii=False,indent=2),depth+1)
+    elif isinstance(value, list):
+        return '\n'.join(text for child in value if isinstance(child, (str, dict))
+                         if (text := message_text(child, depth + 1)))
+    return ''
+
+
+@dataclass(frozen=True)
+class RequestText:
+    raw: str
+    body: str
+    context: tuple[str, ...]
+
+
+def request_text(value):
+    raw = message_text(value)
+    remaining = raw.lstrip()
+    context = []
+    while remaining:
+        header = _AGENTS.match(remaining)
+        candidate = remaining[header.end():] if header else remaining
+        match = _CONTEXT.match(candidate)
+        if not match:
+            break
+        context.append('Repository instructions' if header else
+                       match['tag'].replace('_', ' ').replace('-', ' ').capitalize())
+        remaining = candidate[match.end():].lstrip()
+    return RequestText(raw=raw, body=remaining if context else raw, context=tuple(context))
+
+
+def request_title(value):
+    parsed = request_text(value)
+    first = next((line.strip() for line in parsed.body.splitlines() if line.strip()), '')
+    if not first:
+        return 'Runtime context' if parsed.context else 'Request text unavailable'
+    if first.startswith(('<send_user_message_question_reply>', '[{"questionItemId"', '{"questionItemId"')):
+        return 'Reply to input request'
+    return re.sub(r'^#{1,6}\s+', '', first)
+
+
+def task_description(value):
+    title = request_title(value)
+    if title.casefold().strip(' .!') in _STEERING | _MISSING | {
+            'runtime context', 'request text unavailable', 'reply to input request'}:
+        return ''
+    return title
+
+
+def remember_task(session, text):
+    """A context envelope or terse acknowledgement cannot rename the task."""
+    if not session.capture_details:
+        return
+    from .local_activity import safe
+    if isinstance(text,list):
+        text=[block for block in text if isinstance(block,dict)
+              and block.get('type') in {'text','input_text','output_text'}]
+    # Classify before capture truncation: a large context prefix may otherwise
+    # consume the entire record and conceal the actual request at its end.
+    parsed = request_text(text)
+    description = task_description(parsed.body)
+    if description:
+        session.task_description = safe(description,500)
+        session.tasks[session.turn] = safe(parsed.body,4000)

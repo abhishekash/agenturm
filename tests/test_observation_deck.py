@@ -38,7 +38,8 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertFalse(app.query_one('#results-agents').display)
             self.assertTrue(inspector.display)
-            self.assertIn('session-1', app.query_one('#agent-stats').plain_text)
+            app.set_session_mode('details');await pilot.pause()
+            self.assertIn('session-1', app.query_one('#agent-detail').plain_text)
             await pilot.press('escape')
             await pilot.pause()
             self.assertTrue(app.query_one('#results-agents').display)
@@ -83,6 +84,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press('e')
             await pilot.pause()
             self.assertTrue(inspector.display)
+            app.set_session_mode('details');await pilot.pause()
             self.assertIn('session-1', app.query_one('#agent-detail').plain_text)
 
     async def test_selection_marker_tracks_keyboard_refresh_and_resize_without_erasing_status_colors(self):
@@ -168,7 +170,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
 
             # Very narrow terminals use one labelled selector for all seven
             # views, rather than letting an overflow control cover a tab.
-            await pilot.resize_terminal(50,24)
+            await pilot.resize_terminal(60,24)
             await pilot.pause()
             self.assertTrue(app.screen.region.contains_region(picker.region))
             await pilot.press('3')
@@ -211,7 +213,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.resize_terminal(120,40)
             await pilot.pause()
             self.assertIn(title,' '.join(line.text.rstrip() for line in log.lines))
-            self.assertIn('Shell command · git',log.plain_text)
+            self.assertIn('git status --short',log.plain_text)
             self.assertLessEqual(len(log.lines),log.scrollable_content_region.height+4)  # Task usage may scroll.
             await pilot.resize_terminal(180,48)
             await pilot.pause()
@@ -283,7 +285,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
     async def test_long_commands_and_output_are_never_in_the_default_overview(self):
         feed=ManualFeed()
         event=feed.snapshot.activity[0]
-        event.update(domain='shell',subject='curl -fsSL --secret-argument '+('x'*2000),
+        event.update(domain='shell',subject='curl -fsSL --output '+('x'*2000),
                      detail='RAW_RESPONSE_MARKER '+('body{color:red}'*1000))
         feed.snapshot.local_status['sessions'][0]['task']='Inspect the website performance'
         app=ObservatoryApp(feed,persist_preferences=False)
@@ -293,8 +295,8 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             log=app.query_one('#agent-detail')
             text=log.plain_text
-            self.assertIn('Shell command · curl',text)
-            self.assertNotIn('--secret-argument',text)
+            self.assertIn('curl -fsSL',text)
+            self.assertNotIn('x'*80,text)
             self.assertNotIn('RAW_RESPONSE_MARKER',text)
             self.assertLessEqual(len(log.lines),22)  # Includes the task token/cache summary.
             self.assertFalse(app.query_one('#agent-actions').display)
@@ -484,17 +486,18 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             app.select_agent('source-1')
             await pilot.pause()
             detail=app.query_one('#agent-detail').plain_text
-            self.assertIn('REQUEST',detail)
-            self.assertIn('Implement a retry guard for the payment request',detail)
-            self.assertIn('LATEST ACTION',detail)
+            self.assertNotIn('Implement a retry guard for the payment request',detail)
+            self.assertIn('LATEST WORK',detail)
             self.assertIn('Activity · s',app.query_one('#agent-open').label.plain)
             await pilot.press('e')
             await pilot.pause()
             expanded=app.query_one('#agent-detail').plain_text
-            self.assertIn('Prompt Timeline · Oldest First',expanded)
+            self.assertNotIn('Prompt Timeline',expanded)
             self.assertIn('preserve the original response',' '.join(expanded.split()))
-            self.assertIn('Recent Recorded Activity',expanded)
+            self.assertIn('Recent Work',expanded)
             self.assertIn('git status --short',expanded)
+            app.set_session_mode('prompts');await app.workers.wait_for_complete();await pilot.pause()
+            self.assertIn('preserve the original response',' '.join(app.query_one('#agent-detail').plain_text.split()))
 
     async def test_running_agents_keep_all_prompts_activity_and_mcp_calls_visible(self):
         feed=ManualFeed()
@@ -555,10 +558,14 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             for session_id,source_id,service,runtime,task in running+[
                     ('session-3','source-3','opencode','OpenCode','Investigate the flaky test')]:
                 app.select_agent(source_id)
+                app.set_session_mode('overview')
                 text=app.query_one('#agent-detail').plain_text
-                self.assertIn(f'{runtime} first prompt · {task}',text)
                 self.assertIn(f'{runtime} follow-up prompt · keep going',text)
                 self.assertIn(f'Current work for {runtime}',text)
+                app.set_session_mode('prompts');await app.workers.wait_for_complete();await pilot.pause()
+                self.assertIn(f'{runtime} follow-up prompt · keep going',app.query_one('#agent-detail').plain_text)
+                app.navigate_prompt('older');await pilot.pause()
+                self.assertIn(f'{runtime} first prompt · {task}',app.query_one('#agent-detail').plain_text)
 
             app.action_page('mcp')
             await pilot.pause()
@@ -577,10 +584,13 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one('#agent-table').row_count,3)
             await pilot.press('enter')
             await pilot.pause()
+            app.set_session_mode('overview');await pilot.pause()
             detail=' '.join(app.query_one('#agent-detail').plain_text.split())
-            self.assertIn('OpenCode first prompt · Investigate the flaky test',detail)
             self.assertIn('OpenCode follow-up prompt · keep going',detail)
             self.assertIn('Current work for OpenCode',detail)
+            app.set_session_mode('prompts');await pilot.pause()
+            app.navigate_prompt('older');await pilot.pause()
+            self.assertIn('OpenCode first prompt · Investigate the flaky test',app.query_one('#agent-detail').plain_text)
 
     async def test_compact_overview_leaves_full_height_agent_and_inspector_frames(self):
         feed=ManualFeed()
@@ -643,6 +653,6 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         task='<send_user_message_question_reply> [{"questionItemId":"private-id","answer":"yes"}]'
         item={'task':task}
         preview=task_text(item)
-        self.assertEqual(preview.plain,'Reply to input request')
+        self.assertEqual(preview.plain,'—','A transport reply must not become the task title')
         self.assertTrue(preview.no_wrap)
         self.assertEqual(item['task'],task)

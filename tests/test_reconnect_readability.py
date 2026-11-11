@@ -158,8 +158,9 @@ class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
             await pilot.pause();app.set_agent_filter('all');app.select_agent('source-1')
             await pilot.press('e');await pilot.pause()
             text=app.query_one('#agent-detail').plain_text
-            self.assertLess(text.index('Make the inspector readable'),text.index('Command'))
-            self.assertIn('latest 5 of 20',text)
+            self.assertLess(text.index('Command'),text.index('Latest Request'))
+            self.assertIn('Make the inspector readable',text)
+            self.assertIn('latest 6 of 20 loaded actions',text.casefold())
             self.assertNotIn('task_0.py',text)
             self.assertNotIn('output line 199',text)
             self.assertNotIn('Progress Summary',text)
