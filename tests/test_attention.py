@@ -18,6 +18,24 @@ def item(**values):
 
 
 class AttentionTests(unittest.TestCase):
+    def test_delayed_discovery_and_first_execution_inventory_are_silent(self):
+        ledger=AttentionLedger();ledger.update([],snapshot(),{},100)
+        self.assertEqual(ledger.update([item()],snapshot(101),{},101),[])
+        self.assertEqual(len(ledger.rows),1)
+        # Discovering another execution's existing request is also baseline.
+        other=item(id='other',agent_id='other',trace_id='other-run',request_id='backlog')
+        self.assertEqual(ledger.update([item(),other],snapshot(102),{},102),[])
+        self.assertEqual(len(ledger.rows),2)
+        self.assertEqual(len(ledger.update([item(request_id='next'),other],snapshot(103),{},103)),1)
+
+    def test_empty_restart_then_delayed_changed_request_does_not_alert_backlog(self):
+        previous=AttentionLedger();previous.update([item()],snapshot(),{},100)
+        records=[{**incident.to_record(),'resolved_at':None} for incident in previous.incidents.values()]
+        restarted=AttentionLedger();restarted.restore(records)
+        restarted.update([],snapshot(200),{},200)
+        self.assertEqual(restarted.update([item(request_id='happened-while-closed')],snapshot(201),{},201),[])
+        self.assertEqual(len(restarted.update([item(request_id='actually-new')],snapshot(202),{},202)),1)
+
     def test_initial_inventory_missing_intervals_and_new_request(self):
         ledger=AttentionLedger();first=item()
         self.assertEqual(ledger.update([first],snapshot(),{},100),[])
@@ -116,7 +134,7 @@ class AttentionTests(unittest.TestCase):
         self.assertFalse(fresh_observation(native,snapshot(103),103))
 
     def test_stall_episode_survives_delayed_capture_and_resets_on_progress(self):
-        ledger=AttentionLedger();ledger.update([],snapshot(),{},100)
+        ledger=AttentionLedger();ledger.update([item(state='Working',waiting_for='',request_id='')],snapshot(),{},100)
         stalled=item(state='Possibly stalled',waiting_for='',request_id='')
         self.assertEqual(len(ledger.update([stalled],snapshot(101),{},101)),1)
         identity=ledger.rows[0][0]['_attention_id']
@@ -133,7 +151,7 @@ class AttentionTests(unittest.TestCase):
         done=item(id='done',agent_id='done',state='Completed')
         failed=item(id='failed',agent_id='failed',state='Failed')
         alerts=ledger.update([done,failed,item()],snapshot(101),{},101)
-        self.assertEqual(len(alerts),2)
+        self.assertEqual(alerts,[])  # First inventory for all three executions.
         self.assertEqual([r[0]['_attention_kind'] for r in ledger.rows],['approval','failure','completion'])
 
     def test_resolved_churn_does_not_retain_source_payloads_or_ids(self):

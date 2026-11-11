@@ -1,5 +1,6 @@
 """Daily decisions use task outcomes, while raw failures remain inspectable."""
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import time
@@ -184,7 +185,8 @@ class TodayJourneyTests(unittest.IsolatedAsyncioTestCase):
         feed.snapshot.sessions=[];feed.snapshot.activity=[]
         feed.snapshot.local_status['sessions']=[
             {**base,'source_id':sid,'session_id':sid,'task':title,'run_state':state,
-             'last_record_ns':stamp,'state_since_ns':stamp,'last_activity':{},'waiting_for':wait}
+             'last_record_ns':stamp,'state_since_ns':stamp,'last_activity':{},'waiting_for':wait,
+             'trace_id':hashlib.sha256(sid.encode()).hexdigest()[:32]}
             for sid,title,state,stamp,wait in [
                 ('running','Build payments','running',now,''),
                 ('waiting','Approve migration','waiting',yesterday,'Approval'),
@@ -205,13 +207,16 @@ class TodayJourneyTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('checks are not verified',' '.join(app.query_one('#agent-detail').plain_text.split()))
                 app.last_update=-1;app.refresh_data();await pilot.pause()
                 self.assertEqual(app.selected_source,'done')
-                app.action_review_attention();await pilot.pause()
+                await app.workers.wait_for_complete()
+                app.action_review_attention();await app.workers.wait_for_complete();await pilot.pause();app.refresh_data()
                 self.assertNotIn('done',app.visible_agent_rows)
-                self.assertIn(review_key(app.source_map['done']),json.loads(prefs.read_text())['reviewed_tasks'])
+                self.assertTrue(app.workflow_controller.reviewed(app.source_map['done']))
+                app.save_preferences()
+                self.assertEqual(json.loads(prefs.read_text())['reviewed_tasks'],[])
                 app.set_agent_filter('all');await pilot.pause()
                 self.assertIn('yesterday',app.visible_agent_rows)
                 self.assertIn('old-error',app.visible_agent_rows)
-                app.select_agent('done');app.action_review_attention();await pilot.pause()
+                app.select_agent('done');app.action_review_attention();await app.workers.wait_for_complete();await pilot.pause();app.refresh_data()
                 app.set_agent_filter('today');await pilot.pause()
                 self.assertEqual(app.selected_source,'done')
                 for size in ((80,24),(60,20)):
@@ -230,5 +235,6 @@ class TodayJourneyTests(unittest.IsolatedAsyncioTestCase):
                 # A new completed turn in the same native session needs its own review.
                 old_key=review_key(app.source_map['done'])
                 feed.snapshot.local_status['sessions'][2]['state_since_ns']=now+1
+                feed.snapshot.local_status['sessions'][2]['trace_id']='b'*32
                 app.last_update=-1;app.refresh_data();await pilot.pause()
                 self.assertNotEqual(review_key(app.source_map['done']),old_key)

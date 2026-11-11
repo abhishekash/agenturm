@@ -10,7 +10,7 @@ from tests.test_terminal_search import ManualFeed
 class ExperienceTests(unittest.IsolatedAsyncioTestCase):
     async def test_attention_action_labels_fit_the_split_inspector(self):
         feed=ManualFeed()
-        feed.snapshot.local_status['sessions'][0]['run_state']='error'
+        feed.snapshot.local_status['sessions'][0].update(run_state='error',trace_id='a'*32)
         app=ObservatoryApp(feed,persist_preferences=False)
         async with app.run_test(size=(120,40)) as pilot:
             await pilot.pause()
@@ -18,8 +18,10 @@ class ExperienceTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertFalse(app.query_one('#agent-reviewed',Button).display)
             self.assertFalse(app.query_one('#agent-dismissed',Button).display)
-            await pilot.press('r');await pilot.pause()
-            self.assertTrue(app.reviewed_attention)
+            await app.workers.wait_for_complete()
+            await pilot.press('r');await app.workers.wait_for_complete();await pilot.pause();app.refresh_data()
+            self.assertTrue(app.workflow_controller.reviewed(app.source_map['source-1']))
+            self.assertFalse(app.reviewed_attention)  # Legacy preferences are read, not extended.
             await pilot.press('e');await pilot.pause()
             for name in ('agent-open','agent-trace','agent-reviewed','agent-dismissed'):
                 button=app.query_one('#'+name,Button)
@@ -44,7 +46,7 @@ class ExperienceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_export_and_dismiss_have_distinct_shortcuts(self):
         feed=ManualFeed()
-        feed.snapshot.local_status['sessions'][0]['run_state']='error'
+        feed.snapshot.local_status['sessions'][0].update(run_state='error',trace_id='a'*32)
         app=ObservatoryApp(feed,persist_preferences=False)
         async with app.run_test(size=(120,40)) as pilot:
             await pilot.pause()
@@ -52,12 +54,15 @@ class ExperienceTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press('x');await pilot.pause()
             self.assertIsInstance(app.screen,ExportScreen)
             self.assertFalse(app.dismissed_attention)
+            self.assertFalse(app.workflow_controller.reviewed(app.source_map['source-1']))
             await pilot.press('escape');await pilot.pause()
-            await pilot.press('X');await pilot.pause()
-            self.assertTrue(app.dismissed_attention)
-            dismissed=set(app.dismissed_attention)
+            await app.workers.wait_for_complete()
+            await pilot.press('X');await app.workers.wait_for_complete();await pilot.pause();app.refresh_data()
+            self.assertTrue(app.workflow_controller.reviewed(app.source_map['source-1']))
+            self.assertFalse(app.dismissed_attention)
+            receipts=dict(app.workflow_controller.receipts)
             await pilot.press('2','X');await pilot.pause()
-            self.assertEqual(app.dismissed_attention,dismissed)
+            self.assertEqual(app.workflow_controller.receipts,receipts)
 
     async def test_trace_copy_works_with_collapsed_inspector(self):
         app=ObservatoryApp(ManualFeed(),persist_preferences=False)

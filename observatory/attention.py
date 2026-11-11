@@ -121,6 +121,7 @@ class AttentionLedger:
         self.resolved = set()
         self.new_incidents = []
         self.initialized_namespaces = set()
+        self.initialized_scopes = set()
         self.observed_ids = set()
         self._visible_namespaces = None
         self._observed_scopes = None
@@ -163,6 +164,7 @@ class AttentionLedger:
         self.resolved = set()
         visible_namespaces = {scope_for({}, snapshot, endpoint).namespace or 'unavailable'}
         observed_scopes = set()
+        fresh_scopes = set()
         by_scope = {}
         pending_by_agent = {}
         for incident in self.incidents.values():
@@ -179,6 +181,7 @@ class AttentionLedger:
             self.items[scope.scope_key] = item
             self.scopes[scope.scope_key] = scope
             fresh = fresh_observation(item, snapshot, now)
+            if fresh:fresh_scopes.add(scope.scope_key)
             # Recover an ongoing stall episode across cockpit restarts.
             previous_stall = next((i.to_record() for i in by_scope.get(scope.scope_key,()) if i.kind=='stall'),None)
             stall_anchor = (previous_stall['anchor'] if previous_stall else
@@ -210,7 +213,8 @@ class AttentionLedger:
                 first = old.first_observed_time if old else record.get('first_observed_time', now)
                 incident = replace(incident, first_observed_time=first)
                 self.incidents[incident.id] = incident
-                if incident.id not in self.observed_ids and incident.namespace in self.initialized_namespaces and fresh and incident.alertable:
+                if (incident.id not in self.observed_ids and incident.namespace in self.initialized_namespaces
+                        and incident.scope_key in self.initialized_scopes and fresh and incident.alertable):
                     self.new_incidents.append(incident)
                     notifications.append((item, [incident.reason]))
                 self.observed_ids.add(incident.id)
@@ -227,6 +231,10 @@ class AttentionLedger:
         self.items = {key: value for key, value in self.items.items() if key in retained}
         self.scopes = {key: value for key, value in self.scopes.items() if key in retained}
         self.observed_ids.intersection_update(set(self.records) | set(self.incidents))
+        # Discovery can finish after an initially empty health response. First
+        # inventory for each execution is silent, including restored receipts.
+        self.initialized_scopes.intersection_update(retained)
+        self.initialized_scopes.update(fresh_scopes)
         self._visible_namespaces = visible_namespaces
         self._observed_scopes = observed_scopes
         # Memory-only overflow never retains a missing agent's task/command text.

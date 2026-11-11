@@ -105,7 +105,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
         feed = ManualFeed()
         entry = feed.snapshot.local_status['sessions'][0]
         entry.update(run_state='waiting', waiting_for='User input', working_directory='/work/payments', branch='fix/mcp')
-        feed.snapshot.sessions = [{'session_id': entry['session_id'], 'trace_count': 3,
+        feed.snapshot.sessions = [{'session_id': entry['session_id'], 'services':[entry['service']], 'trace_count': 3,
             'span_count': 12, 'errors': 1, 'failed': 0, 'incomplete': 1,
             'input_tokens': 900, 'output_tokens': 240, 'known_cost_usd': 0.006,
             'unknown_cost_runs': 2}]
