@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Accepted for implementation by user instruction; validation in progress |
+| Status | Engineering implementation complete; external pilot pending |
 | Date | 11 November 2026 |
 | Scope | Local terminal workflows for monitoring, reviewing and continuing agent work |
 | Implementation | [Joint implementation plan and execution record](joint-implementation-plan.html) |
@@ -319,7 +319,4 @@ These are design choices for RFC review, not blockers to preparing the plan.
 
 ## 18 Decision and follow-up
 
-Acceptance of this RFC would authorize the implementation sequence and its default choices, beginning with reconciliation of current inspector work and the exact-scope evidence contract. Each milestone still requires its acceptance gates and validation. Record reviewer comments and any changes to scope here before implementation; this draft does not imply implementation approval or completed work.
-
-
-Implementation was authorized by the user on 11 November 2026. The [joint plan](joint-implementation-plan.html) records reconciliation, review and actual validation. Participant pilot measures remain proposed until a real pilot is conducted.
+Implementation was authorized by the user on 11 November 2026. Engineering implementation and peer review are complete. The [joint plan](joint-implementation-plan.html) records reconciliation, corrected review findings, actual validation and remaining limits. The proposed participant pilot has not been conducted; its outcome measures remain hypotheses until tested with real participants.

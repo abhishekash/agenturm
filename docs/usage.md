@@ -601,8 +601,17 @@ copy and export use that preview. The monitor/review floor is 60×18.
 
 The Workflow inbox uses incident identities and local seen/reviewed state.
 A seen approval or reply stays visible until fresh native evidence resolves it.
-Initial inventory is silent; desktop alerts remain opt-in and require an open
-cockpit. Missing run/request identity is disclosed rather than inferred.
+Each newly observed execution establishes a silent inventory baseline, including
+delayed discovery. Requests already pending on that first observation remain in
+the queue; subsequent fresh transitions can notify. Desktop alerts remain opt-in
+and require an open cockpit. Missing run/request identity is disclosed rather than inferred.
+
+Run usage is shown for an individual agent only when recorded ownership supports
+that allocation. Shared traces and incomplete ownership remain unavailable at the
+agent level; Traces retains the whole-trace totals. Saved links preserve each
+receiver, producer, agent and session separately. Aggregate saved-task usage is
+unavailable when linked scopes share a trace or a recorded parent relationship,
+because their accounting may overlap; handoffs retain each scope's evidence.
 
 Saved tasks now provide **Brief** and **Decisions** screens. Maintain intent,
 acceptance criteria, constraints, questions and a next action alongside notes.
