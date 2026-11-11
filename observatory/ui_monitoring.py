@@ -10,10 +10,36 @@ from textual.widgets import Button, RichLog, Static
 FAILURES = {'error', 'failed', 'denied', 'blocked', 'policy_denied', 'incomplete'}
 
 
+def session_history_feedback(snapshot):
+    notes=[]
+    for kind,error in snapshot.read_errors.items():
+        stamp=snapshot.read_updated.get(kind,0)
+        label={'connections':'SDK connections','activity':'Activity','traces':'Traces'}[kind]
+        notes.append(label+(f' {max(0,int(time.time()-stamp))}s old' if stamp else ' unavailable'))
+    if notes:
+        notes.append('Counts cover available agents; missing evidence is unknown.')
+    if not snapshot.sessions_error:return ' · '.join(notes)
+    if not snapshot.sessions_updated:
+        notes.append('Stored history unavailable · showing available agents')
+    else:
+        notes.append(f'Stored history {max(0,int(time.time()-snapshot.sessions_updated))}s old · totals may be stale')
+    return ' · '.join(notes)
+
+
 def connection_feedback(feed):
     progress=feed.connection
     elapsed=max(0,int(time.monotonic()-progress.started))
     snapshot=feed.snapshot
+    if snapshot.read_errors and snapshot.updated and not snapshot.error:
+        heading=('Retry requested · waiting for current request' if feed.retry_requested else
+                 'Partial data · showing available agents')
+        return 'Partial data',heading+'\n'+session_history_feedback(snapshot)+'\n'+\
+            '\n'.join(f'{kind}: {error}' for kind,error in snapshot.read_errors.items()),True
+    if snapshot.sessions_error and snapshot.updated and not snapshot.error:
+        heading=('Retry requested · waiting for current request' if feed.retry_requested else
+                 'History delayed · '+('stored history unavailable' if not snapshot.sessions_updated else
+                     f'stored history {max(0,int(time.time()-snapshot.sessions_updated))}s old'))
+        return 'History delayed',heading+'\n'+session_history_feedback(snapshot)+' · '+snapshot.sessions_error,True
     slow=progress.phase=='loading' and elapsed>=1
     visible=bool(snapshot.error or not snapshot.updated or slow)
     label=('Authentication' if progress.phase=='auth' else 'Loading delayed' if snapshot.error.startswith('Loading delayed:') else 'Reconnecting' if snapshot.error

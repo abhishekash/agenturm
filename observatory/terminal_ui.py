@@ -24,7 +24,7 @@ from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical
 from textual.screen import Screen
 from textual.strip import Strip
-from textual.widgets import Button, Checkbox, DataTable, Input, RichLog, Select, Static, TabbedContent, TabPane, Tabs, Tree
+from textual.widgets import Button, Checkbox, DataTable, Input, RichLog, Select, Static, Tab, TabbedContent, TabPane, Tabs, Tree
 
 from .terminal import clean, clipped, number, trace_name
 from .agent_hierarchy import (AGENT_ID, HierarchyGraph, branch_marker, canonical_agent_id,
@@ -43,7 +43,7 @@ from .ui_export import ExportScreen
 from .ui_render import update_status_text
 from .ui_coverage import analysis_coverage
 from .ui_monitoring import (UsageScreen, SortScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, changed_records, failed,
-                            failure_groups, event_id, connection_feedback)
+                            failure_groups, event_id, connection_feedback, session_history_feedback)
 
 
 def cell(value, style=''):
@@ -915,8 +915,8 @@ def navigation_hints(width):
 
 
 def session_navigation_hints(mode):
-    return ('Esc Back  m View  [ ] Prompt  z Original  c Copy' if mode=='prompts' else
-            'Esc Back  m View  s Activity  u Usage  ? Help')
+    return ('Esc Back  Tab Controls  [ ] Prompt  z Original  c Copy' if mode=='prompts' else
+            'Esc Back  Tab Controls  ↑↓ Scroll  s Activity  ? Help')
 
 
 def coverage_warning(local_status):
@@ -1033,6 +1033,14 @@ class CockpitTabs(TabbedContent):
                 yield self.app.scope_controls()
             else:
                 yield widget
+
+
+class SessionModeTabs(Tabs):
+    """One focus stop for modes; native arrows select, Enter starts reading."""
+    BINDINGS=[Binding('enter,down','read','Read section',show=False)]
+
+    def action_read(self):
+        self.app.query_one('#agent-detail').focus()
 
 
 def evidence_syntax(content, lexer, theme='Current'):
@@ -1245,15 +1253,25 @@ class ObservatoryApp(App):
     #agent-info { width: 100%; height: 1fr; }
     #agent-reading { height: 1fr; }
     #agent-record { width: 1fr; min-width: 0; height: 1fr; }
-    #agent-detail { width: 100%; height: 1fr; }
+    #agent-detail { width: 100%; height: 1fr; border-left: solid transparent; }
     #agent-stats { display: none; width: 40; height: 1fr; margin-left: 2; padding-left: 2; border-left: solid $agent-border-subtle; }
-    #agent-modes { display: none; height: 1; margin-bottom: 1; }
-    .expanded #agent-modes { display: block; }
-    #agent-modes Button { height: 1; width: 13; min-width: 0; padding: 0; border: none; background: $agent-surface; color: $agent-muted; }
-    #agent-modes Button.-on { color: $agent-primary; background: $agent-focus; text-style: bold underline; }
-    #agent-modes Button:focus { text-style: bold reverse; }
+    #agent-modebar, #agent-context { display: none; }
+    .expanded #agent-modebar, .expanded #agent-context { display: block; }
+    .expanded #agent-bottom .inspector-heading { height: 1; border: none; margin-bottom: 0; }
+    #agent-heading { text-wrap: nowrap; text-overflow: ellipsis; text-style: bold; }
+    #agent-context { height: 1; color: $agent-muted; text-wrap: nowrap; text-overflow: ellipsis; }
+    #agent-modebar { height: 1; margin-top: 1; margin-bottom: 1; }
+    .compact #agent-modebar { margin-top: 0; margin-bottom: 0; }
+    #agent-modes { width: 1fr; height: 1; }
+    #agent-modes Underline { display: none; }
+    #agent-modes Tab { padding: 0 1; background: $agent-surface; }
+    #agent-modes Tab.-active { color: $agent-primary; background: $agent-focus; text-style: bold underline; }
+    #agent-modes:focus Tab.-active { text-style: bold reverse; }
+    #agent-mode-hint { width: 16; height: 1; text-align: right; color: $agent-muted; }
+    #agent-detail:focus { border-left: solid $agent-primary; }
     #agent-prompts { display: none; width: 32; height: 1fr; margin-right: 2; border-right: solid $agent-border-subtle; }
-    #agent-prompt-picker { display: none; height: 1; margin-bottom: 1; }
+    #agent-prompt-picker { display: none; height: 1; margin-bottom: 0; }
+    #agent-prompt-help { width: 1fr; height: 1; color: $agent-muted; }
     #agent-prompt-select { width: 1fr; min-width: 8; height: 1; }
     #agent-prompt-select SelectCurrent { height: 1; border: none; padding: 0; background: $agent-surface; }
     #agent-prompt-picker Button { width: 8; min-width: 0; height: 1; padding: 0; border: none; }
@@ -1373,6 +1391,8 @@ class ObservatoryApp(App):
               Binding('f','toggle_tree','Tree or flat agents',show=False),
               Binding('o','sort_menu','Sort sessions',show=False),
               Binding('m','session_mode','Inspector mode',show=False),
+              Binding('ctrl+left','inspector_mode(-1)','Previous inspector section',show=False),
+              Binding('ctrl+right','inspector_mode(1)','Next inspector section',show=False),
               Binding('z','prompt_original','Original prompt text',show=False),
               Binding('alt+up','inspect_parent','Inspect parent',show=False),
               Binding('alt+down','inspect_first_child','Inspect child',show=False),
@@ -1409,6 +1429,7 @@ class ObservatoryApp(App):
         self.session_evidence=SessionEvidence()
         self.evidence_job=None
         self.session_mode='overview'
+        self.session_reading_positions={}
         self.prompt_original=set()
         self.prompt_options=None
         self.prompt_job=None
@@ -1539,14 +1560,17 @@ class ObservatoryApp(App):
                     yield self.results('agents','agent-table','Search sessions…','list')
                     with Vertical(id='agent-bottom',classes='detail box'):
                         with Horizontal(classes='inspector-heading'):
-                            yield Static('Session inspector')
+                            yield Static('Session inspector',id='agent-heading',markup=False)
                             yield Button('Expand · e',id='expand-agents',classes='expand-button',compact=True)
                         with Vertical(id='agent-info'):
-                            with Horizontal(id='agent-modes'):
-                                yield Button('Overview',id='agent-mode-overview')
-                                yield Button('Prompts',id='agent-mode-prompts')
-                                yield Button('Details',id='agent-mode-details')
+                            yield Static('',id='agent-context',markup=False)
+                            with Horizontal(id='agent-modebar'):
+                                yield SessionModeTabs(Tab('Overview',id='agent-mode-overview'),
+                                    Tab('Prompts',id='agent-mode-prompts'),Tab('Details',id='agent-mode-details'),
+                                    active='agent-mode-overview',id='agent-modes')
+                                yield Static('Ctrl+←/→ · m',id='agent-mode-hint',markup=False)
                             with Horizontal(id='agent-prompt-picker'):
+                                yield Static('Requests · ↑↓ choose · Enter read',id='agent-prompt-help',markup=False)
                                 yield Select([('No prompts','none')],value='none',allow_blank=False,id='agent-prompt-select')
                                 yield Button('Prev [',id='agent-prompt-prev')
                                 yield Button('Next ]',id='agent-prompt-next')
@@ -1818,6 +1842,8 @@ class ObservatoryApp(App):
         self.inspector_signatures.clear()
         self.last_update=-1
         self.refresh_data()
+        if self.inspector_open() and self.focused not in self.screen.focus_chain:
+            self.query_one('#agent-detail').focus()
         trees=self.query('#span-tree')
         if self.query_one('#pages',TabbedContent).active=='traces' and trees and trees.first().cursor_node:
             self.show_span(trees.first().cursor_node.data)
@@ -2025,9 +2051,9 @@ class ObservatoryApp(App):
         coverage=coverage_warning(data.local_status)
         if coverage:health_text+='  ·  '+coverage
         if collection_note or coverage or live.error:health_text+='  ·  d Diagnostics'
-        health=Text(health_text,style='#c5adff' if collection_note else '#ffbd69' if coverage and not data.error else '#ff8799' if data.error else '#abb4a5')
+        health=Text(health_text,style='#c5adff' if collection_note else '#ffbd69' if (coverage or data.sessions_error or data.read_errors) and not data.error else '#ff8799' if data.error else '#abb4a5')
         health_widget=self.query_one('#health',Static)
-        health_widget.tooltip='While paused, counts are distinct new or changed records in the loaded view, not all database events. Collection continues.'
+        health_widget.tooltip=(feedback+'\n' if feedback else '')+'While paused, counts are distinct new or changed records in the loaded view, not all database events. Collection continues.'
         if self.screen.selections:
             health=Text('Text selected · Ctrl+C to copy · click to clear selection and resume display updates',style='#b9afc5')
         update_status_text(health_widget,themed_text(health_widget,health))
@@ -2075,7 +2101,8 @@ class ObservatoryApp(App):
         needs_attention=len(actionable)
         self.stat('attention',needs_attention if data.updated else '—','Needs attention',
                   'Waiting for receiver data' if not data.updated else
-                  f'{replies} need input · {stalled} may be stalled · {failures} failures' if needs_attention else 'No action needed')
+                  f'{replies} need input · {stalled} may be stalled · {failures} failures' if needs_attention else
+                  'None in available agents' if data.sessions_error or data.read_errors else 'No action needed')
         self.query_one('#stat-attention').tooltip=(f'{replies} explicit approval/reply requests · {stalled} possible stalls · {failures} recorded failures. '
             f'Open a session and press r to acknowledge it for this run or Shift+X to dismiss it from Today and Needs attention. Dismissed sessions remain in History and Traces. Ordinary tool calls do not need action. {live} live host processes are listed in Host.')
         servers={item.get('server') for item in data.mcp if item.get('server') and item.get('server')!='Not reported'}
@@ -2103,6 +2130,9 @@ class ObservatoryApp(App):
             +' · '.join(f'{name}: {count} working' for name,count in runtimes.items())
             +'\nWorking includes quiet unfinished turns and exact process CPU / I/O progress, not every open terminal. '
              'Spawn announcements are not counted as working.')
+        if data.sessions_error or data.read_errors:
+            for stat in ('sessions','attention'):
+                self.query_one('#stat-'+stat).tooltip+='\n'+session_history_feedback(data)
         options=[('All agent sessions','all')]+[(f"{item['runtime']} · {item.get('project') or 'SDK'} · {(item.get('session_id') or item['id'])[-6:]}",item['id']) for item in agents]
         if options!=self.scope_options:
             picker=self.query_one('#scope',Select);old=self.scope_value
@@ -2389,6 +2419,10 @@ class ObservatoryApp(App):
                 empty=('Start an agent · d Setup / diagnostics' if not agents and self.scope_value=='all'
                        else 'Nothing pending today · History includes earlier work')
                 status_widget.update(' · '.join(parts) or empty)
+        if self.data.sessions_error or self.data.read_errors:
+            title+=' · partial'
+            if not rows:
+                self.query_one('#search-status-agents',Static).update('Agent data delayed · R Retry now')
         self.query_one('#results-agents').border_title=title if self.data.updated else 'Sessions · loading'
         self.show_agent()
 
@@ -2641,7 +2675,7 @@ class ObservatoryApp(App):
             return [*items,current]
         return items
 
-    def inspect(self,name,title,fields,sections,*,overview=False,identity=None):
+    def inspect(self,name,title,fields,sections,*,overview=False,identity=None,context_in_header=False):
         # Keep the semantic content current even while a compact/hidden pane
         # skips rendering. Copy must never depend on old terminal strips.
         self.inspector_payloads[name]=(title,fields,sections)
@@ -2651,12 +2685,23 @@ class ObservatoryApp(App):
         # would render at min_width=1 and retain those strips after it is shown.
         # Don't cache an unrendered update; on_show rebuilds the latest evidence.
         if not width:return
-        signature=(title,str(fields),str(sections),overview,width,identity)
+        signature=(title,str(fields),str(sections),overview,width,identity,context_in_header)
         if self.inspector_signatures.get(name)==signature:return
         previous=self.inspector_signatures.get(name)
         self.inspector_signatures[name]=signature
         scroll=log.scroll_offset
-        log.clear();log.write(Text(title,style='bold #f6f0e8'))
+        if name=='agent-detail' and identity and previous and previous[5] and previous[5]!=identity:
+            if previous[5][0]!=identity[0]:
+                self.session_reading_positions.clear()
+            else:
+                self.session_reading_positions[previous[5]]=scroll.y
+                while len(self.session_reading_positions)>32:
+                    self.session_reading_positions.pop(next(iter(self.session_reading_positions)))
+        log.clear()
+        if context_in_header:
+            fields=[(label,value) for label,value in fields if label not in {'Agent','Status'}]
+        else:
+            log.write(Text(title,style='bold #f6f0e8'))
         if overview:log.write('')
         table=Table.grid(padding=(0,2));table.add_column(style=themed_style(log,'#b9afc5'),no_wrap=True,
             width=min(max((cell_len(str(label)) for label,_ in fields),default=0),max(8,width//3)))
@@ -2677,6 +2722,8 @@ class ObservatoryApp(App):
         if previous and (previous[5]==identity if identity is not None else
                          previous[0]==title and previous[2]==signature[2]):
             log.scroll_to(y=scroll.y,animate=False)
+        elif name=='agent-detail' and identity in self.session_reading_positions:
+            log.scroll_to(y=self.session_reading_positions[identity],animate=False)
 
     def write_evidence(self,log,label,value,depth=0):
         if value is None or value=='':return
@@ -2917,14 +2964,41 @@ class ObservatoryApp(App):
         self.last_update=-1
         self.refresh_data()
 
-    def set_session_mode(self,mode):
+    def set_session_mode(self,mode,*,focus_reader=True):
         if mode not in {'overview','prompts','details'}:return
         if not self.query_one('#agents').has_class('expanded'):self.action_expand()
         self.screen.clear_selection()
         self.session_mode=mode
+        tabs=self.query_one('#agent-modes',Tabs)
+        with tabs.prevent(Tabs.TabActivated):tabs.active='agent-mode-'+mode
         self.query_one('#shortcuts',Static).update(session_navigation_hints(mode))
         self.show_agent()
-        self.query_one('#agent-detail').focus()
+        self.query_one('#agent-detail' if focus_reader else '#agent-modes').focus()
+
+    @on(Tabs.TabActivated,'#agent-modes')
+    def inspector_mode_activated(self,event):
+        event.stop()
+        if self.query_one('#agents').has_class('expanded'):
+            self.set_session_mode(event.tab.id.removeprefix('agent-mode-'),focus_reader=False)
+
+    def inspector_open(self):
+        return (isinstance(self.screen,ObservatoryScreen) and
+                self.query_one('#pages',TabbedContent).active=='agents' and
+                self.query_one('#agents').has_class('expanded'))
+
+    def action_focus_next(self):
+        if self.inspector_open():self.screen.focus_next('#agent-bottom *')
+        else:super().action_focus_next()
+
+    def action_focus_previous(self):
+        if self.inspector_open():self.screen.focus_previous('#agent-bottom *')
+        else:super().action_focus_previous()
+
+    def action_inspector_mode(self,direction):
+        if not self.inspector_open():return
+        modes=('overview','prompts','details')
+        self.set_session_mode(modes[(modes.index(self.session_mode)+direction)%3],
+                              focus_reader=not isinstance(self.focused,SessionModeTabs))
 
     def open_session_mode(self,mode):
         self.action_page('agents')
@@ -3010,11 +3084,11 @@ class ObservatoryApp(App):
         self.query_one('#agent-stats').display=False
         self.query_one('#agent-prompt-bar').display=prompts
         self.query_one('#agent-prompt-picker').display=prompts
+        self.query_one('#agent-prompt-select').display=self.size.width<120
+        self.query_one('#agent-prompt-help').display=self.size.width>=120
         self.query_one('#agent-prompts').display=prompts and self.size.width>=120
         self.query_one('#agent-evidence-status').display=expanded and not prompts and bool(item)
         self.query_one('#agent-retry').display=False
-        for mode in ('overview','prompts','details'):
-            self.query_one('#agent-mode-'+mode).set_class(mode==self.session_mode,'-on')
         scope=prompt_scope(item) if item else None
         if self.session_prompts.scope!=scope:
             self.session_prompts=PromptHistory(scope=scope)
@@ -3029,6 +3103,8 @@ class ObservatoryApp(App):
         if not self.ai_summary_available:
             button.tooltip='No compatible API key or provider is configured. The recorded progress summary below works without setup.'
         if not item:
+            self.query_one('#agent-heading',Static).update('Session inspector')
+            self.query_one('#agent-context',Static).update('No session selected')
             self.session_prompts=PromptHistory()
             self.query_one('#agent-open',Button).disabled=True
             self.query_one('#agent-trace',Button).disabled=True
@@ -3039,6 +3115,11 @@ class ObservatoryApp(App):
                 self.inspect('agent-detail','Waiting for receiver data',[],[
                     ('Loading sessions','No snapshot has arrived yet. Session counts and usage are not known.'),
                     ('Connection','See the loading stage above · R Retry now.')])
+            elif self.data.sessions_error or self.data.read_errors:
+                self.inspect('agent-detail','Stored session history delayed',[],[
+                    ('Available agents','No matching agents in the available data. Stored history is incomplete.'),
+                    ('History',session_history_feedback(self.data)),
+                    ('Recovery','Retrying automatically · R Retry now.')])
             elif self.search_queries['agents']:
                 self.inspect('agent-detail','No matching agent sessions',[],[('Search','Clear the filter in Agent sessions to show all sessions in this scope.')])
             elif self.agent_filter=='errors':
@@ -3128,6 +3209,11 @@ class ObservatoryApp(App):
         state=agent_status(item)
         state.append(' · '+age(item.get('stamp')),style='#b9afc5')
         fields=[('Agent',identity),('Status',state)]
+        heading=self.query_one('#agent-heading',Static)
+        heading.update(title if expanded else 'Session inspector')
+        heading.tooltip=title
+        context=Text(identity+' · ',style='#b9afc5');context.append_text(state)
+        update_status_text(self.query_one('#agent-context',Static),context)
         short_hierarchy=[(label,value) for label,value in hierarchy_sections
                          if label in {'Direct children','Subtree summary','Child telemetry','Parent relationship','Relationship'}]
         if not expanded:
@@ -3181,8 +3267,9 @@ class ObservatoryApp(App):
             self.inspect('agent-detail',title,fields+details+hierarchy_fields,
                 [('Status evidence',attention_evidence(item,summary)),('Waiting on',wait_summary(item)),
                  ('Task usage',usage_text),('Analysis coverage',analysis_coverage(summary)),
+                 ('History freshness',session_history_feedback(self.data)),
                  ('Working directory',item.get('working_directory'))]+hierarchy_sections+ai_sections,
-                identity=(item['id'],'details'))
+                identity=(item['id'],'details'),context_in_header=True)
             return
         sections=[]
         if input_required(item):sections.append(('Needs you',wait_summary(item)))
@@ -3218,7 +3305,7 @@ class ObservatoryApp(App):
                              (' Reviewed for this run.' if reviewed else ' r Mark reviewed.')))
         sections.append(('Status evidence',attention_evidence(item,summary)))
         sections+=ai_sections
-        self.inspect('agent-detail',title,fields,sections,identity=(item['id'],'overview'))
+        self.inspect('agent-detail',title,fields,sections,identity=(item['id'],'overview'),context_in_header=True)
 
     def show_activity(self):
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
@@ -3574,8 +3661,7 @@ class ObservatoryApp(App):
 
     @on(Button.Pressed)
     def button_pressed(self,event):
-        if event.button.id.startswith('agent-mode-'):self.set_session_mode(event.button.id.removeprefix('agent-mode-'))
-        elif event.button.id=='agent-original':self.action_prompt_original()
+        if event.button.id=='agent-original':self.action_prompt_original()
         elif event.button.id=='agent-prompt-prev':self.navigate_prompt('older')
         elif event.button.id=='agent-prompt-next':self.navigate_prompt('newer')
         elif event.button.id=='agent-retry':
@@ -3746,8 +3832,10 @@ class ObservatoryApp(App):
         self.push_screen(UsageScreen(details=task_usage_summary(usage,title,scope=scope,identity=identity)[1]),self.resume_cockpit)
 
     def action_help(self):
-        if self.query_one('#pages',TabbedContent).active=='agents':
-            self.notify('Enter inspect · ←/→ tree · f flat/tree · m Overview/Prompts/Details · [ previous prompt · ] next · l latest · z original text · c copy · s Activity · Esc back · Ctrl+P palette',timeout=10)
+        if self.inspector_open():
+            self.notify('Enter inspect · ←/→ tabs (or Ctrl+←/→ from content) · Enter/↓ read · Tab/Shift+Tab controls · ↑↓/PgUp/PgDn scroll · m next section · [ ] prompts · z original · c copy · Esc back',timeout=10)
+        elif self.query_one('#pages',TabbedContent).active=='agents':
+            self.notify('↑/↓ choose agent · Enter inspect · ←/→ collapse/expand · f flat/tree · / search · o sort · Alt+↑ parent · Alt+↓ child · Alt+→ needs attention · ? help',timeout=10)
         else:
             self.notify('↑/↓ move · Enter inspect · / search · e expand · Ctrl+P palette · b saved tasks · w workflow · u usage · d diagnostics · x export · p pause/follow · q quit',timeout=8)
 
@@ -3986,10 +4074,11 @@ class ObservatoryApp(App):
         if page=='agents':
             self.query_one('#shortcuts',Static).update(session_navigation_hints(self.session_mode))
         self.call_after_refresh(self.reflow_inspectors)
-        for button in self.query('#'+page+' .expand-button'):button.label=Text('Back · e')
-        target={'agents':'agent-detail','activity':'activity-detail','mcp':'mcp-detail','traces':'span-tree','host':'host-detail','metrics':'metrics-detail','findings':'finding-detail'}[page]
+        for button in self.query('#'+page+' .expand-button'):button.label=Text('Back · Esc')
+        target={'agents':'agent-modes','activity':'activity-detail','mcp':'mcp-detail','traces':'span-tree','host':'host-detail','metrics':'metrics-detail','findings':'finding-detail'}[page]
         self.query_one('#'+target).focus()
-        self.notify('Expanded detail · Esc to return',timeout=2)
+        self.notify('←/→ choose section · Enter read · Tab controls · Esc back' if page=='agents' else
+                    'Expanded detail · Esc to return',timeout=4 if page=='agents' else 2)
     def action_focus_agent(self):
         if self.selected_source and self.query_one('#pages',TabbedContent).active=='agents':
             self.remember_location()

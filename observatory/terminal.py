@@ -139,6 +139,10 @@ class Snapshot:
     hierarchy: dict = field(default_factory=dict)
     activity_errors: bool = False
     view_scope: tuple = ()
+    sessions_error: str = ""
+    sessions_updated: float = 0
+    read_errors: dict = field(default_factory=dict)
+    read_updated: dict = field(default_factory=dict)
 
 
 class Feed:
@@ -172,6 +176,12 @@ class Feed:
         self.extra_cache = None
         self.extra_updated = 0
         self.extra_scope = None
+        # Stored session history is global, independent of the selected view.
+        # Keep its refresh budget and freshness separate from scoped extras.
+        self.sessions_cache = None
+        self.sessions_attempted = None
+        self.sessions_updated = 0
+        self.sessions_error = ''
         self.paused = False
         self.history = {page: [None] for page in ('activity','mcp','traces','findings')}
         self.history_scopes = {}
@@ -194,6 +204,7 @@ class Feed:
         return min(2.0, .5 * max(1,self.connection_failures))
 
     def refresh(self):
+        retry = self.retry_requested
         self.retry_requested=False
         self.connection=ConnectionProgress(
             phase='reconnecting' if self.snapshot.error else 'loading' if self.snapshot.updated else 'connecting',
@@ -222,6 +233,9 @@ class Feed:
                 self.history[page]=[None]
                 self.history_scopes[page]=scope
         history={page:tuple(cursors) for page,cursors in self.history.items()}
+        view_scope=(service,session_id,scope_agent,scope_subtree,include_reviews,
+                    activity_query,mcp_query,query,activity_prompts,activity_errors,
+                    tuple((page,cursors) for page,cursors in history.items()),errors_only)
         pagination={}
         def page_result(page, response):
             pagination[page]={'page':len(history[page]), 'next_cursor':response.get('next_cursor'),
@@ -229,7 +243,30 @@ class Feed:
         requests = RequestBatch(self.api, self.stop, self.connection_stage)
         self._requests = requests
         get = requests.get
+        read_errors,read_updated = {},{}
+        old=self.snapshot
+        def evidence_get(path,kind,fallback):
+            try:
+                response=get(path)
+            except OSError as exc:
+                transient=(500<=exc.code<600 if isinstance(exc,urllib.error.HTTPError)
+                           else not isinstance(exc,InterruptedError))
+                if requested_scope.active_page!='agents' or not transient:
+                    raise
+                read_errors[kind]=clean(str(exc))
+                same_scope=(kind=='connections' or
+                            (old.view_scope==view_scope and
+                             str(old.hierarchy.get('revision') or '')==self.hierarchy_revision))
+                read_updated[kind]=old.read_updated.get(kind,0) if same_scope else 0
+                return fallback if same_scope else {kind:[]}
+            values=response.get(kind) if isinstance(response,dict) else None
+            if not isinstance(values,list) or any(not isinstance(row,dict) for row in values):
+                raise ValueError('Invalid '+kind+' response')
+            if kind not in read_errors:read_updated[kind]=time.time()
+            return response
         scope_revisions = []
+        history_due = (retry or self.sessions_attempted is None or
+                       time.monotonic()-self.sessions_attempted>self.EXTRA_POLL_SECONDS)
         try:
             activity_params = {"limit": 200, "service": service, "session_id": session_id,
                                "include_reviews":int(include_reviews)}
@@ -251,7 +288,7 @@ class Feed:
             initial_paths=['/api/health', '/api/connections',
                            '/api/activity?' + urlencode(activity_params), trace_path]
             if requested_scope.include_global_totals:initial_paths.append('/api/metrics')
-            if self.extra_cache is None:initial_paths.append('/api/sessions?limit=500')
+            if history_due:initial_paths.append('/api/sessions?limit=500')
             requests.prefetch(initial_paths)
             health=get('/api/health')
             local_status = health.get("local_agents", {})
@@ -265,9 +302,10 @@ class Feed:
             if new_revision:
                 self.hierarchy_revision = new_revision
             totals = get('/api/metrics') if requested_scope.include_global_totals else {}
-            agents = get("/api/connections")["connections"]
+            agents = evidence_get('/api/connections','connections',{'connections':old.agents})['connections']
             try:
-                activity_page = get("/api/activity?" + urlencode(activity_params))
+                activity_page = evidence_get('/api/activity?'+urlencode(activity_params),'activity',
+                    {'activity':old.activity,**old.pagination.get('activity',{})})
                 activity = activity_page['activity']
                 result_params = dict(activity_params)
                 if activity_prompts:
@@ -275,8 +313,10 @@ class Feed:
                 if activity_errors:
                     result_params['errors_only']=1
                 if activity_query or history['activity'][-1] or activity_prompts or activity_errors:
-                    activity_page = get("/api/activity?" + urlencode({**result_params,
-                        "q":activity_query,"cursor":history['activity'][-1] or ''}))
+                    activity_page = evidence_get('/api/activity?'+urlencode({**result_params,
+                        'q':activity_query,'cursor':history['activity'][-1] or ''}),'activity',
+                        {'activity':old.activity_results if old.activity_results is not None else old.activity,
+                         **old.pagination.get('activity',{})})
                 activity_results = activity_page['activity']
                 if isinstance(activity_page.get('agent_scope'),dict):
                     scope_revisions.append(activity_page['agent_scope'].get('revision'))
@@ -285,6 +325,28 @@ class Feed:
                 if exc.code != 404:
                     raise
                 activity, activity_results = [], []
+            if history_due:
+                try:
+                    history_response = get('/api/sessions?limit=500')
+                except urllib.error.HTTPError as exc:
+                    if not 500 <= exc.code < 600:
+                        raise
+                    self.sessions_error = f'Stored session history returned HTTP {exc.code}.'
+                except OSError as exc:
+                    if isinstance(exc,InterruptedError):
+                        raise
+                    self.sessions_error = clean(str(exc)) or 'Stored session history could not be loaded.'
+                else:
+                    # Malformed responses and authentication failures remain
+                    # fatal; only transient transport/server errors are partial.
+                    sessions = history_response['sessions']
+                    if not isinstance(sessions,list) or any(not isinstance(row,dict) for row in sessions):
+                        raise ValueError('Invalid session history response')
+                    self.sessions_cache = sessions
+                    self.sessions_updated = time.time()
+                    self.sessions_error = ''
+                self.sessions_attempted = time.monotonic()
+            sessions = self.sessions_cache if self.sessions_cache is not None else []
             scope = (service, session_id, mcp_query, include_reviews, history['mcp'],requested_scope.active_page)
             if self.extra_cache is None or scope != self.extra_scope or time.monotonic()-self.extra_updated>self.EXTRA_POLL_SECONDS:
                 mcp_params = {'limit':100,'service':service,'session_id':session_id,
@@ -301,12 +363,11 @@ class Feed:
                     usage_params['service'] = service
                 if session_id:
                     usage_params['session_id'] = session_id
-                extra_paths=['/api/sessions?limit=500']
+                extra_paths=[]
                 if load_mcp:extra_paths.append('/api/mcp?'+urlencode(mcp_params))
                 if load_metrics:extra_paths.extend(('/api/metric-catalog?limit=500',
                     '/api/measurements?'+urlencode(metric_params),'/api/usage-series?'+urlencode(usage_params)))
                 requests.prefetch(extra_paths)
-                sessions = get('/api/sessions?limit=500')['sessions']
                 mcp,mcp_results,mcp_available,mcp_page,mcp_summary=[],[],True,{},{}
                 metric_catalog,metric_points,metrics_available=[],[],True
                 usage_series,usage_service,usage_session_id=[],None,None
@@ -344,16 +405,16 @@ class Feed:
                         if exc.code != 404:
                             raise
                         usage_series, usage_service, usage_session_id = [], None, None
-                self.extra_cache = (sessions,mcp,mcp_results,mcp_available,mcp_page,mcp_summary,
+                self.extra_cache = (mcp,mcp_results,mcp_available,mcp_page,mcp_summary,
                                     metric_catalog,metric_points,metrics_available,usage_series,usage_service,
                                     usage_session_id)
                 self.extra_scope,self.extra_updated = scope,time.monotonic()
-            (sessions,mcp,mcp_results,mcp_available,mcp_page,mcp_summary,
+            (mcp,mcp_results,mcp_available,mcp_page,mcp_summary,
              metric_catalog,metric_points,metrics_available,usage_series,usage_service,
              usage_session_id)=self.extra_cache
             page_result('mcp',mcp_page)
             metric_history=[]
-            trace_page = get(trace_path)
+            trace_page = evidence_get(trace_path,'traces',{'traces':old.traces,**old.pagination.get('traces',{})})
             traces = trace_page['traces']
             if isinstance(trace_page.get('agent_scope'),dict):
                 scope_revisions.append(trace_page['agent_scope'].get('revision'))
@@ -367,8 +428,8 @@ class Feed:
             traces,activity = traces[:100],activity[:200]
             if not requested_scope.pinned_trace and selected not in {item["trace_id"] for item in traces}:
                 selected = traces[0]["trace_id"] if traces else None
-            detail = get("/api/traces/" + selected + "?span_limit=100") if selected and requested_scope.detail_enabled else {}
-            if selected and requested_span and requested_scope.detail_enabled:
+            detail = get("/api/traces/" + selected + "?span_limit=100") if selected and requested_scope.detail_enabled and 'traces' not in read_errors else {}
+            if selected and requested_span and requested_scope.detail_enabled and 'traces' not in read_errors:
                 wanted=requested_span
                 known={span['span_id'] for span in detail.get('spans',[])}
                 for _ in range(8):
@@ -432,7 +493,9 @@ class Feed:
                 return
             self.selected_trace = selected
             self.snapshot = Snapshot(totals, agents, traces, detail, findings, updated=time.time(), local_status=local_status, activity=activity,
-                                     sessions=sessions,mcp=mcp,mcp_available=mcp_available,mcp_summary=mcp_summary,
+                                     sessions=sessions,sessions_error=self.sessions_error,
+                                     sessions_updated=self.sessions_updated,
+                                     mcp=mcp,mcp_available=mcp_available,mcp_summary=mcp_summary,
                                      metric_catalog=metric_catalog,metric_points=metric_points,
                                      usage_series=usage_series,usage_service=usage_service,
                                      usage_session_id=usage_session_id,
@@ -443,9 +506,7 @@ class Feed:
                                       queries={'activity':activity_query,'mcp':mcp_query,'traces':query},pagination=pagination,
                                       activity_prompts=activity_prompts,
                                       activity_errors=activity_errors,
-                                      view_scope=(service,session_id,scope_agent,scope_subtree,include_reviews,
-                                          activity_query,mcp_query,query,activity_prompts,activity_errors,
-                                          tuple((page,cursors) for page,cursors in history.items())),
+                                      view_scope=view_scope,read_errors=read_errors,read_updated=read_updated,
                                       hierarchy=local_status.get('hierarchy',{}))
             self.connection_failures=0
             self.connection=replace(self.connection,phase='live',stage='Connected',retry_at=0)

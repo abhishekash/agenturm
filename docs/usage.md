@@ -90,7 +90,13 @@ different evidence; neither verifies the entire objective. The footer states
 which recent records are loaded. A quiet session gets its own exact-scoped read,
 even when its events have left the global activity window.
 
-Use the **Overview / Prompts / Details** buttons, or **m** to cycle them.
+The inspector opens with its **Overview / Prompts / Details** tab strip focused.
+Use **←/→** to choose a section and **Enter** or **↓** to read it. From the reader,
+**Ctrl+←/→** switches sections; **m** also cycles them. **Tab** and **Shift+Tab**
+move between the inspector's visible controls. **↑/↓**, **Page Up/Down**, and
+**Home/End** scroll the content. **Esc** closes an open selector first, then
+returns to the selected agent. The task, runtime and status remain visible above
+the content; switching sections preserves the reading position.
 **Prompts** reads one request at a time, starting with the latest. Choose a
 request in the chronological index or the selector; **[** moves to the previous
 request, **]** to the next, and **l** to the latest loaded request. **Earlier
@@ -118,11 +124,20 @@ Enter opens the inspector as a single reading pane. The supported floor is
 
 ### Resource usage
 
-The terminal fetches live data every two seconds; session inventory, MCP,
+The terminal fetches live data every two seconds; stored session inventory, MCP,
 metrics, usage and findings are cached for five seconds. Filter and selection
 actions can wake the feed immediately. Collection continues independently, even
 when display updates are paused. Tables update changed cells instead of
-invalidating an entire row.
+invalidating an entire row. Stored session inventory has its own five-second
+budget, so changing views does not reload the same global history.
+
+When the receiver is reachable but stored reads time out, **Agents** keeps the
+available native roster and labels the view **Partial data** or **History delayed**.
+Previous activity and traces are retained only for the identical filters and
+hierarchy scope. Missing evidence is unknown, and stale totals are disclosed in
+Details. Other evidence views retain their existing reconnect behavior. Reads
+retry automatically; **R** retries immediately. Restart the cockpit and any
+separately running receiver after upgrading to use the optimized queries.
 
 OpenCode polling skips unchanged databases between a 30-second lookback refresh;
 that periodic refresh ages old sessions out even when OpenCode writes nothing.

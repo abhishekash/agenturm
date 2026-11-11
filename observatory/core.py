@@ -1043,10 +1043,18 @@ class Store:
     def connections(self):
         now = time.time_ns()
         with self._connect() as db:
-            rows = db.execute("""SELECT c.*,
-                (SELECT COUNT(*) FROM spans s WHERE s.service=c.service
-                 AND json_extract(s.resource_attributes,'$."observatory.source_id"')=c.source_id) AS span_count
-                FROM agent_connections c ORDER BY c.last_seen_ns DESC LIMIT 50""").fetchall()
+            # A correlated comparison against c.source_id's TEXT affinity uses
+            # only the service prefix of spans_source, scanning that service for
+            # every connection. Group once; the cast preserves that comparison's
+            # text semantics, including sources reported as JSON numbers.
+            rows = db.execute("""WITH counts AS (
+                SELECT service,CAST(json_extract(resource_attributes,'$."observatory.source_id"') AS TEXT) AS source_id,
+                    COUNT(*) AS span_count FROM spans
+                GROUP BY service,CAST(json_extract(resource_attributes,'$."observatory.source_id"') AS TEXT)
+            ) SELECT c.*,COALESCE(counts.span_count,0) AS span_count
+                FROM agent_connections c LEFT JOIN counts
+                ON counts.service=c.service AND counts.source_id=c.source_id
+                ORDER BY c.last_seen_ns DESC LIMIT 50""").fetchall()
         return [{"source_id": r["source_id"], "service": r["service"], "runtime": r["runtime"],
                  "integrations": json.loads(r["integrations"]), "capture_content": bool(r["capture_content"]),
                  "process_id": r["process_id"], "started_ns": r["started_ns"], "last_seen_ns": r["last_seen_ns"],
@@ -1639,7 +1647,6 @@ class Store:
         """Browse saved activity, including logs older than the trace preview window."""
         limit = max(1, min(500, int(limit)))
         before = self._event_cursor(cursor)
-        conditions, params = [], []
         scope = None
         if agent_id:
             scope = self.resolve_agent_scope(agent_id, include_subagents=bool(subtree))
@@ -1648,31 +1655,6 @@ class Store:
             if not scope["agent_ids"]:
                 return {'activity': [], 'next_cursor': None, 'scope': 'agent subtree',
                         'agent_scope': scope}
-            marks = ','.join('?' for _ in scope["agent_ids"])
-            conditions.append(f"s.agent_id IN ({marks})")
-            params.extend(scope["agent_ids"])
-        for expression, value in (("s.session_id", session_id),
-                                  ("json_extract(s.value,'$.service')", service),
-                                  ("json_extract(s.value,'$.domain')", domain)):
-            if value:
-                conditions.append(expression + "=?")
-                params.append(value)
-        if action:
-            conditions.append("lower(json_extract(s.value,'$.action'))=?")
-            params.append(str(action).casefold())
-        if not include_reviews:
-            conditions.append("COALESCE(json_extract(s.value,'$.service'),'')!='codex-review'")
-        if errors_only:
-            conditions.append("lower(json_extract(s.value,'$.result')) IN ('error','failed','denied','blocked','policy_denied','incomplete')")
-        if query:
-            conditions.append("instr(lower(s.value),lower(?))>0")
-            params.append(query)
-        stamp = "json_extract(s.value,'$.time_unix_nano')"
-        key = "COALESCE(s.trace_id,'log') || ':' || json_extract(s.value,'$.source_id')"
-        if before:
-            conditions.append(f"({stamp},{key}) < (?,?)")
-            params.extend(before)
-        where = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
         # Trace summaries contain span-derived activity. Read log activity from
         # its source table so a busy trace's preview limit cannot hide history.
         def attr(*keys, default="''"):
@@ -1698,18 +1680,63 @@ class Store:
         }
         log_value='json_object(' + ','.join(f"'{key}',{value}" for key,value in fields.items()) + ')'
         session=attr(*SESSION_KEYS,default='NULL')
-        activity_sql=f"""WITH activity AS (
-            SELECT cached.trace_id,cached.session_id,cached.agent_id,e.value FROM trace_summaries cached,
-                json_each(cached.activity_json) e WHERE json_extract(e.value,'$.source')!='log'
+        def filters(columns):
+            conditions, params = [], []
+            if scope is not None:
+                marks = ','.join('?' for _ in scope['agent_ids'])
+                conditions.append(columns['agent_id']+f' IN ({marks})')
+                params.extend(scope['agent_ids'])
+            for name, value in (('session_id',session_id),('service',service),('domain',domain)):
+                if value:
+                    conditions.append(columns[name]+'=?')
+                    params.append(value)
+            if action:
+                conditions.append('lower('+columns['action']+')=?')
+                params.append(str(action).casefold())
+            if not include_reviews:
+                conditions.append("COALESCE("+columns['service']+",'')!='codex-review'")
+            if errors_only:
+                conditions.append('lower('+columns['result']+") IN ('error','failed','denied','blocked','policy_denied','incomplete')")
+            if query:
+                conditions.append('instr(lower('+columns['value']+'),lower(?))>0')
+                params.append(query)
+            if before:
+                conditions.append(f"({columns['stamp']},{columns['key']}) < (?,?)")
+                params.extend(before)
+            return ''.join(' AND '+condition for condition in conditions), params
+
+        span_stamp="json_extract(e.value,'$.time_unix_nano')"
+        span_key="COALESCE(cached.trace_id,'log') || ':' || json_extract(e.value,'$.source_id')"
+        span_where, span_params=filters({
+            **{name:f"json_extract(e.value,'$.{name}')" for name in ('service','domain','action','result')},
+            'session_id':'cached.session_id','agent_id':'cached.agent_id',
+            'value':'e.value','stamp':span_stamp,'key':span_key})
+        log_session=f'COALESCE(cached.session_id,{session})'
+        log_key="COALESCE(l.trace_id,'log') || ':' || l.digest"
+        log_where, log_params=filters({**fields,'session_id':log_session,'agent_id':'l.agent_id',
+            'value':log_value,'stamp':'l.time_ns','key':log_key})
+        # Select ordered candidates before constructing payloads. Extracting the
+        # timestamp from a full json_object forced every historical log's body
+        # and metadata through JSON serialization on every cockpit refresh.
+        # Every filter precedes each branch's limit, so old matching requests
+        # and tied timestamps remain reachable through the same global cursor.
+        activity_sql=f"""WITH span_candidates AS (
+            SELECT cached.trace_id,cached.session_id,e.value,{span_stamp} AS stamp,{span_key} AS event_key
+            FROM trace_summaries cached,json_each(cached.activity_json) e
+            WHERE json_extract(e.value,'$.source')!='log'{span_where}
+            ORDER BY stamp DESC,event_key DESC LIMIT ?
+        ), log_candidates AS (
+            SELECT l.digest,l.trace_id,{log_session} AS session_id,l.time_ns AS stamp,{log_key} AS event_key
+            FROM logs l LEFT JOIN trace_summaries cached ON cached.trace_id=l.trace_id
+            WHERE l.event_name='agent.activity'{log_where}
+            ORDER BY stamp DESC,event_key DESC LIMIT ?
+        ) SELECT trace_id,session_id,value,stamp,event_key FROM span_candidates
             UNION ALL
-            SELECT l.trace_id,COALESCE(cached.session_id,{session}),l.agent_id,{log_value}
-                FROM logs l LEFT JOIN trace_summaries cached ON cached.trace_id=l.trace_id
-                WHERE l.event_name='agent.activity'
-        )"""
+            SELECT candidate.trace_id,candidate.session_id,{log_value},candidate.stamp,candidate.event_key
+            FROM log_candidates candidate JOIN logs l ON l.digest=candidate.digest
+            ORDER BY stamp DESC,event_key DESC LIMIT ?"""
         with self._connect() as db:
-            rows = db.execute(activity_sql + f"""SELECT s.trace_id,s.session_id,s.value,{stamp} AS stamp,{key} AS event_key
-                FROM activity s
-                {where} ORDER BY stamp DESC,event_key DESC LIMIT ?""", [*params, limit+1]).fetchall()
+            rows = db.execute(activity_sql, [*span_params,limit+1,*log_params,limit+1,limit+1]).fetchall()
         items = [{**json.loads(row['value']), 'id': row['event_key'],
                   'trace_id': row['trace_id'], 'session_id': row['session_id']} for row in rows[:limit]]
         next_cursor = self._next_event_cursor(rows[limit-1]['stamp'],rows[limit-1]['event_key']) if len(rows)>limit else None

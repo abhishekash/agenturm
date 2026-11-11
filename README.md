@@ -78,8 +78,11 @@ Agenturm is a monitor, not a controller. Reply to agents and approve requests in
 The session inspector opens on **Overview**: the latest agent-reported update,
 recorded work and results, and delegated children. **Prompts** lets you read one
 request at a time, with runtime context separated and original captured text
-always available. **Details** holds IDs, usage and provenance. Press `m` to cycle
-these views, `[` / `]` to move between requests, and `z` to toggle original text.
+always available. **Details** holds IDs, usage and provenance. On the inspector
+tabs, use `←` / `→` to choose a section and `Enter` to read. `Ctrl+←` / `Ctrl+→`
+switch sections from the reader; `m` also cycles them. Use `Tab` / `Shift+Tab`
+for controls, `[` / `]` for requests, and `z` for original text. Reading positions
+survive section changes.
 See the [assessment, reviewed plan and validation report](docs/agents-experience-review.html).
 
 ### Keyboard first
@@ -93,6 +96,8 @@ See the [assessment, reviewed plan and validation report](docs/agents-experience
 | `o` | Choose Working first, Updated, or Status sorting |
 | `/` | Search the current view |
 | `e` | Expand details |
+| `Ctrl+←` / `Ctrl+→`, `m` | Switch inspector sections |
+| `Tab` / `Shift+Tab` | Move between inspector controls |
 | `t` | Follow the linked trace |
 | `Esc` / `Alt+←` | Return or navigate back |
 | `c` | Copy details |

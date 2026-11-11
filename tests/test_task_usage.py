@@ -98,7 +98,7 @@ class TaskUsageJourney(unittest.IsolatedAsyncioTestCase):
         feed.api.get=lambda path: {'sessions':summaries} if path.split('?')[0]=='/api/sessions' else get(path)
         feed.api.traces[0].update(input_tokens=10,output_tokens=2,cache_read_input_tokens=8,
                                   cache_write_input_tokens=1,known_cost_usd=.03,cost_complete=True)
-        feed.extra_cache=None;feed.refresh()
+        feed.sessions_attempted=None;feed.refresh()
         app=ObservatoryApp(feed,persist_preferences=False)
         async with app.run_test(size=(120,40)) as pilot:
             await pilot.pause();app.set_agent_filter('all');app.select_agent('source-1');await pilot.pause()

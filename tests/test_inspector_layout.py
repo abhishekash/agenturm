@@ -6,7 +6,7 @@ import unittest
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
-from textual.widgets import Button, Static
+from textual.widgets import Button, Static, TabbedContent
 
 from observatory.session_prompts import MAX_PROMPT_CHARS, PromptHistory, prompt_scope
 from observatory.terminal_ui import ObservatoryApp, session_event_preview
@@ -52,6 +52,62 @@ class PromptHistoryTests(unittest.TestCase):
 
 
 class InspectorLayoutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_keyboard_sections_reading_controls_popup_and_return(self):
+        feed=ManualFeed()
+        feed.api.activity.extend([prompt(1),dict(prompt(2),detail='A long request\n'+'Read this line.\n'*80)])
+        feed.refresh()
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(120,32)) as pilot:
+            await pilot.pause();app.refresh_timer.stop();app.set_agent_filter('all')
+            app.select_agent('source-1');app.query_one('#agent-table').focus()
+            await pilot.press('enter');await pilot.pause()
+            self.assertEqual(app.focused.id,'agent-modes')
+            await pilot.press('right','right','left');await pilot.pause()
+            self.assertEqual(app.session_mode,'prompts')
+            self.assertEqual(app.focused.id,'agent-modes')
+            self.assertFalse(app.query_one('#agent-prompt-select').display)
+            await pilot.press('enter');await app.workers.wait_for_complete();await pilot.pause()
+            self.assertEqual(app.focused.id,'agent-detail')
+            await pilot.press('pagedown');await pilot.pause()
+            self.assertGreater(app.query_one('#agent-detail').scroll_y,0)
+            selected=app.session_prompts.selected
+            await pilot.press('ctrl+right');await pilot.pause()
+            self.assertEqual(app.session_mode,'details');self.assertEqual(app.focused.id,'agent-detail')
+            await pilot.press('ctrl+left');await pilot.pause()
+            self.assertEqual(app.session_mode,'prompts');self.assertEqual(app.session_prompts.selected,selected)
+            self.assertGreater(app.query_one('#agent-detail').scroll_y,0)
+            visited=[]
+            for _ in range(20):
+                await pilot.press('tab');await pilot.pause()
+                self.assertIn(app.query_one('#agent-bottom'),app.focused.ancestors)
+                if app.focused.id=='agent-detail':break
+                visited.append(app.focused.id)
+            else:self.fail('Tab did not return to the reader')
+            self.assertIn('agent-modes',visited)
+            self.assertIn('agent-prompts',visited)
+            await pilot.press('shift+tab');await pilot.pause()
+            self.assertEqual(app.focused.id,visited[-1])
+            await pilot.resize_terminal(60,18);await pilot.pause()
+            for _ in range(20):
+                if app.focused.id=='agent-prompt-select':break
+                await pilot.press('tab')
+            self.assertEqual(app.focused.id,'agent-prompt-select')
+            await pilot.press('enter');await pilot.pause()
+            self.assertTrue(app.query_one('#agent-prompt-select').expanded)
+            await pilot.press('escape');await pilot.pause()
+            self.assertTrue(app.query_one('#agents').has_class('expanded'))
+            self.assertFalse(app.query_one('#agent-prompt-select').expanded)
+            await pilot.press('u');await pilot.pause()
+            self.assertFalse(app.inspector_open())
+            await pilot.press('tab','shift+tab','escape');await pilot.pause()
+            self.assertTrue(app.inspector_open())
+            await pilot.press('escape');await pilot.pause()
+            self.assertFalse(app.query_one('#agents').has_class('expanded'))
+            self.assertEqual(app.focused.id,'agent-table')
+            self.assertEqual(app.selected_source,'source-1')
+            await pilot.press('enter','2');await pilot.pause()
+            self.assertEqual(app.query_one('#pages',TabbedContent).active,'activity')
+
     async def open_inspector(self,app,pilot,mode='overview'):
         await pilot.pause()
         app.refresh_timer.stop()

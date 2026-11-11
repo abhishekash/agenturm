@@ -127,6 +127,28 @@ class RecoveryTests(unittest.TestCase):
 
 
 class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
+    async def test_partial_history_shows_agents_and_honest_empty_state_without_layout_shift(self):
+        feed=ManualFeed()
+        feed.snapshot=replace(feed.snapshot,sessions_error='Loading sessions timed out (/api/sessions)',sessions_updated=0)
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(80,24)) as pilot:
+            await pilot.pause();app.refresh_timer.stop();app.set_agent_filter('all')
+            self.assertTrue(app.visible_agent_rows)
+            self.assertIn('History delayed',app.query_one('#connection',Static).render().plain)
+            self.assertIn('stored history unavailable',app.query_one('#health',Static).render().plain)
+            self.assertIn('partial',app.query_one('#results-agents').border_title)
+            region=app.query_one('#results-agents').region
+            feed.snapshot=replace(feed.snapshot,updated=time.time(),sessions_error='',sessions_updated=time.time())
+            app.refresh_data();await pilot.pause()
+            self.assertIn('Live',app.query_one('#connection',Static).render().plain)
+            self.assertEqual(region,app.query_one('#results-agents').region)
+            feed.snapshot=replace(Snapshot(),updated=time.time(),sessions_error='Timed out')
+            app.refresh_data();await pilot.pause()
+            self.assertFalse(app.visible_agent_rows)
+            self.assertIn('history delayed',app.inspector_payloads['agent-detail'][0].lower())
+            self.assertNotIn('Start an agent',app.query_one('#agent-detail').plain_text)
+            self.assertIn('R Retry now',app.query_one('#search-status-agents',Static).render().plain)
+
     async def test_startup_never_says_live_before_a_successful_snapshot(self):
         feed=ManualFeed();feed.snapshot=Snapshot()
         feed.connection=ConnectionProgress(started=time.monotonic())
