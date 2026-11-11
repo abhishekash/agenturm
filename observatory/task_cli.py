@@ -7,7 +7,8 @@ from pathlib import Path
 import sqlite3
 import sys
 
-from .saved_tasks import MAX_NOTES, TaskConflict, TaskError, TaskStore, export_handoff, render_handoff
+from .saved_tasks import (BRIEF_FIELDS, MAX_NOTES, TaskConflict, TaskError, TaskStore,
+    backup_task_database, default_path, export_handoff, render_handoff)
 
 
 def add_task_parser(subparsers):
@@ -53,7 +54,11 @@ def add_task_parser(subparsers):
     link.add_argument('--session-id')
     link.add_argument('--agent-id')
     link.add_argument('--trace-id', help='exact 32-character trace ID; session-only links do not contribute usage totals')
+    link.add_argument('--run-start-ns', type=int, help='positive recorded native lifecycle start; never use latest-update time')
+    link.add_argument('--run-end-ns', type=int, help='recorded lifecycle end needed to assign native check observations')
     link.add_argument('--runtime', default='', help='agent name, such as Codex or Claude Code')
+    link.add_argument('--receiver', default='', help='exact receiver namespace from review')
+    link.add_argument('--producer', default='', help='exact producer namespace from review')
     link.add_argument('--state', default='Unknown', help='recorded state of this run')
     guard(link)
     unlink = action('unlink', 'remove an association without deleting its source evidence', True)
@@ -64,6 +69,25 @@ def add_task_parser(subparsers):
     handoff = action('handoff', 'print a brief or export new Markdown and HTML files', True)
     handoff.add_argument('--format', choices=('markdown', 'html', 'json'), default='markdown', help='stdout format (default: markdown)')
     handoff.add_argument('-o', '--output', type=Path, help='new .md/.html/.json path; Markdown and HTML companions are always created')
+    handoff.add_argument('--include-decision-history', action='store_true', help='include superseded decisions in stdout handoff')
+    brief = action('brief', 'show or update structured task fields', True)
+    brief.add_argument('--file', type=Path, help='bounded UTF-8 JSON object of structured brief fields')
+    for field in BRIEF_FIELDS:
+        brief.add_argument('--' + field.replace('_', '-'), help='user-owned text, up to 4,000 characters')
+    guard(brief)
+    decision = action('decide', 'append an accepted or rejected decision version', True)
+    decision.add_argument('--kind', choices=('accepted', 'rejected'), required=True)
+    decision_text = decision.add_mutually_exclusive_group(required=True)
+    decision_text.add_argument('--text')
+    decision_text.add_argument('--text-file', type=Path, help='UTF-8 decision or explicit excerpt, at most 4,000 characters')
+    decision.add_argument('--rationale', default='')
+    decision.add_argument('--scope', default='')
+    decision.add_argument('--supersedes', help='existing decision ID in this task')
+    decision.add_argument('--source-file', type=Path, help='explicit bounded JSON reference for an excerpt; metadata-only sources are refused')
+    guard(decision)
+    action('decisions', 'show all immutable decision versions', True)
+    backup = action('backup', 'create a consistent private SQLite backup without overwriting')
+    backup.add_argument('destination', type=Path)
     archive = action('archive', 'archive a task, or restore it to the list', True)
     archive.add_argument('--restore', action='store_true')
     guard(archive)
@@ -106,6 +130,10 @@ def run_task_command(args, parser):
         return 0
     structured = getattr(args, 'json', False) or getattr(args, 'format', '') == 'json'
     try:
+        if args.task_action == 'backup':
+            path = backup_task_database(args.tasks_db or default_path(), args.destination)
+            print(json.dumps({'format': 'agenturm-task-backup-v1', 'path': path}) if structured else path, flush=True)
+            return 0
         store = TaskStore(args.tasks_db)
         action = args.task_action
         revision = getattr(args, 'expected_revision', None)
@@ -140,7 +168,7 @@ def run_task_command(args, parser):
             text = result['id']
         elif action == 'link':
             if args.evidence_file:
-                if args.session_id or args.agent_id or args.trace_id or args.runtime or args.state != 'Unknown':
+                if args.session_id or args.agent_id or args.trace_id or args.run_start_ns is not None or args.run_end_ns is not None or args.runtime or args.receiver or args.producer or args.state != 'Unknown':
                     raise TaskError('Use either --evidence-file or individual link fields.')
                 try:
                     evidence = json.loads(_read(args.evidence_file, 128 * 1024))
@@ -148,7 +176,9 @@ def run_task_command(args, parser):
                     raise TaskError('Evidence file must contain one JSON object.') from exc
             else:
                 evidence = {'session_id': args.session_id, 'agent_id': args.agent_id,
-                            'trace_id': args.trace_id, 'runtime': args.runtime, 'state': args.state}
+                            'trace_id': args.trace_id, 'runtime': args.runtime, 'state': args.state,
+                            'receiver': args.receiver, 'producer': args.producer,
+                            'run_start_ns': args.run_start_ns, 'run_end_ns': args.run_end_ns}
             result = store.link(args.task_id, evidence, expected_revision=revision)
             text = result['id']
         elif action == 'unlink':
@@ -160,14 +190,51 @@ def run_task_command(args, parser):
         elif action == 'archive':
             result = store.update(args.task_id, archived=not args.restore, expected_revision=revision)
             text = result['id']
+        elif action == 'brief':
+            values = {field: getattr(args, field) for field in BRIEF_FIELDS if getattr(args, field) is not None}
+            if args.file:
+                if values:
+                    raise TaskError('Use --file or individual brief fields.')
+                try:
+                    values = json.loads(_read(args.file, 128 * 1024))
+                except (json.JSONDecodeError, RecursionError) as exc:
+                    raise TaskError('Brief file must contain one JSON object.') from exc
+                if not isinstance(values, dict):
+                    raise TaskError('Brief file must contain one JSON object.')
+            result = store.update_brief(args.task_id, values, expected_revision=revision) if values else store.get(args.task_id)
+            text = '\n\n'.join(field.replace('_', ' ').title() + ':\n' + value for field, value in result['brief'].items())
+        elif action == 'decide':
+            source = None
+            if args.source_file:
+                try:
+                    source = json.loads(_read(args.source_file, 32 * 1024))
+                except (json.JSONDecodeError, RecursionError) as exc:
+                    raise TaskError('Source file must contain one JSON reference object.') from exc
+            decision_text = _read(args.text_file, 16000) if args.text_file else args.text
+            result = store.add_decision(args.task_id, kind=args.kind, text=decision_text, rationale=args.rationale,
+                scope=args.scope, source=source, supersedes_id=args.supersedes, expected_revision=revision)
+            text = result['decisions'][-1]['id']
+        elif action == 'decisions':
+            task = store.get(args.task_id)
+            result = {'format': 'agenturm-task-decisions-v1', 'task_id': task['id'],
+                      'revision': task['revision'], 'decisions': task['decisions']}
+            replaced = {item.get('supersedes_id') for item in task['decisions']}
+            text = '\n\n'.join(item['id'] + ' · ' + item['kind'] +
+                (' · superseded' if item['id'] in replaced else ' · current') + '\n' + item['text'] +
+                '\nRationale: ' + item['rationale'] for item in task['decisions']) or 'No decisions saved.'
+        elif action == 'backup':
+            result = {'format': 'agenturm-task-backup-v1', 'path': store.backup(args.destination)}
+            text = result['path']
         else:
             task = store.get(args.task_id)
             if args.output:
-                result = {'format': 'agenturm-task-export-v1', 'files': export_handoff(task, args.output)}
+                result = {'format': 'agenturm-task-export-v1', 'files': export_handoff(task, args.output,
+                    include_decision_history=args.include_decision_history)}
                 text = '\n'.join(result['files'])
             else:
                 # Streaming output is the primary result; nothing else goes to stdout.
-                print(render_handoff(task, 'json' if structured else args.format), end='', flush=True)
+                print(render_handoff(task, 'json' if structured else args.format,
+                    include_decision_history=args.include_decision_history), end='', flush=True)
                 return 0
         print(json.dumps(result, ensure_ascii=False, indent=2) if structured else text, flush=True)
         return 0

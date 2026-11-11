@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Terminal agent problems and opportunities for Agenturm</title><style>
+:root{color-scheme:light dark;--bg:#f6f7fa;--paper:#fff;--ink:#172033;--muted:#536078;--line:#dce1ea;--accent:#3656b7;--shade:#edf1fa}
+@media(prefers-color-scheme:dark){:root{--bg:#10141c;--paper:#181e29;--ink:#e6ebf5;--muted:#a7b4cc;--line:#354056;--accent:#a6baff;--shade:#222d41}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.65 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1160px;margin:36px auto;padding:40px 48px;background:var(--paper);border:1px solid var(--line);border-radius:16px}h1{font-size:clamp(2rem,5vw,3rem);line-height:1.15;letter-spacing:-.035em;max-width:900px}h2{font-size:1.6rem;line-height:1.25;margin-top:2.5em;padding-top:.5em;border-top:1px solid var(--line)}h3{font-size:1.15rem;margin-top:2em}p,li{max-width:88ch}a{color:var(--accent);text-underline-offset:3px;overflow-wrap:anywhere}p:first-of-type{color:var(--muted)}strong{font-weight:680}.table-scroll{overflow:auto;margin:24px 0;border:1px solid var(--line);border-radius:8px}table{border-collapse:collapse;width:100%;min-width:670px;font-size:14px;line-height:1.5}th,td{text-align:left;padding:14px 16px;vertical-align:top;border-bottom:1px solid var(--line)}th{background:var(--shade);font-weight:700}tr:last-child td{border-bottom:0}code{font-size:.9em;background:var(--shade);padding:.1em .3em;border-radius:3px}footer{color:var(--muted);margin-top:40px;font-size:13px;border-top:1px solid var(--line);padding-top:16px}@media(max-width:700px){body{font-size:16px}main{margin:0;padding:24px 18px;border:0;border-radius:0}h2{font-size:1.4rem}th,td{padding:10px}}@media print{body,main{background:white;color:black}main{border:0;padding:0;max-width:none}.table-scroll{overflow:visible}table{min-width:0}a{color:black}h2,h3{break-after:avoid}tr{break-inside:avoid}}
+</style></head><body><main><h1>Terminal agent problems and opportunities for Agenturm</h1>
+<p>Research snapshot: 11 November 2026. Audience: Agenturm product and engineering.</p>
+<p><strong>Recommendation: make Agenturm the place engineers check to decide which agent needs them, what changed, and how to continue the task.</strong> Lead with attention management, support the review with recorded evidence, and preserve task decisions across sessions. The strongest opportunity connects these three jobs in one local workflow.</p>
+<p>Output correctness and verification have the broadest supporting evidence. Context continuity is the most persistent context-specific problem in the terminal discussions reviewed. Attention management is Agenturm's best initial product focus because the pain is concrete and the existing implementation already addresses much of it. These are different rankings: the largest engineering problem does not automatically make the best product entry point.</p>
+<h2>Scope and strength of evidence</h2>
+<p>This is a qualitative synthesis of 22 selected public sources: six Reddit discussions, two Hacker News discussions, three LinkedIn posts with available comments, five GitHub issues, two Stack Overflow surveys, one practitioner article, and three competing product repositories. They are listed below with links and interpretation limits. Additional search results were used for discovery but are excluded from this evidence set.</p>
+<p>The focus is agents operated from local terminals, often backed by hosted models. Locally operated agents are not necessarily locally hosted models. Claude Code dominates the forum sample; Codex, OpenCode, and Gemini CLI provide additional signals. Browser-only and cloud-only incidents are excluded from the terminal-specific conclusions. One OpenCode issue involves an ACP client in VS Code, so it supports the underlying session-engine problem rather than a terminal-interface claim.</p>
+<p>Searches covered context loss, compaction, handoffs, parallel terminals, permissions, notifications, token usage, stalls, review, and worktree conflicts. Selection favors concrete descriptions and corroboration across platforms. Product announcements establish available alternatives, not independent proof of customer demand. Questions posed by founders exploring the same problem are explicitly marked.</p>
+<p><strong>The ordering below is an evidence-informed judgment, not a measurement of the percentage of all engineers experiencing each problem.</strong> Targeted searches overrepresent the topics searched; posters are self-selected; several discussions contain promotions. Exact ordering among adjacent categories is uncertain. Upvotes, repeated links to the same incident, and vendor assertions are not counted as independent users. Broad developer surveys supply a baseline but do not establish terminal-agent prevalence. Public LinkedIn content was available for three posts; private groups and logged-in feeds were not sampled. Relative publication dates varied between search and page snapshots, so uncertain dates are not treated as precise chronology.</p>
+<h2>Ranked problems</h2>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>Rank</th>
+<th>Problem engineers experience</th>
+<th>Evidence strength in this review</th>
+<th>Agenturm fit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Reviewing and debugging plausible output takes too much effort</td>
+<td>Strong broad evidence; direct terminal practitioner corroboration</td>
+<td>Strong supporting role; cannot establish correctness</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Decisions, constraints, and rejected approaches disappear across compaction and sessions</td>
+<td>Strong recurring qualitative evidence across runtimes</td>
+<td>Strong for continuity; partial for preventing loss</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Engineers miss blocked agents and spend attention checking terminals</td>
+<td>Strong within parallel-session workflows</td>
+<td>Very strong; much already implemented</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Quota and token use are hard to explain or predict</td>
+<td>Recurring qualitative evidence and mature alternatives</td>
+<td>Good visibility; limited control over provider quotas</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Agents appear busy while failing, looping, or lacking useful feedback</td>
+<td>Corroborated failure modes; incidence unmeasured</td>
+<td>Strong for recorded symptoms; partial for semantic failure</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Parallel agents interfere through shared files, workspaces, or stale assumptions</td>
+<td>Concrete reports; narrower evidence than ranks 1–5</td>
+<td>Partial today; substantial extension needed</td>
+</tr>
+<tr>
+<td>7</td>
+<td>State is fragmented across agent tools, sessions, and delegated workers</td>
+<td>Cross-tool examples and workarounds; overlaps with ranks 2–3</td>
+<td>Strong integration fit; competitive category</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Engineers need privacy and understandable collection boundaries</td>
+<td>Broad survey support; weak terminal-specific prevalence evidence</td>
+<td>Important adoption condition; weaker standalone acquisition reason</td>
+</tr>
+</tbody>
+</table></div>
+<h3>1 Review and verification</h3>
+<p>The 2025 Stack Overflow survey reports that 66% of respondents to the frustration question encountered almost-correct AI solutions and 45% found debugging generated code more time-consuming. That question had 31,476 responses. The 2026 survey separately reports that 48% trust AI when they can easily verify its output. These are different questions and must not be used as a year-over-year trend. <a href="https://survey.stackoverflow.co/2025/ai">2025 survey</a>, <a href="https://survey.stackoverflow.co/2026/ai">2026 survey</a>.</p>
+<p>For terminal workflows specifically, Simon Willison describes running Claude Code and Codex in parallel and explains why implementation against a detailed specification is easier to review. The related HN discussion describes the overhead of verifying assumptions in agent output. More simultaneous generation can move the bottleneck to human review. <a href="https://simonwillison.net/2025/Oct/5/parallel-coding-agents/">Practitioner account</a>, <a href="https://news.ycombinator.com/item?id=45489884">HN discussion</a>.</p>
+<p><strong>Agenturm opportunity:</strong> a completion should open a compact account of the requested behavior, recorded edits, checks and their results, later changes that may invalidate those checks, and unresolved failures. This reduces reconstruction work. It does not replace reading the diff or running appropriate checks.</p>
+<h3>2 Context continuity</h3>
+<p>The important loss is often a decision rather than a missing transcript: why an approach was rejected, the limits attached to an approval, or whether something was deployed. A Reddit discussion explicitly distinguishes these cases; its author discloses building a related product, so it is useful problem vocabulary rather than neutral prevalence evidence. An independent compaction complaint describes repeating previously corrected mistakes. A Claude Code issue reports constraints fading during long sessions. <a href="https://www.reddit.com/r/ClaudeCode/comments/1wmoost/how_do_you_carry_decisions_not_chat_history/">Decision discussion</a>, <a href="https://www.reddit.com/r/ClaudeCode/comments/1x7pa1q/anyone_feel_issues_after_compact/">Compaction complaint</a>, <a href="https://github.com/anthropics/claude-code/issues/32659">Claude Code report</a>.</p>
+<p>Engineers already use ADRs, Markdown briefs, smaller tasks, new sessions, and selective retrieval. HN participants describe both elaborate knowledge bases and difficulty getting agents to record important decisions reliably. The thread starter is also exploring a product. These workarounds suggest a continuity need, while demonstrating that plain files can be sufficient for some users. <a href="https://news.ycombinator.com/item?id=50403153">HN context discussion</a>.</p>
+<p><strong>Agenturm opportunity:</strong> promote the existing saved task into the durable unit of work. Preserve intent, decisions, rejected approaches, constraints, next step, linked runs, and workspace evidence. Proposed additions should include timestamps, source links, and superseded decisions. An exported brief can inform the next agent; it cannot restore a model's exact internal state or guarantee compliance.</p>
+<h3>3 Attention across parallel terminals</h3>
+<p>A Reddit user reports that parallel sessions wait unnoticed for a response or approval. Replies propose hooks, operating-system notifications, and terminal triggers. Another user logs notification events and finds that idle reminders make sounds less informative. This suggests the job is distinguishing actionable requests from ordinary completion and idleness, rather than generating more alerts. <a href="https://www.reddit.com/r/ClaudeCode/comments/1qxdmcw/no_notification_when_a_claude_code_session_is/">Missed requests</a>, <a href="https://www.reddit.com/r/ClaudeCode/comments/1wmtg4o/claude_codes_notification_hook_is_not_it_needs/">Notification noise</a>.</p>
+<p><strong>Agenturm opportunity:</strong> order the attention queue by actionable state, retain explicit reasons and evidence age, and take the engineer to the right native terminal. Distinguish approval requested, reply requested, reported completion awaiting review, possible stall, and unknown observation state. A quiet long-running tool is not automatically stuck.</p>
+<h3>4 Quota and token use</h3>
+<p>A Codex user describes large unrelated command output filling context and consuming quota. The reported savings from an instruction change are an informal personal experiment, not a transferable benchmark. A cross-tool handoff author describes switching after limits interrupt debugging; commenters report similar needs. <a href="https://www.reddit.com/r/codex/comments/1t6iulo/i_cut_codex_token_usage_50_with_one_agentsmd_rule/">Output and usage</a>, <a href="https://www.reddit.com/r/ClaudeCode/comments/1r9fkv3/built_a_small_cli_to_carry_your_claude_code/">Switching after limits</a>.</p>
+<p><strong>Agenturm opportunity:</strong> explain recorded usage by task and attempt, expose repeated expensive work, and prepare a handoff when the engineer changes tools. Keep current context occupancy, cumulative input/output usage, reported API cost, and subscription quota separate. Large lifetime token counts cannot establish that the current context is nearly full.</p>
+<p>The 2026 survey reports better output quality as a switching reason for 25.1% of respondents to that question, versus 6.4% citing lower cost. It does not prove cost is unimportant, but it weakens the case for making savings the sole positioning. <a href="https://survey.stackoverflow.co/2026/ai">Survey switching reasons</a>.</p>
+<h3>5 Silent failure and wasted work</h3>
+<p>Boris Heuer describes infrastructure workflows where missing CI runs or editing an unused configuration file provide inadequate feedback. An OpenCode issue reports repeated compaction without useful progress. Gemini CLI has a historical report of repeated editing failures ending in loop detection. These establish failure classes, not current failure rates or universal defects. <a href="https://www.linkedin.com/posts/boris-heuer-388ab5128_aiengineering-codingagents-developertooling-activity-7447971748970647552-_JVQ">LinkedIn account</a>, <a href="https://github.com/anomalyco/opencode/issues/27924">OpenCode loop report</a>, <a href="https://github.com/google-gemini/gemini-cli/issues/5761">Gemini report</a>.</p>
+<p>A recent OpenCode report describes a long compaction wait and an inadequate summary. Later bot replies dispute the proposed mechanism: the wait was within the configured default timeout, and an incomplete stream could not be reproduced as a saved success. The issue was closed as not planned. It remains useful evidence of confusing recovery and weak user feedback, not proof of an unhandled timeout defect. <a href="https://github.com/anomalyco/opencode/issues/61382">Report and follow-up</a>.</p>
+<p><strong>Agenturm opportunity:</strong> connect recorded auth/tool errors, repeated equivalent calls, repeated compactions, usage growth, and observation health in one timeline. New loop warnings should show the repeated evidence and remain advisory. Process activity cannot prove useful progress; the absence of errors cannot prove success.</p>
+<h3>6 Shared workspace interference</h3>
+<p>A Claude Code report describes cache-related editing conflicts between concurrent instances and offers workarounds involving where sessions are launched. It was closed as a duplicate; it should not be described as a confirmed current defect in every version. Willison's separate account describes fresh checkouts for isolation. <a href="https://github.com/anthropics/claude-code/issues/17531">Worktree report</a>, <a href="https://simonwillison.net/2025/Oct/5/parallel-coding-agents/">Isolation practice</a>.</p>
+<p><strong>Agenturm opportunity:</strong> expose exact workspace and branch identity, observed concurrent sessions, and eventually recorded path overlap. Keep shared-directory warnings separate from file ownership and merge-conflict prediction. Preventing collisions requires coordination or isolation in the executing harness; monitoring alone does not provide either.</p>
+<h3>7 Fragmented tools and workers</h3>
+<p>Engineers use different agents for different tasks and switch after interruptions. A LinkedIn abtop discussion asks about aggregate project usage and historical visibility, while other comments emphasize that runtime health does not establish answer quality. These comments support the usefulness of connecting live status to durable task history; they do not demonstrate market-wide demand. <a href="https://www.linkedin.com/posts/alindnbrg_agentobservability-agentharness-codingagents-activity-7470493877150429184-FAyC">LinkedIn discussion</a>.</p>
+<p><strong>Agenturm opportunity:</strong> retain one task across native sessions and show exact delegated relationships when recorded. Build the experience around the task and its evidence rather than asking users to reason from a growing list of session IDs. Missing parent metadata should remain unknown.</p>
+<h3>8 Privacy and collection boundaries</h3>
+<p>The 2026 survey reports privacy or security as a reason to avoid AI at work or school for 13% of respondents to that question. This is broader than terminal monitoring. Transcript-based observability introduces an additional adoption question because prompts, commands, and results may contain private project material. <a href="https://survey.stackoverflow.co/2026/ai">Survey</a>.</p>
+<p><strong>Agenturm opportunity:</strong> make the local storage location, collection coverage, metadata-only mode, and explicit export preview easy to understand. Local storage is valuable, but it does not mean the underlying agent's model requests stay on the machine.</p>
+<h2>What Agenturm already addresses</h2>
+<p>This assessment uses the current checkout's README, usage and saved-task documentation, plus focused inspection of workflow, status, findings, and handoff code. It is not a live validation of every adapter or the published package.</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>Need</th>
+<th>Existing capability</th>
+<th>Remaining limitation or next step</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Find agents needing attention</td>
+<td>Today view, explicit waits, Workflow inbox, opt-in desktop alerts, review acknowledgements</td>
+<td>Validate signal accuracy and discoverability with real multi-session users; alerts need the cockpit open</td>
+</tr>
+<tr>
+<td>Return to the agent</td>
+<td>Verified Linux tmux pane selection; native resume command copying for supported sessions</td>
+<td>Broader terminal support requires exact identity; replies and approvals remain in the agent terminal</td>
+</tr>
+<tr>
+<td>Continue across sessions</td>
+<td>Saved tasks, notes, linked runs, Git captures, previewed Markdown and HTML handoffs</td>
+<td>Notes are maintained explicitly; no automatic decision extraction, injection, or exact replay is established</td>
+</tr>
+<tr>
+<td>Review a reported completion</td>
+<td>Recorded file operations and checks; checks preceding later recorded edits are labeled</td>
+<td>Loaded activity and snapshots are bounded; a recorded check is not proof the captured diff passes</td>
+</tr>
+<tr>
+<td>Investigate failures</td>
+<td>MCP calls, errors, findings, activity and trace links; explicit MCP error results recognized</td>
+<td>Does not detect every semantic error or establish dependency readiness</td>
+</tr>
+<tr>
+<td>Understand usage</td>
+<td>Latest run usage, reported cost, cache breakdown and advisory thresholds</td>
+<td>Missing prices stay unknown; no authoritative subscription billing or quota enforcement</td>
+</tr>
+<tr>
+<td>Inspect delegated workers</td>
+<td>Exact parent/child evidence where supported, independent child inspection</td>
+<td>Runtime coverage varies; hierarchy docs note live validation gaps and unverified Pi linking</td>
+</tr>
+<tr>
+<td>Notice workspace overlap</td>
+<td>Other active sessions in the same directory shown as warnings</td>
+<td>No file ownership inference, worktree locking, or general conflict prevention</td>
+</tr>
+<tr>
+<td>Understand context events</td>
+<td>Recorded compaction and truncation in workflow evidence</td>
+<td>Current context occupancy is not inferred from lifetime tokens; context preservation cannot be guaranteed</td>
+</tr>
+<tr>
+<td>Keep data local</td>
+<td>SQLite, loopback receiver, metadata-only ingestion option; explicit optional AI summaries</td>
+<td>Transcript and exported task content may be sensitive; local monitoring does not localize agent inference</td>
+</tr>
+</tbody>
+</table></div>
+<p>Local references: <a href="../usage.md">Usage</a>, <a href="../saved-tasks.md">Saved tasks</a>, <a href="../agent-hierarchy.md">Hierarchy</a>, <a href="../privacy.md">Privacy</a>, <a href="../../observatory/ui_workflow.py">Workflow implementation</a>, <a href="../../observatory/session_status.py">Status implementation</a>, <a href="../../observatory/saved_tasks.py">Handoffs</a>, <a href="../../observatory/findings.py">Findings</a>.</p>
+<h2>Competitive implications</h2>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>Alternative</th>
+<th>What its repository documents</th>
+<th>Implication for Agenturm</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/graykode/abtop">abtop</a></td>
+<td>Local discovery for Claude Code, Codex and OpenCode; context and quota display for some runtimes; process and port visibility</td>
+<td>A cross-agent process dashboard is already an available alternative. Differentiate through task continuity, review evidence, and actionable attention</td>
+</tr>
+<tr>
+<td><a href="https://github.com/ccusage/ccusage">ccusage</a></td>
+<td>Local usage reporting across many agent tools, with daily, weekly, monthly and session views</td>
+<td>Usage aggregation alone is a crowded proposition. Connect usage to specific attempts and outcomes</td>
+</tr>
+<tr>
+<td><a href="https://github.com/yigitkonur/cli-continues">cli-continues</a></td>
+<td>Native session parsing and structured handoff into another coding tool</td>
+<td>Cross-tool handoff is already served. Agenturm's opportunity is combining maintained decisions, linked evidence, and human review</td>
+</tr>
+</tbody>
+</table></div>
+<p>These capabilities are repository claims inspected on the research date, not benchmarked comparisons. Their features can change. Native hooks, Markdown briefs, ADRs, tmux and separate checkouts are also practical substitutes, often with lower adoption overhead. A new monitor must earn its place by reducing reconstruction and interruptions enough to justify another running tool.</p>
+<p>Rich Snapp's LinkedIn account also cautions that agents follow patterns in the codebase. A context product cannot compensate for all architectural inconsistency or technical debt. <a href="https://www.linkedin.com/posts/richsnapp_probably-the-most-important-concept-that-activity-7484833074434711552-_NMb">Codebase context discussion</a>.</p>
+<h2>Recommended product priorities</h2>
+<p>These are product judgments based on the evidence, ordered by closeness to Agenturm's existing strengths and ease of validating user benefit.</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>Priority</th>
+<th>Outcome to pursue</th>
+<th>Concrete scope</th>
+<th>How to judge it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P0</td>
+<td>Engineers reliably see what needs them</td>
+<td>Make attention reasons, evidence age, review queue and terminal return the default daily loop; validate existing behavior before adding channels</td>
+<td>Shorter observed approval-wait time; fewer manual terminal checks; low false-alert rate</td>
+</tr>
+<tr>
+<td>P1</td>
+<td>Engineers resume a task without repeating decisions</td>
+<td>Improve saved-task brief structure for rejected approaches, constraints, superseded decisions and next steps; keep source links and user review</td>
+<td>Faster resumption; fewer repeated rejected approaches; repeat handoff usage</td>
+</tr>
+<tr>
+<td>P1</td>
+<td>Engineers can reconstruct completion evidence quickly</td>
+<td>Put task intent, changed paths, recorded checks, later edits and unresolved failures together</td>
+<td>Less time locating evidence before review; fewer mistaken assumptions that a reported completion was verified</td>
+</tr>
+<tr>
+<td>P2</td>
+<td>Engineers spot waste before a run ends</td>
+<td>Add bounded repeat/error/compaction patterns with evidence links; distinguish collector delay from agent behavior</td>
+<td>Useful warnings per alert; time from recorded fault to inspection; false positives on legitimate repetition</td>
+</tr>
+<tr>
+<td>P2</td>
+<td>Usage helps explain a task</td>
+<td>Improve usage across explicitly linked runs, with missing-data coverage; show context or quota only when authoritatively available</td>
+<td>Users correctly distinguish run usage, current context and provider limits</td>
+</tr>
+<tr>
+<td>P3</td>
+<td>Parallel work stays understandable</td>
+<td>Add branch/worktree identity and recorded path overlap where reliable</td>
+<td>Earlier overlap discovery without attributing files to the wrong agent</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Suggested positioning:</strong> “See which agent needs you, review what happened, and carry the task forward.” Supporting copy can name Claude Code, Codex, OpenCode and Pi, local discovery, recorded evidence, and saved handoffs with the documented coverage limits.</p>
+<p>The initial customer hypothesis is an engineer who repeatedly runs two or more terminal-agent sessions, reviews the resulting changes, and has already assembled hooks, tmux scripts, notes, or usage tools. An engineer using one short-lived session has less reason to adopt another monitor. A team lead requiring centralized access control and organization-wide reporting has needs beyond the current local product.</p>
+<h2>Proposed validation work</h2>
+<p>Recruit 10–15 engineers for discovery, including single-session users as a comparison group and people using multiple agent brands. This is a proposed sample, not completed interviews. Ask them to show their last blocked session, failed handoff, misleading completion, or workspace collision. Record the actual workaround and consequence before showing Agenturm.</p>
+<p>Run a small, consent-based pilot with the existing attention and saved-task workflows. Establish a baseline first, then compare approval-wait time, status-checking effort, time to reconstruct a completed run, and time to resume a task. Record false positives and missed events alongside successes. Use observation or explicit participant records; API token counts are not a proxy for productivity.</p>
+<p>Ask what they would remove from their setup if Agenturm worked well. Replacing a maintained script or routinely used workflow is stronger evidence than liking a screenshot. Willingness to pay, retention, and measurable time savings remain unvalidated. An initial local subscription or team product would be a separate hypothesis, not a conclusion of this review.</p>
+<h2>Source register</h2>
+<p>Each source is one public page, not one independent engineer. Summaries below are paraphrases. All were accessed on 11 November 2026. Relative dates are intentionally omitted where inconsistent.</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Source</th>
+<th>Evidence type and use</th>
+<th>Interpretation limit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S01</td>
+<td><a href="https://survey.stackoverflow.co/2025/ai">Stack Overflow 2025 AI</a></td>
+<td>Broad survey; almost-correct output and debugging burden</td>
+<td>All AI development tools, not a terminal cohort</td>
+</tr>
+<tr>
+<td>S02</td>
+<td><a href="https://survey.stackoverflow.co/2026/ai">Stack Overflow 2026 AI</a></td>
+<td>Broad survey; conditional trust, switching reasons, privacy</td>
+<td>Different questions and respondent groups from 2025</td>
+</tr>
+<tr>
+<td>S03</td>
+<td><a href="https://news.ycombinator.com/item?id=45489884">HN parallel agent discussion</a></td>
+<td>Practitioner comments; verification overhead</td>
+<td>Self-selected; shares an originating article with S04</td>
+</tr>
+<tr>
+<td>S04</td>
+<td><a href="https://simonwillison.net/2025/Oct/5/parallel-coding-agents/">Willison on parallel coding agents</a></td>
+<td>Firsthand workflow; terminal agents, review and isolation</td>
+<td>One experienced practitioner; October 2025 account</td>
+</tr>
+<tr>
+<td>S05</td>
+<td><a href="https://news.ycombinator.com/item?id=50403153">HN cross-client context question</a></td>
+<td>Re-explanation costs and knowledge-base workarounds</td>
+<td>Starter exploring a product; several promotional replies</td>
+</tr>
+<tr>
+<td>S06</td>
+<td><a href="https://www.reddit.com/r/ClaudeCode/comments/1x7pa1q/anyone_feel_issues_after_compact/">Reddit compaction complaint</a></td>
+<td>Firsthand report of repeated mistakes and lost context</td>
+<td>Anecdote; does not establish a model mechanism</td>
+</tr>
+<tr>
+<td>S07</td>
+<td><a href="https://www.reddit.com/r/ClaudeCode/comments/1qxdmcw/no_notification_when_a_claude_code_session_is/">Reddit missed input notifications</a></td>
+<td>Parallel sessions blocked unnoticed; hook workarounds</td>
+<td>Historical complaint; native capabilities have evolved</td>
+</tr>
+<tr>
+<td>S08</td>
+<td><a href="https://www.reddit.com/r/ClaudeCode/comments/1wmtg4o/claude_codes_notification_hook_is_not_it_needs/">Reddit notification noise</a></td>
+<td>Personal event log and alert filtering experience</td>
+<td>Event proportions apply only to that user's setup</td>
+</tr>
+<tr>
+<td>S09</td>
+<td><a href="https://www.reddit.com/r/codex/comments/1t6iulo/i_cut_codex_token_usage_50_with_one_agentsmd_rule/">Reddit Codex output and token use</a></td>
+<td>Large shell output and context/usage friction</td>
+<td>Personal savings claims are not independently benchmarked</td>
+</tr>
+<tr>
+<td>S10</td>
+<td><a href="https://www.reddit.com/r/ClaudeCode/comments/1r9fkv3/built_a_small_cli_to_carry_your_claude_code/">Reddit cross-tool continuation</a></td>
+<td>Author's limit interruption; commenters' continuation needs</td>
+<td>Product promotion; same product as S22</td>
+</tr>
+<tr>
+<td>S11</td>
+<td><a href="https://www.reddit.com/r/ClaudeCode/comments/1wmoost/how_do_you_carry_decisions_not_chat_history/">Reddit decision continuity</a></td>
+<td>Rejected approaches, conditional decisions and supersession</td>
+<td>Author discloses working on a related product</td>
+</tr>
+<tr>
+<td>S12</td>
+<td><a href="https://www.linkedin.com/posts/boris-heuer-388ab5128_aiengineering-codingagents-developertooling-activity-7447971748970647552-_JVQ">Boris Heuer on tool feedback</a></td>
+<td>Firsthand infrastructure and CI failure descriptions</td>
+<td>One practitioner; includes blog promotion</td>
+</tr>
+<tr>
+<td>S13</td>
+<td><a href="https://www.linkedin.com/posts/richsnapp_probably-the-most-important-concept-that-activity-7484833074434711552-_NMb">Rich Snapp on codebase context</a></td>
+<td>Code patterns and architecture shape agent output</td>
+<td>Practitioner interpretation; no controlled measurement</td>
+</tr>
+<tr>
+<td>S14</td>
+<td><a href="https://www.linkedin.com/posts/alindnbrg_agentobservability-agentharness-codingagents-activity-7470493877150429184-FAyC">LinkedIn abtop discussion</a></td>
+<td>Aggregate usage, history and output-quality concerns</td>
+<td>Product-centered discussion; not independent adoption data</td>
+</tr>
+<tr>
+<td>S15</td>
+<td><a href="https://github.com/anthropics/claude-code/issues/32659">Claude Code issue 32659</a></td>
+<td>Long-session constraint loss report</td>
+<td>Reporter explanations and cross-issue counts are not accepted as measured causality or independent totals</td>
+</tr>
+<tr>
+<td>S16</td>
+<td><a href="https://github.com/anthropics/claude-code/issues/17531">Claude Code issue 17531</a></td>
+<td>Concurrent worktree editing/cache conflict report</td>
+<td>Closed as duplicate; version-specific incident</td>
+</tr>
+<tr>
+<td>S17</td>
+<td><a href="https://github.com/anomalyco/opencode/issues/27924">OpenCode issue 27924</a></td>
+<td>Repeated compaction and credit consumption reports</td>
+<td>Closed as not planned; no claim of universal current defect</td>
+</tr>
+<tr>
+<td>S18</td>
+<td><a href="https://github.com/anomalyco/opencode/issues/61382">OpenCode issue 61382</a></td>
+<td>Compaction wait and inadequate-summary experience</td>
+<td>ACP environment and plugins; bot replies dispute mechanism; closed as not planned</td>
+</tr>
+<tr>
+<td>S19</td>
+<td><a href="https://github.com/google-gemini/gemini-cli/issues/5761">Gemini CLI issue 5761</a></td>
+<td>Repeated editing failures and loop-detection stop</td>
+<td>August 2025; closed as duplicate, not evidence of current prevalence</td>
+</tr>
+<tr>
+<td>S20</td>
+<td><a href="https://github.com/graykode/abtop">abtop repository</a></td>
+<td>Available monitoring alternative and capability matrix</td>
+<td>Product documentation, not independently tested</td>
+</tr>
+<tr>
+<td>S21</td>
+<td><a href="https://github.com/ccusage/ccusage">ccusage repository</a></td>
+<td>Available multi-agent usage reports</td>
+<td>Product documentation, not independently tested</td>
+</tr>
+<tr>
+<td>S22</td>
+<td><a href="https://github.com/yigitkonur/cli-continues">cli-continues repository</a></td>
+<td>Available structured cross-tool handoff</td>
+<td>Product documentation; not an additional demand observation beyond S10</td>
+</tr>
+</tbody>
+</table></div>
+<footer>Research snapshot · 11 November 2026 · Public sources and current Agenturm checkout · Qualitative ranking</footer></main></body></html>

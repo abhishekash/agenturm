@@ -54,3 +54,30 @@ setting is not a substitute for disk encryption or an appropriate disposal
 policy.
 
 Token totals reflect emitted telemetry and may include cached context. Costs remain unknown when the producer does not report them. Neither token nor cost totals should be treated as a billing statement.
+
+## Attention and task continuity
+
+Receiver databases have an opaque persistent receiver identifier. Older receivers
+use an explicitly labeled endpoint namespace; credentials never enter that key.
+The local `workflow.sqlite3` records incident identities, acknowledgements and
+notification delivery claims independently from telemetry. Desktop notifications
+omit prompt/command content and require opt-in. A seen request is not a native
+approval. Initial inventory and stale capture do not generate fresh alerts.
+
+Structured task briefs and decision versions remain user-owned local content in
+additive tables in `tasks.sqlite3`. Notes are not automatically interpreted as
+decisions. Explicitly copying an excerpt creates an editable unsaved draft;
+metadata-only records do not provide content for excerpts. User notes, decisions,
+source references and Git snapshots can contain sensitive information.
+Review exports use the explicit frozen preview and existing owner-only,
+no-overwrite export behavior. No new cloud service or model call is introduced.
+
+Opt-in workflow-pattern diagnostics compute safe fingerprints and persist observations and source
+references, without adding copies of raw tool arguments. They remain observations
+about a bounded captured window, and do not trigger desktop alerts.
+
+Workflow acknowledgements are retained for 90 days. Resolved unacknowledged
+incident payloads and delivery claims are cleaned after 30 days; minimal generic
+execution references supporting a valid acknowledgement remain for its 90-day
+lifetime. Unresolved incidents do not expire automatically. Cleanup follows
+these policies rather than deleting a pending native request.

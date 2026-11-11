@@ -96,3 +96,46 @@ Git capture has an eight-second work budget, individual command timeouts, a 128 
 Saved tasks live in `$XDG_STATE_HOME/agenturm/tasks.sqlite3`, or `~/.local/state/agenturm/tasks.sqlite3` by default. Set `AGENTURM_TASKS_DB` to choose another file; CLI commands also accept `--tasks-db PATH`. This database is separate from telemetry, so telemetry retention/clearing does not delete the saved notes, links, or captured diff. Back up this file to preserve saved tasks.
 
 The database and exported files are created owner-readable/writable only. Notes, workspace paths, commands, and captured diffs can contain sensitive project material. Capture reads the repository directly; saved handoffs are not automatically redacted. Review the preview before copying or sharing it. HTML exports escape captured content and contain no remote assets. When monitoring a remote receiver, its workspace path is retained as evidence but is not automatically selected as a local capture directory.
+
+## Structured briefs and decision history
+
+**Brief** edits intent, acceptance criteria, constraints, open questions, and the
+next action. **Decisions** records accepted and rejected approaches with rationale,
+scope and optional source references. Manual entry is the default. Explicit
+excerpt capture opens an unsaved draft for review. Supersession creates an
+immutable version in the same task; active decisions lead the handoff, while
+history remains available. Missing retained telemetry does not delete a decision
+or establish that its source still exists.
+
+Brief and decision writes share the task's optimistic revision. A stale revision
+refuses the write and retains your draft. Limits are 128 decision versions per
+task, 4,000 characters per text/rationale field and the existing 512 KiB aggregate
+task budget. Notes retain their 32,000-character bound and links their 64-link
+bound. Over-budget edits fail visibly; user decisions are never silently evicted.
+
+Before opening an older task database with a new version, make an explicit SQLite
+backup using `agenturm task --tasks-db OLD backup NEW`. This command uses SQLite's
+backup API. Stop all writers before restoring a backup. The original task table
+columns are preserved; structured data lives in additive side tables. An older
+notes-only writer cannot display decisions but preserves those tables; the newer
+client observes the changed task revision. Mixed-version editing is discouraged.
+No migration infers structured decisions from existing freeform notes.
+
+```sh
+agenturm task brief TASK_ID --intent "Reject expired tokens" --next-action "Add replay regression"
+agenturm task decide TASK_ID --kind accepted --text "Preserve the public API" --rationale "Existing callers depend on it"
+agenturm task decisions TASK_ID --json
+agenturm task handoff TASK_ID --include-decision-history
+```
+
+For bounded file input, use `task brief TASK_ID --file brief.json` and
+`task decide TASK_ID --kind accepted --text-file decision.txt`. Brief JSON accepts
+only the documented fields. File and field limits are validated before saving.
+
+Native runs with an explicit recorded lifecycle start can be linked with
+`task link TASK_ID --receiver RECEIVER --producer SERVICE --session-id SESSION --run-start-ns START`.
+The positive start timestamp must come from the runtime record. This identifies
+a run without inventing a trace or numeric usage: native-only accounting remains
+unknown unless exact recorded run totals are available. Exact trace-backed links
+and older session-only links remain supported. A saved review carries its frozen
+scope; saving it does not silently capture a different currently selected turn.

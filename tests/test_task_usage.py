@@ -17,11 +17,11 @@ class TaskUsageTests(unittest.TestCase):
                 for i,tokens,cost in ((1,100,.2),(2,700,.7)):
                     store.ingest([normalize_native({'trace_id':f'{i:032x}','span_id':f'{i:016x}',
                         'name':'task','start_unix_nano':i*100,'end_unix_nano':i*100+10,'status':'OK',
-                        'attributes':{'session.id':'session-a','gen_ai.usage.input_tokens':tokens,
+                        'attributes':{'session.id':'session-a','agent.id':'ag1_'+'a'*32,'gen_ai.usage.input_tokens':tokens,
                                       'gen_ai.usage.output_tokens':0,'llm.cost.total':cost}})])
                 session=store.sessions()[0]
                 self.assertEqual(session['input_tokens'],800)
-                latest=task_run_usage([session],{'session_id':'session-a'})
+                latest=task_run_usage([session],{'session_id':'session-a','agent_id':'ag1_'+'a'*32})
                 self.assertEqual(latest['input_tokens'],700)
                 self.assertEqual(latest['known_cost_usd'],.7)
                 self.assertEqual(latest['trace_id'],f'{2:032x}')
@@ -79,6 +79,17 @@ class TaskUsageTests(unittest.TestCase):
         self.assertEqual(session_usage(untagged,{'agent_id':'legacy','agent_id_inferred':True,
                                                'session_id':'shared'})['input_tokens'],99)
 
+    def test_explicit_agent_usage_requires_producer_session_and_selected_run(self):
+        selected=dict(service='codex',agent_id='same',session_id='wanted',trace_id='current')
+        rows=[dict(service='claude',agent_id='same',session_id='wanted',latest_run={'trace_id':'wrong','input_tokens':999}),
+              dict(service='codex',agent_id='same',session_id='other',latest_run={'trace_id':'wrong2'}),
+              dict(service='codex',agent_id='same',session_id='wanted',latest_run={'trace_id':'old','input_tokens':888})]
+        self.assertEqual(session_usage(rows,selected),rows[2])
+        self.assertEqual(task_run_usage(rows,selected),{})
+        exact=dict(service='codex',agent_id='same',session_id='wanted',trace_id='current',input_tokens=10,agent_count=1,agent_count_complete=True)
+        self.assertEqual(task_run_usage(rows,selected,[exact]),exact)
+        self.assertEqual(task_run_usage(rows,selected,[{**exact,'agent_id':'sibling'}]),{})
+
 
 class TaskUsageJourney(unittest.IsolatedAsyncioTestCase):
     async def test_selection_inspector_modal_and_trace_use_the_same_task(self):
@@ -90,8 +101,10 @@ class TaskUsageJourney(unittest.IsolatedAsyncioTestCase):
                     'cache_read_input_tokens':360,'cache_write_input_tokens':20,
                     'known_cost_usd':1,'cost_complete':True}]
         for index,row in enumerate(summaries,1):
+            row['services']=['codex' if index==1 else 'claude']
             row['latest_run']={k:v for k,v in row.items() if k not in {'trace_count','session_id'}}
             row['latest_run']['trace_id']=f'run-{index}'
+            row['latest_run'].update(agent_count=1,agent_count_complete=True)
             row['known_cost_usd']=99
             row['input_tokens']=999999
         get=feed.api.get

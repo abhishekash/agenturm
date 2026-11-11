@@ -164,24 +164,45 @@ def usage_summary(totals):
 
 
 def session_usage(sessions, item):
-    """Match one agent's session, never another worker sharing its session ID."""
+    """Require producer/session provenance even when canonical agent IDs match."""
     if not item:return {}
+    def same_producer(row):
+        producer=item.get('service')
+        return not producer or producer in (row.get('services') or [row.get('service')])
+    def same_session(row):
+        return not item.get('session_id') or row.get('session_id')==item['session_id']
     if item.get('agent_id'):
-        exact=next((row for row in sessions if row.get('agent_id')==item['agent_id']),None)
+        exact=next((row for row in sessions if row.get('agent_id')==item['agent_id']
+                    and same_producer(row) and same_session(row)),None)
         if exact is not None:return exact
         if not item.get('agent_id_inferred'):return {}
     return next((row for row in sessions if item.get('session_id')
                  and row.get('session_id')==item['session_id']
-                 and (not item.get('service') or not (row.get('services') or row.get('service'))
-                      or item['service'] in (row.get('services') or [row.get('service')]))
-                 and not row.get('agent_id')), {})
+                 and same_producer(row) and not row.get('agent_id')), {})
 
 
 def task_run_usage(sessions, item, traces=()):
     session=session_usage(sessions,item)
-    if session.get('latest_run'):return session['latest_run']
-    trace_id=session.get('latest_trace_id')
-    return next((row for row in traces if trace_id and row.get('trace_id')==trace_id),{})
+    if item.get('run_start_ns') and not item.get('trace_id'):return {}
+    selected=item.get('trace_id') or item.get('latest_trace_id')
+    latest=session.get('latest_run') or {}
+    def allocated(row):
+        if not row.get('trace_id'):return {}
+        count=row.get('agent_count')
+        if type(count) is int and count==1 and row.get('agent_count_complete') is True:return row
+        return {key:row[key] for key in ('trace_id','agent_id','agent_count','agent_count_complete') if key in row} | {
+            'usage_allocation':'shared trace; per-agent usage unavailable' if type(count) is int and count>1 else
+                'agent allocation unverified; per-agent usage unavailable'}
+    if latest and (not selected or latest.get('trace_id')==selected):return allocated(latest)
+    trace_id=selected or session.get('latest_trace_id')
+    def exact(row):
+        if not trace_id or row.get('trace_id')!=trace_id:return False
+        if item.get('service') and item['service'] not in (row.get('services') or [row.get('service')]):return False
+        if item.get('session_id') and row.get('session_id') and row['session_id']!=item['session_id']:return False
+        if item.get('agent_id') and not item.get('agent_id_inferred') and row.get('agent_id')!=item['agent_id']:return False
+        return True
+    candidate=next((row for row in traces if exact(row)),{})
+    return allocated(candidate) if candidate else {}
 
 
 def task_usage_label(usage, *, compact=False):
@@ -225,6 +246,7 @@ def task_usage_summary(usage, title='', *, scope='session', identity='', compact
            f"Cached input {screen_token('cache_read_input_tokens')}"+cached_suffix]
     if known('cache_write_input_tokens'):
         lines[-1]+=f" · Cache write {screen_token('cache_write_input_tokens')}"
+    if usage.get('usage_allocation'):lines.append(usage['usage_allocation']+' · Trace view retains whole-trace totals.')
     details='\n'.join([
         'SELECTED TASK USAGE',title or 'No task selected','',
         f'Cost: {money}',f'Tokens used: {tokens}',
@@ -239,6 +261,7 @@ def task_usage_summary(usage, title='', *, scope='session', identity='', compact
         'Cached percentage means cached input divided by reported input tokens, not a request hit rate.',
         'A + marks a partial reported subtotal. Missing telemetry is not zero.',
         'Cost is reported USD for this task, not an all-history total or a subscription bill estimate.',
+        *([usage['usage_allocation']+' · Whole-trace totals remain available in Traces.'] if usage.get('usage_allocation') else []),
         'Press Esc to return.'])
     return '\n'.join(lines),details
 

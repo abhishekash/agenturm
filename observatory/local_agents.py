@@ -281,7 +281,12 @@ class Session:
         self.run_state = "unknown"
         self.state_since = 0
         self.waiting_for = ""
+        self.request_id = ""
+        self.request_time_ns = 0
+        self.outcome_id = ""
+        self.outcome_time_ns = 0
         self.pending_tools = RecentMap(MAX_RECENT_CALLS)
+        self.pending_request_times = RecentMap(MAX_RECENT_CALLS)
         self.started = RecentMap(MAX_RECENT_TURNS)
         self.calls = RecentMap(MAX_RECENT_CALLS)
         self.usage = RecentMap(MAX_RECENT_USAGE)
@@ -383,13 +388,13 @@ class Session:
                 "skipped_oversized_records": self.skipped_oversized,
                 "schema_errors": self.schema_errors,
                 "cache_evictions": sum(mapping.evictions for mapping in
-                    (self.started, self.tasks, self.calls, self.tool_inputs, self.usage, self.pending_tools)),
+                    (self.started, self.tasks, self.calls, self.tool_inputs, self.usage, self.pending_tools, self.pending_request_times)),
                 "cache_tracked_bytes": sum(mapping.tracked_bytes for mapping in
-                    (self.started, self.tasks, self.calls, self.tool_inputs, self.usage, self.pending_tools)),
+                    (self.started, self.tasks, self.calls, self.tool_inputs, self.usage, self.pending_tools, self.pending_request_times)),
                 "cache_max_bytes": sum(mapping.max_bytes for mapping in
-                    (self.started, self.tasks, self.calls, self.tool_inputs, self.usage, self.pending_tools)),
+                    (self.started, self.tasks, self.calls, self.tool_inputs, self.usage, self.pending_tools, self.pending_request_times)),
                 "cache_dropped_oversized_entries": sum(mapping.dropped_oversized for mapping in
-                    (self.started, self.tasks, self.calls, self.tool_inputs, self.usage, self.pending_tools))}
+                    (self.started, self.tasks, self.calls, self.tool_inputs, self.usage, self.pending_tools, self.pending_request_times))}
 
     def observe_state(self, row, stamp):
         """Track explicit lifecycle records; absence of output is not an approval wait."""
@@ -406,6 +411,7 @@ class Session:
             self.branch = str(branch)
         state = self.run_state
         event = payload.get("type")
+        request_key = None
         if self.runtime == "Codex":
             if row.get("type") == "event_msg":
                 if event in {"task_started", "task_complete", "task_aborted", "turn_aborted"}:
@@ -415,6 +421,7 @@ class Session:
                 elif event in {"approval_request", "request_user_input"}:
                     state = "waiting"
                     self.waiting_for = "Approval" if event == "approval_request" else "User input"
+                    request_key = payload.get('request_id') or payload.get('call_id') or payload.get('id') or row.get('ordinal') or row.get('uuid') or row.get('timestamp')
                 elif event == "item_completed":
                     item = payload.get("item") or {}
                     if isinstance(item, dict):
@@ -429,6 +436,8 @@ class Session:
                 if event in {"function_call", "custom_tool_call"}:
                     name = str(payload.get("name") or "Tool")
                     self.pending_tools[key] = name
+                    if name.rsplit('.',1)[-1] in {'request_user_input','AskUserQuestion'}:
+                        self.pending_request_times[key] = stamp
                     state = "running"
                 elif event in {"function_call_output", "custom_tool_call_output"}:
                     self.pending_tools.pop(key, None)
@@ -445,7 +454,11 @@ class Session:
             elif role == "assistant":
                 for block in message.get("content") or []:
                     if isinstance(block, dict) and block.get("type") == "toolCall":
-                        self.pending_tools[str(block.get("id") or "")] = str(block.get("name") or "Tool")
+                        key = str(block.get('id') or '')
+                        name = str(block.get('name') or 'Tool')
+                        self.pending_tools[key] = name
+                        if name.rsplit('.',1)[-1] in {'request_user_input','AskUserQuestion'}:
+                            self.pending_request_times[key] = stamp
                 if message.get("stopReason") == "stop":
                     state = "completed"
                     self.pending_tools.clear()
@@ -467,7 +480,11 @@ class Session:
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "tool_use":
-                    self.pending_tools[str(block.get("id"))] = str(block.get("name") or "Tool")
+                    key = str(block.get('id'))
+                    name = str(block.get('name') or 'Tool')
+                    self.pending_tools[key] = name
+                    if name.rsplit('.',1)[-1] in {'request_user_input','AskUserQuestion'}:
+                        self.pending_request_times[key] = stamp
                     state = "running"
                 elif block.get("type") == "tool_result":
                     self.pending_tools.pop(str(block.get("tool_use_id")), None)
@@ -480,6 +497,8 @@ class Session:
             names = list(self.pending_tools.values())
             if any(name.rsplit(".", 1)[-1] in {"request_user_input", "AskUserQuestion"} for name in names):
                 state, self.waiting_for = "waiting", "User input"
+                request_key = next(key for key, name in self.pending_tools.items()
+                    if name.rsplit('.', 1)[-1] in {'request_user_input', 'AskUserQuestion'})
             else:
                 mcp = mcp_attributes(names[-1])
                 label = mcp["mcp.server.name"] + " / " + mcp["mcp.tool.name"] if mcp else names[-1]
@@ -488,6 +507,21 @@ class Session:
                     self.waiting_for += f" (+{len(names)-1} pending)"
         elif state != "waiting":
             self.waiting_for = ""
+        if state == 'waiting' and request_key and str(request_key) != 'None':
+            request_id = identity(self.source_id, self.turn, 'request', str(request_key))
+            if request_id != self.request_id:
+                self.request_id, self.request_time_ns = request_id, self.pending_request_times.get(str(request_key),stamp)
+        elif state != 'waiting':
+            self.request_id, self.request_time_ns = '', 0
+        if state in {'completed', 'interrupted', 'failed', 'error', 'incomplete'}:
+            if state != self.run_state or not self.outcome_id:
+                self.outcome_id = identity(self.source_id, self.turn, 'outcome', state)
+                self.outcome_time_ns = stamp
+        else:
+            self.outcome_id, self.outcome_time_ns = '', 0
+        for key in list(self.pending_request_times):
+            if key not in self.pending_tools:
+                del self.pending_request_times[key]
         if state != self.run_state:
             self.state_since = stamp
         self.run_state = state
@@ -883,6 +917,7 @@ class Session:
             self.file_id = file_id
             self.last_total = None
             self.modern_usage = False
+            self.turn = 'session'
             self.started.clear()
             self.calls.clear()
             self.usage.clear()
@@ -890,9 +925,12 @@ class Session:
             self.task_description = ''
             self.tool_inputs.clear()
             self.pending_tools.clear()
+            self.pending_request_times.clear()
             self.spawn_calls.clear()
             self.announced_agents.clear()
             self.run_state, self.waiting_for, self.state_since = "unknown", "", 0
+            self.request_id, self.request_time_ns = '', 0
+            self.outcome_id, self.outcome_time_ns = '', 0
             self.last_record_ns = 0
         with self.path.open("rb") as stream:
             if self.offset == 0 and stat.st_size > MAX_READ:
@@ -1225,6 +1263,10 @@ class LocalAgents:
                      "project": session.project, "model": session.model,
                      "working_directory": session.working_directory, "branch": session.branch,
                      "run_state": session.run_state, "state_since_ns": session.state_since,
+                     "trace_id": identity(session.source_id, session.turn) if session.turn != 'session' else '',
+                     "run_start_ns": session.started.get(session.turn) or None,
+                     "request_id": session.request_id, "request_time_ns": session.request_time_ns,
+                     "outcome_id": session.outcome_id, "outcome_time_ns": session.outcome_time_ns,
                      "waiting_for": session.waiting_for,
                      "task": "Approval review" if session.internal else (session.task_description or session.tasks.get(session.turn) or "")[:500],
                      "capture_content": session.capture_details,

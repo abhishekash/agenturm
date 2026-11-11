@@ -90,6 +90,12 @@ for controls, `[` / `]` for requests, and `z` for original text. Reading positio
 survive section changes.
 See the [assessment, reviewed plan and validation report](docs/agents-experience-review.html).
 
+Open **Review** from Overview for recorded checks, later edits and explicit
+coverage. **w** opens the attention inbox; seen requests stay pending until native
+evidence resolves them. **b** opens Saved tasks, including structured briefs and
+versioned decisions for a reviewed handoff. See the [joint RFC implementation
+plan](docs/rfcs/joint-implementation-plan.html) and [saved-task guide](docs/saved-tasks.html).
+
 ### Keyboard first
 
 | Key | Action |

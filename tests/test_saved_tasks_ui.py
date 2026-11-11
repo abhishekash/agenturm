@@ -21,16 +21,30 @@ TRACE = 'a' * 32
 
 
 class SelectedRunTests(unittest.TestCase):
+    def test_manual_task_leads_with_intent_and_omits_unknown_usage(self):
+        task={'brief':{'intent':'Keep request IDs stable'},'notes':'Human notes',
+              'links':[], 'usage_summary':{'linked_runs':0,'unscoped_links':0,
+                  'input_tokens':None,'output_tokens':None,'known_cost_usd':None}}
+        text=task_overview(task)
+        self.assertTrue(text.startswith('STRUCTURED BRIEF\nIntent\nKeep request IDs stable'))
+        self.assertIn('Human notes',text)
+        self.assertNotIn('Tokens Not reported',text)
+        self.assertNotIn('0 linked runs',text)
+        self.assertNotIn('USAGE DETAILS',text)
+        linked=task_overview({**task,'links':[{}],'usage_summary':{'linked_runs':1,'input_tokens':20}})
+        self.assertLess(linked.index('Keep request IDs stable'),linked.index('USAGE DETAILS'))
+        self.assertIn('Tokens 20 (partial)',linked)
+
     def test_exact_run_and_agent_scope_never_capture_session_totals_or_other_checks(self):
         feed = ManualFeed()
-        item = {'id': 'worker', 'session_id': 'shared', 'agent_id': 'worker',
+        item = {'id': 'worker', 'session_id': 'shared', 'agent_id': 'worker', 'service': 'codex',
                 'runtime': 'Codex', 'task': 'Fix refresh expiry', 'state': 'Completed',
                 'working_directory': 'file:///tmp/local%20repo'}
-        usage = {'trace_id': TRACE, 'input_tokens': 200, 'output_tokens': 20}
-        event = {'session_id': 'shared', 'agent_id': 'worker', 'trace_id': TRACE,
+        usage = {'trace_id': TRACE, 'input_tokens': 200, 'output_tokens': 20,'agent_count':1,'agent_count_complete':True}
+        event = {'session_id': 'shared', 'agent_id': 'worker', 'service': 'codex', 'trace_id': TRACE,
                  'domain': 'shell', 'subject': 'python -m unittest', 'result': 'success',
                  'time_unix_nano': time.time_ns()}
-        feed.snapshot = replace(feed.snapshot, sessions=[{'agent_id': 'worker', 'session_id': 'shared',
+        feed.snapshot = replace(feed.snapshot, sessions=[{'agent_id': 'worker', 'session_id': 'shared', 'service': 'codex',
             'input_tokens': 999999, 'latest_run': usage}], activity=[event,
             {**event, 'agent_id': 'other', 'subject': 'pytest other-agent'},
             {**event, 'trace_id': 'b' * 32, 'subject': 'pytest other-run'}])

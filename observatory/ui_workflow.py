@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 from textual import on
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, DataTable, Input, Label, RichLog
 from rich.text import Text
@@ -17,50 +17,33 @@ from .ui_monitoring import task_run_usage, task_usage_summary
 from .session_status import today_bucket
 
 
+from .attention import AttentionLedger as PureAttentionLedger, classify, fresh_observation
+from .workflow_evidence import scope_for, safe_text, check_observation
+from .ui_workflow_controller import WorkflowController, prepared_item
+
+
 def events_for(item, events):
-    agent=item.get('agent_id');session=item.get('session_id')
-    return sorted((e for e in events if
-        (agent and e.get('agent_id')==agent) or
-        (session and e.get('session_id')==session and not e.get('agent_id'))),
-        key=lambda e:e.get('time_unix_nano',0))
+    scope=scope_for(item)
+    return sorted((event for event in events if scope.matches(event)),
+                  key=lambda event:event.get('time_unix_nano') or 0)
 
 
 def workflow_reasons(item, usage, snapshot, limits, now=None):
-    now=now or time.time(); reasons=[]
-    waiting=str(item.get('waiting_for') or '').lower()
-    if not item.get('_workflow_reviewed') and item.get('state')=='Waiting' and any(x in waiting for x in ('approval','permission','user input','input request')):
-        reasons.append('Approval requested' if 'approval' in waiting or 'permission' in waiting else 'Reply requested')
-    if today_bucket(item,int(now*1e9))=='attention' and item.get('state') in {'Error','Failed','Interrupted','Incomplete'}:reasons.append('Task interrupted' if item.get('state')=='Interrupted' else 'Reported task failure')
-    if not item.get('_workflow_reviewed') and item.get('state')=='Possibly stalled':reasons.append('Possible stall · inspect activity and collector health')
-    # Limits apply to this recorded run, never session lifetime or inferred prices.
-    total=sum(usage.get(k,0) or 0 for k in ('input_tokens','output_tokens') if usage.get(k+'_reported') is not False)
-    if limits.get('tokens',0)>0 and total>=limits['tokens']:reasons.append('Task token threshold reached')
-    cost=usage.get('known_cost_usd')
-    if limits.get('cost',0)>0 and cost is not None and cost>=limits['cost']:reasons.append('Reported task cost threshold reached')
-    trace=next((t for t in snapshot.traces if t.get('trace_id')==usage.get('trace_id')),{})
-    start=trace.get('start_unix_nano')
-    if item.get('active') and limits.get('minutes',0)>0 and start and now-start/1e9>=limits['minutes']*60:
-        reasons.append('Task elapsed-time threshold reached')
-    return reasons
+    """Compatibility description for Today; the durable inbox retains open history."""
+    now=time.time() if now is None else now
+    selected=dict(item)
+    if selected.get('state') in {'Error','Failed','Interrupted','Incomplete','Completed'} and not today_bucket(selected,int(now*1e9)):
+        return []
+    if usage.get('trace_id') and not selected.get('trace_id'):selected['trace_id']=usage['trace_id']
+    return [incident.reason for incident in classify(selected,scope_for(selected,snapshot),usage,limits,now=now,
+        stall_anchor='preview' if fresh_observation(item,snapshot,now) else '',events=snapshot.activity)
+        if incident.kind!='completion']
 
 
-class AttentionLedger:
-    def __init__(self):
-        self.previous=None;self.since={};self.rows=[]
-
-    def update(self, items, snapshot, limits, now=None):
-        now=now or time.time(); current={}; rows=[]; notifications=[]
-        for item in items:
-            usage=task_run_usage(snapshot.sessions,item,snapshot.traces)
-            reasons=workflow_reasons(item,usage,snapshot,limits,now)
-            if not reasons:continue
-            key=(item['id'],usage.get('trace_id'),tuple(reasons))
-            current[key]=True;self.since.setdefault(key,now)
-            rows.append((item,reasons,self.since[key]))
-            if self.previous is not None and key not in self.previous:notifications.append((item,reasons))
-        self.previous=current;self.since={k:v for k,v in self.since.items() if k in current}
-        self.rows=rows
-        return notifications
+class AttentionLedger(PureAttentionLedger):
+    """Compatibility adapter; the incident engine itself has no UI imports."""
+    def update(self,items,snapshot,limits,now=None,*,endpoint=''):
+        return super().update([prepared_item(item,snapshot) for item in items],snapshot,limits,now,endpoint=endpoint)
 
 
 def desktop_notify(title, body):
@@ -118,16 +101,18 @@ def workflow_report(item, items, snapshot):
            'Receiver: '+(snapshot.error or 'last read succeeded'),
            'Agent state: '+str(item.get('state') or 'Unknown')]
     diagnostics=item.get('diagnostics') or {};process=item.get('process') or {}
-    lines+=['Last recorded activity: '+(f"{max(0,int(time.time()-item['stamp']/1e9))}s ago" if item.get('stamp') else 'not reported'),
-            'Exact observed process IDs: '+(', '.join(map(str,process.get('pids',[]))) or 'not reported'),
-            'Collector backlog bytes: '+str(diagnostics.get('backlog_bytes','not reported')),
-            'Process CPU seconds / I/O chars: '+str(process.get('cpu_seconds','not reported'))+' / '+str(process.get('io_chars','not reported')),
-            'State evidence: '+str(item.get('status_evidence') or 'not reported'),
-            'A quiet process is evidence, not proof of a stall.','', 'WORKSPACE']
-    cwd=item.get('working_directory');lines+=['Directory: '+str(cwd or 'not reported'),'Branch: '+str(item.get('branch') or 'not reported')]
+    if item.get('stamp'):lines.append(f"Last recorded activity: {max(0,int(time.time()-item['stamp']/1e9))}s ago")
+    if item.get('status_evidence'):lines.append(str(item['status_evidence']))
+    if process.get('pids'):lines.append('Exact observed process IDs: '+', '.join(map(str,process['pids'])))
+    if diagnostics.get('backlog_bytes'):lines.append('Collector backlog bytes: '+str(diagnostics['backlog_bytes']))
+    if item.get('state')=='Possibly stalled':lines.append('A quiet process is evidence, not proof of a stall; check the native terminal.')
+    cwd=item.get('working_directory')
+    if cwd:lines+=['','WORKSPACE','Directory: '+str(cwd)]
+    if item.get('branch'):lines.append('Branch: '+str(item['branch']))
     overlap=[x for x in items if x['id']!=item['id'] and cwd and x.get('working_directory')==cwd and x.get('active')]
-    lines+=['Other active sessions in this directory: '+(', '.join(str(x.get('task') or x['id'])[:80] for x in overlap) or 'none observed')]
-    lines+=['Shared directory is an overlap warning; file ownership is not inferred.','','TASK USAGE',task_usage_summary(usage,scope='trace')[0]]
+    if overlap:lines+=['Other active sessions in this directory: '+', '.join(str(x.get('task') or x['id'])[:80] for x in overlap),
+                      'Shared directory is an overlap warning; file ownership is not inferred.']
+    if usage:lines+=['','TASK USAGE',task_usage_summary(usage,scope='trace')[0]]
     children=[x for x in items if item.get('agent_id') and x.get('parent_agent_id')==item['agent_id'] and x.get('relationship_state')=='confirmed' and x.get('relationship_kind')=='delegated']
     if children:
         lines+=['','CONFIRMED DIRECT CHILDREN · separate run usage, not an added subtotal']
@@ -135,102 +120,207 @@ def workflow_report(item, items, snapshot):
             u=task_run_usage(snapshot.sessions,child,snapshot.traces)
             lines+=[str(child.get('task') or child['id'])[:120],task_usage_summary(u,scope='trace')[0]]
     events=events_for(item,snapshot.activity)
-    lines+=['','COMPLETION REVIEW · loaded activity only','Agent reported state: '+str(item.get('state') or 'Unknown')]
+    lines+=['','RECORDED WORK · loaded activity only','Open Review to load checks and edits for this exact execution.']
     files=[e for e in events if e.get('domain')=='file'];shell=[e for e in events if e.get('domain')=='shell']
     lines+=['Recorded file operations: '+str(len(files))]
     for e in files[-8:]:lines.append('  '+str(e.get('subject') or e.get('action') or 'file operation')[:180])
     last_edit=max((e.get('time_unix_nano',0) for e in files),default=0)
     checks=[]
-    for e in shell:
-        subject=str(e.get('subject') or '')
-        if not re.search(r'\b(pytest|unittest|test|check|lint|tsc)\b',subject):continue
-        after='after latest recorded file operation' if last_edit and e.get('time_unix_nano',0)>last_edit else 'freshness against edits unknown' if not last_edit else 'before latest recorded file operation'
-        checks.append('  '+subject[:140]+' · '+str(e.get('result') or e.get('status') or 'result not reported')+' · '+after)
+    for event in shell:
+        check=check_observation(event)
+        if not check:continue
+        stamp=check.get('completed_ns')
+        later=bool(stamp and last_edit and stamp<last_edit)
+        freshness='before latest recorded file operation; later edits exist' if later else 'freshness unknown'
+        checks.append('  '+check['command'][:140]+' · '+check['result']+' · '+freshness)
     lines+=['Recorded check commands:']+(checks[-8:] or ['  None in loaded activity.'])
     lines+=['Recorded command results do not establish complete verification or a clean worktree.','','CONTEXT DIAGNOSTICS']
     context=[e for e in events if re.search(r'compact|truncat|context',str(e.get('action',''))+' '+str(e.get('subject','')),re.I)]
     lines += [str(e.get('subject') or e.get('action'))[:180] for e in context[-5:]] or ['No context events in loaded activity.']
     lines+=['Context occupancy is not inferred from cumulative token usage.','','HANDOFF',resume_command(item) or 'Native resume command unavailable for this runtime.',
             'Resume only after checking that the session is not already active.']
-    return '\n'.join(lines)
+    return safe_text('\n'.join(lines))
 
 
 class WorkflowScreen(ModalScreen):
-    DEFAULT_CSS='''
+    DEFAULT_CSS="""
     WorkflowScreen { align: center middle; background: $background 70%; }
-    #workflow-dialog { width: 96%; height: 96%; background: $surface; border: round $primary; padding: 0 1; }
-    #workflow-inbox { height: 5; }
-    #workflow-log { height: 1fr; }
-    #workflow-controls { height: 3; }
-    #workflow-controls Button { min-width: 8; width: 1fr; }
-    #workflow-limits { height: 3; }
-    #workflow-limits Input { width: 1fr; }
-    '''
-    BINDINGS=[('escape','dismiss','Close')]
-    def __init__(self,owner):super().__init__();self.owner=owner
+    #workflow-dialog { width: 100%; height: 100%; background: $surface; border: round $primary; padding: 0 1; }
+    #workflow-title { height: 1; }
+    #workflow-body { height: 1fr; }
+    #workflow-inbox, #workflow-log { height: 1fr; width: 1fr; }
+    #workflow-settings-panel { height: 1fr; }
+    #workflow-controls, #workflow-limits, #workflow-more { height: 3; }
+    #workflow-controls Button, #workflow-more Button { min-width: 7; width: 1fr; }
+    #workflow-limits Input { width: 1fr; border-title-color: $text; }
+    #workflow-save { min-width: 7; width: 10; }
+    #workflow-retention { height: auto; width: 1fr; }
+    #workflow-too-small { height: 1fr; width: 1fr; content-align: center middle; }
+    """
+    BINDINGS=[('escape','back','Back')]
+
+    def __init__(self,owner):
+        super().__init__();self.owner=owner;self.selected_incident=None;self.rows_by_id={}
+        self._table_signature=None;self._log_signature=None;self._layout_signature=None;self._settings=False;self._detail=False
+
     def compose(self):
         with Vertical(id='workflow-dialog'):
-            yield Label('Workflow · Enter selects · Tab review · Esc returns')
-            yield DataTable(id='workflow-inbox',cursor_type='row')
-            yield RichLog(id='workflow-log',wrap=True,markup=False,min_width=1,auto_scroll=False)
-            yield Checkbox('Desktop attention alerts · omit task text',value=self.owner.workflow_notify,id='workflow-notify')
-            with Horizontal(id='workflow-limits'):
-                for key,label in (('tokens','Task tokens'),('cost','Task USD'),('minutes','Task minutes')):
-                    yield Input(str(self.owner.workflow_limits.get(key,0)),placeholder=label,id='workflow-'+key,tooltip=label+' alert threshold; 0 disables')
-                yield Button('Save limits',id='workflow-save')
+            yield Label('Workflow · Enter selects · Tab actions · Esc back',id='workflow-title')
+            yield Label('Workflow needs 60 × 18. Resize to continue; Esc returns.',id='workflow-too-small')
+            with Horizontal(id='workflow-body'):
+                yield DataTable(id='workflow-inbox',cursor_type='row',zebra_stripes=True)
+                yield RichLog(id='workflow-log',wrap=True,markup=False,min_width=1,auto_scroll=False)
+            with VerticalScroll(id='workflow-settings-panel'):
+                yield Checkbox('Desktop alerts · project and reason only',value=self.owner.workflow_notify,id='workflow-notify')
+                with Horizontal(id='workflow-limits'):
+                    for key,label in (('tokens','Task tokens'),('cost','Task USD'),('minutes','Task minutes')):
+                        yield Input(str(self.owner.workflow_limits.get(key,0)),placeholder=label,id='workflow-'+key,tooltip=label+' threshold; 0 disables')
+                    yield Button('Save',id='workflow-save')
+                with Horizontal(id='workflow-more'):
+                    yield Button('Snooze',id='workflow-snooze',tooltip='Snooze desktop alerts for 10 minutes')
+                    yield Button('Terminal',id='workflow-terminal')
+                    yield Button('Resume',id='workflow-resume',tooltip='Copy native resume command')
+                    yield Button('Cleanup',id='workflow-cleanup',tooltip='Apply retention; unresolved incidents stay')
+                yield Label('Receipts and their minimal execution references expire after 90 days. Other resolved incidents and delivery claims expire after 30 days. '
+                    'Unresolved requests remain visible after Seen. Notifications attempt once; Retry explicitly repeats a failed attempt.',id='workflow-retention')
             with Horizontal(id='workflow-controls'):
+                yield Button('Review',id='workflow-review')
+                yield Button('Seen',id='workflow-seen')
+                yield Button('Retry',id='workflow-retry',tooltip='Retry the selected failed desktop notification')
                 yield Button('Refresh',id='workflow-refresh')
-                yield Button('Snooze',id='workflow-snooze',tooltip='Snooze desktop alerts for 10 minutes')
-                yield Button('Terminal',id='workflow-terminal')
-                yield Button('Resume',id='workflow-resume',tooltip='Copy native resume command')
                 yield Button('Settings',id='workflow-settings')
+
     def on_mount(self):
-        self.query_one(DataTable).add_columns('Task / project','Needs attention','Observed wait')
-        self.query_one('#workflow-notify').display=False
-        self.query_one('#workflow-limits').display=False
+        self.query_one('#workflow-too-small').display=False
+        self.query_one('#workflow-settings-panel').display=False
         for key,title in (('tokens','Tokens'),('cost','USD'),('minutes','Minutes')):
             self.query_one('#workflow-'+key,Input).border_title=title
         self.call_after_refresh(self.render_report)
+
     def on_resize(self):
         if self.is_mounted:self.call_after_refresh(self.render_report)
+
+    def action_back(self):
+        if self._settings:
+            self._settings=False;self.query_one('#workflow-settings-panel').display=False;self.render_report()
+            self.query_one('#workflow-settings').focus()
+        elif self._detail and self.size.width<120:
+            self._detail=False;self.render_report();self.query_one(DataTable).focus()
+        else:self.dismiss()
+
+    def selected_item(self):
+        row=self.rows_by_id.get(self.selected_incident)
+        if row:return row[0]
+        return next((item for item in self.owner.workflow_items() if item['id']==self.owner.selected_source),None)
+
     def render_report(self):
-        owner=self.owner;table=self.query_one(DataTable);table.clear()
-        table.display=bool(owner.workflow_ledger.rows)
-        self.query_one(Label).update('Workflow · '+('Attention inbox · Enter selects' if table.display else 'No attention items')+' · Esc returns')
-        for item,reasons,since in owner.workflow_ledger.rows:
-            table.add_row(str(item.get('task') or item['id'])[:80],'; '.join(reasons),f'{int((time.time()-since)/60)}m',key=item['id'])
+        owner=self.owner;table=self.query_one(DataTable)
+        small=self.size.width<60 or self.size.height<18
+        self.query_one('#workflow-too-small').display=small
+        self.query_one('#workflow-controls').display=not small
+        self.query_one('#workflow-settings-panel').display=self._settings and not small
+        self.query_one('#workflow-body').display=not self._settings and not small
+        if small:return
+        rows=owner.workflow_ledger.rows
+        self.rows_by_id={item['_attention_id']:(item,reasons,since) for item,reasons,since in rows}
+        if self.selected_incident not in self.rows_by_id:
+            self.selected_incident=next((key for key,(item,_,_) in self.rows_by_id.items() if item['id']==owner.selected_source),None)
+        wide=self.size.width>=120 and self.size.height>=24
+        layout=(wide,self._detail,self._settings,self.size,bool(rows))
+        if layout!=self._layout_signature:
+            self._layout_signature=layout;self.call_after_refresh(self.render_report)
+        self.query_one('#workflow-body').display=not self._settings
+        table.display=bool(rows) and (wide or not self._detail)
+        self.query_one('#workflow-log').display=wide or self._detail or not rows
+        title='Workflow · '+('Settings' if self._settings else str(len(rows))+' items · Enter inspect' if rows else 'No attention items')+' · Esc back'
+        warning=owner.workflow_controller.warning
+        if 'capacity reached' in warning:title='Workflow · '+str(len(rows))+' items · Storage full · Esc back'
+        elif warning and ('unavailable' in warning.lower() or 'disabled' in warning.lower()):title='Workflow · '+str(len(rows))+' items · Storage unavailable'
+        self.query_one('#workflow-title',Label).update(title)
+        available=max(24,table.scrollable_content_region.width-6)
+        wait_width=12;reason_width=min(30,max(18,int(available*.4)));task_width=max(4,available-wait_width-reason_width)
+        widths=(task_width,reason_width,wait_width)
+        signature=(widths,tuple((item['_attention_id'],str(item.get('task') or item.get('project') or item.get('service') or 'Recorded execution'),tuple(reasons),int((time.time()-since)/60)) for item,reasons,since in rows))
+        if signature!=self._table_signature:
+            cursor_key=table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value if table.row_count else None
+            old_y=table.scroll_y;old_row=table.cursor_row;table.clear(columns=True)
+            for label,width in zip(('Task / project','Attention','Wait'),widths):table.add_column(label,width=width)
+            for item,reasons,since in rows:
+                stamp=item.get('_attention_source_time_ns')
+                wait=f'{max(0,int((time.time()-(stamp/1e9 if stamp else since))/60))}m'+(' observed' if not stamp else '')
+                reason={'approval':'Approval requested','reply':'Reply requested','failure':'Reported failure',
+                    'interruption':'Task interrupted','completion':'Completion review','stall':'Possible stall',
+                    'tokens':'Token threshold','cost':'Cost threshold','minutes':'Time threshold'}.get(item.get('_attention_kind'),'; '.join(reasons))
+                if item.get('_attention_seen'):reason=reason.replace(' requested','')+' · seen'
+                table.add_row(Text(safe_text(item.get('task') or item.get('project') or item.get('service') or 'Recorded execution')[:80]),
+                              Text(reason),wait,key=item['_attention_id'])
+            cursor_key=cursor_key if cursor_key in self.rows_by_id else self.selected_incident
+            new_row=table.get_row_index(cursor_key) if cursor_key in self.rows_by_id else 0
+            if cursor_key in self.rows_by_id:table.move_cursor(row=new_row,animate=False)
+            table.scroll_to(y=max(0,old_y+new_row-old_row),animate=False)
+            self._table_signature=signature
+        item=self.selected_item()
         items=owner.workflow_items()
-        item=next((x for x in items if x['id']==owner.selected_source),None)
-        text=workflow_report(item,items,owner.feed.snapshot) if item else 'Select a session in Agents to inspect its workflow.'
+        text=workflow_report(item,items,owner.feed.snapshot) if item else 'Select a session in Agents or an incident above to inspect its workflow.'
+        if item and item.get('_attention_id'):
+            status='Seen; the recorded request remains pending.' if item.get('_attention_seen') else 'Not yet acknowledged.'
+            if item.get('_attention_stale'):status+=' Capture is stale or this source is missing; resolution is unconfirmed.'
+            if not item.get('_attention_persistent'):status+=' Durable acknowledgement unavailable: missing exact run/request identity or storage capacity.'
+            text=status+'\n\n'+text
+        text+='\n\nNotifications: '+owner.workflow_delivery+('\n'+warning if warning else '')
         log=self.query_one(RichLog)
-        if not log.content_size.width:return
-        log.clear();log.write(Text(text+'\n\nNotifications: '+owner.workflow_delivery),width=max(1,log.content_size.width-1))
+        key=(self.selected_incident,owner.selected_source,text,log.content_size.width)
+        if log.content_size.width and self._log_signature!=key:
+            old_y=log.scroll_y if self._log_signature and self._log_signature[:2]==key[:2] else 0
+            log.clear();log.write(Text(safe_text(text)),width=max(1,log.content_size.width-1))
+            self.call_after_refresh(log.scroll_to,y=old_y,animate=False)
+            self._log_signature=key
+        seen=self.query_one('#workflow-seen',Button)
+        seen.label='Undo' if item and item.get('_attention_seen') else 'Reviewed' if item and item.get('_attention_kind')=='completion' else 'Seen'
+        seen.disabled=not item or not item.get('_attention_persistent')
+        self.query_one('#workflow-retry',Button).disabled=not item or item.get('_attention_delivery') not in {'failed','unavailable'}
+        self.query_one('#workflow-review',Button).disabled=item is None
         if not table.display and self.focused is table:log.focus()
+
     @on(DataTable.RowSelected,'#workflow-inbox')
     def select_attention(self,event):
-        self.owner.selected_source=event.row_key.value;self.render_report()
+        self.selected_incident=event.row_key.value
+        item=self.rows_by_id[self.selected_incident][0]
+        self.owner.selected_source=item['id'];self._detail=True;self.render_report()
+        if self.size.width<120:self.query_one(RichLog).focus()
+
     @on(Checkbox.Changed,'#workflow-notify')
     def toggle_notifications(self,event):
         self.owner.workflow_notify=event.value
         self.owner.workflow_delivery='Enabled · waiting for new attention' if event.value else 'Disabled'
-        self.owner.save_preferences()
+        self.owner.workflow_updated=None;self.owner.save_preferences();self.owner.update_workflow()
+
     @on(Button.Pressed)
     def pressed(self,event):
-        owner=self.owner;key=event.button.id
+        owner=self.owner;key=event.button.id;item=self.selected_item() or {}
         if key=='workflow-settings':
-            show=not self.query_one('#workflow-limits').display
-            self.query_one('#workflow-limits').display=show
-            self.query_one('#workflow-notify').display=show
-        elif key=='workflow-refresh':self.render_report()
-        elif key=='workflow-snooze':owner.workflow_snooze=time.time()+600;owner.workflow_delivery='Snoozed for 10 minutes';self.render_report()
+            self._settings=not self._settings
+            self.query_one('#workflow-settings-panel').display=self._settings
+            self.render_report()
+            if self._settings:self.query_one('#workflow-notify').focus()
+        elif key=='workflow-refresh':
+            owner.workflow_updated=None;owner.update_workflow();self.render_report()
+        elif key=='workflow-review' and item:owner.action_review_work(item)
+        elif key=='workflow-seen' and item:owner.workflow_controller.acknowledge(item,action='reviewed' if item.get('_attention_kind')=='completion' else 'seen')
+        elif key=='workflow-retry' and item:owner.workflow_controller.retry(item)
+        elif key=='workflow-cleanup':owner.workflow_controller.cleanup()
+        elif key=='workflow-snooze':
+            owner.workflow_snooze=0 if time.time()<owner.workflow_snooze else time.time()+600
+            owner.workflow_delivery='Snoozed for 10 minutes' if owner.workflow_snooze else 'Snooze ended'
+            owner.workflow_updated=None;owner.update_workflow();self.render_report()
         elif key=='workflow-save':
             try:
                 limits={k:float(self.query_one('#workflow-'+k,Input).value) for k in ('tokens','cost','minutes')}
                 if any(not math.isfinite(v) or v<0 for v in limits.values()):raise ValueError()
             except ValueError:owner.notify('Use finite, nonnegative thresholds; 0 disables',severity='error');return
-            owner.workflow_limits=limits;owner.workflow_updated=None;owner.save_preferences();owner.notify('Task alert thresholds saved')
-        elif key=='workflow-terminal':owner.workflow_terminal(next((x for x in owner.workflow_items() if x['id']==owner.selected_source),{}))
+            owner.workflow_limits=limits;owner.workflow_updated=None;owner.save_preferences();owner.update_workflow();owner.notify('Task alert thresholds saved')
+        elif key=='workflow-terminal':owner.workflow_terminal(item)
         elif key=='workflow-resume':
-            command=resume_command(next((x for x in owner.workflow_items() if x['id']==owner.selected_source),{}))
+            command=resume_command(item)
             if command:owner.copy_to_clipboard(command);owner.notify('Resume command copied; check session ownership before running')
             else:owner.notify('No supported native resume command for this session')

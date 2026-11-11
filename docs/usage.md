@@ -589,3 +589,48 @@ snapshot reuses its summary for the lifetime of the UI; new session activity mar
 an earlier snapshot. Provider failures leave the local progress summary available.
 Generated text is labeled and does
 not override recorded status. Internal approval reviews are excluded.
+
+## Review recorded work and retain decisions
+
+Open an agent's Overview and choose **Review** to inspect its recorded edits,
+recognized checks, errors, and context events together. Review is lazy: **Earlier**
+loads another page explicitly. A passing recorded check is an observation about
+that command; later recorded edits and incomplete capture qualify its freshness.
+Assistant claims remain reported statements. Review stays frozen until Refresh;
+copy and export use that preview. The monitor/review floor is 60×18.
+
+The Workflow inbox uses incident identities and local seen/reviewed state.
+A seen approval or reply stays visible until fresh native evidence resolves it.
+Each newly observed execution establishes a silent inventory baseline, including
+delayed discovery. Requests already pending on that first observation remain in
+the queue; subsequent fresh transitions can notify. Desktop alerts remain opt-in
+and require an open cockpit. Missing run/request identity is disclosed rather than inferred.
+
+Run usage is shown for an individual agent only when recorded ownership supports
+that allocation. Shared traces and incomplete ownership remain unavailable at the
+agent level; Traces retains the whole-trace totals. Saved links preserve each
+receiver, producer, agent and session separately. Aggregate saved-task usage is
+unavailable when linked scopes share a trace or a recorded parent relationship,
+because their accounting may overlap; handoffs retain each scope's evidence.
+
+Saved tasks now provide **Brief** and **Decisions** screens. Maintain intent,
+acceptance criteria, constraints, questions and a next action alongside notes.
+Decisions and rejected approaches carry rationale and source references;
+superseding a decision adds a version. Handoffs include active structured context.
+Structured editors retain the existing 60×20 floor and conflict recovery.
+
+For the pilot, deterministic repeated-work findings are explicitly enabled on the
+receiver with `AGENTURM_WORKFLOW_PATTERNS=1`. Restart the receiver to change it.
+This adds observations about repeated matching errors, equivalent calls,
+compaction, and completion with unobserved recovery. Known polling/streaming
+calls are excluded from equivalent-call observations. These rules inspect at
+most 500 records per run, refresh at most 20 existing runs when enabled, and
+remain out of desktop alerts. They do not establish wasted work or correctness.
+
+Workflow acknowledgements expire after 90 days; an old completion may then appear
+unreviewed again. Resolved unacknowledged incidents and notification claims are
+cleaned after 30 days. Minimal execution references needed by a valid
+acknowledgement remain through its 90-day lifetime. Unresolved incidents are not
+automatically expired. **Workflow → Settings → Cleanup** applies retention;
+**Retry** explicitly retries a failed notification claim. Capacity and storage
+failures remain visible, with basic monitoring available.

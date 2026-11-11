@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from rich.text import Text
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
@@ -72,9 +72,9 @@ class ExportScreen(ModalScreen):
     '''
     BINDINGS = [('escape', 'dismiss', 'Cancel')]
 
-    def __init__(self, view, record, scope=None):
+    def __init__(self, view, record, scope=None, *, content=None):
         super().__init__()
-        self.content = investigation_json(view, record, scope)
+        self.content = content if content is not None else investigation_json(view, record, scope)
 
     def compose(self) -> ComposeResult:
         with Vertical(id='export-dialog'):
@@ -99,13 +99,24 @@ class ExportScreen(ModalScreen):
         if not path:
             self.notify('Choose a destination file first.', severity='warning')
             return
+        self.query_one('#export-confirm',Button).disabled=True
+        self.write_export(path)
+
+    @work(thread=True,exclusive=True,exit_on_error=False)
+    def write_export(self,path):
+        error=''
         try:
-            write_investigation(path, self.content)
+            write_investigation(path,self.content)
         except FileExistsError:
-            self.notify('Destination already exists. Choose a new file; nothing was overwritten.', severity='warning')
-            return
+            error='Destination already exists. Choose a new file; nothing was overwritten.'
         except (OSError, ValueError):
-            self.notify('Could not write export. Check the destination and permissions.', severity='error')
-            return
+            error='Could not write export. Check the destination and permissions.'
+        try:self.app.call_from_thread(self.finish_export,error)
+        except RuntimeError:pass
+
+    def finish_export(self,error):
+        if not self.is_mounted:return
+        self.query_one('#export-confirm',Button).disabled=False
+        if error:self.notify(error,severity='error');return
         self.dismiss()
         self.app.notify('Selected investigation exported. Review again before sharing.')

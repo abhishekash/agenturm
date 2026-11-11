@@ -6,6 +6,7 @@ import gzip
 import io
 import json
 import os
+import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
@@ -32,15 +33,29 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
 
         def _json(self, code, value):
             data = json.dumps(value, ensure_ascii=False).encode()
-            if code == 200 and getattr(self, '_cache_version', None) is not None:
-                cache.put(self.path, self._cache_version, data)
-            self._json_bytes(code, data)
+            tagged = value.get('receiver_id') if isinstance(value, dict) else None
+            self._json_bytes(code, data, cache_result=True, body_receiver=tagged)
 
-        def _json_bytes(self, code, data):
+        def _json_bytes(self, code, data, *, cache_result=False, body_receiver=None):
+            receiver = getattr(self, '_get_receiver_id', None) if self.command == 'GET' and code == 200 else None
+            if receiver and code == 200:
+                try:
+                    current = store.receiver_namespace()
+                    changed = current != receiver or body_receiver and body_receiver != receiver
+                except (OSError, ValueError, sqlite3.Error):
+                    changed = True
+                if changed:
+                    code = 409
+                    data = json.dumps({'error': 'Receiver identity changed during this read. Retry the request.'}).encode()
+                    receiver = None
+            if code == 200 and cache_result and getattr(self, '_cache_version', None) is not None:
+                cache.put(self.path, self._cache_version, data)
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            if receiver:
+                self.send_header('X-Agenturm-Receiver-ID', receiver)
             self.end_headers()
             self.wfile.write(data)
 
@@ -68,10 +83,21 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
 
         def do_GET(self):
             self._cache_version = None
+            self._get_receiver_id = None
             route = self._route()
             if route is None:
                 return
             path = route.path
+            # The fast recovery probe deliberately avoids SQLite. Full health
+            # and all data reads bind their response to one receiver identity.
+            if path != '/' and not (path == '/api/health' and parse_qs(route.query).get('probe') == ['1']):
+                namespace = getattr(store, 'receiver_namespace', None)
+                if callable(namespace):
+                    try:
+                        self._get_receiver_id = namespace()
+                    except (OSError, ValueError, sqlite3.Error):
+                        self._json(503, {'error': 'Receiver identity is temporarily unavailable. Retry the request.'})
+                        return
             if cache.eligible(path):
                 self._cache_version, cached = cache.get(self.path)
                 if cached is not None:
@@ -91,7 +117,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                     self._json(200, {"ok": True})
                     return
                 local = getattr(store, "local_agent_monitor", None)
-                self._json(200, {"ok": True, "local_agents": local.status() if local else {"enabled": False}})
+                self._json(200, {"ok": True, "receiver_id": store.receiver_namespace() if hasattr(store,"receiver_namespace") else None, "review_trace_filter": True, "local_agents": local.status() if local else {"enabled": False}})
             elif path == "/api/connections":
                 self._json(200, {"connections": store.connections()})
             elif path == "/api/hierarchy":
@@ -125,7 +151,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                         action=query.get("action", [None])[0],
                         agent_id=query.get("agent_id", [None])[0],
                         subtree=query.get("subtree", ["0"])[0]=="1",
-                        scope_revision=query.get("scope_revision", [None])[0])
+                        scope_revision=query.get("scope_revision", [None])[0],
+                        trace_id=query.get("trace_id", [None])[0])
                     self._json(200, page)
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
