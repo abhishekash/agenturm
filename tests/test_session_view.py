@@ -2,7 +2,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from textual.widgets import DataTable, Input, Select
+from textual.widgets import Button, DataTable, Input, Select
 from observatory.terminal_ui import (ObservatoryApp, attention_evidence, coverage_warning, failure_evidence, input_required, recorded_progress,
                                      input_status, sources, wait_label, wait_summary)
 from tests.test_terminal_search import ManualFeed
@@ -177,7 +177,10 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn('answer in the Codex terminal', ' '.join(detail.split()))
                     self.assertIn('Agenturm is read-only', ' '.join(detail.split()))
                     self.assertIn('Status Evidence',detail)
-                    self.assertIn('Recorded Failures',detail)
+                    # Historical totals must not turn an explicit input wait
+                    # into another error reminder.
+                    self.assertNotIn('Recorded Failures',detail)
+                    self.assertIn('Errors 0',str(app.query_one('#agent-errors',Button).label))
                     # Mounting and refreshes never trigger paid API calls.
                     generate.assert_not_called()
                     await pilot.click('#agent-summary')

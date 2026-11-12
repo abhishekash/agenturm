@@ -253,6 +253,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         feed.snapshot.local_status['sessions']=[]
         feed.snapshot.sessions=[{'session_id':'failed-session','latest_status':'ERROR',
             'latest_task_outcome':'failed',
+            'services':['codex'],'latest_trace_id':'failed-trace',
             'latest_task':'Best reliable mini PC under €300 in Germany',
             'last_unix_nano':time.time_ns(),'errors':1,'trace_count':1}]
         get=feed.api.get
@@ -272,7 +273,8 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
                 app.show_agent()
                 if height>=30:
                     self.assertIn('Best reliable mini PC',' '.join(line.text.rstrip() for line in log.lines))
-                    self.assertIn('1 recorded failed run(s)',log.plain_text)
+                    self.assertIn('The run reported a failure',' '.join(log.plain_text.split()))
+                    self.assertNotIn('1 recorded failed run(s)',log.plain_text)
                 await pilot.press('2','1')
                 await pilot.pause()
             self.assertIn('Best reliable mini PC under €300 in Germany',log.plain_text)
