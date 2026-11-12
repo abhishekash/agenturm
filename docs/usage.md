@@ -91,18 +91,31 @@ which recent records are loaded. A quiet session gets its own exact-scoped read,
 even when its events have left the global activity window.
 
 The inspector opens with its **Overview / Prompts / Details** tab strip focused.
-Use **←/→** to choose a section and **Enter** or **↓** to read it. From the reader,
+Use **←/→** to choose a section and **Enter** to enter it. In Prompts, **↑/↓**
+from the tabs enters request navigation and chooses an older/newer request;
+in other sections **↓** enters the reader. From the reader,
 **Ctrl+←/→** switches sections; **m** also cycles them. **Tab** and **Shift+Tab**
-move between the inspector's visible controls. **↑/↓**, **Page Up/Down**, and
-**Home/End** scroll the content. **Esc** closes an open selector first, then
+move between the inspector's visible controls. While the text reader has focus,
+**↑/↓**, **Page Up/Down**, and **Home/End** scroll its content. **Esc** closes an open selector first, then
 returns to the selected agent. The task, runtime and status remain visible above
 the content; switching sections preserves the reading position.
-**Prompts** reads one request at a time, starting with the latest. Choose a
-request in the chronological index or the selector; **[** moves to the previous
+**Prompts** reads one request at a time, starting with the latest. It opens on
+the chronological index at wide sizes: **↑/↓** chooses requests, **Home/End**
+chooses oldest/latest, and **Enter** or **→** reads. In compact layouts,
+**↑/↓**, **Enter** or **Space** opens the native request chooser; arrows select
+and **Enter** confirms and reads. **→** reads the current compact choice directly.
+From the request text, **←** returns to its navigator. **[** moves to the previous
 request, **]** to the next, and **l** to the latest loaded request. **Earlier
 prompts** loads an older page without moving the request you are reading.
 The reader retains up to 300 requests, preserving the selected request and
 newest arrivals; older history remains available in Activity.
+
+**F1** opens a persistent, scrollable keyboard reference from any screen,
+including editors; **Esc** or **F1** returns without losing the draft or selection.
+The footer distinguishes choosing requests from scrolling their text.
+**Ctrl+R** opens the selected agent's recorded-work review. The complete
+[keyboard navigation guide](keyboard-navigation.md) covers the inspector,
+Workflow, Review, saved tasks, dropdowns and editors.
 
 Known complete runtime context blocks are separated from the readable request,
 with a visible disclosure. **z** toggles original captured text for that request.
