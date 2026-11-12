@@ -179,10 +179,10 @@ class TerminalQuitTests(unittest.TestCase):
         import time
 
         code = textwrap.dedent('''
-            import os, signal, sys, threading, time
+            import os, signal, sys, threading
             from observatory.__main__ import main
             from observatory.terminal_ui import ObservatoryApp
-            ready_fd, mode = int(sys.argv[2]), sys.argv[4]
+            ready_fd, mode, gate_fd = int(sys.argv[2]), sys.argv[4], int(sys.argv[5])
             previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
             original_mount = ObservatoryApp.on_mount
             def fail():
@@ -190,12 +190,13 @@ class TerminalQuitTests(unittest.TestCase):
             def mount(self):
                 if mode == 'startup-term':
                     os.write(ready_fd, b'READY\\n')
-                    time.sleep(.15)
+                    os.read(gate_fd, 1)
                 original_mount(self)
                 if mode != 'startup-term':
-                    self.call_after_refresh(lambda: os.write(ready_fd, b'READY\\n'))
-                if mode == 'error':
-                    self.set_timer(.15, fail)
+                    def ready():
+                        os.write(ready_fd, b'READY\\n')
+                        if mode == 'error': self.call_later(fail)
+                    self.call_after_refresh(ready)
             ObservatoryApp.on_mount = mount
             sys.argv = ['agenturm', '--db', sys.argv[1], 'cockpit', '--port', sys.argv[3], '--no-local-agents']
             status = 0
@@ -212,6 +213,7 @@ class TerminalQuitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             master, slave = pty.openpty()
             read_fd, write_fd = os.pipe()
+            gate_fd, gate_write = os.pipe()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
             before = termios.tcgetattr(slave)
             with socket.socket() as address:
@@ -221,9 +223,10 @@ class TerminalQuitTests(unittest.TestCase):
                    'XDG_CONFIG_HOME': directory, 'XDG_STATE_HOME': directory,
                    'OBSERVATORY_ENDPOINT': '', 'OBSERVATORY_TOKEN': ''}
             process = subprocess.Popen([sys.executable, '-c', code, str(Path(directory)/'test.db'),
-                                        str(write_fd), str(port), mode], stdin=slave, stdout=slave,
-                                       stderr=slave, pass_fds=(write_fd,), env=env, start_new_session=True)
+                                        str(write_fd), str(port), mode, str(gate_fd)], stdin=slave, stdout=slave,
+                                       stderr=slave, pass_fds=(write_fd,gate_fd), env=env, start_new_session=True)
             os.close(write_fd)
+            os.close(gate_fd)
             output, notices, sent = bytearray(), bytearray(), False
             try:
                 deadline = time.monotonic()+20
@@ -239,7 +242,9 @@ class TerminalQuitTests(unittest.TestCase):
                     if not sent and b'READY\n' in notices:
                         sent = True
                         if mode=='quit': os.write(master,b'q')
-                        elif mode in {'term','startup-term'}: os.kill(process.pid,signal.SIGTERM)
+                        elif mode in {'term','startup-term'}:
+                            os.kill(process.pid,signal.SIGTERM)
+                            if mode=='startup-term': os.write(gate_write,b'G')
                         elif mode=='interrupt': os.kill(process.pid,signal.SIGINT)
                     if process.poll() is not None and not ready:
                         break
@@ -256,7 +261,7 @@ class TerminalQuitTests(unittest.TestCase):
             finally:
                 if process.poll() is None:
                     process.kill();process.wait(timeout=3)
-                os.close(master);os.close(slave);os.close(read_fd)
+                os.close(master);os.close(slave);os.close(read_fd);os.close(gate_write)
 
     def test_normal_quit_restores_terminal(self):
         self.terminal_exit('quit',0)
