@@ -6,7 +6,7 @@ The reported screenshot exposed three practical failures: Claude runtime scaffol
 
 1. Correct task projection at its shared parser. Separate complete known runtime envelopes, consume recognised operational controls in either block order, and suppress canonical truncated caveat labels from old collectors. Preserve captured records and substantive requests.
 2. Give every node a fixed disclosure slot and four cells per tree level. Continue ancestor guides through metadata and spacing. Retain exact recorded relationships, expand/collapse behaviour, and independent parent/child outcomes.
-3. Use a short source line and whitespace. Remove zebra bands, the duplicate selection arrow, recent action text, and routine missing-parent boilerplate. Keep relevant worker counts and hidden branch progress.
+3. Use a short source line, whitespace, and faint alternating block backgrounds. Remove heavy bands, the duplicate selection arrow, recent action text, and routine missing-parent boilerplate. Keep relevant worker counts and hidden branch progress.
 4. Present three scan categories while preserving the existing evidence model: In progress, Needs attention, Ready for review. Explain uncertainty in the inspector. Keep actual input incidents, durable acknowledgements, and notifications independent of display categories.
 5. Validate native capture/restart, persisted bad-label fallbacks, privacy, state changes, keyboard navigation, selection, themes, and narrow layouts; publish verified distribution artifacts.
 
@@ -16,7 +16,7 @@ Independent peer review approved this scope and caught a mixed-record edge case:
 
 At 120×36 or larger each block has two content lines and two rows of spacing. At 24 or more terminal rows there is one separator row; shorter layouts retain two content lines. The list remains virtualised and scrollable. Wide terminals keep the inspector beside it; 80×24 and 60-column layouts prioritise the list and open the inspector with Enter.
 
-Each level gains four cells even for a leaf. Metadata aligns beneath its title, without repeating the branch connector. The selection background remains visible in supported themes. Left collapses or moves to a parent; Right expands or enters a child. Original prompts and full task text remain in the inspector.
+Each level gains four cells even for a leaf. Metadata aligns beneath its title, without repeating the branch connector. Alternating agent blocks use a gentle tint derived from each theme’s surface and panel colours; the selected block keeps a stronger highlight. Left collapses or moves to a parent; Right expands or enters a child. Original prompts and full task text remain in the inspector.
 
 The main states are projections, not a new source of truth. Recent or bounded quiet unfinished turns are In progress. Explicit completion is Ready for review, including a completed parent whose child is still working. Failures, pending input, or unavailable status are Needs attention, with the exact cause in the inspector. Status uncertainty does not create approval incidents or notifications.
 

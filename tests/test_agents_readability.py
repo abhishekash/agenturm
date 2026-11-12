@@ -52,7 +52,7 @@ class AgentsReadabilityTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(160,42)) as pilot:
             await pilot.pause();app.refresh_timer.stop();app.set_agent_filter('all')
             table=app.query_one('#agent-table')
-            self.assertFalse(table.zebra_stripes)
+            self.assertTrue(table.zebra_stripes)
             self.assertEqual(table.row_count,6)
             self.assertIn('3 working agents',app.query_one('#stat-sessions').render().plain)
             root=table.get_row('s-root')[0].plain.splitlines()

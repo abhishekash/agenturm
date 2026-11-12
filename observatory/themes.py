@@ -2,6 +2,7 @@
 import re
 
 from rich.text import Span
+from textual.color import Color
 from textual.theme import Theme
 
 
@@ -80,6 +81,11 @@ PALETTES = {
         row_alt='#0a3c48', footer_key='#1b4b58',
     ),
 }
+
+
+for colors in PALETTES.values():
+    # A gentle tint for whole agent blocks; the cursor remains the strong cue.
+    colors['row-soft'] = Color.parse(colors['surface']).blend(Color.parse(colors['panel']), 0.5).hex
 
 
 def supported_themes():
