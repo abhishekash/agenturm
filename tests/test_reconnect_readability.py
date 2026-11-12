@@ -170,6 +170,9 @@ class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
 
     async def test_busy_session_is_a_bounded_summary_with_full_evidence_in_activity(self):
         feed=ManualFeed();now=time.time_ns();base=feed.api.activity[0]
+        # The snapshot is a recent window: the original request remains
+        # authoritative while a later, different request belongs below work.
+        feed.api.sessions[0]['initial_task']='Inspect the recorded command output.'
         output='\n'.join(f'    output line {i}' for i in range(200))
         feed.api.activity=[{**base,'source_id':f'event-{i}','time_unix_nano':now+i,
                             'subject':f'python task_{i}.py','detail':json.dumps({'output':output})}
