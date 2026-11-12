@@ -82,14 +82,14 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(150,40)) as pilot:
             await pilot.pause();app.refresh_timer.stop();app.set_agent_filter('all')
             table=app.query_one('#agent-table',DataTable)
-            self.assertFalse(table.zebra_stripes)
+            self.assertTrue(table.zebra_stripes)
             app.select_agent('s-c1')
             table.move_cursor(row=[key.value for key in table.rows].index('s-c1'))
             for theme in ('Current','Observation','Bright','Dark','Solarized'):
                 app.theme=theme;await pilot.pause()
                 styles=[table.get_component_rich_style(name).bgcolor for name in
                         ('datatable--odd-row','datatable--even-row','datatable--cursor')]
-                self.assertNotEqual(styles[1],styles[2],theme)
+                self.assertEqual(len(set(styles)),3,theme)
             for size,height in (((150,40),4),((150,24),3),((150,40),4),((80,24),3),((60,18),2)):
                 await pilot.resize_terminal(*size);await pilot.pause()
                 self.assertTrue(all(row.height==height for row in table.rows.values()),size)

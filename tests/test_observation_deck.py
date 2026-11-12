@@ -31,7 +31,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(controls.size.height,1)
             self.assertEqual([str(c.label) for c in app.query_one('#agent-table', DataTable).columns.values()],
                              ['Task / source', 'State', 'Updated'])
-            self.assertFalse(app.query_one('#agent-table').zebra_stripes)
+            self.assertTrue(app.query_one('#agent-table').zebra_stripes)
             self.assertNotIn('session-1', app.query_one('#agent-detail').plain_text)
             self.assertNotIn('LATEST RECORDED EVENT', app.query_one('#agent-detail').plain_text)
             await pilot.click('#expand-agents')

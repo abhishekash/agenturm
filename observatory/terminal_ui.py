@@ -1322,7 +1322,7 @@ class ObservatoryApp(App):
     DataTable > .datatable--hover { background: $agent-row-hover; }
     DataTable > .datatable--odd-row { background: $agent-row-alt; }
     DataTable > .datatable--even-row { background: $agent-surface; }
-    #agent-table > .datatable--odd-row { background: $agent-surface; }
+    #agent-table > .datatable--odd-row { background: $agent-row-soft; }
     RichLog { background: $agent-surface; color: $agent-text; scrollbar-size: 1 1; }
     RichLog:focus { background-tint: transparent; }
     #mcp-servers { height: 7; margin-bottom: 1; }
@@ -1597,7 +1597,7 @@ class ObservatoryApp(App):
         return Vertical(
             Horizontal(*controls,classes='searchbar'),
             Static('Loading…',id='mcp-hint' if page=='mcp' else 'search-status-'+page,classes='search-status',markup=False),
-            ResultsTable(id=table,cursor_type='row',zebra_stripes=False,cursor_foreground_priority='renderable'),
+            ResultsTable(id=table,cursor_type='row',zebra_stripes=page=='agents',cursor_foreground_priority='renderable'),
             *footer,
             id='results-'+page,classes='box results '+classes)
 

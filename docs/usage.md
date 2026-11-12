@@ -127,8 +127,8 @@ removed; it cannot restore content omitted upstream. **Details** holds IDs,
 model, reported usage, status evidence and relationship provenance.
 
 Agent rows prioritize the first substantive task. Runtime and project sit below,
-with worker counts where relevant. Whitespace separates sessions without striped
-bands: four lines at 120×36 or larger, three at 24 or more terminal rows, and two
+with worker counts where relevant. Whitespace and a subtle alternating background
+separate whole agent blocks: four lines at 120×36 or larger, three at 24 or more terminal rows, and two
 in shorter layouts. Each tree level adds four cells, with aligned metadata and
 continuing ancestor guides. Selection remains visible through
 resize, and only a branch's first line is its disclosure target. Collapsed parents retain both
@@ -498,7 +498,7 @@ The offline LangGraph retrieval control was run and imported alongside the harne
 
 The terminal's **Agents** view puts **Task / source**, **State**, and **Updated** in
 a task-focused list. Task previews stay on one line; runtime, project, and relevant
-worker counts occupy the second. Whitespace separates agents. Recent activity
+worker counts occupy the second. Whitespace and gentle alternating shades separate agents. The selected block has a stronger highlight. Recent activity
 and relationship provenance stay in the inspector. On wide terminals the session inspector is on the right with
 only status and a short latest-action label, not command arguments or output. On narrower
 terminals it stacks below; compact terminals prioritize the list until you inspect.

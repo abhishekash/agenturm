@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Give alternating agent blocks a subtle theme-aware background shade while preserving spacing, hierarchy guides and the stronger selection highlight.
+
 ## Agenturm 0.2.3
 
 - Fix branch priority for completed parents with running or attention-needing descendants without changing the parent’s own displayed outcome.
