@@ -288,7 +288,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
         app = ObservatoryApp(feed)
         async with app.run_test(size=(160, 48)) as pilot:
             await pilot.pause()
-            app.query_one('#scope', Select).value='source-1'
+            app.set_session_scope('source-1')
             await pilot.pause()
             app.action_page('activity')
             await pilot.pause()

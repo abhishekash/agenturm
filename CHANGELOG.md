@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Replace the narrow agent-session dropdown with a centred, searchable chooser that shows task titles and runtime/project/identity context, with arrow-key selection, explicit apply/cancel and exact worker scoping.
+
 - Give alternating agent blocks a subtle theme-aware background shade while preserving spacing, hierarchy guides and the stronger selection highlight.
 
 ## Agenturm 0.2.3

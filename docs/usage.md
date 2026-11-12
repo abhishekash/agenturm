@@ -504,6 +504,14 @@ only status and a short latest-action label, not command arguments or output. On
 terminals it stacks below; compact terminals prioritize the list until you inspect.
 Full session IDs, working directories, branches (when recorded), models, and usage
 remain available in the expanded inspector rather than taking up table columns.
+The **All agent sessions** control opens a centred chooser like the sort menu.
+Tasks are the primary labels; runtime, project, and a worker/agent identifier sit
+beneath them. **↑/↓** moves, **Enter** applies the session, and **Esc** cancels.
+Press **/** to search by task, runtime, project, or session ID; **Ctrl+A** replaces
+the search text. The command palette also exposes **Choose agent session**.
+Selecting a worker keeps its exact producer, session, and agent identity; choose
+**All agent sessions** to clear that individual scope.
+
 Press **Enter** to inspect; **e** expands the details and **s** opens session activity.
 Raw output and long values remain available in the selectable, copyable expanded
 detail pane and Activity. The default view does not repeat the activity table or
