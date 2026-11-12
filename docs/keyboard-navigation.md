@@ -86,3 +86,7 @@ uv run python scripts/verify_keyboard_tmux.py
 The check creates a private tmux socket, removes it on exit, prints a JSON result, and exits nonzero with the captured frame on failure. It never attaches to an existing tmux server or uses personal session records.
 
 The self-contained HTML guide embeds actual rendered states. It was inspected at desktop/light (1280 pixels) and mobile/dark (390 pixels), with all three images loaded and no horizontal page overflow.
+
+## Agent session chooser
+
+Tab to **All agent sessions** and press Enter, or use **Ctrl+P → Choose agent session**. The chooser uses the same centred popup pattern as Updated sorting, with task titles and separate runtime/project/identity metadata. Use **↑/↓** and **Enter** to apply a session; **Esc** cancels and restores focus. **/** focuses search, **Ctrl+A** replaces the query, and Down returns to the choices. Search accepts task text, project, runtime, session IDs and worker IDs. Empty results keep the chooser open. The chooser remains usable at 60×18 and returns the monitor to its current responsive layout after resize.

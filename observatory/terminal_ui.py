@@ -44,7 +44,7 @@ from .ui_preferences import Preferences
 from .ui_export import ExportScreen
 from .ui_render import update_status_text
 from .ui_coverage import analysis_coverage
-from .ui_monitoring import (UsageScreen, SortScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, changed_records, failed,
+from .ui_monitoring import (UsageScreen, SortScreen, SessionScopeScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, changed_records, failed,
                             failure_groups, event_id, connection_feedback, session_history_feedback)
 
 
@@ -1236,10 +1236,12 @@ class ObservatoryApp(App):
     #agent-filter SelectCurrent { height: 1; border: none; background: $agent-canvas; padding: 0 1; }
     #scope-label { display: none; width: 8; }
     #controls.agents-active #scope-label { display: none; }
-    #scope { display: none; width: 22; height: 1; margin-right: 1; }
+    #scope { display: none; width: 34; height: 1; min-width: 0; margin-right: 1;
+        padding: 0; border: none; background: $agent-surface; color: $agent-secondary;
+        content-align: left middle; text-wrap: nowrap; text-overflow: ellipsis; }
     #controls.agents-active #scope { display: block; }
-    #scope SelectCurrent { height: 1; border: none; background: $agent-surface; padding: 0 1; }
-    #scope:focus > SelectCurrent { border: none; color: $agent-primary; }
+    #scope:hover { background: $agent-hover; color: $agent-primary; }
+    #scope:focus { background: $agent-focus; color: $agent-primary; text-style: bold; }
     #evidence-scope-label, #evidence-scope { display: none; }
     #evidence-scope-label { width: auto; height: 1; color: $agent-muted; }
     #scope-label { width: auto; }
@@ -1401,7 +1403,7 @@ class ObservatoryApp(App):
     .narrow #summary { grid-gutter: 0 1; }
     .narrow .stat { padding: 0 1; }
     .narrow #controls { margin: 0 1; }
-    .narrow #scope { width: 16; }
+    .narrow #scope { width: 22; }
     .narrow #scope-label { display: none; }
     .narrow #evidence-scope { width: 10; }
     .narrow #evidence-scope-label { display: none !important; }
@@ -1446,7 +1448,7 @@ class ObservatoryApp(App):
     .expanded #span-info { height: 2fr; }
     .single-pane #agent-bottom { display: none; }
     .single-pane #agents.expanded #agent-bottom { display: block; width: 100%; height: 1fr; }
-    .single-pane #scope { width: 12; }
+    .single-pane #scope { width: 16; }
     .single-pane #agent-filter { width: 14; }
     .minimal #masthead { padding: 0 1; }
     .minimal #pages { margin: 0; }
@@ -1527,7 +1529,6 @@ class ObservatoryApp(App):
         self.metric_history_requested_key=None
         self.metric_history_loaded_key=None
         self.metric_history_points=[]
-        self.scope_options=None
         self.scope_value='all'
         self.agent_filter='today'
         self.agent_filter_before_errors='today'
@@ -1611,7 +1612,7 @@ class ObservatoryApp(App):
             Button('Reorder',id='refresh-order',tooltip='List changed; apply queued ordering without losing your selected session'),
             Button('Updated ↓',id='agent-sort',tooltip='Choose Working first, Updated, or Status sorting · o'),
             Static('Session',id='scope-label'),
-            Select([('All agent sessions','all')],value='all',allow_blank=False,id='scope'),
+            Button('All agent sessions ▾',id='scope',tooltip='Choose agent session · Enter'),
             Static('Evidence',id='evidence-scope-label'),
             Select([('This agent','exact'),('This agent + subagents','subtree')],
                    value='exact',allow_blank=False,id='evidence-scope'),
@@ -1752,6 +1753,7 @@ class ObservatoryApp(App):
             ('Show History','All sessions, including earlier unreviewed completions',lambda:self.set_agent_filter('all')),
             ('Show session errors','Show failed or incomplete sessions, including older history',lambda:self.set_agent_filter('errors')),
             ('Sort sessions by newest update','Newest updated first inside fixed status groups',lambda:self.set_agent_sort(True)),
+            ('Choose agent session','Filter by task, project, runtime or session ID',self.action_session_scope),
             ('Sort sessions by oldest update','Oldest updated first inside fixed status groups',lambda:self.set_agent_sort(False)),
             ('Switch sort direction','Toggle newest/oldest update ordering',self.action_toggle_sort),
             ('Refresh session order','Apply queued ordering while preserving session selection',self.refresh_agent_order),
@@ -1824,6 +1826,57 @@ class ObservatoryApp(App):
         self.collapse('agents')
         self.set_agent_sort(not choice.endswith('_old'))
         self.query_one('#agent-table',DataTable).focus()
+
+    def update_scope_button(self):
+        if not self.query('#scope'):return
+        item=getattr(self,'source_map',{}).get(self.scope_value)
+        label=task_preview(item) or 'Untitled session' if item else (
+            'All sessions' if self.layout_size.width<96 else 'All agent sessions')
+        button=self.query_one('#scope',Button)
+        button.label=Text('▾ '+label,no_wrap=True,overflow='ellipsis')
+        button.tooltip=(label+'\n'+self.scope_label()+'\nSession '+str(item.get('session_id') or item['id'])
+                        if item else 'Choose agent session · Enter')
+
+    def action_session_scope(self):
+        if not isinstance(self.screen,ObservatoryScreen):return
+        entries=[dict(id='all',task='All agent sessions',description='Show every available session',
+                      detail='All agent sessions · remove the individual session scope')]
+        for item in getattr(self,'source_map',{}).values():
+            title=task_preview(item) or 'Untitled session'
+            runtime=item.get('runtime') or item.get('service') or 'Agent'
+            service=item.get('service') or ''
+            if runtime in {'OpenTelemetry','SDK / OTLP'} and service:
+                runtime+=' / '+service
+            project=item.get('project') or 'SDK'
+            session=str(item.get('session_id') or item['id'])
+            worker=item.get('native_worker_id')
+            agent=item.get('agent_id')
+            identity=('Worker '+str(worker)[-8:] if worker else
+                      'Agent '+str(agent)[-8:] if agent else 'Session '+session[-8:])
+            description=f'{runtime} · {project} · {identity}'
+            entries.append(dict(id=item['id'],task=title,description=description,
+                detail=title+'\n'+f'{runtime} / {project} · Session {session}'+
+                       (' · Worker '+str(worker) if worker else ''),
+                session_id=session,service=service,agent_id=item.get('agent_id') or '',worker_id=worker or ''))
+        return_focus=self.focused
+        self.push_screen(SessionScopeScreen(entries,self.scope_value),
+                         lambda choice:self.choose_session_scope(choice,return_focus))
+
+    def choose_session_scope(self,choice,return_focus=None):
+        # A modal may have been resized; apply the monitor's responsive classes
+        # again after it resumes, even when the choice was cancelled.
+        self.update_layout()
+        self.refresh_data()
+        if choice is not None:
+            if choice=='all' or choice in getattr(self,'source_map',{}):
+                self.set_session_scope(choice)
+                item=getattr(self,'source_map',{}).get(choice)
+                if item and self.query_one('#pages',TabbedContent).active=='agents':
+                    self._select_agent_id(item['agent_id'])
+            else:self.notify('That session is no longer available. Choose another session.')
+        button=self.query_one('#scope',Button)
+        target=button if button.display else return_focus
+        if target is not None and target.is_attached:target.focus()
 
     def action_toggle_sort(self):
         self.set_agent_sort(not self.agent_sort_desc)
@@ -1989,6 +2042,7 @@ class ObservatoryApp(App):
             self.sync_more_view(self.query_one('#pages',TabbedContent).active or 'agents')
         if getattr(self,'summary_values',None):
             self.refresh_summary()
+        self.update_scope_button()
         self.last_update=-1
 
     def stat(self,name,value,label,detail):
@@ -2248,15 +2302,11 @@ class ObservatoryApp(App):
         if data.sessions_error or data.read_errors:
             for stat in ('sessions','attention'):
                 self.query_one('#stat-'+stat).tooltip+='\n'+session_history_feedback(data)
-        options=[('All agent sessions','all')]+[(f"{item['runtime']} · {item.get('project') or 'SDK'} · {(item.get('session_id') or item['id'])[-6:]}",item['id']) for item in agents]
-        if options!=self.scope_options:
-            picker=self.query_one('#scope',Select);old=self.scope_value
-            available=any(value==old for _,value in options)
-            if not available:
-                self.scope_value='all'
-                self.feed.session_id='';self.feed.service='';self.feed.scope_agent_id=''
-            picker.set_options(options);picker.value=old if available else 'all';self.scope_options=options
         self.source_map={item['id']:item for item in agents}
+        if self.scope_value!='all' and self.scope_value not in self.source_map:
+            self.scope_value='all'
+            self.feed.session_id='';self.feed.service='';self.feed.scope_agent_id=''
+        self.update_scope_button()
         self.sync_evidence_scope()
         # Build view models and evidence only for the visible tab. Hidden views
         # retain their selection and are refreshed from the latest snapshot on
@@ -3688,10 +3738,10 @@ class ObservatoryApp(App):
             self.feed.session_id=''
             self.feed.service=''
 
-    @on(Select.Changed,'#scope')
-    def scope_changed(self,event):
-        if event.value==Select.BLANK or event.value==self.scope_value:return
-        self.scope_value=str(event.value);item=getattr(self,'source_map',{}).get(self.scope_value)
+    def set_session_scope(self,value):
+        if value==self.scope_value:return
+        if value!='all' and value not in getattr(self,'source_map',{}):return
+        self.scope_value=value;item=getattr(self,'source_map',{}).get(value)
         self.selected_activity=self.selected_mcp=self.selected_finding=None
         self.feed.session_id=item.get('session_id') or '' if item else ''
         self.feed.service=item.get('service') or '' if item else ''
@@ -3818,6 +3868,7 @@ class ObservatoryApp(App):
                 self.set_agent_filter('errors')
         elif event.button.id=='agent-sort':
             self.action_sort_menu()
+        elif event.button.id=='scope':self.action_session_scope()
         elif event.button.id and event.button.id.startswith('filter-'):
             self.set_agent_filter(event.button.id.removeprefix('filter-'))
         elif event.button.id=='history-back':self.action_history_back()
@@ -4122,10 +4173,7 @@ class ObservatoryApp(App):
         self.action_page(location['page'])
         if location['expanded']:self.action_expand()
         def restore():
-            picker=self.query_one('#scope',Select)
-            if any(value==self.scope_value for _,value in self.scope_options or ()):
-                with picker.prevent(Select.Changed):
-                    picker.value=self.scope_value
+            self.update_scope_button()
             evidence=self.query_one('#evidence-scope',Select)
             with evidence.prevent(Select.Changed):
                 evidence.value='subtree' if self.evidence_scope_subtree else 'exact'
@@ -4263,8 +4311,7 @@ class ObservatoryApp(App):
             # Apply scope synchronously: an asynchronous Select.Changed used to
             # clear the exact failed event after we had already selected it.
             self.scope_value=self.selected_source
-            picker=self.query_one('#scope',Select)
-            with picker.prevent(Select.Changed):picker.value=self.scope_value
+            self.update_scope_button()
             self.evidence_scope_subtree=False
             evidence=self.query_one('#evidence-scope',Select)
             with evidence.prevent(Select.Changed):evidence.value='exact'
@@ -4304,7 +4351,7 @@ class ObservatoryApp(App):
     def action_all(self):
         self.selected_activity=self.selected_mcp=self.selected_finding=None
         if self.agent_filter=='errors':self.agent_filter=self.agent_filter_before_errors
-        self.query_one('#scope',Select).value='all'
+        self.set_session_scope('all')
         self.errors_only.clear()
         self.feed.activity_errors=False
         self.prompts_only=False;self.feed.activity_prompts=False

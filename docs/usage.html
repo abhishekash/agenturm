@@ -394,7 +394,14 @@ only status and a short latest-action label, not command arguments or output. On
 terminals it stacks below; compact terminals prioritize the list until you inspect.
 Full session IDs, working directories, branches (when recorded), models, and usage
 remain available in the expanded inspector rather than taking up table columns.
-Press <strong>Enter</strong> to inspect; <strong>e</strong> expands the details and <strong>s</strong> opens session activity.
+The <strong>All agent sessions</strong> control opens a centred chooser like the sort menu.
+Tasks are the primary labels; runtime, project, and a worker/agent identifier sit
+beneath them. <strong>↑/↓</strong> moves, <strong>Enter</strong> applies the session, and <strong>Esc</strong> cancels.
+Press <strong>/</strong> to search by task, runtime, project, or session ID; <strong>Ctrl+A</strong> replaces
+the search text. The command palette also exposes <strong>Choose agent session</strong>.
+Selecting a worker keeps its exact producer, session, and agent identity; choose
+<strong>All agent sessions</strong> to clear that individual scope.</p>
+<p>Press <strong>Enter</strong> to inspect; <strong>e</strong> expands the details and <strong>s</strong> opens session activity.
 Raw output and long values remain available in the selectable, copyable expanded
 detail pane and Activity. The default view does not repeat the activity table or
 show an unconfigured AI-summary button. Internal reviews are hidden from native

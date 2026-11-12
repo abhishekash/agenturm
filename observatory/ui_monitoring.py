@@ -2,10 +2,13 @@
 import math
 import time
 from rich.text import Text
-from textual import on
+from textual import on, events
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, RichLog, Static
+from textual.widgets import Button, Input, OptionList, RichLog, Static
+from textual.widgets.option_list import Option
+from .terminal import clean
+from .themes import PALETTES, CURRENT
 
 FAILURES = {'error', 'failed', 'denied', 'blocked', 'policy_denied', 'incomplete'}
 
@@ -330,3 +333,112 @@ class SortScreen(ModalScreen):
     @on(Button.Pressed)
     def choose_button(self,event):
         self.dismiss(event.button.id.removeprefix('sort-'))
+
+
+class SessionScopeSearch(Input):
+    BINDINGS=[('ctrl+a','select_all','Select all')]
+
+
+class SessionScopeScreen(ModalScreen):
+    """A readable, keyboard-first choice of existing session scope."""
+    DEFAULT_CSS='''
+    SessionScopeScreen { align: center middle; background: $background 70%; }
+    #session-scope-dialog { width: 88; max-width: 94%; height: 80%; max-height: 32; min-height: 14;
+        border: round $primary; background: $surface; padding: 1 2; }
+    #session-scope-title, #session-scope-count, #session-scope-hint { height: 1; }
+    #session-scope-title { text-style: bold; }
+    #session-scope-search { height: 1; border: none; padding: 0; background: $agent-panel; }
+    #session-scope-options { height: 1fr; min-height: 4; border: none; padding: 0; background: $surface; }
+    #session-scope-options > .option-list--option-highlighted { background: $agent-cursor; color: $agent-on-cursor; }
+    #session-scope-description { height: 2; color: $agent-muted; }
+    #session-scope-count, #session-scope-hint { color: $agent-muted; }
+    '''
+    BINDINGS=[('escape','cancel','Cancel'),('/','focus_search','Search')]
+
+    def __init__(self,entries,selected='all'):
+        super().__init__()
+        # Freeze the chooser while reading; resolve the chosen identity against
+        # the current roster only after returning to the monitor.
+        self.entries=[dict(entry) for entry in entries]
+        self.selected=selected
+        self.filtered=[]
+
+    def compose(self):
+        with Vertical(id='session-scope-dialog'):
+            yield Static('Choose agent session',id='session-scope-title')
+            yield SessionScopeSearch(placeholder='Search task, project, runtime or session ID…',id='session-scope-search')
+            yield Static('',id='session-scope-count')
+            yield OptionList(id='session-scope-options',markup=False)
+            yield Static('',id='session-scope-description',markup=False)
+            yield Static('↑↓ Choose · Enter Apply · / Search · Esc Cancel',id='session-scope-hint')
+
+    def on_mount(self):
+        self.app.theme_changed_signal.subscribe(self,self.theme_changed)
+        self.fit_dialog()
+        self.filter_entries('')
+        self.query_one(OptionList).focus()
+
+    def on_unmount(self):self.app.theme_changed_signal.unsubscribe(self)
+
+    def fit_dialog(self):
+        self.query_one('#session-scope-dialog').styles.height=min(
+            32,max(14,10+2*len(self.entries)),max(14,int(self.size.height*.8)))
+
+    def on_resize(self):
+        self.fit_dialog()
+        self.call_after_refresh(self.query_one(OptionList).scroll_to_highlight)
+
+    def theme_changed(self,theme):
+        options=self.query_one(OptionList)
+        index=options.highlighted
+        identity=self.filtered[index]['id'] if index is not None and index<len(self.filtered) else self.selected
+        self.filter_entries(self.query_one(Input).value,identity)
+
+    def filter_entries(self,query,highlight=None):
+        query=query.casefold().strip()
+        self.filtered=[entry for entry in self.entries if not query or query in
+            ' '.join(str(value or '') for value in entry.values()).casefold()]
+        options=self.query_one(OptionList)
+        colors=PALETTES.get(self.app.theme,CURRENT)
+        labels=[]
+        for entry in self.filtered:
+            text=Text(no_wrap=True,overflow='ellipsis')
+            text.append('✓ ' if entry['id']==self.selected else '  ',style=colors['secondary'])
+            text.append(clean(entry['task']),style='bold')
+            text.append('\n  '+clean(entry['description']),style=colors['muted'])
+            labels.append(Option(text,id=entry['id']))
+        options.clear_options().add_options(labels)
+        options.highlighted=next((i for i,entry in enumerate(self.filtered) if entry['id']==(highlight or self.selected)),
+                                 0 if self.filtered else None)
+        self.query_one('#session-scope-count',Static).update(
+            f'{len(self.filtered)} '+('choice' if len(self.filtered)==1 else 'choices')
+            if self.filtered else 'No matching sessions · clear search to see all')
+        self.show_description()
+
+    def show_description(self):
+        index=self.query_one(OptionList).highlighted
+        entry=self.filtered[index] if index is not None and index<len(self.filtered) else None
+        self.query_one('#session-scope-description',Static).update(
+            '\n'.join(clean(line) for line in (entry.get('detail') or entry['task']).splitlines()) if entry else '')
+
+    @on(Input.Changed,'#session-scope-search')
+    def search_changed(self,event):self.filter_entries(event.value)
+
+    @on(OptionList.OptionHighlighted,'#session-scope-options')
+    def highlight_changed(self,event):self.show_description()
+
+    @on(OptionList.OptionSelected,'#session-scope-options')
+    def choose_option(self,event):self.dismiss(event.option_id)
+
+    @on(Input.Submitted,'#session-scope-search')
+    def choose_search_result(self):
+        index=self.query_one(OptionList).highlighted
+        if index is not None and index<len(self.filtered):self.dismiss(self.filtered[index]['id'])
+
+    def on_key(self,event:events.Key):
+        if self.focused is self.query_one(Input) and event.key in {'up','down'}:
+            self.query_one(OptionList).focus()
+            event.stop();event.prevent_default()
+
+    def action_focus_search(self):self.query_one(Input).focus()
+    def action_cancel(self):self.dismiss(None)

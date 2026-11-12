@@ -374,7 +374,7 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             app.set_agent_filter("all")
             await pilot.pause()
-            app.query_one("#scope", Select).value = "s-root"
+            app.set_session_scope("s-root")
             await pilot.pause()
             app.query_one("#evidence-scope", Select).value = "subtree"
             await pilot.pause()

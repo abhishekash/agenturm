@@ -123,9 +123,9 @@ class BrandingTest(unittest.IsolatedAsyncioTestCase):
                     if not widget.display:
                         continue
                     self.assertTrue(app.screen.region.contains_region(widget.region), f'{size}: {name}')
-                scope_label = app.query_one('#scope SelectCurrent #label')
-                self.assertEqual(scope_label.size.height, 1)
-                self.assertEqual(app.query_one('#scope').value,'all')
+                scope_label = app.query_one('#scope')
+                self.assertEqual(scope_label.content_size.height, 1)
+                self.assertEqual(app.scope_value,'all')
                 self.assertFalse(app.query_one('#history-back').display)
                 self.assertIn('127.0.0.1:4318', app.query_one('#connection').tooltip)
                 table = app.query_one('#agent-table')
