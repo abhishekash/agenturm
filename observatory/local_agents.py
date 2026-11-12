@@ -27,6 +27,8 @@ from .native_json import loads
 MAX_READ = 8 * 1024 * 1024
 MAX_LINE = 2 * 1024 * 1024
 MAX_SOURCES = 50
+MAX_TASK_PREFIX_BYTES = 512 * 1024
+MAX_TASK_PREFIX_RECORDS = 256
 MAX_CONFIG_BYTES = 1024 * 1024
 MAX_RECENT_TURNS = 64
 MAX_RECENT_CALLS = 512
@@ -534,6 +536,8 @@ class Session:
                         "agent.relationship.kind": self.relationship_kind,
                         "agent.relationship.state": self.relationship_state,
                         "agent.native_session.id": self.native_session_id}
+        if self.capture_details and not self.internal and self.task_description:
+            relationship['agent.session.task'] = self.task_description
         if self.native_worker_id:
             relationship["agent.native_worker_id"] = self.native_worker_id
         if self.parent_agent_id:
@@ -905,6 +909,56 @@ class Session:
                 result.append(self.root(stamp, "completed"))
         return result
 
+    def read_initial_task(self, stream):
+        """Read a bounded prefix for identity only; never replay old work or state."""
+        if not self.capture_details or self.internal:
+            return
+        from .local_activity import safe
+        from .session_text import task_description
+        prefix = stream.read(min(MAX_TASK_PREFIX_BYTES, MAX_READ))
+        self.bytes_read_total += len(prefix)
+        # The last fragment may be an incomplete record at the byte boundary.
+        for line in prefix.split(b'\n')[:-1][:MAX_TASK_PREFIX_RECORDS]:
+            try:
+                row = loads(line)
+                if not isinstance(row, dict):
+                    continue
+                content = None
+                if self.runtime == 'Codex':
+                    payload = row.get('payload') or {}
+                    if not isinstance(payload, dict):
+                        continue
+                    if row.get('type') == 'turn_context' and payload.get('model') == 'codex-auto-review':
+                        # Privacy classification is the only prefix state we
+                        # replay. It must survive a jump over the old context.
+                        self.codex(row, timestamp(row.get('timestamp')))
+                        return
+                    item = payload.get('item') or {}
+                    if row.get('type') == 'event_msg' and isinstance(item, dict) and item.get('type') == 'UserMessage':
+                        content = item.get('content')
+                    elif row.get('type') == 'event_msg' and payload.get('type') == 'user_message':
+                        content = payload.get('message')
+                    elif row.get('type') == 'response_item' and payload.get('type') == 'message' and payload.get('role') == 'user':
+                        content = payload.get('content')
+                elif self.runtime == 'Claude Code' and row.get('type') == 'user':
+                    message = row.get('message') or {}
+                    if isinstance(message, dict):
+                        content = message.get('content')
+                elif self.runtime == 'Pi' and row.get('type') == 'message':
+                    message = row.get('message') or {}
+                    if isinstance(message, dict) and message.get('role') == 'user':
+                        content = message.get('content')
+                if isinstance(content, list):
+                    content = [block for block in content if isinstance(block, dict)
+                               and block.get('type') in {'text','input_text','output_text'}]
+                title = task_description(content)
+                if title and not self.task_description:
+                    self.task_description = safe(title, 500)
+                    if self.runtime != 'Codex':
+                        return
+            except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
+                continue
+
     def poll(self):
         stat = self.path.stat()
         self.source_size_bytes = stat.st_size
@@ -943,6 +997,8 @@ class Session:
                 except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
                     self.skipped += 1
                     self.schema_errors += 1
+                stream.seek(0)
+                self.read_initial_task(stream)
                 stream.seek(stat.st_size - MAX_READ)
                 # Skip only the partial first record, without allocating an
                 # arbitrarily large line from a malformed session file.
@@ -1028,11 +1084,13 @@ class Session:
             for span in spans:
                 span['service'] = self.service
                 span['resource_attributes']['service.name'] = self.service
+                span['attributes'].pop('agent.session.task', None)
                 if span['name'] == 'agent.run':
                     span['attributes']['agent.task'] = 'Approval review'
             for log in logs:
                 log['service'] = self.service
                 log['body'] = ''
+                log['attributes'].pop('agent.session.task', None)
                 log['attributes']['agent.activity.subject'] = 'Approval review'
         if spans:
             self.store.ingest(spans)
@@ -1269,6 +1327,7 @@ class LocalAgents:
                      "outcome_id": session.outcome_id, "outcome_time_ns": session.outcome_time_ns,
                      "waiting_for": session.waiting_for,
                      "task": "Approval review" if session.internal else (session.task_description or session.tasks.get(session.turn) or "")[:500],
+                     "initial_task": session.task_description if session.capture_details and not session.internal else "",
                      "capture_content": session.capture_details,
                      "last_activity": session.last_activity,
                      "last_record_ns": session.last_record_ns,

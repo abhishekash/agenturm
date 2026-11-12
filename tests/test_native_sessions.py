@@ -89,6 +89,89 @@ class NativeSessionTests(unittest.TestCase):
         self.assertEqual(session.task_description,'')
         self.assertFalse(session.tasks)
 
+    def task_row(self, runtime, text, second=1):
+        stamp=f'2026-11-11T12:00:{second:02d}Z'
+        if runtime=='Codex':
+            return {'type':'event_msg','timestamp':stamp,'payload':{'type':'item_completed',
+                    'item':{'type':'UserMessage','content':text}}}
+        message={'role':'user','content':[{'type':'text','text':text}]}
+        return {'type':'user' if runtime=='Claude Code' else 'message',
+                'timestamp':stamp,'id':f'message-{second}','uuid':f'message-{second}','message':message}
+
+    def test_first_task_survives_controls_new_turns_and_reader_restart(self):
+        for runtime in ['Codex','Claude Code','Pi']:
+            with self.subTest(runtime=runtime):
+                session=self.session(runtime)
+                self.append(session,self.task_row(runtime,'switch model'),
+                            self.task_row(runtime,'Fix refresh token expiry.',2),
+                            self.task_row(runtime,'Add cancellation coverage.',3),
+                            self.task_row(runtime,'Switch model to gpt-6.1-sol',4))
+                self.assertEqual(session.task_description,'Fix refresh token expiry.')
+                restarted=Session(self.store,session.path,runtime)
+                restarted.poll()
+                self.assertEqual(restarted.task_description,'Fix refresh token expiry.')
+                stored=[row for row in self.store.sessions() if row.get('initial_task')=='Fix refresh token expiry.']
+                self.assertTrue(stored)
+
+    def test_large_sessions_recover_first_request_without_replaying_old_activity(self):
+        for runtime in ['Codex','Claude Code','Pi']:
+            with self.subTest(runtime=runtime):
+                session=self.session(runtime)
+                rows=[self.task_row(runtime,'<environment_context>work</environment_context>'),
+                      self.task_row(runtime,'Fix refresh token expiry.',2)]
+                rows += [self.task_row(runtime,'switch model',3)]*100
+                session.path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+                with patch('observatory.local_agents.MAX_READ',2048):session.poll()
+                self.assertEqual(session.task_description,'Fix refresh token expiry.')
+                # The prefix supplies identity only. Its original prompt has
+                # not been misrepresented as freshly ingested activity.
+                activity=self.store.activity_page(session_id=session.session_id)['activity']
+                self.assertNotIn('Fix refresh token expiry.',str([row.get('subject') for row in activity]))
+                self.assertLessEqual(session.bytes_read_total,4096)
+                session.poll()
+                self.assertEqual(session.task_description,'Fix refresh token expiry.')
+
+    def test_prefix_identity_has_a_hard_read_budget_and_metadata_only_skips_it(self):
+        session=self.session('Codex')
+        session.path.write_text(json.dumps(self.task_row('Codex','switch model'))+'\n' +
+                                ' '*1024+'\n'+json.dumps(self.task_row('Codex','Fix hidden request.',2))+'\n')
+        with patch('observatory.local_agents.MAX_TASK_PREFIX_BYTES',128):
+            with session.path.open('rb') as stream:session.read_initial_task(stream)
+        self.assertEqual(session.task_description,'')
+        self.assertEqual(session.bytes_read_total,128)
+        private=self.session('Pi',details=False)
+        with patch.object(Path,'open',side_effect=AssertionError('metadata-only identity read')):
+            private.read_initial_task(None)
+        self.assertEqual(private.task_description,'')
+
+    def test_large_internal_review_prefix_never_leaks_identity(self):
+        session=self.session('Codex')
+        rows=[self.task_row('Codex','Private review request.'),
+              {'type':'turn_context','timestamp':'2026-11-11T12:00:02Z',
+               'payload':{'model':'codex-auto-review','turn_id':'review'}}]
+        rows += [self.task_row('Codex','switch model',3)]*100
+        session.path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+        with patch('observatory.local_agents.MAX_READ',2048):session.poll()
+        self.assertTrue(session.internal)
+        self.assertFalse(session.capture_details)
+        self.assertEqual(session.task_description,'')
+        with self.store._connect() as db:
+            attrs=[row[0] for row in db.execute('SELECT attributes FROM logs UNION ALL SELECT attributes FROM spans')]
+        self.assertNotIn('Private review request',str(attrs))
+        self.assertNotIn('agent.session.task',str(attrs))
+
+    def test_late_internal_review_redacts_initial_identity_in_memory_and_storage(self):
+        session=self.session('Codex')
+        self.append(session,self.task_row('Codex','Private original request.'))
+        self.assertTrue(any(row.get('initial_task')=='Private original request.' for row in self.store.sessions()))
+        self.append(session,{'type':'turn_context','timestamp':'2026-11-11T12:00:03Z',
+                             'payload':{'turn_id':'review','model':'codex-auto-review'}})
+        self.assertEqual(session.task_description,'')
+        with self.store._connect() as db:
+            attrs=[row[0] for row in db.execute('SELECT attributes FROM logs UNION ALL SELECT attributes FROM spans')]
+        self.assertNotIn('agent.session.task',str(attrs))
+        self.assertNotIn('Private original request',str(self.store.sessions()))
+
     def test_local_agent_shutdown_consumes_interrupt_during_thread_join(self):
         agents = LocalAgents(self.store)
 

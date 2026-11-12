@@ -565,6 +565,7 @@ def sources(snapshot, include_reviews=False):
             'session_id':session_id,'runtime':runtime,'service':service,'project':session.get('project') or '',
             'working_directory':'','branch':'','model':', '.join(session.get('models') or []),
             'task':session.get('latest_task') or '',
+             'initial_task':session.get('initial_task') or '',
              'run_state':reported,'task_outcome_ns':session.get('task_outcome_ns') or 0,
              'waiting_for':waiting_for,'last_activity':{},'capture_content':None,
              **health,'spans':session.get('span_count',0),
@@ -616,11 +617,15 @@ def sources(snapshot, include_reviews=False):
         candidates=(by_agent.get(item.get('agent_id'),()) if not item.get('agent_id_inferred')
                     else by_session.get(item.get('session_id'),()))
         evidence=scoped_events(candidates,scope)
-        if not task_preview(item):
+        title=task_description(item.get('initial_task') or '')
+        if title:
+            item['task']=title
+            item['task_source']='initial recorded user request'
+        else:
             prompts=sorted(scoped_prompts(evidence,prompt_scope(item)),
                            key=lambda event:event.get('time_unix_nano') or 0)
-            title=next((task_description(recorded_message_text(event)) for event in prompts
-                        if task_description(recorded_message_text(event))), '')
+            title=next((title for event in prompts
+                        if (title:=task_description(recorded_message_text(event)))), '')
             if title:
                 item['task']=title
                 item['task_source']='recorded user request'
@@ -709,7 +714,7 @@ def wait_label(item):
 
 
 def task_preview(item):
-    return clean(task_description(item.get('task') or ''))
+    return clean(task_description(item.get('initial_task') or '') or task_description(item.get('task') or ''))
 
 
 def brief_activity(item):
@@ -728,7 +733,10 @@ def brief_activity(item):
         label=command.splitlines()[0] if command else 'Shell command'
     elif domain=='message':
         text=recorded_message_text(item)
-        label=('Request: ' if item.get('action')=='user' else 'Agent: ')+request_title(text)
+        if item.get('action')=='user' and not task_description(text):
+            label='Session instruction'
+        else:
+            label=('Request: ' if item.get('action')=='user' else 'Agent: ')+request_title(text)
     elif domain=='model':
         label='Model call'+(' · '+subject if subject else '')
     elif domain=='file':
