@@ -6,6 +6,20 @@ RECENT_NS = 35 * 1_000_000_000
 STALL_NS = 5 * 60 * 1_000_000_000
 
 
+def session_phase(item):
+    """Three scan labels; never changes lifecycle, process or incident evidence.
+
+    Attention includes unavailable status that merits inspection. It does not
+    imply an approval request, an error, or a notification-worthy incident.
+    """
+    state = item.get('state')
+    if state == 'Completed':
+        return 'review'
+    if state in {'Working', 'Processing', 'Tool running', 'Working (quiet)'}:
+        return 'running'
+    return 'attention'
+
+
 def task_outcome(root):
     """Read lifecycle evidence from the run itself, never from child errors.
 
@@ -43,7 +57,7 @@ def today_bucket(item, now_ns=None):
         import time
         now_ns = time.time_ns()
     state = item.get('state')
-    if item.get('active'):
+    if session_phase(item) == 'running':
         return 'running'
     reason = str(item.get('waiting_for') or '').casefold()
     pending_input = state == 'Waiting' and any(
@@ -61,7 +75,7 @@ def today_bucket(item, now_ns=None):
         return '' if reviewed else 'review'
     if state in {'Error', 'Failed', 'Interrupted', 'Incomplete'}:
         return '' if reviewed else 'attention'
-    return 'unconfirmed'
+    return '' if reviewed else 'attention'
 
 
 def session_health(entry, now_ns):

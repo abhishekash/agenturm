@@ -113,6 +113,28 @@ class NativeSessionTests(unittest.TestCase):
                 stored=[row for row in self.store.sessions() if row.get('initial_task')=='Fix refresh token expiry.']
                 self.assertTrue(stored)
 
+    def test_claude_initial_command_scaffolding_is_skipped_on_capture_and_restart(self):
+        session=self.session('Claude Code')
+        caveat=('<local-command-caveat>The command below was run directly in Claude Code, '
+                'not sent to you as a request.</local-command-caveat>')
+        controls='<command-message>model</command-message>\n<command-name>/model</command-name>'
+        self.append(session,self.task_row('Claude Code',caveat,1),
+            self.task_row('Claude Code',controls,2),
+            self.task_row('Claude Code','<local-command-stdout>Switched model</local-command-stdout>',3),
+            self.task_row('Claude Code','Fix checkout retries.',4),
+            self.task_row('Claude Code','Continue',5))
+        self.assertEqual(session.task_description,'Fix checkout retries.')
+        restarted=Session(self.store,session.path,'Claude Code')
+        restarted.poll()
+        self.assertEqual(restarted.task_description,'Fix checkout retries.')
+        with session.path.open('rb') as stream:
+            prefix=Session(self.store,session.path,'Claude Code')
+            prefix.read_initial_task(stream)
+        self.assertEqual(prefix.task_description,'Fix checkout retries.')
+        with self.store._connect() as db:
+            logs=' '.join(row[0] for row in db.execute('SELECT body FROM logs'))
+        self.assertIn('<local-command-caveat>',logs)
+
     def test_large_sessions_recover_first_request_without_replaying_old_activity(self):
         for runtime in ['Codex','Claude Code','Pi']:
             with self.subTest(runtime=runtime):

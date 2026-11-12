@@ -126,9 +126,11 @@ means the stored, bounded, redacted record, with terminal control characters
 removed; it cannot restore content omitted upstream. **Details** holds IDs,
 model, reported usage, status evidence and relationship provenance.
 
-Agent rows prioritize task and current work. Alternating backgrounds group each
-agent's two content lines. At 120×30 or larger, a third line adds space between
-agents; smaller layouts retain two lines. Selection remains visible through
+Agent rows prioritize the first substantive task. Runtime and project sit below,
+with worker counts where relevant. Whitespace separates sessions without striped
+bands: four lines at 120×36 or larger, three at 24 or more terminal rows, and two
+in shorter layouts. Each tree level adds four cells, with aligned metadata and
+continuing ancestor guides. Selection remains visible through
 resize, and only a branch's first line is its disclosure target. Collapsed parents retain both
 working and attention counts for their descendants. **←/→** collapse/expand
 branches in Today, Running and History; search temporarily reveals matching
@@ -238,7 +240,7 @@ MCP shows reported servers, tools or methods, state, duration, arguments/results
 
 **Connection feedback.** The cockpit loads the visible view without requesting all-history totals or hidden MCP/metrics/findings views. The initial session read starts alongside the other required reads. Before the first snapshot, the session area says it is waiting for receiver data; it does not claim there are no sessions. Data timeouts name the affected request and show Loading delayed. Startup immediately prints the receiver address and shows Connecting until the first complete snapshot arrives. An explicitly selected receiver being offline opens the cockpit in reconnect mode. After the first snapshot, refresh/reconnect feedback stays in the fixed header and footer, keeping the list and inspector stationary. Slow refreshes show the current loading stage and elapsed time; disconnections retain the last good data, show its age, and display an attempt count and retry countdown. Click **Retry now** during startup or press **Shift+R** at any time to skip the next retry delay. A retry requested during an active read runs when that read finishes. Reconnect attempts use a one-second lightweight liveness probe before loading session data, with retry delays from half a second up to two seconds. Normal data reads retain their three-second socket timeout. Authentication failures name the missing configuration. The `/api/health?probe=1` endpoint checks liveness without performing process/session discovery; the full health response still carries collection diagnostics. Restart a separately running receiver after updating to enable the lightweight probe.
 
-**Today and task outcomes.** Today uses the local calendar day. Active work and explicit input/approval requests stay visible even if they began earlier. Today’s failed, interrupted, and incomplete tasks appear under needs you; unknown recent outcomes remain visible as unconfirmed. Earlier completed or failed tasks remain in **History** and recorded errors remain in **Errors**, but old failures no longer inflate the attention count or Workflow inbox. A quiet, stale running span without a linked live process is unconfirmed rather than invented live work. The collector’s discovery limits still apply. At 24 terminal rows or fewer, the header and navigation shrink to one row each and task rows omit their blank separator, leaving room for tasks and usage in a 60-column split. Help and quit remain in the bottom hint line.
+**Today and task outcomes.** Today uses the local calendar day. Active work and explicit input/approval requests stay visible even if they began earlier. Today’s failed, interrupted, incomplete, and unknown outcomes appear under Needs attention. The inspector distinguishes a recorded failure or pending input from unavailable status. Earlier completed or failed tasks remain in **History** and recorded errors remain in **Errors**, but old failures no longer inflate the attention count or Workflow inbox. A quiet, stale running span without a linked live process needs a status check; it is never counted as confirmed live work. The collector’s discovery limits still apply. At 24 terminal rows or fewer, the header and navigation shrink to one row each. At 24 rows task blocks keep one separator line; shorter layouts use two content lines, leaving room for tasks and usage in a 60-column split. Help and quit remain in the bottom hint line.
 
 **Ready for review** means the agent reported completion and you have not marked that run reviewed. It does not mean the changes or tests have been verified. Press **r** to mark a completion or attention item reviewed; the acknowledgement is stored locally for that run. Today removes reviewed completed work, while History retains it. Press **r** in History to reopen its review. A new task lifecycle in the same session gets a new review. Normal tool/model span errors remain evidence and do not override the task’s reported lifecycle. When no task outcome was captured, Agenturm shows **Unknown**, even when low-level spans succeeded. Trace health and error counts continue to describe the recorded telemetry.
 
@@ -495,9 +497,9 @@ The offline LangGraph retrieval control was run and imported alongside the harne
 ## Agent session overview
 
 The terminal's **Agents** view puts **Task / source**, **State**, and **Updated** in
-a task-focused list. Task previews stay on one line; runtime, project, and current
-work occupy the second. Alternating backgrounds separate agents, with an extra
-line of space on roomy terminals. On wide terminals the session inspector is on the right with
+a task-focused list. Task previews stay on one line; runtime, project, and relevant
+worker counts occupy the second. Whitespace separates agents. Recent activity
+and relationship provenance stay in the inspector. On wide terminals the session inspector is on the right with
 only status and a short latest-action label, not command arguments or output. On narrower
 terminals it stacks below; compact terminals prioritize the list until you inspect.
 Full session IDs, working directories, branches (when recorded), models, and usage
@@ -510,8 +512,9 @@ sessions and stored session summaries alike unless Reviews is enabled.
 
 The compact framed overview sits above a separate **Views** frame and scope
 controls. **Working agents** and **Needs attention** have separate summary
-areas; attention includes explicit input requests, possible stalls, and recorded
-failures, not ordinary tool waits. Press **1** for Agents, **2** for Activity,
+areas; attention includes explicit input requests, possible stalls, recorded
+failures, and status that needs inspection. Ordinary active tool waits stay in progress.
+Unknown or delayed status does not create an approval incident or desktop alert. Press **1** for Agents, **2** for Activity,
 **3** for MCP Calls, or **4** for Traces. MCP details, token usage, and process
 inventory remain in their dedicated views. Wide terminals show all seven view
 tabs; narrower terminals expose **5 Host**, **6 Metrics**, and **7 Findings** in
@@ -522,32 +525,38 @@ cap: it and the inspector fill the remaining workspace, with additional sessions
 reachable by scrolling. Short terminals use a compact summary to preserve room
 for evidence.
 
-Square, single-line panel edges and aligned headers separate the workspace without
-extra toolbars. An amber **▸** marks the selected session. Status uses shape and
-wording as well as color: **●** working, **◌** quiet work, **✓** completed, and **!**
-for input requests or status warnings. Completed rows keep a muted status rather
-than competing with live work. Selection retains these colors in every theme.
+Square, single-line panel edges and aligned headers separate the workspace. A
+cursor background identifies the selected session and preserves status colors in
+all themes. The list uses three main labels:
+
+- **In progress**: an unfinished turn supported by recent records, exact process progress, or the existing bounded quiet-work interval.
+- **Needs attention**: a recorded input wait, failure, possible stall, or unavailable status. The inspector explains which; this label alone does not imply that a reply is required.
+- **Ready for review**: the agent explicitly reported completion. This is not proof that checks passed or that the current worktree is verified.
+
+Review acknowledgements and precise lifecycle evidence stay in the inspector. A
+completed parent keeps its own Ready for review state while its children may be
+In progress. Collapsed branches retain hidden progress and attention counts.
 
 In **Activity**, select an agent with the Scope control (or press **s** on its row
 in Agents), then click **Prompts** beside Errors. This shows only recorded user
 messages for that agent, newest first; use **]** to page backward through older
 prompts. Turn Prompts off to return to the full activity stream.
 
-Status comes from native lifecycle records: **Working**, **Waiting**, **Completed**,
-or **Interrupted**. A known input request shows **User input**; a pending tool shows
-**Tool response** and its name. Unfinished turns with quiet logs show **Quiet work**
-(**Working (quiet)** in the expanded inspector);
-CPU/I/O progress from an exactly matched session process or its children can support
-**Processing** or **Tool running**. These are activity signals, not proof that a model
-request is making useful progress. Explicit approval/input waits persist until resolved.
+Precise status evidence comes from native lifecycle records and exactly matched
+process observations. Quiet unfinished turns stay **In progress** for the existing
+bounded interval; CPU/I/O activity may support long model or tool calls. These are
+activity signals, not proof of useful progress. Explicit approval/input waits
+persist until resolved, with the recorded reason and native terminal named in the
+inspector.
 
-After at least five minutes without records or observed process progress, a matched
-live session shows **May be stalled** (**Possibly stalled** in the expanded inspector), not a definitive hang. Without a process match,
-the status is **Unconfirmed** instead. **Monitor delayed** or **Catching up** identifies
-collector delay/unread data, not an agent failure. Details explain the status evidence.
-New transcript headers without started work are not counted as working. Completed
-turns stay completed even if their terminal process remains open. Unrecognized/missing
-lifecycle records remain **Unknown**. SDK connections report connection state separately.
+After at least five minutes without records or observed process progress, a
+matched live session may be stalled; without a process match, its unfinished
+status is unconfirmed. Both appear as **Needs attention**, with that distinction
+explained in the inspector. Collector delay or unread data is a status check,
+not an agent failure. Missing lifecycle data or an SDK connection alone never
+establishes active work or completion. Completed turns stay completed even if
+their terminal process remains open. None of these display changes invents a
+workflow incident, completion receipt, or desktop notification.
 
 The **MCP Calls** view includes configured server names discovered in known local
 Codex, Claude Code, Cursor, Gemini CLI, GitHub Copilot CLI, OpenCode, and VS Code configuration files, alongside

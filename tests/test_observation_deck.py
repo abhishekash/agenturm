@@ -31,7 +31,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(controls.size.height,1)
             self.assertEqual([str(c.label) for c in app.query_one('#agent-table', DataTable).columns.values()],
                              ['Task / source', 'State', 'Updated'])
-            self.assertTrue(app.query_one('#agent-table').zebra_stripes)
+            self.assertFalse(app.query_one('#agent-table').zebra_stripes)
             self.assertNotIn('session-1', app.query_one('#agent-detail').plain_text)
             self.assertNotIn('LATEST RECORDED EVENT', app.query_one('#agent-detail').plain_text)
             await pilot.click('#expand-agents')
@@ -58,7 +58,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             attention = app.query_one('#stat-attention').render().plain
             self.assertIn('1 working agent',work)
             self.assertIn('1 needs attention',attention)
-            self.assertIn('Codex 1', app.query_one('#stat-sessions').tooltip)
+            self.assertIn('Codex: 1 working', app.query_one('#stat-sessions').tooltip)
             self.assertEqual(len(app.query('#stat-processes')), 0)
             await pilot.press('2')
             await pilot.pause()
@@ -87,7 +87,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             app.set_session_mode('details');await pilot.pause()
             self.assertIn('session-1', app.query_one('#agent-detail').plain_text)
 
-    async def test_selection_marker_tracks_keyboard_refresh_and_resize_without_erasing_status_colors(self):
+    async def test_selection_tracks_keyboard_refresh_and_resize_without_erasing_status_colors(self):
         feed=ManualFeed()
         now=time.time_ns()
         feed.snapshot.local_status['sessions'][0].update(run_state='running',last_record_ns=now)
@@ -98,26 +98,26 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             app.set_agent_filter('all')
             await pilot.pause()
             table=app.query_one('#agent-table',DataTable)
-            self.assertTrue(table.get_row('source-1')[0].plain.startswith('▸ '))
-            self.assertFalse(table.get_row('source-2')[0].plain.startswith('▸ '))
+            self.assertEqual(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value,'source-1')
+            self.assertFalse(table.get_row('source-2')[0].plain.lstrip().startswith('▸ '))
             await pilot.press('down')
             await pilot.pause()
             self.assertEqual(app.selected_source,'source-2')
-            self.assertTrue(table.get_row('source-2')[0].plain.startswith('▸ '))
-            self.assertFalse(table.get_row('source-1')[0].plain.startswith('▸ '))
+            self.assertEqual(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value,'source-2')
+            self.assertFalse(table.get_row('source-1')[0].plain.lstrip().startswith('▸ '))
             app.last_update=-1
             app.refresh_data()
             await pilot.resize_terminal(80,24)
             await pilot.resize_terminal(180,48)
             await pilot.pause()
             self.assertEqual(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value,'source-2')
-            self.assertTrue(table.get_row('source-2')[0].plain.startswith('▸ '))
+            self.assertEqual(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value,'source-2')
             for theme,colors in PALETTES.items():
                 app.theme=theme
                 await pilot.pause()
                 segments=[segment for row in range(table.size.height) for segment in table.render_line(row)]
-                working=next(segment for segment in segments if '● Working' in segment.text)
-                completed=next(segment for segment in segments if '✓ Completed' in segment.text)
+                working=next(segment for segment in segments if 'In progress' in segment.text)
+                completed=next(segment for segment in segments if 'Ready for review' in segment.text)
                 self.assertEqual(working.style.color.get_truecolor().hex,colors['success'])
                 self.assertEqual(completed.style.color.get_truecolor().hex,colors['muted'])
 
@@ -278,12 +278,12 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('Best reliable mini PC under €300 in Germany',log.plain_text)
 
     def test_status_shapes_separate_work_history_and_explicit_requests(self):
-        self.assertEqual(agent_status({'state':'Working','active':True}).plain,'● Working')
-        self.assertEqual(agent_status({'state':'Working (quiet)','active':True}).plain,'◌ Quiet work')
-        self.assertEqual(agent_status({'state':'Completed'}).plain,'✓ Completed')
-        self.assertEqual(agent_status({'state':'Waiting','waiting_for':'Approval'}).plain,'! NEEDS APPROVAL')
-        self.assertEqual(agent_status({'state':'Failed'}).plain,'× Failed')
-        self.assertEqual(agent_status({'state':'Unknown'}).plain,'· Unknown')
+        self.assertEqual(agent_status({'state':'Working','active':True}).plain,'In progress')
+        self.assertEqual(agent_status({'state':'Working (quiet)','active':True}).plain,'In progress')
+        self.assertEqual(agent_status({'state':'Completed'}).plain,'Ready for review')
+        self.assertEqual(agent_status({'state':'Waiting','waiting_for':'Approval'}).plain,'Needs attention')
+        self.assertEqual(agent_status({'state':'Failed'}).plain,'Needs attention')
+        self.assertEqual(agent_status({'state':'Unknown'}).plain,'Needs attention')
 
     async def test_long_commands_and_output_are_never_in_the_default_overview(self):
         feed=ManualFeed()
@@ -324,7 +324,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.theme,'Observation')
             self.assertIn('Untitled session · Codex',app.query_one('#agent-table').get_row('source-1')[0].plain)
             self.assertIn('Repair keyboard navigation',app.query_one('#agent-table').get_row('source-2')[0].plain)
-            self.assertEqual(app.query_one('#agent-table').get_row('source-1')[0].plain.count('\n'),1)
+            self.assertEqual(len([line for line in app.query_one('#agent-table').get_row('source-1')[0].plain.splitlines() if line.strip()]),2)
             app.query_one('#agent-filter',Select).value='active'
             await pilot.pause()
             self.assertEqual(app.agent_filter,'active')

@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://www.agenturm.dev/#demo"><strong>Explore the workflow →</strong></a> &nbsp;·&nbsp;
   <a href="docs/usage.md">Documentation</a> &nbsp;·&nbsp;
-  <a href="https://github.com/abhishekash/agenturm/releases/tag/v0.2.1">What’s new in 0.2.1</a>
+  <a href="https://github.com/abhishekash/agenturm/releases/tag/v0.2.2">What’s new in 0.2.2</a>
 </p>
 
 <p align="center">
@@ -86,7 +86,9 @@ To upgrade, run `uv tool upgrade agenturm`, then restart Agenturm and any separa
 
 **Today** puts active work and work needing review within reach; **History** keeps earlier sessions available. Search by task or project. Switch between the tree and flat list with `f`.
 
-Task labels stay anchored to the **first substantive recorded request**. Model changes, acknowledgements, and later steering stay in Prompts without renaming the task. Recent activity remains separate on the source line. [Task identity and capture limits](docs/session-task-labels.md).
+The roster uses **In progress**, **Needs attention**, and **Ready for review**, with precise status evidence in the inspector. Spaced task blocks and deeper tree guides keep workers readable.
+
+Task labels stay anchored to the **first substantive recorded request**. Model changes, acknowledgements, and later steering stay in Prompts without renaming the task. The source line stays short; recent activity and status evidence live in the inspector. [Task identity and capture limits](docs/session-task-labels.md).
 
 A parent and its workers retain independent states. A completed parent can still have a working child; the branch summary makes that visible. Missing parent evidence stays explicit. Relationships use exact runtime identifiers, rather than guesses from similar tasks or nested spans. [Hierarchy support and limits](docs/agent-hierarchy.md).
 
@@ -163,7 +165,7 @@ Choose **Current (Alpine Ember), Bright, Dark, or Solarized** through `Ctrl+P �
 
 ## Status and contributing
 
-Agenturm is open source under the [MIT license](LICENSE). Version **0.2.1** includes the agent hierarchy, readable inspector, completion review, attention inbox, and saved-task continuity workflows. Signal coverage depends on the source. Long-session memory behavior remains under investigation; see the [validation report](docs/rigorous-validation.md) for measurements and limits.
+Agenturm is open source under the [MIT license](LICENSE). Version **0.2.2** includes the agent hierarchy, readable inspector, completion review, attention inbox, and saved-task continuity workflows. Signal coverage depends on the source. Long-session memory behavior remains under investigation; see the [validation report](docs/rigorous-validation.md) for measurements and limits.
 
 ```sh
 git clone https://github.com/abhishekash/agenturm.git

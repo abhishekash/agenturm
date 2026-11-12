@@ -77,20 +77,20 @@ class HierarchyFeed(Feed):
 
 
 class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_agent_blocks_adapt_spacing_preserve_selection_and_keep_distinct_bands(self):
+    async def test_agent_blocks_adapt_spacing_preserve_selection_and_keep_visible_cursor(self):
         app=ObservatoryApp(HierarchyFeed(),persist_preferences=False)
         async with app.run_test(size=(150,40)) as pilot:
             await pilot.pause();app.refresh_timer.stop();app.set_agent_filter('all')
             table=app.query_one('#agent-table',DataTable)
-            self.assertTrue(table.zebra_stripes)
+            self.assertFalse(table.zebra_stripes)
             app.select_agent('s-c1')
             table.move_cursor(row=[key.value for key in table.rows].index('s-c1'))
             for theme in ('Current','Observation','Bright','Dark','Solarized'):
                 app.theme=theme;await pilot.pause()
                 styles=[table.get_component_rich_style(name).bgcolor for name in
                         ('datatable--odd-row','datatable--even-row','datatable--cursor')]
-                self.assertEqual(len(set(styles)),3,theme)
-            for size,height in (((150,40),3),((150,24),2),((150,40),3),((80,24),2),((60,18),2)):
+                self.assertNotEqual(styles[1],styles[2],theme)
+            for size,height in (((150,40),4),((150,24),3),((150,40),4),((80,24),3),((60,18),2)):
                 await pilot.resize_terminal(*size);await pilot.pause()
                 self.assertTrue(all(row.height==height for row in table.rows.values()),size)
                 self.assertEqual(app.selected_source,'s-c1')
@@ -105,15 +105,15 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             app.action_tree_left();await pilot.pause()
             self.assertEqual(app.visible_agent_rows,['s-root'])
             root=app.query_one('#agent-table').get_row('s-root')[0].plain
-            self.assertIn('2 working',root)
-            self.assertIn('1 needs you',root)
+            self.assertIn('2 active',root)
+            self.assertIn('1 attention',root)
             self.assertNotIn('— tok',root)
             for size in ((150,40),(60,18)):
                 await pilot.resize_terminal(*size);await pilot.pause()
                 table=app.query_one('#agent-table')
                 rendered='\n'.join(table.render_line(y).text for y in range(table.size.height))
-                self.assertIn('2 working',rendered)
-                self.assertIn('1 needs you',rendered)
+                self.assertIn('2 active',rendered)
+                self.assertIn('1 attention',rendered)
             app.action_inspect_first_child();await pilot.pause()
             self.assertEqual(app.selected_source,'s-c2')
             self.assertIn('s-c2',app.visible_agent_rows)
@@ -146,7 +146,7 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(table.row_count, 1)
             self.assertIn("4 subagents", table.get_row("s-root")[0].plain)
-            self.assertIn("1 needs you", table.get_row("s-root")[0].plain)
+            self.assertIn("1 attention", table.get_row("s-root")[0].plain)
             self.assertEqual(app.query_one("#stat-sessions").render().plain, counts_before)
             self.assertEqual(app.query_one("#stat-attention").render().plain, attention_before)
 
@@ -158,7 +158,7 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app.selected_source, "s-c1")
             detail = app.query_one("#agent-detail").plain_text
-            self.assertIn("NEEDS REPLY", detail)
+            self.assertIn("Needs attention", detail)
             self.assertIn("Inspect API logs", detail)
             self.assertIn("request", " ".join(detail.split()).casefold())
 
@@ -167,7 +167,7 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app.table_data["agent-table"]["s-c3"]["state"], "Completed")
             detail = app.query_one("#agent-detail").plain_text
-            self.assertIn("1 working", detail.casefold())
+            self.assertIn("1 in progress", detail.casefold())
             await pilot.press("e");await pilot.pause()
             detail = app.query_one("#agent-detail").plain_text
             self.assertIn("direct children", detail.casefold())

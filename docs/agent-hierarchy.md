@@ -6,6 +6,8 @@ parent and child. A nested span, shared project, shared working directory,
 similar title, process ancestry, or copied conversation is not evidence of a
 delegation.
 
+The Agents tree uses a fixed disclosure slot and four cells of indentation per level, including leaves. Runtime/project metadata aligns under its task title; ancestor guides continue through row spacing. Collapse with **Left**, expand or enter a child with **Right**. Collapsed branches retain progress and attention counts; the parent keeps its own lifecycle state.
+
 ## Identity
 
 Every node has an opaque `agent_id` derived from:

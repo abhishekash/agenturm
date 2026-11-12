@@ -125,7 +125,7 @@ class HierarchyGraphTests(unittest.TestCase):
     def test_tree_prefix_caps_visual_indent_and_supports_ascii(self):
         prefix = tree_prefix(20, last=True, ancestor_last=[False] * 20)
         self.assertTrue(prefix.startswith("…"))
-        self.assertLessEqual(len(prefix), 32)
+        self.assertLessEqual(len(prefix), 36)
         ascii_prefix = tree_prefix(2, last=True, ancestor_last=[True, True], ascii_only=True)
         self.assertIn("`-", ascii_prefix)
         self.assertEqual(branch_marker(False, False), "")

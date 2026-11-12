@@ -125,8 +125,8 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 table=app.query_one('#agent-table',DataTable)
                 self.assertNotIn('Waiting on',[str(column.label) for column in table.columns.values()])
                 self.assertGreater(table.column_widths[0],table.column_widths[1])
-                self.assertEqual(table.rows['source-1'].height,3)
-                self.assertEqual(table.rows['source-2'].height,3)
+                self.assertEqual(table.rows['source-1'].height,4)
+                self.assertEqual(table.rows['source-2'].height,4)
                 task_cell=table.get_row('source-1')[0]
                 self.assertTrue(task_cell.no_wrap)
                 rendered='\n'.join(table.render_line(row).text for row in range(table.size.height))
@@ -145,8 +145,8 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
             app.last_update=-1
             app.refresh_data()
             await pilot.pause()
-            self.assertEqual(table.rows['source-1'].height,3)
-            self.assertEqual(table.get_row('source-1')[0].plain.splitlines()[0].strip(), '▸ Fix checkout')
+            self.assertEqual(table.rows['source-1'].height,4)
+            self.assertEqual(table.get_row('source-1')[0].plain.splitlines()[0].strip(), 'Fix checkout')
 
     async def test_columns_waiting_and_summary_are_bound_to_selected_session(self):
         feed = ManualFeed()
@@ -166,14 +166,14 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual([str(c.label) for c in table.columns.values()],
                         ['Task / source', 'State', 'Updated'])
                     row = ' '.join(str(value) for value in table.get_row_at(0))
-                    self.assertIn('NEEDS REPLY', row)
+                    self.assertIn('Needs attention', row)
                     self.assertNotIn('Reply · Codex terminal', row)
                     self.assertNotIn('Progress Summary · Recorded Activity',app.query_one('#agent-detail').plain_text)
                     await pilot.press('e')
                     await pilot.pause()
                     detail = app.query_one('#agent-detail').plain_text
                     self.assertNotIn('Progress Summary · Recorded Activity', detail)
-                    self.assertIn('NEEDS REPLY', app.query_one('#agent-context').render().plain)
+                    self.assertIn('Needs attention', app.query_one('#agent-context').render().plain)
                     self.assertIn('answer in the Codex terminal', ' '.join(detail.split()))
                     self.assertIn('Agenturm is read-only', ' '.join(detail.split()))
                     self.assertIn('Status Evidence',detail)
@@ -245,7 +245,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
             table = app.query_one('#agent-table', DataTable)
             self.assertEqual(next(iter(table.rows)).value, 'source-2')
             row = ' '.join(str(value) for value in table.get_row_at(0))
-            self.assertIn('NEEDS APPROVAL', row)
+            self.assertIn('Needs attention', row)
             detail=' '.join(app.query_one('#agent-detail').plain_text.split())
             self.assertIn('Approval needed',detail)
             self.assertIn('Claude terminal',detail)
