@@ -11,6 +11,7 @@ import base64
 import html
 from html.parser import HTMLParser
 import mimetypes
+import tomllib
 from pathlib import Path
 from urllib.parse import urlsplit
 from markdown_it import MarkdownIt
@@ -55,11 +56,15 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--markdown',type=Path,default=ROOT/'README.md')
     parser.add_argument('--output',type=Path,default=ROOT/'docs/readme.html')
+    parser.add_argument('--version', help='Override the version shown in the document header')
     args=parser.parse_args();source=args.markdown.resolve()
+    project=ROOT/'pyproject.toml'
+    version=args.version or (tomllib.loads(project.read_text())['project']['version'] if project.exists() else '')
+    product_label='Agenturm'+(' / '+html.escape(version) if version else '')
     rendered=MarkdownIt('commonmark',{'html':True}).enable('table').render(source.read_text())
     embedded=Embed(source);embedded.feed(rendered)
     title='Agenturm — '+('README' if source.name=='README.md' else source.stem.replace('-',' ').title())
-    output='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+title+'</title><style>'+STYLE+'</style></head><body><main><nav><strong>Agenturm / 0.2.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="'+REPO+str(source.relative_to(ROOT))+'">Markdown source ↗</a></nav>'+''.join(embedded.parts)+'<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>'
+    output='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+title+'</title><style>'+STYLE+'</style></head><body><main><nav><strong>'+product_label+'</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="'+REPO+str(source.relative_to(ROOT))+'">Markdown source ↗</a></nav>'+''.join(embedded.parts)+'<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>'
     args.output.parent.mkdir(parents=True,exist_ok=True);args.output.write_text(output)
     print('Wrote',args.output)
 
