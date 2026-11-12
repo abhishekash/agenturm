@@ -133,7 +133,7 @@ class LocalMonitoringJourneys(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(app.selected_activity)
             self.assertFalse(app.query_one('#activity-trace',Button).disabled)
             self.assertIn('runtime reported this failed outcome',app.query_one('#activity-detail').plain_text)
-            self.assertIn('No failed call details',app.query_one('#activity-detail').plain_text)
+            self.assertIn('No failed call details',' '.join(app.query_one('#activity-detail').plain_text.split()))
             await pilot.press('t');await pilot.pause()
             self.assertEqual(feed.selected_trace,'trace-1')
             await pilot.press('alt+left');await pilot.pause()
