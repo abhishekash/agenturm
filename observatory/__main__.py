@@ -66,7 +66,9 @@ def main():
             "endpoint": os.environ.get("OBSERVATORY_ENDPOINT"),
         }
         try:
-            run_cockpit(db_path=args.db, **options)
+            status = run_cockpit(db_path=args.db, **options)
+            if status:
+                parser.exit(status)
         except CockpitError as exc:
             parser.exit(2, f"Agenturm: {exc}\n")
     elif args.command == "serve":
