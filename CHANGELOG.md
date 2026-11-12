@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Limit Agents error reminders to unseen, concrete evidence in the two most recently active conversations per project/runtime. Keep workers with their parent, suppress reminders after matching later success, and persist viewed-error receipts without clearing task outcomes or approvals. Retain all captured error history in Activity and Traces.
+
 - Replace the narrow agent-session dropdown with a centred, searchable chooser that shows task titles and runtime/project/identity context, with arrow-key selection, explicit apply/cancel and exact worker scoping.
 
 - Give alternating agent blocks a subtle theme-aware background shade while preserving spacing, hierarchy guides and the stronger selection highlight.

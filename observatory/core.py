@@ -701,6 +701,7 @@ class Store:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN {name} TEXT")
             summary_columns = {row[1] for row in db.execute("PRAGMA table_info(trace_summaries)")}
             for name, declaration in (("activity_json", "TEXT NOT NULL DEFAULT '[]'"),
+                                      ("error_refs_json", "TEXT NOT NULL DEFAULT '[]'"),
                                       ("agent_id", "TEXT")):
                 if name not in summary_columns:
                     db.execute(f"ALTER TABLE trace_summaries ADD COLUMN {name} {declaration}")
@@ -1215,12 +1216,15 @@ class Store:
                     db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
                     continue
                 summary, activity, findings, timestamp = derived
-                db.execute("INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id) VALUES(?,?,?,?,?) "
+                from .error_reminders import trace_error_references
+                errors = trace_error_references(activity, trace_id)
+                db.execute("INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id,error_refs_json) VALUES(?,?,?,?,?,?) "
                            "ON CONFLICT(trace_id) DO UPDATE SET session_id=excluded.session_id,"
                            "summary_json=excluded.summary_json,activity_json=excluded.activity_json,"
-                           "agent_id=excluded.agent_id",
+                           "agent_id=excluded.agent_id,error_refs_json=excluded.error_refs_json",
                            (trace_id, summary.get("session_id"), json.dumps(summary, separators=(",", ":")),
-                            json.dumps(activity, separators=(",", ":")), summary.get("agent_id")))
+                            json.dumps(activity, separators=(",", ":")), summary.get("agent_id"),
+                            json.dumps(errors, separators=(",", ":"))))
                 db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
                 db.executemany("INSERT INTO finding_cache(finding_id,trace_id,time_ns,finding_json) VALUES(?,?,?,?)",
                                ((item["id"], trace_id, timestamp,
@@ -2688,11 +2692,27 @@ class Store:
                       AND {session_expr} IN ({placeholders}) AND {traced_session}
                     GROUP BY {session_expr}""", session_ids).fetchall()
             for session in log_sessions:
-                log_rows.extend(db.execute(f"""SELECT l.trace_id,l.time_ns,l.service,l.event_name,l.severity_number,
+                log_rows.extend(db.execute(f"""SELECT l.digest,l.span_id,l.trace_id,l.time_ns,l.service,l.event_name,l.severity_number,
                         l.attributes,l.resource_attributes,l.body,{session_expr} AS session_id
                     FROM logs l WHERE {session_expr}=?
                     ORDER BY time_ns DESC,digest DESC LIMIT 50""",
                     (session["session_id"],)).fetchall())
+            # Error reminders use bounded concrete evidence, never lifetime totals.
+            # Read only the newest two traces for each execution identity.
+            recent_traces = set()
+            trace_counts = {}
+            for row in rows:
+                key = (row['session_id'], row['agent_id'])
+                trace_counts[key] = trace_counts.get(key, 0) + 1
+                if trace_counts[key] <= 2:
+                    recent_traces.add(row['trace_id'])
+            reminder_events = []
+            selected_traces = sorted(recent_traces)
+            for offset in range(0, len(selected_traces), 200):
+                selected = selected_traces[offset:offset + 200]
+                marks = ','.join('?' for _ in selected)
+                for row in db.execute(f'SELECT error_refs_json FROM trace_summaries WHERE trace_id IN ({marks})', selected):
+                    reminder_events.extend(json.loads(row['error_refs_json']))
         grouped = {}
         for row in rows:
             summary = json.loads(row["summary_json"])
@@ -2777,6 +2797,11 @@ class Store:
                 body = json.loads(row["body"])
             except (TypeError, ValueError):
                 body = ""
+            if row['event_name'] == 'agent.activity':
+                event = _activity_row(attrs, row['time_ns'], 'log', row['digest'],
+                                      row['span_id'], row['service'], resource_attributes=resource)
+                reminder_events.append({**event, 'trace_id': row['trace_id'],
+                    'id': (row['trace_id'] or 'log') + ':' + row['digest']})
             log_agent_id = _agent_id_from_attributes(attrs, resource, row["service"])
             key = (session_id, log_agent_id)
             item = grouped.get(key)
@@ -2913,8 +2938,16 @@ class Store:
             task_wait = item.pop("task_waiting_for", None)
             item["waiting_for"] = (task_wait or latest_wait
                                    if item.get("latest_task_outcome") == "waiting" else latest_wait)
+        from .error_reminders import error_reference, pending_failures
+        errors_by_owner = {}
+        for event in reminder_events:
+            key = (event.get('session_id'), event.get('agent_id'))
+            errors_by_owner.setdefault(key, []).append(event)
         result = []
         for item in grouped.values():
+            # Metadata references only; full captured errors stay in Activity.
+            item['recent_errors'] = [error_reference(event)
+                for event in pending_failures(errors_by_owner.get((item['session_id'], item.get('agent_id')), []))]
             item["known_cost_usd"] = round(item["known_cost_usd"], 8)
             from .storage_derived import finalize_usage
             finalize_usage(item)

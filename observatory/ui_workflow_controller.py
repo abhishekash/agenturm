@@ -1,5 +1,6 @@
 """Background-only workflow persistence, acknowledgement and notification delivery."""
 from __future__ import annotations
+from collections import OrderedDict
 import threading
 import time
 
@@ -7,6 +8,7 @@ from .attention import AttentionLedger, classify, fresh_observation
 from .ui_monitoring import task_run_usage
 from .workflow_evidence import scope_for, safe_text
 from .workflow_store import WorkflowStore, WorkflowStoreError
+from .error_reminders import event_receipt
 
 
 def prepared_item(item, snapshot):
@@ -34,6 +36,9 @@ class WorkflowController:
         self.store = None
         self.ledger = AttentionLedger()
         self.receipts = {}
+        self.error_seen = set()
+        self._pending_error_seen = set()
+        self._error_seen = OrderedDict()
         self.warning = ''
         self._lock = threading.Lock()
         self._queue = []
@@ -81,12 +86,21 @@ class WorkflowController:
                     self._observe(*args)
                 elif kind == 'ack':
                     self._ack(*args)
+                elif kind == 'error_seen':
+                    self._open_storage(args[1])
+                    self._remember_errors(args[0])
+                    if self.store:
+                        self.store.mark_error_seen(args[0])
+                    elif not self._memory:
+                        raise WorkflowStoreError('Error was marked seen for this monitor; durable storage is unavailable')
                 elif kind == 'retry':
                     self._retry(*args)
                 elif kind == 'cleanup':
                     if not self.store and self._latest and self._latest[3]['persist']:
                         self.store = WorkflowStore(self.store_path)
                         self.ledger.restore(self.store.load())
+                        self._remember_errors(self.store.load_error_seen())
+                        self.store.mark_error_seen(self._error_seen)
                         self._persist()
                     if self.store:
                         self.store.cleanup()
@@ -101,11 +115,11 @@ class WorkflowController:
             rows = list(self.ledger.rows)
             receipts = {key: dict(value) for key, value in self.ledger.records.items()}
             try:
-                self.owner.call_from_thread(self._publish, rows, receipts, self.warning, message)
+                self.owner.call_from_thread(self._publish, rows, receipts, self.warning, message, set(self._error_seen))
             except RuntimeError:
                 return
 
-    def _publish(self, rows, receipts, warning, message):
+    def _publish(self, rows, receipts, warning, message, error_seen=None):
         if self._closed:
             return
         def presentation(values):
@@ -113,7 +127,10 @@ class WorkflowController:
                                  r.get('delivery_status')) for key, r in values.items()
                                 if r.get('acknowledgement') or r.get('delivery_status')))
         changed = (presentation(self.receipts) != presentation(receipts)
-                   or getattr(self, '_published_warning', '') != warning)
+                   or getattr(self, '_published_warning', '') != warning
+                   or bool(set(error_seen or ()) - self.error_seen))
+        self._pending_error_seen.difference_update(error_seen or ())
+        self.error_seen=set(error_seen or ()) | self._pending_error_seen
         self._published_warning = warning
         self.receipts = receipts
         self.warning = warning
@@ -130,21 +147,25 @@ class WorkflowController:
 
     def _observe(self, items, snapshot, limits, options):
         self._latest = (items, snapshot, limits, options)
-        if not self._store_attempted:
-            self._store_attempted = True
-            self._memory = not options['persist']
-            if options['persist']:
-                try:
-                    self.store = WorkflowStore(self.store_path)
-                    self.ledger.restore(self.store.load())
-                except WorkflowStoreError as exc:
-                    self._storage_error = str(exc)
-                    self.store = None
+        self._open_storage(options['persist'])
         self.ledger.update([prepared_item(item, snapshot) for item in items], snapshot, limits,
                            endpoint=options['endpoint'])
         self._persist()
         if self.store and options['notify'] and time.time() >= options['snooze'] and not self._closed:
             self._deliver(self.ledger.new_incidents)
+
+    def _open_storage(self, persist):
+        if not self._store_attempted:
+            self._store_attempted = True
+            self._memory = not persist
+            if persist:
+                try:
+                    self.store = WorkflowStore(self.store_path)
+                    self.ledger.restore(self.store.load())
+                    self._remember_errors(self.store.load_error_seen())
+                except WorkflowStoreError as exc:
+                    self._storage_error = str(exc)
+                    self.store = None
 
     def _persist(self):
         if self.store:
@@ -188,6 +209,26 @@ class WorkflowController:
         prepared = prepared_item(item, self.owner.feed.snapshot)
         scope = scope_for(prepared, self.owner.feed.snapshot, self.owner.feed.api.endpoint)
         self._enqueue(('ack', (scope.scope_key, prepared.get('_attention_id'), action)))
+
+    def error_displayed(self, events, *, snapshot=None):
+        """Only call after actual error details are opened, never for a count."""
+        keys = {key for event in events if (key := event_receipt(
+            event, snapshot if snapshot is not None else self.owner.feed.snapshot, self.owner.feed.api.endpoint))}
+        keys -= self.error_seen
+        if not keys:
+            return
+        self.error_seen.update(keys)
+        self._pending_error_seen.update(keys)
+        self.owner.last_update = -1
+        persist=bool(self.owner.preferences.enabled and not self.owner.is_headless)
+        self._enqueue(('error_seen', (keys,persist)))
+
+    def _remember_errors(self, identities):
+        from .workflow_store import MAX_INCIDENTS
+        for identity in identities:
+            self._error_seen[identity]=None
+        while len(self._error_seen)>MAX_INCIDENTS:
+            self._error_seen.popitem(last=False)
 
     def _ack(self, scope_key, incident_id, action):
         chosen = [i for i in self.ledger.incidents.values() if i.scope_key == scope_key and

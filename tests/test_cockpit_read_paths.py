@@ -31,7 +31,7 @@ class CockpitReadPathTests(unittest.TestCase):
             for trace,service in (('a'*32,'codex'),('b'*32,'claude')):
                 events=[{'source':'span','source_id':'same-span','service':service,
                     'time_unix_nano':79,'domain':'tool','action':'call','result':'success'}]
-                db.execute('INSERT INTO trace_summaries VALUES(?,?,?,?,?)',
+                db.execute('INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id) VALUES(?,?,?,?,?)',
                            (trace,'summary-session','{}',json.dumps(events),'agent-'+service))
             # Summary identity still wins over an inconsistent raw log attribute.
             db.execute('UPDATE logs SET trace_id=?,agent_id=? WHERE digest=?',
