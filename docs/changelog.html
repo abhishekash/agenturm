@@ -1,12 +1,18 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm changelog</title><style>
-:root{color-scheme:light dark;--bg:#f6f8fb;--fg:#172336;--muted:#e4eaf1;--link:#135ba3}
-@media(prefers-color-scheme:dark){:root{--bg:#131a24;--fg:#e2eaf5;--muted:#2c384b;--link:#8fc4ff}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,sans-serif}
-main{max-width:1000px;margin:auto;padding:40px 24px 80px}h1{line-height:1.2;font-size:clamp(28px,5vw,42px)}h2{margin-top:2em;line-height:1.3}
-a{color:var(--link)}pre{overflow:auto;padding:18px;background:var(--muted);border-radius:8px}code{font-size:.9em}
-table{display:block;overflow:auto;border-collapse:collapse;width:100%;font-size:14px}th,td{padding:12px;text-align:left;border-bottom:1px solid var(--muted)}th{white-space:nowrap}li{margin:.5em 0}
-@media(max-width:600px){main{padding:24px 16px}th,td{min-width:130px;padding:8px}}
-</style></head><body><main><h1>Changelog</h1>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Changelog</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.1</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/CHANGELOG.md">Markdown source ↗</a></nav><h1>Changelog</h1>
+<h2>Agenturm 0.2.1</h2>
+<ul>
+<li>Keep Agents task labels anchored to the first substantive captured request, so model switches, acknowledgements, and later follow-ups do not rename the work.</li>
+<li>Preserve original prompts and per-turn requests while keeping recent activity separate from the session identity.</li>
+<li>Recover initial task identity from a bounded prefix of large native session files and retain it through receiver restarts and stored history.</li>
+<li>Prefer the first substantive OpenCode request over generated titles, with bounded identity reads and cache invalidation on database replacement.</li>
+<li>Preserve exact worker scope, metadata-only capture, and internal-review redaction for the new identity metadata.</li>
+<li>Refresh the README and add a task-led website walkthrough, actual terminal captures, a captioned video, and a written transcript.</li>
+</ul>
+<p>Restart Agenturm and any separately running receiver after upgrading. Task labels remain local; AI summaries are still explicitly requested. Existing capture and memory-stability limits continue to apply.</p>
 <h2>Agenturm 0.2.0</h2>
 <ul>
 <li>Make prompt browsing work directly with arrow keys, provide persistent F1 help, and preserve navigator/reader focus across section changes and resize.</li>
@@ -27,7 +33,7 @@ table{display:block;overflow:auto;border-collapse:collapse;width:100%;font-size:
 <li>Reduce startup history-query work and keep available live agents visible when stored reads are delayed, with explicit missing/stale evidence and safe filter-scoped retention.</li>
 </ul>
 <p>Restart Agenturm and any separately running receiver after upgrading. The release remains Python-based; the experimental Rust ingestion change was reverted.</p>
-<p>Known limitation: a mixed headless 20-minute validation run showed RSS rising from about 70 to 125 MiB despite bounded review caches and stable sampled descriptors. Memory stability remains under investigation; see the <a href="rigorous-validation.html">validation report</a>.</p>
+<p>Known limitation: a mixed headless 20-minute validation run showed RSS rising from about 70 to 125 MiB despite bounded review caches and stable sampled descriptors. Memory stability remains under investigation; see the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rigorous-validation.html">validation report</a>.</p>
 <h2>Agenturm 0.1.7</h2>
 <ul>
 <li>Reduce local monitoring resource usage, load expensive view data on demand, and index source lookups to avoid startup timeouts.</li>
@@ -71,4 +77,5 @@ table{display:block;overflow:auto;border-collapse:collapse;width:100%;font-size:
 <h2>Agent Observatory 0.1.2</h2>
 <ul>
 <li>See the GitHub releases for earlier release notes.</li>
-</ul></main></body></html>
+</ul>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

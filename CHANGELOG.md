@@ -1,5 +1,16 @@
 # Changelog
 
+## Agenturm 0.2.1
+
+- Keep Agents task labels anchored to the first substantive captured request, so model switches, acknowledgements, and later follow-ups do not rename the work.
+- Preserve original prompts and per-turn requests while keeping recent activity separate from the session identity.
+- Recover initial task identity from a bounded prefix of large native session files and retain it through receiver restarts and stored history.
+- Prefer the first substantive OpenCode request over generated titles, with bounded identity reads and cache invalidation on database replacement.
+- Preserve exact worker scope, metadata-only capture, and internal-review redaction for the new identity metadata.
+- Refresh the README and add a task-led website walkthrough, actual terminal captures, a captioned video, and a written transcript.
+
+Restart Agenturm and any separately running receiver after upgrading. Task labels remain local; AI summaries are still explicitly requested. Existing capture and memory-stability limits continue to apply.
+
 ## Agenturm 0.2.0
 
 - Make prompt browsing work directly with arrow keys, provide persistent F1 help, and preserve navigator/reader focus across section changes and resize.
