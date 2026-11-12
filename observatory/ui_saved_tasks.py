@@ -249,7 +249,7 @@ class TaskScreen(TaskJobs, ModalScreen):
     .task-actions Button { width: 1fr; min-width: 8; height: 3; padding: 0; }
     #handoff-path { height: 3; }
     '''
-    BINDINGS = [Binding('escape', 'back', 'Back', priority=True)]
+    BINDINGS = [Binding('escape', 'back', 'Back')]
 
     def __init__(self, owner):
         super().__init__()
@@ -433,6 +433,7 @@ class TaskDetailScreen(TaskScreen):
         for button in self.query('#task-title-row Button'):
             button.set_styles('height: 1; padding: 0 1; border: none;')
         self.call_after_refresh(self.render_task)
+        self.query_one('#task-body').focus()
 
     def on_resize(self):
         self.update_floor()
@@ -526,7 +527,7 @@ class TaskEditor(TaskJobs, ModalScreen):
     .task-actions Button { width: 1fr; height: 3; min-width: 8; padding: 0; }
     '''
     BINDINGS = [Binding('ctrl+s', 'save', 'Save', priority=True),
-                Binding('escape', 'cancel', 'Cancel', priority=True)]
+                Binding('escape', 'cancel', 'Cancel')]
 
     def __init__(self, owner, task=None, context=None):
         super().__init__()
@@ -760,6 +761,7 @@ class TaskDecisionsScreen(TaskScreen):
     def on_mount(self):
         self.render_decisions()
         self.update_floor()
+        self.query_one('#decision-version' if self.record.get('decisions') else '#decision-add').focus()
 
     def render_decisions(self):
         decisions = self.record.get('decisions', [])

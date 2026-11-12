@@ -99,7 +99,8 @@ class WorkflowJourney(unittest.IsolatedAsyncioTestCase):
             screen=app.screen;table=screen.query_one(DataTable)
             self.assertGreaterEqual(table.size.height,14)
             self.assertFalse(screen.query_one(RichLog).display)
-            table.focus();await pilot.press(*(['down']*20));await pilot.pause()
+            self.assertIs(app.focused,table)
+            await pilot.press(*(['down']*20));await pilot.pause()
             key=table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
             position=table.scroll_y
             app.workflow_ledger.rows=[(dict(it,task=it['task']+' refreshed'),reason,since) for it,reason,since in ledger.rows]

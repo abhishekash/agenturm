@@ -24,7 +24,7 @@ from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical
 from textual.screen import Screen
 from textual.strip import Strip
-from textual.widgets import Button, Checkbox, DataTable, Input, RichLog, Select, Static, Tab, TabbedContent, TabPane, Tabs, Tree
+from textual.widgets import Button, Checkbox, DataTable, Input, OptionList, RichLog, Select, Static, Tab, TabbedContent, TabPane, Tabs, Tree
 
 from .terminal import clean, clipped, number, trace_name
 from .agent_hierarchy import (AGENT_ID, HierarchyGraph, branch_marker, canonical_agent_id,
@@ -916,9 +916,15 @@ def navigation_hints(width):
     return '↑↓ Move  Enter Inspect  / Search  b Tasks  ? Help  q Quit'
 
 
-def session_navigation_hints(mode):
-    return ('Esc Back  Tab Controls  [ ] Prompt  z Original  c Copy' if mode=='prompts' else
-            'Esc Back  Tab Controls  ↑↓ Scroll  s Activity  ? Help')
+def session_navigation_hints(mode, focus=''):
+    if focus=='agent-modes':
+        return '←→ Sections  ↑↓ Prompts  Enter Choose  F1 Help  Esc Back' if mode=='prompts' else '←→ Sections  Enter Read  Tab  F1 Help  Esc Back'
+    if mode=='prompts':
+        if focus=='agent-prompt-options':return '↑↓ Choose  Enter Read  Esc Cancel  F1 Help'
+        if focus=='agent-prompt-select':return '↑↓/Enter Choose  → Read  [ ] Prompt  F1 Help  Esc Back'
+        if focus=='agent-prompts':return '↑↓ Choose  Enter Read  [ ] Prompt  Tab  F1 Help  Esc Back'
+        return '↑↓ Scroll  ← Prompts  [ ] Prompt  Tab  F1 Help  Esc Back'
+    return '↑↓ Scroll  Tab Controls  Ctrl+R Review  F1 Help  Esc Back'
 
 
 def coverage_warning(local_status):
@@ -985,7 +991,7 @@ class ResultsTable(DataTable):
     def add_row(self,*cells,**kwargs):
         kwargs.setdefault('height',self.preview_height(cells))
         key=super().add_row(*self.project(cells),**kwargs)
-        self.full_rows[key]=cells
+        self.full_rows[key.value]=cells
         return key
 
     def project(self,values):
@@ -1028,6 +1034,31 @@ class ResultsTable(DataTable):
         if rows and density_changed:self.move_cursor(row=min(selected,len(rows)-1),scroll=True)
 
 
+class PromptIndex(ResultsTable):
+    """Choose a request before entering its independently scrollable text."""
+    BINDINGS=[Binding('right','read_prompt','Read prompt',show=False),
+              Binding('home','prompt_edge("first")','First prompt',show=False),
+              Binding('end','prompt_edge("latest")','Latest prompt',show=False)]
+
+    def action_read_prompt(self):self.app.query_one('#agent-detail').focus()
+    def action_prompt_edge(self,direction):self.app.navigate_prompt(direction)
+
+
+class PromptPicker(Select):
+    """Keep the native chooser; Right enters the selected request's text."""
+    BINDINGS=[Binding('right','read_prompt','Read prompt',show=False),
+              Binding('enter','choose_or_read','Choose / read prompt',show=False,priority=True)]
+
+    def action_read_prompt(self):self.app.query_one('#agent-detail').focus()
+
+    def action_choose_or_read(self):
+        if not self.expanded:self.action_show_overlay();return
+        # Confirming the current value emits no Select.Changed. Read after the
+        # native OptionList commits either the current or a different choice.
+        self.query_one(OptionList).action_select()
+        self.call_after_refresh(self.action_read_prompt)
+
+
 class SearchInput(Input):
     """Use familiar select-all behavior in cockpit search fields."""
     BINDINGS=[Binding('ctrl+a','select_all','Select all',show=False)]
@@ -1048,10 +1079,17 @@ class CockpitTabs(TabbedContent):
 
 class SessionModeTabs(Tabs):
     """One focus stop for modes; native arrows select, Enter starts reading."""
-    BINDINGS=[Binding('enter,down','read','Read section',show=False)]
+    BINDINGS=[Binding('enter','read','Read section',show=False),
+              Binding('down','enter_section(1)','Enter section',show=False),
+              Binding('up','enter_section(-1)','Enter section',show=False)]
 
     def action_read(self):
-        self.app.query_one('#agent-detail').focus()
+        self.app.focus_session_content()
+
+    def action_enter_section(self,direction):
+        self.app.focus_session_content()
+        if self.app.session_mode=='prompts':
+            self.app.navigate_prompt('older' if direction<0 else 'newer')
 
 
 def evidence_syntax(content, lexer, theme='Current'):
@@ -1131,6 +1169,15 @@ class SelectableRichLog(RichLog):
         if self.is_mounted and self in self.screen.selections:
             self.screen.clear_selection()
         return super().clear()
+
+
+class SessionReader(SelectableRichLog):
+    BINDINGS=[Binding('left','prompt_index','Choose prompt',show=False)]
+
+    def action_prompt_index(self):
+        if self.app.inspector_open() and self.app.session_mode=='prompts':
+            self.app.focus_prompt_navigator()
+        else:self.action_scroll_left()
 
 
 class ObservatoryScreen(Screen):
@@ -1286,6 +1333,7 @@ class ObservatoryApp(App):
     #agent-prompt-help { width: 1fr; height: 1; color: $agent-muted; }
     #agent-prompt-select { width: 1fr; min-width: 8; height: 1; }
     #agent-prompt-select SelectCurrent { height: 1; border: none; padding: 0; background: $agent-surface; }
+    #agent-prompt-select SelectOverlay { text-wrap: nowrap; text-overflow: ellipsis; }
     #agent-prompt-picker Button { width: 8; min-width: 0; height: 1; padding: 0; border: none; }
     #agent-prompt-picker #agent-original { width: 13; }
     #agent-evidence-status { height: auto; max-height: 2; color: $agent-muted; }
@@ -1390,6 +1438,8 @@ class ObservatoryApp(App):
     .short #search-status-agents.-empty { display: block; }
     '''
     BINDINGS=[Binding('/','search','Search'),Binding('e','expand','Expand'),Binding('?','help','Help'),Binding('t','open_trace','Trace'),
+              Binding('f1','keyboard_help','Keyboard help',show=False,priority=True),
+              Binding('ctrl+r','review_current','Review work',show=False),
               Binding('c','copy','Copy'), Binding('alt+left','history_back','Back',show=False),
               Binding('[','history("newer")','Newer',show=False),Binding(']','history("older")','Older',show=False),
               Binding('l','history("latest")','Latest',show=False),
@@ -1584,15 +1634,16 @@ class ObservatoryApp(App):
                                     active='agent-mode-overview',id='agent-modes')
                                 yield Static('Ctrl+←/→ · m',id='agent-mode-hint',markup=False)
                             with Horizontal(id='agent-prompt-picker'):
-                                yield Static('Requests · ↑↓ choose · Enter read',id='agent-prompt-help',markup=False)
-                                yield Select([('No prompts','none')],value='none',allow_blank=False,id='agent-prompt-select')
+                                yield Static('Requests · ↑↓ choose · Enter/→ read',id='agent-prompt-help',markup=False)
+                                yield PromptPicker([('No prompts','none')],value='none',allow_blank=False,id='agent-prompt-select',
+                                    tooltip='↑/↓ and Enter choose a request · → reads it · [ ] previous/next')
                                 yield Button('Prev [',id='agent-prompt-prev')
                                 yield Button('Next ]',id='agent-prompt-next')
                                 yield Button('Original · z',id='agent-original')
                             with Horizontal(id='agent-reading'):
-                                yield ResultsTable(id='agent-prompts',cursor_type='row',zebra_stripes=False)
+                                yield PromptIndex(id='agent-prompts',cursor_type='row',zebra_stripes=False)
                                 with Vertical(id='agent-record'):
-                                    yield SelectableRichLog(id='agent-detail',min_width=1,wrap=True,markup=False,auto_scroll=False)
+                                    yield SessionReader(id='agent-detail',min_width=1,wrap=True,markup=False,auto_scroll=False)
                                     with Horizontal(id='agent-prompt-bar'):
                                         yield Static('',id='agent-prompt-status',markup=False)
                                         yield Button('Earlier prompts',id='agent-earlier-prompts')
@@ -1600,7 +1651,7 @@ class ObservatoryApp(App):
                             yield Static('',id='agent-evidence-status',markup=False)
                             yield Button('Retry evidence',id='agent-retry')
                             with Horizontal(classes='inspector-actions'):
-                                yield Button('Review work',id='agent-review-work',tooltip='Read scoped recorded checks, edits and errors')
+                                yield Button('Review · Ctrl+R',id='agent-review-work',tooltip='Ctrl+R · Read scoped recorded checks, edits and errors')
                                 yield Button(Text('Activity · s'),id='agent-open',tooltip='Read all recorded activity for this session')
                                 yield Button('Trace · t',id='agent-trace',tooltip='Inspect the latest linked trace for this session')
                                 yield Button('Mark reviewed · r',id='agent-reviewed',tooltip='Acknowledge this attention item for this run; does not change the recorded session status')
@@ -1838,10 +1889,29 @@ class ObservatoryApp(App):
         self.reflow_inspectors()
 
     def on_resize(self,event):
+        prompt_navigation=(self.inspector_open() and self.session_mode=='prompts' and
+            self.focused is not None and (self.focused.id in {'agent-prompts','agent-prompt-select'} or
+            self.query_one('#agent-prompt-select') in self.focused.ancestors))
+        current_navigation='agent-prompts' if prompt_navigation and self.focused.id=='agent-prompts' else 'agent-prompt-select'
         self.update_layout(event.size)
         self.schedule_inspector_reflow()
         self.call_after_refresh(self.refresh_summary)
         self.call_after_refresh(self.refresh_data)
+        if prompt_navigation:
+            target='agent-prompts' if event.size.width>=120 else 'agent-prompt-select'
+            if current_navigation!=target:self._prompt_navigation_after_reflow=True
+
+    def on_descendant_focus(self):
+        if self.inspector_open():self.update_session_hints()
+
+    def update_session_hints(self):
+        self.query_one('#shortcuts',Static).update(session_navigation_hints(
+            self.session_mode,self.session_focus_context()))
+
+    def session_focus_context(self):
+        if self.focused is not None and any(node.id=='agent-prompt-select' for node in self.focused.ancestors):
+            return 'agent-prompt-options'
+        return self.focused.id if self.focused else ''
 
     def schedule_inspector_reflow(self):
         if self.inspector_reflow_pending:return
@@ -1867,6 +1937,9 @@ class ObservatoryApp(App):
         def restore():
             for name,position in positions.items():
                 self.query_one('#'+name).scroll_to(x=position.x,y=position.y,animate=False)
+            if getattr(self,'_prompt_navigation_after_reflow',False) and self.inspector_open() and self.session_mode=='prompts':
+                self._prompt_navigation_after_reflow=False
+                self.focus_prompt_navigator()
         self.call_after_refresh(restore)
 
     def update_layout(self,size=None):
@@ -1888,7 +1961,7 @@ class ObservatoryApp(App):
         for brand in self.query('#brand'):
             brand.update(themed_text(brand,masthead(demo=getattr(self,'demo_mode',False),compact=True)))
         for hints in self.query('#shortcuts'):
-            hints.update(session_navigation_hints(self.session_mode) if self.screen.has_class('inspecting')
+            hints.update(session_navigation_hints(self.session_mode,self.session_focus_context()) if self.screen.has_class('inspecting')
                          and self.query_one('#pages',TabbedContent).active=='agents' else navigation_hints(size.width))
         if self.query('#more-views') and self.query('#pages'):
             self.sync_more_view(self.query_one('#pages',TabbedContent).active or 'agents')
@@ -2990,7 +3063,18 @@ class ObservatoryApp(App):
         with tabs.prevent(Tabs.TabActivated):tabs.active='agent-mode-'+mode
         self.query_one('#shortcuts',Static).update(session_navigation_hints(mode))
         self.show_agent()
-        self.query_one('#agent-detail' if focus_reader else '#agent-modes').focus()
+        if focus_reader:self.focus_session_content()
+        else:self.query_one('#agent-modes').focus()
+        # A tab change can keep the same focused widget, so no focus event will
+        # refresh the hint that distinguishes choosing prompts from reading.
+        self.update_session_hints()
+
+    def focus_prompt_navigator(self):
+        self.query_one('#agent-prompts' if self.size.width>=120 else '#agent-prompt-select').focus()
+
+    def focus_session_content(self):
+        if self.session_mode=='prompts':self.focus_prompt_navigator()
+        else:self.query_one('#agent-detail').focus()
 
     @on(Tabs.TabActivated,'#agent-modes')
     def inspector_mode_activated(self,event):
@@ -3044,13 +3128,16 @@ class ObservatoryApp(App):
     @on(Select.Changed,'#agent-prompt-select')
     def prompt_selected(self,event):
         self.select_prompt(str(event.value))
+        picker=self.query_one('#agent-prompt-select')
+        if self.focused is picker or (self.focused and picker in self.focused.ancestors):
+            self.call_after_refresh(self.query_one('#agent-detail').focus)
 
     def navigate_prompt(self,direction):
         history=self.session_prompts
         keys=[prompt_key(event) for event in history.ordered()]
         if not keys:return
         index=keys.index(history.selected) if history.selected in keys else len(keys)-1
-        index=(len(keys)-1 if direction=='latest' else
+        index=(0 if direction=='first' else len(keys)-1 if direction=='latest' else
                max(0,index-1) if direction=='older' else min(len(keys)-1,index+1))
         self.select_prompt(keys[index])
 
@@ -3877,12 +3964,29 @@ class ObservatoryApp(App):
         self.push_screen(UsageScreen(details=task_usage_summary(usage,title,scope=scope,identity=identity)[1]),self.resume_cockpit)
 
     def action_help(self):
-        if self.inspector_open():
-            self.notify('Enter inspect · ←/→ tabs (or Ctrl+←/→ from content) · Enter/↓ read · Tab/Shift+Tab controls · ↑↓/PgUp/PgDn scroll · m next section · [ ] prompts · z original · c copy · Esc back',timeout=10)
-        elif self.query_one('#pages',TabbedContent).active=='agents':
-            self.notify('↑/↓ choose agent · Enter inspect · ←/→ collapse/expand · f flat/tree · / search · o sort · Alt+↑ parent · Alt+↓ child · Alt+→ needs attention · ? help',timeout=10)
-        else:
-            self.notify('↑/↓ move · Enter inspect · / search · e expand · Ctrl+P palette · b saved tasks · w workflow · u usage · d diagnostics · x export · p pause/follow · q quit',timeout=8)
+        self.action_keyboard_help()
+
+    def action_keyboard_help(self):
+        from .ui_keyboard import KeyboardHelpScreen
+        if isinstance(self.screen,KeyboardHelpScreen):self.screen.dismiss();return
+        context=(('Agents · '+self.session_mode.title()) if self.inspector_open() else
+                 self.query_one('#pages',TabbedContent).active.title() if isinstance(self.screen,ObservatoryScreen) else
+                 self.screen.__class__.__name__.removesuffix('Screen'))
+        previous=self.screen
+        previous_navigation='agent-prompts' if self.size.width>=120 else 'agent-prompt-select'
+        prompt_navigation=self.focused is not None and (self.focused.id in {'agent-prompts','agent-prompt-select'} or
+            any(ancestor.id=='agent-prompt-select' for ancestor in self.focused.ancestors))
+        def returned(_=None):
+            if self.screen is previous and isinstance(previous,ObservatoryScreen):
+                target='agent-prompts' if self.size.width>=120 else 'agent-prompt-select'
+                if prompt_navigation and target!=previous_navigation and self.inspector_open() and self.session_mode=='prompts':
+                    self._prompt_navigation_after_reflow=True
+                self.resume_cockpit()
+        self.push_screen(KeyboardHelpScreen(context),returned)
+
+    def action_review_current(self):
+        if isinstance(self.screen,ObservatoryScreen) and self.query_one('#pages',TabbedContent).active=='agents':
+            self.action_review_work()
 
     def action_diagnostics(self):
         self.push_screen(DiagnosticsScreen(self.feed.snapshot.local_status),self.resume_cockpit)
@@ -4015,8 +4119,10 @@ class ObservatoryApp(App):
         self.query_one('#history-back',Button).disabled=not self.navigation_history
 
     def action_history(self,direction,page=None):
+        if not isinstance(self.screen,ObservatoryScreen):return
         page=page or self.query_one('#pages',TabbedContent).active
         if page=='agents' and self.session_mode=='prompts':
+            if not self.inspector_open() or any(p.expanded for p in self.query(Select)):return
             self.navigate_prompt({'newer':'older','older':'newer'}.get(direction,direction));return
         if page not in self.feed.history:return
         self.screen.clear_selection()

@@ -99,18 +99,30 @@ different evidence; neither verifies the entire objective. The footer states
 which recent records are loaded. A quiet session gets its own exact-scoped read,
 even when its events have left the global activity window.</p>
 <p>The inspector opens with its <strong>Overview / Prompts / Details</strong> tab strip focused.
-Use <strong>←/→</strong> to choose a section and <strong>Enter</strong> or <strong>↓</strong> to read it. From the reader,
+Use <strong>←/→</strong> to choose a section and <strong>Enter</strong> to enter it. In Prompts, <strong>↑/↓</strong>
+from the tabs enters request navigation and chooses an older/newer request;
+in other sections <strong>↓</strong> enters the reader. From the reader,
 <strong>Ctrl+←/→</strong> switches sections; <strong>m</strong> also cycles them. <strong>Tab</strong> and <strong>Shift+Tab</strong>
-move between the inspector's visible controls. <strong>↑/↓</strong>, <strong>Page Up/Down</strong>, and
-<strong>Home/End</strong> scroll the content. <strong>Esc</strong> closes an open selector first, then
+move between the inspector's visible controls. While the text reader has focus,
+<strong>↑/↓</strong>, <strong>Page Up/Down</strong>, and <strong>Home/End</strong> scroll its content. <strong>Esc</strong> closes an open selector first, then
 returns to the selected agent. The task, runtime and status remain visible above
 the content; switching sections preserves the reading position.
-<strong>Prompts</strong> reads one request at a time, starting with the latest. Choose a
-request in the chronological index or the selector; <strong>[</strong> moves to the previous
+<strong>Prompts</strong> reads one request at a time, starting with the latest. It opens on
+the chronological index at wide sizes: <strong>↑/↓</strong> chooses requests, <strong>Home/End</strong>
+chooses oldest/latest, and <strong>Enter</strong> or <strong>→</strong> reads. In compact layouts,
+<strong>↑/↓</strong>, <strong>Enter</strong> or <strong>Space</strong> opens the native request chooser; arrows select
+and <strong>Enter</strong> confirms and reads. <strong>→</strong> reads the current compact choice directly.
+From the request text, <strong>←</strong> returns to its navigator. <strong>[</strong> moves to the previous
 request, <strong>]</strong> to the next, and <strong>l</strong> to the latest loaded request. <strong>Earlier
 prompts</strong> loads an older page without moving the request you are reading.
 The reader retains up to 300 requests, preserving the selected request and
 newest arrivals; older history remains available in Activity.</p>
+<p><strong>F1</strong> opens a persistent, scrollable keyboard reference from any screen,
+including editors; <strong>Esc</strong> or <strong>F1</strong> returns without losing the draft or selection.
+The footer distinguishes choosing requests from scrolling their text.
+<strong>Ctrl+R</strong> opens the selected agent's recorded-work review. The complete
+<a href="keyboard-navigation.html">keyboard navigation guide</a> covers the inspector,
+Workflow, Review, saved tasks, dropdowns and editors.</p>
 <p>Known complete runtime context blocks are separated from the readable request,
 with a visible disclosure. <strong>z</strong> toggles original captured text for that request.
 Literal JSON, code, line breaks and indentation are retained. <strong>c</strong> copies the

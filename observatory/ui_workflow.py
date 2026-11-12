@@ -196,6 +196,11 @@ class WorkflowScreen(ModalScreen):
         for key,title in (('tokens','Tokens'),('cost','USD'),('minutes','Minutes')):
             self.query_one('#workflow-'+key,Input).border_title=title
         self.call_after_refresh(self.render_report)
+        self.call_after_refresh(self.focus_initial)
+
+    def focus_initial(self):
+        table=self.query_one('#workflow-inbox',DataTable)
+        (table if table.display and table.row_count else self.query_one('#workflow-log',RichLog)).focus()
 
     def on_resize(self):
         if self.is_mounted:self.call_after_refresh(self.render_report)
