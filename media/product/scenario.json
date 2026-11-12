@@ -1,0 +1,188 @@
+{
+  "agents": [
+    {
+      "id": "coordinator",
+      "task": "Fix refresh token expiry",
+      "runtime": "Codex",
+      "project": "auth-api",
+      "state": "Working",
+      "tone": "working",
+      "source": "Coordinator · reviewing worker results",
+      "detail": "The expiry regression is recorded. The API worker is waiting for your decision on the response code.",
+      "work": [
+        "Read refresh-token validation and the existing tests.",
+        "Delegated API behavior and expiry regression checks.",
+        "Comparing worker results before the final change."
+      ],
+      "kind": "root",
+      "native": "demo-coordinator",
+      "coverage": "Example records only"
+    },
+    {
+      "id": "api",
+      "task": "Check the expired-token response",
+      "runtime": "Codex",
+      "project": "auth-api",
+      "state": "Needs input",
+      "tone": "waiting",
+      "source": "Worker · explicit recorded question",
+      "detail": "Should an expired refresh token return 401 or 403? The worker recorded a request for user input.",
+      "work": [
+        "Compared the existing refresh endpoint and its callers.",
+        "Recorded an unresolved response-code question."
+      ],
+      "kind": "child",
+      "native": "demo-api-worker",
+      "coverage": "Explicit parent identity recorded"
+    },
+    {
+      "id": "tests",
+      "task": "Add the expiry regression",
+      "runtime": "Codex",
+      "project": "auth-api",
+      "state": "Ready for review",
+      "tone": "success",
+      "source": "Worker · agent reported completion",
+      "detail": "The worker reported a regression test and 12 passing tests. A later edit means that result does not validate the current files.",
+      "work": [
+        "Added the expired-token regression.",
+        "Recorded pytest: 12 passed at 14:08.",
+        "Reported completion. A later edit was captured at 14:10."
+      ],
+      "kind": "child",
+      "native": "demo-test-worker",
+      "coverage": "Check history is a bounded excerpt"
+    },
+    {
+      "id": "web",
+      "task": "Fix checkout keyboard navigation",
+      "runtime": "OpenCode",
+      "project": "storefront",
+      "state": "Working",
+      "tone": "working",
+      "source": "Independent session · editing focus handling",
+      "detail": "The latest captured change updates ArrowUp and ArrowDown handling in the checkout form.",
+      "work": [
+        "Read the checkout form’s focus handlers.",
+        "Updated keyboard selection; no completed test result is recorded here."
+      ],
+      "kind": "root",
+      "native": "demo-storefront",
+      "coverage": "No relationship to auth-api recorded"
+    },
+    {
+      "id": "docs",
+      "task": "Document the callback configuration",
+      "runtime": "Claude Code",
+      "project": "docs",
+      "state": "Ready for review",
+      "tone": "success",
+      "source": "Independent session · agent reported completion",
+      "detail": "The session reported updated callback documentation. Review the change in its native workspace before accepting it.",
+      "work": [
+        "Updated the callback configuration guide.",
+        "Reported completion; no verification is established by that status."
+      ],
+      "kind": "root",
+      "native": "demo-docs",
+      "coverage": "No relationship to auth-api recorded"
+    }
+  ],
+  "handoff": "# Fix refresh token expiry\n\nIntent: reject expired refresh tokens promptly.\nAcceptance: add an expiry regression; preserve the public API.\nConstraints: no new dependency.\n\nAccepted decision: keep the public refresh API.\nRationale: existing clients depend on its shape.\nSource: manually reviewed task notes.\n\nOpen question: should an expired token return 401 or 403?\nNext action: resolve the response-code question with the developer,\nthen rerun pytest tests/auth -q after the latest edit.\n\nLinked evidence:\n- Coordinator session: Fix refresh token expiry\n- Test worker: 12 passed at 14:08; later edit at 14:10\n- Recorded GitHub tool call: HTTP 403, API rate limit exceeded\n\nWorkspace capture: 14:12, relative to the saved Git base.\nChanged paths: src/auth/refresh.py, tests/auth/test_refresh.py\nThis excerpt is synthetic. Capture does not run checks or establish\nwhich agent authored each change. Recheck current files.\n\nCopy this reviewed brief into the agent you choose.\nAgenturm does not send it or launch that agent.\n",
+  "prompts": [
+    {
+      "title": "The original task",
+      "time": "13:42",
+      "body": "Fix refresh token expiry. An expired token currently retries until the request times out. Reject it promptly and add a regression test.",
+      "context": "Captured environment context: project auth-api; workspace /example/auth-api.",
+      "raw": "<environment_context>\n  <cwd>/example/auth-api</cwd>\n</environment_context>\n\nFix refresh token expiry. An expired token currently retries until the request times out. Reject it promptly and add a regression test."
+    },
+    {
+      "title": "The constraints",
+      "time": "13:46",
+      "body": "Keep the public refresh API and avoid a new dependency. Ask me if the response-code behavior needs to change.",
+      "context": "No additional runtime context was captured with this request.",
+      "raw": "Keep the public refresh API and avoid a new dependency. Ask me if the response-code behavior needs to change."
+    },
+    {
+      "title": "The review request",
+      "time": "14:03",
+      "body": "Have a worker check the expiry regression. Before you say done, show which tests ran and whether any files changed afterward.",
+      "context": "No additional runtime context was captured with this request.",
+      "raw": "Have a worker check the expiry regression. Before you say done, show which tests ran and whether any files changed afterward."
+    }
+  ],
+  "stages": [
+    {
+      "name": "Fleet",
+      "question": "Who needs me?",
+      "title": "Give every agent a place in the picture.",
+      "description": "A coordinator, two delegated workers, and two independent sessions. Select a worker, collapse the branch, or open the attention request. Each agent keeps its own state.",
+      "takeaway": "Find the terminal that needs you without opening every transcript.",
+      "action": "Read the requests",
+      "screen": "Agents · Today"
+    },
+    {
+      "name": "Prompts",
+      "question": "What was asked?",
+      "title": "Read the request. Keep the original within reach.",
+      "description": "Move through three requests from the coordinator’s session. Runtime context is separated from the readable request. Original captured text remains available.",
+      "takeaway": "Recover the intent and constraints before making the next decision.",
+      "action": "Review the result",
+      "screen": "Session inspector · Prompts"
+    },
+    {
+      "name": "Review",
+      "question": "What does “done” mean?",
+      "title": "A passing check has a time and a scope.",
+      "description": "The test worker reported completion. Its recorded check passed, then a file changed. Review preserves that sequence and makes missing evidence explicit.",
+      "takeaway": "Know what you still need to verify before accepting the change.",
+      "action": "Inspect a tool failure",
+      "screen": "Session review · Test worker"
+    },
+    {
+      "name": "Tools",
+      "question": "Why did a call fail?",
+      "title": "Get the response, not just a red status.",
+      "description": "Inspect the GitHub MCP call’s arguments and recorded response, then follow its linked execution. A failed call is evidence; it does not establish that the whole agent is blocked.",
+      "takeaway": "Investigate the tool failure with the request and its context together.",
+      "action": "Prepare the handoff",
+      "screen": "MCP Calls · Coordinator"
+    },
+    {
+      "name": "Handoff",
+      "question": "How do I pick this up later?",
+      "title": "Keep the reasoning with the task.",
+      "description": "This saved task contains a manually reviewed brief, a decision with its rationale, linked runs, and a workspace capture. Preview the handoff before you copy it into your next agent.",
+      "takeaway": "Continue with an explicit next action and the decisions already made.",
+      "action": "Try it on your machine",
+      "screen": "Saved tasks · Handoff"
+    }
+  ],
+  "tools": [
+    {
+      "id": "github",
+      "name": "github / get_pull_request",
+      "note": "PR #184 · auth-api",
+      "status": "Error",
+      "tone": "error",
+      "duration": "842 ms",
+      "request": "{\n  \"repository\": \"example/auth-api\",\n  \"pull_number\": 184\n}",
+      "response": "{\n  \"error\": {\n    \"status_code\": 403,\n    \"message\": \"API rate limit exceeded\"\n  }\n}",
+      "explanation": "The server returned HTTP 403 with a rate-limit message. This call did not return the pull-request details.",
+      "trace": true
+    },
+    {
+      "id": "file",
+      "name": "filesystem / read_file",
+      "note": "Refresh implementation",
+      "status": "Success",
+      "tone": "success",
+      "duration": "12 ms",
+      "request": "{\n  \"path\": \"src/auth/refresh.py\"\n}",
+      "response": "{\n  \"path\": \"src/auth/refresh.py\",\n  \"content\": \"… check expiry before retrying …\"\n}",
+      "explanation": "A successful file read. The shortened example response shows the recorded path and a synthetic content excerpt.",
+      "trace": false
+    }
+  ]
+}

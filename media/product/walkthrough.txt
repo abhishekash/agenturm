@@ -1,0 +1,26 @@
+Agenturm 0.2.0 — 37-second silent terminal walkthrough
+Actual terminal UI; synthetic example records.
+
+01 / AGENTS / See the task and its workers.
+Each agent keeps its own state. A branch can carry a request for you.
+
+02 / PROMPTS / Recover the original request.
+Choose a request with the keyboard; read the captured text in its own space.
+
+02 / PROMPTS / Keep the constraints in view.
+Read the next request without losing the session’s context.
+
+02 / PROMPTS / Read the later steering.
+The developer asked for tests and visibility into changes after them.
+
+03 / REVIEW / Inspect what the check establishes.
+The captured pytest command passed. Later recorded edits require another check.
+
+04 / TOOLS / Read the response behind a failure.
+The GitHub MCP call returned HTTP 403: API rate limit exceeded.
+
+05 / HANDOFF / Carry the decision and next action.
+Review a saved handoff, then copy it into the agent you choose.
+
+The test worker’s passed check precedes later edits. No fresh validation is established.
+Prompts, decisions, and all task identities are fictional. Agenturm does not send the handoff or launch an agent.
