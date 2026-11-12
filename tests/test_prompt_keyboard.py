@@ -1,7 +1,7 @@
 """Choose every captured request and read it without mouse or direct actions."""
 import unittest
 
-from textual.widgets import Static
+from textual.widgets import OptionList, Static
 
 from observatory.terminal_ui import ObservatoryApp
 from tests.test_inspector_layout import ManualFeed, prompt
@@ -77,6 +77,9 @@ class PromptKeyboardTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press('left');await pilot.pause()
             await pilot.press('up');await pilot.pause()
             self.assertTrue(app.query_one('#agent-prompt-select').expanded)
+            overlay=app.query_one('#agent-prompt-select').query_one(OptionList)
+            self.assertEqual(overlay.virtual_size.height,overlay.option_count,
+                             'Each request needs one readable row in the compact chooser')
             self.assertIn('↑↓ Choose',app.query_one('#shortcuts',Static).render().plain)
             self.assertNotIn('Scroll',app.query_one('#shortcuts',Static).render().plain)
             await pilot.press('up','enter');await pilot.pause()

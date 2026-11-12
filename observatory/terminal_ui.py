@@ -1333,6 +1333,7 @@ class ObservatoryApp(App):
     #agent-prompt-help { width: 1fr; height: 1; color: $agent-muted; }
     #agent-prompt-select { width: 1fr; min-width: 8; height: 1; }
     #agent-prompt-select SelectCurrent { height: 1; border: none; padding: 0; background: $agent-surface; }
+    #agent-prompt-select SelectOverlay { text-wrap: nowrap; text-overflow: ellipsis; }
     #agent-prompt-picker Button { width: 8; min-width: 0; height: 1; padding: 0; border: none; }
     #agent-prompt-picker #agent-original { width: 13; }
     #agent-evidence-status { height: auto; max-height: 2; color: $agent-muted; }
