@@ -1,5 +1,4 @@
-<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm changelog</title><style>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm changelog</title><style>
 :root{color-scheme:light dark;--bg:#f6f8fb;--fg:#172336;--muted:#e4eaf1;--link:#135ba3}
 @media(prefers-color-scheme:dark){:root{--bg:#131a24;--fg:#e2eaf5;--muted:#2c384b;--link:#8fc4ff}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,sans-serif}
@@ -8,6 +7,27 @@ a{color:var(--link)}pre{overflow:auto;padding:18px;background:var(--muted);borde
 table{display:block;overflow:auto;border-collapse:collapse;width:100%;font-size:14px}th,td{padding:12px;text-align:left;border-bottom:1px solid var(--muted)}th{white-space:nowrap}li{margin:.5em 0}
 @media(max-width:600px){main{padding:24px 16px}th,td{min-width:130px;padding:8px}}
 </style></head><body><main><h1>Changelog</h1>
+<h2>Agenturm 0.2.0</h2>
+<ul>
+<li>Make prompt browsing work directly with arrow keys, provide persistent F1 help, and preserve navigator/reader focus across section changes and resize.</li>
+<li>Restore terminal settings on external SIGINT/SIGTERM, preserve prior signal handlers, and return meaningful interrupt, termination and failure exit statuses.</li>
+<li>Add a workflow inbox for waiting requests, failures and agent-reported completion, with opt-in local notification delivery and explicit acknowledgement.</li>
+<li>Keep selected work and reading positions stationary during background refreshes, and clarify current work versus agent-reported completion.</li>
+<li>Add exactly scoped, lazy recorded-work review with check outcomes, later edits, bounded paging and frozen copy/export.</li>
+<li>Persist local attention acknowledgements and desktop delivery claims with stable request/run identities, silent restart inventory and seen-but-pending requests.</li>
+<li>Add structured saved-task briefs, immutable decision versions, explicit excerpt drafts, native lifecycle links and continuity CLI commands.</li>
+<li>Keep saved links and usage separate across receivers/producers, preserve old notes-only databases, and provide an explicit pre-migration SQLite backup command.</li>
+<li>Offer opt-in bounded repeated-work observations in Findings, with polling exclusions and captured-window qualifications.</li>
+<li>Reorganize the session inspector into Overview, Prompts, and Details, with recent agent-reported progress before history and a selectable, wrapped prompt reader.</li>
+<li>Separate known runtime context from requests, preserve the original captured text, and keep meaningful task descriptions through short follow-up replies.</li>
+<li>Correct worker evidence and usage attribution, load bounded history for quiet sessions, and preserve prompt selection and reading position during updates.</li>
+<li>Separate agents with alternating row backgrounds and extra spacing on roomy terminals; keep compact rows, prioritize working and attention counts, honor collapsed branches, and reveal hidden children during navigation.</li>
+<li>Support a usable 60×18 inspector with a clear resize message below that minimum.</li>
+<li>Give the inspector a native keyboard tab strip, visible focus, scoped Tab/Shift+Tab navigation, and preserved reading positions between sections.</li>
+<li>Reduce startup history-query work and keep available live agents visible when stored reads are delayed, with explicit missing/stale evidence and safe filter-scoped retention.</li>
+</ul>
+<p>Restart Agenturm and any separately running receiver after upgrading. The release remains Python-based; the experimental Rust ingestion change was reverted.</p>
+<p>Known limitation: a mixed headless 20-minute validation run showed RSS rising from about 70 to 125 MiB despite bounded review caches and stable sampled descriptors. Memory stability remains under investigation; see the <a href="rigorous-validation.html">validation report</a>.</p>
 <h2>Agenturm 0.1.7</h2>
 <ul>
 <li>Reduce local monitoring resource usage, load expensive view data on demand, and index source lookups to avoid startup timeouts.</li>
@@ -51,5 +71,4 @@ table{display:block;overflow:auto;border-collapse:collapse;width:100%;font-size:
 <h2>Agent Observatory 0.1.2</h2>
 <ul>
 <li>See the GitHub releases for earlier release notes.</li>
-</ul>
-</main></body></html>
+</ul></main></body></html>

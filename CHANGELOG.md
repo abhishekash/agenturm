@@ -1,13 +1,16 @@
 # Changelog
 
-## Unreleased
+## Agenturm 0.2.0
 
+- Make prompt browsing work directly with arrow keys, provide persistent F1 help, and preserve navigator/reader focus across section changes and resize.
+- Restore terminal settings on external SIGINT/SIGTERM, preserve prior signal handlers, and return meaningful interrupt, termination and failure exit statuses.
+- Add a workflow inbox for waiting requests, failures and agent-reported completion, with opt-in local notification delivery and explicit acknowledgement.
+- Keep selected work and reading positions stationary during background refreshes, and clarify current work versus agent-reported completion.
 - Add exactly scoped, lazy recorded-work review with check outcomes, later edits, bounded paging and frozen copy/export.
 - Persist local attention acknowledgements and desktop delivery claims with stable request/run identities, silent restart inventory and seen-but-pending requests.
 - Add structured saved-task briefs, immutable decision versions, explicit excerpt drafts, native lifecycle links and continuity CLI commands.
 - Keep saved links and usage separate across receivers/producers, preserve old notes-only databases, and provide an explicit pre-migration SQLite backup command.
 - Offer opt-in bounded repeated-work observations in Findings, with polling exclusions and captured-window qualifications.
-
 - Reorganize the session inspector into Overview, Prompts, and Details, with recent agent-reported progress before history and a selectable, wrapped prompt reader.
 - Separate known runtime context from requests, preserve the original captured text, and keep meaningful task descriptions through short follow-up replies.
 - Correct worker evidence and usage attribution, load bounded history for quiet sessions, and preserve prompt selection and reading position during updates.
@@ -15,6 +18,10 @@
 - Support a usable 60×18 inspector with a clear resize message below that minimum.
 - Give the inspector a native keyboard tab strip, visible focus, scoped Tab/Shift+Tab navigation, and preserved reading positions between sections.
 - Reduce startup history-query work and keep available live agents visible when stored reads are delayed, with explicit missing/stale evidence and safe filter-scoped retention.
+
+Restart Agenturm and any separately running receiver after upgrading. The release remains Python-based; the experimental Rust ingestion change was reverted.
+
+Known limitation: a mixed headless 20-minute validation run showed RSS rising from about 70 to 125 MiB despite bounded review caches and stable sampled descriptors. Memory stability remains under investigation; see the [validation report](docs/rigorous-validation.html).
 
 ## Agenturm 0.1.7
 
