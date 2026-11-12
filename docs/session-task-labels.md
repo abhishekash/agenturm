@@ -1,6 +1,6 @@
 # Agent task labels
 
-The Agents view identifies a session by its first substantive recorded request. Follow-ups such as “switch model,” “use gpt-6.1-sol,” “continue,” and “go ahead” remain in the prompt history without renaming the task. The source line shows the runtime, project, and recent activity separately. A standalone operational request appears there as “Session instruction.”
+The Agents view identifies a session by its first substantive recorded request. Follow-ups such as “switch model,” “use gpt-6.1-sol,” “continue,” and “go ahead” remain in the prompt history without renaming the task. The source line shows runtime, project, and relevant worker counts. Recent activity stays in the inspector; operational requests remain in Prompts.
 
 For example, a session that starts with “Fix refresh token expiry,” then receives “Add cancellation coverage” and “Switch model to gpt-6.1-sol,” keeps **Fix refresh token expiry** as its task label. The later requests and their original text remain inspectable in Prompts; the per-turn trace still retains that turn’s substantive request.
 
@@ -10,7 +10,7 @@ For example, a session that starts with “Fix refresh token expiry,” then rec
 2. For older receivers or producers without that field, use the earliest substantive user request available in the exactly scoped activity window. Worker identity and producer/session scope are preserved.
 3. If no suitable prompt is available, retain a meaningful runtime-supplied task. If that too is missing or only contains steering, show the existing untitled-session fallback.
 
-Only complete known runtime envelopes are separated. Standalone model/effort controls and acknowledgements are excluded from identity. Requests to implement model switching, change model loading, or use a model to perform substantive work remain ordinary requests. Operational text on the first line does not hide a substantive request on a later line. Input-reply transport envelopes remain replies rather than task names.
+Complete known runtime envelopes are separated, including Claude Code’s local-command caveat and local stdout/stderr. Native model/control envelopes are recognised regardless of their block order. Canonical caveat prefixes truncated into old stored labels are suppressed only in the task projection; original captured records remain intact. Arbitrary XML, incomplete user-authored markup, inline mentions, and code examples are preserved. Standalone model/effort controls and acknowledgements are excluded from identity. Requests to implement model switching, change model loading, or use a model to perform substantive work remain ordinary requests. Operational text on the first line does not hide a substantive request on a later line. Input-reply transport envelopes remain replies rather than task names.
 
 ## Bounded collection and restart
 

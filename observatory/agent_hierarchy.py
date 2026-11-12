@@ -162,6 +162,8 @@ def node_attention(node):
     available.  This fallback keeps backend summaries useful without importing
     the terminal module.
     """
+    if '_display_attention' in node:
+        return bool(node['_display_attention'])
     if "attention" in node:
         return bool(node.get("attention"))
     state = str(node.get("state") or "")
@@ -579,7 +581,7 @@ def _merge_observation(previous, incoming):
     return result
 
 
-def tree_prefix(depth, *, last=True, ancestor_last=(), ascii_only=False):
+def tree_prefix(depth, *, last=True, ancestor_last=(), ascii_only=False, continuation=False):
     """Draw a bounded tree prefix with an explicit depth fallback.
 
     Indentation is capped at eight levels.  Deeper nodes keep the relationship
@@ -588,10 +590,10 @@ def tree_prefix(depth, *, last=True, ancestor_last=(), ascii_only=False):
     """
     depth = max(0, int(depth))
     glyph = {
-        "branch": "|- " if ascii_only else "├─ ",
-        "last": "`- " if ascii_only else "└─ ",
-        "pipe": "|  " if ascii_only else "│  ",
-        "deep": ".. " if ascii_only else "…  ",
+        "branch": "|-- " if ascii_only else "├── ",
+        "last": "`-- " if ascii_only else "└── ",
+        "pipe": "|   " if ascii_only else "│   ",
+        "deep": "..  " if ascii_only else "…   ",
     }
     cap = 8
     visible = min(depth, cap)
@@ -601,9 +603,12 @@ def tree_prefix(depth, *, last=True, ancestor_last=(), ascii_only=False):
         visible = cap
     for level in range(1, visible):
         is_last = ancestor_last[level] if level < len(ancestor_last) else False
-        prefix += "   " if is_last else glyph["pipe"]
+        prefix += "    " if is_last else glyph["pipe"]
     if depth:
-        prefix += glyph["last"] if last else glyph["branch"]
+        if continuation:
+            prefix += "    " if last else glyph["pipe"]
+        else:
+            prefix += glyph["last"] if last else glyph["branch"]
     return prefix
 
 

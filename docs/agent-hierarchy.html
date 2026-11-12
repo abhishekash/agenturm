@@ -1,0 +1,218 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Agent Hierarchy</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.2</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/agent-hierarchy.md">Markdown source ↗</a></nav><h1>Agent hierarchy</h1>
+<p>Agenturm observes delegated agents as a tree of <strong>agents</strong>, not as a flat list
+of sessions. Hierarchy is built only from runtime metadata that names an exact
+parent and child. A nested span, shared project, shared working directory,
+similar title, process ancestry, or copied conversation is not evidence of a
+delegation.</p>
+<p>The Agents tree uses a fixed disclosure slot and four cells of indentation per level, including leaves. Runtime/project metadata aligns under its task title; ancestor guides continue through row spacing. Collapse with <strong>Left</strong>, expand or enter a child with <strong>Right</strong>. Collapsed branches retain progress and attention counts; the parent keeps its own lifecycle state.</p>
+<h2>Identity</h2>
+<p>Every node has an opaque <code>agent_id</code> derived from:</p>
+<pre><code>runtime + producer/source namespace + native execution id
+</code></pre>
+<p>The resolver is <code>observatory.agent_hierarchy.canonical_agent_id</code>. Discovery,
+storage, API scope resolution, and the terminal tree use the same resolver.
+A spawn result and a later child transcript therefore resolve to one node.</p>
+<p>The normalized node also keeps the available native identifiers:</p>
+<ul>
+<li><code>native_session_id</code>: the runtime's session/conversation identifier.</li>
+<li><code>native_worker_id</code>: the worker/agent identifier when a runtime shares one
+session across several agents.</li>
+<li><code>source_id</code>: the existing Agenturm evidence source identifier.</li>
+<li><code>parent_agent_id</code>: canonical parent identity, or null.</li>
+<li><code>relationship_kind</code>: <code>delegated</code>, <code>forked</code>, or <code>unknown</code>.</li>
+<li><code>relationship_state</code>: <code>confirmed</code>, <code>unresolved</code>, <code>conflicted</code>, or <code>invalid</code>.</li>
+<li><code>relationship_provenance</code>: bounded adapter/record/time evidence. Never raw
+arguments, environments, or transcript content.</li>
+<li><code>discovery_state</code>: <code>observed</code> or <code>announced</code>.</li>
+<li><code>coverage</code>: <code>complete</code>, <code>partial</code>, or <code>unknown</code>.</li>
+</ul>
+<p>An absent parent field is not proof that a session is a root. Only a runtime's
+explicit root marker or a confirmed delegation edge changes that label. Forks
+and continuations remain separate from delegation.</p>
+<h2>Runtime capability matrix</h2>
+<p>Validation used synthetic fixtures matching the public transcript/database
+shapes below. Live validation against each installed runtime version remains
+pending where noted.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Runtime</th>
+<th>Child discovery</th>
+<th>Exact delegation linking</th>
+<th>Independent child evidence</th>
+<th>Known limitations</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>Separate rollout JSONL files in the same date tree</td>
+<td><code>session_meta.payload.parent_thread_id</code>; also <code>source.subagent.thread_spawn.parent_thread_id</code>. Successful <code>spawn_agent</code> output may announce the exact child <code>agent_id</code> before its transcript arrives.</td>
+<td>Yes, each rollout has its own trace/activity evidence.</td>
+<td>Older subagent rollouts without <code>parent_thread_id</code> stay unlinked. <code>forked_from_id</code> is a fork, not a worker edge.</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td><code>~/.claude/projects/&lt;project&gt;/&lt;session&gt;/subagents/agent-&lt;agentId&gt;.jsonl</code></td>
+<td>Transcript path parent session plus optional sidecar <code>agent-&lt;agentId&gt;.meta.json</code> (<code>parentAgentId</code>, <code>toolUseId</code>). A successful parent <code>Task</code>/<code>Agent</code> tool result carrying <code>toolUseResult.agentId</code> may announce the child.</td>
+<td>Yes, each sidecar transcript has its own recorded request and tools.</td>
+<td>Sidecars are optional on older versions. Without a sidecar <code>parentAgentId</code>, the session directory is the parent. Older inline sidechain records are not split into workers.</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td><code>session</code> rows with <code>parent_id</code> set</td>
+<td><code>session.parent_id</code></td>
+<td>Yes, each child session has its own messages/parts.</td>
+<td>Recent activity rows without a retained session row remain unlinked observations.</td>
+</tr>
+<tr>
+<td>Pi</td>
+<td>Only explicit parent fields if a Pi version supplies them</td>
+<td><code>parentAgentId</code> / <code>parentSessionId</code> / <code>parent_id</code> when present</td>
+<td>Not independently verified</td>
+<td>No documented Pi subagent transcript format was confirmed. Unlinked sessions are labelled unknown rather than assumed roots.</td>
+</tr>
+<tr>
+<td>SDK / OTLP</td>
+<td>Only the explicit convention below</td>
+<td><code>agent.parent_id</code> with <code>agent.id</code></td>
+<td>Yes, if the producer emits child evidence</td>
+<td>A nested span alone is not proof of a subagent. Producers that omit the attributes remain unlinked.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Codex, Claude Code, and OpenCode shapes above were checked against published
+format notes and exercised with synthetic fixtures. On the validation host
+(2026-10-30), the installed schemas also contained the expected identifiers:
+Codex CLI <code>0.164.0</code> (<code>thread_spawn</code>, <code>parent_thread_id</code>, <code>spawn_agent</code>),
+Claude Code <code>2.1.304</code> (<code>parentAgentId</code>, <code>toolUseResult</code>,
+<code>listSubagentIdsFromDisk</code>), and OpenCode <code>2.0.32</code> (<code>parent_id</code> /
+<code>session_parent_idx</code>). A real model-backed parent/child capture on each runtime
+is still pending because the local CLIs require account/provider use. Pi <code>1.3.0</code>
+exposes subagent concepts in its bundled SDK, but its local JSONL parent fields
+were not verified; automatic Pi linking is not claimed.</p>
+<p>Codex history forked from a parent is shown with <code>relationship_kind=forked</code>.
+OpenCode sessions are namespaced by database path, so equal native session IDs
+from two databases do not merge.</p>
+<h2>SDK / OTLP convention (additive)</h2>
+<p>Producers may attach these attributes to spans and/or <code>agent.activity</code> logs.
+All are optional; existing exports remain valid.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent.id</code></td>
+<td>Exact native execution identity, unique within the producer namespace.</td>
+</tr>
+<tr>
+<td><code>agent.parent_id</code></td>
+<td>Exact native execution identity of the delegating agent, in the same namespace.</td>
+</tr>
+<tr>
+<td><code>agent.namespace</code></td>
+<td>Producer/source namespace. Defaults to the resource <code>service.name</code>.</td>
+</tr>
+<tr>
+<td><code>agent.worker_id</code></td>
+<td>Optional worker identifier when one session hosts several agents.</td>
+</tr>
+<tr>
+<td><code>agent.runtime</code></td>
+<td>Runtime label, for example <code>SDK</code> or a product name.</td>
+</tr>
+<tr>
+<td><code>agent.relationship.kind</code></td>
+<td><code>delegated</code>, <code>forked</code>, or <code>unknown</code>.</td>
+</tr>
+<tr>
+<td><code>agent.relationship.state</code></td>
+<td><code>confirmed</code>, <code>unresolved</code>, <code>conflicted</code>, or <code>invalid</code>.</td>
+</tr>
+<tr>
+<td><code>agent.coverage</code></td>
+<td><code>complete</code>, <code>partial</code>, or <code>unknown</code> for the child evidence.</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>session.id</code> remains the evidence grouping key. If several agents share it,
+supply <code>agent.worker_id</code> and use distinct <code>agent.id</code> values. A parent is only
+linked when <code>agent.parent_id</code> names the exact native identity under the same
+namespace. Span ancestry alone never creates an edge.</p>
+<h2>Storage and reconciliation</h2>
+<p>SQLite changes are additive and versioned through <code>schema_meta</code>:</p>
+<ul>
+<li><code>agent_nodes</code> stores normalized identity, bounded relationship provenance,
+discovery state, coverage, and first/last observation times.</li>
+<li><code>agent_identity</code> indexes runtime/namespace/native identity to canonical
+<code>agent_id</code>.</li>
+<li><code>spans</code>, <code>logs</code>, and <code>trace_summaries</code> gain nullable <code>agent_id</code> columns for
+exact scoped evidence queries. Existing rows remain readable.</li>
+</ul>
+<p>Upserts are keyed by canonical child identity. Child-before-parent observations
+are retained; a later exact parent observation makes the edge available.
+Announced spawn nodes are replaced by observed child telemetry without a
+duplicate row. Competing confirmed parents retain bounded claims and mark the
+node <code>conflicted</code>; it is projected as unlinked rather than resolved by arrival
+order. Self-links and cycles are marked <code>invalid</code> and rejected for projection.
+Retention may delete the parent while keeping a newer child. The child remains
+visible with unavailable-parent context; a placeholder is not counted as a
+working agent.</p>
+<h2>API scope</h2>
+<p>All scope parameters are additive. Legacy calls keep exact-session behavior.</p>
+<pre><code class="language-text">GET /api/hierarchy?limit=2000
+GET /api/activity?...&amp;agent_id=ag1_...&amp;subtree=1
+GET /api/mcp?...&amp;agent_id=ag1_...&amp;subtree=1
+GET /api/traces?...&amp;agent_id=ag1_...&amp;subtree=1
+GET /api/findings?...&amp;agent_id=ag1_...&amp;subtree=1
+</code></pre>
+<p><code>subtree=1</code> resolves canonical descendant membership in SQLite. Exact mode uses
+only that node. Filters, totals, summaries, pagination, and finding occurrence
+counts use the same resolved membership before limits are applied. Responses include <code>agent_scope</code> and a hierarchy revision. Pass
+<code>scope_revision=&lt;revision&gt;</code> with continuation requests; a change is rejected
+instead of mixing pages from different membership sets. The cockpit also resets
+paging when membership changes and rejects responses from a superseded
+selection.</p>
+<h2>Terminal behavior</h2>
+<p>The Agents view defaults to a tree when at least one confirmed delegation edge
+exists. <code>f</code> or the command palette switches between tree and flat presentations.
+Up/Down selects visible rows. Right expands a branch, or moves to its first
+child when already expanded. Left collapses a branch, or moves to its visible
+parent. Enter and <code>e</code> keep their existing inspect/expand-evidence behavior.
+Clicking the disclosure area toggles children; clicking elsewhere selects the
+row as before. Search reveals matching ancestor paths without rewriting saved
+expansion state. Today/Running filters include required ancestor context but
+honor manually collapsed branches. Parent/child/attention navigation expands
+the target's ancestor path before selecting it; an explicitly targeted filtered
+child is made visible. Branch summaries prioritize both working and attention
+counts over optional runtime/project metadata.</p>
+<p>Every row's State column describes that node only. Descendant work and attention
+appear as a separate subtree summary, so a completed parent never becomes
+&quot;Working&quot; because a child is active. Announced nodes say “Spawn recorded ·
+status unavailable” and never count as working. Expansion state is in-memory and
+is not written to UI preferences.</p>
+<p>At narrow widths, indentation is capped and deeper rows retain an explicit
+<code>depth N</code> label instead of dropping the relationship. <code>AGENTURM_ASCII=1</code> uses
+ASCII branch/disclosure glyphs.</p>
+<h2>Limits and privacy</h2>
+<ul>
+<li>At most 5,000 relationship observations are accepted in one upsert.</li>
+<li>Graph traversal is bounded to 10,000 nodes; projection is iterative and uses
+one adjacency index per hierarchy revision.</li>
+<li>Provenance strings are capped at 512 bytes; parent claims are capped at four.</li>
+<li>Native discovery keeps its existing source-count, lookback, byte, and cache
+limits. Hierarchy does not add recursive scans.</li>
+<li>Metadata-only capture retains structural relationships from session headers
+and sidecars, but omits task/description text, prompts, arguments, and outputs.</li>
+<li>Diagnostics report node/announcement counts, persistence failures, and the
+hierarchy revision, not prompts or raw spawn payloads.</li>
+</ul>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

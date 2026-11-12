@@ -29,7 +29,7 @@ from textual.widgets import Button, Checkbox, DataTable, Input, OptionList, Rich
 from .terminal import clean, clipped, number, trace_name
 from .agent_hierarchy import (AGENT_ID, HierarchyGraph, branch_marker, canonical_agent_id,
                               node_active, node_attention, tree_prefix)
-from .session_status import session_health, today_bucket
+from .session_status import session_health, session_phase, today_bucket
 from .feed_requests import shared_get
 from .workflow_evidence import ReviewCache, ReviewHistory, scope_for
 from .session_prompts import (MAX_PROMPTS, PromptHistory, SessionEvidence, prompt_key,
@@ -494,6 +494,18 @@ def review_session(entry):
             'codex-auto-review' in models)
 
 
+def unique_agents(items):
+    """Count and draw a canonical agent once; prefer observed over announced."""
+    by_agent={}
+    for item in items:
+        identity=item.get('agent_id') or item['id']
+        previous=by_agent.get(identity)
+        if previous is None or (previous.get('discovery_state')=='announced' and
+                                item.get('discovery_state')!='announced'):
+            by_agent[identity]=item
+    return list(by_agent.values())
+
+
 def sources(snapshot, include_reviews=False):
     connections={item['source_id']:item for item in snapshot.agents}
     by_agent={};by_session={}
@@ -633,6 +645,7 @@ def sources(snapshot, include_reviews=False):
             item['last_activity']=max(evidence,key=lambda event:event.get('time_unix_nano') or 0,default={})
         item['attention']=attention_required(item)
         item['owns_attention']=attention_required(item)
+        item['_display_attention']=session_phase(item)=='attention'
     return sorted(result,key=lambda item:(not (item.get('active') or item.get('state')=='Waiting'),not item['recent'],-item['stamp'],item['id']))
 
 
@@ -677,7 +690,12 @@ def attention_evidence(item,summary=None,error_event=None):
             return evidence+' Open Traces to inspect spans; check Diagnostics/Host for collection health.'
         return ('The lifecycle reported '+item['state'].lower()+', but no error message or failed action was captured. '
                 'The cause is unknown: inspect Traces and check Diagnostics/Host to distinguish agent/tool failure from missing collection.')
-    return item.get('status_evidence') or 'Status comes from recorded lifecycle events.'
+    if item.get('status_evidence'):return item['status_evidence']
+    if item.get('discovery_state')=='announced':
+        return 'A worker spawn was recorded, but no worker status has arrived. This does not establish that it is running.'
+    if session_phase(item)=='attention':
+        return 'The task status is unavailable. Check the agent terminal or collection diagnostics; no input request or completion was established.'
+    return 'Status comes from recorded lifecycle events.'
 
 
 def recorded_progress(item, events, totals):
@@ -770,32 +788,25 @@ def task_metadata(item, summary=None, *, announced=False, unlinked=False, depth=
                   parent_unavailable=False, parent_retained=False, details=True):
     runtime=clean(item.get('runtime') or item.get('service') or 'Agent')
     project=clean(item.get('project') or 'SDK')
-    action=brief_activity(item.get('last_activity') or {}) if item.get('last_activity') else 'No recent action recorded'
     if announced:
-        return f"{runtime} · Spawn recorded · status unavailable"
+        return f"{runtime} · Status not yet received"
     parts=[runtime]+([project] if item.get('project') else [])
     if item.get('_ancestor_context'):parts.append('parent context')
     if summary and summary.get('descendants'):
         count=summary.get('descendants',0)
         family=[]
-        if summary.get('attention'):
-            family.append(f"{summary['attention']} needs you")
         if summary.get('working'):
-            family.append(f"{summary['working']} working")
+            family.append(f"{summary['working']} active")
+        if summary.get('attention'):
+            family.append(f"{summary['attention']} attention")
         family.append(quantity(count,'subagent'))
-        if summary.get('announced'):
-            family.append(f"{summary['announced']} spawn recorded")
-        parts=family+parts
-    elif parent_retained:
-        parts.insert(2,'parent outside window')
+        # Expanded children show their own states. A collapsed branch must
+        # still expose work or attention hidden inside it.
+        parts = (family+parts if not item.get('_expanded') else parts+[quantity(count,'subagent')])
     elif parent_unavailable:
-        parts.insert(2,'parent unavailable')
-    elif unlinked:
-        parts.insert(2,'parent not reported')
+        parts.append('Parent outside view')
     if depth>8:
         parts.append(f"depth {depth}")
-    if not summary or not summary.get('descendants'):
-        if item.get('last_activity'):parts.append(action)
     return ' · '.join(parts)
 
 
@@ -806,34 +817,31 @@ def agent_list_text(item,selected=False,*,prefix='',summary=None,announced=False
     title=task_preview(item) or (f"Spawn recorded · {item.get('runtime') or 'agent'}" if announced
                                  else f"Untitled session · {item.get('runtime') or 'agent'}")
     title=' '.join(title.split())
-    marker=branch_marker(bool(item.get('_expanded')),bool(item.get('_has_children')),ascii_only=ascii_only)
+    marker=branch_marker(bool(item.get('_expanded')),bool(item.get('_has_children')),ascii_only=ascii_only) or '  '
     metadata=task_metadata(item,summary,announced=announced,unlinked=unlinked,depth=depth,
                            parent_unavailable=parent_unavailable,
                            parent_retained=parent_retained,details=False)
-    text=Text('▸ ' if selected else '  ',style='#dceb5a',no_wrap=True,overflow='ellipsis')
+    # The cursor background identifies selection. Reserve a fixed disclosure
+    # slot even for leaves so each level gains a full four cells of indent.
+    text=Text('  ',no_wrap=True,overflow='ellipsis')
     text.append(prefix+marker,style='#abb4a5')
     text.append(title,style='bold #edf1e7' if item.get('active') or input_required(item) else '#dedce5')
-    text.append('\n  ',style='#abb4a5')
+    continuation=item.get('_continuation','')
+    text.append('\n  '+continuation+'  ',style='#abb4a5')
     text.append(metadata,style='#abb4a5')
+    # Preserve ancestor guides across the whitespace between task blocks.
+    text.append(('\n  '+continuation)*2,style='#abb4a5')
     return text
 
 
 def agent_status(item):
-    """Status uses shape and wording as well as color; history stays subdued."""
-    state=item.get('state')
-    if item.get('_today_bucket')=='review':
-        return cell('Ready for review','#b9afc5')
-    if input_required(item):
-        marker,style='!','bold #ff8799'
-    elif state in {'Error','Failed'}:
-        marker,style='×','#ff8799'
-    elif state in {'Waiting','Possibly stalled','Monitor delayed','Catching up','Unconfirmed'}:
-        marker,style='!','#ffbd69'
-    elif item.get('active'):
-        marker,style=('◌' if state=='Working (quiet)' else '●'),'#86e3b5'
-    else:
-        marker,style=('✓' if state=='Completed' else '·'),'#b9afc5'
-    return cell(marker+' '+input_status(item),style)
+    """Three human scan states; precise lifecycle evidence stays in the inspector."""
+    phase=session_phase(item)
+    label,style={'running':('In progress','#86e3b5'),
+                 'attention':('Needs attention','#ffbd69'),
+                 'review':('Ready for review','#b9afc5')}[phase]
+    if phase=='attention' and item.get('state') in {'Error','Failed'}:style='#ff8799'
+    return cell(label,style)
 
 
 def input_status(item):
@@ -876,7 +884,8 @@ def review_key(item):
 def today_order_key(item,newest_first=True,mode='working'):
     if mode in {'updated','status'}:return agent_order_key(item,newest_first,mode)
     bucket=item.get('_today_bucket') or today_bucket(item)
-    return ({'running':0,'attention':1,'review':2,'unconfirmed':3}.get(bucket,4),
+    return ({'running':0,'attention':1,'review':2}.get(bucket,4),
+            0 if attention_required(item) else 1,
             *agent_order_key(item,newest_first,'updated'))
 
 
@@ -894,7 +903,7 @@ def agent_status_group(item):
     terminated session above a working one.
     """
     state=item.get('state')
-    if item.get('active') or state in WORKING_STATES:
+    if session_phase(item)=='running':
         return 0
     if state in TERMINATED_STATES:
         return 3
@@ -986,7 +995,8 @@ class ResultsTable(DataTable):
         await super()._on_click(event)
 
     def agent_row_height(self):
-        return 3 if self.app.size.width>=120 and self.app.size.height>=30 else 2
+        if self.app.size.width>=120 and self.app.size.height>=36:return 4
+        return 3 if self.app.size.height>=24 else 2
 
     def preview_height(self,values):
         if self.id!='agent-table' or not self.column_widths or not values:
@@ -1310,7 +1320,7 @@ class ObservatoryApp(App):
     DataTable > .datatable--hover { background: $agent-row-hover; }
     DataTable > .datatable--odd-row { background: $agent-row-alt; }
     DataTable > .datatable--even-row { background: $agent-surface; }
-    #agent-table > .datatable--odd-row { background: $agent-panel; }
+    #agent-table > .datatable--odd-row { background: $agent-surface; }
     RichLog { background: $agent-surface; color: $agent-text; scrollbar-size: 1 1; }
     RichLog:focus { background-tint: transparent; }
     #mcp-servers { height: 7; margin-bottom: 1; }
@@ -1585,7 +1595,7 @@ class ObservatoryApp(App):
         return Vertical(
             Horizontal(*controls,classes='searchbar'),
             Static('Loading…',id='mcp-hint' if page=='mcp' else 'search-status-'+page,classes='search-status',markup=False),
-            ResultsTable(id=table,cursor_type='row',zebra_stripes=page=='agents',cursor_foreground_priority='renderable'),
+            ResultsTable(id=table,cursor_type='row',zebra_stripes=False,cursor_foreground_priority='renderable'),
             *footer,
             id='results-'+page,classes='box results '+classes)
 
@@ -2005,7 +2015,10 @@ class ObservatoryApp(App):
 
     def refresh_summary(self):
         for name,values in self.summary_values.items():
+            widget=self.query_one('#stat-'+name,Static)
+            tooltip=widget.tooltip
             self.stat(name,*values)
+            widget.tooltip=tooltip
 
     def fill(self,name,rows,preserve=None):
         """Preserve row identity and scroll position while live values change."""
@@ -2162,10 +2175,10 @@ class ObservatoryApp(App):
         if data.updated==self.last_update:return
         self.last_update=data.updated;self.data=data
         agents=sources(data,self.feed.include_reviews)
-        work=[item for item in agents if not item['review']]
+        work=[item for item in unique_agents(agents) if not item['review']]
         observed_work=[item for item in work if item.get('discovery_state')!='announced']
         recent=sum(item['recent'] for item in observed_work)
-        active=[item for item in observed_work if item.get('active') or item.get('state')=='Connected']
+        active=[item for item in observed_work if session_phase(item)=='running']
         reviews=sum(entry.get('service')=='codex-review' for entry in data.local_status.get('sessions',[]))
         processes=(data.local_status.get('runtime') or {}).get('processes',[])
         live=sum(not str(item.get('state','')).startswith(('Z','X')) for item in processes)
@@ -2182,29 +2195,29 @@ class ObservatoryApp(App):
                      if item.get('relationship_state') in {'unresolved','conflicted','invalid'} or
                      (item.get('parent_agent_id') and item.get('parent_agent_id') not in known_agents))
         runtimes={name:sum(item.get('runtime')==name for item in active) for name in sorted({item.get('runtime') or 'Agent' for item in active})}
-        session_detail=' · '.join(f'{name} {count}' for name,count in runtimes.items()) or f'{len(observed_work)} sessions · {replies} action'
-        if groups or workers:
-            session_detail=f"{quantity(groups,'task group')} · {quantity(workers,'worker')}"
-            if unlinked:
-                session_detail+=f" · {unlinked} unlinked"
-            elif replies:
-                session_detail+=f" · {replies} action"
-        elif replies and active:
-            session_detail+=f' · {replies} action'
+        session_detail=quantity(len(observed_work),'session')
+        if workers:session_detail+=' · '+quantity(workers,'worker')
         stat_width=(self.size.width-(4 if self.size.width>=140 else 2))//(2 if self.size.width<100 else 4)
         if cell_len(session_detail)>stat_width-(5 if self.size.width>=140 else 3):
-            session_detail=f'{len(work)} sessions · {replies} action'
+            session_detail=quantity(len(observed_work),'session')
         self.stat('sessions',len(active) if data.updated else '—','Working agents',session_detail if data.updated else 'Waiting for receiver data')
-        actionable=[item for item in work if today_bucket(self.review_state(item))=='attention']
+        actionable=[item for item in observed_work if today_bucket(self.review_state(item))=='attention']
         stalled=sum(item.get('state')=='Possibly stalled' for item in actionable)
         failures=sum(item.get('state') in {'Error','Failed','Interrupted','Incomplete'} for item in actionable)
         needs_attention=len(actionable)
+        requests=sum(input_required(item) for item in actionable)
+        status_checks=sum(not attention_required(item) for item in actionable)
+        attention_detail=' · '.join(f'{count} {label}' for count,label in
+            ((requests,'need input'),(stalled,'may be stalled'),(failures,'failed'),
+             (status_checks,'need a status check')) if count)
         self.stat('attention',needs_attention if data.updated else '—','Needs attention',
                   'Waiting for receiver data' if not data.updated else
-                  f'{replies} need input · {stalled} may be stalled · {failures} failures' if needs_attention else
+                  attention_detail if needs_attention else
                   'None in available agents' if data.sessions_error or data.read_errors else 'No action needed')
-        self.query_one('#stat-attention').tooltip=(f'{replies} explicit approval/reply requests · {stalled} possible stalls · {failures} recorded failures. '
-            f'Open a session and press r to acknowledge it for this run or Shift+X to dismiss it from Today and Needs attention. Dismissed sessions remain in History and Traces. Ordinary tool calls do not need action. {live} live host processes are listed in Host.')
+        self.query_one('#stat-attention').tooltip=(f'{requests} explicit approval/reply requests · {stalled} possible stalls · {failures} recorded failures · {status_checks} status checks. '
+            f'Status checks mean lifecycle or collection evidence is unavailable, not that input was requested. '
+            f'Recorded incidents can be acknowledged in the inspector; status uncertainty cannot be marked completed. '
+            f'Dismissed incidents remain in History and Traces. {live} live host processes are listed in Host.')
         servers={item.get('server') for item in data.mcp if item.get('server') and item.get('server')!='Not reported'}
         operations={(item.get('server'),item.get('tool')) for item in data.mcp if item.get('tool') and item.get('tool')!='Not reported'}
         mcp_errors=sum(str(item.get('status','')).upper() in {'ERROR','FAILED'} for item in data.mcp)
@@ -2289,7 +2302,7 @@ class ObservatoryApp(App):
             self.hierarchy_graph=graph
             self.hierarchy_structure_key=key
         else:
-            dynamic=('state','active','attention','stamp','last_activity','waiting_for',
+            dynamic=('state','active','attention','_display_attention','stamp','last_activity','waiting_for',
                      'task','project','run_state','last_record_ns','source_id','id','review')
             for item in agents:
                 node=graph.nodes.get(item.get('agent_id'))
@@ -2300,18 +2313,7 @@ class ObservatoryApp(App):
         return graph
 
     def render_agents(self):
-        agents=list(self.source_map.values())
-        # Duplicate observations of one canonical agent are one node.  A later
-        # transcript always supersedes its earlier spawn announcement.
-        by_agent={}
-        for item in agents:
-            agent_id=item.get('agent_id')
-            if not agent_id:continue
-            previous=by_agent.get(agent_id)
-            if previous is None or (previous.get('discovery_state')=='announced' and
-                                    item.get('discovery_state')=='observed'):
-                by_agent[agent_id]=item
-        agents=list(by_agent.values())
+        agents=unique_agents(self.source_map.values())
         self.hierarchy_entries={item['agent_id']:item for item in agents}
         graph=self.hierarchy_for(agents)
         tree_available=any(node.get('parent_agent_id') and node.get('relationship_state')=='confirmed'
@@ -2448,8 +2450,10 @@ class ObservatoryApp(App):
                              _parent_unavailable=parent_unavailable,
                              _parent_retained=parent_retained,
                              _ancestor_context=row['agent_id'] not in match_ids)
-                shown['_prefix']=tree_prefix(row['depth'],last=row['last'],
-                    ancestor_last=row['ancestor_last'],ascii_only=self.ascii_tree)
+                for name,continuation in (('_prefix',False),('_continuation',True)):
+                    shown[name]=tree_prefix(row['depth'],last=row['last'],
+                        ancestor_last=row['ancestor_last'],ascii_only=self.ascii_tree,
+                        continuation=continuation)
                 self.agent_row_meta[item['id']]=shown
                 visible_agents.append((shown,item,row,summary,unlinked))
             desired=[shown['agent_id'] for shown,_,_,_,_ in visible_agents]
@@ -2509,13 +2513,12 @@ class ObservatoryApp(App):
             if self.agent_filter=='today' and self.data.updated:
                 status_widget=self.query_one('#search-status-agents',Static)
                 compact=status_widget.size.width<80
-                labels=(('running','running'),('attention','need you'),
-                        ('review','review' if compact else 'ready for review'),
-                        ('unconfirmed','unknown' if compact else 'unconfirmed'))
+                labels=(('running','in progress'),('attention','need attention'),
+                        ('review','review' if compact else 'ready for review'))
                 parts=[]
                 for key,label in labels:
                     count=sum(bucket==key for bucket in buckets.values())
-                    if count:parts.append(f'{count} '+('needs you' if key=='attention' and count==1 else label))
+                    if count:parts.append(f'{count} '+('needs attention' if key=='attention' and count==1 else label))
                 empty=('Start an agent · d Setup / diagnostics' if not agents and self.scope_value=='all'
                        else 'Nothing pending today · History includes earlier work')
                 status_widget.update(' · '.join(parts) or empty)
@@ -2903,7 +2906,7 @@ class ObservatoryApp(App):
                    or related.get('relationship_state')=='conflicted'
                    for related in graph.nodes.values()):
             # A flat inventory with no relationship evidence stays as concise as
-            # before; absence of parent metadata is already visible in list rows.
+            # before; absence of parent metadata remains available in Details.
             return [], []
         fields=[]
         sections=[]
@@ -2946,12 +2949,14 @@ class ObservatoryApp(App):
             lines=[]
             for child_id in children:
                 child=graph.nodes[child_id]
-                lines.append(f"{task_preview(child) or 'Untitled session'} · {child.get('state') or 'Unknown'}")
+                lines.append(f"{task_preview(child) or 'Untitled session'} · {agent_status(child).plain}")
             sections.append(('Direct children', '\n'.join(lines[:20]) + ('\n…' if len(lines)>20 else '')))
         if summary['observed'] or summary['announced']:
-            sections.append(('Subtree summary',
-                f"{summary['working']} working · {summary['waiting']} waiting · {summary['failed']} failed · "
-                f"{summary['attention']} need attention · coverage {summary['coverage']}"))
+            parts=[quantity(summary['descendants'],'subagent')]
+            if summary['working']:parts.append(f"{summary['working']} in progress")
+            if summary['attention']:parts.append(f"{summary['attention']} need attention")
+            if summary['coverage']!='complete':parts.append('Coverage '+summary['coverage'])
+            sections.append(('Subtree summary',' · '.join(parts)))
         sections.append(('Hierarchy actions',
             'Alt+Up inspect parent · Alt+Down first child · Alt+Right next descendant needing attention · '
             'f switches tree/flat'))
@@ -3344,7 +3349,7 @@ class ObservatoryApp(App):
                 sections.append(('Failure',f'{count} recorded failed run(s). Open Failures for evidence.' if count else
                                  'The run recorded a failure. Open Failures for evidence.'))
             if input_required(item):sections.append(('Waiting for',wait_summary(item)))
-            elif item['state'] in {'Possibly stalled','Unconfirmed','Monitor delayed','Catching up'}:
+            elif session_phase(item)=='attention':
                 sections.append(('Observation',session_excerpt(attention_evidence(item,summary),lines=3)))
             if item['state']=='Completed' and not reviewed:
                 sections.append(('Review','Agent reported completion; checks are not verified here. r Mark reviewed.'))

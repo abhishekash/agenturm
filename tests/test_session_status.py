@@ -1,11 +1,20 @@
 """Live work, quiet work, and collection delays must not be conflated."""
 import unittest
 
-from observatory.session_status import session_health
+from observatory.session_status import session_health, session_phase
 
 
 class SessionHealthTests(unittest.TestCase):
     now = 2_000_000_000_000_000_000
+
+    def test_three_scan_categories_never_infer_completion_or_running_from_missing_evidence(self):
+        for state in ('Working','Working (quiet)','Tool running','Processing'):
+            self.assertEqual(session_phase({'state':state,'active':True}),'running')
+        for state in ('Unknown','Unconfirmed','Monitor delayed','Catching up','Spawn recorded',
+                      'Connected','Finished','Offline','Idle','Waiting','Failed','Interrupted'):
+            # A stale/contradictory flag must not override the lifecycle evidence.
+            self.assertEqual(session_phase({'state':state,'active':True}),'attention',state)
+        self.assertEqual(session_phase({'state':'Completed','active':True,'errors':8}),'review')
 
     def entry(self, seconds=120, **values):
         return {'run_state': 'running', 'last_record_ns': self.now - seconds * 1_000_000_000,

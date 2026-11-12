@@ -1,6 +1,17 @@
 # Changelog
 
-## Agenturm 0.2.1
+## Agenturm 0.2.2
+
+- Give the Agents roster quiet whitespace, aligned task/source lines, and four-cell hierarchy indentation with continuous ancestor guides.
+- Remove striped bands, duplicate selection arrows, recent-activity text, and repeated parent-not-reported boilerplate from roster rows.
+- Use three main scan labels: In progress, Needs attention, and Ready for review. Keep lifecycle/process evidence precise in the inspector.
+- Count unavailable status as a status check, separate from actual input requests, errors, and desktop notifications. A connection alone is not an active task.
+- Exclude Claude Code local-command caveats, control envelopes, and local stdout/stderr from task identity, including canonical truncated caveats in old labels. Preserve raw prompt records.
+- Retain completion outcomes for parents with working children, stable selection during refresh/resize, and keyboard branch navigation at compact sizes.
+
+Includes the stable task identity and documentation changes prepared for the unpublished 0.2.1 candidate below. Restart Agenturm and any separate receiver after upgrading. No automatic model calls or database migration are introduced.
+
+## Agenturm 0.2.1 (unpublished candidate)
 
 - Keep Agents task labels anchored to the first substantive captured request, so model switches, acknowledgements, and later follow-ups do not rename the work.
 - Preserve original prompts and per-turn requests while keeping recent activity separate from the session identity.
