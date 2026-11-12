@@ -91,3 +91,7 @@ class AgentErrorsUXTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.selected_source,'s-a')
             self.assertEqual(app.query_one('#agent-table',DataTable).cursor_row,2)
             self.assertEqual(app.source_map['s-parent']['state'],'Completed')
+            self.assertEqual(app.query_one('#agent-table').get_row('s-parent')[1].plain,'Ready for review')
+            app.set_agent_filter('today');await pilot.pause()
+            self.assertEqual(app.visible_agent_rows[0],'s-parent')
+            self.assertEqual(app.source_map['s-parent']['state'],'Completed')

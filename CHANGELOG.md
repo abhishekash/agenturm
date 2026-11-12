@@ -1,6 +1,14 @@
 # Changelog
 
-## Agenturm 0.2.2
+## Agenturm 0.2.3
+
+- Fix branch priority for completed parents with running or attention-needing descendants without changing the parent’s own displayed outcome.
+- Prevent Claude local-only caveats, control envelopes and stdout/stderr from starting a running turn, replacing a completed root, or clearing a pending request. Preserve real continuations, mixed requests, raw activity and metadata-only capture behaviour.
+- Include the roster readability, three main scan states and stable first-request identity changes from the unpublished candidates below.
+
+0.2.1 and 0.2.2 were release candidates superseded before publication. Restart Agenturm and any separate receiver after upgrading.
+
+## Agenturm 0.2.2 (unpublished candidate)
 
 - Give the Agents roster quiet whitespace, aligned task/source lines, and four-cell hierarchy indentation with continuous ancestor guides.
 - Remove striped bands, duplicate selection arrows, recent-activity text, and repeated parent-not-reported boilerplate from roster rows.

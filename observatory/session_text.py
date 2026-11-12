@@ -100,6 +100,37 @@ def request_title(value):
     return re.sub(r'^#{1,6}\s+', '', first)
 
 
+def _after_local_control(body):
+    """Consume exactly one complete known operational command envelope."""
+    remaining=body.lstrip()
+    commands=[]
+    while (block := _COMMAND_BLOCK.match(remaining)):
+        if block['tag']=='command-name':
+            commands.append(block[0].split('>',1)[1].rsplit('<',1)[0].strip().removeprefix('/'))
+        remaining=remaining[block.end():].lstrip()
+    return remaining if len(commands)==1 and commands[0] in _LOCAL_CONTROL_NAMES else None
+
+
+def local_command_only(value):
+    """Claude local UI records cannot start/resolve a model turn or input wait.
+
+    Only complete known envelopes qualify. Real prose, custom commands, replies,
+    and mixed wrapper/request records remain actual user turns.
+    """
+    remaining=message_text(value).lstrip()
+    seen=False
+    while remaining:
+        match=_CONTEXT.match(remaining)
+        if match and match['tag'].startswith('local-command-'):
+            remaining=remaining[match.end():].lstrip()
+        else:
+            tail=_after_local_control(remaining)
+            if tail is None:return False
+            remaining=tail
+        seen=True
+    return seen
+
+
 def task_description(value):
     """First substantive request line, excluding standalone session controls.
 
@@ -114,14 +145,8 @@ def task_description(value):
         # identity. Suppress that label too; raw prompts stay intact.
         if _TRUNCATED_LOCAL_CAVEAT.match(body.lstrip()):
             return ''
-        remaining = body.lstrip()
-        blocks = []
-        while (block := _COMMAND_BLOCK.match(remaining)):
-            blocks.append(block)
-            remaining = remaining[block.end():].lstrip()
-        command = next((re.sub(r'^/','', block[0].split('>',1)[1].rsplit('<',1)[0].strip())
-                        for block in blocks if block['tag']=='command-name'), '')
-        if command not in _LOCAL_CONTROL_NAMES:
+        remaining = _after_local_control(body)
+        if remaining is None:
             break
         # A local command's stdout/caveat may follow the command in this same
         # record, including multiline output. Keep projecting complete envelopes.

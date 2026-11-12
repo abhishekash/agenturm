@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://www.agenturm.dev/#demo"><strong>Explore the workflow →</strong></a> &nbsp;·&nbsp;
   <a href="docs/usage.md">Documentation</a> &nbsp;·&nbsp;
-  <a href="https://github.com/abhishekash/agenturm/releases/tag/v0.2.2">What’s new in 0.2.2</a>
+  <a href="https://github.com/abhishekash/agenturm/releases/tag/v0.2.3">What’s new in 0.2.3</a>
 </p>
 
 <p align="center">
@@ -165,7 +165,7 @@ Choose **Current (Alpine Ember), Bright, Dark, or Solarized** through `Ctrl+P �
 
 ## Status and contributing
 
-Agenturm is open source under the [MIT license](LICENSE). Version **0.2.2** includes the agent hierarchy, readable inspector, completion review, attention inbox, and saved-task continuity workflows. Signal coverage depends on the source. Long-session memory behavior remains under investigation; see the [validation report](docs/rigorous-validation.md) for measurements and limits.
+Agenturm is open source under the [MIT license](LICENSE). Version **0.2.3** includes the agent hierarchy, readable inspector, completion review, attention inbox, and saved-task continuity workflows. Signal coverage depends on the source. Long-session memory behavior remains under investigation; see the [validation report](docs/rigorous-validation.md) for measurements and limits.
 
 ```sh
 git clone https://github.com/abhishekash/agenturm.git

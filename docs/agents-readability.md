@@ -10,7 +10,7 @@ The reported screenshot exposed three practical failures: Claude runtime scaffol
 4. Present three scan categories while preserving the existing evidence model: In progress, Needs attention, Ready for review. Explain uncertainty in the inspector. Keep actual input incidents, durable acknowledgements, and notifications independent of display categories.
 5. Validate native capture/restart, persisted bad-label fallbacks, privacy, state changes, keyboard navigation, selection, themes, and narrow layouts; publish verified distribution artifacts.
 
-Independent peer review approved this scope and caught a mixed-record edge case: a model command followed by multiline local stdout could still become a title. The parser now re-projects runtime context after consuming each control envelope. Independent retesting confirmed the fix and found no remaining blocker.
+Independent peer review approved this scope and caught a mixed-record edge case: a model command followed by multiline local stdout could still become a title. The parser now re-projects runtime context after consuming each control envelope. Independent retesting confirmed that fix. The full suite subsequently caught a branch-priority regression: a completed parent’s own status must not hide its running children in sorting. A sort-only branch projection fixes that without changing lifecycle evidence. Additional native validation found and repaired a pre-existing issue where pure Claude local commands could manufacture a running turn after completion. Final publication requires a green full matrix and release gate.
 
 ## Resulting layout
 
@@ -22,7 +22,7 @@ The main states are projections, not a new source of truth. Recent or bounded qu
 
 ## Verification
 
-Regression tests cover Claude caveat/control/output combinations, raw preservation, old truncated title fallback, live capture, reader restart and prefix identity. Rendered journeys cover four-cell title and metadata alignment, collapse/expand, hidden counts, three labels, dynamic status resolution, keyboard movement, and retained selection at 160×42, 120×36, 80×24, and 60×20. Additional suites exercise existing review, inspector, themes, saved workflow and privacy behaviour. Synthetic captures were inspected in dark and light themes; they contain no user session data.
+Regression tests cover Claude caveat/control/output combinations, completed-root preservation, pending-request preservation, legitimate continuations, metadata-only classification, raw preservation, old truncated title fallback, live capture, reader restart and prefix identity. Rendered journeys cover four-cell title and metadata alignment, collapse/expand, hidden counts, three labels, dynamic status resolution, keyboard movement, and retained selection at 160×42, 120×36, 80×24, and 60×20. Additional suites exercise existing review, inspector, themes, saved workflow and privacy behaviour. Synthetic captures were inspected in dark and light themes; they contain no user session data.
 
 ## Further polish within this scope
 

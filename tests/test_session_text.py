@@ -4,10 +4,23 @@ import unittest
 from types import SimpleNamespace
 
 from observatory.session_prompts import MAX_PROMPTS, PromptHistory, SessionEvidence, scoped_events
-from observatory.session_text import message_text, remember_task, request_text, request_title, task_description
+from observatory.session_text import local_command_only, message_text, remember_task, request_text, request_title, task_description
 
 
 class SessionTextTests(unittest.TestCase):
+    def test_operational_only_is_stricter_than_empty_task_identity(self):
+        command='<command-message>model</command-message><command-name>/model</command-name>'
+        output='<local-command-stdout>Switched model\nLocal output</local-command-stdout>'
+        for value in [command,output,command+output,output+command]:
+            self.assertTrue(local_command_only(value))
+            self.assertFalse(local_command_only(value+'\nFix checkout retries.'))
+        for value in ['continue','yes','switch model','',
+                      '<local-command-stdout>unfinished',
+                      '<command-name>/review</command-name>',
+                      command+'<command-name>/review</command-name>',
+                      'Explain '+output]:
+            self.assertFalse(local_command_only(value),value)
+
     def test_claude_local_command_context_never_becomes_task_identity(self):
         caveat=('<local-command-caveat>The command below was run directly in Claude Code, '
                 'not sent to you as a request.</local-command-caveat>')
