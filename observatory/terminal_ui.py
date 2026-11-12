@@ -32,6 +32,7 @@ from .agent_hierarchy import (AGENT_ID, HierarchyGraph, branch_marker, canonical
 from .session_status import session_health, session_phase, today_bucket
 from .feed_requests import shared_get
 from .workflow_evidence import ReviewCache, ReviewHistory, scope_for
+from .error_reminders import reminders, outcome_event
 from .session_prompts import (MAX_PROMPTS, PromptHistory, SessionEvidence, prompt_key,
                               prompt_scope, scoped_events, scoped_prompts)
 from .session_text import message_text, request_text, request_title, task_description
@@ -1306,6 +1307,7 @@ class ObservatoryApp(App):
     #controls.agents-active #agent-errors { display: block; }
     #agent-errors:hover, #agent-errors:focus { color: $agent-primary; background: $agent-error; }
     #agent-errors.-on { color: $agent-canvas; background: $agent-error; }
+    #agent-errors.-empty { color: $agent-muted; background: $agent-panel; text-style: none; }
     .error-filter.-on { color: $agent-error; border: none; background: $agent-error-surface; text-style: bold; }
     .prompt-filter { width: 12; margin-right: 1; }
     .prompt-filter.-on { color: $agent-primary; border: none; background: $agent-focus; text-style: bold; }
@@ -1608,7 +1610,7 @@ class ObservatoryApp(App):
             Static('Show:',classes='control-label'),
             Select([('Today','today'),('Running','active'),('History','all'),('Errors','errors')],
                    value='today',allow_blank=False,id='agent-filter',tooltip='Today: current work and today’s outcomes. History includes earlier completions and failures.'),
-            Button('Errors 0',id='agent-errors',tooltip='Show sessions with recorded failures or incomplete runs, including older sessions'),
+            Button('Errors 0',id='agent-errors',tooltip='Unseen errors in the two most recently active conversations per project/runtime. Open an error to stop its reminder. Full history stays in Activity and Traces.'),
             Button('Reorder',id='refresh-order',tooltip='List changed; apply queued ordering without losing your selected session'),
             Button('Updated ↓',id='agent-sort',tooltip='Choose Working first, Updated, or Status sorting · o'),
             Static('Session',id='scope-label'),
@@ -2393,21 +2395,13 @@ class ObservatoryApp(App):
         today_ids={identity for identity,bucket in buckets.items() if bucket}
         counts={'today':len(today_ids),'active':sum(bool(item.get('active')) for item in scoped_agents),
                 'all':len(scoped_agents)}
-        aggregates={row.get('agent_id'):row for row in self.data.sessions if row.get('agent_id')}
-        legacy={}
-        for row in self.data.sessions:
-            if not row.get('agent_id'):legacy.setdefault(row.get('session_id'),[]).append(row)
-        def has_errors(item):
-            aggregate=aggregates.get(item.get('agent_id')) or session_usage(legacy.get(item.get('session_id'),()),item)
-            return (item.get('state') in {'Error','Failed','Incomplete'} or
-                    any(item.get(key) or aggregate.get(key) for key in ('errors','failed','incomplete')) or
-                    str((item.get('last_activity') or {}).get('result','')).casefold() in
-                    {'error','failed','denied','blocked','policy_denied','incomplete'})
-        error_ids={item['id'] for item in scoped_agents if has_errors(item)}
+        self.agent_error_reminders=reminders(agents,self.data,self.workflow_controller.error_seen,self.feed.api.endpoint)
+        error_ids={item['id'] for item in scoped_agents if item['id'] in self.agent_error_reminders}
         counts['errors']=len(error_ids)
         error_button=self.query_one('#agent-errors',Button)
         error_button.label=f"Errors {'● ' if self.agent_filter=='errors' else ''}{counts['errors']}"
         error_button.set_class(self.agent_filter=='errors','-on')
+        error_button.set_class(not error_ids,'-empty')
         filter_options=[(f'Today {counts["today"]}','today'),
                         (f'Running {counts["active"]}','active'),
                         (f'History {counts["all"]}','all'),
@@ -2563,6 +2557,8 @@ class ObservatoryApp(App):
             title=f"Sessions · {len(match_ids)} matches · {len(visible_agents)} rows"
         else:
             self.search_status('agents',len(visible_agents),'session')
+            if self.agent_filter=='errors' and not match_ids:
+                self.query_one('#search-status-agents',Static).update('No unseen recent errors · 2 Activity for history')
             title=f"{'Today' if self.agent_filter=='today' else 'History' if self.agent_filter=='all' else 'Sessions'} · {len(match_ids)} agents"
             if tree_mode:title+=f' · {len(visible_agents)} rows'
             if self.agent_filter=='today' and self.data.updated:
@@ -3298,8 +3294,9 @@ class ObservatoryApp(App):
             elif self.search_queries['agents']:
                 self.inspect('agent-detail','No matching agent sessions',[],[('Search','Clear the filter in Agent sessions to show all sessions in this scope.')])
             elif self.agent_filter=='errors':
-                self.inspect('agent-detail','No session errors',[],[
-                    ('Errors','No failed or incomplete sessions in this scope.'),
+                self.inspect('agent-detail','No unseen recent errors',[],[
+                    ('Errors','No unseen errors in the two most recently active conversations per project/runtime.'),
+                    ('History','Viewed errors stay in Activity and Traces. Missing evidence does not establish success.'),
                     ('Show sessions','Click Errors again or choose Today, Running, or History.'),
                 ])
             elif self.agent_filter=='today' and not self.source_map:
@@ -3323,8 +3320,8 @@ class ObservatoryApp(App):
         run_usage=task_run_usage(self.data.sessions,item,self.data.traces)
         usage_text,_=task_usage_summary(run_usage,run_usage.get('task') or task_preview(item),scope='trace',
                                       identity=run_usage.get('trace_id') or '',compact=self.size.width<100)
-        self.agent_has_failures=(item.get('state') in {'Error','Failed','Incomplete'} or
-                                 any(item.get(key) or summary.get(key) for key in ('errors','failed','incomplete')))
+        pending_errors=getattr(self,'agent_error_reminders',{}).get(item['id'],[])
+        self.agent_has_failures=bool(pending_errors)
         trace_button=self.query_one('#agent-trace',Button)
         trace_button.disabled=not bool(self.linked_agent_trace())
         reviewed_button=self.query_one('#agent-reviewed',Button)
@@ -3353,8 +3350,11 @@ class ObservatoryApp(App):
         recorded=next((event for event in meaningful if event.get('domain')!='message'),None)
         assistant=next((event for event in actions if event.get('domain')=='message'
                         and event.get('action')=='assistant'),None)
-        error_event=next((event for event in actions if str(event.get('result') or event.get('status') or '').casefold()
-                          in {'error','failed','denied','blocked','policy_denied','incomplete'}),None)
+        pending_ids={event.get('id') or event.get('source_id') for event in pending_errors}
+        error_event=next((event for event in actions if failed(event) and
+                          (event.get('id') or event.get('source_id')) in pending_ids),None)
+        if not error_event:
+            error_event=next((event for event in pending_errors if not str(event.get('id','')).startswith('outcome:')),None)
         failure_detail=failure_evidence(error_event)
         request_event=next((event for event in actions if event.get('domain')=='message'
                             and event.get('action')=='user'),None)
@@ -3365,13 +3365,15 @@ class ObservatoryApp(App):
                        'Request · s' if input_required(item) and request_event else
                        'Activity · s')
         primary_tip=('Open the exact recorded failed event' if error_event else
-                     'Find recorded failures in this session, including older history' if self.agent_has_failures else
+                     'Inspect the unseen recent failure; opening its details stops this reminder' if self.agent_has_failures else
                      'Open the recorded user request; reply in the agent terminal' if request_event and input_required(item) else
                      'Read all recorded activity for this session')
         self.query_one('#agent-open',Button).label=Text(primary_label)
         self.query_one('#agent-open',Button).tooltip=primary_tip
         # Retain trace links without rendering a duplicate activity table.
         self.table_data['agent-actions']={event.get('id') or event['source_id']:event for event in actions[:30]}
+        if error_event:
+            self.table_data['agent-actions'][event_id(error_event)]=error_event
         hierarchy_fields,hierarchy_sections=self.hierarchy_sections(item)
         title=task_preview(item)
         if not title:
@@ -3399,10 +3401,8 @@ class ObservatoryApp(App):
                 sections.append(('Latest work',brief_activity(recorded or latest)))
             if failure_detail and attention_required(item):
                 sections.append(('Recorded error',session_excerpt(failure_detail,lines=3)))
-            elif item['state'] in {'Error','Failed','Incomplete'}:
-                count=summary.get('errors') or item.get('errors')
-                sections.append(('Failure',f'{count} recorded failed run(s). Open Failures for evidence.' if count else
-                                 'The run recorded a failure. Open Failures for evidence.'))
+            elif self.agent_has_failures and item['state'] in {'Error','Failed','Incomplete'}:
+                sections.append(('Failure','The run reported a failure. s Inspect the recorded evidence.'))
             if input_required(item):sections.append(('Waiting for',wait_summary(item)))
             elif session_phase(item)=='attention':
                 sections.append(('Observation',session_excerpt(attention_evidence(item,summary),lines=3)))
@@ -3410,7 +3410,7 @@ class ObservatoryApp(App):
                 sections.append(('Review','Agent reported completion; checks are not verified here. r Mark reviewed.'))
             if reviewed:fields.append(('Review','Reviewed for this run'))
             if dismissed:fields.append(('Attention','Dismissed'))
-            if self.agent_has_failures and not attention_required(item):fields.append(('Errors','Recorded tool/run errors · s Inspect'))
+            if self.agent_has_failures and not attention_required(item):fields.append(('Errors','Unseen recent error · s Inspect'))
             if request_event and input_required(item):
                 sections.append(('Latest request',session_excerpt(request_text(recorded_message_text(request_event)).body,lines=3)))
             sections += [(label,value) for label,value in short_hierarchy if label=='Subtree summary']
@@ -3458,8 +3458,8 @@ class ObservatoryApp(App):
             sections.append(('Progress','Content capture is disabled for this source.' if item.get('capture_content') is False else
                              'No work records are available yet. Missing evidence does not establish what the agent has done.'))
         if failure_detail:sections.append(('Recorded failure',session_excerpt(failure_detail,lines=5,width=None)))
-        elif summary.get('errors'):
-            sections.append(('Recorded failures',f"{int(summary['errors'])} across observed runs · s Inspect failures"))
+        elif self.agent_has_failures:
+            sections.append(('Unseen error','The run reported a failure · s Inspect evidence'))
         if recorded:
             preview=session_event_preview(recorded,expanded=False)
             sections.append(('Latest recorded event',preview))
@@ -3505,6 +3505,16 @@ class ObservatoryApp(App):
                     or (self.data.view_scope and self.data.view_scope[:5]!=self.current_evidence_scope())):
                 self.inspect('activity-detail','Filtering activity',[],[('Status','Waiting for matching events from the receiver.')]);return
             if 'activity' in self.errors_only:
+                source=self.source_map.get(self.scope_value,{})
+                outcome=outcome_event(source)
+                if outcome:
+                    self.inspect('activity-detail','Run reported failure',[
+                        ('Agent',source.get('runtime') or source.get('service')),
+                        ('Status',source.get('state')),('Run',source.get('trace_id') or source.get('latest_trace_id'))],
+                        [('Evidence','The runtime reported this failed outcome. No failed call details are available in these results.'),
+                         ('Next step','Inspect the linked trace with t, or resume the original agent terminal to diagnose the failure.')])
+                    self.error_evidence_displayed([outcome])
+                    return
                 self.inspect('activity-detail','No failed activity events',[],[
                     ('Errors filter','No failed activity events captured in these results; this does not clear a recorded trace-level failure.'),
                     ('Inspect the trace','Press t or Trace to inspect the session’s linked trace.' if fallback else
@@ -3514,6 +3524,8 @@ class ObservatoryApp(App):
             self.inspect('activity-detail','No activity in this scope',[],[('Scope','Choose another agent session or clear the search to view recent activity.')]);return
         details=decode(item.get('detail') or '')
         sections=list(details.items()) if isinstance(details,dict) else [('Recorded content',details)]
+        if 'detail' not in item:
+            sections.insert(0,('Error details','Only a reference is loaded. Waiting for retained details; this error stays unseen until its evidence loads.'))
         if failed(item):
             group=next(iter(failure_groups([item],self.data.activity)),item)
             later=item.get('_later_success') or group.get('_later_success')
@@ -3538,6 +3550,21 @@ class ObservatoryApp(App):
         self.inspect('activity-detail',headline(item),[('Agent',item.get('service')),('Type',item.get('domain')),('Result',str(status(item.get('result')))),
             ('When',when(item.get('time_unix_nano'))),('Duration',timing(item.get('duration_ms')))],
             sections+[('Source',item.get('source')),('Trace ID',item.get('trace_id')),('Span ID',item.get('span_id'))])
+        if failed(item) and 'detail' in item:
+            events=[event for event in (item.get('_failures') or [item]) if 'detail' in event]
+            for source in getattr(self,'source_map',{}).values():
+                if (source.get('service')==item.get('service') and
+                    source.get('session_id')==item.get('session_id') and
+                    (None if source.get('agent_id_inferred') else source.get('agent_id'))==item.get('agent_id') and
+                    item.get('trace_id') and item['trace_id']==(source.get('trace_id') or source.get('latest_trace_id'))):
+                    if outcome:=outcome_event(source):events.append(outcome)
+            self.error_evidence_displayed(events)
+
+    def error_evidence_displayed(self,events):
+        region=self.query_one('#activity-detail',RichLog).scrollable_content_region
+        if (region.width and region.height and isinstance(self.screen,ObservatoryScreen)
+                and self.query_one('#pages',TabbedContent).active=='activity'):
+            self.workflow_controller.error_displayed(events,snapshot=self.data)
 
     def show_mcp(self):
         item=self.table_data.get('mcp-table',{}).get(self.selected_mcp)
@@ -4324,7 +4351,8 @@ class ObservatoryApp(App):
             # A clipped reader record needs a fresh query, even when it is
             # older than the latest Activity page. The feed replaces the pinned
             # excerpt with the retained event once this exact-source query lands.
-            query=str(record.get('source_id') or '') if prompt_view and record and record.get('_reader_clipped') else ''
+            needs_record=bool(record and ('detail' not in record or (prompt_view and record.get('_reader_clipped'))))
+            query=str(record.get('source_id') or '') if needs_record else ''
             self.search_queries['activity']=query
             if 'activity' in self.search_timers:self.search_timers.pop('activity').stop()
             field=self.query_one('#search-activity',Input)
@@ -4338,6 +4366,11 @@ class ObservatoryApp(App):
             self.feed.request_refresh()
             self.action_page('activity')
             self.last_update=-1;self.refresh_data()
+            if (not prompt_view and self.screen.has_class('single-pane') and self.agent_has_failures
+                    and not (record and failed(record)) and outcome_event(self.source_map.get(self.selected_source,{}))):
+                # An empty table cannot open its inspector with Enter. Show the
+                # explicit lifecycle evidence when there is no captured call.
+                if not self.query_one('#activity').has_class('expanded'):self.action_expand()
 
     def sync_activity_controls(self):
         self.feed.activity_prompts=self.prompts_only

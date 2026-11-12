@@ -119,6 +119,8 @@ class WorkflowStore:
                     claimed_at REAL NOT NULL, updated_at REAL NOT NULL, attempts INTEGER NOT NULL,
                     status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', PRIMARY KEY(namespace,id))''')
                 db.execute('CREATE INDEX IF NOT EXISTS workflow_incidents_resolved ON workflow_incidents_v1(resolved_at)')
+                db.execute('''CREATE TABLE IF NOT EXISTS workflow_error_seen_v1 (
+                    id TEXT PRIMARY KEY, seen_at REAL NOT NULL)''')
                 db.execute("INSERT OR IGNORE INTO workflow_meta VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
         except (OSError, sqlite3.Error) as exc:
             raise WorkflowStoreError('Workflow storage unavailable: ' + str(exc)) from exc
@@ -167,6 +169,25 @@ class WorkflowStore:
     def cleanup(self, *, now=None):
         with self._transaction() as db:
             return self._cleanup(db, time.time() if now is None else float(now))
+
+    def load_error_seen(self):
+        with self._transaction(write=False) as db:
+            rows = db.execute('SELECT id FROM workflow_error_seen_v1 ORDER BY seen_at DESC,id DESC LIMIT ?',
+                              (MAX_INCIDENTS,)).fetchall()
+            return tuple(row['id'] for row in reversed(rows))
+
+    def mark_error_seen(self, identities, *, now=None):
+        identities = list(dict.fromkeys(identities))
+        if len(identities) > MAX_INCIDENTS or any(
+                not isinstance(value, str) or len(value) != 64 or
+                any(char not in '0123456789abcdef' for char in value) for value in identities):
+            raise WorkflowStoreError('Invalid error receipt identity')
+        with self._transaction() as db:
+            # Idempotent, unlike the explicit reversible workflow acknowledgement.
+            db.executemany('INSERT OR IGNORE INTO workflow_error_seen_v1 VALUES(?,?)',
+                           [(value, time.time() if now is None else float(now)) for value in identities])
+            db.execute('''DELETE FROM workflow_error_seen_v1 WHERE id NOT IN (
+                SELECT id FROM workflow_error_seen_v1 ORDER BY seen_at DESC,id DESC LIMIT ?)''', (MAX_INCIDENTS,))
 
     @staticmethod
     def _rows(db, namespace=None):

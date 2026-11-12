@@ -73,8 +73,8 @@ def event_id(event):
 
 def operation_key(event):
     # Matching a tool name alone would conflate different commands or sessions.
-    identity = event.get('agent_id') or (event.get('service'), event.get('session_id'))
-    return identity, event.get('domain'), event.get('action'), event.get('subject')
+    return tuple(event.get(key) for key in
+                 ('service','agent_id','session_id','trace_id','domain','action','subject'))
 
 
 def failure_groups(events, context=()):

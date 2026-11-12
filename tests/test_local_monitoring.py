@@ -132,7 +132,8 @@ class LocalMonitoringJourneys(unittest.IsolatedAsyncioTestCase):
             await pilot.press('s');await pilot.pause()
             self.assertIsNone(app.selected_activity)
             self.assertFalse(app.query_one('#activity-trace',Button).disabled)
-            self.assertIn('trace-level failure',app.query_one('#activity-detail').plain_text)
+            self.assertIn('runtime reported this failed outcome',app.query_one('#activity-detail').plain_text)
+            self.assertIn('No failed call details',' '.join(app.query_one('#activity-detail').plain_text.split()))
             await pilot.press('t');await pilot.pause()
             self.assertEqual(feed.selected_trace,'trace-1')
             await pilot.press('alt+left');await pilot.pause()
@@ -149,11 +150,12 @@ class LocalMonitoringJourneys(unittest.IsolatedAsyncioTestCase):
             receiver.store.ingest([normalize_native({'trace_id':tid,'span_id':sid,'name':'model.call',
                 'start_unix_nano':now-100,'end_unix_nano':now,'status':'ERROR',
                 'attributes':{'session.id':'local-session','agent.task':'Fix local tests',
-                              'gen_ai.usage.input_tokens':100,'gen_ai.usage.output_tokens':20,'llm.cost.total':.3}})])
+                              'gen_ai.usage.input_tokens':100,'gen_ai.usage.output_tokens':20,'llm.cost.total':.3}},'codex')])
             attrs={'event.name':'agent.activity','session.id':'local-session',
                    'agent.activity.domain':'shell','agent.activity.action':'run',
                    'agent.activity.subject':'pytest','agent.activity.result':'error'}
-            receiver.store.ingest_logs(normalize_otlp_logs({'resourceLogs':[{'scopeLogs':[{'logRecords':[{
+            receiver.store.ingest_logs(normalize_otlp_logs({'resourceLogs':[{'resource':{'attributes':[
+                {'key':'service.name','value':{'stringValue':'codex'}}]},'scopeLogs':[{'logRecords':[{
                 'traceId':tid,'spanId':sid,'timeUnixNano':now,'severityNumber':17,
                 'body':{'stringValue':'local assertion failed'},
                 'attributes':[{'key':key,'value':{'stringValue':value}} for key,value in attrs.items()]}]}]}]}))
@@ -183,7 +185,8 @@ class LocalMonitoringJourneys(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(app.selected_activity,selected)
                     self.assertEqual(app.query_one('#pages',TabbedContent).active,'activity')
                     await pilot.press('alt+left');await pilot.pause(.4)
-                    self.assertEqual(app.selected_source,source)
+                    self.assertIsNone(app.selected_source)  # Seen failure leaves the reminder queue.
+                    self.assertIn(source,app.source_map)
                     self.assertEqual(app.scope_value,'all')
                     self.assertEqual(app.query_one('#pages',TabbedContent).active,'agents')
                     self.assertFalse(feed.snapshot.error)
@@ -263,7 +266,8 @@ class LocalMonitoringJourneys(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one('#activity-table',DataTable).get_row_at(0)[2].plain,'Error')
             await pilot.press('alt+left');await pilot.pause()
             self.assertEqual(app.query_one('#pages',TabbedContent).active,'agents')
-            self.assertEqual(app.selected_source,'source-1')
+            self.assertIsNone(app.selected_source)  # Seen failure leaves the reminder queue.
+            self.assertIn('source-1',app.source_map)
             self.assertEqual(app.agent_filter,'errors')
             self.assertEqual(app.scope_value,'all')
             self.assertEqual(app.search_queries['activity'],'missing')
