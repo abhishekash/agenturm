@@ -153,10 +153,6 @@ uv run agenturm
 uv run python -m unittest discover -s tests -v
 ```
 
-An [experimental Rust trace importer and receiver](rust/README.md) is available
-for testing native ingestion. The supported `agenturm` application remains the
-Python terminal cockpit.
-
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and demo production. [Issues](https://github.com/abhishekash/agenturm/issues) and focused pull requests with clear reproductions are welcome.
 
 <details>
