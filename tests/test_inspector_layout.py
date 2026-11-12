@@ -65,6 +65,7 @@ class InspectorLayoutTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press('right','right','left');await pilot.pause()
             self.assertEqual(app.session_mode,'prompts')
             self.assertEqual(app.focused.id,'agent-modes')
+            self.assertIn('Enter Prompts',app.query_one('#shortcuts',Static).render().plain)
             self.assertFalse(app.query_one('#agent-prompt-select').display)
             await pilot.press('enter');await app.workers.wait_for_complete();await pilot.pause()
             self.assertEqual(app.focused.id,'agent-prompts')

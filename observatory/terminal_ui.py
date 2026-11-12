@@ -3057,6 +3057,9 @@ class ObservatoryApp(App):
         self.show_agent()
         if focus_reader:self.focus_session_content()
         else:self.query_one('#agent-modes').focus()
+        # A tab change can keep the same focused widget, so no focus event will
+        # refresh the hint that distinguishes choosing prompts from reading.
+        self.update_session_hints()
 
     def focus_prompt_navigator(self):
         self.query_one('#agent-prompts' if self.size.width>=120 else '#agent-prompt-select').focus()
