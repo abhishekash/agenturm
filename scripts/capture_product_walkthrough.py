@@ -116,6 +116,7 @@ async def capture(output):
             async def save(name):
                 await pilot.pause(.4)
                 svg=app.export_screenshot(title='Agenturm 0.2.0 · synthetic example')
+                svg='\n'.join(line.rstrip() for line in svg.split('\n'))
                 (output/f'{name}.svg').write_text(svg)
                 svg=svg.replace('Fira Code','DejaVu Sans Mono').replace('FiraCode','DejaVu Sans Mono')
                 (output/f'{name}.png').write_bytes(cairosvg.svg2png(bytestring=svg.encode(),output_width=1920))
