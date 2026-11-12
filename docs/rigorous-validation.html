@@ -1,0 +1,181 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm rigorous validation</title><style>
+:root{color-scheme:light dark;--bg:#f5f5ef;--paper:#fff;--text:#202923;--muted:#526158;--line:#d3dbd3;--accent:#315b42}
+@media(prefers-color-scheme:dark){:root{--bg:#111814;--paper:#1a241e;--text:#e8eee9;--muted:#acb9ae;--line:#3a4b3e;--accent:#b4d6a7}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:17px/1.65 system-ui,sans-serif}main{max-width:1100px;margin:2rem auto;padding:2.5rem;background:var(--paper);border:1px solid var(--line);border-radius:14px}h1,h2,h3{line-height:1.25}h2{margin-top:2.5rem;border-top:1px solid var(--line);padding-top:1rem}a{color:var(--accent)}li{margin:.7rem 0}table{display:block;overflow:auto;border-collapse:collapse;max-width:100%}td,th{border:1px solid var(--line);padding:.6rem;text-align:left;vertical-align:top}pre{overflow:auto;padding:1rem;border:1px solid var(--line);font-size:13px}figure{margin:2rem 0;padding:.8rem;border:1px solid var(--line)}img{display:block;width:100%;height:auto}figcaption{font-size:.9rem;color:var(--muted)}code{overflow-wrap:anywhere}pre code{overflow-wrap:normal}@media(max-width:650px){body{font-size:16px}main{margin:0;padding:1.2rem;border:0;border-radius:0}figure{padding:.3rem}}@media print{main{border:0;margin:0}figure{break-inside:avoid}}
+</style></head><body><main><h1>Rigorous validation after the Rust revert</h1>
+<p>12 November 2026. This checks the Python Agenturm application, including Agents, inspector prompts, keyboard navigation, receiver recovery and durable workflows. Rust remains reverted.</p>
+<h2>Verdict</h2>
+<p><strong>Functional checks pass after the fixes; memory stability remains an open finding.</strong> The lifecycle-fix source, <code>5c7e9629176a944cbc6b726d32d041bc73635642</code>, passed all 12 jobs in <a href="https://github.com/abhishekash/agenturm/actions/runs/43202168712">CI run 43202168712</a>. Testing found and fixed terminal restoration and process exit-status bugs. Installed-package and actual terminal checks passed. The soak result and resource qualification are recorded below; a functional pass is not a claim of memory stability.</p>
+<h2>Failures reproduced and fixed</h2>
+<table>
+<thead>
+<tr>
+<th>Trigger</th>
+<th>Before</th>
+<th>After</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>External SIGTERM while running</td>
+<td>Terminal flags left in raw mode</td>
+<td>Exact original termios restored; exit 143</td>
+</tr>
+<tr>
+<td>External SIGTERM during startup</td>
+<td>Terminal flags left in raw mode</td>
+<td>Exact original termios restored; exit 143</td>
+</tr>
+<tr>
+<td>External SIGINT</td>
+<td>Process reported success, exit 0</td>
+<td>Normal cleanup and exit 130</td>
+</tr>
+<tr>
+<td>UI runtime exception</td>
+<td>Process reported success, exit 0</td>
+<td>Normal cleanup and exit 1</td>
+</tr>
+</tbody>
+</table>
+<p>A real pseudoterminal reproduced all four failures before the patch. External signals now request Textual's normal shutdown through handlers installed before the terminal driver starts. The CLI propagates its return code. Previous signal handlers are restored, including across repeated runs. Normal quit returns 0. Existing Ctrl+C selection-copy behavior is retained.</p>
+<p>The regression tests verify the full original termios settings, alternate-screen exit, cursor restoration, worker cleanup, signal handlers and return codes. Startup termination uses a two-way pipe handshake so the signal lands during mount without a guessed delay. An independent peer reran the lifecycle checks and approved the implementation.</p>
+<p>One initial CI attempt correctly caught an outdated mock in the offline-startup test: it mocked synchronous <code>run()</code> after the implementation moved to <code>run_async()</code>. The fixture now uses an awaited <code>AsyncMock</code> and asserts the successful return status. That 609-test source matrix is green; the later focus regression increases discovery to 610 tests.</p>
+<h2>Reflow focus regression</h2>
+<p>Independent tracing of a real feed and installed SSH UI showed that resize could queue reader focus before restoring the prompt chooser about 0.23 seconds later. When focus is lost during reflow, the fallback now uses the current section's normal entry control: the request navigator for Prompts and the reader for Overview/Details. It does not replace an already focused, visible reader.</p>
+<p>The new regression clears lost focus, queues three reflows before deferred focus is applied, and requires the compact prompt chooser. It then enters the reader and resizes, requiring reader focus to survive. This failed on the prior implementation (<code>agent-detail</code> instead of <code>agent-prompt-select</code>) and passes with the change. The peer approved this minimal fix. The earlier persistent SSH focus observation was not deterministically reproduced, so the transient trace is not presented as a complete explanation of that observation.</p>
+<p>The final application and test source is <code>47e2e6476f9f66a61c46b61e1137e82c5f31e252</code>; its full Python/SDK results are recorded in <a href="https://github.com/abhishekash/agenturm/actions/runs/43205162279">CI run 43205162279</a>. Discovery now contains <strong>610 tests</strong>, with 14 optional SDK cases skipped in base environments. The matrix covers Python 3.11–3.14 and the eight JavaScript/SDK jobs listed below. The linked run retains each job's outcome and exact test duration. The additional regression and final-source installed/UI checks are separate from the earlier 609-test matrix.</p>
+<h2>Regression and installed-package evidence</h2>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Actual result</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Lifecycle CI Python 3.11</td>
+<td>609 tests, 14 optional skips; 600.127 seconds</td>
+<td>Full discovery</td>
+</tr>
+<tr>
+<td>Lifecycle CI Python 3.12</td>
+<td>609 tests, 14 optional skips; 655.346 seconds</td>
+<td>Full discovery</td>
+</tr>
+<tr>
+<td>Lifecycle CI Python 3.13</td>
+<td>609 tests, 14 optional skips; 537.861 seconds</td>
+<td>Full discovery</td>
+</tr>
+<tr>
+<td>Lifecycle CI Python 3.14</td>
+<td>609 tests, 14 optional skips; 603.440 seconds</td>
+<td>Full discovery</td>
+</tr>
+<tr>
+<td>Other eight CI jobs</td>
+<td>All passed</td>
+<td>Node 22/24; OTLP; CLI automatic capture; OpenAI Agents SDK; Pydantic AI; LangChain; Google ADK</td>
+</tr>
+<tr>
+<td>Local existing suite</td>
+<td>603 tests, 14 optional skips; 974.586 seconds</td>
+<td>Baseline before the six added regressions; final CI is the exact-source result</td>
+</tr>
+<tr>
+<td>Local lifecycle + reconnect</td>
+<td>22 tests passed; 23.295 seconds</td>
+<td>Final runner and offline-startup fixtures</td>
+</tr>
+<tr>
+<td>Final installed wheel</td>
+<td>20 tests passed; 112.699 seconds</td>
+<td>13 shutdown, four prompt and three keyboard journeys; Python 3.13.5</td>
+</tr>
+<tr>
+<td>Final dependency-floor check</td>
+<td>20 tests passed; 98.856 seconds</td>
+<td>Installed wheel with Textual 8.2.0 on Python 3.12.3</td>
+</tr>
+<tr>
+<td>Final UI integration</td>
+<td>20 tests passed; 170.941 seconds</td>
+<td>Prompt, keyboard and inspector layout suites</td>
+</tr>
+<tr>
+<td>Wheel/source identity</td>
+<td>All 53 packaged Python module bytes matched</td>
+<td>Fresh isolated environment, imported outside checkout; Rust absent</td>
+</tr>
+</tbody>
+</table>
+<p>The optional SDK cases are skipped in base Python environments. Separate CI jobs install and exercise their integrations; skipped cases are not counted as executed passes.</p>
+<h2>Keyboard and terminal checks</h2>
+<p>The installed wheel passed the reusable actual-key tmux journey twice: <strong>20 checks with normal color and 20 with <code>NO_COLOR=1</code></strong>, at 120×32, 80×24 and 60×18. Synthetic prompts include Unicode and long text. The journey delivers physical terminal key sequences and verifies the visible result, rather than supplying focus manually.</p>
+<p>It covers entering inspector tabs; direct Up from Prompts; older/newer selection; Home/End; Enter/Right to read; Left to return; Ctrl+Left/Right between sections; compact selector arrows and unchanged confirmation; F1 help; selection/focus through resize; and normal quit with exact terminal restoration. These checks complement headless application tests. The <a href="keyboard-navigation.html">keyboard guide</a> documents the complete shortcut map and focus rules.</p>
+<p>SSH evidence: the installed wheel passed <strong>15 checks over actual loopback OpenSSH transport</strong>, twice consecutively with the final probe. The disposable Debian container used Python 3.12.14 and OpenSSH 10.0p2. Arrows, Home/End, Enter, Ctrl+Left/Right, compact prompt selection, F1 and resize propagation worked at 120×32, 80×24 and 60×18. The remote shell verified exact termios restoration, and SSH returned 0. Temporary keys and known-hosts stayed inside the private fixture; the container and tmux server were removed.</p>
+<p>Early SSH probe attempts sampled transient focus and read tmux pane-death before process exit status was available. The final probe requires stable visible state and waits for the actual exit status. Independent live-receiver tracing also completed 16 resize transitions. The reflow fallback is covered in its own regression above. The rebuilt final wheel also passed the 15-stage SSH journey with exit 0. These results establish local SSH transport behavior, not WAN latency, disconnect recovery or every terminal emulator.</p>
+<h2>Receiver, CLI and saved work</h2>
+<p>A separate installed-package check used a real loopback receiver, HTTP feed and headless UI. It stopped the receiver, observed the connection error, exercised F1 and Activity navigation while offline, then replaced the receiver on the same port with a new database and UUID while reusing native agent/session IDs. It waited for the new non-empty roster and prompt history, and verified old prompt history was excluded. Recovery passed.</p>
+<p>Installed CLI checks also passed: non-TTY use returns an actionable error with exit 2; help returns 0 on stdout; authenticated one-shot snapshots work; missing authentication returns 2; metadata-only capture and <code>NO_COLOR</code> output contracts hold. Saved-task CLI checks cover create, brief updates, immutable decisions and supersession, stale revision exit 3, Markdown/HTML handoff, no-overwrite exit 2, SQLite backup and private file permissions.</p>
+<p>All checks used temporary synthetic data. No personal session records, provider calls, real notification delivery or user tmux sessions were used.</p>
+<h2>Live soak and resources</h2>
+<p>Soak result: <strong>1201.10 measured seconds, 400 cycles, two observed outages and two recovered receiver replacements</strong>, with process exit 0. The separate durable fixtures produced 400 incidents, acknowledgements, exclusive claims and resolutions. All SQLite integrity checks passed. This long run used application source <code>5c7e962</code> imported before the final reflow fix, and the earlier helper before positive-payload assertions were strengthened.</p>
+<table>
+<thead>
+<tr>
+<th>Observed metric</th>
+<th>Corrected 20-minute run</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Concurrent API reads</td>
+<td>At most four, asserted</td>
+</tr>
+<tr>
+<td>Review cache</td>
+<td>At most four entries; largest sampled payload 46,160 bytes</td>
+</tr>
+<tr>
+<td>Individual review history</td>
+<td>Asserted ≤1,000 events and ≤2 MiB</td>
+</tr>
+<tr>
+<td>Sampled open file descriptors</td>
+<td>9–9</td>
+</tr>
+<tr>
+<td>Sampled thread count</td>
+<td>Up to 16</td>
+</tr>
+<tr>
+<td>RSS</td>
+<td>69.73 MiB at first sample → 124.99 MiB at last; peak sampled 125.58 MiB</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Memory stability is not established.</strong> RSS continued to rise despite bounded review caches and stable sampled descriptors. This is a mixed headless workload with a growing durable ledger, not a fixed-size production terminal session. The cause has not been isolated; it needs retained-allocation profiling and a comparable production-terminal run. The explicit SQLite probe closure did not eliminate the rise. Functional success must not hide this resource finding.</p>
+<p>The final hardened helper ran separately on final application source <code>47e2e64</code>: <strong>62.11 seconds, 16 cycles, both outages/replacements recovered, exit 0</strong>. It additionally requires non-empty namespace-confirmed exact review evidence, a non-empty fresh roster using the API's <code>latest_task</code> field, exact reopened brief/link content, and stopped receiver/feed workers before publishing success. Those stronger assertions and the reflow fix are covered by this shorter run, not retroactively by the 20-minute run. CLI checks rejected seven invalid-duration/path/overwrite cases. Independent peer review approved the helper.</p>
+<p>Numeric evidence: <a href="validation/2026-11-12-soak-20m.json">20-minute samples</a>, <a href="validation/2026-11-12-soak-final-source.json">final-source smoke</a>, <a href="validation/2026-11-12-ssh.json">SSH result</a>. The long-run helper SHA-256 was <code>907dc95448e1526f03550dcf773ab9c92607e35076ce15ca28839ab5fc9fb1e2</code>; the committed helper includes the later assertion and cleanup hardening.</p>
+<p>The repeatable helper is <code>scripts/soak_workflows.py</code>. It runs an actual local receiver and HTTP ingestion with six synthetic workers, three parent/child pairs and bounded span IDs. The monitor runs headlessly, resizes through 120×32, 80×24, 60×18, 45×14 and 160×48, and exercises inspector/help navigation. Two deliberate receiver outages must be observed before same-port replacements recover. Scoped review reads share the feed's concurrency budget; obsolete fixture records are pruned, and every SQLite database receives an integrity check.</p>
+<p>Because the headless controller intentionally disables persistence, attention and task durability are exercised separately through their real modules. Each cycle creates a waiting request, verifies exclusive delivery claims across store instances, simulates failed delivery and retry, acknowledges it, reopens the store, resolves it with fresh Working evidence, and checks sensitive task text is absent from persisted receipts. Task brief/link updates are reopened as well. Synthetic delivery does not exercise the desktop notification backend.</p>
+<p>An earlier 20-minute functional run completed 407 cycles but its raw SQLite measurement connections were only used as context managers, which do not close SQLite connections. The helper now explicitly closes those probes and measures file descriptors. That earlier RSS series is not attributed to a product leak. Resource claims below use the corrected repeat. Separate traced-allocation probes are diagnostic only, because tracing changes the process footprint.</p>
+<p>Repeat from a development checkout:</p>
+<pre><code class="language-sh">uv run python scripts/verify_keyboard_tmux.py
+NO_COLOR=1 uv run python scripts/verify_keyboard_tmux.py
+uv run python scripts/soak_workflows.py --duration 1200 --output /tmp/agenturm-soak.json
+</code></pre>
+<p>The soak requires a new result path, finite duration of at least 30 seconds and an existing output directory. Success is now written after cleanup completes. It writes periodic JSON samples. Check both the final JSON and process exit status; a partial progress file does not establish a completed run.</p>
+<h2>What remains worth doing well</h2>
+<ol>
+<li>Investigate the observed RSS rise. Profile retained allocations over a longer fixed-load session, distinguish bounded renderer caches from retained application objects, and set an evidence-based steady-state memory budget. This run does not establish multi-hour memory stability.</li>
+<li>Repeat the same keyboard journey in named outer terminal emulators and over a genuinely remote SSH link with latency and disconnects. Loopback transport cannot establish WAN behavior.</li>
+<li>Observe AI engineers doing the existing tasks without coaching: find the active agent, understand its subagents, read all requests, identify recorded progress, and resume saved work. Automated assertions establish behavior, not comprehension.</li>
+<li>Keep testing boundary cases of existing workflows: very long request histories, large families, partial capture, stale evidence, and recovery while reading. Preserve explicit coverage limits and stable focus as the interface evolves.</li>
+</ol>
+<p>Independent peer review approved the lifecycle change, minimal focus fix and final hardened helper, and reviewed the report for provenance and false-positive claims. The final documentation was rendered at 1280-pixel desktop/light and 390-pixel mobile/dark widths with no horizontal page overflow.</p>
+<p>No participant study, every-emulator compatibility, actual desktop notification delivery, WAN resilience or multi-hour stability is claimed. The report's HTML is self-contained and supports light/dark mode.</p></main></body></html>

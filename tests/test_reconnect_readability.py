@@ -6,7 +6,7 @@ import tempfile
 import unittest
 import urllib.error
 from dataclasses import replace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from textual.widgets import Button, Static
 from observatory.feed_requests import ConnectionProgress
@@ -44,9 +44,11 @@ class RecoveryTests(unittest.TestCase):
         with patch('sys.stdin.isatty',return_value=True),patch('sys.stdout.isatty',return_value=True), \
              patch('sys.stderr',stderr),patch.object(Api,'get',side_effect=urllib.error.URLError('refused')) as get, \
              patch('observatory.terminal_ui.ObservatoryApp') as app,patch('observatory.terminal.LocalReceiver') as receiver:
-            run_cockpit(endpoint='http://localhost:14319',local_agents=False)
+            app.return_value.run_async=AsyncMock()
+            app.return_value.return_code=0
+            self.assertEqual(run_cockpit(endpoint='http://localhost:14319',local_agents=False),0)
         get.assert_called_once_with('/api/health?probe=1')
-        app.return_value.run.assert_called_once()
+        app.return_value.run_async.assert_awaited_once()
         receiver.assert_not_called()
         self.assertIn('Connecting to receiver',stderr.getvalue())
 

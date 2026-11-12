@@ -1,0 +1,30 @@
+{
+  "passed": true,
+  "transport": "loopback OpenSSH in disposable container; not WAN latency",
+  "versions": "Python 3.12.14\nOpenSSH_10.0p2 Debian-7+deb13u4, OpenSSL 3.5.7 9 Jun 2026",
+  "sizes": [
+    "120x32",
+    "80x24",
+    "60x18"
+  ],
+  "checks": [
+    "installed remote agent list",
+    "remote inspector tabs",
+    "remote prompts",
+    "remote Up chooses older",
+    "remote Down chooses newer",
+    "remote Home",
+    "remote End",
+    "remote Enter reads",
+    "remote Ctrl+Right section",
+    "remote Ctrl+Left section",
+    "SSH resize propagation to80x24",
+    "remote compact chooser",
+    "remote F1 help",
+    "SSH resize/help return to60x18",
+    "remote terminal flags restored"
+  ],
+  "check_count": 15,
+  "remote_termios_restored": true,
+  "exit_status": 0
+}

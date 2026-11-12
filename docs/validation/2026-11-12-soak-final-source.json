@@ -1,0 +1,58 @@
+{
+  "passed": true,
+  "setup_seconds": 1.86,
+  "measured_seconds": 62.11,
+  "cycles": 16,
+  "receiver_replacements": 2,
+  "observed_outages": 2,
+  "peak_active_reads": 4,
+  "headless_monitor": true,
+  "durable_modules_exercised_separately": true,
+  "durable": {
+    "incidents": 16,
+    "acknowledgements": 16,
+    "claims": 16,
+    "resolved": 16
+  },
+  "samples": [
+    {
+      "elapsed_seconds": 16.87,
+      "cycles": 6,
+      "rss_mib": 67.95,
+      "open_fds": 9,
+      "threads": 5,
+      "interval_cpu_percent": 38.16,
+      "api_reads": 59,
+      "peak_active_reads": 4,
+      "cache_entries": 4,
+      "cache_bytes": 8655,
+      "receiver_replacements": 0,
+      "durable": {
+        "incidents": 6,
+        "acknowledgements": 6,
+        "claims": 6,
+        "resolved": 6
+      }
+    },
+    {
+      "elapsed_seconds": 50.56,
+      "cycles": 12,
+      "rss_mib": 71.61,
+      "open_fds": 9,
+      "threads": 6,
+      "interval_cpu_percent": 24.31,
+      "api_reads": 156,
+      "peak_active_reads": 4,
+      "cache_entries": 4,
+      "cache_bytes": 6347,
+      "receiver_replacements": 2,
+      "durable": {
+        "incidents": 12,
+        "acknowledgements": 12,
+        "claims": 12,
+        "resolved": 12
+      }
+    }
+  ],
+  "cleanup_completed": true
+}

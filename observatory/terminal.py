@@ -1,11 +1,13 @@
 """Receiver lifecycle and live data for the terminal cockpit."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -768,6 +770,31 @@ def open_terminal(command):
     raise CockpitError("No graphical terminal is available. Run the cockpit in your current terminal, or use --once.")
 
 
+def _run_terminal_app(app):
+    """Let Textual restore the terminal before reporting signals or failures."""
+    async def run():
+        loop = asyncio.get_running_loop()
+        previous = {}
+        registered = os.name == 'posix' and threading.current_thread() is threading.main_thread()
+        try:
+            if registered:
+                # Register before the driver enters raw mode, including startup.
+                # Textual consumes task cancellation, so explicit exit codes are
+                # needed for external SIGINT as well as SIGTERM.
+                for signum in (signal.SIGINT, signal.SIGTERM):
+                    handler = signal.getsignal(signum)
+                    loop.add_signal_handler(signum, lambda code=128+signum: app.exit(return_code=code))
+                    previous[signum] = handler
+            await app.run_async()
+            return app.return_code
+        finally:
+            for signum, handler in previous.items():
+                loop.remove_signal_handler(signum)
+                signal.signal(signum, handler)
+
+    return asyncio.run(run())
+
+
 def run_cockpit(*, db_path="observatory.db", port=14318, endpoint=None,
                 once=False, new_window=False, local_agents=True, metadata_only=False):
     if not 1 <= port <= 65535:
@@ -822,9 +849,9 @@ def run_cockpit(*, db_path="observatory.db", port=14318, endpoint=None,
         if once:
             print_snapshot(feed)
         else:
-            ObservatoryApp(feed).run()
+            return _run_terminal_app(ObservatoryApp(feed))
     except KeyboardInterrupt:
-        pass
+        return 130
     finally:
         complete_cleanup(*([feed.close] if feed is not None else []),
                          *([receiver.close] if receiver is not None else []))
