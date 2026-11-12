@@ -1,9 +1,9 @@
 # Rust port: trace ingestion
 
-This is the first native component of Agent Observatory. It is a working Rust
+This is an experimental native ingestion component for Agenturm. It is a Rust
 JSONL importer and loopback HTTP trace receiver that writes the existing SQLite
-schema. The Python dashboard can read the resulting database. The normal
-`agent-observatory` command remains the supported full application.
+schema. The Python cockpit can read the resulting database. The normal
+`agenturm` command remains the supported full application.
 
 ## Build and use
 
@@ -21,11 +21,22 @@ compressed and decompressed body to 8 MiB, and supports `--token` or
 `OBSERVATORY_TOKEN` for bearer authentication. It listens on `127.0.0.1` by
 default. `GET /api/health` reports receiver health.
 
-Run the Python dashboard against the same database after an import. Do not run
-both receivers on the same port. The Rust process does not yet serve the web
-dashboard or implement local Codex and Claude Code session discovery, OTLP
-protobuf, logs, metrics, progress, outcomes, or the full query API. It is not a
-drop-in replacement for `agent-observatory serve`.
+Stop any Python receiver using the database before importing with Rust. After
+the import, stop the Rust receiver and open the database with the Python cockpit:
+
+```bash
+uv run agenturm --db runs.db cockpit --port 14319 --no-local-agents
+```
+
+Concurrent Rust/Python writers are not a supported workflow. The Rust process
+does not implement local session discovery, native hierarchy indexing, OTLP
+protobuf, logs, metrics, progress, outcomes, or the query API. It is not a
+drop-in replacement for `agenturm serve` or a cockpit endpoint.
+
+When writing a current Python database, Rust updates an explicitly supplied
+canonical `ag1_…` span owner and clears an old indexed owner when the replacement
+has no canonical owner. Unknown ownership stays unknown. Use the Python receiver
+for native worker identity and hierarchy support.
 
 ## Validation and performance
 
@@ -36,12 +47,14 @@ python rust/bench.py
 ```
 
 The compatibility check verifies that Python reads Rust-imported traces and
-endpoint inventory, and that reimporting a span invalidates the cached summary.
+endpoint inventory, reimporting a span invalidates the cached summary, and
+replacing Python-written spans updates or clears their indexed canonical owner.
 The benchmark includes parsing, storage, derived summaries, and a query of
-all traces. On one local run with 20,000 synthetic spans across 100 traces,
+all traces. On an original prototype run against an older Python store with
+20,000 synthetic spans across 100 traces,
 Python took 0.78 seconds; Rust import followed by Python summary backfill took
 0.62 seconds. This is a modest improvement for that workload, not evidence of
-a generally faster app. The Rust import itself took 0.18 seconds. Run repeated
+a generally faster current app. The Rust import itself took 0.18 seconds. Run repeated
 benchmarks with representative traces and live dashboard traffic before
 making a performance claim.
 

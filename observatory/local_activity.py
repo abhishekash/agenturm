@@ -4,9 +4,12 @@ from __future__ import annotations
 import json
 import re
 import shlex
+from itertools import islice
 from pathlib import Path
 
 from .findings import _safe_text, _SENSITIVE_FIELD, _TOKEN_FIELD
+from .native_json import loads
+from .session_text import remember_task
 
 CONTENT_LIMIT = 8000
 
@@ -15,7 +18,7 @@ def safe(value, limit=CONTENT_LIMIT):
     if isinstance(value, dict):
         value = {str(key): "[REDACTED]" if _SENSITIVE_FIELD.search(str(key)) or _TOKEN_FIELD.search(str(key))
                  else "[opaque payload omitted]" if str(key) in {"encrypted_content", "signature", "raw_content"} or str(key) == "data" and isinstance(child, str) and len(child) > 1000
-                 else safe(child, 2000) for key, child in list(value.items())[:60]}
+                 else safe(child, 2000) for key, child in islice(value.items(), 60)}
         value = json.dumps(value, ensure_ascii=False, indent=2)
     elif isinstance(value, list):
         value = json.dumps([safe(child, 2000) for child in value[:60]], ensure_ascii=False, indent=2)
@@ -46,8 +49,8 @@ def mcp_attributes(name):
 def mcp_failed(value):
     if isinstance(value, str):
         try:
-            value = json.loads(value)
-        except ValueError:
+            value = loads(value)
+        except (ValueError, OverflowError, RecursionError):
             return False
     return isinstance(value, dict) and bool(value.get("isError") or value.get("is_error"))
 
@@ -58,11 +61,17 @@ def emit(session, row, stamp, domain, action, subject, detail="", result="observ
         return None
     from .local_agents import identity
     attrs = {"session.id": session.session_id, "observatory.project": session.project,
+             "agent.id": session.agent_id, "agent.runtime": session.runtime,
+             "agent.discovery_state": session.discovery_state,
+             "agent.relationship.kind": session.relationship_kind,
+             "agent.relationship.state": session.relationship_state,
              "observatory.data_source": "local-session-log", "agent.activity.domain": domain,
              "agent.activity.action": action, "agent.activity.subject": safe(subject, 500),
              "agent.activity.result": result, "agent.activity.actor": session.runtime,
              "observatory.record_id": identity(session.source_id, row.get("ordinal") or row.get("uuid") or stamp,
                                                 domain, action, str(subject)[:500], *([call_id] if call_id else [])), **(extra or {})}
+    if session.parent_agent_id:
+        attrs["agent.parent_id"] = session.parent_agent_id
     payload = row.get("payload") or {}
     item = payload.get("item") or {} if isinstance(payload, dict) else {}
     span_id = None
@@ -104,10 +113,11 @@ def codex_activity(session, row, stamp):
         name = str(payload.get("name") or "Tool")
         args = payload.get("arguments") or payload.get("input") or ""
         try:
-            parsed = json.loads(args) if isinstance(args, str) else args
-        except (ValueError, TypeError):
+            parsed = loads(args) if isinstance(args, str) else args
+        except (ValueError, TypeError, OverflowError, RecursionError):
             parsed = {}
-        session.tool_inputs[str(payload.get("call_id") or payload.get("id"))] = (name, safe(args))
+        # Results only need the tool name, not another retained argument payload.
+        session.tool_inputs[str(payload.get("call_id") or payload.get("id"))] = (name, "", session.turn)
         subject = name
         domain = "tool"
         mcp = mcp_attributes(name)
@@ -126,15 +136,22 @@ def codex_activity(session, row, stamp):
                         call_id=payload.get("call_id") or payload.get("id") if mcp else None))
     elif kind == "response_item" and event in {"function_call_output", "custom_tool_call_output"}:
         key = str(payload.get("call_id") or payload.get("id"))
-        name, _ = session.tool_inputs.get(key, ("Tool", ""))
+        pending = session.calls.get(key)
+        fallback = (pending[0], "", pending[2]) if pending else ("Tool", "", session.turn)
+        name, _, call_turn = session.tool_inputs.pop(key, fallback)
         mcp = mcp_attributes(name)
         output = payload.get("output") or ""
         pending = session.calls.pop(key, None) if mcp else None
         out.append(emit(session, row, stamp, "mcp" if mcp else "tool", "result", name,
                         {"result": output} if mcp else output,
                         "error" if mcp_failed(output) else "success" if mcp else "observed", mcp,
-                        call_id=key if mcp else None, turn=pending[2] if pending else None))
-    elif kind == "event_msg" and event in {"task_started", "task_complete", "task_aborted"}:
+                        call_id=key if mcp else None, turn=pending[2] if pending else call_turn))
+    elif kind == 'event_msg' and event in {'approval_request', 'request_user_input'}:
+        # Request identities and generic labels remain available in metadata-only mode.
+        out.append(emit(session, row, stamp, 'agent', event,
+                        'Approval requested' if event == 'approval_request' else 'Reply requested',
+                        result='waiting'))
+    elif kind == "event_msg" and event in {"task_started", "task_complete", "task_aborted", "turn_aborted"}:
         action = "started" if event == "task_started" else "completed" if event == "task_complete" else "interrupted"
         out.append(emit(session, row, stamp, "agent", action, session.project or session.runtime,
                         {key: payload[key] for key in ("duration_ms", "time_to_first_token_ms") if key in payload}, action))
@@ -192,7 +209,7 @@ def codex_activity(session, row, stamp):
             text = "" if session.internal else plaintext(item.get("content"))
             role = "user" if item_type == "UserMessage" else "assistant"
             if role == "user" and text and session.capture_details:
-                session.tasks[session.turn] = text[:4000]
+                remember_task(session, item.get("content"))
             out.append(emit(session, row, stamp, "message", role,
                 "Approval review" if session.internal else text.splitlines()[0][:300] if text and session.capture_details else role + " message", text,
                 "observed", {"message.role": role, "message.phase": item.get("phase") or ""}))
@@ -215,7 +232,7 @@ def claude_activity(session, row, stamp):
     if text and row.get("type") in {"assistant", "user"}:
         role = row["type"]
         if role == "user" and session.capture_details:
-            session.tasks[session.turn] = text[:4000]
+            remember_task(session, content)
         out.append(emit(session, row, stamp, "message", role, text.splitlines()[0][:300] if session.capture_details else role+" message", text))
     for block in blocks:
         if not isinstance(block, dict):
@@ -227,21 +244,65 @@ def claude_activity(session, row, stamp):
             mcp = mcp_attributes(name)
             if mcp:
                 domain, subject = "mcp", mcp["mcp.server.name"]
-            session.tool_inputs[str(block.get("id"))] = (name, safe(subject, 500))
+            session.tool_inputs[str(block.get("id"))] = (name, safe(subject, 500) if session.capture_details else "", session.turn)
             out.append(emit(session, row, stamp, domain, name, subject if session.capture_details else name,
                 {"arguments": args} if mcp else args, "started", {"tool.name": name, **mcp},
                 call_id=block.get("id") if mcp else None))
         elif block.get("type") == "tool_result":
-            name, subject = session.tool_inputs.get(str(block.get("tool_use_id")), ("Tool", "Tool result"))
+            name, subject, call_turn = session.tool_inputs.pop(str(block.get("tool_use_id")), ("Tool", "Tool result", session.turn))
             mcp = mcp_attributes(name)
             pending = session.calls.pop(block.get("tool_use_id"), None)
             output = block.get("content") or ""
             out.append(emit(session, row, stamp, "mcp" if mcp else "tool", name+" result", subject if session.capture_details else name,
                 {"result": output} if mcp else output, "error" if block.get("is_error") else "success", mcp,
-                call_id=block.get("tool_use_id") if mcp else None, turn=pending[2] if pending else None))
+                call_id=block.get("tool_use_id") if mcp else None, turn=pending[2] if pending else call_turn))
         elif block.get("type") == "thinking":
             out.append(emit(session, row, stamp, "agent", "processing", "Model processing"))
     if row.get("type") == "system":
         out.append(emit(session, row, stamp, "context", str(row.get("subtype") or "event"), "Session event",
                         {key:row[key] for key in ("durationMs", "messageCount", "isMeta") if key in row}))
+    return [entry for entry in out if entry]
+
+
+def pi_activity(session, row, stamp):
+    """Extract bounded activity from Pi's append-only session records."""
+    message = row.get("message") or {}
+    if row.get("type") != "message" or not isinstance(message, dict):
+        return []
+    role = message.get("role")
+    out = []
+    if role == "user":
+        text = plaintext(message.get("content")) if session.capture_details else ""
+        if text:
+            remember_task(session, message.get("content"))
+        out.append(emit(session, row, stamp, "message", "user",
+                        text.splitlines()[0][:300] if text else "user message", text,
+                        "observed", {"message.role": "user"}, turn=session.turn))
+    elif role == "assistant":
+        for block in message.get("content") or []:
+            if not isinstance(block, dict) or block.get("type") != "toolCall":
+                continue
+            call_id = str(block.get("id") or "")
+            name = str(block.get("name") or "Tool")
+            if not call_id:
+                continue
+            session.calls[call_id] = (name, stamp, session.turn)
+            session.tool_inputs[call_id] = (name, "", session.turn)
+            out.append(emit(session, row, stamp, "tool", "call", name,
+                            block.get("arguments") if session.capture_details else "",
+                            "started", {"tool.name": name}, call_id=call_id, turn=session.turn))
+    elif role == "toolResult":
+        call_id = str(message.get("toolCallId") or "")
+        name = str(message.get("toolName") or "Tool")
+        pending = session.calls.get(call_id)
+        start = pending[1] if pending else stamp
+        turn = pending[2] if pending else session.turn
+        failed = bool(message.get("isError"))
+        detail = plaintext(message.get("content")) if session.capture_details else ""
+        out.append(emit(session, row, stamp, "tool", "result", name, detail,
+                        "error" if failed else "success", {"tool.name": name},
+                        call_id=call_id or None, turn=turn))
+    if role == "assistant" and isinstance(message.get("usage"), dict):
+        out.append(emit(session, row, stamp, "model", "usage", session.model or "Model not reported",
+                        message["usage"], "reported", {"gen_ai.request.model": session.model or "unknown"}))
     return [entry for entry in out if entry]

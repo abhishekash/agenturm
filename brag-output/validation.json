@@ -1,0 +1,120 @@
+{
+  "ok": true,
+  "strict": false,
+  "browserSkipped": false,
+  "lint": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "filesScanned": 6
+  },
+  "runtime": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": []
+  },
+  "layout": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "duration": 24,
+    "samples": [
+      1.333,
+      4,
+      6.667,
+      9.333,
+      12,
+      14.667,
+      17.333,
+      20,
+      22.667
+    ],
+    "transitionSamples": [],
+    "transitionSamplesDropped": 0,
+    "tolerance": 2,
+    "totalIssueCount": 0,
+    "truncated": false
+  },
+  "motion": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": false,
+    "samples": 0
+  },
+  "contrast": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": true,
+    "samples": [
+      1.333,
+      6.667,
+      12,
+      17.333,
+      22.667
+    ],
+    "checked": 51,
+    "passed": 51
+  },
+  "craft": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": true,
+    "step": 0.125,
+    "samples": 192
+  },
+  "audio": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": []
+  },
+  "hdr": {
+    "autoPromotion": null,
+    "inspection": "available"
+  },
+  "snapshots": {
+    "enabled": true,
+    "files": [
+      ".hyperframes/artifacts/snapshots/0d0367e8-ba6e-4687-b74b-dff48dbe9986/frame-00-at-1.3s.png",
+      ".hyperframes/artifacts/snapshots/0d0367e8-ba6e-4687-b74b-dff48dbe9986/frame-01-at-6.7s.png",
+      ".hyperframes/artifacts/snapshots/0d0367e8-ba6e-4687-b74b-dff48dbe9986/frame-02-at-12.0s.png",
+      ".hyperframes/artifacts/snapshots/0d0367e8-ba6e-4687-b74b-dff48dbe9986/frame-03-at-17.3s.png",
+      ".hyperframes/artifacts/snapshots/0d0367e8-ba6e-4687-b74b-dff48dbe9986/frame-04-at-22.7s.png"
+    ],
+    "times": [
+      1.333,
+      6.667,
+      12,
+      17.333,
+      22.667
+    ],
+    "findingFiles": []
+  },
+  "saved": {
+    "id": "ec32fed3-8571-4ba4-8c6c-22802715c3c5",
+    "revision": "9837694b-5c63-408a-b723-190f574e6fd4",
+    "report": "/home/abhishekash/abhi-codes/agentic/agenturm/brag-output/composition/.hyperframes/artifacts/checks/ec32fed3-8571-4ba4-8c6c-22802715c3c5.json",
+    "attribution": "recorded-revision"
+  },
+  "_meta": {
+    "version": "0.8.207",
+    "latestVersion": "0.8.207",
+    "updateAvailable": false
+  }
+}

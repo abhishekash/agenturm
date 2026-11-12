@@ -1,0 +1,51 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Experimental Rust trace ingestion</title><style>
+:root{color-scheme:light dark;--bg:#f5f5ef;--paper:#fff;--text:#202923;--muted:#526158;--line:#d3dbd3;--accent:#315b42}
+@media(prefers-color-scheme:dark){:root{--bg:#111814;--paper:#1a241e;--text:#e8eee9;--muted:#acb9ae;--line:#3a4b3e;--accent:#b4d6a7}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:17px/1.65 system-ui,sans-serif}main{max-width:1100px;margin:2rem auto;padding:2.5rem;background:var(--paper);border:1px solid var(--line);border-radius:14px}h1,h2,h3{line-height:1.25}h2{margin-top:2.5rem;border-top:1px solid var(--line);padding-top:1rem}a{color:var(--accent)}li{margin:.7rem 0}table{display:block;overflow:auto;border-collapse:collapse;max-width:100%}td,th{border:1px solid var(--line);padding:.6rem;text-align:left;vertical-align:top}pre{overflow:auto;padding:1rem;border:1px solid var(--line);font-size:13px}figure{margin:2rem 0;padding:.8rem;border:1px solid var(--line)}img{display:block;width:100%;height:auto}figcaption{font-size:.9rem;color:var(--muted)}code{overflow-wrap:anywhere}pre code{overflow-wrap:normal}@media(max-width:650px){body{font-size:16px}main{margin:0;padding:1.2rem;border:0;border-radius:0}figure{padding:.3rem}}@media print{main{border:0;margin:0}figure{break-inside:avoid}}
+</style></head><body><main><h1 id="rust-port-trace-ingestion">Rust port: trace ingestion</h1>
+<p>This is an experimental native ingestion component for Agenturm. It is a Rust
+JSONL importer and loopback HTTP trace receiver that writes the existing SQLite
+schema. The Python cockpit can read the resulting database. The normal
+<code>agenturm</code> command remains the supported full application.</p>
+<h2 id="build-and-use">Build and use</h2>
+<p>Install a Rust toolchain, then from the repository root:</p>
+<pre><code class="language-bash">cargo build --release --manifest-path rust/Cargo.toml
+rust/target/release/agent-observatory-rs --db runs.db import-jsonl traces.jsonl
+rust/target/release/agent-observatory-rs --db runs.db serve --port 4318
+</code></pre>
+<p>The receiver accepts <code>POST /api/spans</code> with native JSON spans and
+<code>POST /v1/traces</code> with OTLP JSON. It accepts gzip request bodies, bounds the
+compressed and decompressed body to 8 MiB, and supports <code>--token</code> or
+<code>OBSERVATORY_TOKEN</code> for bearer authentication. It listens on <code>127.0.0.1</code> by
+default. <code>GET /api/health</code> reports receiver health.</p>
+<p>Stop any Python receiver using the database before importing with Rust. After
+the import, stop the Rust receiver and open the database with the Python cockpit:</p>
+<pre><code class="language-bash">uv run agenturm --db runs.db cockpit --port 14319 --no-local-agents
+</code></pre>
+<p>Concurrent Rust/Python writers are not a supported workflow. The Rust process
+does not implement local session discovery, native hierarchy indexing, OTLP
+protobuf, logs, metrics, progress, outcomes, or the query API. It is not a
+drop-in replacement for <code>agenturm serve</code> or a cockpit endpoint.</p>
+<p>When writing a current Python database, Rust updates an explicitly supplied
+canonical <code>ag1_…</code> span owner and clears an old indexed owner when the replacement
+has no canonical owner. Unknown ownership stays unknown. Use the Python receiver
+for native worker identity and hierarchy support.</p>
+<h2 id="validation-and-performance">Validation and performance</h2>
+<pre><code class="language-bash">cargo test --manifest-path rust/Cargo.toml
+python rust/compat.py
+python rust/bench.py
+</code></pre>
+<p>The compatibility check verifies that Python reads Rust-imported traces and
+endpoint inventory, reimporting a span invalidates the cached summary, and
+replacing Python-written spans updates or clears their indexed canonical owner.
+The benchmark includes parsing, storage, derived summaries, and a query of
+all traces. On an original prototype run against an older Python store with
+20,000 synthetic spans across 100 traces,
+Python took 0.78 seconds; Rust import followed by Python summary backfill took
+0.62 seconds. This is a modest improvement for that workload, not evidence of
+a generally faster current app. The Rust import itself took 0.18 seconds. Run repeated
+benchmarks with representative traces and live dashboard traffic before
+making a performance claim.</p>
+<p>The next porting steps are derived summaries and findings, protobuf plus
+logs/metrics, the query API, local session discovery, and terminal UI. Keep
+cross-language database checks as each component moves.</p></main></body></html>

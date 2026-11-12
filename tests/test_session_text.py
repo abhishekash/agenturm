@@ -1,0 +1,91 @@
+"""Trustworthy session labels and scoped evidence, without a terminal."""
+import json
+import unittest
+from types import SimpleNamespace
+
+from observatory.session_prompts import MAX_PROMPTS, PromptHistory, SessionEvidence, scoped_events
+from observatory.session_text import message_text, remember_task, request_text, request_title, task_description
+
+
+class SessionTextTests(unittest.TestCase):
+    def test_known_complete_context_is_separated_and_source_is_preserved(self):
+        raw='# AGENTS.md instructions for /work/api\n\n<INSTRUCTIONS>Run tests.</INSTRUCTIONS>\n' + \
+            '<environment_context>cwd: /work/api</environment_context>\n\nFix retries.\n    keep indentation'
+        text=request_text(raw)
+        self.assertEqual(text.raw,raw)
+        self.assertEqual(len(text.context),2)
+        self.assertEqual(text.body,'Fix retries.\n    keep indentation')
+        self.assertEqual(task_description(raw),'Fix retries.')
+        context='<skills_instructions>Use the repository skill.</skills_instructions>'
+        self.assertEqual(task_description(context),'')
+        self.assertEqual(request_title(context),'Runtime context')
+
+    def test_code_unknown_xml_and_incomplete_context_are_never_stripped(self):
+        for raw in ('<request>Fix retries</request>',
+                    '```xml\n<environment_context>sample</environment_context>\n```',
+                    'Explain <environment_context>sample</environment_context>',
+                    '<environment_context>unfinished context',
+                    'Change this:\n<environment_context>sample</environment_context>'):
+            self.assertEqual(request_text(raw).body,raw)
+            self.assertFalse(request_text(raw).context)
+
+    def test_wrapped_text_blocks_preserve_unicode_and_indentation(self):
+        payload={'content':[{'type':'input_text','text':'检查重试 e\u0301'},
+                            {'type':'text','text':'    return retry()'}]}
+        self.assertEqual(message_text(payload),'检查重试 e\u0301\n    return retry()')
+        self.assertEqual(message_text('\x1b[31mText\x1b[0m'),'Text')
+        self.assertEqual(message_text('safe\u009b\u202e\n    text'),'safe\n    text')
+
+    def test_literal_json_request_is_lossless_in_original_and_readable_views(self):
+        raw='{"text":"Keep literal JSON", "constraint":"MUST RETAIN THIS"}'
+        self.assertEqual(request_text(raw).raw,raw)
+        self.assertEqual(request_text(raw).body,raw)
+
+    def test_context_and_terse_steering_do_not_replace_meaningful_task(self):
+        session=SimpleNamespace(capture_details=True,task_description='',tasks={},turn='first')
+        remember_task(session,'Fix checkout retries.\nKeep the public API.')
+        session.turn='second'
+        remember_task(session,'go ahead')
+        remember_task(session,'<environment_context>cwd</environment_context>')
+        self.assertEqual(session.task_description,'Fix checkout retries.')
+        self.assertNotIn('second',session.tasks)
+        remember_task(session,'Add cancellation coverage.')
+        self.assertEqual(session.task_description,'Add cancellation coverage.')
+        session.capture_details=False
+        remember_task(session,'Private new task')
+        self.assertNotIn('Private',str(session.tasks))
+
+    def test_scope_isolates_workers_services_and_missing_identity(self):
+        def event(agent,service='codex',session='shared'):
+            return dict(agent_id=agent,service=service,session_id=session)
+        events=[event('worker'),event('sibling'),event(None),event('worker','claude'),event('worker',session='elsewhere')]
+        self.assertEqual(scoped_events(events,('codex','shared','worker',False)),events[:1])
+        self.assertEqual(scoped_events(events,('codex','shared','worker',True)),[events[0],events[2]])
+        self.assertEqual(scoped_events(events,None),[])
+
+    def test_history_cache_is_bounded_and_does_not_change_selection(self):
+        history=PromptHistory(scope=('codex','session','',True))
+        def event(i):
+            return dict(id=str(i),service='codex',session_id='session',domain='message',action='user',
+                        time_unix_nano=i,subject=f'Request {i}',detail='x'*18000)
+        history.merge(event(i) for i in range(MAX_PROMPTS+5))
+        self.assertEqual(len(history.events),MAX_PROMPTS)
+        self.assertTrue(history.limited)
+        self.assertIn('Reader limit',history.events[str(MAX_PROMPTS)]['detail'])
+        history.selected='10'
+        history.merge([event(10),event(10000)])
+        self.assertEqual(history.selected,'10')
+        self.assertEqual(len(history.events),MAX_PROMPTS)
+
+    def test_selected_evidence_window_replaces_old_records_and_exposes_partial(self):
+        evidence=SessionEvidence(scope=('codex','s','worker',False),requested_revision=10)
+        row=dict(service='codex',session_id='s',agent_id='worker')
+        evidence.accept({'activity':[dict(row,id=i) for i in range(105)],'next_cursor':'earlier'})
+        self.assertEqual(len(evidence.events),100)
+        self.assertTrue(evidence.partial)
+        evidence.accept({'activity':[dict(row,id=200)]})
+        self.assertEqual([event['id'] for event in evidence.events],[200])
+        self.assertFalse(evidence.partial)
+
+
+if __name__=='__main__':unittest.main()

@@ -1,4 +1,4 @@
-"""Small local HTTP receiver and dashboard, using only the Python standard library."""
+"""Small local HTTP receiver and API for the terminal cockpit."""
 from __future__ import annotations
 
 import hmac
@@ -6,30 +6,56 @@ import gzip
 import io
 import json
 import os
+import sqlite3
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
+from .agent_hierarchy import CAPABILITIES, HierarchyGraph
 from .core import Store, normalize_native, normalize_otlp, TRACE_ID
 from .otlp_proto import decode_trace_request
 from .logs import normalize_otlp_logs, decode_log_request
 from .metrics import normalize_otlp_metrics, decode_metric_request
 from .watch import start_watchers
-from .distribution import installer_info, package_archive
+from .receiver import BoundedHTTPServer, DeadlineHandler
+from .response_cache import ResponseCache
 
-UI = Path(__file__).with_name("index.html")
+# Preserve the historical server import while exposing the explicit bounded name.
+ThreadingHTTPServer = BoundedHTTPServer
+
 MAX_BODY = 8 * 1024 * 1024
 
 
 def handler_for(store: Store, token: str | None = None, quiet=False):
-    class Handler(BaseHTTPRequestHandler):
+    cache = ResponseCache(store.path)
+    class Handler(DeadlineHandler, BaseHTTPRequestHandler):
+        response_cache = cache
+
         def _json(self, code, value):
             data = json.dumps(value, ensure_ascii=False).encode()
+            tagged = value.get('receiver_id') if isinstance(value, dict) else None
+            self._json_bytes(code, data, cache_result=True, body_receiver=tagged)
+
+        def _json_bytes(self, code, data, *, cache_result=False, body_receiver=None):
+            receiver = getattr(self, '_get_receiver_id', None) if self.command == 'GET' and code == 200 else None
+            if receiver and code == 200:
+                try:
+                    current = store.receiver_namespace()
+                    changed = current != receiver or body_receiver and body_receiver != receiver
+                except (OSError, ValueError, sqlite3.Error):
+                    changed = True
+                if changed:
+                    code = 409
+                    data = json.dumps({'error': 'Receiver identity changed during this read. Retry the request.'}).encode()
+                    receiver = None
+            if code == 200 and cache_result and getattr(self, '_cache_version', None) is not None:
+                cache.put(self.path, self._cache_version, data)
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            if receiver:
+                self.send_header('X-Agenturm-Receiver-ID', receiver)
             self.end_headers()
             self.wfile.write(data)
 
@@ -48,53 +74,71 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
 
         def _route(self):
             route = urlparse(self.path)
-            # The static shell contains no telemetry; its API requests still need a token.
-            if self.command == "GET" and route.path in {"/", "/setup.js", "/setup.css", "/activity.js", "/activity.css"}:
-                return route
-            if not self._authorized():
+            # The root is a static, non-sensitive hint for someone who opens
+            # the receiver URL in a browser. Keep every data/API route gated.
+            if route.path != "/" and not self._authorized():
                 self._json(401, {"error": "unauthorized"})
                 return None
             return route
 
         def do_GET(self):
+            self._cache_version = None
+            self._get_receiver_id = None
             route = self._route()
             if route is None:
                 return
             path = route.path
+            # The fast recovery probe deliberately avoids SQLite. Full health
+            # and all data reads bind their response to one receiver identity.
+            if path != '/' and not (path == '/api/health' and parse_qs(route.query).get('probe') == ['1']):
+                namespace = getattr(store, 'receiver_namespace', None)
+                if callable(namespace):
+                    try:
+                        self._get_receiver_id = namespace()
+                    except (OSError, ValueError, sqlite3.Error):
+                        self._json(503, {'error': 'Receiver identity is temporarily unavailable. Retry the request.'})
+                        return
+            if cache.eligible(path):
+                self._cache_version, cached = cache.get(self.path)
+                if cached is not None:
+                    self._json_bytes(200, cached)
+                    return
             if path == "/":
-                data = UI.read_bytes()
+                data = ("Agenturm is terminal-first. Run `agenturm` in a terminal "
+                        "to monitor local sessions. This HTTP service receives OTLP and serves the local API.\n").encode()
                 self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(data)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(data)
-            elif path in {"/setup.js", "/setup.css", "/activity.js", "/activity.css"}:
-                data = UI.with_name(path[1:]).read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/javascript; charset=utf-8" if path.endswith(".js") else "text/css; charset=utf-8")
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(data)
             elif path == "/api/health":
+                if parse_qs(route.query).get('probe')==['1']:
+                    self._json(200, {"ok": True})
+                    return
                 local = getattr(store, "local_agent_monitor", None)
-                self._json(200, {"ok": True, "local_agents": local.status() if local else {"enabled": False}})
-            elif path == "/api/setup":
-                self._json(200, {**installer_info(),
-                                 "auth_required": bool(token),
-                                 "integrations": ["OpenAI Python SDK", "Anthropic Python SDK", "LangChain / LangGraph"]})
-            elif path == "/api/package":
-                data, filename = package_archive()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/gzip")
-                self.send_header("Content-Length", str(len(data)))
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(data)
+                self._json(200, {"ok": True, "receiver_id": store.receiver_namespace() if hasattr(store,"receiver_namespace") else None, "review_trace_filter": True, "local_agents": local.status() if local else {"enabled": False}})
             elif path == "/api/connections":
                 self._json(200, {"connections": store.connections()})
+            elif path == "/api/hierarchy":
+                query = parse_qs(route.query)
+                try:
+                    limit = max(1, min(10000, int(query.get("limit", [2000])[0])))
+                    include_reviews = query.get("include_reviews", ["1"])[0] not in {"0", "false", "False"}
+                    nodes = store.agent_nodes(limit=limit, include_reviews=include_reviews)
+                    graph = HierarchyGraph(nodes)
+                    self._json(200, {
+                        "nodes": nodes,
+                        "capabilities": CAPABILITIES,
+                        "revision": store.hierarchy_revision(),
+                        "diagnostics": graph.diagnostics,
+                        "coverage": ("complete" if not graph.diagnostics["missing_parents"] and
+                                     not graph.diagnostics["announced"] and
+                                     all(node.get("coverage") == "complete" for node in nodes)
+                                     else "partial"),
+                    })
+                except ValueError as exc:
+                    self._json(400, {"error": str(exc)})
             elif path == "/api/activity":
                 query = parse_qs(route.query)
                 try:
@@ -103,7 +147,12 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                         query=query.get("q", [None])[0], session_id=query.get("session_id", [None])[0],
                         cursor=query.get("cursor", [None])[0],
                         include_reviews=query.get("include_reviews", ["1"])[0]!="0",
-                        errors_only=query.get("errors_only", ["0"])[0]=="1")
+                        errors_only=query.get("errors_only", ["0"])[0]=="1",
+                        action=query.get("action", [None])[0],
+                        agent_id=query.get("agent_id", [None])[0],
+                        subtree=query.get("subtree", ["0"])[0]=="1",
+                        scope_revision=query.get("scope_revision", [None])[0],
+                        trace_id=query.get("trace_id", [None])[0])
                     self._json(200, page)
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
@@ -115,8 +164,11 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                     page = store.mcp_page(limit=int(query.get('limit', [100])[0]),
                         service=query.get('service', [None])[0], session_id=query.get('session_id', [None])[0],
                         query=query.get('q', [None])[0], cursor=query.get('cursor', [None])[0],
-                        include_reviews=query.get('include_reviews', ['1'])[0]!='0')
-                    self._json(200, {**page, 'scope': 'stored MCP operations'})
+                        include_reviews=query.get('include_reviews', ['1'])[0]!='0',
+                        agent_id=query.get('agent_id', [None])[0],
+                        subtree=query.get('subtree', ['0'])[0]=='1',
+                        scope_revision=query.get('scope_revision', [None])[0])
+                    self._json(200, {**page, 'scope': page.get('scope', 'stored MCP operations')})
                 except ValueError as exc:
                     self._json(400, {'error': str(exc)})
             elif path == "/api/usage-series":
@@ -125,7 +177,9 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                     days = int(query.get("days", [7])[0])
                     step = query.get("step", ["day"])[0]
                     service = query.get("service", [None])[0]
-                    self._json(200, store.usage_series(days=days, step=step, service=service))
+                    session_id = query.get("session_id", [None])[0]
+                    self._json(200, store.usage_series(days=days, step=step, service=service,
+                                                       session_id=session_id))
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
             elif path == "/api/logs":
@@ -134,6 +188,11 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                 query = parse_qs(route.query, keep_blank_values=True)
                 try:
                     limit = max(1, min(500, int(query.get("limit", [500])[0])))
+                    if query.get("latest", ["0"])[0] == "1":
+                        points = store.metric_latest_points(limit=limit,
+                            service=query.get("service", [None])[0])
+                        self._json(200, {"points": points})
+                        return
                     temporality = query.get("temporality", [None])[0]
                     points = store.metric_points(limit=limit,
                         service=query.get("service", [None])[0], name=query.get("name", [None])[0],
@@ -157,7 +216,10 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                 query = parse_qs(route.query)
                 try:
                     limit = max(1, min(500, int(query.get("limit", [100])[0])))
-                    page = store.finding_page(limit=limit, cursor=query.get("cursor", [None])[0])
+                    page = store.finding_page(limit=limit, cursor=query.get("cursor", [None])[0],
+                                              agent_id=query.get("agent_id", [None])[0],
+                                              subtree=query.get("subtree", ["0"])[0] == "1",
+                                              scope_revision=query.get("scope_revision", [None])[0])
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
                     return
@@ -192,7 +254,10 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                                             query.get("session_id", [None])[0],
                                             query.get("q", [None])[0],
                                             query.get("endpoint_id", [None])[0],
-                                            query.get("include_reviews", ["1"])[0]!="0")
+                                            query.get("include_reviews", ["1"])[0]!="0",
+                                            query.get("agent_id", [None])[0],
+                                            query.get("subtree", ["0"])[0]=="1",
+                                            query.get("scope_revision", [None])[0])
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
                     return
@@ -253,7 +318,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                 if size <= 0 or size > MAX_BODY:
                     self._json(413, {"error": "body size must be 1 to 8 MiB"})
                     return
-                raw = self.rfile.read(size)
+                raw = self.read_body(size)
                 if len(raw) != size:
                     raise ValueError("truncated request body")
                 encoding = self.headers.get("Content-Encoding", "identity").lower()
@@ -310,7 +375,11 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                     self._json(200, {"accepted": count})
                 else:
                     self._json(404, {"error": "not found"})
-            except (ValueError, TypeError, KeyError, AttributeError, OSError, EOFError, json.JSONDecodeError) as exc:
+            except TimeoutError:
+                raise
+            except (ValueError, TypeError, KeyError, AttributeError, OSError, EOFError, OverflowError, RecursionError) as exc:
+                if self._response_started:
+                    raise
                 self._json(400, {"error": str(exc)})
 
         def log_message(self, format, *args):
@@ -333,7 +402,7 @@ def serve(db_path="observatory.db", host="127.0.0.1", port=4318, token=None,
     store.local_agent_monitor = local
     watch = start_watchers(store, watch_jsonl, watch_service) if watch_jsonl else None
     maintenance = _start_retention(store, retention_days) if retention_days is not None else None
-    print(f"Observatory listening at http://{host}:{server.server_port} (database: {db_path})", flush=True)
+    print(f"Goechala receiver listening at http://{host}:{server.server_port} (database: {db_path})", flush=True)
     if local:
         print("Watching local Codex / Claude Code sessions · " + ("metadata only" if metadata_only else "activity and bounded, redacted content"), flush=True)
     try:

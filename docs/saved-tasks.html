@@ -1,0 +1,108 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saved tasks and handoffs</title><style>
+:root{color-scheme:light dark;--bg:#f5f5ef;--paper:#fff;--text:#202923;--muted:#526158;--line:#d3dbd3;--accent:#315b42}
+@media(prefers-color-scheme:dark){:root{--bg:#111814;--paper:#1a241e;--text:#e8eee9;--muted:#acb9ae;--line:#3a4b3e;--accent:#b4d6a7}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:17px/1.65 system-ui,sans-serif}main{max-width:1100px;margin:2rem auto;padding:2.5rem;background:var(--paper);border:1px solid var(--line);border-radius:14px}h1,h2,h3{line-height:1.25}h2{margin-top:2.5rem;border-top:1px solid var(--line);padding-top:1rem}a{color:var(--accent)}li{margin:.7rem 0}table{display:block;overflow:auto;border-collapse:collapse;max-width:100%}td,th{border:1px solid var(--line);padding:.6rem;text-align:left;vertical-align:top}pre{overflow:auto;padding:1rem;border:1px solid var(--line);font-size:13px}figure{margin:2rem 0;padding:.8rem;border:1px solid var(--line)}img{display:block;width:100%;height:auto}figcaption{font-size:.9rem;color:var(--muted)}code{overflow-wrap:anywhere}pre code{overflow-wrap:normal}@media(max-width:650px){body{font-size:16px}main{margin:0;padding:1.2rem;border:0;border-radius:0}figure{padding:.3rem}}@media print{main{border:0;margin:0}figure{break-inside:avoid}}
+</style></head><body><main><h1 id="saved-tasks-and-handoffs">Saved tasks and handoffs</h1>
+<p>Keep one task across agent sessions. Save its intent, decisions, next step, linked runs, and workspace evidence locally; then prepare a brief to continue with the agent you choose.</p>
+<h2 id="the-daily-loop">The daily loop</h2>
+<ol>
+<li>Select the session you want to keep in the monitor. Press <strong>b</strong>, then <strong>n</strong>. Or use <strong>Ctrl+P → Save selected session as a task</strong>.</li>
+<li>Review the suggested title and local workspace. Write the intent, decisions, and next step in the brief. <strong>Ctrl+S</strong> saves the task, links the selected run or session, and captures Git changes if a workspace was supplied. A blank task works without a receiver.</li>
+<li>Open the task to <strong>Edit</strong> its brief, inspect <strong>Runs</strong>, <strong>Link</strong> the monitoring selection, or <strong>Capture</strong> the workspace again. To link another agent/run, return to the monitor, select it, and reopen the saved task. Existing exact runs are refreshed rather than counted twice.</li>
+<li>Choose <strong>Handoff</strong>. Review the saved notes, diff, run usage, and recorded checks. <strong>Copy brief</strong> copies what you previewed; paste it into the agent you want to continue with. <strong>Write MD + HTML</strong> saves the same evidence as two new files.</li>
+<li><strong>Archive</strong> finished tasks to clear the list. <strong>Archived</strong> includes them again; <strong>Restore</strong> returns a task to the active list. Archival retains its notes and evidence.</li>
+</ol>
+<p><strong>Esc</strong> moves back one screen. In an edited form, the first Esc warns about unsaved changes; the second discards them. <strong>Tab</strong> moves between fields and actions, including out of the notes editor. <strong>Ctrl+R</strong> reloads a saved task after a concurrent edit. Revision conflicts keep your text visible and refuse to overwrite the newer record: copy your edits, return to the task, reload, and reconcile them.</p>
+<h2 id="keep-the-monitor-calm">Keep the monitor calm</h2>
+<p>Saved tasks use a separate full-screen path. The monitor gains a shortcut and palette entries; its session rows and panels do not grow. At 120 columns the task list keeps room for titles:</p>
+<pre><code class="language-text">Saved tasks · 2
+[ Find a saved task…                                                                                                  ]
+Task                                                                                Links  Saved
+Fix refresh token expiry                                                              2    Nov 04 12:10
+Finish release notes                                                                  1    Nov 04 11:35
+
+Saved locally. Open a task to capture changes or prepare a handoff.
+[ New · n                              ][ Open                             ][ Archived · a                           ]
+↑/↓ Move  Enter Open  n New  Esc Monitor
+</code></pre>
+<p>The same single-pane layout fits a 60-column split; long table titles truncate and open in the detail view:</p>
+<pre><code class="language-text">Saved tasks · 2
+[ Find a saved task…                                     ]
+Task                           Links  Saved
+Fix refresh token expiry       2      Nov 04 12:10
+Finish release notes           1      Nov 04 11:35
+
+Saved locally. Open a task to capture changes or
+prepare a handoff.
+[ New · n         ][ Open          ][ Archived · a       ]
+↑/↓ Move  Enter Open  n New  Esc Monitor
+</code></pre>
+<p>At <strong>80×24</strong> and <strong>60×20</strong>, the list, details, run links, and handoff are separate screens. The details scroll; actions stay below them. At the narrow size, the editor uses the whole screen so several lines of the brief remain visible. Below 60×20, a size notice replaces the content while retaining edits. Enlarge the terminal to continue.</p>
+<p>The layout has no outer panel border around the task list or detail body. Only the editor adds one enclosing border, with standard input outlines inside. Every row contains three fields: task title, link count, saved time; no repeated runtime/status paragraph, permanent marker, or cost/cache boilerplate. List controls use 10 of 20 rows at the minimum size, leaving 10 for the table including its header. Details reserve 7 rows for heading, feedback, actions, and hints, leaving 13 for content. Handoff keeps its destination field visible and leaves 10 rows for the preview at the floor size.</p>
+<p>Loading and saving display a status immediately and disable duplicate actions. Empty lists explain how to create a task. Capture failures retain the task and show the issue. Disconnected monitoring does not prevent editing existing saved work. SQLite, Git capture, and file export run outside the UI input thread. There is no background Git polling.</p>
+<h2 id="commands-without-a-running-monitor">Commands without a running monitor</h2>
+<pre><code class="language-bash">agenturm task create --title &quot;Fix refresh expiry&quot; --workspace . \
+  --notes &quot;Intent: reject expired tokens. Next: add a replay test.&quot; --snapshot
+# Prints the saved task UUID. Substitute it for TASK_ID below.
+
+agenturm task list
+agenturm task show TASK_ID
+agenturm task update TASK_ID --notes-file ./brief.txt
+agenturm task snapshot TASK_ID
+agenturm task handoff TASK_ID
+agenturm task handoff TASK_ID --output ./refresh-handoff.md
+agenturm task archive TASK_ID
+</code></pre>
+<p><code>handoff --output</code> creates both <code>.md</code> and <code>.html</code>, with embedded styles and light/dark support. A <code>.json</code> destination also creates a JSON copy. Existing destinations are never overwritten. Copy and export are explicit local operations; Agenturm does not send the brief or launch another agent. A linked session may offer <strong>Copy resume</strong> when its runtime has a supported native resume command; check whether the session is already active before running it.</p>
+<p>For scripting, each command accepts <code>--json</code>. <code>handoff --format html</code> or <code>--format json</code> selects stdout format. Diagnostics go to stderr. Exit codes are 0 for success, 2 for invalid input/storage errors, and 3 for revision conflicts. Mutating an existing task can include <code>--expected-revision N</code>; inspect the revision with <code>show --json</code> first.</p>
+<pre><code class="language-bash">agenturm task link TASK_ID --session-id SESSION_ID --runtime Codex
+agenturm task link TASK_ID --evidence-file ./run-evidence.json
+agenturm task unlink TASK_ID LINK_KEY
+agenturm task list --all --offset 1000 --json
+agenturm task archive TASK_ID --restore
+</code></pre>
+<p>The terminal loads metadata for the newest 1,000 tasks and shows a coverage notice if more exist. Search covers loaded tasks. CLI <code>list --offset</code> pages through older tasks; JSON includes total and next offset. Full records load only when opened.</p>
+<h2 id="evidence-and-usage-boundaries">Evidence and usage boundaries</h2>
+<p>An exact run link uses a 32-character hexadecimal trace ID. Its usage comes from that recorded run, not the lifetime session total. Different agents can be linked to one saved task deliberately. Session-only associations are kept for context and excluded from numeric totals. A task allows 64 links; refreshing an existing trace replaces its evidence without adding it again.</p>
+<p>Input and output form the token total. Cached input, cache writes, and reasoning tokens are breakdowns, so do not add them again. Reported USD costs are captured evidence; Agenturm does not invent prices, estimate subscription charges, or claim cache savings. Missing or partial telemetry is labeled. The selected run's loaded activity can contribute up to eight recorded test/check commands; this is a bounded excerpt, not a complete validation history. Relink to update it.</p>
+<p>The first successful workspace capture pins the current Git commit as the base. Later captures include committed, staged, and unstaged tracked changes relative to that base, plus untracked paths. Untracked file contents and ignored files are omitted. Git hooks, configured clean/smudge/process filters, external diff programs, and text conversion are disabled. Capture does not modify files, refs, or the index and does not run checks.</p>
+<p>Changes may predate the task or come from another agent in the workspace. Active writers may change files during or after capture. A recorded passing command is not proof that the captured diff passes. Handoffs state these limits and include capture timestamps. Changing the task workspace resets the saved base. A temporarily unavailable workspace preserves the existing base for the next capture.</p>
+<p>Git capture has an eight-second work budget, individual command timeouts, a 128 KiB diff limit, and at most 100 displayed changed paths. Partial output and unavailable repositories are labeled. Notes are limited to 32,000 characters and each saved record to 512 KiB. Nothing silently evicts saved tasks.</p>
+<h2 id="local-storage-and-sharing">Local storage and sharing</h2>
+<p>Saved tasks live in <code>$XDG_STATE_HOME/agenturm/tasks.sqlite3</code>, or <code>~/.local/state/agenturm/tasks.sqlite3</code> by default. Set <code>AGENTURM_TASKS_DB</code> to choose another file; CLI commands also accept <code>--tasks-db PATH</code>. This database is separate from telemetry, so telemetry retention/clearing does not delete the saved notes, links, or captured diff. Back up this file to preserve saved tasks.</p>
+<p>The database and exported files are created owner-readable/writable only. Notes, workspace paths, commands, and captured diffs can contain sensitive project material. Capture reads the repository directly; saved handoffs are not automatically redacted. Review the preview before copying or sharing it. HTML exports escape captured content and contain no remote assets. When monitoring a remote receiver, its workspace path is retained as evidence but is not automatically selected as a local capture directory.</p>
+<h2 id="structured-briefs-and-decision-history">Structured briefs and decision history</h2>
+<p><strong>Brief</strong> edits intent, acceptance criteria, constraints, open questions, and the
+next action. <strong>Decisions</strong> records accepted and rejected approaches with rationale,
+scope and optional source references. Manual entry is the default. Explicit
+excerpt capture opens an unsaved draft for review. Supersession creates an
+immutable version in the same task; active decisions lead the handoff, while
+history remains available. Missing retained telemetry does not delete a decision
+or establish that its source still exists.</p>
+<p>Brief and decision writes share the task's optimistic revision. A stale revision
+refuses the write and retains your draft. Limits are 128 decision versions per
+task, 4,000 characters per text/rationale field and the existing 512 KiB aggregate
+task budget. Notes retain their 32,000-character bound and links their 64-link
+bound. Over-budget edits fail visibly; user decisions are never silently evicted.</p>
+<p>Before opening an older task database with a new version, make an explicit SQLite
+backup using <code>agenturm task --tasks-db OLD backup NEW</code>. This command uses SQLite's
+backup API. Stop all writers before restoring a backup. The original task table
+columns are preserved; structured data lives in additive side tables. An older
+notes-only writer cannot display decisions but preserves those tables; the newer
+client observes the changed task revision. Mixed-version editing is discouraged.
+No migration infers structured decisions from existing freeform notes.</p>
+<pre><code class="language-sh">agenturm task brief TASK_ID --intent &quot;Reject expired tokens&quot; --next-action &quot;Add replay regression&quot;
+agenturm task decide TASK_ID --kind accepted --text &quot;Preserve the public API&quot; --rationale &quot;Existing callers depend on it&quot;
+agenturm task decisions TASK_ID --json
+agenturm task handoff TASK_ID --include-decision-history
+</code></pre>
+<p>For bounded file input, use <code>task brief TASK_ID --file brief.json</code> and
+<code>task decide TASK_ID --kind accepted --text-file decision.txt</code>. Brief JSON accepts
+only the documented fields. File and field limits are validated before saving.</p>
+<p>Native runs with an explicit recorded lifecycle start can be linked with
+<code>task link TASK_ID --receiver RECEIVER --producer SERVICE --session-id SESSION --run-start-ns START</code>.
+The positive start timestamp must come from the runtime record. This identifies
+a run without inventing a trace or numeric usage: native-only accounting remains
+unknown unless exact recorded run totals are available. Exact trace-backed links
+and older session-only links remain supported. A saved review carries its frozen
+scope; saving it does not silently capture a different currently selected turn.</p></main></body></html>

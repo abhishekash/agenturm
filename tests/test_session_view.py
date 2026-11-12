@@ -2,30 +2,137 @@ import time
 import unittest
 from unittest.mock import patch
 
-from textual.widgets import DataTable, Input
-from observatory.terminal_ui import ObservatoryApp, sources
+from textual.widgets import DataTable, Input, Select
+from observatory.terminal_ui import (ObservatoryApp, attention_evidence, coverage_warning, failure_evidence, input_required, recorded_progress,
+                                     input_status, sources, wait_label, wait_summary)
 from tests.test_terminal_search import ManualFeed
 
 
 class SessionViewTests(unittest.IsolatedAsyncioTestCase):
+    def test_failure_evidence_prefers_recorded_exception_reason(self):
+        event={'domain':'mcp','action':'call','subject':'github / search_issues','result':'error',
+               'detail':'{"exception":{"type":"TimeoutError","message":"request timed out after 30s"}}'}
+        self.assertEqual(failure_evidence(event),
+                         'mcp call github / search_issues · error: request timed out after 30s')
+
+    def test_failure_evidence_without_reason_says_where_to_look(self):
+        event={'domain':'shell','action':'run','subject':'pytest','result':'failed','detail':'{}'}
+        self.assertEqual(failure_evidence(event),
+                         'shell run pytest · failed. Open the failed event for its recorded details.')
+
+    def test_aggregate_error_distinguishes_run_evidence_from_collection_health(self):
+        item={'state':'Error','trace_count':2,'errors':1,'latest_trace_id':'trace-abc'}
+        evidence=attention_evidence(item,item)
+        self.assertIn('Telemetry recorded 1 failed run(s)',evidence)
+        self.assertIn('Latest trace: trace-abc',evidence)
+        self.assertIn('not proof of a collector failure',evidence)
+        self.assertIn('Diagnostics/Host',evidence)
+
+    def test_lifecycle_error_without_captured_detail_says_cause_is_unknown(self):
+        evidence=attention_evidence({'state':'Error'})
+        self.assertIn('no error message or failed action was captured',evidence)
+        self.assertIn('cause is unknown',evidence)
+
+    def test_missing_task_uses_first_recorded_user_prompt_as_identity(self):
+        feed=ManualFeed()
+        entry=feed.snapshot.local_status['sessions'][0]
+        entry['task']='Task not reported'
+        feed.snapshot.activity.extend([
+            {'id':'prompt-later','source_id':'prompt-later','service':'codex','session_id':entry['session_id'],
+             'time_unix_nano':20,'domain':'message','action':'user','subject':'Second request'},
+            {'id':'prompt-first','source_id':'prompt-first','service':'codex','session_id':entry['session_id'],
+             'time_unix_nano':10,'domain':'message','action':'user','subject':'Repair terminal navigation'},
+        ])
+        item=next(row for row in sources(feed.snapshot) if row['source_id']==entry['source_id'])
+        self.assertEqual(item['task'],'Repair terminal navigation')
+        self.assertEqual(item['task_source'],'recorded user request')
+
+    def test_native_opencode_and_pi_status_sessions_are_agent_rows(self):
+        feed = ManualFeed()
+        now = time.time_ns()
+        for runtime, sid in (("OpenCode", "opencode-session"), ("Pi", "pi-session")):
+            feed.snapshot.local_status['sessions'].append({
+                'source_id': f'{runtime.lower()}-source', 'runtime': runtime,
+                'service': runtime.lower(), 'session_id': sid, 'project': 'project',
+                'task': 'Task', 'run_state': 'running',
+                'last_activity': {'time_unix_nano': now}, 'capture_content': False,
+            })
+        rows = sources(feed.snapshot)
+        for runtime, sid in (("OpenCode", "opencode-session"), ("Pi", "pi-session")):
+            self.assertTrue(any(item['runtime'] == runtime and item['session_id'] == sid for item in rows))
+
+    async def test_tasks_get_spare_width_and_projects_have_readable_two_line_rows(self):
+        feed=ManualFeed()
+        task=('Investigate the checkout regression and improve keyboard navigation '
+              'for the payment form before preparing the next release.')
+        feed.snapshot.local_status['sessions'][0]['task']=task
+        feed.snapshot.local_status['sessions'][1]['task']='Task not reported'
+        app=ObservatoryApp(feed)
+        async with app.run_test(size=(160,48)) as pilot:
+            await pilot.pause()
+            app.set_agent_filter('all')
+            await pilot.pause()
+            for size in ((160,48),(120,40),(160,48)):
+                await pilot.resize_terminal(*size)
+                await pilot.pause()
+                table=app.query_one('#agent-table',DataTable)
+                self.assertNotIn('Waiting on',[str(column.label) for column in table.columns.values()])
+                self.assertGreater(table.column_widths[0],table.column_widths[1])
+                self.assertEqual(table.rows['source-1'].height,3)
+                self.assertEqual(table.rows['source-2'].height,3)
+                task_cell=table.get_row('source-1')[0]
+                self.assertTrue(task_cell.no_wrap)
+                rendered='\n'.join(table.render_line(row).text for row in range(table.size.height))
+                self.assertIn('Investigate the checkout',rendered)
+                self.assertIn('payments',rendered)
+                await pilot.press('e')
+                await pilot.pause()
+                self.assertEqual(app.query_one('#agent-heading').tooltip,task)
+                app.set_session_mode('details');await pilot.pause()
+                self.assertIn(task,' '.join(app.query_one('#agent-detail').plain_text.split()))
+                await pilot.press('escape')
+                await pilot.pause()
+                self.assertIn('Untitled session',table.get_row('source-2')[0].plain)
+            # Live updates can shrink a wrapped row without changing row identity.
+            feed.snapshot.local_status['sessions'][0]['task']='Fix checkout'
+            app.last_update=-1
+            app.refresh_data()
+            await pilot.pause()
+            self.assertEqual(table.rows['source-1'].height,3)
+            self.assertEqual(table.get_row('source-1')[0].plain.splitlines()[0].strip(), '▸ Fix checkout')
+
     async def test_columns_waiting_and_summary_are_bound_to_selected_session(self):
         feed = ManualFeed()
         entry = feed.snapshot.local_status['sessions'][0]
         entry.update(run_state='waiting', waiting_for='User input', working_directory='/work/payments', branch='fix/mcp')
-        app = ObservatoryApp(feed)
-        with patch('observatory.ai_summary.generate_summary', return_value='Reviewed migration. Waiting for your answer.') as generate:
-            async with app.run_test(size=(160, 48)) as pilot:
-                await pilot.pause()
-                table = app.query_one('#agent-table', DataTable)
-                self.assertEqual([str(c.label) for c in table.columns.values()],
-                    ['Agent', 'Session ID', 'Repo / project', 'Status', 'Updated', 'Waiting on', 'Task / details'])
-                row = ' '.join(str(value) for value in table.get_row_at(0))
-                self.assertIn('Waiting', row)
-                self.assertIn('User input', row)
-                # Mounting and refreshes never trigger paid API calls.
-                generate.assert_not_called()
-                with patch.dict('os.environ', {'OBSERVATORY_SUMMARY_URL': 'http://localhost:1234/v1/chat/completions',
-                                               'OBSERVATORY_SUMMARY_MODEL': 'local-model'}):
+        feed.snapshot.sessions = [{'session_id': entry['session_id'], 'services':[entry['service']], 'trace_count': 3,
+            'span_count': 12, 'errors': 1, 'failed': 0, 'incomplete': 1,
+            'input_tokens': 900, 'output_tokens': 240, 'known_cost_usd': 0.006,
+            'unknown_cost_runs': 2}]
+        with patch.dict('os.environ', {'OBSERVATORY_SUMMARY_URL': 'http://localhost:1234/v1/chat/completions',
+                                       'OBSERVATORY_SUMMARY_MODEL': 'local-model'}):
+            app = ObservatoryApp(feed)
+            with patch('observatory.ai_summary.generate_summary', return_value='Reviewed migration. Waiting for your answer.') as generate:
+                async with app.run_test(size=(160, 48)) as pilot:
+                    await pilot.pause()
+                    table = app.query_one('#agent-table', DataTable)
+                    self.assertEqual([str(c.label) for c in table.columns.values()],
+                        ['Task / source', 'State', 'Updated'])
+                    row = ' '.join(str(value) for value in table.get_row_at(0))
+                    self.assertIn('NEEDS REPLY', row)
+                    self.assertNotIn('Reply · Codex terminal', row)
+                    self.assertNotIn('Progress Summary · Recorded Activity',app.query_one('#agent-detail').plain_text)
+                    await pilot.press('e')
+                    await pilot.pause()
+                    detail = app.query_one('#agent-detail').plain_text
+                    self.assertNotIn('Progress Summary · Recorded Activity', detail)
+                    self.assertIn('NEEDS REPLY', app.query_one('#agent-context').render().plain)
+                    self.assertIn('answer in the Codex terminal', ' '.join(detail.split()))
+                    self.assertIn('Agenturm is read-only', ' '.join(detail.split()))
+                    self.assertIn('Status Evidence',detail)
+                    self.assertIn('Recorded Failures',detail)
+                    # Mounting and refreshes never trigger paid API calls.
+                    generate.assert_not_called()
                     await pilot.click('#agent-summary')
                     await app.workers.wait_for_complete()
                     await pilot.pause()
@@ -35,31 +142,278 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                     await app.workers.wait_for_complete()
                     self.assertEqual(generate.call_count, 1)
                     self.assertEqual(generate.call_args.args[1]['project'], 'payments')
+                    self.assertEqual(generate.call_args.args[1]['observed_totals'], {
+                        'runs': 3, 'spans': 12, 'errors': 1, 'failed_runs': 0,
+                        'incomplete_runs': 1, 'input_tokens': 900, 'output_tokens': 240,
+                        'known_cost_usd': 0.006, 'runs_with_unknown_cost': 2})
+
+    async def test_unconfigured_summary_is_available_locally_without_prompt_or_blank_panel(self):
+        with patch.dict('os.environ', {'OBSERVATORY_SUMMARY_URL': '', 'OBSERVATORY_SUMMARY_MODEL': '',
+                                       'OPENAI_API_KEY': '', 'OPENAI_BASE_URL': '', 'OPENAI_API_BASE': ''}):
+            feed = ManualFeed()
+            feed.api.activity.clear()
+            feed.refresh()
+            app = ObservatoryApp(feed)
+            async with app.run_test(size=(140, 42)) as pilot:
+                await pilot.pause()
+                app.set_agent_filter('all')
+                await pilot.pause()
+                self.assertTrue(app.query_one('#agent-summary').disabled)
+                self.assertIn('works without setup', app.query_one('#agent-summary').tooltip)
+                detail = app.query_one('#agent-detail').plain_text
+                self.assertIn('LATEST WORK', detail)
+                self.assertIn('git status --short', detail)
+                self.assertNotIn('AI summary ·', detail)
+                actions = app.query_one('#agent-actions', DataTable)
+                self.assertEqual(actions.row_count, 0)
+                self.assertFalse(actions.display)
+                await pilot.press('e')
+                await pilot.pause()
+                self.assertIn('Status Evidence',app.query_one('#agent-detail').plain_text)
+                self.assertEqual(len(app.query('#agent-output')), 0)
+                # The retired browser-output shortcut stays removed; b now
+                # opens local saved tasks rather than a blank output panel.
+                self.assertEqual([binding.action for binding in app.BINDINGS if binding.key == 'b'], ['saved_tasks'])
+
+    def test_wait_copy_and_reply_guidance_separate_user_input_from_tool_wait(self):
+        reply = {'runtime': 'OpenCode', 'state': 'Waiting', 'waiting_for': 'User input'}
+        self.assertTrue(input_required(reply))
+        self.assertIn('OpenCode terminal', wait_label(reply))
+        self.assertIn('read-only', wait_summary(reply))
+        tool = {'runtime': 'Codex', 'state': 'Waiting', 'waiting_for': 'Tool response: github / search'}
+        self.assertFalse(input_required(tool))
+        self.assertIn('no user action', wait_summary(tool))
+
+    async def test_sessions_needing_action_are_prioritized_and_labeled(self):
+        feed = ManualFeed()
+        now = time.time_ns()
+        waiting = next(item for item in feed.snapshot.local_status['sessions']
+                       if item['source_id'] == 'source-2')
+        waiting.update(run_state='waiting', waiting_for='Approval',
+                       last_activity={'time_unix_nano': now, 'domain': 'tool',
+                                      'action': 'permission', 'subject': 'write file'})
+        app = ObservatoryApp(feed)
+        async with app.run_test(size=(150, 42)) as pilot:
+            await pilot.pause()
+            table = app.query_one('#agent-table', DataTable)
+            self.assertEqual(next(iter(table.rows)).value, 'source-2')
+            row = ' '.join(str(value) for value in table.get_row_at(0))
+            self.assertIn('NEEDS APPROVAL', row)
+            detail=' '.join(app.query_one('#agent-detail').plain_text.split())
+            self.assertIn('Approval needed',detail)
+            self.assertIn('Claude terminal',detail)
+
+    async def test_three_working_agents_are_counted_named_and_prioritized_over_history(self):
+        feed = ManualFeed()
+        now = time.time_ns()
+        feed.snapshot.local_status['sessions'] = [
+            {'source_id': f'live-{index}', 'session_id': f'live-session-{index}',
+             'service': runtime.lower(), 'runtime': runtime, 'run_state': 'running',
+             'last_record_ns': now-120_000_000_000, 'task': 'A long model request'}
+            for index, runtime in enumerate(('Codex', 'Codex', 'OpenCode'))]
+        feed.snapshot.local_status['sessions'].append({
+            'source_id': 'done', 'session_id': 'done', 'runtime': 'Pi', 'service': 'pi',
+            'run_state': 'completed', 'last_record_ns': now, 'task': 'Finished work'})
+        app = ObservatoryApp(feed)
+        async with app.run_test(size=(160, 48)) as pilot:
+            await pilot.pause()
+            widget = app.query_one('#stat-sessions')
+            text = ' '.join(widget.render_line(row).text for row in range(widget.size.height))
+            self.assertIn('3 working agents', text)
+            table = app.query_one('#agent-table', DataTable)
+            self.assertEqual(list(table.rows)[0].value, 'live-0')
+            self.assertEqual(list(table.rows)[-1].value, 'done')
+            self.assertIn('A long model request', table.get_row('live-0')[0].plain)
+
+    async def test_prompts_filter_shows_only_user_messages_for_scoped_agent(self):
+        feed = ManualFeed()
+        stamp = time.time_ns() + 1
+        prompt = {'id':'prompt-1','source_id':'prompt-1','service':'codex','session_id':'session-1',
+                  'time_unix_nano':stamp,'domain':'message','action':'user','subject':'Deploy the update',
+                  'detail':'Deploy the update after the checks pass.','result':'observed'}
+        assistant = {'id':'assistant-1','source_id':'assistant-1','service':'codex','session_id':'session-1',
+                     'time_unix_nano':stamp+1,'domain':'message','action':'assistant','subject':'I will check the tests',
+                     'detail':'I will check the tests first.','result':'observed'}
+        other_session = {**prompt,'id':'prompt-2','source_id':'prompt-2','session_id':'session-2',
+                         'subject':'Do not show this other agent'}
+        feed.api.activity.extend([prompt, assistant, other_session])
+        feed.session_id='session-1';feed.service='codex';feed.request_refresh()
+        app = ObservatoryApp(feed)
+        async with app.run_test(size=(160, 48)) as pilot:
+            await pilot.pause()
+            app.query_one('#scope', Select).value='source-1'
+            await pilot.pause()
+            app.action_page('activity')
+            await pilot.pause()
+            await pilot.click('#prompts-activity')
+            await pilot.pause()
+            table = app.query_one('#activity-table', DataTable)
+            self.assertEqual(table.row_count, 1)
+            row = ' '.join(str(value) for value in table.get_row_at(0))
+            self.assertIn('Deploy the update', row)
+            self.assertNotIn('I will check the tests', row)
+            self.assertNotIn('Do not show this other agent', row)
+            self.assertEqual(len(feed.snapshot.activity), 3)
+
+    def test_recorded_progress_uses_captured_facts_and_does_not_guess_remaining_work(self):
+        item = {'state': 'Working', 'stamp': time.time_ns(), 'waiting_for': ''}
+        events = [{'time_unix_nano': time.time_ns(), 'domain': 'file', 'action': 'write',
+                   'subject': 'src/app.py', 'result': 'success'}]
+        summary = recorded_progress(item, events, {})
+        self.assertIn('Latest: Write app.py', summary)
+        self.assertIn('Errors: 0 recorded in captured recent activity', summary)
+        self.assertIn('Remaining work is not reported by the agent.', summary)
+
+    def test_discovery_caps_are_visible_as_partial_coverage(self):
+        warning = coverage_warning({'omitted_sources': 3, 'max_sources': 50,
+                                    'opencode_omitted_sessions': 2})
+        self.assertIn('3 older Codex/Claude sessions', warning)
+        self.assertIn('2 older OpenCode sessions', warning)
+        self.assertEqual(coverage_warning({}), '')
 
     async def test_server_inventory_includes_older_servers_and_filters_calls(self):
         feed = ManualFeed()
-        feed.snapshot.mcp_summary = {'calls': 140, 'tools': 5, 'errors': 2,
+        feed.api.mcp_summary = {'calls': 140, 'tools': 5, 'errors': 2,
             'servers': [{'server': 'github', 'calls': 139, 'tools': 4, 'errors': 1},
-                        {'server': 'older-server', 'calls': 1, 'tools': 1, 'errors': 1}]}
+                        {'server': 'older-server', 'calls': 1, 'tools': 1, 'errors': 1}],
+            'metric_calls': 68, 'metric_servers': [
+                {'server': 'cursor-mcp-server', 'calls': 68, 'tools': 3, 'errors': 2}]}
         app = ObservatoryApp(feed)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.action_page('mcp')
             await pilot.pause()
             table = app.query_one('#mcp-servers', DataTable)
-            self.assertEqual(table.row_count, 2)
+            self.assertEqual(table.row_count, 3, repr(app.table_data.get('mcp-servers')))
+            aggregate = app.table_data['mcp-servers']['cursor-mcp-server']
+            self.assertEqual((aggregate['calls'], aggregate['metric_calls']), (0, 68))
+            row_index = [key.value for key in table.rows].index('cursor-mcp-server')
+            self.assertIn('Aggregate metric', str(table.get_row_at(row_index)))
             table.focus()
-            table.move_cursor(row=1)
+            table.move_cursor(row=2)
             await pilot.press('enter')
             await pilot.pause()
             self.assertEqual(app.query_one('#search-mcp', Input).value, 'older-server')
 
-    def test_stale_running_session_does_not_claim_live_or_approval_wait(self):
+    async def test_unattributed_mcp_calls_are_visible_and_filterable_in_inventory(self):
+        feed = ManualFeed()
+        feed.api.mcp.append({
+            'id': 'call-unattributed', 'service': 'codex', 'session_id': 'session-1',
+            'time_unix_nano': time.time_ns(), 'server': 'Not reported', 'tool': 'lookup_release',
+            'method': 'tools/call', 'status': 'OK', 'duration_ms': 12,
+            'arguments': {'query': 'release'}, 'output': {'matches': 1},
+            'source': 'span', 'trace_id': 'trace-unattributed', 'span_id': 'span-unattributed'})
+        feed.api.mcp_summary = {'calls': 2, 'tools': 2, 'errors': 0,
+            'servers': [{'server': 'github', 'calls': 1, 'tools': 1, 'errors': 0}],
+            'unknown_server_calls': 1, 'unknown_server_tools': 1, 'unknown_server_errors': 0}
+        feed.extra_updated = 0
+        feed.refresh()
+        app = ObservatoryApp(feed)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.action_page('mcp')
+            await pilot.pause()
+            table = app.query_one('#mcp-servers', DataTable)
+            self.assertIn('Not reported', app.table_data['mcp-servers'])
+            row_index = [key.value for key in table.rows].index('Not reported')
+            self.assertIn('attribution unavailable', str(table.get_row_at(row_index)))
+            table.focus()
+            table.move_cursor(row=row_index)
+            await pilot.press('enter')
+            await pilot.pause(0.3)
+            self.assertEqual(app.query_one('#search-mcp', Input).value, 'Not reported')
+            self.assertIn('call-unattributed', app.table_data.get('mcp-table', {}))
+
+    async def test_non_tool_mcp_method_is_visible_in_the_operations_column(self):
+        feed = ManualFeed()
+        feed.api.mcp[0].update(tool='Not reported', method='resources/read')
+        feed.extra_updated = 0
+        feed.refresh()
+        app = ObservatoryApp(feed)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.action_page('mcp')
+            await pilot.pause()
+            table = app.query_one('#mcp-table', DataTable)
+            self.assertIn('Tool / method', [str(column.label) for column in table.columns.values()])
+            row = ' '.join(str(value) for value in table.get_row_at(0))
+            self.assertIn('resources/read', row)
+
+    async def test_global_findings_are_searchable_and_open_the_source_trace(self):
+        feed = ManualFeed()
+        feed.api.findings = [{
+            'id': 'finding-credential-001', 'trace_id': 'trace-1', 'kind': 'credential_exposure',
+            'title': 'Possible credential material captured', 'severity': 'high',
+            'detail': 'Detected token pattern in captured text. Values are omitted.',
+            'evidence': [{'type': 'span', 'id': 'span-1'}], 'time_unix_nano': time.time_ns(),
+            'session_id': 'session-1', 'task': 'Review migration', 'services': ['codex'],
+            'occurrence_count': 3, 'trace_count': 2, 'session_count': 1}]
+        feed.findings_cache = None
+        feed.refresh()
+        app = ObservatoryApp(feed)
+        async with app.run_test(size=(150, 42)) as pilot:
+            await pilot.pause()
+            app.action_page('findings')
+            await pilot.pause()
+            table = app.query_one('#finding-table', DataTable)
+            self.assertEqual(table.row_count, 1)
+            self.assertIn('credential_exposure', str(table.get_row_at(0)))
+            self.assertIn('Possible credential material', app.query_one('#finding-detail').plain_text)
+            self.assertIn('3 across 2 traces', app.query_one('#finding-detail').plain_text)
+            self.assertFalse(app.query_one('#finding-trace').disabled)
+            await pilot.click('#finding-trace')
+            await pilot.pause()
+            self.assertEqual(feed.selected_trace, 'trace-1')
+            self.assertEqual(feed.selected_span_id, 'span-1')
+            self.assertEqual(app.query_one('#pages').active, 'traces')
+
+    async def test_configured_server_without_calls_is_listed_as_unverified(self):
+        feed = ManualFeed()
+        feed.api.mcp_configurations = [
+            {'server': 'not-called-yet', 'client': 'Codex', 'scope': 'User', 'config': 'config.toml'}]
+        feed.refresh()
+        self.assertEqual(len(feed.snapshot.local_status['mcp_configurations']), 1)
+        app = ObservatoryApp(feed)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.action_page('mcp')
+            await pilot.pause()
+            table = app.query_one('#mcp-servers', DataTable)
+            self.assertEqual(table.row_count, 2, repr(app.table_data.get('mcp-servers')))
+            rows = app.table_data['mcp-servers']
+            entry = rows['not-called-yet']
+            self.assertEqual(entry['calls'], 0)
+            self.assertEqual(entry['server'], 'not-called-yet')
+            row_index = [key.value for key in table.rows].index('not-called-yet')
+            self.assertIn('not-called-yet', str(table.get_row_at(row_index)))
+            self.assertIn('Configured · Codex', str(table.get_row_at(row_index)))
+
+    def test_quiet_unfinished_turn_is_not_mistaken_for_a_stall_or_approval_wait(self):
         feed = ManualFeed()
         entry = feed.snapshot.local_status['sessions'][0]
         entry.update(run_state='running', waiting_for='Tool response: github / search')
         entry['last_activity']['time_unix_nano'] = time.time_ns() - 120_000_000_000
         item = next(item for item in sources(feed.snapshot) if item['id'] == entry['source_id'])
-        self.assertEqual(item['state'], 'No updates')
+        self.assertEqual(item['state'], 'Working (quiet)')
+        self.assertTrue(item['active'])
         self.assertFalse(item['recent'])
         self.assertNotIn('approval', item['waiting_for'].lower())
+
+    def test_agent_list_includes_recent_otlp_sessions_without_connection_registration(self):
+        feed = ManualFeed()
+        feed.snapshot.sessions = [{
+            'session_id': 'gemini-native-session', 'services': ['gemini-cli'],
+            'models': ['gemini-2.5-pro'], 'latest_status': 'WAITING',
+            'latest_task': 'Inspect failing tests', 'last_unix_nano': time.time_ns(),
+            'waiting_for': 'Approval', 'span_count': 3, 'trace_count': 1,
+            'project': 'agent-goechala'}]
+        item = next(row for row in sources(feed.snapshot) if row.get('session_id') == 'gemini-native-session')
+        self.assertEqual(item['runtime'], 'Gemini CLI')
+        self.assertEqual(item['state'], 'Waiting')
+        self.assertEqual(item['waiting_for'], 'Approval')
+        self.assertEqual(item['project'], 'agent-goechala')
+        self.assertEqual(item['model'], 'gemini-2.5-pro')
+        self.assertEqual(item['spans'], 3)
+        feed.snapshot.sessions[0].update(latest_status='RUNNING', waiting_for='')
+        item = next(row for row in sources(feed.snapshot) if row.get('session_id') == 'gemini-native-session')
+        self.assertEqual(item['state'], 'Working')

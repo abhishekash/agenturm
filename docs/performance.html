@@ -1,0 +1,154 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Resource budgets and reproducible benchmarks</title><style>
+:root{color-scheme:light dark;--bg:#f5f5ef;--paper:#fff;--text:#202923;--muted:#526158;--line:#d3dbd3;--accent:#315b42}
+@media(prefers-color-scheme:dark){:root{--bg:#111814;--paper:#1a241e;--text:#e8eee9;--muted:#acb9ae;--line:#3a4b3e;--accent:#b4d6a7}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:17px/1.65 system-ui,sans-serif}main{max-width:1100px;margin:2rem auto;padding:2.5rem;background:var(--paper);border:1px solid var(--line);border-radius:14px}h1,h2,h3{line-height:1.25}h2{margin-top:2.5rem;border-top:1px solid var(--line);padding-top:1rem}a{color:var(--accent)}li{margin:.7rem 0}table{display:block;overflow:auto;border-collapse:collapse;max-width:100%}td,th{border:1px solid var(--line);padding:.6rem;text-align:left;vertical-align:top}pre{overflow:auto;padding:1rem;border:1px solid var(--line);font-size:13px}figure{margin:2rem 0;padding:.8rem;border:1px solid var(--line)}img{display:block;width:100%;height:auto}figcaption{font-size:.9rem;color:var(--muted)}code{overflow-wrap:anywhere}pre code{overflow-wrap:normal}@media(max-width:650px){body{font-size:16px}main{margin:0;padding:1.2rem;border:0;border-radius:0}figure{padding:.3rem}}@media print{main{border:0;margin:0}figure{break-inside:avoid}}
+</style></head><body><main><h1 id="resource-budgets-and-reproducible-benchmarks">Resource budgets and reproducible benchmarks</h1>
+<p>Agenturm monitors other processes, so bounded background work matters as much
+as the speed of a single inspector. Use synthetic workloads for comparisons;
+do not copy personal agent databases into benchmark fixtures.</p>
+<h2 id="whole-app-baseline">Whole-app baseline</h2>
+<pre><code class="language-bash">uv run python scripts/benchmark_app.py
+# Longer idle window, less affected by UI startup:
+uv run python scripts/benchmark_app.py --idle-seconds 30
+</code></pre>
+<p>The benchmark runs each workload in a fresh process and temporary directory:</p>
+<ul>
+<li>Small: 10 traces with 20 spans each.</li>
+<li>Large: 2 traces with 10,000 spans each.</li>
+<li>Payloads: 2 traces with 1,000 spans each, with 8 KiB synthetic payloads per span.</li>
+<li>Actual SQLite storage, loopback receiver, HTTP feed, and headless Textual UI;
+  all seven views are visited before measuring idle CPU and RSS.</li>
+<li>No local session discovery, personal preference reads/writes, paid models,
+  or external network calls.</li>
+</ul>
+<p>It reports ingestion plus derived-processing time, feed refresh latency, idle
+process CPU, current Linux RSS, peak observed RSS where supported, and database
+size. CPU includes the UI, receiver, and feed. Twelve refresh samples provide a
+small empirical distribution, not a statistically reliable production p95;
+compare on the same machine with the same Python version. Headless UI memory
+and CPU do not establish rendering performance for every terminal emulator.
+RSS includes Python, Textual, SQLite, and temporary allocations: it is not just
+the size of persisted telemetry.
+The first refresh and warm median are reported separately: an unchanged database
+can reuse serialized API responses, whereas the first request must compute them.
+Peak observed RSS is the larger of the OS high-water counter and the sampled
+current RSS; those OS accounting mechanisms can differ slightly.</p>
+<h2 id="agent-hierarchy-benchmark">Agent hierarchy benchmark</h2>
+<p><code>tests/test_agent_hierarchy.py</code> builds a synthetic 1,010-node forest (ten roots,
+ten children per root, nine grandchildren per child) and exercises the same
+adjacency/projection code as the cockpit. On the development Linux host used for
+this change (Python 3.13, warm process), three local runs measured approximately:</p>
+<ul>
+<li>graph construction and cycle validation: 6.1–6.6 ms;</li>
+<li>flattening the fully expanded forest: 5.1–5.7 ms;</li>
+<li>first-pass subtree summaries for all roots: 1.2 ms; repeated cached lookups are faster.</li>
+</ul>
+<p>These are descriptive measurements, not a promised latency target. The fixture
+is separate from the production 50-source discovery limit; it verifies bounded
+projection cost without increasing real discovery windows.</p>
+<h2 id="native-reader-microbenchmark">Native-reader microbenchmark</h2>
+<pre><code class="language-bash">uv run python scripts/benchmark_resources.py
+</code></pre>
+<p>This isolates OpenCode reader polling for idle, unrelated database writes, and
+one changed tool. It does <strong>not</strong> measure derived storage processing or UI work.
+Avoid treating this microbenchmark as whole-app performance.</p>
+<h2 id="native-discovery-benchmark">Native discovery benchmark</h2>
+<pre><code class="language-bash">uv run python scripts/benchmark_discovery.py
+</code></pre>
+<p>This scans 10,000 synthetic JSONL files in 100 directories, including 100 recent
+sources, and selects the newest 50. It never opens personal session directories
+or ingests the generated files. Discovery uses one streaming <code>scandir</code> traversal
+and constructs paths only for recent candidates. It still checks old files for
+new writes, so resuming an old session remains discoverable within the normal
+ten-second discovery interval. Directory symlinks are not followed.</p>
+<h2 id="november-2026-optimization-measurements">November 2026 optimization measurements</h2>
+<p>On the same Linux / Python 3.12.3 host, with ten-second idle windows and all views
+warmed, the baseline (with the navigation feedback bug fixed) and the optimized
+response cache, summary rendering, and on-demand trace details measured:</p>
+<table>
+<thead>
+<tr>
+<th>Workload</th>
+<th>Refresh median before → after</th>
+<th>Idle CPU before → after</th>
+<th>RSS before → after</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Small</td>
+<td>23.6 → 10.2 ms</td>
+<td>7.20 → 5.78%</td>
+<td>73.6 → 68.7 MiB</td>
+</tr>
+<tr>
+<td>20,000 spans</td>
+<td>39.0 → 9.4 ms</td>
+<td>8.00 → 5.73%</td>
+<td>69.6 → 68.7 MiB</td>
+</tr>
+<tr>
+<td>8 KiB payloads</td>
+<td>39.9 → 12.8 ms</td>
+<td>8.38 → 5.59%</td>
+<td>76.8 → 70.3 MiB</td>
+</tr>
+</tbody>
+</table>
+<p>The synthetic discovery benchmark measured 115.1 → 52.3 ms CPU per scan.
+These are individual local runs, not portable guarantees. Cold refresh remained
+roughly 220–325 ms; ingestion was essentially unchanged and RSS modestly lower. Continuous
+writes invalidate the response cache, so these idle gains do not establish an
+equivalent improvement under sustained ingestion. The whole-app benchmark still
+excludes native discovery and real terminal rendering.</p>
+<h2 id="deterministic-budgets">Deterministic budgets</h2>
+<p>Regression tests enforce work limits rather than machine-dependent timings:</p>
+<ul>
+<li>Feed reads have at most four workers and sixteen prefetch slots per refresh.
+  Workers do not publish snapshots. A changed filter or selection invalidates
+  the pending snapshot.</li>
+<li>Each receiver response is limited to 16 MiB before JSON decoding. Decoded
+  Python objects can require more memory than their serialized representation.</li>
+<li>Live feed polling waits two seconds between refreshes. Inventory and findings
+  reads are cached for five seconds unless their scope changes.</li>
+<li>Watched JSONL reads are limited to 8 MiB per poll and 2 MiB per record.
+  Oversized records are dropped through their terminating newline.</li>
+<li>OpenCode payloads are limited to 2 MiB per record and 16 MiB per poll before
+  JSON is transferred into Python; deferred parts resume on later polls.</li>
+<li>Native lifecycle caches are limited to 64 KiB per entry and 1 MiB per map.</li>
+<li>Serialized API response caching retains at most 32 entries / 4 MiB of payload,
+  with a 1 MiB per-response limit. Authentication runs before cache lookup. A
+  dedicated read-only SQLite connection checks <code>PRAGMA data_version</code> before
+  reuse and before publishing a computed result; commits from ingestion,
+  derived processing, retention, and external writers invalidate the cache.
+  Database replacement also invalidates it. Health, connections, hierarchy, and
+  rolling usage windows bypass caching. The connection closes with the receiver.</li>
+<li>Summary cards skip unchanged text repaints. Programmatic view-menu updates
+  cannot enqueue additional navigation commands.</li>
+<li>The cockpit fetches trace-detail payloads only while Traces is visible. Opening
+  Traces requests a fresh snapshot; closing it invalidates any in-flight detail
+  response. Trace summaries and session monitoring continue on every live poll.</li>
+<li>AI summary evidence retains at most thirty matching events.</li>
+</ul>
+<p>These are component budgets, not a fixed whole-process RSS ceiling. Before
+changing defaults, compare all workloads, inspect database growth, and check
+that the optimization has not changed counts, correlation, or error semantics.</p>
+<h2 id="workflow-review-and-attention-budgets">Workflow review and attention budgets</h2>
+<p>Review loads only when opened, in pages of 200 records. Retention is bounded to
+1,000 records and 2 MiB of serialized decoded content per selection, four cached
+selections and 8 MiB total. HTTP review responses are capped at 2 MiB before JSON
+decoding. Paging is explicit; prompt history retains its independent limits.
+Polling, prompts and review share a four-request active HTTP budget. Generation
+guards discard obsolete screen results. Frozen exports do not fetch more history.</p>
+<p>Optional workflow diagnostics inspect at most 500 observations per trace and
+refresh at most 20 existing traces when enabled. Existing derived trace payload
+budgets also apply. They are disabled by default. User-owned task briefs and
+128 decision versions share the existing 512 KiB task limit, with hard refusal
+instead of silent eviction. Persistent workflow incidents have a 10,000-record capacity;
+unresolved records are retained and capacity limits are disclosed. Overflow
+requests remain visible as minimal memory-only observations with durable
+acknowledgement and desktop delivery disabled. This preserves unresolved work;
+it is not a fixed heap ceiling under unlimited outstanding requests.</p>
+<p>The joint implementation report records comparative small, large and payload
+benchmarks from the same machine. Serialized review budgets are not Python heap
+ceilings; decoded objects and rendering require additional memory.</p></main></body></html>

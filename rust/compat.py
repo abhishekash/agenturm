@@ -19,11 +19,13 @@ TRACE = "a" * 32
 SPAN = "1" * 16
 
 
-def write(path, task):
+def write(path, task, *, agent_id=None):
     span = {"trace_id": TRACE, "span_id": SPAN, "name": "agent.run",
             "start_unix_nano": 100, "end_unix_nano": 200,
             "attributes": {"agent.task": task}, "events": [],
             "resource_attributes": {"host.name": "test-host", "os.type": "linux"}}
+    if agent_id:
+        span["attributes"]["agent.id"] = agent_id
     path.write_text(json.dumps(span) + "\n", encoding="utf-8")
     return span
 
@@ -48,12 +50,30 @@ def run():
         endpoints = store.endpoints()
         assert len(endpoints) == 1 and endpoints[0]["identity_value"] == "test-host"
 
+        store.close()
         updated = write(source, "Updated task")
         import_with_rust(db, source)
+        store = Store(db)
         assert store.traces()[0]["task"] == "Updated task"
         assert len(store.trace(TRACE)["spans"]) == 1
         assert normalize_native(updated)["resource_attributes"]["host.name"] == "test-host"
-        print("Rust import, endpoint inventory, and Python query compatibility: passed")
+        owner = "ag1_" + "a" * 32
+        store.ingest([normalize_native(write(source, "Python owner", agent_id=owner))])
+        store.close()
+        replacement = "ag1_" + "b" * 32
+        write(source, "Rust replacement owner", agent_id=replacement)
+        import_with_rust(db, source)
+        store = Store(db)
+        with store._connect() as connection:
+            assert connection.execute("SELECT agent_id FROM spans").fetchone()[0] == replacement
+        store.close()
+        write(source, "Unowned replacement")
+        import_with_rust(db, source)
+        store = Store(db)
+        with store._connect() as connection:
+            assert connection.execute("SELECT agent_id FROM spans").fetchone()[0] is None
+        store.close()
+        print("Rust import, endpoint inventory, Python queries and current-schema ownership: passed")
 
 
 if __name__ == "__main__":

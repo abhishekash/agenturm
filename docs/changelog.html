@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm changelog</title><style>
+:root{color-scheme:light dark;--bg:#f6f8fb;--fg:#172336;--muted:#e4eaf1;--link:#135ba3}
+@media(prefers-color-scheme:dark){:root{--bg:#131a24;--fg:#e2eaf5;--muted:#2c384b;--link:#8fc4ff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,sans-serif}
+main{max-width:1000px;margin:auto;padding:40px 24px 80px}h1{line-height:1.2;font-size:clamp(28px,5vw,42px)}h2{margin-top:2em;line-height:1.3}
+a{color:var(--link)}pre{overflow:auto;padding:18px;background:var(--muted);border-radius:8px}code{font-size:.9em}
+table{display:block;overflow:auto;border-collapse:collapse;width:100%;font-size:14px}th,td{padding:12px;text-align:left;border-bottom:1px solid var(--muted)}th{white-space:nowrap}li{margin:.5em 0}
+@media(max-width:600px){main{padding:24px 16px}th,td{min-width:130px;padding:8px}}
+</style></head><body><main><h1>Changelog</h1>
+<h2>Agenturm 0.1.7</h2>
+<ul>
+<li>Reduce local monitoring resource usage, load expensive view data on demand, and index source lookups to avoid startup timeouts.</li>
+<li>Show truthful connection/loading progress, retry feedback, and a Retry now action without claiming an empty session list before data arrives.</li>
+<li>Make session inspectors readable with bounded, indented previews and full recorded evidence available in Activity.</li>
+<li>Add working-first, updated-time, and status sorting, red error filters, and clearer failure investigation.</li>
+<li>Show tokens and cost for each task's latest recorded run; keep input/output and cached-input breakdowns in the inspector, with exact values under <code>u</code>.</li>
+<li>Improve compact layouts, keyboard navigation, copying, and pausing live updates without losing the selected session.</li>
+</ul>
+<p>Restart Agenturm after upgrading. Restart any separately running receiver as well so it serves the new task-usage fields.</p>
+<h2>Agenturm 0.1.6</h2>
+<ul>
+<li>Show exact recorded delegations as an expandable agent tree, with a flat fallback, subtree activity/attention summaries, and canonical child inspection.</li>
+<li>Discover Codex subagent rollouts, Claude Code subagent sidecars, and OpenCode child sessions; keep forks and unlinked observations distinct from delegated workers.</li>
+<li>Persist normalized agent identities and bounded relationship provenance in additive SQLite tables, with <code>/api/hierarchy</code> and exact/subtree scope parameters for Activity, MCP, Traces, and Findings.</li>
+<li>Add explicit SDK/OTLP hierarchy attributes and document runtime capabilities and limitations.</li>
+<li>Add an Updated ↓/↑ sort control (and <code>o</code> shortcut) that always keeps working sessions first and terminated sessions last, with updated-time ordering inside each group.</li>
+</ul>
+<h2>Agenturm 0.1.5</h2>
+<ul>
+<li>Install only the <code>agenturm</code> command; remove the legacy <code>agent-observatory</code> and <code>agent-goechala</code> entry points.</li>
+<li>Show recorded reasons when a session fails.</li>
+<li>Make attention states actionable and evidence-based, and persist dismissed attention failures.</li>
+<li>Avoid caching inspector text at a hidden-pane width.</li>
+<li>Refresh the terminal walkthrough media.</li>
+</ul>
+<h2>Agenturm 0.1.4</h2>
+<ul>
+<li>Rework the terminal cockpit with a compact status overview and a separate, clearly framed view navigator.</li>
+<li>Keep the agent list uncapped, add Recent / Active / All filtering, and surface recorded prompts and activity in the inspector.</li>
+<li>Capture OpenCode user prompts locally when detail capture is enabled; metadata-only mode continues to omit prompt content.</li>
+<li>Improve MCP evidence, session prioritization, responsive navigation, themes, and graceful shutdown.</li>
+</ul>
+<h2>Agenturm 0.1.3</h2>
+<ul>
+<li>Rename and brand the terminal monitor as Agenturm, with a tower identity and walkthrough.</li>
+<li>Refresh the TUI with the Alpine Ember theme and tower mark.</li>
+<li>Keep selected Activity filter labels and keyboard shortcuts visible.</li>
+<li>Improve ADK protocol span handling and clarify release tagging for the renamed package.</li>
+</ul>
+<h2>Agent Observatory 0.1.2</h2>
+<ul>
+<li>See the GitHub releases for earlier release notes.</li>
+</ul>
+</main></body></html>

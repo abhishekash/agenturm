@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-observatory-cli"
-version = "0.1.2"
-description = "Local terminal and web dashboard for AI agent sessions, MCP calls, OpenTelemetry traces, and errors."
+name = "agenturm"
+version = "0.1.7"
+description = "Terminal-first monitor for AI agent sessions, MCP calls, OpenTelemetry traces, and errors."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
@@ -28,11 +28,11 @@ classifiers = [
 dependencies = ["textual>=8.2,<9"]
 
 [project.urls]
-Homepage = "https://github.com/abhishekash/agent-observatory"
-Documentation = "https://github.com/abhishekash/agent-observatory/blob/main/docs/usage.md"
-Repository = "https://github.com/abhishekash/agent-observatory"
-Issues = "https://github.com/abhishekash/agent-observatory/issues"
-Changelog = "https://github.com/abhishekash/agent-observatory/releases"
+Homepage = "https://github.com/abhishekash/agenturm"
+Documentation = "https://github.com/abhishekash/agenturm/blob/main/docs/usage.md"
+Repository = "https://github.com/abhishekash/agenturm"
+Issues = "https://github.com/abhishekash/agenturm/issues"
+Changelog = "https://github.com/abhishekash/agenturm/releases"
 
 [project.optional-dependencies]
 auto = [
@@ -46,10 +46,10 @@ langchain = ["langchain-core>=0.3.9,<2"]
 openai-agents = ["openai-agents>=0.1.0,<2"]
 
 [project.scripts]
-agent-observatory = "observatory.__main__:main"
+agenturm = "observatory.__main__:main"
 
-[tool.setuptools.package-data]
-observatory = ["index.html", "setup.js", "setup.css", "activity.js", "activity.css"]
+[tool.setuptools.exclude-package-data]
+observatory = ["*.html", "*.js", "*.css"]
 
 [tool.setuptools.packages.find]
 include = ["observatory*"]

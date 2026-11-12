@@ -1,127 +1,171 @@
 <p align="center">
-  <img src="media/logo.png" alt="Agent Observatory logo" width="640">
+  <a href="https://www.agenturm.dev/">
+    <img src="media/brand/hero.svg" alt="Agenturm tower-and-lens logo and the headline: Know what your agents are doing. Local observability for Codex, Claude Code, OpenCode, Pi, and OpenTelemetry agents." width="100%">
+  </a>
 </p>
-
-# Agent Observatory
-
-[![CI](https://github.com/abhishekash/agent-observatory/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/abhishekash/agent-observatory/actions/workflows/ci.yml)
-[![GitHub stars](https://img.shields.io/github/stars/abhishekash/agent-observatory?style=social)](https://github.com/abhishekash/agent-observatory/stargazers)
-[![PyPI](https://img.shields.io/pypi/v/agent-observatory-cli)](https://pypi.org/project/agent-observatory-cli/)
-[![Downloads](https://img.shields.io/pypi/dm/agent-observatory-cli?label=downloads%2Fmonth)](https://pypistats.org/packages/agent-observatory-cli)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/abhishekash/agent-observatory/blob/main/LICENSE)
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
-![OpenTelemetry OTLP](https://img.shields.io/badge/OpenTelemetry-OTLP-425CC7?logo=opentelemetry&logoColor=white)
-![Local first](https://img.shields.io/badge/data-local--first-2E8B57)
-
-**See what your coding agents are doing, live.** Agent Observatory brings local Codex and Claude Code sessions together with OpenTelemetry from instrumented agents, so you can see which sessions are working or waiting, what they last did, which MCP tools they called, and where a trace failed. Browse it in a keyboard friendly terminal or a local web dashboard.
 
 <p align="center">
-  <a href="https://raw.githubusercontent.com/abhishekash/agent-observatory/main/media/investigation-demo.mp4"><img src="media/investigation-demo-preview.gif" alt="Animated walkthrough: find an agent session, inspect a failed MCP response, and follow its trace" width="960"></a>
+  <strong>Follow Codex, Claude Code, OpenCode, and Pi from one terminal.</strong><br>
+  See recorded progress, inspect tool calls, and find what needs your attention.
 </p>
 
-<p align="center"><em>Animated preview above · <a href="https://raw.githubusercontent.com/abhishekash/agent-observatory/main/media/investigation-demo.mp4">Full 31-second 1080p MP4</a> · <a href="docs/investigation-video.md">Transcript</a>. Actual terminal UI with synthetic data; no real prompts or files.</em></p>
+<p align="center">
+  <a href="https://www.agenturm.dev/#demo"><strong>Try the interactive demo →</strong></a> &nbsp;·&nbsp;
+  <a href="docs/usage.md">Documentation</a> &nbsp;·&nbsp;
+  <a href="docs/privacy.md">Privacy boundaries</a>
+</p>
 
-## Start in one command
+<p align="center">
+  <a href="https://github.com/abhishekash/agenturm/actions/workflows/ci.yml"><img src="https://github.com/abhishekash/agenturm/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://www.agenturm.dev/"><img src="https://img.shields.io/badge/interface-terminal-ffbd69?labelColor=191621" alt="Terminal interface"></a>
+  <a href="docs/privacy.md"><img src="https://img.shields.io/badge/data-local_by_default-c5adff?labelColor=191621" alt="Local by default"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-b9afc5?labelColor=191621" alt="MIT license"></a>
+</p>
 
-Requires Python 3.11+. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if needed, then:
+## The view from your terminal
 
-```bash
-uvx --from agent-observatory-cli agent-observatory
-```
+<p align="center">
+  <a href="media/agenturm-demo.mp4">
+    <img src="media/agenturm-demo.gif" alt="29-second animated walkthrough of Agenturm's synthetic terminal: agent sessions, recorded prompts, MCP evidence, and a linked trace." width="100%">
+  </a>
+</p>
 
-To keep the command installed:
+<p align="center"><sub>Actual terminal UI · synthetic example records · <a href="media/agenturm-demo.mp4">Watch or download the full 29-second video</a> · <a href="docs/investigation-video.md">Rebuild the walkthrough</a></sub></p>
 
-```bash
-uv tool install agent-observatory-cli
-agent-observatory
-```
+## Start here. Stay in your terminal.
 
-Or install it into the active Python environment with `python -m pip install agent-observatory-cli`.
+Requires **Python 3.11+** and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
-The terminal cockpit discovers recent local Codex and Claude Code sessions automatically. Press **b** to open the local web dashboard. It listens on `127.0.0.1:14318`.
-
-### Your first minute
-
-1. Open **Agents**. Each row shows the runtime, session ID, repository/project, observed status, last update, any reported wait, and current or last task. Select a session to see its model, usage, and recent work.
-2. Open **MCP Calls** to see servers with observed calls in the selected history scope. Select a server to filter its calls, or inspect a call for recorded arguments, result, duration, and linked trace.
-3. Open **Activity** or **Traces** to follow the work around a call. Select a row and press **Enter** to inspect it; press **e** for a wider view. Press **b** to open the local browser dashboard.
-
-No sessions yet? Start a local Codex or Claude Code session and perform a task. Observatory discovers supported local session records; it does not attach to every process or infer unrecorded actions. Other runtimes need [instrumentation or OTLP export](https://github.com/abhishekash/agent-observatory/blob/main/docs/python.md). The MCP view lists servers with recorded calls, not every server configured on your machine.
-
-```text
-Codex / Claude Code logs ─┐
-Instrumented agents ─────┼─> local receiver ─> terminal cockpit / web dashboard
-                         └─> local SQLite history
-```
-
-### Optional AI session summaries
-
-Summaries are **off by default** and run only when you request one. Configure a compatible Chat Completions endpoint, model, and API key, then use **AI summary** on a selected session. The request contains the task, project, reported state, waiting reason, and recent action headlines; it excludes raw tool payloads, working directories, and hidden reasoning. Headlines can still contain private project details, so review the [data sent and provider setup](https://github.com/abhishekash/agent-observatory/blob/main/docs/usage.md#optional-ai-summaries) before enabling it.
-
-Already cloned the repository? Run the installer for your shell:
+Run it once without installing:
 
 ```bash
-./scripts/install.sh
+uvx agenturm
 ```
 
-```powershell
-.\scripts\install.ps1
+Or install the command:
+
+```bash
+uv tool install agenturm
+agenturm
 ```
 
-These install the checkout as an isolated uv tool. Re-run the script after pulling an update. No administrator access is needed.
+`agenturm` is published on [PyPI](https://pypi.org/project/agenturm/). The [installer](https://www.agenturm.dev/install.sh) wraps the same `uv tool install` for macOS and Linux. To run the latest unreleased source instead:
 
-## What you get
+```bash
+uvx --from git+https://github.com/abhishekash/agenturm agenturm
+```
 
-- **Agents:** one row per discovered session, with session ID, project, observed status, update age, reported wait, and task/details.
-- **Activity:** readable user/assistant messages, shell commands, file changes, browser events, model use, and tool results.
-- **MCP:** observed server inventory and tool calls with readable arguments/results, errors, latency, and direct links to execution spans. Unobserved configured servers are not listed.
-- **Traces:** parent/child spans, model usage, errors, and evidence for each operation.
-- **Host:** known local agent processes and basic resource use, shown separately from sessions.
-- **Web dashboard:** searchable live activity with the same local receiver.
+## Find what needs your attention
 
-The cockpit adapts from compact terminals to wide workspaces. Search stays with each view, **Enter** inspects a row, **e** expands the details, and **Esc** returns to the list. Drag to highlight inspector text and press **Ctrl+C** to copy it; **c** copies the current details. Activity, MCP Calls, and Traces include **Older / Newer / Latest** controls for stored history, and **Alt+Left** returns from a linked trace to the event you were reading.
+Start in **Today** with running work, sessions that need you, and reported completions awaiting your review. **History** keeps earlier work available. Ready for review means the agent reported completion; it does not verify the changes or tests. Select a task to inspect its evidence, and press `r` to mark that run reviewed. See the [daily workflow guide](docs/usage.html).
 
-The receiver stores data in a local SQLite file and listens on `127.0.0.1:14318`. Native session capture is bounded and redacts recognizable credentials on a best-effort basis. Choose metadata-only capture with `--metadata-only`. See [Privacy and capture boundaries](https://github.com/abhishekash/agent-observatory/blob/main/docs/privacy.md).
+Press **b** for **Saved tasks**: keep a brief across sessions, link specific runs, capture workspace changes, and prepare a handoff for your next agent. Saved tasks also work offline through `agenturm task`. See [saved tasks and handoffs](docs/saved-tasks.html).
 
-## Connect other agents
+| Start with… | Then inspect… |
+| --- | --- |
+| **Agents** — sessions, projects, status, and last update | A session's task, recorded progress, current work, and reported waits |
+| **Activity** — what happened in a session | Recorded prompts, messages, shell commands, file changes, and errors |
+| **MCP calls** — tools and servers | Arguments, responses, failures, duration, and linked execution |
+| **Traces** — how a run fits together | Parent and child operations, model usage, and errors |
+| **Host and metrics** — runtime and reported usage | Known local processes, host details, and recorded OTLP metrics |
 
-Send OpenTelemetry traces, logs, and metrics over OTLP/HTTP, or use the Python and JavaScript clients:
+Recent supported Codex, Claude Code, OpenCode, and Pi records are discovered locally—without restarting your agents. Other supported tools can send telemetry through OpenTelemetry to the local receiver.
 
-- [Python setup and automatic SDK capture](https://github.com/abhishekash/agent-observatory/blob/main/docs/python.md)
-- [Node.js client](https://github.com/abhishekash/agent-observatory/blob/main/docs/javascript.md)
-- [OTLP, receiver, and deployment configuration](https://github.com/abhishekash/agent-observatory/blob/main/docs/receiver.md)
-- [Complete usage guide and examples](https://github.com/abhishekash/agent-observatory/blob/main/docs/usage.md)
+When a runtime records an exact delegation, Agents shows an expandable tree and keeps every child independently inspectable. A completed parent stays completed while its workers continue, and a collapsed branch carries descendant activity and attention counts. Press `f` to switch to the flat list. See [agent hierarchy support and limits](docs/agent-hierarchy.md).
 
-For MCP clients that need to query saved traces conversationally, see
-[SpanHound](https://github.com/abhishekash/spanhound), a local MCP
-server for trace failures, approvals, token usage, and run comparisons.
-SpanHound reads JSONL and OTLP JSON files and can capture supported Python library calls.
+Each agent has a task line and a muted source/current-work line, grouped by an
+alternating background. Roomy terminals add a line of space between agents;
+compact terminals keep the two content lines. Selection stays distinct from the
+alternating rows.
 
-## Help improve agent observability
+Agenturm is a monitor, not a controller. Reply to agents and approve requests in their own terminals.
 
-[Tell us about your first run](https://github.com/abhishekash/agent-observatory/issues/new?template=first_run.yml):
-which agent you use, what you expected to see, and what was missing or confusing.
-Share a redacted example when reporting a capture or formatting problem.
+The session inspector opens on **Overview**: the latest agent-reported update,
+recorded work and results, and delegated children. **Prompts** lets you read one
+request at a time, with runtime context separated and original captured text
+always available. **Details** holds IDs, usage and provenance. On the inspector
+tabs, use `←` / `→` to choose a section and `Enter` to read. `Ctrl+←` / `Ctrl+→`
+switch sections from the reader; `m` also cycles them. Use `Tab` / `Shift+Tab`
+for controls, `[` / `]` for requests, and `z` for original text. Reading positions
+survive section changes.
+See the [assessment, reviewed plan and validation report](docs/agents-experience-review.html).
 
-If Agent Observatory helps with your workflow, a [GitHub star](https://github.com/abhishekash/agent-observatory) helps other agent developers find it. Issues with a clear reproduction and small fixes are especially welcome.
+Open **Review** from Overview for recorded checks, later edits and explicit
+coverage. **w** opens the attention inbox; seen requests stay pending until native
+evidence resolves them. **b** opens Saved tasks, including structured briefs and
+versioned decisions for a reviewed handoff. See the [joint RFC implementation
+plan](docs/rfcs/joint-implementation-plan.html) and [saved-task guide](docs/saved-tasks.html).
+
+### Keyboard first
+
+| Key | Action |
+| --- | --- |
+| `1`–`7` | Switch views |
+| `↑` / `↓`, `Enter` | Select and inspect a record |
+| `→` / `←` | Expand a branch / collapse or move to the parent |
+| `f` | Switch the Agents tree and flat list |
+| `o` | Choose Working first, Updated, or Status sorting |
+| `/` | Search the current view |
+| `e` | Expand details |
+| `Ctrl+←` / `Ctrl+→`, `m` | Switch inspector sections |
+| `Tab` / `Shift+Tab` | Move between inspector controls |
+| `t` | Follow the linked trace |
+| `Esc` / `Alt+←` | Return or navigate back |
+| `c` | Copy details |
+| `d` | Open collection diagnostics |
+| `w` | Attention inbox, completion review, task alerts, and terminal handoff |
+| `b` | Saved tasks: notes, linked runs, workspace capture, and handoff |
+| `x` | Preview and export selected evidence |
+| `q` | Quit |
+
+### Four terminal themes
+
+Press **Ctrl+P → Theme** to choose **Current** (Alpine Ember), **Bright**, **Dark**, or **Solarized**. The selected palette carries through panels, tables, controls, and evidence inspectors.
+
+## Local by default
+
+Supported records and telemetry are stored in local SQLite. The built-in receiver listens on `127.0.0.1:14318`. **Local monitoring and recorded-progress summaries need no account or API key.**
+
+Captured messages, commands, and tool results can contain sensitive project information. Recognizable credentials are redacted on a best-effort basis. Use `--metadata-only` to omit native session text, commands, and outputs from future ingestion. [Read what is collected and where it goes](docs/privacy.md).
+
+Recorded-progress summaries work locally. Optional AI summaries call your configured provider only when explicitly requested. The documented session evidence can include task and action text; review [AI summary setup and data](docs/usage.md#optional-ai-summaries) before enabling one.
+
+## Integrations and documentation
+
+- [Complete usage guide](docs/usage.md) — installation, local discovery, keyboard shortcuts, and troubleshooting.
+- [Integrations guide](docs/frameworks.md) — Pydantic AI, Google ADK, Gemini CLI, and other OTLP agents.
+- [Python integrations and automatic SDK capture](docs/python.md)
+- [JavaScript client](docs/javascript.md)
+- [Receiver and OTLP configuration](docs/receiver.md)
+- [Resource budgets and benchmarking](docs/performance.md)
+- [Capture and privacy boundaries](docs/privacy.md)
+- [Brand and terminal themes](docs/branding.md)
+
+For conversational queries over recorded MCP executions, see [SpanHound](https://github.com/abhishekash/spanhound), the companion MCP tool.
 
 ## Develop
 
 ```bash
-git clone https://github.com/abhishekash/agent-observatory.git
-cd agent-observatory
-uv tool install --editable .
-python -m unittest discover -s tests -v
+git clone https://github.com/abhishekash/agenturm.git
+cd agenturm
+uv sync
+uv run agenturm
+uv run python -m unittest discover -s tests -v
 ```
 
 An [experimental Rust trace importer and receiver](rust/README.md) is available
-for testing the native ingestion path. The Python application remains the full
-dashboard and terminal UI.
+for testing native ingestion. The supported `agenturm` application remains the
+Python terminal cockpit.
 
-Contributions and bug reports are welcome. See [CONTRIBUTING.md](https://github.com/abhishekash/agent-observatory/blob/main/CONTRIBUTING.md) and [open an issue](https://github.com/abhishekash/agent-observatory/issues).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and demo production. [Issues](https://github.com/abhishekash/agenturm/issues) and focused pull requests with clear reproductions are welcome.
 
-Maintainers can follow the [PyPI publishing guide](https://github.com/abhishekash/agent-observatory/blob/main/docs/publishing.md) to release a version with Trusted Publishing.
+<details>
+<summary>Upgrading from Agent Observatory</summary>
 
-## License
+Agenturm is the new name. Install from this repository to get the `agenturm` command. Existing Python imports (`observatory`), `OBSERVATORY_*` settings, telemetry keys, and `observatory.db` history continue to work. The old executable aliases are intentionally not installed; use `agenturm`. The source install above works independently of PyPI publication.
 
-Agent Observatory is distributed under the [MIT License](https://github.com/abhishekash/agent-observatory/blob/main/LICENSE).
+</details>
+
+---
+
+**Agenturm** is open source under the [MIT license](LICENSE). Read more at [agenturm.dev](https://www.agenturm.dev/).

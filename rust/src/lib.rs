@@ -293,6 +293,11 @@ pub fn ingest(db: &mut Connection, spans: &[Span]) -> Result<usize> {
         return Ok(0);
     }
     let tx = db.transaction()?;
+    let indexed_owners: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('spans') WHERE name='agent_id')",
+        [],
+        |row| row.get(0),
+    )?;
     let mut touched = HashSet::new();
     {
         let mut insert = tx.prepare_cached("INSERT INTO spans
@@ -303,6 +308,11 @@ pub fn ingest(db: &mut Connection, spans: &[Span]) -> Result<usize> {
             end_ns=excluded.end_ns,status=excluded.status,service=excluded.service,
             attributes=excluded.attributes,events=excluded.events,links=excluded.links,
             resource_attributes=excluded.resource_attributes,scope_name=excluded.scope_name")?;
+        let mut owner = if indexed_owners {
+            Some(tx.prepare_cached("UPDATE spans SET agent_id=? WHERE trace_id=? AND span_id=?")?)
+        } else {
+            None
+        };
         let mut touch = tx.prepare_cached(
             "INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
             ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)",
@@ -332,6 +342,11 @@ pub fn ingest(db: &mut Connection, spans: &[Span]) -> Result<usize> {
                 span.resource_attributes.to_string(),
                 span.scope_name
             ])?;
+            if let Some(owner) = &mut owner {
+                // Never retain a previous Python writer's owner after replacing
+                // its attributes. Native hierarchy indexing is not ported yet.
+                owner.execute(params![canonical_owner(span), span.trace_id, span.span_id])?;
+            }
             touch.execute(params![span.trace_id, span.end_ns])?;
             if let Some((key, value)) = endpoint_identity(&span.resource_attributes) {
                 let digest = Sha256::digest(format!("{key}\0{value}").as_bytes());
@@ -373,6 +388,21 @@ pub fn ingest(db: &mut Connection, spans: &[Span]) -> Result<usize> {
     }
     tx.commit()?;
     Ok(spans.len())
+}
+
+fn canonical_owner(span: &Span) -> Option<&str> {
+    let raw = span
+        .attributes
+        .get("agent.id")
+        .filter(|value| !value.is_null() && value.as_str() != Some(""))
+        .or_else(|| span.resource_attributes.get("agent.id"))?
+        .as_str()?;
+    let suffix = raw.strip_prefix("ag1_")?;
+    (suffix.len() == 32
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some(raw)
 }
 
 const ENDPOINT_RESOURCE_KEYS: &[&str] = &[
@@ -473,6 +503,21 @@ mod tests {
         ingest(&mut db, &[span.clone(), span])?;
         let count: i64 = db.query_row("SELECT COUNT(*) FROM spans", [], |row| row.get(0))?;
         assert_eq!(count, 1);
+        db.execute("ALTER TABLE spans ADD COLUMN agent_id TEXT", [])?;
+        db.execute(
+            "UPDATE spans SET agent_id=?",
+            [format!("ag1_{}", "a".repeat(32))],
+        )?;
+        let mut raw = sample();
+        let replacement = format!("ag1_{}", "b".repeat(32));
+        raw["attributes"]["agent.id"] = json!(replacement);
+        ingest(&mut db, &[normalize_native(&raw, "test")?])?;
+        let owner: String = db.query_row("SELECT agent_id FROM spans", [], |row| row.get(0))?;
+        assert_eq!(owner, replacement);
+        ingest(&mut db, &[normalize_native(&sample(), "test")?])?;
+        let owner: Option<String> =
+            db.query_row("SELECT agent_id FROM spans", [], |row| row.get(0))?;
+        assert_eq!(owner, None);
         Ok(())
     }
 
