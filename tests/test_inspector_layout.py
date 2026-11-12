@@ -67,6 +67,8 @@ class InspectorLayoutTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.focused.id,'agent-modes')
             self.assertFalse(app.query_one('#agent-prompt-select').display)
             await pilot.press('enter');await app.workers.wait_for_complete();await pilot.pause()
+            self.assertEqual(app.focused.id,'agent-prompts')
+            await pilot.press('enter');await pilot.pause()
             self.assertEqual(app.focused.id,'agent-detail')
             await pilot.press('pagedown');await pilot.pause()
             self.assertGreater(app.query_one('#agent-detail').scroll_y,0)
@@ -76,6 +78,8 @@ class InspectorLayoutTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press('ctrl+left');await pilot.pause()
             self.assertEqual(app.session_mode,'prompts');self.assertEqual(app.session_prompts.selected,selected)
             self.assertGreater(app.query_one('#agent-detail').scroll_y,0)
+            self.assertEqual(app.focused.id,'agent-prompts')
+            await pilot.press('enter');await pilot.pause()
             visited=[]
             for _ in range(20):
                 await pilot.press('tab');await pilot.pause()
