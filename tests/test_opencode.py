@@ -184,7 +184,8 @@ class OpenCodeReaderTests(unittest.TestCase):
         reader.poll()
         self.assertEqual(reader.discovered_sessions, 1)
         entry = reader.status_sessions()[0]
-        self.assertEqual(entry['task'], 'V2 real task')
+        self.assertEqual(entry['task'], 'initial prompt')
+        self.assertEqual(entry['initial_task'], 'initial prompt')
         self.assertEqual(entry['project'], 'v2-project')
         self.assertEqual(entry['model'], 'v2-model')
         self.assertEqual(entry['run_state'], 'completed')
@@ -206,6 +207,68 @@ class OpenCodeReaderTests(unittest.TestCase):
         reader = OpenCodeReader(self.store, path=self.database)
         self.assertGreater(reader.poll(), 0)
         self.assertEqual(reader.discovered_sessions, 1)
+
+    def test_first_request_beats_generated_title_and_model_controls(self):
+        now=time.time_ns()//1_000_000
+        for table in ['legacy','v2']:
+            with self.subTest(table=table):
+                with closing(sqlite3.connect(self.database)) as db,db:
+                    db.execute('DELETE FROM message WHERE id != ?',('msg_test',))
+                    if table=='v2':
+                        db.execute('CREATE TABLE IF NOT EXISTS session_message(id TEXT PRIMARY KEY,session_id TEXT,type TEXT,seq INTEGER,time_created INTEGER,time_updated INTEGER,data TEXT)')
+                    for index,text in enumerate(['switch model',
+                         '<environment_context>'+('context '*2000)+'</environment_context>\nFix refresh token expiry.',
+                         'Add cancellation coverage.', 'Switch model to gpt-6.1-sol']):
+                        if table=='v2':
+                            db.execute('INSERT OR REPLACE INTO session_message VALUES(?,?,?,?,?,?,?)',
+                                       (f'user-{index}','ses_test','user',index,now-5000+index,now+index,json.dumps({'text':text})))
+                        else:
+                            db.execute('INSERT INTO message VALUES(?,?,?,?,?)',
+                                       (f'user-{index}','ses_test',now-5000+index,now+index,json.dumps({'role':'user','content':text})))
+                reader=OpenCodeReader(self.store,path=self.database);reader.poll()
+                entry=next(item for item in reader.status_sessions() if item['session_id']=='ses_test')
+                self.assertEqual(entry['task'],'Fix refresh token expiry.')
+                self.assertEqual(entry['initial_task'],'Fix refresh token expiry.')
+                reader.poll()
+                self.assertEqual(reader.status_sessions()[0]['task'],'Fix refresh token expiry.')
+
+    def test_initial_request_cache_avoids_rereads_and_follows_database_replacement(self):
+        import observatory.opencode as module
+        now=time.time_ns()//1_000_000
+        with closing(sqlite3.connect(self.database)) as db,db:
+            db.execute('INSERT INTO message VALUES(?,?,?,?,?)',('first','ses_test',now-5000,now-5000,
+                       json.dumps({'role':'user','content':'Fix refresh token expiry.'})))
+        reader=OpenCodeReader(self.store,path=self.database);reader.poll()
+        with patch.object(module,'_first_user_prompt',wraps=module._first_user_prompt) as read:
+            with closing(sqlite3.connect(self.database)) as db,db:
+                db.execute('UPDATE session SET time_updated=?',(now+100,))
+            reader.poll();read.assert_not_called()
+        replacement=Path(self.tmp.name)/'replacement.db'
+        with closing(sqlite3.connect(self.database)) as old,closing(sqlite3.connect(replacement)) as new:
+            old.backup(new)
+            new.execute('UPDATE message SET data=? WHERE id=?',
+                        (json.dumps({'role':'user','content':'Repair the replaced database.'}),'first'));new.commit()
+        replacement.replace(self.database)
+        reader.poll()
+        self.assertEqual(reader.status_sessions()[0]['initial_task'],'Repair the replaced database.')
+        self.assertLessEqual(len(reader._initial_tasks),50)
+
+    def test_identity_lookup_skips_oversized_values_and_bounds_candidate_count(self):
+        from observatory.opencode import _first_user_prompt
+        now=time.time_ns()//1_000_000
+        with closing(sqlite3.connect(self.database)) as db,db:
+            db.row_factory=sqlite3.Row
+            for index,text in enumerate(['x'*2000,'switch model','Repair expiry.']):
+                db.execute('INSERT INTO message VALUES(?,?,?,?,?)',(f'bounded-{index}','ses_test',now-5000+index,now-5000+index,
+                           json.dumps({'role':'user','content':text})))
+            columns={row[1] for row in db.execute('PRAGMA table_info(message)')}
+            with patch('observatory.opencode.MAX_TASK_BYTES',512):
+                self.assertEqual(_first_user_prompt(db,'message',columns,'ses_test'),'Repair expiry.')
+            with patch('observatory.opencode.MAX_TASK_MESSAGES',2):
+                # The first oversized message consumes the finite prefix budget;
+                # a later request is never claimed without being read.
+                with patch('observatory.opencode.MAX_TASK_BYTES',512):
+                    self.assertEqual(_first_user_prompt(db,'message',columns,'ses_test'),'')
 
     def test_uses_first_user_prompt_when_opencode_title_is_missing(self):
         now_ms = time.time_ns() // 1_000_000

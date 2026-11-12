@@ -50,10 +50,28 @@ class SessionTextTests(unittest.TestCase):
         self.assertEqual(session.task_description,'Fix checkout retries.')
         self.assertNotIn('second',session.tasks)
         remember_task(session,'Add cancellation coverage.')
-        self.assertEqual(session.task_description,'Add cancellation coverage.')
+        self.assertEqual(session.task_description,'Fix checkout retries.')
+        self.assertEqual(session.tasks['second'],'Add cancellation coverage.')
         session.capture_details=False
         remember_task(session,'Private new task')
         self.assertNotIn('Private',str(session.tasks))
+
+    def test_model_controls_never_become_task_identity_but_remain_readable(self):
+        controls = ['switch model', 'Switch model to gpt-6.1-sol.', 'please switch model to `local-model`',
+                    'use gpt-6.1-sol', 'switch to claude-sonnet please', '/model gpt-6.1',
+                    'set reasoning effort to high', 'change effort xhigh', 'go ahead', 'hi',
+                    '<environment_context>work</environment_context>\nswitch model',
+                    '<command-name>/model</command-name>\n<command-args>gpt-6</command-args>',
+                    '<send_user_message_question_reply>\n{"answer":"Use GPT"}\n</send_user_message_question_reply>']
+        for text in controls:
+            with self.subTest(text=text):
+                self.assertEqual(task_description(text),'')
+                self.assertEqual(request_text(text).raw,text)
+        self.assertEqual(task_description('Switch model\nFix checkout retries.'),'Fix checkout retries.')
+        for text in ['Implement model switching in settings.', 'Switch model loading to an async queue.',
+                     'Use gpt-6 to diagnose the checkout failure.', 'Continue the database migration.',
+                     '检查重试逻辑', 'Fix the model selector']:
+            with self.subTest(text=text):self.assertEqual(task_description(text),text)
 
     def test_scope_isolates_workers_services_and_missing_identity(self):
         def event(agent,service='codex',session='shared'):

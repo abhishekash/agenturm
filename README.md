@@ -86,6 +86,8 @@ To upgrade, run `uv tool upgrade agenturm`, then restart Agenturm and any separa
 
 **Today** puts active work and work needing review within reach; **History** keeps earlier sessions available. Search by task or project. Switch between the tree and flat list with `f`.
 
+Task labels stay anchored to the **first substantive recorded request**. Model changes, acknowledgements, and later steering stay in Prompts without renaming the task. Recent activity remains separate on the source line. [Task identity and capture limits](docs/session-task-labels.md).
+
 A parent and its workers retain independent states. A completed parent can still have a working child; the branch summary makes that visible. Missing parent evidence stays explicit. Relationships use exact runtime identifiers, rather than guesses from similar tasks or nested spans. [Hierarchy support and limits](docs/agent-hierarchy.md).
 
 ### Read the request with its context

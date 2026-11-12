@@ -1077,6 +1077,7 @@ class Store:
             for row in rows:
                 attrs = json.loads(row["attributes"])
                 attrs["agent.activity.subject"] = "Approval review"
+                attrs.pop("agent.session.task", None)
                 db.execute("UPDATE logs SET body=?,attributes=?,service='codex-review' WHERE digest=?",
                            (json.dumps(""), json.dumps(attrs), row["digest"]))
                 if row["trace_id"]:
@@ -1084,6 +1085,7 @@ class Store:
             rows = db.execute("SELECT trace_id,span_id,attributes,name FROM spans WHERE instr(resource_attributes,?)>0", (source_id,)).fetchall()
             for row in rows:
                 attrs = json.loads(row["attributes"])
+                attrs.pop("agent.session.task", None)
                 if row["name"] == "agent.run":
                     attrs["agent.task"] = "Approval review"
                 db.execute("UPDATE spans SET attributes=?,service='codex-review' WHERE trace_id=? AND span_id=?",
@@ -2736,6 +2738,8 @@ class Store:
                             "relationship_state", "relationship_provenance"):
                     if summary.get(key):
                         item[key] = summary[key]
+            if summary.get("initial_task") and not item.get("initial_task"):
+                item["initial_task"] = summary["initial_task"]
             item["trace_count"] += 1
             item["span_count"] += int(summary.get("span_count") or 0)
             status = summary.get("status")
@@ -2814,6 +2818,10 @@ class Store:
                     item["latest_trace_id"] = row["trace_id"]
                 if row["time_ns"] >= item.get("_trace_last_ns", 0):
                     item["latest_waiting_for"] = _waiting_for(attrs)
+            initial_task = attrs.get("agent.session.task")
+            if initial_task and not item.get("initial_task"):
+                from .session_text import task_description
+                item["initial_task"] = task_description(initial_task)[:500]
             task = attrs.get("agent.task") or attrs.get("task")
             source_event = attrs.get("observatory.source.event_name") or row["event_name"]
             if (not task and source_event == "cursor.conversation.user_message"
@@ -3327,6 +3335,7 @@ def summarize(spans):
             "relationship_provenance": hierarchy_attr("agent.relationship.provenance"),
             "active": any(s['name']=='agent.run' and s['attributes'].get('agent.run.state')=='running' for s in spans),
             "task": root["attributes"].get("agent.task"),
+            "initial_task": root["attributes"].get("agent.session.task"),
             "waiting_for": waiting_for,
             "project": next((root.get("resource_attributes", {}).get(key)
                              for key in ("vcs.repository.name", "project.name", "repository.name")

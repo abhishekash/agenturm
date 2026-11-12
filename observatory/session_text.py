@@ -17,7 +17,20 @@ _CONTEXT = re.compile(
     r'system-reminder|INSTRUCTIONS|skill)\b[^>]*>.*?</(?P=tag)>', re.S)
 _AGENTS = re.compile(r'^# AGENTS\.md instructions for [^\n]+\n\s*(?=<INSTRUCTIONS>)')
 _STEERING = {'yes', 'no', 'ok', 'okay', 'thanks', 'thank you', 'go ahead',
-             'continue', 'please continue', 'proceed', 'do it', 'sure', 'sounds good'}
+             'continue', 'please continue', 'proceed', 'do it', 'sure', 'sounds good',
+             'hi', 'hello', 'hey', 'yes please', 'thanks please continue',
+             'merge it', 'force merge all', 'commit it', 'commit and push',
+             'use a different model', 'switch to a different model'}
+# Match complete operational instructions, never mentions inside a real task.
+_MODEL = r'(?:gpt[\w./:+-]*|claude[\w./:+-]*|gemini[\w./:+-]*|o[134][\w./:+-]*|qwen[\w./:+-]*|llama[\w./:+-]*|deepseek[\w./:+-]*|auto|default)'
+_CONTROLS = re.compile(
+    r'^(?:(?:please|(?:can|could|would)\s+you)\s+)?(?:'
+    r'(?:switch|change)(?:\s+(?:the|your))?\s+model(?:\s+to\s+[\w./:@+-]+|\s+' + _MODEL + r')?'
+    r'|(?:switch|change)\s+(?:back\s+)?to\s+' + _MODEL + r'(?:\s+model)?'
+    r'|(?:use|try)\s+(?:the\s+)?' + _MODEL + r'(?:\s+(?:model|instead))?'
+    r'|(?:set|change|switch)(?:\s+the)?\s+(?:reasoning\s+)?effort(?:\s+to)?\s+(?:none|minimal|low|medium|high|xhigh|max|ultra)'
+    r'|/(?:model|effort)(?:\s+[\w./:@+-]+)?|/(?:compact|clear|resume)'
+    r')(?:\s+please)?$', re.I)
 _MISSING = {'task not reported', 'user message', 'assistant message', 'user prompt'}
 
 
@@ -79,15 +92,34 @@ def request_title(value):
 
 
 def task_description(value):
-    title = request_title(value)
-    if title.casefold().strip(' .!') in _STEERING | _MISSING | {
-            'runtime context', 'request text unavailable', 'reply to input request'}:
+    """First substantive request line, excluding standalone session controls.
+
+    This changes only identity labels. Every original request stays inspectable.
+    A control followed by an actual task on another line still yields that task.
+    """
+    body = request_text(value).body
+    if request_title(body) == 'Reply to input request':
         return ''
-    return title
+    # Native slash-command envelopes are operational records, not requests.
+    if re.fullmatch(r'<command-name>/(?:model|effort|compact|clear|resume)</command-name>'
+                    r'(?:\s*<command-(?:message|args)>.*?</command-(?:message|args)>)*', body.strip(), re.S):
+        return ''
+    for line in body.splitlines():
+        if not line.strip():
+            continue
+        title = request_title(line)
+        folded = title.casefold().strip(' .!?')
+        if folded in _STEERING | _MISSING | {
+                'runtime context', 'request text unavailable', 'reply to input request'}:
+            continue
+        if _CONTROLS.fullmatch(folded.replace('`', '')):
+            continue
+        return title
+    return ''
 
 
 def remember_task(session, text):
-    """A context envelope or terse acknowledgement cannot rename the task."""
+    """Keep session identity stable; per-turn requests retain their own intent."""
     if not session.capture_details:
         return
     from .local_activity import safe
@@ -99,5 +131,6 @@ def remember_task(session, text):
     parsed = request_text(text)
     description = task_description(parsed.body)
     if description:
-        session.task_description = safe(description,500)
+        if not session.task_description:
+            session.task_description = safe(description,500)
         session.tasks[session.turn] = safe(parsed.body,4000)

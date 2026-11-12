@@ -70,6 +70,8 @@ def emit(session, row, stamp, domain, action, subject, detail="", result="observ
              "agent.activity.result": result, "agent.activity.actor": session.runtime,
              "observatory.record_id": identity(session.source_id, row.get("ordinal") or row.get("uuid") or stamp,
                                                 domain, action, str(subject)[:500], *([call_id] if call_id else [])), **(extra or {})}
+    if session.capture_details and not session.internal and session.task_description:
+        attrs['agent.session.task'] = session.task_description
     if session.parent_agent_id:
         attrs["agent.parent_id"] = session.parent_agent_id
     payload = row.get("payload") or {}

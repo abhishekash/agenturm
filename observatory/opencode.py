@@ -18,6 +18,8 @@ from .local_agents import identity, timestamp
 from .native_json import loads
 
 MAX_SESSIONS = 50
+MAX_TASK_MESSAGES = 32
+MAX_TASK_BYTES = 256 * 1024
 MAX_MESSAGES_PER_SESSION = 30
 MAX_PARTS_PER_MESSAGE = 200
 LOOKBACK_NS = 24 * 60 * 60 * 1_000_000_000
@@ -64,7 +66,8 @@ def _first_timestamp(*values):
 
 
 def _first_user_prompt(db, table, columns, session_id, part_columns=()):
-    """Return a bounded preview of the earliest user-authored prompt."""
+    """First substantive user request within a bounded identity-read budget."""
+    from .session_text import task_description
     if not {"id", "session_id", "data"} <= set(columns):
         return ""
     filters = ['"session_id"=?']
@@ -76,29 +79,48 @@ def _first_user_prompt(db, table, columns, session_id, part_columns=()):
         filters.append('json_valid("data") AND json_extract("data",\'$.role\')=?')
         params.append("user")
     order = next((f'"{name}"' for name in ("seq", "time_created", "id") if name in columns), '"id"')
-    row = db.execute(f'SELECT "id","data" FROM "{table}" WHERE {" AND ".join(filters)} '
-                     f'ORDER BY {order} ASC LIMIT 1', params).fetchone()
-    if not row:
-        return ""
-    data = _json(row["data"])
-    content = data.get("text") or data.get("content") or ""
-    if isinstance(content, list):
-        content = "\n".join(str(block.get("text") or "") for block in content
-                            if isinstance(block, dict) and block.get("type") == "text")
-    if isinstance(content, str) and content.strip():
-        return safe(content, 500).strip()
-    # Legacy OpenCode stores user text in message-linked text parts.
-    if {"id", "message_id", "data"} <= set(part_columns):
-        part_order = ' ORDER BY "time_created","id"' if "time_created" in part_columns else ' ORDER BY "id"'
-        parts = db.execute(f'SELECT "data" FROM "part" WHERE "message_id"=?{part_order} LIMIT 20',
-                           (row["id"],)).fetchall()
-        text = []
-        for part in parts:
-            block = _json(part["data"])
-            if block.get("type") == "text" and isinstance(block.get("text"), str):
-                text.append(block["text"])
-        if text:
-            return safe("\n".join(text), 500).strip()
+    remaining = MAX_TASK_BYTES
+    # Oversized values never enter Python. Stream rows to keep the aggregate
+    # payload bounded even if many leading requests are runtime controls.
+    query = (f'SELECT "id",length(CAST("data" AS BLOB)) AS payload_size '
+             f'FROM "{table}" WHERE {" AND ".join(filters)} ORDER BY {order} ASC LIMIT ?')
+    for row in db.execute(query, [*params, MAX_TASK_MESSAGES]):
+        size = row['payload_size'] or 0
+        if size > MAX_TASK_BYTES:
+            continue
+        if size > remaining:
+            break
+        remaining -= size
+        raw = db.execute(f'SELECT "data" FROM "{table}" WHERE "id"=?', (row['id'],)).fetchone()
+        data = _json(raw['data'] if raw else None)
+        content = data.get("text") or data.get("content") or ""
+        if isinstance(content, list):
+            content = [block for block in content if isinstance(block, dict)
+                       and block.get('type') in {'text','input_text'}]
+        title = task_description(content)
+        if title:
+            return safe(title, 500)
+        # Legacy OpenCode stores user content in message-linked text parts.
+        if not content and {"id", "message_id", "data"} <= set(part_columns):
+            part_order = '"time_created","id"' if "time_created" in part_columns else '"id"'
+            text = []
+            parts = db.execute('SELECT "id",length(CAST("data" AS BLOB)) AS payload_size '
+                               f'FROM "part" WHERE "message_id"=? ORDER BY {part_order} LIMIT 20', (row["id"],))
+            for part in parts:
+                size = part['payload_size'] or 0
+                if size > MAX_TASK_BYTES:
+                    continue
+                if size > remaining:
+                    break
+                remaining -= size
+                raw_part = db.execute('SELECT "data" FROM "part" WHERE "id"=? AND "message_id"=?',
+                                      (part['id'],row['id'])).fetchone()
+                block = _json(raw_part['data'] if raw_part else None)
+                if block.get('type') in {'text','input_text'} and isinstance(block.get('text'), str):
+                    text.append(block['text'])
+            title = task_description('\n'.join(text))
+            if title:
+                return safe(title, 500)
     return ""
 
 
@@ -186,6 +208,7 @@ class OpenCodeReader:
         # Never keep tool payloads or an unbounded history in memory.
         self._message_revisions = {}
         self._prompt_revisions = {}
+        self._initial_tasks = {}
         self._progress_revisions = {}
         self._part_revisions = {}
         self._payload_cursors = {}
@@ -286,7 +309,7 @@ class OpenCodeReader:
             wal_path = Path(str(self.path) + "-wal")
             wal = wal_path.stat() if wal_path.exists() else None
             return (main.st_mtime_ns, main.st_size,
-                    wal.st_mtime_ns if wal else 0, wal.st_size if wal else 0)
+                    wal.st_mtime_ns if wal else 0, wal.st_size if wal else 0, main.st_dev, main.st_ino)
         except OSError:
             return None
 
@@ -379,6 +402,7 @@ class OpenCodeReader:
             self.omitted_sessions = 0
             self.fingerprint = None
             self._message_revisions.clear()
+            self._initial_tasks.clear()
             self._progress_revisions.clear()
             self._part_revisions.clear()
             self._payload_cursors.clear()
@@ -397,6 +421,7 @@ class OpenCodeReader:
         sessions = []
         message_revisions = dict(self._message_revisions)
         prompt_revisions = dict(self._prompt_revisions)
+        initial_tasks = dict(self._initial_tasks)
         part_revisions = dict(self._part_revisions)
         cursors = dict(self._payload_cursors)
         message_window = set()
@@ -418,6 +443,7 @@ class OpenCodeReader:
                     self.discovered_sessions = 0
                     self.omitted_sessions = 0
                     self._message_revisions.clear()
+                    self._initial_tasks.clear()
                     self._progress_revisions.clear()
                     self._part_revisions.clear()
                     self._payload_cursors.clear()
@@ -589,10 +615,13 @@ class OpenCodeReader:
                                         for name, updates in activity_tables.items()]
                     read_table = max(table_candidates, default=(0, message_table))[1]
                     read_columns = self._columns(db, read_table) if read_table else set()
-                    if self.capture_details and not data.get("title") and read_table:
-                        prompt = _first_user_prompt(db, read_table, read_columns, session_id, part_columns)
+                    if self.capture_details and read_table:
+                        task_key = (fingerprint[-2:], read_table, session_id)
+                        prompt = initial_tasks.get(task_key) or _first_user_prompt(db, read_table, read_columns, session_id, part_columns)
                         if prompt:
+                            initial_tasks[task_key] = prompt
                             item["task"] = prompt
+                            item["initial_task"] = prompt
                     if not read_table or not {"id", "session_id", "data"} <= read_columns:
                         continue
                     state, lifecycle_ns, evidence = self._lifecycle(db, read_table, read_columns, session_id)
@@ -646,6 +675,7 @@ class OpenCodeReader:
                                             "session.id": session_id,
                                             "agent.id": agent_id,
                                             "agent.runtime": "OpenCode",
+                                            **({"agent.session.task": item['initial_task']} if item.get('initial_task') else {}),
                                             "observatory.project": project,
                                             "agent.activity.domain": "message",
                                             "agent.activity.action": "user",
@@ -721,6 +751,7 @@ class OpenCodeReader:
                                 if self.capture_details else "")
                         root_attrs = {"session.id": session_id, "agent.run.state": state,
                                       "agent.task": task or "OpenCode session",
+                                      **({"agent.session.task": item['initial_task']} if item.get('initial_task') else {}),
                                       "agent.id": agent_id,
                                       "agent.runtime": "OpenCode",
                                       "observatory.project": project}
@@ -856,6 +887,8 @@ class OpenCodeReader:
                                 if key[:2] in message_window and
                                 (key[:2] not in part_windows or key[2] in part_windows[key[:2]])}
         session_ids = {item['session_id'] for item in sessions}
+        self._initial_tasks = {key:value for key,value in initial_tasks.items()
+                               if key[0]==fingerprint[-2:] and key[2] in session_ids}
         self._payload_cursors = {key: value for key, value in cursors.items()
                                  if key[1] in session_ids and (key[2] is None or key[1:] in message_window)}
         self._session_cursor += 1

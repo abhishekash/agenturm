@@ -47,6 +47,53 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item['task'],'Repair terminal navigation')
         self.assertEqual(item['task_source'],'recorded user request')
 
+    def test_first_substantive_prompt_replaces_legacy_latest_title_and_ignores_controls(self):
+        feed=ManualFeed();entry=feed.snapshot.local_status['sessions'][0]
+        entry['task']='Switch model to gpt-6.1-sol'
+        def event(text,stamp,**kw):
+            return dict(source_id=str(stamp),service=entry['service'],session_id=entry['session_id'],
+                        domain='message',action='user',subject=text,time_unix_nano=stamp,**kw)
+        feed.snapshot.activity.extend([event('Switch model',1),event('Fix refresh token expiry.',2),
+                                       event('Add cancellation coverage.',3),event('switch model',4)])
+        item=next(row for row in sources(feed.snapshot) if row['id']==entry['source_id'])
+        self.assertEqual(item['task'],'Fix refresh token expiry.')
+        # A canonical identity from the receiver wins over a partial recent window.
+        entry['initial_task']='Repair original authentication regression.'
+        item=next(row for row in sources(feed.snapshot) if row['id']==entry['source_id'])
+        self.assertEqual(item['task'],'Repair original authentication regression.')
+
+    async def test_agent_row_and_inspector_keep_initial_request_during_model_switch(self):
+        feed=ManualFeed();entry=feed.api.sessions[0]
+        entry['initial_task']='Fix refresh token expiry.'
+        entry['task']='switch model'
+        control=dict(source_id='control',service='codex',session_id=entry['session_id'],
+                     domain='message',action='user',subject='switch model',time_unix_nano=time.time_ns())
+        entry['last_activity']=control;feed.api.activity.append(control);feed.refresh()
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(120,32)) as pilot:
+            await pilot.pause();app.refresh_timer.stop();app.select_agent(entry['source_id'])
+            for size in [(120,32),(80,24)]:
+                await pilot.resize_terminal(*size);await pilot.pause()
+                row=app.query_one('#agent-table',DataTable).get_row(entry['source_id'])[0].plain
+                self.assertIn('Fix refresh token expiry.',row)
+                self.assertNotIn('switch model',row.casefold())
+            await pilot.press('e');await pilot.pause()
+            self.assertEqual(app.query_one('#agent-heading').tooltip,'Fix refresh token expiry.')
+            self.assertEqual(control['subject'],'switch model')
+
+    def test_worker_task_never_inherits_parent_or_sibling_request(self):
+        from observatory.agent_hierarchy import canonical_agent_id
+        feed=ManualFeed();entry=feed.snapshot.local_status['sessions'][0]
+        entry['agent_id']=canonical_agent_id('Codex','test','worker')
+        entry['task']='switch model'
+        feed.snapshot.activity.extend([
+            dict(source_id='parent',service='codex',session_id=entry['session_id'],agent_id='other',
+                 domain='message',action='user',subject='Parent task',time_unix_nano=1),
+            dict(source_id='worker',service='codex',session_id=entry['session_id'],agent_id=entry['agent_id'],
+                 domain='message',action='user',subject='Check token expiry tests.',time_unix_nano=2)])
+        item=next(row for row in sources(feed.snapshot) if row['id']==entry['source_id'])
+        self.assertEqual(item['task'],'Check token expiry tests.')
+
     def test_native_opencode_and_pi_status_sessions_are_agent_rows(self):
         feed = ManualFeed()
         now = time.time_ns()
