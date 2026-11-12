@@ -918,7 +918,7 @@ def navigation_hints(width):
 
 def session_navigation_hints(mode, focus=''):
     if focus=='agent-modes':
-        return '←→ Sections  Enter Prompts  Tab  F1 Help  Esc Back' if mode=='prompts' else '←→ Sections  Enter Read  Tab  F1 Help  Esc Back'
+        return '←→ Sections  ↑↓ Prompts  Enter Choose  F1 Help  Esc Back' if mode=='prompts' else '←→ Sections  Enter Read  Tab  F1 Help  Esc Back'
     if mode=='prompts':
         if focus=='agent-prompt-options':return '↑↓ Choose  Enter Read  Esc Cancel  F1 Help'
         if focus=='agent-prompt-select':return '↑↓/Enter Choose  → Read  [ ] Prompt  F1 Help  Esc Back'
@@ -1079,10 +1079,17 @@ class CockpitTabs(TabbedContent):
 
 class SessionModeTabs(Tabs):
     """One focus stop for modes; native arrows select, Enter starts reading."""
-    BINDINGS=[Binding('enter,down','read','Read section',show=False)]
+    BINDINGS=[Binding('enter','read','Read section',show=False),
+              Binding('down','enter_section(1)','Enter section',show=False),
+              Binding('up','enter_section(-1)','Enter section',show=False)]
 
     def action_read(self):
         self.app.focus_session_content()
+
+    def action_enter_section(self,direction):
+        self.app.focus_session_content()
+        if self.app.session_mode=='prompts':
+            self.app.navigate_prompt('older' if direction<0 else 'newer')
 
 
 def evidence_syntax(content, lexer, theme='Current'):

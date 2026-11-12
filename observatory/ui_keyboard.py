@@ -22,6 +22,7 @@ AGENTS AND INSPECTOR
 Enter / e        Open the inspector
 ← / →            Choose Overview, Prompts or Details on the tab strip
 Enter / ↓        Enter the chosen section
+Prompts tabs: ↑ / ↓ enters the navigator and chooses older / newer.
 Ctrl+← / Ctrl+→  Change inspector section from its content
 m                Next inspector section
 Ctrl+R           Review the selected agent's recorded work

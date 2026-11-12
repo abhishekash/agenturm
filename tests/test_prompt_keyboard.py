@@ -15,21 +15,26 @@ class PromptKeyboardTests(unittest.IsolatedAsyncioTestCase):
         feed.refresh()
         return ObservatoryApp(feed,persist_preferences=False)
 
-    async def open_prompts(self,app,pilot):
+    async def open_prompts(self,app,pilot,*,enter_section=True):
         await pilot.pause();app.refresh_timer.stop();app.set_agent_filter('all')
         app.select_agent('source-1');app.query_one('#agent-table').focus()
-        await pilot.press('enter','right','enter')
+        await pilot.press('enter','right')
+        if enter_section:await pilot.press('enter')
         await app.workers.wait_for_complete();await pilot.pause()
 
     async def test_wide_arrows_choose_every_prompt_enter_reads_left_returns(self):
         app=self.app()
         async with app.run_test(size=(120,32)) as pilot:
-            await self.open_prompts(app,pilot)
-            self.assertEqual(app.focused.id,'agent-prompts')
+            await self.open_prompts(app,pilot,enter_section=False)
+            self.assertEqual(app.focused.id,'agent-modes')
             keys=list(app.session_prompts.events)
             keys.sort(key=lambda key:app.session_prompts.events[key]['time_unix_nano'])
             self.assertGreaterEqual(len(keys),8)
             self.assertEqual(app.session_prompts.selected,keys[-1])
+            await pilot.press('up');await pilot.pause()
+            self.assertEqual(app.focused.id,'agent-prompts')
+            self.assertEqual(app.session_prompts.selected,keys[-2])
+            await pilot.press('end');await pilot.pause()
             self.assertIn('↑↓ Choose',app.query_one('#shortcuts',Static).render().plain)
             await pilot.press('home');await pilot.pause()
             self.assertEqual(app.session_prompts.selected,keys[0])
