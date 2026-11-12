@@ -115,3 +115,17 @@ class PromptKeyboardTests(unittest.IsolatedAsyncioTestCase):
             await pilot.resize_terminal(60,18);await pilot.pause()
             await pilot.press('escape');await pilot.pause()
             self.assertEqual(app.focused.id,'agent-prompt-select')
+
+    async def test_lost_prompt_focus_returns_to_navigation_across_queued_reflows(self):
+        app=self.app()
+        async with app.run_test(size=(80,24)) as pilot:
+            await self.open_prompts(app,pilot)
+            # A hidden navigator can leave focus invalid during a resize. More
+            # than one reflow may run before Textual applies deferred focus.
+            app.screen.set_focus(None)
+            for _ in range(3):app.reflow_inspectors()
+            await pilot.pause()
+            self.assertEqual(app.focused.id,'agent-prompt-select')
+            await pilot.press('right')
+            await pilot.resize_terminal(120,32);await pilot.pause()
+            self.assertEqual(app.focused.id,'agent-detail')

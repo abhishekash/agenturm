@@ -1930,7 +1930,9 @@ class ObservatoryApp(App):
         self.last_update=-1
         self.refresh_data()
         if self.inspector_open() and self.focused not in self.screen.focus_chain:
-            self.query_one('#agent-detail').focus()
+            # Repeated reflows can run before deferred focus is applied. Keep
+            # Prompts on its navigator instead of queuing a competing reader.
+            self.focus_session_content()
         trees=self.query('#span-tree')
         if self.query_one('#pages',TabbedContent).active=='traces' and trees and trees.first().cursor_node:
             self.show_span(trees.first().cursor_node.data)
