@@ -135,6 +135,60 @@ class NativeSessionTests(unittest.TestCase):
             logs=' '.join(row[0] for row in db.execute('SELECT body FROM logs'))
         self.assertIn('<local-command-caveat>',logs)
 
+    def test_claude_local_controls_preserve_completed_roots_and_pending_requests(self):
+        from observatory.local_agents import identity
+        caveat='<local-command-caveat>The command below was run directly in Claude Code.</local-command-caveat>'
+        command='<command-message>model</command-message>\n<command-name>/model</command-name>'
+        output='<local-command-stdout>PRIVATE_CONTROL_OUTPUT\nSwitched model</local-command-stdout>'
+        for details in (True,False):
+            for state in ('completed','waiting'):
+                with self.subTest(details=details,state=state):
+                    path=self.root/f'{details}-{state}.jsonl';path.touch()
+                    session=Session(self.store,path,'Claude Code',capture_details=details)
+                    self.append(session,self.task_row('Claude Code','Fix checkout retries.',1))
+                    message=({'content':[{'type':'text','text':'Done'}],'stop_reason':'end_turn'}
+                        if state=='completed' else {'content':[{'type':'tool_use','name':'AskUserQuestion',
+                            'id':'question','input':{'question':'Proceed?'}}]})
+                    self.append(session,{'type':'assistant','timestamp':'2026-11-11T12:00:02Z',
+                                         'uuid':'answer','message':message})
+                    def lifecycle():
+                        return (session.run_state,session.turn,session.state_since,session.outcome_id,
+                            session.outcome_time_ns,session.request_id,session.request_time_ns,
+                            dict(session.pending_tools))
+                    before=lifecycle()
+                    with self.store._connect() as db:
+                        roots=[tuple(row) for row in db.execute("SELECT trace_id,span_id,attributes FROM spans WHERE name='agent.run' ORDER BY trace_id,span_id")]
+                    for second,text in enumerate((caveat,command,output,caveat+command+output),3):
+                        self.append(session,self.task_row('Claude Code',text,second))
+                        self.assertEqual(lifecycle(),before)
+                    with self.store._connect() as db:
+                        after=[tuple(row) for row in db.execute("SELECT trace_id,span_id,attributes FROM spans WHERE name='agent.run' ORDER BY trace_id,span_id")]
+                        logs=' '.join(str(tuple(row)) for row in db.execute(
+                            'SELECT body,attributes FROM logs WHERE trace_id=?',
+                            (identity(session.source_id,before[1]),)))
+                    self.assertEqual(after,roots)
+                    if details:self.assertIn('PRIVATE_CONTROL_OUTPUT',logs)
+                    else:self.assertNotIn('PRIVATE_CONTROL_OUTPUT',logs)
+                    restarted=Session(self.store,path,'Claude Code',capture_details=details)
+                    restarted.poll()
+                    self.assertEqual(restarted.run_state,state)
+                    self.assertEqual(restarted.turn,before[1])
+                    # A real request, even a terse continuation, is still a new turn.
+                    self.append(session,self.task_row('Claude Code','continue',8))
+                    self.assertEqual(session.run_state,'running')
+                    self.assertNotEqual(session.turn,before[1])
+                    self.assertFalse(session.outcome_id or session.request_id)
+                    self.assertFalse(session.pending_tools)
+
+    def test_claude_mixed_local_context_and_real_request_starts_work(self):
+        session=self.session('Claude Code')
+        raw=('<local-command-caveat>Local command context</local-command-caveat>'
+             '<command-name>/model</command-name>'
+             '<local-command-stdout>Switched model</local-command-stdout>\nFix checkout retries.')
+        self.append(session,self.task_row('Claude Code',raw,1))
+        self.assertEqual(session.run_state,'running')
+        self.assertEqual(session.task_description,'Fix checkout retries.')
+
     def test_large_sessions_recover_first_request_without_replaying_old_activity(self):
         for runtime in ['Codex','Claude Code','Pi']:
             with self.subTest(runtime=runtime):

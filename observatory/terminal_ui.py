@@ -883,7 +883,7 @@ def review_key(item):
 
 def today_order_key(item,newest_first=True,mode='working'):
     if mode in {'updated','status'}:return agent_order_key(item,newest_first,mode)
-    bucket=item.get('_today_bucket') or today_bucket(item)
+    bucket=item.get('_branch_phase') or item.get('_today_bucket') or today_bucket(item)
     return ({'running':0,'attention':1,'review':2}.get(bucket,4),
             0 if attention_required(item) else 1,
             *agent_order_key(item,newest_first,'updated'))
@@ -903,6 +903,8 @@ def agent_status_group(item):
     terminated session above a working one.
     """
     state=item.get('state')
+    if item.get('_branch_phase')=='running':return 0
+    if item.get('_branch_phase')=='attention':return 1
     if session_phase(item)=='running':
         return 0
     if state in TERMINATED_STATES:
@@ -2424,7 +2426,10 @@ class ObservatoryApp(App):
                 summary=graph.summary(agent_id)
                 # Keep a completed parent with live workers near the top without
                 # changing the parent's displayed lifecycle state.
-                branch={**node,'active':bool(node.get('active') or summary['working']),
+                phase=''
+                if summary['working']:phase='running'
+                elif summary['attention'] and session_phase(node)!='running':phase='attention'
+                branch={**node,'_branch_phase':phase,
                         'stamp':max(node.get('stamp') or 0,summary['last_activity'])}
                 ordering=today_order_key if self.agent_filter=='today' else agent_order_key
                 return ordering(branch,newest_first=self.agent_sort_desc,mode=self.agent_sort_mode)

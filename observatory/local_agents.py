@@ -473,6 +473,8 @@ class Session:
             message = row.get("message") or {}
             if not isinstance(message, dict):
                 return
+            if row.get('type')=='user' and claude_local_command(row):
+                return
             blocks = message.get("content")
             blocks = blocks if isinstance(blocks, list) else []
             if row.get("type") == "user" and not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
@@ -850,6 +852,8 @@ class Session:
         message = row.get("message") or {}
         if not isinstance(message, dict):
             return []
+        if row.get('type')=='user' and claude_local_command(row):
+            return []
         content = message.get("content") or []
         blocks = content if isinstance(content, list) else []
         result = []
@@ -1073,7 +1077,7 @@ class Session:
                 self.observe_state(row, stamp)
                 if self.capture_details and self.turn in self.tasks and self.turn in self.started:
                     payload = row.get("payload") or {}
-                    if (self.runtime == "Codex" and isinstance(payload, dict) and (payload.get("item") or {}).get("type") == "UserMessage") or (self.runtime == "Claude Code" and row.get("type") == "user" and plaintext_task(row)):
+                    if (self.runtime == "Codex" and isinstance(payload, dict) and (payload.get("item") or {}).get("type") == "UserMessage") or (self.runtime == "Claude Code" and row.get("type") == "user" and plaintext_task(row) and not claude_local_command(row)):
                         spans.append(self.root(stamp, "running"))
                 if self.run_state in {"completed", "interrupted"}:
                     self.finish_turn()
@@ -1168,6 +1172,12 @@ def _safe_identifier(value, limit=256):
         return None
     value = value.strip()
     return value if value and len(value) <= limit else None
+
+
+def claude_local_command(row):
+    from .session_text import local_command_only
+    message=row.get('message') or {}
+    return isinstance(message,dict) and local_command_only(message.get('content'))
 
 
 def plaintext_task(row):
