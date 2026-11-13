@@ -260,6 +260,13 @@ def run(args):
     if args.history:
         from scripts.benchmark_history import build
         build(base/'telemetry.db')
+        # Keep the full retained corpus while distinguishing old baseline work
+        # from the exact newly generated completion receipts under test.
+        offset=2*86400*10**9
+        with sqlite3.connect(base/'telemetry.db') as db:
+            db.execute('UPDATE spans SET start_unix_nano=start_unix_nano-?,end_unix_nano=end_unix_nano-?',(offset,offset))
+            db.execute('UPDATE logs SET time_unix_nano=time_unix_nano-?',(offset,))
+            db.execute('UPDATE trace_activity SET last_ns=last_ns-?',(offset,))
     preparation_seconds=time.monotonic()-preparation_started
     channel='agenturm-soak-'+str(os.getpid())
     env={key:os.environ[key] for key in ('PATH','LANG','LC_ALL','LD_LIBRARY_PATH') if key in os.environ}
@@ -515,7 +522,7 @@ def run(args):
     result=dict(schema_version=1,source_start=revision_start,source_end=revision_end,
         host=dict(system=platform.system(),architecture=platform.machine(),python=platform.python_version(),logical_cpus=os.cpu_count()),
         configured_seconds=args.duration,phase_seconds=args.phase_seconds,elapsed_seconds=duration,eager_tls=args.eager_tls,profile_ui=args.profile_ui,
-        seeded_history=dict(traces=5751,spans=31000,logs=41000,days=35) if args.history else None,
+        seeded_history=dict(traces=5751,spans=31000,logs=41000,days=35,newest_age_days=2) if args.history else None,
         fixture_preparation_seconds=preparation_seconds,initial_readiness_seconds=locals().get('initial_readiness_seconds'),
         completed_turns=len(workload.completed),verified_turns=len(verified),approval_requests=len(workload.requests),observed_approval_requests=len({row['cycle'] for row in observed_requests}),
         accepted_review_ids=len(accepted),persisted_review_ids=len(persisted),missing_review_ids=len(missing),
