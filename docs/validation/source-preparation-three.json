@@ -1,9 +1,9 @@
 {
   "kind": "source-projection-microbenchmark",
   "python": "3.12.3",
-  "source": "bc235988f4fc85e4f4630e9073fdf1619829a1c4",
+  "source": "76d27e0116d8743130605384401b23c406f0ab7f",
   "source_dirty": false,
-  "script_sha256": "55a7d084de6718ac07ac7986007a110070b2922c16d056be1b5c136c5f42df36",
+  "script_sha256": "c209d12f21d0a6ea1904c955e59db0189180cb3d0f8a17a8236bd3f5214b3be1",
   "samples": 7,
   "generations": 20,
   "consumers": 3,
@@ -12,51 +12,105 @@
       "source_rows": 50,
       "activity_rows": 200,
       "equivalent": true,
+      "retained": true,
       "uncached_ms": [
-        299.158,
-        304.974,
-        313.5,
-        310.793,
-        311.313,
-        300.855,
-        293.575
+        291.834,
+        302.541,
+        373.397,
+        280.649,
+        276.659,
+        288.379,
+        283.203
       ],
       "prepared_ms": [
-        216.274,
-        233.285,
-        229.785,
-        221.555,
-        240.788,
-        239.414,
-        238.991
+        228.207,
+        241.924,
+        243.243,
+        245.928,
+        214.818,
+        214.79,
+        220.393
       ],
-      "uncached_median_ms": 304.974,
-      "prepared_median_ms": 233.285
+      "uncached_median_ms": 288.379,
+      "prepared_median_ms": 228.207
     },
     "prompt_fallback": {
       "source_rows": 50,
       "activity_rows": 200,
       "equivalent": true,
+      "retained": true,
       "uncached_ms": [
-        471.797,
-        461.294,
-        451.836,
-        450.474,
-        434.442,
-        418.828,
-        419.79
+        424.514,
+        447.149,
+        463.612,
+        436.51,
+        428.069,
+        431.167,
+        427.011
       ],
       "prepared_ms": [
-        277.614,
-        315.717,
-        299.835,
-        330.721,
-        262.138,
-        254.465,
-        265.089
+        308.952,
+        291.392,
+        292.764,
+        272.879,
+        268.821,
+        268.668,
+        284.853
       ],
-      "uncached_median_ms": 450.474,
-      "prepared_median_ms": 277.614
+      "uncached_median_ms": 431.167,
+      "prepared_median_ms": 284.853
+    },
+    "metadata_only": {
+      "source_rows": 50,
+      "activity_rows": 200,
+      "equivalent": true,
+      "retained": false,
+      "uncached_ms": [
+        77.088,
+        84.037,
+        85.074,
+        92.851,
+        89.965,
+        84.611,
+        84.974
+      ],
+      "prepared_ms": [
+        80.757,
+        84.676,
+        89.888,
+        86.517,
+        87.541,
+        94.731,
+        136.834
+      ],
+      "uncached_median_ms": 84.974,
+      "prepared_median_ms": 87.541
+    },
+    "oversized": {
+      "source_rows": 50,
+      "activity_rows": 201,
+      "equivalent": true,
+      "retained": false,
+      "uncached_ms": [
+        329.552,
+        337.843,
+        342.173,
+        278.368,
+        277.111,
+        334.693,
+        284.046
+      ],
+      "prepared_ms": [
+        307.921,
+        320.372,
+        297.793,
+        288.266,
+        303.586,
+        335.525,
+        284.419
+      ],
+      "uncached_median_ms": 329.552,
+      "prepared_median_ms": 303.586
     }
   }
 }
