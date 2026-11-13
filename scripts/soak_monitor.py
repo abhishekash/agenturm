@@ -284,7 +284,7 @@ def run(args):
     endpoint=f'http://127.0.0.1:{port}'
     command=[sys.executable,str(Path(__file__).resolve())]
     receiver=None;actor=None;streams=[];errors=[];samples=[];latencies={};verified=[];reconnects=[]
-    expected_reviews=set();rendered_approvals=set();ui_pids=[];exit_statuses=[]
+    expected_reviews=set();rendered_approvals=set();ui_pids=[];exit_statuses=[];approval_latencies=[]
     checked_receivers=set()
     def spawn(mode):
         log=(base/(mode+'.log')).open('a');streams.append(log)
@@ -370,9 +370,11 @@ def run(args):
                 if phase==1:
                     pending_cycle=cycle
                     # Inspect the actual pending inbox, not just received data.
-                    time.sleep(2);keys('w');time.sleep(.8)
-                    pending_screen=screen(f'approval-{cycle}')
-                    if 'Approval' not in pending_screen:raise RuntimeError(f'Approval not rendered for cycle {cycle}')
+                    issued=time.monotonic();keys('w')
+                    while 'Approval requested' not in screen(f'approval-{cycle}'):
+                        if time.monotonic()-issued>=10:raise RuntimeError(f'Approval not rendered within ten seconds for cycle {cycle}')
+                        time.sleep(.2)
+                    approval_latencies.append((time.monotonic()-issued)*1000)
                     rendered_approvals.add(cycle);keys('Escape')
                 if phase==5:
                     keys('Escape','Escape','1','w')
@@ -531,6 +533,8 @@ def run(args):
         completed_turns=len(workload.completed),verified_turns=len(verified),approval_requests=len(workload.requests),observed_approval_requests=len({row['cycle'] for row in observed_requests}),
         accepted_review_ids=len(accepted),persisted_review_ids=len(persisted),missing_review_ids=len(missing),
         expected_review_ids=len(expected_reviews),rendered_approval_inboxes=len(rendered_approvals),
+        approval_visible_latency_ms=dict(median=statistics.median(approval_latencies) if approval_latencies else None,
+            p95=percentile(approval_latencies,.95),max=max(approval_latencies,default=0)),
         shared_daemon_false_progress=len(false_working),heartbeat_samples=len(heartbeat),
         heartbeat_interval_p95=percentile([row['interval'] for row in heartbeat],.95),
         heartbeat_interval_max=max((row['interval'] for row in heartbeat),default=0),
