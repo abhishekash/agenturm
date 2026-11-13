@@ -1,0 +1,116 @@
+{
+  "kind": "source-projection-microbenchmark",
+  "python": "3.12.3",
+  "source": "76d27e0116d8743130605384401b23c406f0ab7f",
+  "source_dirty": false,
+  "script_sha256": "c209d12f21d0a6ea1904c955e59db0189180cb3d0f8a17a8236bd3f5214b3be1",
+  "samples": 7,
+  "generations": 20,
+  "consumers": 2,
+  "cases": {
+    "canonical_title": {
+      "source_rows": 50,
+      "activity_rows": 200,
+      "equivalent": true,
+      "retained": true,
+      "uncached_ms": [
+        210.276,
+        191.208,
+        183.795,
+        186.724,
+        189.065,
+        194.287,
+        194.408
+      ],
+      "prepared_ms": [
+        208.054,
+        193.423,
+        187.206,
+        193.583,
+        188.262,
+        197.915,
+        201.411
+      ],
+      "uncached_median_ms": 191.208,
+      "prepared_median_ms": 193.583
+    },
+    "prompt_fallback": {
+      "source_rows": 50,
+      "activity_rows": 200,
+      "equivalent": true,
+      "retained": true,
+      "uncached_ms": [
+        278.457,
+        279.171,
+        288.165,
+        288.296,
+        285.668,
+        284.748,
+        306.747
+      ],
+      "prepared_ms": [
+        226.232,
+        232.952,
+        240.911,
+        240.244,
+        235.332,
+        242.823,
+        257.546
+      ],
+      "uncached_median_ms": 285.668,
+      "prepared_median_ms": 240.244
+    },
+    "metadata_only": {
+      "source_rows": 50,
+      "activity_rows": 200,
+      "equivalent": true,
+      "retained": false,
+      "uncached_ms": [
+        59.681,
+        55.951,
+        57.522,
+        55.373,
+        54.193,
+        53.924,
+        53.469
+      ],
+      "prepared_ms": [
+        57.414,
+        57.886,
+        56.404,
+        55.263,
+        54.455,
+        53.308,
+        53.927
+      ],
+      "uncached_median_ms": 55.373,
+      "prepared_median_ms": 55.263
+    },
+    "oversized": {
+      "source_rows": 50,
+      "activity_rows": 201,
+      "equivalent": true,
+      "retained": false,
+      "uncached_ms": [
+        191.155,
+        192.673,
+        188.558,
+        198.202,
+        186.983,
+        201.256,
+        190.493
+      ],
+      "prepared_ms": [
+        191.611,
+        187.891,
+        201.501,
+        197.343,
+        186.538,
+        193.746,
+        187.572
+      ],
+      "uncached_median_ms": 191.155,
+      "prepared_median_ms": 191.611
+    }
+  }
+}
