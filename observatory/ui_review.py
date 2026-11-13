@@ -267,7 +267,7 @@ class ReviewExcerptScreen(ModalScreen):
         from .ui_saved_tasks import SavedTasksScreen,capture_selected_run
         ref,text=self.rows[event.row_key.value];scope=self.projection['scope']
         source=dict(receiver=scope['receiver'],producer=scope['producer'],agent_id=scope['agent_id'],
-            session_id=scope['session_id'],trace_id=scope['run_id'],
+            session_id=scope['session_id'],trace_id=str(ref.get('trace_id') or ''),
             event_id=str(ref.get('source_id') or ref.get('id') or ''),
             run_start_ns=scope.get('run_start_ns'),
             coverage=self.projection['window']['coverage'],

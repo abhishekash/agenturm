@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserve whole-turn identity, recorded step membership, checks and usage when saving terminal Review into a task. Reject contradictory frozen scopes; keep older inconsistent links readable while withholding ambiguous totals until explicitly relinked or removed.
 - Make Workflow's Shift+R bulk-review action respond to the uppercase key sent by real terminals. Defer HTTPS handler setup during local HTTP polling while retaining standard HTTPS verification and redirect refusal.
 - Add an isolated complete-monitor soak with native ingestion, real terminal interaction, exact review/approval gates, reconnect and shutdown checks, retained-history load and matched polling measurements. Record the completed hour and remaining resource costs in the validation report.
 

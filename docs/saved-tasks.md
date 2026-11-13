@@ -12,6 +12,12 @@ Keep one task across agent sessions. Save its intent, decisions, next step, link
 
 **Esc** moves back one screen. In an edited form, the first Esc warns about unsaved changes; the second discards them. **Tab** moves between fields and actions, including out of the notes editor. **Ctrl+R** reloads a saved task after a concurrent edit. Revision conflicts keep your text visible and refuse to overwrite the newer record: copy your edits, return to the task, reload, and reconcile them.
 
+Saving **Review → Save task** keeps the frozen execution boundary. An OpenCode recorded turn retains all its recorded step IDs, checks and turn usage; selecting a later member does not turn the receipt into one step. Linking both a turn and a contained step makes aggregate usage unavailable rather than counting the same tokens twice. A frozen snapshot whose scope contradicts its wrapper is rejected.
+
+Frozen usage must agree with the saved association. Decision excerpts keep the chosen event's step identity, including a later step within a turn. Capture revocation is rechecked before saving source evidence; independently edited titles and notes remain yours.
+
+Older saved links with inconsistent scope remain readable, including your notes and original evidence. **Runs** labels these **Repair scope**, and handoffs explain why their usage is unavailable. Explicitly relink the matching Review, or unlink the inconsistent record. Merely opening or editing your task does not rewrite the original evidence.
+
 ## Keep the monitor calm
 
 Saved tasks use a separate full-screen path. The monitor gains a shortcut and palette entries; its session rows and panels do not grow. At 120 columns the task list keeps room for titles:
