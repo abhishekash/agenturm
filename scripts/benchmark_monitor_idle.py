@@ -64,8 +64,9 @@ def validate_idle(events, start, end, pid, receiver_id, history):
         if (row.get('pid')!=pid or row.get('receiver_id')!=receiver_id or
                 row.get('error') or row.get('read_errors') or row.get('sessions_error') or
                 not row.get('initial_poll_complete') or row.get('native_read_errors') or row.get('native_schema_errors') or
+                row.get('opencode_read_errors') or any(row.get('opencode_diagnostics',{}).get(key,0) for key in ('read_errors','schema_errors')) or
                 not 0<=row['at']-row.get('updated',0)<=6 or not expected.issubset(row.get('native_sessions',[])) or
-                history and (row.get('session_count',0)<36 or row.get('mcp_calls',0)<1)):
+                history and row.get('session_count',0)<36):
             errors.append('Timed cockpit lost fresh, correctly scoped fixture data');break
     return errors
 
@@ -111,6 +112,14 @@ def measure(args):
         else:raise RuntimeError('Receiver readiness deadline exceeded')
         ready_seconds=time.monotonic()-started
         receiver_id=health['receiver_id']
+        # Verify retained data before timing. Agents deliberately does not poll
+        # the hidden MCP view; requiring its counter in idle heartbeats would
+        # either reject a healthy cockpit or accidentally widen idle work.
+        if args.history:
+            if len(api.get('/api/sessions?limit=500').get('sessions',[]))<36:
+                raise RuntimeError('Retained session fixture is missing')
+            if api.get('/api/mcp?limit=20').get('summary',{}).get('calls',0)<1:
+                raise RuntimeError('Retained MCP fixture is missing')
         tmux('new-session','-d','-s','monitor','-x','120','-y','36',*command,'ui',str(base),str(port))
         tmux('set-option','-t','monitor','remain-on-exit','on')
         ui=int(tmux('display-message','-p','-t','monitor','#{pane_pid}').strip())
@@ -168,6 +177,9 @@ def measure(args):
     if source!=revision():errors.append('Source changed during measurement')
     if health.get('local_agents',{}).get('read_errors') or health.get('local_agents',{}).get('schema_errors'):
         errors.append('Native fixture read/schema errors')
+    local=health.get('local_agents',{})
+    if local.get('opencode_read_errors') or any(local.get('opencode_diagnostics',{}).get(key,0) for key in ('read_errors','schema_errors')):
+        errors.append('OpenCode fixture read/schema errors')
     result=dict(source=source,publishable=not source['dirty'] and not args.profile and not errors,
         history=args.history,profiling=args.profile,warmup_seconds=args.warmup,
         initial_readiness_seconds=ready_seconds,requested_idle_seconds=args.seconds,processes=budgets,

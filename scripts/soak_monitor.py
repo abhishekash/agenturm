@@ -147,6 +147,8 @@ def child(mode, directory, port):
                     initial_poll_complete=app.feed.snapshot.local_status.get('initial_poll_complete'),
                     native_read_errors=app.feed.snapshot.local_status.get('read_errors',0),
                     native_schema_errors=app.feed.snapshot.local_status.get('schema_errors',0),
+                    opencode_read_errors=app.feed.snapshot.local_status.get('opencode_read_errors',0),
+                    opencode_diagnostics=app.feed.snapshot.local_status.get('opencode_diagnostics',{}),
                     states=[dict(session=item.get('session_id'), state=item.get('state'),
                                  request=item.get('request_id'), parent=item.get('parent_agent_id'))
                             for item in app.workflow_items()],

@@ -1836,7 +1836,7 @@ class ObservatoryApp(App):
             'All sessions' if self.layout_size.width<96 else 'All agent sessions')
         button=self.query_one('#scope',Button)
         caption=Text('▾ '+label,no_wrap=True,overflow='ellipsis')
-        if button.label!=caption:button.label=caption
+        if button.label.plain!=caption.plain:button.label=caption
         button.tooltip=(label+'\n'+self.scope_label()+'\nSession '+str(item.get('session_id') or item['id'])
                         if item else 'Choose agent session · Enter')
 
