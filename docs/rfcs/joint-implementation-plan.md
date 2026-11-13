@@ -43,7 +43,7 @@ Engineering implementation and release validation are complete. The plan and imp
 - **Attention:** stable per-request and per-outcome identities, positive fresh resolution, retained missing-source requests, silent per-execution inventory/restart (including delayed discovery), seen-but-pending requests, reversible per-outcome review, private workflow storage and atomic delivery claims. Notifications remain opt-in, generic and cockpit-bound. Failure, capacity, retry and cleanup paths are visible.
 - **Continuity:** additive structured brief and immutable decision tables, optimistic revisions, supersession, explicit excerpt drafts, bounded file inputs, backup CLI, native lifecycle links and frozen review handoffs. Link identities preserve receiver, producer, agent and session even inside one shared trace. Older namespaced links refresh only against equal recorded scope fields. Shared traces and recorded parent/child links retain individual evidence while withholding potentially overlapping aggregate usage. Native-only links do not invent accounting.
 - **Diagnostics:** opt-in repeated-error, equivalent-call, compaction and unobserved-recovery observations. Analysis is bounded to 500 records per run and the 20 most recent active traces, with shell polling exclusions, malformed-metadata protection, exact worker/session ownership and matching group counts. Errors after a completion are not attributed to that completion. No heuristic desktop alerts.
-- **Terminal workflow:** queue first on narrow screens, stable incident selection/scroll, Enter/Escape drill-down, 14 list rows at 60×20, readable review at 60×18, and structured editing at 60×20. Below the editing floor drafts remain intact. Actual rendered frames are embedded below.
+- **Terminal workflow:** queue first on narrow screens, stable incident selection/scroll, Enter/Escape drill-down, at least 11 list rows at 60×20 (the Workflow queue currently provides 14), readable review at 60×18, and structured editing at 60×20. Below the editing floor drafts remain intact. Actual rendered frames are embedded below.
 
 ### Decisions reached during review
 
@@ -54,6 +54,8 @@ Engineering implementation and release validation are complete. The plan and imp
 5. Review stays exact to the selected execution. Existing Activity provides explicit subtree inspection; this implementation does not merge descendant reviews or usage into a parent result.
 6. Saving a frozen review preserves its original receiver, run and projection even if the live selection advances. Metadata-only capture cannot supply an excerpt or reveal cached content.
 7. Whole-trace accounting cannot be presented as an individual agent's usage when multiple owners are recorded or ownership capture is incomplete. Cached summaries include indexed span/log owners and event owners; sampled and legacy single-owner counts remain unverified. Traces retains its existing trace-wide accounting. Saved parent and child reviews cannot overwrite each other, and possible accounting overlap cannot become a sum.
+
+The compact-layout acceptance target was revised on 13 November 2026: at least 11 list rows at 60×20, including the column heading, with at most nine rows of surrounding interface chrome. The existing 14-row Workflow queue remains above this minimum.
 
 ### Resource investigation
 
