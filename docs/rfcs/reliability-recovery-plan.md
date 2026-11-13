@@ -1,6 +1,21 @@
 # Reliability recovery implementation plan
 
-Status: implementation and independent review complete. Exact-commit validation and delivery status are recorded in [PR #67](https://github.com/abhishekash/agenturm/pull/67). Baseline: main `d36446c`. Input: the consolidated `agenturm-review-notes.md` and the independently reproduced assessment. The work improves the existing monitor, evidence review, attention inbox and task CLI. Persistent notification services, model-generated briefs, collision detection, new dashboards and extra runtime integrations are deferred.
+Status: implemented, independently reviewed and merged through [PR #67](https://github.com/abhishekash/agenturm/pull/67) on 13 November 2026 at 14:27 UTC. Merge commit: `10137aaf721cc4c3a543dfeaabe83be1f0e45e62`. Local main was synced to that commit. These changes remain **Unreleased**.
+
+Baseline: main `d36446c`. Input: the consolidated `agenturm-review-notes.md` and the independently reproduced assessment. The work improves the existing monitor, evidence review, attention inbox and task CLI. Persistent notification services, model-generated briefs, collision detection, new dashboards and extra runtime integrations remain outside this plan.
+
+## Delivery status
+
+| Workstream | Status | Delivered behavior |
+| --- | --- | --- |
+| Native evidence fidelity | Complete | Native checks, edits, assistant content and scoped usage survive ingestion, review and export; unsupported commands retain their original evidence. |
+| OpenCode turn identity | Complete | Explicit step/recorded-turn selectors preserve initiating prompts, worker ownership and qualified usage. |
+| Local safety and storage | Complete | Private shared state, automatic local authentication, Host/Origin checks, redaction, safe migration and new-store retention. |
+| Indexed history reads | Complete; performance follow-up below | Indexed source selection and scalar summaries, snapshot-coherent detail reads, resumable backfill and visible readiness. |
+| Attention and durability | Complete | Unknown status separated from action, recent/history completion filtering, frozen-ID bulk review and graceful receipt draining. |
+| Existing workflow composition | Complete | Review JSON links directly to saved tasks; command failures are readable; `--once` reports readiness and failure truthfully. |
+
+Completion here means the implemented contracts passed the gates below. It does not establish a full native-reader/cockpit performance budget or prove daily adoption; those remain explicit follow-ups.
 
 ## Delivery rules
 
@@ -34,7 +49,7 @@ Generate an automatic local receiver token for newly launched local receivers; a
 
 Expand textual and structured redaction fixtures for common assigned secrets, database URL passwords, Stripe tokens and MySQL password arguments without corrupting numeric usage or ordinary command flags.
 
-New managed state stores default to 14 days of telemetry history (an age bound, not a hard byte cap); explicit `--retention-days` configures or opts an existing store in. Only a newly created managed store is auto-enrolled; relocation/reopening never enrolls a legacy store. Existing policy metadata is respected. Migration tests include live WAL committed rows, failures/interruption, symlinks and occupied sidecars. Existing explicit databases retain their policy until the user chooses otherwise. New managed state stores use a documented retention policy; existing explicit databases retain their policy until the user chooses otherwise. Do not prune any existing personal database while implementing. Explain that retention bounds storage, while indexing bounds read cost.
+New managed state stores default to 14 days of telemetry history (an age bound, not a hard byte cap); explicit `--retention-days` configures or opts an existing store in. Only a newly created managed store is auto-enrolled; relocation/reopening never enrolls a legacy store. Existing policy metadata is respected. Migration tests include live WAL committed rows, failures/interruption, symlinks and occupied sidecars. Existing explicit databases retain their policy until the user chooses otherwise. Do not prune any existing personal database while implementing. Explain that retention bounds storage, while indexing bounds read cost.
 
 Acceptance: launch from unrelated directories resolves to one state store; explicit legacy paths still work; migration round-trips committed data without overwrite; foreign Host/Origin and missing-token requests fail before content access; local CLI/API/exporter attachment works; fake-secret fixtures are redacted while benign fields remain intact.
 
@@ -64,13 +79,21 @@ Make `--once` wait for bounded initial discovery/index readiness, distinguish em
 
 Acceptance: review JSON → task link → handoff works without a hand-authored wrapper; malformed/cross-scope/oversized imports are explicit; native command output is readable without escaping artefacts; cold/empty/ready/partial/timed-out snapshots have truthful counts, costs and exit statuses.
 
-## Final release gate
+## Delivery validation
 
 1. Independent plan and code review; resolve identified correctness/privacy/data-loss risks.
 2. Adapter-to-export golden journeys, security/migration, cross-process storage and lifecycle/keyboard tests pass.
 3. Representative history benchmark, not only unchanged tiny/single-trace benchmarks, is recorded with conditions and limits.
 4. Repository test suite, appropriate packaging checks and CI are reviewed. Keep release status truthful and document any optional skips or pending CI.
 5. Update usage, privacy/performance documentation and this plan's implementation record. Supply responsive self-contained HTML companions. Preserve the input notes and existing telemetry.
+
+Results for tested head `b2f0b42737c89b4c5911c553dc9b45c0a5c62bbd`:
+
+- [All 12 PR CI jobs passed](https://github.com/abhishekash/agenturm/actions/runs/43440918727): 706 tests on each of Python 3.11, 3.12, 3.13 and 3.14, with 14 optional SDK skips per version; both Node versions and six SDK/interoperability jobs passed separately.
+- Independent review approved implementation `ecdf027` after 38 targeted tests and an authenticated older-run usage probe. The final readiness-test amendment was separately approved after all six affected tests passed independently. It waits on advertised indexing readiness without weakening the history assertions.
+- The wheel/sdist built successfully. An isolated installed wheel passed automatic token discovery, cold-start snapshot, native request/check projection and authentication boundaries. Real terminal keyboard journeys covered Agents, expanded inspector and Prompts at 120×36, plus compact Agents and Workflow/history at 60×18. HTML companions passed 16 desktop/mobile light/dark render checks.
+- After merge, all 19 combined session-filter, local-monitoring and shutdown tests passed on `10137aa`, which also includes separately validated [PR #68](https://github.com/abhishekash/agenturm/pull/68). The [post-merge main CI run](https://github.com/abhishekash/agenturm/actions/runs/43442939551) was still running when this plan was updated; its linked result is authoritative for the merged tree.
+- The supplied review notes and personal telemetry were preserved. No release was published.
 
 ## Implementation record
 
@@ -82,6 +105,17 @@ Acceptance: review JSON → task link → handoff works without a hand-authored 
 - Indexed reads: source Activity scalars/pointers, indexed MCP candidates, compact latest-run payloads, narrow per-run/session numeric aggregation and covering service indexes are implemented. Invalidations are transactional; interrupted background rebuilds resume; hydration and ownership share one SQLite snapshot. Readiness/progress is explicit. Benchmark results are recorded separately.
 - Attention: shared daemon work does not imply session progress/liveness; unknown remains visible separately from actionable attention. Recent/history completion filtering, frozen-ID bulk review and bounded graceful receipt drain are implemented. A real Textual teardown test verifies queued acknowledgements and seen errors survive a pending publication.
 - CLI/information/snapshot: Review JSON imports directly into task links, including bounded turn membership and overlap-safe accounting; command/result excerpts and unclassified shell records remain inspectable; --once has explicit ready/error/partial/interrupt outcomes without false empty snapshots.
-- Independent code review: approved after resolving parser, token, native streaming, provenance, readiness, hydration-race and shutdown findings. Final independent batch: 28 targeted tests passed. Current full-suite/CI results and merge state are recorded in [PR #67 checks](https://github.com/abhishekash/agenturm/pull/67/checks).
+- Independent code review: approved after resolving parser, token, native streaming, provenance, readiness, hydration-race and shutdown findings. A 28-test snapshot batch was followed by 38 tests on the implementation commit and six tests on the final readiness amendment. These overlapping batches are not a unique test count. Final CI and merge results are recorded above.
 
 The [validation report](../reliability-recovery-validation.md) records representative history measurements, integration fixes, limitations and final CI status.
+
+## Remaining quality work, in execution order
+
+These improve the delivered features. They are follow-up work, not claims that the measurements or user outcomes already exist.
+
+1. **Measure the complete monitor under sustained native ingestion.** Establish a repeatable, isolated soak of at least one hour with the receiver, supported native readers and interactive cockpit running together. Exercise prompts, delegated workers, approval requests, completion review, reconnect and graceful shutdown. Record per-process CPU/RSS, read latency, ingestion/derivation backlog, database/WAL growth and reconstruction mistakes. Gate: every injected request and accepted acknowledgement is accounted for; no cross-worker evidence or shared-daemon false progress; compare resource use under the same workload. The existing Store probe does not settle the original live-monitor CPU concern. Repeat the existing reconstruction pilot before claiming daily-use value.
+2. **Shorten first-history readiness.** The representative fixture needed 212.81 seconds for its initial ownership/source rebuild. Profile batch transactions and query plans before changing the migration. Reuse the same 35-day fixture and record cold/restart timings, foreground read availability and backlog under writes. Gate: repeatable improvement without increased evidence loss, ownership ambiguity or peak memory; interruption/restart preserves stable event IDs and pagination. Keep incomplete readiness visible.
+3. **Reduce remaining read and storage costs.** Under writes, the Store probe measured median Sessions at 375.52 ms and MCP at 249.98 ms. The fixture occupied 413.85 MiB, including 60.12 MiB of Activity metadata/pointers plus indexes. Refine scalar lookups and remove redundant index work using query plans and per-table measurements. Gate: controlled before/after results on the same fixture and host, with pagination, concurrent ownership/content snapshots, pruning and compatible-writer invalidation unchanged. Age retention must not be described as a byte cap or automatic compaction.
+4. **Maintain producer-shaped regression fixtures.** Add deidentified, version-labelled records as supported producers change, covering streaming text, wrapped checks, failed edits, late parents, unknown usage and clipped output. Gate: ingestion → authenticated API → review/export → task link preserves the expected scope and uncertainty. Extend the existing runtime coverage; do not add integrations as part of this work.
+
+Record each follow-up's measurements and decision in the validation report before marking it complete. Preserve the original acceptance contracts and the boundaries around personal data.

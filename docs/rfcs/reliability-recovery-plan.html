@@ -3,7 +3,51 @@
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
 </style></head><body><main><nav><strong>Agenturm / Unreleased reliability recovery</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/reliability-recovery-plan.md">Markdown source ↗</a></nav><h1>Reliability recovery implementation plan</h1>
-<p>Status: implementation and independent review complete. Exact-commit validation and delivery status are recorded in <a href="https://github.com/abhishekash/agenturm/pull/67">PR #67</a>. Baseline: main <code>d36446c</code>. Input: the consolidated <code>agenturm-review-notes.md</code> and the independently reproduced assessment. The work improves the existing monitor, evidence review, attention inbox and task CLI. Persistent notification services, model-generated briefs, collision detection, new dashboards and extra runtime integrations are deferred.</p>
+<p>Status: implemented, independently reviewed and merged through <a href="https://github.com/abhishekash/agenturm/pull/67">PR #67</a> on 13 November 2026 at 14:27 UTC. Merge commit: <code>10137aaf721cc4c3a543dfeaabe83be1f0e45e62</code>. Local main was synced to that commit. These changes remain <strong>Unreleased</strong>.</p>
+<p>Baseline: main <code>d36446c</code>. Input: the consolidated <code>agenturm-review-notes.md</code> and the independently reproduced assessment. The work improves the existing monitor, evidence review, attention inbox and task CLI. Persistent notification services, model-generated briefs, collision detection, new dashboards and extra runtime integrations remain outside this plan.</p>
+<h2>Delivery status</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Workstream</th>
+<th>Status</th>
+<th>Delivered behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Native evidence fidelity</td>
+<td>Complete</td>
+<td>Native checks, edits, assistant content and scoped usage survive ingestion, review and export; unsupported commands retain their original evidence.</td>
+</tr>
+<tr>
+<td>OpenCode turn identity</td>
+<td>Complete</td>
+<td>Explicit step/recorded-turn selectors preserve initiating prompts, worker ownership and qualified usage.</td>
+</tr>
+<tr>
+<td>Local safety and storage</td>
+<td>Complete</td>
+<td>Private shared state, automatic local authentication, Host/Origin checks, redaction, safe migration and new-store retention.</td>
+</tr>
+<tr>
+<td>Indexed history reads</td>
+<td>Complete; performance follow-up below</td>
+<td>Indexed source selection and scalar summaries, snapshot-coherent detail reads, resumable backfill and visible readiness.</td>
+</tr>
+<tr>
+<td>Attention and durability</td>
+<td>Complete</td>
+<td>Unknown status separated from action, recent/history completion filtering, frozen-ID bulk review and graceful receipt draining.</td>
+</tr>
+<tr>
+<td>Existing workflow composition</td>
+<td>Complete</td>
+<td>Review JSON links directly to saved tasks; command failures are readable; <code>--once</code> reports readiness and failure truthfully.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Completion here means the implemented contracts passed the gates below. It does not establish a full native-reader/cockpit performance budget or prove daily adoption; those remain explicit follow-ups.</p>
 <h2>Delivery rules</h2>
 <ul>
 <li>Keep personal telemetry and the supplied review notes untouched. Exercise migrations and retention on temporary synthetic copies only. Preserve raw source identities, worker boundaries and existing explicit database configuration.</li>
@@ -23,7 +67,7 @@
 <p>Use a common private state directory for the default telemetry database, while honoring <code>--db</code>. Discover an existing launch-directory database and explain explicit use/migration; never move or delete it silently. Provide a consistent SQLite-backup migration command that refuses occupied destinations (including sidecars) and preserves WAL-backed committed data. Default migration creates a new receiver namespace and records its source provenance. An identity-preserving cutover requires an explicitly stopped old receiver; a backup is never permission to run two live receivers with one namespace. Keep owner-only database/token files.</p>
 <p>Generate an automatic local receiver token for newly launched local receivers; attach local clients using that token. Keep explicit token configuration and existing external receiver connections working. Validate Host and Origin before API reads and ingestion. An existing unauthenticated receiver must be identified as such rather than being silently assumed secure. Same-OS-user agents remain inside the user's trust boundary; a token does not provide same-user sandboxing.</p>
 <p>Expand textual and structured redaction fixtures for common assigned secrets, database URL passwords, Stripe tokens and MySQL password arguments without corrupting numeric usage or ordinary command flags.</p>
-<p>New managed state stores default to 14 days of telemetry history (an age bound, not a hard byte cap); explicit <code>--retention-days</code> configures or opts an existing store in. Only a newly created managed store is auto-enrolled; relocation/reopening never enrolls a legacy store. Existing policy metadata is respected. Migration tests include live WAL committed rows, failures/interruption, symlinks and occupied sidecars. Existing explicit databases retain their policy until the user chooses otherwise. New managed state stores use a documented retention policy; existing explicit databases retain their policy until the user chooses otherwise. Do not prune any existing personal database while implementing. Explain that retention bounds storage, while indexing bounds read cost.</p>
+<p>New managed state stores default to 14 days of telemetry history (an age bound, not a hard byte cap); explicit <code>--retention-days</code> configures or opts an existing store in. Only a newly created managed store is auto-enrolled; relocation/reopening never enrolls a legacy store. Existing policy metadata is respected. Migration tests include live WAL committed rows, failures/interruption, symlinks and occupied sidecars. Existing explicit databases retain their policy until the user chooses otherwise. Do not prune any existing personal database while implementing. Explain that retention bounds storage, while indexing bounds read cost.</p>
 <p>Acceptance: launch from unrelated directories resolves to one state store; explicit legacy paths still work; migration round-trips committed data without overwrite; foreign Host/Origin and missing-token requests fail before content access; local CLI/API/exporter attachment works; fake-secret fixtures are redacted while benign fields remain intact.</p>
 <h2>4. Indexed read economics and migration</h2>
 <p>Materialize normalized activity and MCP/event metadata with time, trace/turn, producer, canonical agent and session indexes. Maintain bounded per-run/session/usage projections incrementally at committed ingestion/derivation rather than reparsing all historical JSON on each poll. Preserve raw records as the source of truth. Use versioned, idempotent migrations and resumable/batched backfills; stable pagination and replacement detection must survive backfill and pruning.</p>
@@ -38,7 +82,7 @@
 <p>Improve current Overview/Review/Findings output with safely decoded command/result excerpts and useful failure details. Avoid blanket HIGH classification for every non-zero shell exit; retain the original result and distinguish an observation from a confirmed unresolved failure. Existing views should make source lookup and unknowns comprehensible.</p>
 <p>Make <code>--once</code> wait for bounded initial discovery/index readiness, distinguish empty/partial/delayed/error states, return an appropriate status, and print unknown totals/cost as unavailable rather than false zeros. Preserve stable stdout/stderr behavior for scripting. Exit 0 means a ready snapshot (including a known empty store); exit 2 means fatal/read failure; exit 3 means the bounded readiness deadline expired with partial discovery/index state; interrupt returns 130. Unknown totals remain unavailable on non-ready output.</p>
 <p>Acceptance: review JSON → task link → handoff works without a hand-authored wrapper; malformed/cross-scope/oversized imports are explicit; native command output is readable without escaping artefacts; cold/empty/ready/partial/timed-out snapshots have truthful counts, costs and exit statuses.</p>
-<h2>Final release gate</h2>
+<h2>Delivery validation</h2>
 <ol>
 <li>Independent plan and code review; resolve identified correctness/privacy/data-loss risks.</li>
 <li>Adapter-to-export golden journeys, security/migration, cross-process storage and lifecycle/keyboard tests pass.</li>
@@ -46,6 +90,14 @@
 <li>Repository test suite, appropriate packaging checks and CI are reviewed. Keep release status truthful and document any optional skips or pending CI.</li>
 <li>Update usage, privacy/performance documentation and this plan's implementation record. Supply responsive self-contained HTML companions. Preserve the input notes and existing telemetry.</li>
 </ol>
+<p>Results for tested head <code>b2f0b42737c89b4c5911c553dc9b45c0a5c62bbd</code>:</p>
+<ul>
+<li><a href="https://github.com/abhishekash/agenturm/actions/runs/43440918727">All 12 PR CI jobs passed</a>: 706 tests on each of Python 3.11, 3.12, 3.13 and 3.14, with 14 optional SDK skips per version; both Node versions and six SDK/interoperability jobs passed separately.</li>
+<li>Independent review approved implementation <code>ecdf027</code> after 38 targeted tests and an authenticated older-run usage probe. The final readiness-test amendment was separately approved after all six affected tests passed independently. It waits on advertised indexing readiness without weakening the history assertions.</li>
+<li>The wheel/sdist built successfully. An isolated installed wheel passed automatic token discovery, cold-start snapshot, native request/check projection and authentication boundaries. Real terminal keyboard journeys covered Agents, expanded inspector and Prompts at 120×36, plus compact Agents and Workflow/history at 60×18. HTML companions passed 16 desktop/mobile light/dark render checks.</li>
+<li>After merge, all 19 combined session-filter, local-monitoring and shutdown tests passed on <code>10137aa</code>, which also includes separately validated <a href="https://github.com/abhishekash/agenturm/pull/68">PR #68</a>. The <a href="https://github.com/abhishekash/agenturm/actions/runs/43442939551">post-merge main CI run</a> was still running when this plan was updated; its linked result is authoritative for the merged tree.</li>
+<li>The supplied review notes and personal telemetry were preserved. No release was published.</li>
+</ul>
 <h2>Implementation record</h2>
 <ul>
 <li>Planning: baseline and supplied feedback inspected; independent reproductions already confirm edit/check omissions, OpenCode prompt exclusion, stale shared-process progress, ownership cache gaps, local request/redaction weaknesses and CLI shape mismatch.</li>
@@ -56,7 +108,16 @@
 <li>Indexed reads: source Activity scalars/pointers, indexed MCP candidates, compact latest-run payloads, narrow per-run/session numeric aggregation and covering service indexes are implemented. Invalidations are transactional; interrupted background rebuilds resume; hydration and ownership share one SQLite snapshot. Readiness/progress is explicit. Benchmark results are recorded separately.</li>
 <li>Attention: shared daemon work does not imply session progress/liveness; unknown remains visible separately from actionable attention. Recent/history completion filtering, frozen-ID bulk review and bounded graceful receipt drain are implemented. A real Textual teardown test verifies queued acknowledgements and seen errors survive a pending publication.</li>
 <li>CLI/information/snapshot: Review JSON imports directly into task links, including bounded turn membership and overlap-safe accounting; command/result excerpts and unclassified shell records remain inspectable; --once has explicit ready/error/partial/interrupt outcomes without false empty snapshots.</li>
-<li>Independent code review: approved after resolving parser, token, native streaming, provenance, readiness, hydration-race and shutdown findings. Final independent batch: 28 targeted tests passed. Current full-suite/CI results and merge state are recorded in <a href="https://github.com/abhishekash/agenturm/pull/67/checks">PR #67 checks</a>.</li>
+<li>Independent code review: approved after resolving parser, token, native streaming, provenance, readiness, hydration-race and shutdown findings. A 28-test snapshot batch was followed by 38 tests on the implementation commit and six tests on the final readiness amendment. These overlapping batches are not a unique test count. Final CI and merge results are recorded above.</li>
 </ul>
 <p>The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/reliability-recovery-validation.md">validation report</a> records representative history measurements, integration fixes, limitations and final CI status.</p>
+<h2>Remaining quality work, in execution order</h2>
+<p>These improve the delivered features. They are follow-up work, not claims that the measurements or user outcomes already exist.</p>
+<ol>
+<li><strong>Measure the complete monitor under sustained native ingestion.</strong> Establish a repeatable, isolated soak of at least one hour with the receiver, supported native readers and interactive cockpit running together. Exercise prompts, delegated workers, approval requests, completion review, reconnect and graceful shutdown. Record per-process CPU/RSS, read latency, ingestion/derivation backlog, database/WAL growth and reconstruction mistakes. Gate: every injected request and accepted acknowledgement is accounted for; no cross-worker evidence or shared-daemon false progress; compare resource use under the same workload. The existing Store probe does not settle the original live-monitor CPU concern. Repeat the existing reconstruction pilot before claiming daily-use value.</li>
+<li><strong>Shorten first-history readiness.</strong> The representative fixture needed 212.81 seconds for its initial ownership/source rebuild. Profile batch transactions and query plans before changing the migration. Reuse the same 35-day fixture and record cold/restart timings, foreground read availability and backlog under writes. Gate: repeatable improvement without increased evidence loss, ownership ambiguity or peak memory; interruption/restart preserves stable event IDs and pagination. Keep incomplete readiness visible.</li>
+<li><strong>Reduce remaining read and storage costs.</strong> Under writes, the Store probe measured median Sessions at 375.52 ms and MCP at 249.98 ms. The fixture occupied 413.85 MiB, including 60.12 MiB of Activity metadata/pointers plus indexes. Refine scalar lookups and remove redundant index work using query plans and per-table measurements. Gate: controlled before/after results on the same fixture and host, with pagination, concurrent ownership/content snapshots, pruning and compatible-writer invalidation unchanged. Age retention must not be described as a byte cap or automatic compaction.</li>
+<li><strong>Maintain producer-shaped regression fixtures.</strong> Add deidentified, version-labelled records as supported producers change, covering streaming text, wrapped checks, failed edits, late parents, unknown usage and clipped output. Gate: ingestion → authenticated API → review/export → task link preserves the expected scope and uncertainty. Extend the existing runtime coverage; do not add integrations as part of this work.</li>
+</ol>
+<p>Record each follow-up's measurements and decision in the validation report before marking it complete. Preserve the original acceptance contracts and the boundaries around personal data.</p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
