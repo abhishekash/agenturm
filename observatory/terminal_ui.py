@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import weakref
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
@@ -507,7 +509,9 @@ def unique_agents(items):
     return list(by_agent.values())
 
 
-def sources(snapshot, include_reviews=False):
+def prepare_sources(snapshot, include_reviews=False, *, denied_sources=frozenset(), policy_snapshot=None):
+    """Prepare attributed identity and text, without clock-dependent health."""
+    health_inputs={}
     connections={item['source_id']:item for item in snapshot.agents}
     by_agent={};by_session={}
     for event in snapshot.activity:
@@ -519,13 +523,8 @@ def sources(snapshot, include_reviews=False):
         review=review_session(entry)
         if review and not include_reviews:
             continue
-        if entry.get('discovery_state')=='announced':
-            health={'state':'Spawn recorded','active':False,'recent':False,
-                    'stamp':entry.get('last_record_ns') or 0,
-                    'status_evidence':'Spawn recorded · status unavailable'}
-        else:
-            health=session_health(entry,time.time_ns())
-        result.append({**entry,**health,'id':entry['source_id'],'review':review,
+        health_inputs[entry['source_id']]=entry
+        result.append({**entry,'id':entry['source_id'],'review':review,
                        'spans':connection.get('span_count',0)})
     for entry in connections.values():
         review=review_session(entry)
@@ -570,10 +569,10 @@ def sources(snapshot, include_reviews=False):
         waiting_for=session.get('waiting_for') or ''
         if reported in {'completed','failed','interrupted','incomplete'}:waiting_for=''
         if waiting_for and reported=='unknown':reported='waiting'
-        health=session_health({'run_state':reported,
-            'waiting_for':waiting_for,'last_record_ns':stamp},time.time_ns())
         runtime='Gemini CLI' if any('gemini' in name.casefold() for name in services) else 'OpenTelemetry'
         source_id='otlp-session:'+str(session_id)+(':'+str(stored_agent_id) if stored_agent_id else '')
+        health_inputs[source_id]={'run_state':reported,
+            'waiting_for':waiting_for,'last_record_ns':stamp}
         result.append({'id':source_id,'source_id':source_id,
             'session_id':session_id,'runtime':runtime,'service':service,'project':session.get('project') or '',
             'working_directory':'','branch':'','model':', '.join(session.get('models') or []),
@@ -581,7 +580,7 @@ def sources(snapshot, include_reviews=False):
              'initial_task':session.get('initial_task') or '',
              'run_state':reported,'task_outcome_ns':session.get('task_outcome_ns') or 0,
              'waiting_for':waiting_for,'last_activity':{},'capture_content':None,
-             **health,'spans':session.get('span_count',0),
+             'spans':session.get('span_count',0),
              'trace_count':session.get('trace_count',0),'errors':session.get('errors',0),
              'failed':session.get('failed',0),'incomplete':session.get('incomplete',0),
              'latest_trace_id':session.get('latest_trace_id'),
@@ -626,6 +625,17 @@ def sources(snapshot, include_reviews=False):
         item.setdefault('coverage','unknown')
         item.setdefault('source_namespace',str(namespace))
         item.setdefault('native_session_id',item.get('session_id'))
+        if item['id'] in denied_sources:item['capture_content']=False
+        if policy_snapshot is not None:
+            from .review_facts import review_capture_policy
+            item.update(review_capture_policy(item,policy_snapshot,scope_for(item,snapshot)))
+        if item.get('capture_content') is False:
+            # Fresh health may revoke capture while a failed Activity refresh
+            # leaves old text in the snapshot. Never derive text from it.
+            item['task']='';item['initial_task']=''
+            item['last_activity']={key:value for key,value in (item.get('last_activity') or {}).items()
+                if key in {'time_unix_nano','domain','action','result','id','source_id','trace_id','span_id'}}
+            continue
         scope=prompt_scope(item)
         candidates=(by_agent.get(item.get('agent_id'),()) if not item.get('agent_id_inferred')
                     else by_session.get(item.get('session_id'),()))
@@ -644,6 +654,92 @@ def sources(snapshot, include_reviews=False):
                 item['task_source']='recorded user request'
         if item['id'].startswith('otlp-session:'):
             item['last_activity']=max(evidence,key=lambda event:event.get('time_unix_nano') or 0,default={})
+    return result,health_inputs
+
+
+class SourcePreparation:
+    """Two bounded snapshot preparations shared by this app's consumers.
+
+    Equality against detached inputs catches nested in-place changes as well as
+    receiver/scope/policy replacement. No prompt cache survives a generation.
+    Health, attention, review receipts and live sorting are never cached here.
+    """
+    def __init__(self):
+        self.entries=[]
+
+    def clear(self):
+        self.entries.clear()
+
+    @staticmethod
+    def within_budget(value):
+        """Bound retained scalar characters, nodes and nesting before copying."""
+        stack=[(value,0)];nodes=0;characters=0
+        while stack:
+            item,depth=stack.pop();nodes+=1
+            if nodes>20000 or depth>24:return False
+            if isinstance(item,str):characters+=len(item)
+            elif isinstance(item,dict):
+                if len(item)>20000-nodes:return False
+                stack.extend((child,depth+1) for pair in item.items() for child in pair)
+            elif isinstance(item,(tuple,list)):
+                if len(item)>20000-nodes:return False
+                stack.extend((child,depth+1) for child in item)
+            elif item is not None and not isinstance(item,(bool,int,float)):
+                return False
+            if characters>512000:return False
+        return True
+
+    def get(self,snapshot,include_reviews,denied_sources,policy_snapshot):
+        inputs=(getattr(snapshot,'receiver_id',''),getattr(snapshot,'view_scope',()),
+                snapshot.agents,snapshot.local_status.get('sessions',[]),
+                getattr(snapshot,'sessions',[]),snapshot.activity,denied_sources)
+        # Feed responses are already byte bounded. Also bound retained rows and
+        # bypass unusually large custom feeds rather than growing a text cache.
+        bounded=(not denied_sources and sum(len(rows) for rows in inputs[2:5])<=500
+                 and len(inputs[5])<=200)
+        if denied_sources:self.clear()
+        for index,(owner,reviews,frozen,prepared) in enumerate(self.entries):
+            if owner() is snapshot and reviews==include_reviews:
+                if bounded and frozen==inputs:
+                    self.entries.append(self.entries.pop(index))
+                    return prepared
+                self.entries.pop(index)
+                break
+        self.entries[:]=[entry for entry in self.entries if entry[0]() is not None]
+        if not bounded or not self.within_budget(inputs[:-1]):
+            return prepare_sources(snapshot,include_reviews,denied_sources=denied_sources,
+                                   policy_snapshot=policy_snapshot)
+        frozen=deepcopy(inputs)
+        from types import SimpleNamespace
+        detached=SimpleNamespace(agents=frozen[2],local_status={'sessions':frozen[3]},
+                                 sessions=frozen[4],activity=frozen[5])
+        prepared=prepare_sources(detached,include_reviews)
+        try:owner=weakref.ref(snapshot)
+        except TypeError:return prepared
+        self.entries.append((owner,include_reviews,frozen,prepared))
+        del self.entries[:-2]
+        return prepared
+
+
+def sources(snapshot, include_reviews=False, *, preparation=None, policy_snapshot=None):
+    policy=policy_snapshot if policy_snapshot is not None else snapshot
+    same_receiver=getattr(policy,'receiver_id','')==getattr(snapshot,'receiver_id','')
+    denied=frozenset(entry['source_id'] for entry in policy.local_status.get('sessions',[])
+                     if entry.get('capture_content') is False) if same_receiver else frozenset()
+    if same_receiver and policy.local_status.get('capture_content') is False:denied=denied|{None}
+    prepared=(preparation.get(snapshot,include_reviews,denied,policy if denied else None) if preparation is not None
+              else prepare_sources(snapshot,include_reviews,denied_sources=denied,
+                                   policy_snapshot=policy if denied else None))
+    result=deepcopy(prepared[0]) if preparation is not None else prepared[0]
+    now=time.time_ns()
+    for item in result:
+        entry=prepared[1].get(item['id'])
+        if entry is not None:
+            if entry.get('discovery_state')=='announced':
+                item.update(state='Spawn recorded',active=False,recent=False,
+                            stamp=entry.get('last_record_ns') or 0,
+                            status_evidence='Spawn recorded · status unavailable')
+            else:item.update(session_health(entry,now))
         item['attention']=attention_required(item)
         item['owns_attention']=attention_required(item)
         item['_display_attention']=session_phase(item)=='attention'
@@ -1500,6 +1596,8 @@ class ObservatoryApp(App):
         self.task_store_path=task_store_path
         self.agent=None
         self.data=feed.snapshot
+        self.source_preparation=SourcePreparation()
+        self.capture_policy_signature=None
         self.workflow_updated=None
         self.workflow_ledger=AttentionLedger()
         self.workflow_notify=False
@@ -1951,6 +2049,7 @@ class ObservatoryApp(App):
 
     async def on_unmount(self):
         import asyncio
+        self.source_preparation.clear()
         await asyncio.to_thread(self.workflow_controller.close)
         self.save_preferences()
         if self.refresh_timer:self.refresh_timer.stop()
@@ -2191,6 +2290,14 @@ class ObservatoryApp(App):
         self.update_workflow()
         if not isinstance(self.screen,ObservatoryScreen):return
         live=self.feed.snapshot
+        policy_signature=(live.receiver_id,live.local_status.get('capture_content'),tuple(sorted(tuple(str(entry.get(key) or '')
+            for key in ('source_id','service','agent_id','session_id','runtime'))
+            for entry in live.local_status.get('sessions',[]) if entry.get('capture_content') is False)))
+        if policy_signature!=self.capture_policy_signature:
+            self.capture_policy_signature=policy_signature
+            self.source_preparation.clear()
+            self.last_update=-1
+            self.screen.clear_selection()
         data=self.display_snapshot(live)
         state,feedback,connecting=connection_feedback(self.feed)
         self.screen.set_class(connecting,'connecting')
@@ -2239,7 +2346,8 @@ class ObservatoryApp(App):
             return
         if data.updated==self.last_update:return
         self.last_update=data.updated;self.data=data
-        agents=sources(data,self.feed.include_reviews)
+        agents=sources(data,self.feed.include_reviews,preparation=self.source_preparation,
+                       policy_snapshot=self.feed.snapshot)
         work=[item for item in unique_agents(agents) if not item['review']]
         observed_work=[item for item in work if item.get('discovery_state')!='announced']
         recent=sum(item['recent'] for item in observed_work)
@@ -3026,7 +3134,7 @@ class ObservatoryApp(App):
         return fields, sections
 
     def sync_session_prompts(self,item,actions):
-        scope=prompt_scope(item)
+        scope=prompt_scope(item) if item.get('capture_content') is not False else None
         if self.session_prompts.scope!=scope:
             self.session_prompts=PromptHistory(scope=scope)
         history=self.session_prompts
@@ -3096,7 +3204,7 @@ class ObservatoryApp(App):
         self.show_agent()
 
     def sync_session_evidence(self,item):
-        scope=prompt_scope(item)
+        scope=prompt_scope(item) if item.get('capture_content') is not False else None
         if self.session_evidence.scope!=scope:
             self.session_evidence=SessionEvidence(scope=scope)
         evidence=self.session_evidence
@@ -3272,7 +3380,10 @@ class ObservatoryApp(App):
         self.query_one('#agent-evidence-status').display=expanded and not prompts and bool(item)
         self.query_one('#agent-retry').display=False
         self.query_one('#agent-review-work').display=expanded and self.session_mode=='overview' and bool(item)
-        scope=prompt_scope(item) if item else None
+        captured=bool(item) and item.get('capture_content') is not False
+        scope=prompt_scope(item) if captured else None
+        if item and not captured:
+            self.ai_summaries.pop(item['id'],None)
         if self.session_prompts.scope!=scope:
             self.session_prompts=PromptHistory(scope=scope)
             self.prompt_original.clear()
@@ -3282,7 +3393,7 @@ class ObservatoryApp(App):
         self.inspector_payloads.pop('agent-stats',None)
         button=self.query_one('#agent-summary',Button)
         button.display=self.ai_summary_available and bool(item) and not prompts
-        button.disabled=not bool(item) or self.summary_busy or not self.ai_summary_available
+        button.disabled=not captured or self.summary_busy or not self.ai_summary_available
         if not self.ai_summary_available:
             button.tooltip='No compatible API key or provider is configured. The recorded progress summary below works without setup.'
         if not item:
@@ -3332,7 +3443,7 @@ class ObservatoryApp(App):
         run_usage=task_run_usage(self.data.sessions,item,self.data.traces)
         usage_text,_=task_usage_summary(run_usage,run_usage.get('task') or task_preview(item),scope='trace',
                                       identity=run_usage.get('trace_id') or '',compact=self.size.width<100)
-        pending_errors=getattr(self,'agent_error_reminders',{}).get(item['id'],[])
+        pending_errors=getattr(self,'agent_error_reminders',{}).get(item['id'],[]) if captured else []
         self.agent_has_failures=bool(pending_errors)
         trace_button=self.query_one('#agent-trace',Button)
         trace_button.disabled=not bool(self.linked_agent_trace())
@@ -3355,7 +3466,7 @@ class ObservatoryApp(App):
             stamp,text=generated
             label='AI summary · earlier snapshot' if stamp!=item.get('stamp') else 'AI summary · provider generated'
             ai_sections=[(label,text)]
-        actions=(self.sync_session_evidence(item) if expanded and self.session_mode!='prompts'
+        actions=[] if not captured else (self.sync_session_evidence(item) if expanded and self.session_mode!='prompts'
                  else sorted(scoped_events([*self.session_evidence.events,*self.data.activity],scope),
                              key=lambda event:event.get('time_unix_nano') or 0,reverse=True))
         meaningful=[event for event in actions if event.get('domain') not in {'model','context','agent'}]
@@ -3966,6 +4077,8 @@ class ObservatoryApp(App):
         from .ai_summary import SummaryConfig, SummaryError
         item=getattr(self,'source_map',{}).get(self.selected_source)
         if not item or self.summary_busy:return
+        if item.get('capture_content') is False:
+            self.notify('Content capture is disabled for this source.');return
         if item.get('review'):
             self.notify('AI summaries exclude internal approval reviews.',severity='warning');return
         try:
@@ -3980,10 +4093,18 @@ class ObservatoryApp(App):
         self.show_agent()
         summary_item=dict(item)
         summary_item['telemetry_totals']=dict(session_usage(self.data.sessions,item))
-        self.summarize_agent(summary_item,config)
+        self.summarize_agent(summary_item,config,scope_for(item,self.data,self.feed.api.endpoint))
+
+    def summary_capture_allowed(self,item,scope):
+        from types import SimpleNamespace
+        from .review_facts import review_capture_policy
+        live=self.feed.snapshot
+        if scope_for(item,live,self.feed.api.endpoint).receiver!=scope.receiver:return False
+        policy=SimpleNamespace(receiver_id=scope.receiver,local_status=live.local_status)
+        return review_capture_policy(item,policy,scope).get('capture_content') is not False
 
     @work(group='ai-summary')
-    async def summarize_agent(self,item,config):
+    async def summarize_agent(self,item,config,execution_scope):
         from .ai_summary import generate_summary, summary_evidence, SummaryError
         try:
             scope=prompt_scope(item)
@@ -3992,8 +4113,12 @@ class ObservatoryApp(App):
             params={'limit':30,'service':item.get('service') or '',
                     'session_id':session,'agent_id':'' if legacy else agent,'subtree':0,'include_reviews':0}
             page=await asyncio.to_thread(self.feed.api.get,'/api/activity?'+urlencode(params))
+            if not self.summary_capture_allowed(item,execution_scope):
+                raise SummaryError('Summary cancelled: source capture or receiver identity changed.')
             evidence=summary_evidence(item,page.get('activity',[]))
             result=await asyncio.to_thread(generate_summary,config,evidence)
+            if not self.summary_capture_allowed(item,execution_scope):
+                raise SummaryError('Summary discarded: source capture or receiver identity changed.')
             self.ai_summaries[item['id']]=(item.get('stamp'),result)
             if len(self.ai_summaries)>50:self.ai_summaries.pop(next(iter(self.ai_summaries)))
         except SummaryError as exc:
@@ -4022,7 +4147,7 @@ class ObservatoryApp(App):
         self.refresh_data()
 
     def workflow_items(self):
-        return sources(self.feed.snapshot,self.feed.include_reviews)
+        return sources(self.feed.snapshot,self.feed.include_reviews,preparation=self.source_preparation)
 
     def review_state(self,item):
         acknowledged=self.workflow_controller.reviewed(item)
