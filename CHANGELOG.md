@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add headless `agenturm review` for one explicit producer/agent/session/trace, with bounded paging, receiver identity checks and the same evidence projection as terminal Review. Keep captured claims separate from recorded check results and disclose partial coverage.
+- Copy readable frozen evidence briefs, retain `j` Copy JSON, and preview non-overwriting private Markdown/HTML receipt pairs. Recheck identity-level capture policy across run changes, reads, formatting and export confirmation.
+- Exclude recognized informational commands from validation counts, share modifying-edit facts between Workflow and Review, and refresh exact-run lifecycle/usage alongside evidence. Require complete producer/agent/session ownership before allocating whole-trace facts; bound later-edit reference expansion.
+
 - Limit Agents error reminders to unseen, concrete evidence in the two most recently active conversations per project/runtime. Keep workers with their parent, suppress reminders after matching later success, and persist viewed-error receipts without clearing task outcomes or approvals. Retain all captured error history in Activity and Traces.
 
 - Replace the narrow agent-session dropdown with a centred, searchable chooser that shows task titles and runtime/project/identity context, with arrow-key selection, explicit apply/cancel and exact worker scoping.

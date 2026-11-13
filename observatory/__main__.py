@@ -16,6 +16,8 @@ def main():
     sub = parser.add_subparsers(dest="command")
     from .task_cli import add_task_parser
     task_parser = add_task_parser(sub)
+    from .review_cli import add_review_parser
+    add_review_parser(sub)
     cockpit = sub.add_parser("cockpit", help="monitor agent sessions and telemetry in the terminal")
     cockpit.add_argument("--port", type=int, default=14318, help="local receiver port (default: 14318)")
     cockpit.add_argument("--endpoint", default=os.environ.get("OBSERVATORY_ENDPOINT"),
@@ -55,7 +57,11 @@ def main():
     prune = sub.add_parser("prune", help="delete telemetry older than the retention period")
     prune.add_argument("--older-than-days", type=float, required=True)
     args = parser.parse_args()
-    if args.command == "task":
+    if args.command == "review":
+        from .review_cli import run_review_command
+        status=run_review_command(args)
+        if status:parser.exit(status)
+    elif args.command == "task":
         from .task_cli import run_task_command
         status = run_task_command(args, task_parser)
         if status:

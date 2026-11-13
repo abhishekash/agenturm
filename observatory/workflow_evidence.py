@@ -10,12 +10,15 @@ import shlex
 import time
 import unicodedata
 from urllib.parse import urlencode, urlsplit
+from .session_text import local_command_only, message_text, request_text
 
 PAGE_SIZE = 200
 MAX_EVENTS = 1000
 MAX_BYTES = 2 * 1024 * 1024
 CACHE_SELECTIONS = 4
 CACHE_BYTES = 8 * 1024 * 1024
+LATER_REFERENCE_BYTES = 128 * 1024
+LATER_REFERENCES_PER_CHECK = 8
 
 
 def safe_text(value):
@@ -106,11 +109,25 @@ def check_kind(command):
     except ValueError: return None
     while words and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', words[0]): words.pop(0)
     if not words: return None
+    # These invocations inspect the tool itself; they do not validate the work.
+    informational={'--help','-h','--version','-V','--collect-only','--co','--fixtures',
+        '--fixtures-per-test','--markers','--trace-config','--list','--listTests',
+        '--listFilesOnly','--showConfig','--show-files','--show-settings','--dry-run'}
+    if any(word.split('=',1)[0] in informational for word in words): return None
     if words[0] in ('uv', 'poetry') and words[1:2] == ['run']:
         words = words[2:]
         while words and words[0] in ('--no-sync','--offline','--frozen','--locked','--no-project','--active'):words.pop(0)
     if not words: return None
     executable = words[0].rsplit('/', 1)[-1]
+    arguments = words[1:]
+    if (executable=='pytest' or re.fullmatch(r'python(?:\d+(?:\.\d+)*)?',executable)) and any(word in {'--collect-only','--co'} for word in arguments): return None
+    if executable in ('jest','vitest') and ('--listTests' in arguments or arguments[:1]==['list']): return None
+    if executable in ('tsc','eslint') and '-v' in arguments: return None
+    if executable=='tsc' and '--showConfig' in arguments:return None
+    if executable=='ruff' and not (arguments[:1]==['check'] or arguments[:1]==['format'] and '--check' in arguments):return None
+    if executable=='cargo' and '--list' in arguments:return None
+    if executable=='go' and any(word=='-list' or word.startswith('-list=') for word in arguments):return None
+    if executable in ('make','go') and '-n' in arguments:return None
     if executable in ('pytest', 'ruff', 'mypy', 'pyright', 'tsc', 'eslint', 'flake8', 'pylint', 'jest', 'vitest'): return executable
     if re.fullmatch(r'python(?:\d+(?:\.\d+)*)?', executable) and words[1:3] in (['-m', 'unittest'], ['-m', 'pytest']): return words[2]
     if executable in ('npm', 'pnpm', 'yarn', 'bun') and len(words) > 1:
@@ -136,6 +153,7 @@ def check_observation(event):
     result = str(event.get('result') or '').lower()
     status = 'passed' if exit_code == 0 else 'failed' if exit_code is not None else 'passed' if result in ('success', 'ok') else 'failed' if result in ('failed', 'error', 'failure') else 'unknown'
     return dict(source=reference(event), command=command, kind=kind, result=status, exit_code=exit_code,
+                result_basis='recorded exit code' if exit_code is not None else 'producer result label' if status!='unknown' else 'no terminal result',
                 completed_ns=event.get('end_unix_nano') or event.get('time_unix_nano') if status != 'unknown' else None)
 
 
@@ -188,16 +206,38 @@ class ReviewHistory:
         self.receiver_confirmed=bool(response_receiver and response_receiver==self.scope.receiver and not self.scope.endpoint_fallback)
 
     def projection(self, item):
-        rows = sorted(self.events.values(), key=lambda e: (e.get('time_unix_nano') or 0, event_key(e)))
+        rows = sorted(self.events.values(), key=lambda e: (e.get('time_unix_nano') or 0, event_key(e))) if item.get('capture_content') is not False else []
         edits = [e for e in rows if e.get('domain') == 'file' and e.get('action') in ('write', 'edit', 'delete', 'create', 'patch', 'rename')]
         checks = [check for event in rows if (check := check_observation(event))]
+        reference_budget=LATER_REFERENCE_BYTES
+        edit_refs=[(e.get('time_unix_nano') or 0,reference(e)) for e in edits]
+        ref_sizes={id(ref):len(json.dumps(ref,ensure_ascii=False).encode()) for _,ref in edit_refs}
         for check in checks:
             stamp = check['completed_ns']
-            later = [reference(e) for e in edits if stamp and (e.get('time_unix_nano') or 0) > stamp]
-            check['later_edits'] = later
+            later = [ref for time_ns,ref in edit_refs if stamp and time_ns > stamp]
+            linked=[]
+            for ref in later[:LATER_REFERENCES_PER_CHECK]:
+                size=ref_sizes[id(ref)]
+                if size>reference_budget:break
+                linked.append(ref);reference_budget-=size
+            check['later_edits'] = linked
+            check['later_edit_count']=len(later)
+            check['later_edits_clipped']=len(linked)<len(later)
             check['freshness'] = 'later recorded edits' if later else 'freshness unknown'
         errors = [e for e in rows if str(e.get('result') or '').lower() in ('error', 'failed', 'failure', 'blocked', 'denied')]
         context = [e for e in rows if e.get('action') in ('compaction', 'compact', 'truncation', 'context_truncated')]
+        def latest_message(action):
+            if item.get('capture_content') is False:return None
+            for event in reversed(rows):
+                if event.get('domain')!='message' or event.get('action')!=action:continue
+                text=message_text(event.get('detail')) or message_text(event.get('subject'))
+                if not text or (action=='user' and local_command_only(text)):continue
+                parsed=request_text(text) if action=='user' else None
+                body=parsed.body if parsed else text
+                if not body:continue
+                return dict(text=body[:2000],source=reference(event),clipped=len(body)>2000,
+                            context_omitted=list(parsed.context) if parsed else [])
+            return None
         stamps = [e['time_unix_nano'] for e in rows if isinstance(e.get('time_unix_nano'), int)]
         reasons = list(dict.fromkeys(self.limited))
         if not self.loaded: reasons.append('Evidence not loaded')
@@ -207,15 +247,19 @@ class ReviewHistory:
         if self.scope.run_start_ns and not self.scope.run_id and not self.scope.run_end_ns:reasons.append('Native lifecycle end is unavailable; exact run interval cannot be isolated')
         if self.scope.kind != 'run': reasons.append('Session/agent evidence; exact run identity unavailable')
         if item.get('capture_content') is False: reasons.append('Metadata-only capture')
+        elif self.loaded and not rows: reasons.append('No scoped activity loaded; collection or indexing may still be pending, or capture may be unavailable. Retry explicitly.')
+        if item.get('_review_metadata_note'): reasons.append(item['_review_metadata_note'])
         if not stamps or len(stamps) != len(rows): reasons.append('Some timestamps unavailable')
         window = dict(earliest_ns=min(stamps) if stamps else None, latest_ns=max(stamps) if stamps else None,
             count=len(rows), next_cursor=self.cursor, scope_revision=self.revision, capture_revision=self.capture_revision,
             coverage='partial' if reasons else 'loaded captured interval', reasons=reasons,
             note='Captured records do not establish complete runtime capture or the current worktree state.')
         candidate=item.get('_review_usage') or {}
+        owner=candidate.get('review_owner') or {}
         exact_usage=bool(self.scope.run_id and candidate.get('trace_id')==self.scope.run_id and
             type(candidate.get('agent_count')) is int and candidate['agent_count']==1 and candidate.get('agent_count_complete') is True and
-            (not candidate.get('agent_id') or candidate.get('agent_id')==self.scope.agent_id))
+            owner.get('producer')==self.scope.producer and owner.get('agent_id')==self.scope.agent_id and
+            (not self.scope.session_id or owner.get('session_id')==self.scope.session_id))
         usage=dict(scope='exact run' if exact_usage else 'unavailable',trace_id=self.scope.run_id or None,
             agent_count=candidate.get('agent_count'),allocation=candidate.get('usage_allocation') or ('single recorded agent' if exact_usage else 'agent allocation unverified'),
             values={key:candidate[key] for key in ('input_tokens','output_tokens','cache_read_input_tokens',
@@ -223,11 +267,12 @@ class ReviewHistory:
                 'cost_reported','cost_coverage','cost_complete','usage_complete','unknown_cost_runs',
                 'cache_read_input_tokens_reported','cache_write_input_tokens_reported') if exact_usage and key in candidate},
             note='Recorded run usage only; session lifetime, descendant totals and provider billing are separate.')
-        return dict(format='agenturm-review-v1', title=safe_text(item.get('task') or 'Selected execution'),
+        return dict(format='agenturm-review-v1', title='Selected execution (metadata-only)' if item.get('capture_content') is False else safe_text(item.get('task') or 'Selected execution'),
             scope=asdict(self.scope), captured_at=self.captured_at, reported_outcome=item.get('state') or 'Unknown',
             edits=[dict(source=reference(e), path=safe_text(e.get('subject')), action=e.get('action')) for e in edits],
             checks=checks, usage=usage, errors=[dict(source=reference(e), subject=safe_text(e.get('subject'))) for e in errors],
-            context_events=[dict(source=reference(e), subject=safe_text(e.get('subject'))) for e in context], window=window)
+            context_events=[dict(source=reference(e), subject=safe_text(e.get('subject'))) for e in context], window=window,
+            request=latest_message('user'),agent_update=latest_message('assistant'))
 
 
 class ReviewCache:
@@ -252,9 +297,20 @@ def render_review(projection):
     counts={state:sum(check['result']==state for check in projection['checks']) for state in ('passed','failed','unknown')}
     lines = [projection['title'], '', 'Agent reported: ' + projection['reported_outcome'],
         'Evidence: '+window['coverage']+' · '+str(window['count'])+' captured records',
-        'Checks: '+' · '.join(str(counts[state])+' '+state for state in counts), '', 'RECORDED CHECKS']
+        'Checks: '+' · '.join(str(counts[state])+' '+state for state in counts),
+        'Review next step: '+review_guidance(projection), '', 'LATEST CAPTURED REQUEST FOR THIS RUN']
+    request=projection.get('request')
+    lines += [request['text']+('… (excerpt clipped)' if request.get('clipped') else '')] if request else ['Not available in loaded evidence; the task label is not a reconstructed request.']
+    if request and request.get('context_omitted'):lines.append('Captured context separated: '+', '.join(request['context_omitted']))
+    if projection.get('agent_update'):
+        lines+=['','AGENT-REPORTED UPDATE',projection['agent_update']['text']]
+    lines += ['', 'RECORDED CHECKS']
     for check in projection['checks']:
-        lines += [check['result'].upper() + ' · ' + check['command'], '  ' + check['freshness']]
+        basis=check.get('result_basis','recorded producer result')
+        if check.get('exit_code') is not None:basis+=' '+str(check['exit_code'])
+        freshness=check['freshness']
+        if check.get('later_edit_count'):freshness=str(check['later_edit_count'])+' '+freshness
+        lines += [check['result'].upper() + ' · ' + check['command'], '  ' + basis+' · '+freshness]
     if not projection['checks']: lines.append('No recognized checks in the loaded evidence. Assistant claims are not check results.')
     lines += ['', 'RECORDED EDITS'] + [e['action'] + ' · ' + e['path'] for e in projection['edits']]
     if not projection['edits']: lines.append('No file operations captured in this interval.')
@@ -283,3 +339,15 @@ def render_review(projection):
         'Window: '+stamp(window['earliest_ns'])+' – '+stamp(window['latest_ns']),
         *window['reasons'], window['note'],usage.get('note','')]
     return safe_text('\n'.join(lines))
+
+
+def review_guidance(projection):
+    """A next inspection step, never a correctness or merge-readiness verdict."""
+    checks=projection.get('checks') or []
+    if projection.get('reported_outcome')=='Waiting':return 'Read the request and respond in the original agent terminal.'
+    if any(check['result']=='failed' for check in checks):return 'Inspect the failed validation commands and their source records.'
+    if any(check.get('later_edit_count',len(check.get('later_edits',()))) for check in checks):return 'Inspect the later edits and rerun the affected checks in your terminal.'
+    if any(check['result']=='unknown' for check in checks):return 'Find the missing command results before relying on these checks.'
+    if not checks:return 'No validation was captured here; choose and run the checks this change needs.'
+    if projection['window']['coverage']=='partial':return 'Inspect the coverage gaps before drawing conclusions from the captured checks.'
+    return 'Review the changes and decide which checks the current worktree still needs.'

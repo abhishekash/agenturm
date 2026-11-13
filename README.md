@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <strong>One terminal to understand your agents’ work.</strong><br>
-  See who needs you, read what happened, and keep the context for the next session.
+  <strong>Inspect the evidence behind your agents’ work.</strong><br>
+  Attribute each run, examine what supports “done,” and retain the context for review.
 </p>
 
 <p align="center">
@@ -22,11 +22,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-b9afc5?labelColor=191621" alt="MIT license"></a>
 </p>
 
-## Keep a clear view as the work spreads out
+## What it adds to an engineer's workflow
 
-You have Codex implementing a change, Claude Code reviewing another project, and a worker checking tests. A session asks a question. Another reports “done.” Tomorrow, you need to remember why you chose an approach.
+With concurrent agents, the expensive question becomes **which run produced this result, and what supports it?** A completion message does not tell you whether the selected worker ran the check, whether an edit followed it, or whether you are looking at a different execution's evidence.
 
-**Agenturm brings those threads into one local, keyboard-driven workspace.** It reads supported local agent records and configured OpenTelemetry signals, stores them in SQLite, and connects the current session to its recorded work.
+Agenturm reads supported local agent records and configured OpenTelemetry signals into SQLite. Its practical value is in three jobs: **attribute concurrent work**, **inspect recorded validation and its gaps**, and **carry evidence and engineering decisions across sessions**. Exact identities keep workers separate; Review distinguishes agent claims from recorded results; saved tasks retain a brief, rationale and linked runs. It does not independently attest command execution or establish the current worktree's correctness.
 
 | When you need to… | Agenturm gives you… |
 | --- | --- |
@@ -38,6 +38,8 @@ You have Codex implementing a change, Claude Code reviewing another project, and
 | Continue the task in another session | A saved brief, versioned decisions, linked runs, workspace capture, and a handoff you review before sharing |
 
 Reply to agents and approve their requests in their own terminals. Agenturm monitors their work; it does not launch or control them.
+
+**On main / Unreleased:** `agenturm review` exposes the same scoped evidence without opening the cockpit, as text, JSON or a frozen Markdown/HTML receipt. It shows a check followed by an edit as a reason to inspect and rerun affected checks, and discloses missing ownership or capture. [Engineering contracts, a concrete example, and CLI usage](docs/work-receipts.md) · [Standalone HTML](docs/work-receipts.html). This command is not in the published 0.2.3 package yet.
 
 ## See it in action
 

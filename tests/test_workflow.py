@@ -36,7 +36,7 @@ class WorkflowEvidenceTests(unittest.TestCase):
         feed=ManualFeed();item={'id':'a','service':'codex','agent_id':'a','session_id':'s','state':'Completed','working_directory':'/repo'}
         events=[{'agent_id':'b','session_id':'s','domain':'shell','subject':'pytest secret','result':'success','time_unix_nano':10},
                 {'agent_id':'a','domain':'shell','subject':'pytest','result':'error','time_unix_nano':20},
-                {'agent_id':'a','domain':'file','subject':'edit a.py','time_unix_nano':30}]
+                {'agent_id':'a','domain':'file','action':'edit','subject':'edit a.py','time_unix_nano':30}]
         snapshot=replace(feed.snapshot,activity=events)
         for event in events:event.update(service='codex',session_id='s')
         report=workflow_report(item,[item,{'id':'b','active':True,'working_directory':'/repo','task':'other task'}],snapshot)

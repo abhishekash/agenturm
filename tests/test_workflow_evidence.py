@@ -84,7 +84,8 @@ class EvidenceTests(unittest.TestCase):
         history=ReviewHistory(self.scope)
         projection=history.projection({'_review_usage':{'trace_id':'other','input_tokens':999}})
         self.assertEqual(projection['usage']['values'],{})
-        projection=history.projection({'_review_usage':{'trace_id':'run','input_tokens':10,'known_cost_usd':0,'cost_complete':False,'agent_count':1,'agent_count_complete':True}})
+        projection=history.projection({'_review_usage':{'trace_id':'run','input_tokens':10,'known_cost_usd':0,'cost_complete':False,'agent_count':1,'agent_count_complete':True,
+            'review_owner':{'producer':'codex','agent_id':'worker','session_id':'session'}}})
         self.assertEqual(projection['usage']['values']['input_tokens'],10)
         self.assertFalse(projection['usage']['values']['cost_complete'])
 
@@ -138,6 +139,81 @@ class EvidenceTests(unittest.TestCase):
 
 
 class ReviewJourney(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_commits_matching_native_outcome_and_owned_usage(self):
+        from tests.test_terminal_search import ManualFeed
+        from observatory.terminal_ui import ObservatoryApp
+        from observatory.ui_review import ReviewScreen
+        feed=ManualFeed();feed.request_refresh=lambda:None
+        feed.snapshot.receiver_id='receiver';feed.snapshot.review_trace_filter=True
+        native=dict(source_id='current',service='codex',session_id='session',agent_id='worker',trace_id='run',
+            runtime='Codex',task='Fix retries',run_state='running',last_record_ns=time.time_ns(),capture_content=True)
+        usage=dict(trace_id='run',agent_id='worker',agent_count=1,agent_count_complete=True,input_tokens=100,
+            review_owner=dict(producer='codex',agent_id='worker',session_id='session'))
+        feed.snapshot.local_status={'sessions':[native]}
+        feed.snapshot.sessions=[dict(agent_id='worker',session_id='session',services=['codex'],latest_run=usage)]
+        original=feed.api.get
+        feed.api.get=lambda path: {'activity':[event()],'receiver_id':'receiver'} if 'limit=200' in path else original(path)
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(80,24)) as pilot:
+            await pilot.pause();app.refresh_timer.stop()
+            app.push_screen(ReviewScreen(app,{**native,'state':'Working','_review_usage':dict(usage)}))
+            await app.workers.wait_for_complete();await pilot.pause();screen=app.screen
+            self.assertEqual(screen.projection['usage']['values']['input_tokens'],100)
+            native['run_state']='completed';usage['input_tokens']=500;feed.snapshot.updated=time.time()
+            await pilot.press('R');await app.workers.wait_for_complete();await pilot.pause()
+            self.assertEqual(screen.projection['reported_outcome'],'Completed')
+            self.assertEqual(screen.projection['usage']['values']['input_tokens'],500)
+            native['trace_id']='new';native['run_state']='running';usage['trace_id']='new'
+            await pilot.press('R');await app.workers.wait_for_complete();await pilot.pause()
+            self.assertEqual(screen.projection['scope']['run_id'],'run')
+            self.assertEqual(screen.projection['reported_outcome'],'Completed')
+            self.assertIn('previous snapshot',' '.join(screen.projection['window']['reasons']))
+
+    async def test_policy_change_during_formatting_revokes_copy_and_frozen_export_button(self):
+        from tests.test_terminal_search import ManualFeed
+        from observatory.terminal_ui import ObservatoryApp
+        from observatory.ui_review import ReviewScreen
+        from observatory.ui_export import ReceiptExportScreen
+        from observatory.work_receipts import freeze_receipt
+        from unittest.mock import patch
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from textual.widgets import Input
+        feed=ManualFeed();feed.request_refresh=lambda:None
+        feed.snapshot.receiver_id='receiver';feed.snapshot.review_trace_filter=True
+        native=dict(source_id='current',service='codex',runtime='Codex',agent_id='worker',session_id='session',trace_id='new',capture_content=True)
+        feed.snapshot.local_status={'sessions':[native]}
+        original=feed.api.get
+        feed.api.get=lambda path: {'activity':[{**event(),'subject':'pytest PRIVATE'}],'receiver_id':'receiver'} if 'limit=200' in path else original(path)
+        app=ObservatoryApp(feed,persist_preferences=False);started=threading.Event();release=threading.Event()
+        def slow_format(projection):
+            started.set();release.wait(5);return freeze_receipt(projection)
+        async with app.run_test(size=(60,18)) as pilot:
+            await pilot.pause();app.refresh_timer.stop()
+            app.push_screen(ReviewScreen(app,{**native,'trace_id':'run','task':'PRIVATE_TASK'}))
+            await app.workers.wait_for_complete();await pilot.pause();screen=app.screen
+            self.assertIn('PRIVATE',screen.frozen_json())
+            with patch('observatory.work_receipts.freeze_receipt',side_effect=slow_format),patch.object(app,'copy_to_clipboard') as copy:
+                await pilot.press('c');self.assertTrue(await asyncio.to_thread(started.wait,2))
+                native['capture_content']=False;release.set()
+                await app.workers.wait_for_complete();await pilot.pause();copy.assert_not_called()
+                await pilot.press('j');await pilot.pause()
+                self.assertNotIn('PRIVATE',copy.call_args.args[0])
+                self.assertNotIn('PRIVATE',str(screen.query_one('#review-heading').content))
+            with TemporaryDirectory() as directory:
+                # Exercise the real inherited Button.Pressed route, not a direct method call.
+                target=Path(directory)/'blocked.md'
+                app.push_screen(ReceiptExportScreen(freeze_receipt(screen.projection),valid=lambda:False))
+                await pilot.pause();app.screen.query_one('#export-path',Input).value=str(target)
+                preview=app.screen.query_one('#export-preview')
+                self.assertEqual(preview.scroll_y,0)
+                self.assertFalse(preview.show_horizontal_scrollbar)
+                self.assertIn('# Agenturm execution evidence',preview.lines[0].text)
+                for widget in app.screen.query('#export-dialog > *'):
+                    self.assertTrue(app.screen.region.contains_region(widget.region),widget.id)
+                await pilot.click('#export-confirm');await app.workers.wait_for_complete();await pilot.pause()
+                self.assertFalse(target.exists());self.assertFalse(target.with_suffix('.html').exists())
+
     async def test_lazy_paging_frozen_copy_export_floor_and_return(self):
         from tests.test_terminal_search import ManualFeed
         from observatory.terminal_ui import ObservatoryApp
@@ -159,8 +235,11 @@ class ReviewJourney(unittest.IsolatedAsyncioTestCase):
             app.push_screen(ReviewScreen(app,item));await app.workers.wait_for_complete();await pilot.pause()
             screen=app.screen;self.assertIsInstance(screen,ReviewScreen)
             self.assertEqual(len(requests),1);self.assertIn('trace_id=run',requests[0])
+            started_snapshot=screen.started_snapshot;feed.snapshot.updated+=1
             await pilot.click('#review-earlier');await app.workers.wait_for_complete();await pilot.pause()
             self.assertEqual(len(screen.history.events),2)
+            self.assertEqual(screen.started_snapshot,started_snapshot)
+            self.assertIn('newer snapshot available',str(screen.query_one('#review-status').content))
             with patch.object(app,'copy_to_clipboard') as copy:
                 await pilot.press('c');await pilot.pause();frozen=copy.call_args.args[0]
             await pilot.press('x');await pilot.pause();self.assertIsInstance(app.screen,ExportScreen)

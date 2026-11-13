@@ -18,7 +18,7 @@ from .session_status import today_bucket
 
 
 from .attention import AttentionLedger as PureAttentionLedger, classify, fresh_observation
-from .workflow_evidence import scope_for, safe_text, check_observation
+from .workflow_evidence import ReviewHistory, event_key, scope_for, safe_text
 from .ui_workflow_controller import WorkflowController, prepared_item
 
 
@@ -120,17 +120,18 @@ def workflow_report(item, items, snapshot):
             u=task_run_usage(snapshot.sessions,child,snapshot.traces)
             lines+=[str(child.get('task') or child['id'])[:120],task_usage_summary(u,scope='trace')[0]]
     events=events_for(item,snapshot.activity)
+    scope=scope_for(item,snapshot)
+    preview=ReviewHistory(scope,events={event_key(e):e for e in events},loaded=True,
+        limited=['Loaded activity preview; open Review for exact-run paging'],
+        receiver_confirmed=bool(getattr(snapshot,'receiver_id','')))
+    projection=preview.projection({**item,'_review_usage':usage})
     lines+=['','RECORDED WORK · loaded activity only','Open Review to load checks and edits for this exact execution.']
-    files=[e for e in events if e.get('domain')=='file'];shell=[e for e in events if e.get('domain')=='shell']
-    lines+=['Recorded file operations: '+str(len(files))]
-    for e in files[-8:]:lines.append('  '+str(e.get('subject') or e.get('action') or 'file operation')[:180])
-    last_edit=max((e.get('time_unix_nano',0) for e in files),default=0)
+    files=projection['edits']
+    lines+=['Recorded modifying file operations: '+str(len(files))]
+    for e in files[-8:]:lines.append('  '+str(e.get('path') or e.get('action') or 'file operation')[:180])
     checks=[]
-    for event in shell:
-        check=check_observation(event)
-        if not check:continue
-        stamp=check.get('completed_ns')
-        later=bool(stamp and last_edit and stamp<last_edit)
+    for check in projection['checks']:
+        later=bool(check['later_edit_count'])
         freshness='before latest recorded file operation; later edits exist' if later else 'freshness unknown'
         checks.append('  '+check['command'][:140]+' · '+check['result']+' · '+freshness)
     lines+=['Recorded check commands:']+(checks[-8:] or ['  None in loaded activity.'])

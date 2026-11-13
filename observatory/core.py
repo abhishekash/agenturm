@@ -399,6 +399,23 @@ def _recorded_activity_agents(spans, logs=()):
     return agents
 
 
+def _review_owner(spans, logs, activity, *, complete):
+    """Conservative whole-trace allocation proof; missing identity stays unknown."""
+    if not complete:return None
+    owners=set()
+    for record in (*spans,*logs):
+        attrs=record.get('attributes') or {};resource=record.get('resource_attributes') or {}
+        owner=_agent_id_from_attributes(attrs,resource,record.get('service'))
+        session=next((_session_value(attrs.get(key) or resource.get(key)) for key in SESSION_KEYS
+            if _session_value(attrs.get(key) or resource.get(key))),None)
+        owners.add((record.get('service'),owner,session))
+    owners.update((event.get('service'),event.get('agent_id'),event.get('session_id')) for event in activity)
+    if len(owners)==1:
+        producer,owner,session=next(iter(owners))
+        if producer and owner and session:return dict(producer=producer,agent_id=owner,session_id=session)
+    return None
+
+
 def _activity_for(spans, logs):
     activity = []
     explicit_span_ids = set()
@@ -2406,6 +2423,7 @@ class Store:
         trace_id = _id(trace_id, TRACE_ID, "trace_id")
         spans = self._spans(trace_id)
         with self._connect() as db:
+            log_count=db.execute('SELECT COUNT(*) FROM logs WHERE trace_id=?',(trace_id,)).fetchone()[0]
             rows = db.execute("SELECT time_ns,stage,message,percent,session_id,service FROM progress WHERE trace_id=? ORDER BY time_ns,id", (trace_id,)).fetchall()
             indexed_agents={row[0] for row in db.execute(
                 "SELECT agent_id FROM spans WHERE trace_id=? AND agent_id IS NOT NULL UNION "
@@ -2441,6 +2459,8 @@ class Store:
         if summary:
             summary['agent_count']=len(indexed_agents | _recorded_activity_agents(spans,logs))
             summary['agent_count_complete']=True
+            summary['review_owner']=_review_owner(spans,logs,activity,
+                complete=summary['agent_count']==1 and log_count==len(logs) and not rows)
             summary["session_id"] = session_id
             summary["activity_terms"] = sorted({str(value)[:200] for item in activity
                 for value in (item["domain"], item["action"], item["subject"], item["actor"]) if value})
@@ -2741,7 +2761,7 @@ class Store:
                               "input_tokens_reported","output_tokens_reported","cache_read_input_tokens_reported",
                               "cache_write_input_tokens_reported","reasoning_output_tokens_reported",
                               "known_cost_usd","cost_complete","usage_complete","task_outcome","task_outcome_ns",
-                              "agent_id","agent_count","agent_count_complete")
+                              "agent_id","agent_count","agent_count_complete","review_owner","waiting_for")
                 item["latest_run"]={key:summary[key] for key in usage_fields if key in summary}
                 item["latest_run"]["trace_id"]=row["trace_id"]
                 if row['trace_id'] in legacy_agent_counts:
