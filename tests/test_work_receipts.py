@@ -179,6 +179,12 @@ class HeadlessReviewTests(unittest.TestCase):
         api.get_review=flip
         with self.assertRaisesRegex(ValueError,'Capture policy changed'):self.collect(api)
 
+    def test_empty_receiver_window_is_qualified_not_a_complete_execution_claim(self):
+        api=FakeReviewApi();api.rows=[]
+        projection=self.collect(api)
+        self.assertEqual(projection['window']['coverage'],'partial')
+        self.assertIn('indexing may still be pending',' '.join(projection['window']['reasons']))
+
     def test_noninteractive_json_stdout_errors_and_status_contract(self):
         parser=argparse.ArgumentParser();add_review_parser(parser.add_subparsers())
         args=parser.parse_args(['review','--service','codex','--agent-id','worker','--trace-id','run','--format','json'])
@@ -244,6 +250,10 @@ class HeadlessReceiverJourney(unittest.TestCase):
                     activity('message','user','Fix retries '+worker,2),activity('shell','execute','pytest '+worker,3),
                     activity('file','edit','retry.py',4)]),'svc')
             receiver.store.ingest([span('parent',1),span('worker',2)])
+            # The live receiver indexes asynchronously. Prepare the indexed
+            # fixture deterministically; this journey tests HTTP scope/auth,
+            # not a read-after-ingest timing guarantee.
+            receiver.store._refresh_summaries([trace])
             endpoint='http://127.0.0.1:'+str(receiver.server.server_address[1])
             destination=Path(directory)/'review.json'
             command=[sys.executable,'-m','observatory','review','--endpoint',endpoint,'--service','svc',

@@ -247,6 +247,7 @@ class ReviewHistory:
         if self.scope.run_start_ns and not self.scope.run_id and not self.scope.run_end_ns:reasons.append('Native lifecycle end is unavailable; exact run interval cannot be isolated')
         if self.scope.kind != 'run': reasons.append('Session/agent evidence; exact run identity unavailable')
         if item.get('capture_content') is False: reasons.append('Metadata-only capture')
+        elif self.loaded and not rows: reasons.append('No scoped activity loaded; collection or indexing may still be pending, or capture may be unavailable. Retry explicitly.')
         if item.get('_review_metadata_note'): reasons.append(item['_review_metadata_note'])
         if not stamps or len(stamps) != len(rows): reasons.append('Some timestamps unavailable')
         window = dict(earliest_ns=min(stamps) if stamps else None, latest_ns=max(stamps) if stamps else None,
