@@ -556,6 +556,8 @@ def normalize_otlp(body):
 class Store:
     def __init__(self, path, async_derived_refresh=False, workflow_patterns=None):
         self.path = str(path)
+        from .read_connections import ReadConnections
+        self._read_connections = ReadConnections(path)
         self.workflow_patterns = (os.environ.get("AGENTURM_WORKFLOW_PATTERNS", "0") == "1"
                                   if workflow_patterns is None else bool(workflow_patterns))
         self._async_derived_refresh = bool(async_derived_refresh)
@@ -819,7 +821,7 @@ class Store:
 
     def index_status(self):
         state=dict(self.migration_status)
-        with self._connect() as db:
+        with self._read() as db:
             dirty=bool(db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone())
         if dirty:
             state.update(ready=False,stage='Indexing incoming source changes')
@@ -857,6 +859,9 @@ class Store:
             raise
         finally:
             db.close()
+
+    def _read(self):
+        return self._read_connections.read()
 
     def register_connection(self, record):
         source_id = _id(record.get("source_id"), TRACE_ID, "source_id")
@@ -1060,7 +1065,7 @@ class Store:
                 review, observed_ns, first_seen, now)
 
     def hierarchy_revision(self, *, _db=None):
-        with (self._connect() if _db is None else nullcontext(_db)) as db:
+        with (self._read() if _db is None else nullcontext(_db)) as db:
             row = db.execute("SELECT value FROM schema_meta WHERE key='agent_hierarchy_revision'").fetchone()
         return "h" + (str(row[0]) if row else "0")
 
@@ -1184,7 +1189,7 @@ class Store:
 
     def connections(self):
         now = time.time_ns()
-        with self._connect() as db:
+        with self._read() as db:
             # Match the indexed TEXT expression, including numeric source IDs.
             rows = db.execute("""SELECT c.*,(SELECT COUNT(*) FROM spans s
                 WHERE s.service=c.service AND
@@ -1380,6 +1385,10 @@ class Store:
                         self._derived_condition.notify()
 
     def close(self):
+        try:self._close_workers()
+        finally:self._read_connections.close()
+
+    def _close_workers(self):
         self._migration_stop.set()
         if self._migration_thread and self._migration_thread.is_alive():self._migration_thread.join(timeout=15)
         if self._derived_thread is None:
@@ -1604,7 +1613,8 @@ class Store:
     def internal_source_ids(self,source_ids,*,_db=None):
         ids=sorted({value for value in source_ids if isinstance(value,str)})
         result=set()
-        with (self._connect() if _db is None else nullcontext(_db)) as db:
+        if not ids:return result
+        with (self._read() if _db is None else nullcontext(_db)) as db:
             for offset in range(0,len(ids),200):
                 chunk=ids[offset:offset+200];marks=','.join('?' for _ in chunk)
                 result.update(row[0] for row in db.execute(f'SELECT source_id FROM native_source_policy_v1 WHERE internal=1 AND source_id IN ({marks})',chunk))

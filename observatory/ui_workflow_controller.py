@@ -219,7 +219,8 @@ class WorkflowController:
             return False
         scope = scope_for(prepared_item(item, self.owner.feed.snapshot),
                           self.owner.feed.snapshot, self.owner.feed.api.endpoint)
-        return any(r.get('scope_key') == scope.scope_key and r.get('kind') == kind and r.get('acknowledgement')
+        key = scope.scope_key
+        return any(r.get('scope_key') == key and r.get('kind') == kind and r.get('acknowledgement')
                    for r in self.receipts.values())
 
     def seen(self, item):

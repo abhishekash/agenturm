@@ -22,12 +22,18 @@ class HistoryReadEconomicsTests(unittest.TestCase):
         self.store.ingest([normalize_native(dict(trace_id='a'*32,span_id='b'*16,name='MCP call',
             start_unix_nano=1,end_unix_nano=2,resource_attributes={'observatory.source_id':7},
             attributes={'mcp.method.name':'tools/call','mcp.server.name':'fixture','mcp.tool.name':'search'}),'fixture')])
-        queries=[];original=self.store._connect
+        queries=[];original=self.store._connect;original_read=self.store._read
         @contextmanager
         def traced():
             with original() as db:
                 db.set_trace_callback(queries.append);yield db
-        with patch.object(self.store,'_connect',traced):
+        @contextmanager
+        def traced_read():
+            with original_read() as db:
+                db.set_trace_callback(queries.append)
+                try:yield db
+                finally:db.set_trace_callback(None)
+        with patch.object(self.store,'_connect',traced),patch.object(self.store,'_read',traced_read):
             self.assertEqual(self.store.connections()[0]['span_count'],1)
             self.assertEqual(len(self.store.mcp_page()['calls']),1)
         selects=[q for q in queries if q.startswith('SELECT c.*') or q.startswith('SELECT *,') and (' AS mcp_key' in q)]
