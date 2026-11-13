@@ -51,6 +51,18 @@ def source_revision():
                ('scripts/soak_monitor.py','observatory/http_transport.py','observatory/ui_workflow.py')})
 
 
+def seed_history(path, *, traces=5751, span_count=31000, log_count=41000):
+    from scripts.benchmark_history import build
+    build(path,traces=traces,span_count=span_count,log_count=log_count)
+    # The full corpus remains retained, but its newest outcome predates the
+    # default completion inbox. Exact review receipts then cover new turns only.
+    offset=2*86400*10**9
+    with sqlite3.connect(path) as db:
+        db.execute('UPDATE spans SET start_ns=start_ns-?,end_ns=end_ns-?',(offset,offset))
+        db.execute('UPDATE logs SET time_ns=time_ns-?',(offset,))
+        db.execute('UPDATE trace_activity SET last_ns=last_ns-?',(offset,))
+
+
 def event(kind, payload, *, ago=0):
     return dict(type=kind, timestamp=datetime.fromtimestamp(
         time.time()-ago, timezone.utc).isoformat(), payload=payload)
@@ -258,15 +270,7 @@ def run(args):
     workload=Workload(base)
     preparation_started=time.monotonic()
     if args.history:
-        from scripts.benchmark_history import build
-        build(base/'telemetry.db')
-        # Keep the full retained corpus while distinguishing old baseline work
-        # from the exact newly generated completion receipts under test.
-        offset=2*86400*10**9
-        with sqlite3.connect(base/'telemetry.db') as db:
-            db.execute('UPDATE spans SET start_unix_nano=start_unix_nano-?,end_unix_nano=end_unix_nano-?',(offset,offset))
-            db.execute('UPDATE logs SET time_unix_nano=time_unix_nano-?',(offset,))
-            db.execute('UPDATE trace_activity SET last_ns=last_ns-?',(offset,))
+        seed_history(base/'telemetry.db')
     preparation_seconds=time.monotonic()-preparation_started
     channel='agenturm-soak-'+str(os.getpid())
     env={key:os.environ[key] for key in ('PATH','LANG','LC_ALL','LD_LIBRARY_PATH') if key in os.environ}
