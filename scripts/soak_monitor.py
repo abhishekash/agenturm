@@ -315,10 +315,13 @@ def run(args):
         keys('Escape','Escape','q')
         deadline=time.monotonic()+8
         while time.monotonic()<deadline:
-            if tmux('display-message','-p','-t','monitor','#{pane_dead}',capture=True).strip()=='1':
-                status=tmux('display-message','-p','-t','monitor','#{pane_dead_status}',capture=True).strip()
-                exit_statuses.append(dict(role='cockpit',status=status))
-                if status!='0':errors.append('Cockpit exited unsuccessfully: '+status)
+            dead,status,signum=tmux('display-message','-p','-t','monitor',
+                '#{pane_dead}:#{pane_dead_status}:#{pane_dead_signal}',capture=True).strip().split(':')
+            # PTY closure can be visible before waitpid supplies exit status.
+            # Require an actual status; a signal or unknown status is no pass.
+            if dead=='1' and (status or signum):
+                exit_statuses.append(dict(role='cockpit',status=status,signal=signum))
+                if status!='0' or signum:errors.append(f'Cockpit exited unsuccessfully: status={status}, signal={signum}')
                 return
             time.sleep(.1)
         errors.append('cockpit did not finish graceful exit within eight seconds')
