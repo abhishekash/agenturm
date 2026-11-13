@@ -30,13 +30,13 @@ class HistoryReadEconomicsTests(unittest.TestCase):
         with patch.object(self.store,'_connect',traced):
             self.assertEqual(self.store.connections()[0]['span_count'],1)
             self.assertEqual(len(self.store.mcp_page()['calls']),1)
-        selects=[q for q in queries if q.startswith('SELECT c.*') or q.startswith('SELECT * FROM spans WHERE trace_id ||') or q.startswith('SELECT * FROM logs WHERE CASE')]
+        selects=[q for q in queries if q.startswith('SELECT c.*') or q.startswith('SELECT *,') and (' AS mcp_key' in q)]
         self.assertEqual(len(selects),3)
         with original() as db:
             plans=[' '.join(row[3] for row in db.execute('EXPLAIN QUERY PLAN '+sql)) for sql in selects]
         self.assertIn('spans_source_text_v1',plans[0])
-        self.assertIn('spans_mcp_lookup_v1',plans[1])
-        self.assertIn('logs_mcp_lookup_v1',plans[2])
+        self.assertIn('spans_mcp_owner_lookup_v4',plans[1])
+        self.assertIn('logs_mcp_owner_lookup_v4',plans[2])
 
     def test_original_task_and_latest_summary_share_one_snapshot(self):
         from observatory.storage_sessions import session_projection

@@ -49,11 +49,12 @@ def initialize(db):
         )
     # Hydrate selected MCP call keys through expression indexes, rather than
     # recomputing identities over every retained payload for each page.
-    db.execute("CREATE INDEX IF NOT EXISTS spans_mcp_lookup_v1 ON spans(trace_id || ':' || span_id)")
-    db.execute('''CREATE INDEX IF NOT EXISTS logs_mcp_lookup_v1 ON logs(
-        CASE WHEN NULLIF(json_extract(attributes,'$."observatory.mcp.call_id"'),'') IS NOT NULL
-        THEN 'cursor-mcp:' || NULLIF(json_extract(attributes,'$."observatory.mcp.call_id"'),'')
-        WHEN trace_id IS NOT NULL AND span_id IS NOT NULL THEN trace_id || ':' || span_id ELSE digest END)''')
+    from .storage_mcp import call_key_sql
+    for kind,table in (('span','spans'),('log','logs')):
+        db.execute(f'CREATE INDEX IF NOT EXISTS {table}_mcp_owner_lookup_v4 ON {table}({call_key_sql(kind)})')
+        db.execute(f'DROP INDEX IF EXISTS {table}_mcp_owner_lookup_v3')
+        db.execute(f'DROP INDEX IF EXISTS {table}_mcp_owner_lookup_v2')
+        db.execute(f'DROP INDEX IF EXISTS {table}_mcp_lookup_v1')
     db.execute('''CREATE INDEX IF NOT EXISTS spans_source_text_v1 ON spans(
         service,CAST(json_extract(resource_attributes,'$."observatory.source_id"') AS TEXT))''')
     from .core import INPUT_TOKEN_KEYS, OUTPUT_TOKEN_KEYS, TOKEN_BREAKDOWN_KEYS
