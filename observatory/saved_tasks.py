@@ -90,12 +90,84 @@ def _workspace(value):
     return str(Path(value).expanduser().resolve()) if value else ''
 
 
+def _run_usage(usage, eligible=True):
+    if not isinstance(usage, dict):
+        raise TaskError('Usage must be an object.')
+    result = {}
+    if eligible:
+        for field in TOKEN_FIELDS:
+            if usage.get(field) is not None:
+                value = _number(usage[field], field)
+                if value != int(value):
+                    raise TaskError(f'{field} must be a whole token count.')
+                result[field] = int(value)
+                result[field + '_reported'] = usage.get(field + '_reported') is not False
+            elif field + '_reported' in usage:
+                result[field + '_reported'] = False
+        cost = usage.get('known_cost_usd')
+        if cost is not None:
+            cost = float(_number(cost, 'known_cost_usd'))
+            # An incomplete empty sum is not a reported zero-cost execution.
+            if cost != 0 or usage.get('cost_complete') is not False:
+                result['known_cost_usd'] = cost
+        for flag in ('cost_complete', 'usage_complete'):
+            result[flag] = usage.get(flag) is True
+    return result
+
+
+def review_scope_issue(link):
+    """Check frozen/wrapper agreement without rewriting existing saved evidence."""
+    projection = link.get('review_snapshot')
+    if projection is None:
+        return None
+    scope = projection.get('scope') if isinstance(projection, dict) else None
+    if not isinstance(scope, dict):
+        return 'Frozen review has no readable execution scope.'
+    turn, trace = link.get('turn_id') or '', link.get('trace_id') or ''
+    if turn:
+        if trace or scope.get('kind') != 'turn' or scope.get('turn_id') != turn:
+            return 'Recorded turn and frozen review scope disagree.'
+        usage = projection.get('usage')
+        members = usage.get('step_trace_ids') if isinstance(usage, dict) else None
+        wrapper = link.get('step_trace_ids') or []
+        if (not isinstance(members, list) or not isinstance(wrapper, list)
+                or len(members) > 1000 or len(wrapper) > 1000
+                or any(not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{32}', value) for value in members + wrapper)
+                or sorted(set(members)) != sorted(set(wrapper))):
+            return 'Recorded turn membership and frozen review disagree.'
+    elif scope.get('turn_id') or scope.get('kind') == 'turn':
+        return 'A whole-turn review was saved as a step; relink the recorded turn.'
+    elif trace:
+        if scope.get('kind') != 'run' or scope.get('run_id') != trace:
+            return 'Recorded step and frozen review scope disagree.'
+        if isinstance(projection.get('usage'), dict) and projection['usage'].get('step_trace_ids'):
+            return 'A step review cannot contain whole-turn membership.'
+    elif not link.get('run_start_ns') or scope.get('kind') != 'run' or scope.get('run_start_ns') != link.get('run_start_ns'):
+        return 'Recorded lifecycle interval and frozen review disagree.'
+    for field in ('receiver', 'producer', 'agent_id', 'session_id'):
+        if (link.get(field) or '') != (scope.get(field) or ''):
+            return 'Recorded identity and frozen review disagree: ' + field + '.'
+    usage = projection.get('usage')
+    if not isinstance(usage, dict) or not isinstance(usage.get('values'), dict):
+        return 'Frozen review has no readable usage projection.'
+    try:
+        eligible = bool(trace or turn and link.get('step_trace_ids'))
+        if _run_usage(link.get('usage', {}), eligible) != _run_usage(usage['values'], eligible):
+            return 'Recorded usage and frozen review disagree.'
+    except TaskError:
+        return 'Frozen review contains invalid usage.'
+    return None
+
+
 def _link(evidence):
     if not isinstance(evidence, dict):
         raise TaskError('Linked evidence must be an object.')
     if evidence.get('format')=='agenturm-review-v1':
         scope=evidence.get('scope')
         if not isinstance(scope,dict):raise TaskError('Review scope must be an object.')
+        projected_usage=evidence.get('usage')
+        if not isinstance(projected_usage,dict) or not isinstance(projected_usage.get('values'),dict):
+            raise TaskError('Review usage must be an object with recorded values.')
         evidence={**{key:scope.get(key) for key in ('receiver','producer','agent_id','session_id','run_start_ns','run_end_ns')},
             'trace_id':'' if scope.get('turn_id') else scope.get('run_id'),'turn_id':scope.get('turn_id'),
             'step_trace_ids':(evidence.get('usage') or {}).get('step_trace_ids',[]),
@@ -120,6 +192,8 @@ def _link(evidence):
         members=evidence.get('step_trace_ids') or []
         if not isinstance(members,list) or len(members)>1000 or any(not isinstance(value,str) or not re.fullmatch(r'[0-9a-f]{32}',value) for value in members):raise TaskError('Turn step identities must be bounded recorded trace IDs.')
         result['step_trace_ids']=sorted(set(members))
+    elif evidence.get('step_trace_ids'):
+        raise TaskError('Step membership requires a recorded turn.')
     start = evidence.get('run_start_ns')
     if start is not None:
         start = _timestamp(start, 'Run lifecycle start')
@@ -148,24 +222,8 @@ def _link(evidence):
     usage = evidence.get('usage')
     if usage is None:
         usage = {}
-    if not isinstance(usage, dict):
-        raise TaskError('Usage must be an object.')
-    result['usage'] = {}
     # Session associations cannot be safely added to exact run totals.
-    if trace or turn and result.get("step_trace_ids"):
-        for field in TOKEN_FIELDS:
-            if usage.get(field) is not None:
-                value = _number(usage[field], field)
-                if value != int(value):
-                    raise TaskError(f'{field} must be a whole token count.')
-                result['usage'][field] = int(value)
-                result['usage'][field + '_reported'] = usage.get(field + '_reported') is not False
-            elif field + '_reported' in usage:
-                result['usage'][field + '_reported'] = False
-        if usage.get('known_cost_usd') is not None:
-            result['usage']['known_cost_usd'] = float(_number(usage['known_cost_usd'], 'known_cost_usd'))
-        for flag in ('cost_complete', 'usage_complete'):
-            result['usage'][flag] = usage.get(flag) is True
+    result['usage'] = _run_usage(usage, bool(trace or turn and result.get('step_trace_ids')))
     checks = evidence.get('checks')
     if checks is None:
         checks = []
@@ -178,6 +236,8 @@ def _link(evidence):
         check_trace = check.get('trace_id') or ''
         if trace and check_trace and check_trace != trace:
             continue
+        if turn and check_trace and check_trace not in result.get('step_trace_ids', []):
+            raise TaskError('Recorded check is outside the linked turn membership.')
         command = _text(check.get('command', ''), 'Check command', 2000, multiline=True)
         if command:
             check_time = _timestamp(check.get('time_ns') or check.get('time_unix_nano') or 0, 'Check time')
@@ -187,12 +247,14 @@ def _link(evidence):
                 'result': _text(str(check.get('result') or 'not reported'), 'Check result', 200),
                 'time_ns': check_time,
                 'trace_id': _text(check_trace, 'Check trace', 64),
-                'scope': 'linked run' if trace and check_trace else 'native lifecycle run; captured interval may be partial' if start else 'session activity; run assignment unverified'})
+                'scope': 'recorded turn' if turn and check_trace else 'linked run' if trace and check_trace else 'native lifecycle run; captured interval may be partial' if start else 'session activity; run assignment unverified'})
     if evidence.get('review_snapshot') is not None:
         projection = evidence['review_snapshot']
         if not isinstance(projection, dict):
             raise TaskError('Review snapshot must be an object.')
         scope = projection.get('scope') or {}
+        if not isinstance(scope, dict):
+            raise TaskError('Review scope must be an object.')
         if (not (trace or start or turn) or (scope.get('turn_id') != turn if turn else scope.get('run_id') != trace if trace else scope.get('run_start_ns') != start) or
                 result.get('receiver') and scope.get('receiver') != result['receiver'] or
                 result.get('producer') and scope.get('producer') != result['producer'] or
@@ -219,13 +281,16 @@ def _link(evidence):
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise TaskError('Review snapshot is malformed or exceeds its capture permissions.') from exc
         result['review_snapshot'] = json.loads(serialized)
+        if issue := review_scope_issue(result):
+            raise TaskError(issue)
     return result
 
 
 def usage_summary(links):
+    invalid = [link for link in links if review_scope_issue(link)]
     runs = {(link.get('receiver', ''), link.get('producer', ''), link.get('agent_id', ''),
              link.get('session_id', ''), ('turn:'+link['turn_id']) if link.get('turn_id') else link.get('trace_id') or link.get('run_start_ns')): link
-            for link in links if link.get('turn_id') or link.get('trace_id') or link.get('run_start_ns')}
+            for link in links if not review_scope_issue(link) and (link.get('turn_id') or link.get('trace_id') or link.get('run_start_ns'))}
     shared = {}
     for identity, link in runs.items():
         members=link.get('step_trace_ids') if link.get('turn_id') else [link['trace_id']] if link.get('trace_id') else []
@@ -235,17 +300,20 @@ def usage_summary(links):
     related = sum(bool(link.get('parent_agent_id')) and
                   (link.get('receiver', ''), link['parent_agent_id']) in recorded_agents
                   for link in runs.values())
-    ambiguous = bool(overlapping or related)
+    ambiguous = bool(overlapping or related or invalid)
     unscoped = sum(not (link.get('turn_id') or link.get('trace_id') or link.get('run_start_ns')) for link in links)
     result = {'scope': 'Recorded linked runs only; snapshots update when linked evidence is refreshed.',
               'linked_runs': len(runs), 'unscoped_links': unscoped,
               'ambiguous_shared_traces': overlapping, 'related_run_scopes': related,
+              'invalid_scope_links': len(invalid),
               'aggregation_ambiguous': ambiguous,
               'relationship_coverage': 'Recorded parent links only; missing relationships remain unknown.'}
     if overlapping:
         result['scope'] += ' Multiple agent/session scopes share a trace; aggregate usage is unavailable because their accounting may overlap. Review each linked scope separately.'
     elif related:
         result['scope'] += ' Recorded parent and child agents are linked; aggregate usage is unavailable because their accounting may overlap. Review each linked scope separately.'
+    if invalid:
+        result['scope'] += ' A saved review has contradictory scope metadata; aggregate usage is unavailable. Relink the recorded review or explicitly unlink that association.'
     result['scope'] += ' Relationship coverage includes recorded parent links only; missing relationships remain unknown.'
     for field in TOKEN_FIELDS:
         reported = [link['usage'][field] for link in runs.values()
@@ -338,6 +406,8 @@ class TaskStore:
         except (ValueError, RecursionError) as exc:
             raise TaskError('Saved task data is damaged. Restore the task database from a backup.') from exc
         result['usage_summary'] = usage_summary(result['links'])
+        result['link_scope_warnings'] = [{'key': link.get('key'), 'issue': issue}
+            for link in result['links'] if (issue := review_scope_issue(link))]
         try:
             brief = db.execute('SELECT brief_json FROM task_briefs_v1 WHERE task_id=?', (task_id,)).fetchone()
             result['brief'] = json.loads(brief[0]) if brief else dict.fromkeys(BRIEF_FIELDS, '')
@@ -353,6 +423,7 @@ class TaskStore:
 
     @staticmethod
     def _check_size(task):
+        task = {key: value for key, value in task.items() if key not in {'usage_summary', 'link_scope_warnings'}}
         without_receipts={**task,'links':[{key:value for key,value in link.items() if key!='review_snapshot'} for link in task.get('links',[])]}
         if len(json.dumps(without_receipts,ensure_ascii=False).encode())>512*1024:
             raise TaskError('Saved task fields exceed the 512 KiB limit. Shorten this draft, unlink older evidence, or export it and start a new task; no saved decisions were removed.')
@@ -470,6 +541,15 @@ class TaskStore:
         entry = _link(evidence)
         def modify(task):
             def same_scope(link):
+                snapshot = link.get('review_snapshot') or {}
+                old_scope = snapshot.get('scope') if isinstance(snapshot, dict) else None
+                if (entry.get('turn_id') and review_scope_issue(link) and isinstance(old_scope, dict)
+                        and old_scope.get('turn_id') == entry['turn_id']
+                        and all(old_scope.get(key) == entry.get(key) for key in
+                                ('receiver', 'producer', 'agent_id', 'session_id'))):
+                    # An explicit relink can repair an old downgraded wrapper;
+                    # ordinary task reads/edits never rewrite its evidence.
+                    return True
                 # Recognize an older namespaced key only through all of its
                 # recorded scope fields. Unnamespaced legacy keys stay exact.
                 return (bool(entry.get('receiver')) and bool(link.get('receiver')) and
@@ -597,15 +677,17 @@ def render_handoff(task, format='markdown', *, include_decision_history=False):
                   '- Producer: ' + _md(link.get('producer') or 'Legacy association; producer not recorded'),
                   '- Session: ' + _md(link.get('session_id') or 'Not reported'),
                   '- Agent: ' + _md(link.get('agent_id') or 'Legacy session scope; worker not recorded'),
-                  '- Run: ' + _md(link.get('trace_id') or ('Recorded native lifecycle start: '+_iso(link['run_start_ns'])
+                  '- Run: ' + _md(('Recorded turn: '+link['turn_id']+' · '+str(len(link.get('step_trace_ids') or []))+' recorded steps') if link.get('turn_id') else link.get('trace_id') or ('Recorded native lifecycle start: '+_iso(link['run_start_ns'])
                       if link.get('run_start_ns') else 'Unscoped; excluded from usage totals')),
                   '- Reported state: ' + _md(link.get('state') or 'Unknown'),
                   '- Evidence captured: ' + _iso(link.get('captured_ns'))]
+        if issue := review_scope_issue(link):
+            lines += ['', 'Scope issue: ' + issue + ' Usage for this association is unavailable until explicitly relinked.']
         if link.get('parent_agent_id'):
             lines += ['- Recorded parent' + (' (retained from an earlier capture)' if link.get('parent_identity_retained') else '')
                       + ': ' + _md(link['parent_agent_id'])]
         if usage['aggregation_ambiguous'] and link.get('trace_id'):
-            individual = link.get('usage', {})
+            individual = {} if review_scope_issue(link) else link.get('usage', {})
             values = []
             for field, label in (('input_tokens','Input tokens'),('output_tokens','Output tokens'),
                                  ('cache_read_input_tokens','Cached input'),('cache_write_input_tokens','Cache writes')):
@@ -615,7 +697,8 @@ def render_handoff(task, format='markdown', *, include_decision_history=False):
                 values.append('- Reported cost: ' + f"${individual['known_cost_usd']:,.4f}" +
                               ('' if individual.get('cost_complete') else ' (partial)'))
             lines += ['', 'Recorded usage for this scope only (excluded from an overlapping aggregate):',
-                      *values] if values else ['', 'No usage was reported for this linked scope.']
+                      *values] if values else ['', 'Usage is unavailable until the review scope is repaired.' if review_scope_issue(link)
+                                              else 'No usage was reported for this linked scope.']
         if link.get('task'):
             lines += ['- Recorded request: ' + _md(link['task'])]
         if link.get('resume_command'):

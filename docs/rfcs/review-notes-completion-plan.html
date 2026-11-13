@@ -1,0 +1,249 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Review Notes Completion Plan</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.3</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/review-notes-completion-plan.md">Markdown source ↗</a></nav><h1>Complete review-notes implementation plan</h1>
+<p>13 November 2026. Baseline: merged <code>d75872c</code> after PRs #67–70. Input: the supplied <code>agenturm-review-notes.md</code>, preserved unchanged. Status: reconciliation and staged implementation in progress. The user authorized completing the full findings and recommendations after the controlled monitor validation, including work outside the narrower recovery plan. This is not a claim that all findings are closed.</p>
+<h2>Delivery and trust rules</h2>
+<p>Keep personal telemetry, preferences and source notes untouched. Use generated repositories, native records and receiver state for tests and measurements. Preserve private state/authentication, redaction, non-destructive migration, source ownership, capture-policy revocation, pagination and truthful unknown/partial usage. No provider key or account is required for local monitoring.</p>
+<p>Each stage has a coherent code change, regression gates, independent review and a reviewable PR. Follow the repository's admin squash-merge preference and verify the remote merged state and local main; report pending CI separately. Keep changes Unreleased until explicitly asked to release. Supply responsive self-contained light/dark HTML companions for documents.</p>
+<p>Use the existing Agents → attention → evidence → continuity surfaces. Avoid additional dashboards, generic Host/Metrics work, themes, AI-generated summaries, extra manual task fields, agent launching, native approval execution or autonomous remediation. Optional integrations must not weaken zero-config collection. Observations and human decisions remain distinct.</p>
+<h2>Reconciliation of all 27 findings</h2>
+<p>“Implemented” means a concrete code path and regression/controlled evidence exists, not universal producer compatibility or user adoption. “Partial” identifies remaining work below. Positive findings are preserved rather than treated as missing features.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Finding</th>
+<th>Current status and evidence</th>
+<th>Remaining contract / stage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>F1: CPU/RSS</td>
+<td>Partial. PR70 fixed HTTP/TLS overhead; the controlled hour measured receiver 28.69% and cockpit 17.75% of one core under ingestion, keyboard activity and extra probes.</td>
+<td>Measure idle and normal-load budgets; profile readiness/read/render costs; B.</td>
+</tr>
+<tr>
+<td>F2: retention</td>
+<td>Implemented for new managed stores: 14-day age policy; existing stores need explicit opt-in. Migration/retention tests preserve legacy data.</td>
+<td>Preserve policy during optimizations; B. Age retention is not a byte cap.</td>
+</tr>
+<tr>
+<td>F3: launch-directory telemetry</td>
+<td>Implemented: private shared state, owner-only files, explicit safe legacy migration; PR67.</td>
+<td>Preserve during watcher and hook work; F.</td>
+</tr>
+<tr>
+<td>F4: one-shot truthfulness</td>
+<td>Implemented: readiness wait and distinct ready/error/partial/interrupt exits; PR67.</td>
+<td>Include headless regressions in B/F.</td>
+</tr>
+<tr>
+<td>F5: OpenCode step versus turn</td>
+<td>Implemented in reader, Review UI/CLI and provenance rollups; PR67.</td>
+<td>Fix remaining UI saved-link boundary; A.</td>
+</tr>
+<tr>
+<td>F6: Codex evidence omissions</td>
+<td>Implemented: native edits/checks/text/usage reach authenticated API, Review/export and task-link fixtures; PR67.</td>
+<td>Extend existing producer-shaped coverage; G.</td>
+</tr>
+<tr>
+<td>F7: noisy attention</td>
+<td>Implemented for explicit requests/unknown separation; shared-daemon and incident-specific gates; PR67/70.</td>
+<td>Preserve the same semantics without a cockpit; F.</td>
+</tr>
+<tr>
+<td>F8: useful information density</td>
+<td>Partial. Alternating blocks/hierarchy improved, but roster code still appends two blank lines.</td>
+<td>More useful rows and source-backed Overview at wide/floor sizes; B/D.</td>
+</tr>
+<tr>
+<td>F9: old completion backlog</td>
+<td>Implemented: recent/history selection, readable ages, frozen-ID bulk review; real terminal R fixed and 294 receipts verified in PR70.</td>
+<td>Reuse identical receipt behavior in headless runner; F.</td>
+</tr>
+<tr>
+<td>F10: no recorded continuity use</td>
+<td>External adoption evidence absent. Headless Review-to-task composition works; no participants or voluntary reuse measured.</td>
+<td>Reduce manual work via approved drafts; D. Prepare materials in G; participant outcomes stay open.</td>
+</tr>
+<tr>
+<td>F11: shared-daemon false progress</td>
+<td>Implemented: multiplexed process work never proves per-session progress; old session stayed unconfirmed throughout the hour.</td>
+<td>Preserve stronger-evidence requirements in F.</td>
+</tr>
+<tr>
+<td>F12: unknown children as attention</td>
+<td>Implemented: unknown/unlinked status is separate from actionable requests; PR67.</td>
+<td>No hook or collision heuristic may promote this into an approval.</td>
+</tr>
+<tr>
+<td>F13: strong MCP view / recommendations</td>
+<td>Existing inventory/call inspection is a preserved strength; per-tool interpretation remains incomplete.</td>
+<td>Windowed reliability/latency and coverage-qualified recommendations; E.</td>
+</tr>
+<tr>
+<td>F14: generic failure detail</td>
+<td>Partial. Commands/exit/output and expected search exits improved; structured native detail extraction and grouping still diverge.</td>
+<td>One operation/failure projection and exact navigation/recovery observations; C.</td>
+</tr>
+<tr>
+<td>F15: historical JSON expansion</td>
+<td>Partial. Source Activity and scalar/run projections exist; remaining session/MCP/readiness costs are material.</td>
+<td>Profile and remove remaining repeated historical work; B.</td>
+</tr>
+<tr>
+<td>F16: local API/redaction</td>
+<td>Implemented: local tokens, Host/Origin, redirect refusal and expanded redaction; PR67/70.</td>
+<td>Mandatory invariants for indexes, exports, background runner and hooks.</td>
+</tr>
+<tr>
+<td>F17: native add/update</td>
+<td>Implemented and regression tested; PR67.</td>
+<td>Retain failed-attempt distinction in C/D/G.</td>
+</tr>
+<tr>
+<td>F18: wrapped checks</td>
+<td>Implemented with conservative shell recognition and masked/compound/no-op negative cases; PR67.</td>
+<td>Share command semantics in C.</td>
+</tr>
+<tr>
+<td>F19: usage ownership</td>
+<td>Implemented for proved exact-run/turn allocation, unknown fields and partial costs; PR67.</td>
+<td>Prevent UI turn-link downgrade in A; explain usage in E.</td>
+</tr>
+<tr>
+<td>F20: assistant placeholders</td>
+<td>Implemented for supported native text variants; placeholders suppressed; PR67.</td>
+<td>Continue schema/version-shaped fixtures in G.</td>
+</tr>
+<tr>
+<td>F21: lost initiating intent</td>
+<td>Implemented: bounded independent request/update context and explicit coverage; PR67.</td>
+<td>Typed instruction investigation in G uses the same source references.</td>
+</tr>
+<tr>
+<td>F22: complete run shows no work</td>
+<td>Implemented ingestion → API → Review/export contracts; 294 turn reconstructions in PR70.</td>
+<td>Preserve through all later projections.</td>
+</tr>
+<tr>
+<td>F23: Review/task mismatch</td>
+<td>CLI composition implemented. Independent review found UI capture drops turn membership and silently wraps a turn snapshot as a step.</td>
+<td>Repair the UI boundary and validate contradictory scopes, including legacy reads; A.</td>
+</tr>
+<tr>
+<td>F24: passing suite / fixture gap</td>
+<td>Preserved strength; CI now 711 tests per supported Python, with 14 optional skips and separate SDK jobs.</td>
+<td>Current native-shaped golden journeys remain release gates, not test counts alone.</td>
+</tr>
+<tr>
+<td>F25: OpenCode prompt exclusion</td>
+<td>Implemented via explicit recorded-turn membership; exact-step mode remains explicit.</td>
+<td>A/C/D must preserve full turn scope.</td>
+</tr>
+<tr>
+<td>F26: idealized fixtures</td>
+<td>Current Codex/OpenCode-shaped fixtures and end-to-end journeys implemented.</td>
+<td>Extend deidentified, version-labelled supported-runtime coverage in G. Live Claude/Pi claims require actual evidence.</td>
+</tr>
+<tr>
+<td>F27: cockpit-bound delivery / native events / Git</td>
+<td>Open outside the first recovery scope. A receiver collects independently but does not share durable attention delivery; Review lacks frozen current Git correlation.</td>
+<td>Read-only Git D; shared headless attention and optional lifecycle F.</td>
+</tr>
+</tbody>
+</table></div>
+<h2>Coverage of all eleven recommended value problems</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Recommendation</th>
+<th>Implementation contract</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R1: reliable cross-runtime attention</td>
+<td>Existing classifier/terminal handoff plus persistent headless delivery with durable dedup; F.</td>
+</tr>
+<tr>
+<td>R2: truthful turn receipts + Git</td>
+<td>Scope repair A; shared facts C; frozen read-only current Git correlation D. No worktree attribution or check certification.</td>
+</tr>
+<tr>
+<td>R3: actionable failure diagnosis</td>
+<td>Structured command/exit/output/arguments, occurrence-preserving fingerprints, expected nonzero distinctions and matching-later-success evidence; C.</td>
+</tr>
+<tr>
+<td>R4: automatic continuity</td>
+<td>Editable draft from observed request/edits/checks/errors, existing human decisions and captured Git; explicit approval before saving, no authored-field overwrite; D.</td>
+</tr>
+<tr>
+<td>R5: parallel collisions</td>
+<td>Recorded modifying-path overlap only within proved workspace/branch, with rename/attempt/worktree/unknown handling and cross-agent check/edit chronology; D/E.</td>
+</tr>
+<tr>
+<td>R6: waste/loops</td>
+<td>Conservative progression observations combining repeated failures/calls/compactions and usage with captured edit/check progress; E. No declaration that intentional work is waste.</td>
+</tr>
+<tr>
+<td>R7: MCP recommendations</td>
+<td>Per-tool outcomes/durations with denominators, windows and capture coverage; “unobserved” never means unnecessary; E.</td>
+</tr>
+<tr>
+<td>R8: task usage explanation</td>
+<td>Explicit turn/day/lifetime labels, retry/cache explanations, authoritative context occupancy only, and optional clearly labelled user-configured estimates separate from recorded cost; E.</td>
+</tr>
+<tr>
+<td>R9: retrospective investigations</td>
+<td>Typed path/command/instruction searches over retained indexed evidence, bounded paging, CLI output and exact source navigation; G.</td>
+</tr>
+<tr>
+<td>R10: safe collection</td>
+<td>PR67 defaults remain non-negotiable; new data/projections obey capture policy, retention, redaction and auth; all stages.</td>
+</tr>
+<tr>
+<td>R11: optional native lifecycle</td>
+<td>Versioned opt-in input and supported-runtime recipes researched from primary/native contracts; preserve unknown identities and zero-config discovery; F.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The seven recommended recovery steps map to A/C/G (native correctness), A/F (turn model), B (economics), F (persistent accurate attention), inherited safety gates, D (drafts), and G (pilot materials/external outcomes).</p>
+<h2>Stage A — scope consistency and UI continuity repair</h2>
+<p>First fix <code>capture_selected_run()</code> and <code>_link()</code> so a whole-turn snapshot cannot be accepted under a step key. Carry receiver/producer/agent/session/turn identity and the full bounded step membership from the same frozen projection. Reject contradictory wrapper/snapshot scope kind, identity or membership. Preserve readable legacy task/decision content while making previously ambiguous link accounting unavailable until explicitly repaired; do not silently reinterpret stored human data.</p>
+<p>Gate: actual Review → saved-task UI → handoff preserves turn identity, checks and usage; UI and headless imports agree; turn plus contained step cannot double-count; contradictory snapshots fail; legacy incomplete links remain inspectable without trusted totals; capture-policy and size limits remain intact.</p>
+<h2>Stage B — measured economics and useful existing views</h2>
+<p>Profile the retained fixture before choosing queries or caches. Investigate connection-count JSON grouping, repeated session scalar/label lookups, MCP aggregation and per-trace migration connection/transaction work. Any cache must distinguish raw/derived/ownership/capture revisions and cross-process writes, and must not serve text under another owner or namespace. Migrations remain resumable and readiness truthful.</p>
+<p>Use public framework lifecycle patterns to investigate repeated modal/render retention; avoid an unmeasured private-framework patch. Improve useful roster density while preserving one clear separation between roots, deeper child indentation, alternate shading and stable keyboard/scroll position. Existing Overview should show readable source-backed work, not generic placeholder summaries.</p>
+<p>Targets on the same generated corpus/reference host: substantially shorten cold readiness (target under 30 seconds), steady idle complete-monitor CPU under 5% of one core, and session/MCP p95 under 100 ms under the controlled write workload. Record achieved values and limitations; do not trade away correctness to meet targets or call changed workloads a before/after result. Repeat normal-load and active-probe comparisons with identical conditions. If a target is missed, keep it explicitly open.</p>
+<p>Gate: indexed query plans, source/derived invalidation, concurrent ownership/content snapshots, pruning, file replacement, partial/unknown usage and interrupted migration remain correct. Render 120×36, 80×24 and 60×18. Keep packet/disk/subprocess work off the UI event thread.</p>
+<h2>Stage C — shared actionable operation and failure facts</h2>
+<p>Extract structured native command/result/output once for Findings, Review, diagnostics and later search/drafts. Group by a safe operation/error fingerprint while retaining every occurrence's actor/session/turn/source ID. Different arguments/errors and redacted-ambiguous inputs must not collapse into one supposed failure or recovery.</p>
+<p>Expected nonzero search/comparison results require actual command and exit evidence; unknown wrappers/compound failures cannot be declared informational. A passing retry is “later matching success observed,” not proof all consequences were repaired. Show bounded useful stderr/result excerpts and an exact event action. Keep current/previous-conversation unseen error reminders and incident receipts independent from archival findings and native approvals.</p>
+<p>Gate: wrapped/nested native shapes, masked failures, grep/diff versus validation errors, secrets, different workers, retries, stale history and later successes; exact source navigation preserves filters and selection.</p>
+<h2>Stage D — frozen Git correlation and approved handoff drafts</h2>
+<p>Reuse <code>capture_workspace()</code> and its bounded read-only Git safeguards. Require a proven local workspace binding or an explicit user-selected remote-to-local mapping; a remote receiver's cwd string is not proof that a local directory is its checkout. Freeze current branch/HEAD/status/diff, observation time, workspace/base provenance and clipping with the evidence receipt. Explicitly distinguish recorded agent paths from all current worktree changes, pre-existing work and concurrent edits. An earlier check does not validate the current worktree. Capture only on deliberate review/draft actions in a worker; no Git polling storm. Metadata-only or revoked source capture must not expose derived Git diff content through Review, drafts or exports; separately authored saved-task material keeps its own explicit ownership and consent boundary.</p>
+<p>Generate a clearly labelled editable draft from the original request, scoped evidence, captured Git and saved accepted/rejected human decisions. Drafting must remove repeated identifier entry. Preserve authored fields and require an explicit approve/save action for durable task updates; do not manufacture decisions, constraints or intent from assistant claims. Path-overlap observations use recorded modifying events within proved workspace/branch; handle rename pairs, failed attempts, separate worktrees and missing identity. Same-directory occupancy alone is not a collision.</p>
+<p>Gate: real temporary Git repositories with dirty/staged/committed/untracked/renamed states, moved HEAD, partial output, filters/hooks/lazy-fetch defense and timeouts; overlapping writers and check-before-other-agent-edit chronology; draft → edit → approve → saved task/handoff, with no mutation before approval and no authored-field loss.</p>
+<h2>Stage E — evidence-qualified MCP, progression and usage explanations</h2>
+<p>Add per-tool reliability/latency windows with known/unknown outcome and duration counts. Explain small samples, scope, capture boundaries and configured-but-unobserved servers. Recommendations link to observed calls/configuration context; never suggest deleting configuration from absence alone.</p>
+<p>Extend opt-in repeated-work observations with source-linked progress context, failures/successes/edits/checks, compaction and usage growth. Exclude routine polling and unprovable equivalence. Keep heuristics out of explicit request counts and desktop alerts. Explain turn/day/lifetime usage, retry contributions and cache semantics. Show context occupancy only from explicit authoritative runtime fields. Optional estimates use explicit rates/units/accounting assumptions, are separate from recorded cost, and become unavailable when allocations are ambiguous.</p>
+<p>Gate: mixed runtimes/workers, window boundaries, unknown durations/outcomes, redacted arguments, intentional retries/polls, new progress, missing context/usage and partial model/rate coverage. No hypothetical provider cost is presented as a bill.</p>
+<h2>Stage F — persistent attention and optional lifecycle integration</h2>
+<p>Factor scope preparation, classification, persistence and delivery into one UI-independent runner. A long-running local receiver/watcher can deliver without an open full-screen client; the TUI remains an optional client. Reuse the existing durable claims and receipts so multiple cockpits/watchers do not duplicate alerts. First-install inventory is a quiet baseline. An established watcher must deliver once a still-pending, never-delivered request that arose while it was offline; already-delivered or acknowledged incidents must not repeat. Reconnect must not turn baseline silence into permanent loss of new requests. A fresh explicit request remains until a matching positive resolution. Storage failure is visible and cannot produce optimistic acknowledgements.</p>
+<p>Define and fixture a bounded versioned optional native input before wiring recipes. Research current supported runtime contracts from primary documentation/local schemas; do not invent a hook or infer missing turn/request identity from time proximity. Validate sender/session/worker/turn relationships, request IDs, event ordering, replay and source precedence; preserve unscoped/contradictory evidence as uncertain. Installation/configuration is explicit. Collection and notifications never approve a native request, launch an agent or run a remediation command.</p>
+<p>Gate: watcher/receiver restarts, two cockpits plus watcher, duplicate delivery claims, offline catch-up, same-text new request, acknowledgement, stale/reordered/duplicate events, missing/foreign parents, storage failure and bounded graceful drain. Auth, Host/Origin, local-token discovery, redaction and retention apply to the new path.</p>
+<h2>Stage G — retrospective investigations and participant-ready pilot kit</h2>
+<p>Build typed path/command/instruction investigations on the same indexed source identities. Preserve global retained-history scope, bounded paging, disclosed clipping/pruning and exact event navigation; add reproducible CLI results. Reuse existing Activity storage/search instead of creating competing ownership or unbounded JSON scans. Measure any extra search indexing/read cost.</p>
+<p>Prepare generated scenarios, expected answers, observer timing/error sheets, consent/data-handling instructions and reconstruction/resumption exercises using the existing pilot protocol. Include explicit approval versus unknown status, older check/later edit, turn membership, native terminal handoff, overlapping paths, reconnect and resumed decisions. No personal transcripts or participant identifiers belong in fixtures.</p>
+<p>Gate: investigations answer which session changed a path, which command failed and which agent received an instruction across producers, including renames, unicode, missing IDs, pagination and retention. CLI/UI source navigation agrees. Participant materials render at desktop/mobile sizes and clearly state proposed measures and zero observed participant outcomes.</p>
+<h2>External validation and completion ledger</h2>
+<h3>Stage A implementation</h3>
+<p>Terminal capture now uses the shared execution preparation and preserves the frozen turn boundary, member trace IDs and each check's source trace. Task import rejects contradictory wrapper/snapshot identity, kind, membership and usage. Existing inconsistent links stay readable and retain authored data; their usage is withheld with a repair warning until an explicit relink or unlink. Turn-plus-contained-step accounting remains ambiguous instead of double-counted.</p>
+<p>Validation includes an actual keyboard-driven Review → Save task → edit → Ctrl+S → task → handoff journey, UI/CLI import equality, later-member selection, contradictory imports, legacy reads/edits/explicit repair and metadata-only capture. Peer review exposed additional usage, consent and excerpt-provenance gaps: frozen usage now owns accounting; same-receiver capture revocation is rechecked before capture and task persistence without losing authored fields; decision excerpts retain their actual member trace instead of the turn anchor. Explicitly saving an older frozen receipt after receiver replacement retains only that receipt's facts. The focused gate passed 72 tests in 79.87 seconds; all 12 turn-continuity cases passed again after the final queued-save and frozen-namespace policy guards. HTML companions were rendered at 1280-pixel light and 390-pixel dark widths without document overflow or external assets. Stages B–G remain open; this stage does not complete the full review.</p>
+<p>Participant recruitment/consent, live Claude/Pi data not available in this environment, measured human reconstruction/resumption time and voluntary repeat use cannot be manufactured by automated tests. Prepare the materials and report these dependencies with denominators; do not mark F10/adoption evidence complete without participants. Native integration capabilities unsupported by a runtime must be labelled rather than guessed.</p>
+<p>After each merged stage, update this reconciliation with concrete files, tests, measurements and PR links. Technical delivery and observed user outcomes are separate statuses. The final full-note record must account for every F1–F27 and R1–R11, preserve the stated limits, and identify any external dependency still open.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

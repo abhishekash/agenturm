@@ -23,7 +23,7 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widgets import Button, DataTable, Input, RichLog, Select, Static, TextArea
 
-from .saved_tasks import BRIEF_FIELDS, TaskStore, export_handoff, render_handoff
+from .saved_tasks import BRIEF_FIELDS, TaskStore, export_handoff, render_handoff, review_scope_issue
 from .ui_monitoring import task_run_usage
 from .ui_workflow import events_for, resume_command
 
@@ -44,6 +44,22 @@ def local_workspace(value):
     return value
 
 
+def current_capture_context(owner, context):
+    """Recheck source consent without touching independently authored task fields."""
+    if not context:
+        return context
+    from .review_facts import review_capture_policy
+    from .workflow_evidence import ExecutionScope
+    result = deepcopy(context)
+    scope = ExecutionScope(str(result.get('receiver') or ''), str(result.get('producer') or ''),
+        str(result.get('agent_id') or ''), str(result.get('session_id') or ''))
+    policy = review_capture_policy(result, owner.feed.snapshot, scope)
+    if policy.get('capture_content') is False:
+        result.update(task='Metadata-only execution', checks=[], capture_content=False, local_workspace='')
+        result.pop('review_snapshot', None)
+    return result
+
+
 def capture_selected_run(owner, *, item_override=None, review_snapshot=None):
     """Freeze only the chosen identity and exact-run evidence already loaded."""
     item = deepcopy(item_override) if item_override is not None else next((item for item in owner.workflow_items()
@@ -51,43 +67,55 @@ def capture_selected_run(owner, *, item_override=None, review_snapshot=None):
     if not item:
         return None
     data = owner.feed.snapshot
-    usage = deepcopy(task_run_usage(data.sessions, item, data.traces))
+    from .review_facts import review_capture_policy
+    from .workflow_evidence import ExecutionScope, scope_for
+    policy_scope = ExecutionScope(**review_snapshot['scope']) if review_snapshot is not None else scope_for(item,data,getattr(owner.feed.api,'endpoint',''))
+    item.update(review_capture_policy(item,data,policy_scope))
+    from .ui_workflow_controller import prepared_item
+    selected = prepared_item(item, data)
+    usage = deepcopy(selected['_workflow_usage'])
     if review_snapshot is not None:
         usage = deepcopy((review_snapshot.get('usage') or {}).get('values') or {})
     # Trace summaries use an empty cost sum as zero even when no prices exist.
     # Keep that distinct from a complete, explicitly reported zero-cost run.
     if usage.get('known_cost_usd') == 0 and usage.get('cost_complete') is False:
         usage['known_cost_usd'] = None
-    trace = str(review_snapshot['scope'].get('run_id') or '') if review_snapshot is not None else str(usage.get('trace_id') or item.get('latest_trace_id') or '')
+    trace = str(review_snapshot['scope'].get('run_id') or '') if review_snapshot is not None else str(item.get('trace_id') or usage.get('trace_id') or item.get('latest_trace_id') or '')
     trace = trace.lower() if re.fullmatch(r'[0-9a-fA-F]{32}', trace) else ''
     from .workflow_evidence import ExecutionScope, scope_for
-    scope = scope_for({**item, 'latest_trace_id': trace}, data, getattr(owner.feed.api, 'endpoint', ''))
+    scope = scope_for({**selected, 'latest_trace_id': trace}, data, getattr(owner.feed.api, 'endpoint', ''))
+    members = deepcopy((review_snapshot.get('usage') or {}).get('step_trace_ids') or []) if review_snapshot is not None else deepcopy(usage.get('step_trace_ids') or [])
     if review_snapshot is not None:
         captured_scope = ExecutionScope(**review_snapshot['scope'])
         if (captured_scope.agent_id != scope.agent_id or captured_scope.session_id != scope.session_id
                 or captured_scope.producer != scope.producer
-                or item.get('run_start_ns') and captured_scope.run_start_ns != item['run_start_ns']
+                or not captured_scope.turn_id and item.get('run_start_ns') and captured_scope.run_start_ns != item['run_start_ns']
+                or item.get('turn_id') and captured_scope.turn_id != item['turn_id']
                 or (item.get('trace_id') or item.get('latest_trace_id')) and captured_scope.run_id
-                    and captured_scope.run_id != (item.get('trace_id') or item.get('latest_trace_id'))):
+                    and (item.get('trace_id') or item.get('latest_trace_id')) not in
+                        ({captured_scope.run_id, *members} if captured_scope.turn_id else {captured_scope.run_id})):
             raise ValueError('Frozen review does not belong to this selected agent.')
         scope = captured_scope
     checks = []
     frozen_review = None
-    if (trace or scope.run_start_ns and getattr(scope, 'run_end_ns', None)) and item.get('capture_content') is not False:
+    if (trace or scope.turn_id or scope.run_start_ns and getattr(scope, 'run_end_ns', None)) and item.get('capture_content') is not False:
         from .workflow_evidence import check_observation
-        for event in events_for(item, data.activity):
-            exact = event.get('trace_id') == trace if trace else scope.matches(event)
+        for event in events_for(selected, data.activity):
+            exact = scope.matches(event) if scope.turn_id else event.get('trace_id') == trace if trace else scope.matches(event)
             check = check_observation(event) if exact else None
             if check:
                 checks.append({'command': plain(check['command'])[:2000],
-                    'result': check['result'], 'time_ns': check.get('completed_ns') or 0, 'trace_id': trace})
+                    'result': check['result'], 'time_ns': check.get('completed_ns') or 0, 'trace_id': event.get('trace_id') or ''})
         last = {'item_id':item['id'], 'projection':review_snapshot} if review_snapshot is not None else getattr(owner, 'last_review', None) or {}
         projection = last.get('projection') or {}
         if (last.get('item_id') == item['id'] and projection.get('scope') == asdict(scope)
                 and item.get('capture_content') is not False):
             frozen_review = deepcopy(projection)
+            usage = deepcopy((projection.get('usage') or {}).get('values') or {})
+            members = deepcopy((projection.get('usage') or {}).get('step_trace_ids') or [])
             checks = [{'command': check['command'], 'result': check['result'],
-                       'time_ns': check.get('completed_ns') or 0, 'trace_id': trace}
+                       'time_ns': check.get('completed_ns') or 0,
+                       'trace_id': (check.get('source') or {}).get('trace_id') or (trace if not scope.turn_id else '')}
                       for check in projection.get('checks', [])][-32:]
     endpoint = urlsplit(getattr(owner.feed.api, 'endpoint', '')).hostname
     workspace = local_workspace(item.get('working_directory'))
@@ -97,16 +125,19 @@ def capture_selected_run(owner, *, item_override=None, review_snapshot=None):
             'run_end_ns': getattr(scope, 'run_end_ns', None),
             'agent_id': scope.agent_id,
             'parent_agent_id': str(item.get('parent_agent_id') or ''),
-            'runtime': one_line(item.get('runtime'), 120), 'trace_id': trace,
-            'task': one_line(item.get('task')), 'state': one_line(item.get('state'), 120),
+            'runtime': one_line(item.get('runtime'), 120), 'trace_id': '' if scope.turn_id else trace,
+            'task': 'Metadata-only execution' if item.get('capture_content') is False else one_line(item.get('task')), 'state': one_line(item.get('state'), 120),
             'working_directory': workspace,
             'local_workspace': workspace if endpoint in {'localhost', '127.0.0.1', '::1'} else '',
             'branch': one_line(item.get('branch'), 512),
-            'captured_ns': time.time_ns(), 'usage': deepcopy(usage) if trace else {},
+            'captured_ns': time.time_ns(), 'usage': deepcopy(usage) if trace or scope.turn_id else {},
+            'capture_content': item.get('capture_content'),
             'checks': checks[-8:], 'resume_command': resume_command({**item, 'working_directory': workspace})}
     if frozen_review is not None:
         result['review_snapshot'] = frozen_review
-    return result
+    if scope.turn_id:
+        result.update(turn_id=scope.turn_id, step_trace_ids=members)
+    return current_capture_context(owner,result)
 
 
 def stamp(value):
@@ -588,8 +619,12 @@ class TaskEditor(TaskJobs, ModalScreen):
             if task:
                 return store.update(task['id'], title=title, workspace=workspace, notes=notes,
                                     expected_revision=task['revision'])
-            created = store.create(title, workspace, notes, link=context)
-            if workspace:
+            safe_context = current_capture_context(self.owner, context)
+            revoked = bool(context and safe_context.get('capture_content') is False)
+            safe_title = 'Metadata-only execution' if revoked and title == self.initial[0] else title
+            safe_workspace = '' if revoked and workspace == self.initial[1] else workspace
+            created = store.create(safe_title, safe_workspace, notes, link=safe_context)
+            if safe_workspace:
                 try:
                     created = store.snapshot(created['id'], expected_revision=created['revision'])
                 except Exception as exc:
@@ -727,10 +762,24 @@ class TaskDecisionEditor(TaskBriefEditor):
             return
         values = self.values()
         task = self.record
+        source = self.source
+        if source and current_capture_context(self.owner, source).get('capture_content') is False:
+            source = None
+            if values['text'] == self.initial['text']:
+                self.status('Source capture was revoked. Enter your own decision text or cancel; the excerpt cannot be saved.')
+                return
         self.lock_fields()
-        self.job(lambda store: store.add_decision(task['id'], **values, source=self.source,
-            supersedes_id=self.supersedes['id'] if self.supersedes else None,
-            expected_revision=task['revision']), self.dismiss, 'Saving new decision version…')
+        def save(store):
+            safe_source = source
+            if safe_source and current_capture_context(self.owner, safe_source).get('capture_content') is False:
+                from .saved_tasks import TaskError
+                if values['text'] == self.initial['text']:
+                    raise TaskError('Source capture was revoked. Enter your own decision text or cancel; the excerpt cannot be saved.')
+                safe_source = None
+            return store.add_decision(task['id'], **values, source=safe_source,
+                supersedes_id=self.supersedes['id'] if self.supersedes else None,
+                expected_revision=task['revision'])
+        self.job(save, self.dismiss, 'Saving new decision version…')
 
 
 class TaskDecisionsScreen(TaskScreen):
@@ -865,7 +914,9 @@ class TaskRunsScreen(TaskScreen):
         table.clear()
         for link in self.record['links']:
             table.add_row(Text((link.get('runtime') or 'Agent') + ' · ' + (link.get('task') or link.get('session_id') or 'Recorded run')),
-                          'Run' if link.get('trace_id') or link.get('run_start_ns') else 'Session only', link.get('state') or 'Unknown', key=link['key'])
+                          'Repair scope' if review_scope_issue(link) else 'Turn' if link.get('turn_id') else 'Run' if link.get('trace_id') or link.get('run_start_ns') else 'Session only', link.get('state') or 'Unknown', key=link['key'])
+        if self.record.get('link_scope_warnings'):
+            self.status('A saved review needs scope repair. Relink that Review or explicitly unlink it; aggregate usage is unavailable.')
         if not self.record['links']:
             self.status('No linked runs. Return to the task and Link a selected monitoring session.')
         table.focus()

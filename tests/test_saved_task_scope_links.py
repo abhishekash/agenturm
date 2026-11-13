@@ -18,9 +18,11 @@ class ScopedTaskLinkTests(unittest.TestCase):
         history.accept({'activity':[dict(id='event-'+agent,source_id='event-'+agent,service='codex',
             agent_id=agent,session_id=session,trace_id=trace,domain='shell',action='execute',
             subject='pytest '+agent,result='success',time_unix_nano=100)],'next_cursor':None})
+        projection=history.projection({'task':agent,'state':'Completed'})
+        projection['usage']['values']=usage or {}
         return dict(receiver='receiver',producer='codex',agent_id=agent,session_id=session,trace_id=trace,
                     runtime='Codex',task='Review '+agent,state='Completed',captured_ns=1000,
-                    parent_agent_id=parent or '',usage=usage or {},review_snapshot=history.projection({'task':agent,'state':'Completed'}))
+                    parent_agent_id=parent or '',usage=usage or {},review_snapshot=projection)
 
     def known(self, amount=100):
         return dict(input_tokens=amount,output_tokens=20,known_cost_usd=.1,
