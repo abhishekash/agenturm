@@ -1,0 +1,493 @@
+"""Isolated native-reader + receiver + real-terminal monitoring soak (Linux/tmux).
+
+Run from the checkout with its dependencies installed:
+  PYTHONPATH=. .venv/bin/python scripts/soak_monitor.py --output /tmp/agenturm-soak-new
+
+Default: one hour, one three-worker cycle every 30 seconds. No provider calls.
+The output directory must not exist. It contains only generated native sources,
+private receiver credentials, telemetry, tmux captures and measurements. Do not
+publish the directory wholesale; results.json contains no credentials. The child
+processes replace Path.home only within this harness and inherit a minimal env;
+native discovery cannot reach the user's transcripts/configuration. Host process
+inventory is real; project configuration discovery is restricted to the fixture.
+"""
+from __future__ import annotations
+
+import argparse
+from contextlib import ExitStack
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import shlex
+import shutil
+import signal
+import socket
+import sqlite3
+import statistics
+import subprocess
+import sys
+import time
+import traceback
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def write_json(path, value):
+    path.write_text(json.dumps(value, indent=2) + '\n')
+
+
+def append(path, value):
+    with path.open('a') as stream:
+        stream.write(json.dumps(value, separators=(',', ':')) + '\n')
+
+
+def event(kind, payload, *, ago=0):
+    return dict(type=kind, timestamp=datetime.fromtimestamp(
+        time.time()-ago, timezone.utc).isoformat(), payload=payload)
+
+
+def native(path, kind, **payload):
+    append(path, event(kind, payload))
+
+
+def child(mode, directory, port):
+    base = Path(directory).resolve()
+    sys.path.insert(0, str(ROOT))
+    # No HOME/CODEX_HOME override; only this isolated process sees the fixture
+    # home through the platform API. No user transcript/config roots are read.
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(Path, 'home', return_value=base/'fixture-home'))
+        if os.environ.get('AGENTURM_SOAK_EAGER_TLS')=='1':
+            from observatory import http_transport
+            import urllib.request
+            def eager(request, *, timeout):
+                return urllib.request.build_opener(http_transport.NoRedirect()).open(request,timeout=timeout)
+            stack.enter_context(patch.object(http_transport,'urlopen',eager))
+        from observatory import local_runtime
+        original = local_runtime.project_directories
+        def fixture_projects(*args, **kwargs):
+            return {path for path in original(*args, **kwargs)
+                    if Path(path).is_relative_to(base)}
+        stack.enter_context(patch.object(local_runtime, 'project_directories', fixture_projects))
+        if mode == 'actor':
+            import ctypes
+            ctypes.CDLL(None).prctl(15, b'codex', 0, 0, 0)
+            files = [stack.enter_context((base/'fixture-home/.codex/sessions'/name).open())
+                     for name in ('parent.jsonl', 'stale.jsonl')]
+            while True:
+                for stream in files:
+                    stream.seek(0); stream.read(256)
+                hashlib.pbkdf2_hmac('sha256', b'synthetic', b'soak', 3000)
+                time.sleep(.5)
+        if mode == 'receiver':
+            from observatory.core import Store
+            close = Store.close
+            def observed_close(store):
+                before=len(store._derived_pending)
+                close(store)
+                append(base/'receiver-exits.jsonl',dict(pending_before=before,pending_after=len(store._derived_pending)))
+            stack.enter_context(patch.object(Store,'close',observed_close))
+            from observatory.__main__ import main
+            sys.argv = ['agenturm', '--db', str(base/'telemetry.db'), 'serve', '--port', str(port)]
+            main()
+            return
+        if mode != 'ui':
+            raise ValueError(mode)
+        from observatory.terminal_ui import ObservatoryApp
+        from observatory.ui_workflow_controller import WorkflowController
+        from observatory.terminal import Api, Feed, _run_terminal_app
+        telemetry = base/'ui-events.jsonl'
+        original_mount = ObservatoryApp.on_mount
+        original_enqueue = WorkflowController._enqueue
+        def enqueue(controller, job):
+            accepted = not controller._closed
+            result = original_enqueue(controller, job)
+            if accepted and job[0] == 'review_completions' and job[1][0]:
+                append(telemetry, dict(kind='accepted_reviews', ids=list(job[1][0]), at=time.time()))
+            return result
+        def mount(app):
+            original_mount(app)
+            previous = [time.monotonic()]
+            def heartbeat():
+                now = time.monotonic()
+                append(telemetry, dict(kind='heartbeat', at=time.time(), pid=os.getpid(),
+                    interval=now-previous[0], error=app.feed.snapshot.error,
+                    states=[dict(session=item.get('session_id'), state=item.get('state'),
+                                 request=item.get('request_id'), parent=item.get('parent_agent_id'))
+                            for item in app.workflow_items()],
+                    warning=app.workflow_controller.warning))
+                previous[0] = now
+            app.set_interval(1, heartbeat)
+        stack.enter_context(patch.object(WorkflowController, '_enqueue', enqueue))
+        stack.enter_context(patch.object(ObservatoryApp, 'on_mount', mount))
+        token = (base/'state/agenturm'/f'receiver-{port}.token').read_text().strip()
+        feed = Feed(Api(f'http://127.0.0.1:{port}', token))
+        profiler = None
+        if os.environ.get('AGENTURM_SOAK_PROFILE') == '1':
+            import cProfile
+            profiler=cProfile.Profile();profiler.enable()
+        try:
+            _run_terminal_app(ObservatoryApp(feed))
+        finally:
+            if profiler:
+                profiler.disable();profiler.dump_stats(str(base/f'cockpit-{os.getpid()}.prof'))
+            feed.close()
+
+
+class Workload:
+    def __init__(self, base):
+        self.base = base
+        self.paths = {}
+        directory = base/'fixture-home/.codex/sessions'
+        directory.mkdir(parents=True)
+        for name in ('parent', 'child', 'stale'):
+            path = directory/(name+'.jsonl'); self.paths[name] = path
+            payload = dict(id='soak-'+name, cwd=str(base/'project'))
+            if name == 'child':
+                payload.update(parent_thread_id='soak-parent', source={'subagent': {
+                    'thread_spawn': {'parent_thread_id': 'soak-parent', 'depth': 1}}})
+            append(path, event('session_meta', payload, ago=3600 if name=='stale' else 0))
+        append(self.paths['stale'], event('event_msg', dict(type='task_started', turn_id='stale-turn'), ago=3600))
+        # File mtime must not masquerade as current session work.
+        stamp=time.time()-3600;os.utime(self.paths['stale'], (stamp,stamp))
+        (base/'project').mkdir()
+        self.database=base/'opencode.db'
+        with sqlite3.connect(self.database) as db:
+            db.executescript('''
+                PRAGMA journal_mode=WAL;
+                CREATE TABLE project(id TEXT PRIMARY KEY,name TEXT,worktree TEXT);
+                CREATE TABLE session(id TEXT PRIMARY KEY,project_id TEXT,title TEXT,directory TEXT,
+                  time_created INTEGER,time_updated INTEGER,agent TEXT,model TEXT,tokens_input INTEGER,tokens_output INTEGER);
+                CREATE TABLE message(id TEXT PRIMARY KEY,session_id TEXT,time_created INTEGER,time_updated INTEGER,data TEXT);
+                CREATE TABLE part(id TEXT PRIMARY KEY,session_id TEXT,message_id TEXT,time_created INTEGER,data TEXT);
+            ''')
+            now=time.time_ns()//1_000_000
+            db.execute('INSERT INTO project VALUES(?,?,?)', ('p','soak-project',str(base/'project')))
+            db.execute('INSERT INTO session VALUES(?,?,?,?,?,?,?,?,?,?)',
+                ('soak-opencode','p','Validate OpenCode turn boundaries',str(base/'project'),now,now,'build','model-synthetic',0,0))
+        self.requests=[];self.completed=[];self.turns={}
+
+    def phase(self, cycle, phase):
+        for name in ('parent','child'):
+            path=self.paths[name];turn=f'{name}-turn-{cycle}'
+            if phase==0:
+                native(path,'event_msg',type='task_started',turn_id=turn)
+                native(path,'event_msg',type='item_completed',item=dict(type='UserMessage',id=f'{name}-prompt-{cycle}',
+                    content=[dict(type='text',text=f'Validate {name} cycle {cycle}')]))
+                self.turns[(name,cycle)]=turn
+            elif phase==1 and name=='parent':
+                request=f'approval-{cycle}'
+                native(path,'event_msg',type='approval_request',request_id=request,prompt='Approve synthetic check')
+                self.requests.append((cycle,request))
+            elif phase==2:
+                native(path,'event_msg',type='task_started',turn_id=turn)
+                native(path,'event_msg',type='item_completed',item=dict(type='CommandExecution',id=f'check-{cycle}',
+                    command=['/usr/bin/zsh','-lc','npm run check'],status='completed',aggregated_output=f'{name} check {cycle} passed',exit_code=0))
+            elif phase==3:
+                native(path,'event_msg',type='item_completed',item=dict(type='FileChange',id=f'edit-{cycle}',status='completed',
+                    changes={f'src/{name}_{cycle}.py':dict(type='update',diff='+ synthetic correction')}))
+                native(path,'token_usage_record',turn_id=turn,response_id=f'{name}-{cycle}',usage=dict(input_tokens=100+cycle,output_tokens=10,cached_input_tokens=50))
+            elif phase==4:
+                native(path,'event_msg',type='item_completed',item=dict(type='AgentMessage',id=f'answer-{cycle}',
+                    phase='final_answer',content=[dict(type='Text',text=f'Validated {name} cycle {cycle}')]))
+                native(path,'event_msg',type='task_complete',turn_id=turn)
+                self.completed.append((name,cycle))
+        now=time.time_ns()//1_000_000
+        uid=f'open-user-{cycle}';mid=f'open-step-{cycle}'
+        with sqlite3.connect(self.database) as db:
+            if phase==0:
+                for key,data in [(uid,dict(role='user',content=[dict(type='text',text=f'Validate OpenCode cycle {cycle}')])),
+                    (mid,dict(role='assistant',parentID=uid,modelID='model-synthetic',time=dict(created=now),tokens=dict(input=30,output=5)))]:
+                    stamp=now+(key==mid)
+                    db.execute('INSERT INTO message VALUES(?,?,?,?,?)',(key,'soak-opencode',stamp,stamp,json.dumps(data)))
+            elif phase==2:
+                data=dict(type='tool',tool='bash',state=dict(status='completed',input=dict(command='pytest -q'),output=f'OpenCode cycle {cycle} passed',metadata=dict(exit=0),time=dict(start=now-10,end=now)))
+                db.execute('INSERT INTO part VALUES(?,?,?,?,?)',(f'open-tool-{cycle}','soak-opencode',mid,now,json.dumps(data)))
+            elif phase in (3,4):
+                # Text-part-only streaming must be seen without touching the message row.
+                data=dict(type='text',text=f'Validated OpenCode cycle {cycle}' if phase==4 else f'Checking OpenCode cycle {cycle}')
+                db.execute('INSERT OR REPLACE INTO part VALUES(?,?,?,?,?)',(f'open-text-{cycle}','soak-opencode',mid,now,json.dumps(data)))
+                if phase==4:
+                    data=json.loads(db.execute('SELECT data FROM message WHERE id=?',(mid,)).fetchone()[0])
+                    data.update(finish='stop',time=dict(created=now-1000,completed=now))
+                    db.execute('UPDATE message SET data=?,time_updated=? WHERE id=?',(json.dumps(data),now,mid))
+                    self.completed.append(('opencode',cycle))
+            db.execute('UPDATE session SET time_updated=?',(now,))
+
+
+def process_sample(pid):
+    path=Path('/proc')/str(pid)
+    try:
+        fields=path.joinpath('stat').read_text().rsplit(')',1)[1].split()
+        status=dict(line.split(':',1) for line in path.joinpath('status').read_text().splitlines() if ':' in line)
+        return dict(pid=pid,cpu_seconds=(int(fields[11])+int(fields[12]))/os.sysconf('SC_CLK_TCK'),
+                    sampled_at=time.monotonic(),
+                    rss_mib=int(status.get('VmRSS','0 kB').split()[0])/1024,
+                    peak_rss_mib=int(status.get('VmHWM','0 kB').split()[0])/1024)
+    except (OSError,ValueError,IndexError):
+        return None
+
+
+def percentile(values, fraction):
+    return sorted(values)[min(len(values)-1,int((len(values)-1)*fraction))] if values else None
+
+
+def run(args):
+    from observatory.terminal import Api
+    from observatory.local_agents import identity
+    from observatory.review_cli import collect_review
+    base=args.output.resolve();base.mkdir(mode=0o700)
+    workload=Workload(base)
+    channel='agenturm-soak-'+str(os.getpid())
+    env={key:os.environ[key] for key in ('PATH','LANG','LC_ALL','LD_LIBRARY_PATH') if key in os.environ}
+    env.update(XDG_STATE_HOME=str(base/'state'),XDG_CONFIG_HOME=str(base/'config'),
+               XDG_DATA_HOME=str(base/'data'),OPENCODE_DB=str(workload.database),TERM='xterm-256color',PYTHONUNBUFFERED='1')
+    if args.profile_ui:env['AGENTURM_SOAK_PROFILE']='1'
+    if args.eager_tls:env['AGENTURM_SOAK_EAGER_TLS']='1'
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
+    endpoint=f'http://127.0.0.1:{port}'
+    command=[sys.executable,str(Path(__file__).resolve())]
+    receiver=None;actor=None;streams=[];errors=[];samples=[];latencies={};verified=[];reconnects=[]
+    def spawn(mode):
+        log=(base/(mode+'.log')).open('a');streams.append(log)
+        return subprocess.Popen([*command,'_child',mode,str(base),str(port),'app-server'],env=env,cwd=base/'project',stdout=log,stderr=subprocess.STDOUT)
+    def tmux(*values, capture=False):
+        result=subprocess.run(['tmux','-L',channel,*values],env=env,text=True,capture_output=True,timeout=5)
+        if result.returncode:raise RuntimeError('tmux: '+result.stderr)
+        return result.stdout if capture else None
+    def screen(label):
+        text=tmux('capture-pane','-p','-t','monitor',capture=True)
+        (base/(label+'.txt')).write_text(text)
+        return text
+    def keys(*values):
+        # Separate Escape bytes from following keys; a terminal otherwise
+        # correctly decodes the concatenated sequence as an Alt chord.
+        for value in values:
+            tmux('send-keys','-t','monitor',value);time.sleep(.25)
+    def start_ui(compact=False):
+        width,height=('60','18') if compact else ('120','36')
+        tmux('new-session','-d','-s','monitor','-x',width,'-y',height,shlex.join([*command,'_child','ui',str(base),str(port)]))
+        tmux('set-option','-t','monitor','remain-on-exit','on')
+    def ui_pid():
+        return int(tmux('display-message','-p','-t','monitor','#{pane_pid}',capture=True).strip())
+    def stop_ui():
+        keys('Escape','Escape','q')
+        deadline=time.monotonic()+8
+        while time.monotonic()<deadline:
+            if tmux('display-message','-p','-t','monitor','#{pane_dead}',capture=True).strip()=='1':return
+            time.sleep(.1)
+        errors.append('cockpit did not finish graceful exit within eight seconds')
+    def wait_ready(api, timeout=25):
+        deadline=time.monotonic()+timeout
+        while time.monotonic()<deadline:
+            try:
+                health=api.get('/api/health')
+                if health.get('indexing',{}).get('ready') and health.get('local_agents',{}).get('initial_poll_complete'):return health
+            except OSError:pass
+            time.sleep(.2)
+        raise RuntimeError('Receiver readiness deadline exceeded')
+    def stop_receiver():
+        nonlocal receiver
+        if receiver and receiver.poll() is None:
+            receiver.send_signal(signal.SIGINT)
+            try:receiver.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                receiver.kill();receiver.wait();errors.append('receiver required forced shutdown')
+    def request(api, path):
+        before=time.monotonic()
+        try:return api.get(path)
+        finally:latencies.setdefault(path,[]).append((time.monotonic()-before)*1000)
+    started=time.monotonic();last_phase=-1;mid_restart=False;receiver_restart=False
+    try:
+        receiver=spawn('receiver');actor=spawn('actor')
+        token_file=base/'state/agenturm'/f'receiver-{port}.token'
+        for _ in range(100):
+            if token_file.exists():break
+            if receiver.poll() is not None:raise RuntimeError('Receiver failed; see receiver.log')
+            time.sleep(.1)
+        api=Api(endpoint,token_file.read_text().strip());wait_ready(api);start_ui()
+        # Timed workload begins after first receiver readiness.
+        started=time.monotonic();next_sample=started;sample_interval=args.phase_seconds
+        previous={};pending_cycle=None;next_phase=started
+        while time.monotonic()-started<args.duration or last_phase%6!=5:
+            now=time.monotonic();elapsed=now-started
+            phase_index=last_phase+1
+            if now>=next_phase:
+                cycle,phase=divmod(phase_index,6)
+                if phase_index!=last_phase+1:errors.append(f'workload skipped phases: {last_phase} -> {phase_index}')
+                workload.phase(cycle,phase);last_phase=phase_index
+                if phase==1:pending_cycle=cycle
+                if phase==5:
+                    keys('Escape','Escape','1','w')
+                    time.sleep(1.2)
+                    text=screen(f'workflow-{cycle}')
+                    if 'Shift+R' not in text:raise RuntimeError('Workflow did not open before review key')
+                    keys('R');time.sleep(.4);keys('Escape')
+                    for name in ('parent','child'):
+                        # Match authoritative identity from the observed inventory.
+                        health=api.get('/api/health')
+                        observed=next(row for row in health['local_agents']['sessions'] if row['session_id']=='soak-'+name)
+                        projection=collect_review(api,service='codex',agent_id=observed['agent_id'],session_id='soak-'+name,trace_id=observed['trace_id'],pages=5)
+                        if (len(projection['checks'])!=1 or len(projection['edits'])!=1
+                            or projection['edits'][0]['path']!=f'src/{name}_{cycle}.py'
+                            or projection['usage']['values']['input_tokens']!=100+cycle
+                            or projection['request']['text']!=f'Validate {name} cycle {cycle}'):
+                            errors.append(f'Codex reconstruction mismatch: {name} cycle {cycle}')
+                        else:verified.append(f'{name}:{cycle}')
+                    trace=identity('opencode-trace','soak-opencode',f'open-step-{cycle}')
+                    rollup=api.get('/api/review-turn?trace_id='+trace)['turn']
+                    owner=rollup.get('review_owner') or {}
+                    projection=collect_review(api,service='opencode',agent_id=owner.get('agent_id'),session_id='soak-opencode',trace_id=trace,pages=5,whole_turn=True)
+                    if (len(projection['checks'])!=1 or projection['usage']['values']['input_tokens']!=30
+                        or projection['request']['text']!=f'Validate OpenCode cycle {cycle}'
+                        or projection['agent_update']['text']!=f'Validated OpenCode cycle {cycle}'):
+                        errors.append(f'OpenCode reconstruction mismatch: cycle {cycle}')
+                    else:verified.append(f'opencode:{cycle}')
+                    if cycle%5==0:screen(f'cycle-{cycle}')
+                next_phase=time.monotonic()+args.phase_seconds
+            if now>=next_sample:
+                health=request(api,'/api/health');local=health.get('local_agents',{})
+                if pending_cycle is not None:
+                    row=next((row for row in local.get('sessions',[]) if row.get('session_id')=='soak-parent'),{})
+                    expected=identity(row.get('source_id'),f'parent-turn-{pending_cycle}','request',f'approval-{pending_cycle}')
+                    if row.get('request_id')==expected:
+                        append(base/'observed-requests.jsonl',dict(cycle=pending_cycle,id=row['request_id']))
+                        pending_cycle=None
+                for path in ('/api/sessions','/api/activity?limit=50','/api/metrics','/api/mcp?limit=20'):
+                    request(api,path)
+                record=dict(elapsed=elapsed,backlog_bytes=local.get('backlog_bytes'),
+                    opencode_backlog=local.get('opencode_diagnostics',{}).get('backlog_records'),
+                    read_errors=local.get('read_errors'),schema_errors=local.get('schema_errors'),
+                    database_bytes=(base/'telemetry.db').stat().st_size,
+                    wal_bytes=(base/'telemetry.db-wal').stat().st_size if (base/'telemetry.db-wal').exists() else 0,
+                    processes={})
+                for role,pid in [('receiver',receiver.pid),('cockpit',ui_pid()),('synthetic_daemon',actor.pid)]:
+                    value=process_sample(pid)
+                    if value:
+                        old=previous.get(role)
+                        if old and old[0]==pid:
+                            value['sample_seconds']=value['sampled_at']-old[2]
+                            value['cpu_delta_seconds']=value['cpu_seconds']-old[1]
+                            value['cpu_percent_one_core']=value['cpu_delta_seconds']/value['sample_seconds']*100
+                        previous[role]=(pid,value['cpu_seconds'],value['sampled_at']);record['processes'][role]=value
+                samples.append(record);append(base/'samples.jsonl',record)
+                next_sample=now+sample_interval
+            # Restart at phase 5 boundaries, never skip a pending input phase.
+            if last_phase%6==5 and elapsed>args.duration*.33 and not receiver_restart:
+                before=time.monotonic();old_id=health['receiver_id'];stop_receiver()
+                time.sleep(8);receiver=spawn('receiver');new=wait_ready(api)
+                if new['receiver_id']!=old_id:errors.append('Receiver identity changed on restart')
+                reconnects.append(dict(kind='receiver',at=elapsed,seconds=time.monotonic()-before));receiver_restart=True
+                next_phase=time.monotonic()+args.phase_seconds
+            if last_phase%6==5 and elapsed>args.duration*.66 and not mid_restart:
+                screen('before-cockpit-restart');stop_ui()
+                tmux('kill-session','-t','monitor');start_ui(compact=True);mid_restart=True
+                next_phase=time.monotonic()+args.phase_seconds
+                reconnects.append(dict(kind='cockpit',at=elapsed))
+            time.sleep(.15)
+        screen('final');stop_ui()
+        stop_receiver()
+    except Exception as exc:
+        (base/'failure.txt').write_text(traceback.format_exc())
+        errors.append(f'{type(exc).__name__}: {exc}')
+    except KeyboardInterrupt:
+        errors.append('Interrupted before the configured soak completed')
+    finally:
+        stop_receiver()
+        if actor and actor.poll() is None:actor.terminate();actor.wait(timeout=5)
+        subprocess.run(['tmux','-L',channel,'kill-server'],capture_output=True)
+        for stream in streams:stream.close()
+    duration=time.monotonic()-started
+    ui_events=[json.loads(line) for line in (base/'ui-events.jsonl').read_text().splitlines()] if (base/'ui-events.jsonl').exists() else []
+    accepted={identity for row in ui_events if row['kind']=='accepted_reviews' for identity in row['ids']}
+    heartbeat=[row for row in ui_events if row['kind']=='heartbeat']
+    observed_requests=[json.loads(line) for line in (base/'observed-requests.jsonl').read_text().splitlines()] if (base/'observed-requests.jsonl').exists() else []
+    persisted=set()
+    workflow=base/'state/agenturm/workflow.sqlite3'
+    if workflow.exists():
+        with sqlite3.connect(workflow) as db:
+            persisted={row[0] for row in db.execute('SELECT id FROM workflow_acknowledgements_v1')}
+    missing=accepted-persisted
+    if missing:errors.append(f'{len(missing)} accepted reviews missing after shutdown')
+    if not accepted:errors.append('No keyboard review acknowledgements were accepted')
+    if len(verified)<3:errors.append('No complete three-worker cycle reconstructed')
+    if len(verified)!=len(workload.completed):errors.append('Not every completed turn was reconstructed')
+    missing_requests={cycle for cycle,_ in workload.requests}-{row['cycle'] for row in observed_requests}
+    if missing_requests:errors.append(f'Unobserved approval request cycles: {sorted(missing_requests)}')
+    false_working=[row for row in heartbeat if any(item['session']=='soak-stale' and item['state'] in {'Working','Working (quiet)','Processing','Possibly stalled'} for item in row['states'])]
+    if false_working:errors.append(f'Shared daemon falsely advanced stale session in {len(false_working)} observations')
+    if any(row.get('read_errors') or row.get('schema_errors') for row in samples):errors.append('Native read/schema errors occurred')
+    exits=[json.loads(line) for line in (base/'receiver-exits.jsonl').read_text().splitlines()] if (base/'receiver-exits.jsonl').exists() else []
+    if not exits or any(row['pending_after'] for row in exits):errors.append('Derived work was not confirmed drained at receiver shutdown')
+    request_ids={row['id'] for row in observed_requests}
+    ui_requests={item['request'] for row in heartbeat for item in row['states'] if item['request']}
+    if request_ids-ui_requests:errors.append('Not every observed native approval appeared in the cockpit')
+    if receiver_restart and (not any(row['error'] for row in heartbeat) or not heartbeat or heartbeat[-1]['error']):
+        errors.append('Cockpit disconnect/recovery was not observed')
+    resources={}
+    for role in ('receiver','cockpit','synthetic_daemon'):
+        values=[row['processes'][role] for row in samples if role in row['processes']]
+        cpus=[row['cpu_percent_one_core'] for row in values if 'cpu_percent_one_core' in row]
+        resources[role]=dict(cpu_median=statistics.median(cpus) if cpus else None,cpu_p95=percentile(cpus,.95),
+            cpu_mean_weighted=(sum(row.get('cpu_delta_seconds',0) for row in values)/sum(row.get('sample_seconds',0) for row in values)*100) if any(row.get('sample_seconds') for row in values) else None,
+            rss_max_mib=max((row['rss_mib'] for row in values),default=0),peak_rss_mib=max((row['peak_rss_mib'] for row in values),default=0))
+        segments=[]
+        for pid in sorted({row['pid'] for row in values}):
+            points=[(row['elapsed'],row['processes'][role]['rss_mib']) for row in samples
+                    if role in row['processes'] and row['processes'][role]['pid']==pid]
+            start=points[0][0];end=points[-1][0]
+            warm=[rss for elapsed,rss in points if start+60<=elapsed<=start+300]
+            tail=[rss for elapsed,rss in points if elapsed>=end-60]
+            segments.append(dict(observed_seconds=end-start,
+                warm_rss_median_mib=statistics.median(warm) if warm else None,
+                last_minute_rss_median_mib=statistics.median(tail),
+                warm_to_tail_delta_mib=statistics.median(tail)-statistics.median(warm) if warm else None))
+        resources[role]['rss_segments']=segments
+    result=dict(schema_version=1,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
+        tracked_source_dirty=bool(subprocess.run(['git','diff','--quiet'],cwd=ROOT).returncode),
+        source_sha256={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in
+                       ('scripts/soak_monitor.py','observatory/http_transport.py','observatory/ui_workflow.py')},
+        host=dict(system=platform.system(),architecture=platform.machine(),python=platform.python_version(),logical_cpus=os.cpu_count()),
+        configured_seconds=args.duration,phase_seconds=args.phase_seconds,elapsed_seconds=duration,eager_tls=args.eager_tls,profile_ui=args.profile_ui,
+        completed_turns=len(workload.completed),verified_turns=len(verified),approval_requests=len(workload.requests),observed_approval_requests=len({row['cycle'] for row in observed_requests}),
+        accepted_review_ids=len(accepted),persisted_review_ids=len(persisted),missing_review_ids=len(missing),
+        shared_daemon_false_progress=len(false_working),heartbeat_samples=len(heartbeat),
+        heartbeat_interval_p95=percentile([row['interval'] for row in heartbeat],.95),
+        heartbeat_interval_max=max((row['interval'] for row in heartbeat),default=0),
+        connection_error_observations=sum(bool(row['error']) for row in heartbeat),
+        recovered_after_outage=bool(any(row['error'] for row in heartbeat) and heartbeat and not heartbeat[-1]['error']),
+        resources=resources,latency_ms={key:dict(median=statistics.median(values),p95=percentile(values,.95),max=max(values)) for key,values in latencies.items()},
+        reconnects=reconnects,receiver_shutdowns=exits,sample_count=len(samples),errors=errors,
+        storage=dict(database_bytes=(base/'telemetry.db').stat().st_size,
+            peak_database_plus_wal_bytes=max((row['database_bytes']+row['wal_bytes'] for row in samples),default=0),
+            max_native_backlog_bytes=max((row.get('backlog_bytes') or 0 for row in samples),default=0),
+            max_opencode_backlog_records=max((row.get('opencode_backlog') or 0 for row in samples),default=0)),
+        limitations=['Synthetic native records; no live provider or agent runtime.','Host process inventory is real; project config reads restricted to synthetic project.',
+            'Heartbeat and review-queue instrumentation add small overhead.','No daily-use or human reconstruction-pilot conclusion.'])
+    write_json(base/'results.json',result);print(json.dumps(result,indent=2),flush=True)
+    return 1 if errors else 0
+
+
+def main():
+    if len(sys.argv)>1 and sys.argv[1]=='_child':
+        child(sys.argv[2],sys.argv[3],int(sys.argv[4]));return 0
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output',type=Path,required=True,help='new private artifact directory')
+    parser.add_argument('--duration',type=float,default=3600,help='seconds after receiver readiness')
+    parser.add_argument('--phase-seconds',type=float,default=5,help='six phases per completed workload cycle')
+    parser.add_argument('--profile-ui',action='store_true',help='diagnostic cProfile; do not compare its CPU timings to unprofiled runs')
+    parser.add_argument('--eager-tls',action='store_true',help='diagnostic baseline: restore pre-fix per-request TLS handler initialization in the cockpit')
+    args=parser.parse_args()
+    if args.duration<args.phase_seconds*6 or args.phase_seconds<2:parser.error('Use at least one cycle and phases >=2 seconds')
+    if sys.platform!='linux' or not shutil.which('tmux'):parser.error('This measurement harness requires Linux /proc and tmux')
+    if args.output.exists():parser.error('Output directory must not exist')
+    return run(args)
+
+
+if __name__=='__main__':
+    raise SystemExit(main())
