@@ -50,6 +50,10 @@ def initialize(db):
     # Hydrate selected MCP call keys through expression indexes, rather than
     # recomputing identities over every retained payload for each page.
     from .storage_mcp import call_key_sql
+    db.execute(f'CREATE INDEX IF NOT EXISTS spans_mcp_owner_trace_v1 ON spans(trace_id,service,agent_id) WHERE {MCP_PREDICATE}')
+    db.execute('''CREATE INDEX IF NOT EXISTS spans_mcp_execution_v1 ON spans(trace_id,service,agent_id,
+        json_extract(attributes,'$."gen_ai.tool.name"'))
+        WHERE lower(json_extract(attributes,'$."gen_ai.tool.type"'))='mcptool' ''')
     for kind,table in (('span','spans'),('log','logs')):
         db.execute(f'CREATE INDEX IF NOT EXISTS {table}_mcp_owner_lookup_v4 ON {table}({call_key_sql(kind)})')
         db.execute(f'DROP INDEX IF EXISTS {table}_mcp_owner_lookup_v3')

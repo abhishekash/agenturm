@@ -37,6 +37,12 @@ class HistoryReadEconomicsTests(unittest.TestCase):
         self.assertIn('spans_source_text_v1',plans[0])
         self.assertIn('spans_mcp_owner_lookup_v4',plans[1])
         self.assertIn('logs_mcp_owner_lookup_v4',plans[2])
+        inventory=next(sql for sql in queries if sql.startswith('WITH evidence') and ' AS failed' in sql)
+        with original() as db:
+            lookups=[row[3] for row in db.execute('EXPLAIN QUERY PLAN '+inventory)
+                     if 'SEARCH execution ' in row[3] or 'SEARCH candidate_execution ' in row[3]]
+        self.assertTrue(lookups)
+        self.assertTrue(all('trace_id=?' in plan for plan in lookups),lookups)
 
     def test_original_task_and_latest_summary_share_one_snapshot(self):
         from observatory.storage_sessions import session_projection
