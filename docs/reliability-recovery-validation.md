@@ -10,11 +10,11 @@
 - Local defaults tests cover concurrent token creation, file mode/shape, Host/Origin rejection, credential-bearing redirect refusal, safe non-strict SDK failures, retention enrolment, WAL-aware copy and overwrite/sidecar refusal.
 - A real Textual shutdown test pauses publication, accepts an acknowledgement and viewed-error receipt, exits the app and verifies both durable records. The worker drains with the event loop available. Snapshot tests distinguish ready-empty, read-failed and readiness-expired output. Bulk review freezes completion IDs and excludes requests/later arrivals. A 100-completion persistence test verifies repeat bulk actions do not undo review or consume later arrivals, and turn anchors survive SQLite storage/restart across assistant-step changes.
 
-The independent reviewer approved the final snapshot/provenance fixes after a 28-test targeted run. Additional focused batches passed 33 security/identity tests, 82 storage/native/local-monitoring tests and 27 recovery-contract tests. These batches overlap and must not be added as a unique test count.
+The independent reviewer approved the final snapshot/provenance fixes after a 28-test targeted run and approved implementation commit `ecdf027eca91a0782590e8644e5364142fe49f0d` after a further 38-test run and an authenticated older-run usage probe. Additional focused batches passed 33 security/identity tests, 82 storage/native/local-monitoring tests and 27 recovery-contract tests. These batches overlap and must not be added as a unique test count.
 
 ## Full integration record
 
-The full integration run discovered **698 tests**, with **14 optional SDK skips**. Four failures exposed remaining integration contracts: the transport mock target, the new Unknown label, the original task-field size budget and the Workflow reading floor. All four were corrected; the six directly affected tests passed on rerun. The 512 KiB user-field bound is preserved separately from 4 MiB total receipt capacity. Final immutable-commit CI results will be appended after completion.
+The full integration run discovered **698 tests**, with **14 optional SDK skips**. Four failures exposed remaining integration contracts: the transport mock target, the new Unknown label, the original task-field size budget and the Workflow reading floor. All four were corrected; the six directly affected tests passed on rerun. The 512 KiB user-field bound is preserved separately from 4 MiB total receipt capacity. The first immutable-code matrix then ran 703 tests: Python 3.12–3.14 passed, while 3.11 exposed a test fixture racing the intentionally asynchronous startup projection. The fixture now waits on advertised health readiness before asserting history results; it does not assume a scheduler delay. Authoritative current-commit results and merge status are recorded in [PR #67 checks](https://github.com/abhishekash/agenturm/pull/67/checks).
 
 ## Representative retained-history probe
 
@@ -48,3 +48,7 @@ The retained fixture occupied **413.85 MiB** after the write probe. Activity met
 1. Expand deidentified schema fixtures across producer versions, keeping the same ownership, clipping and command-result contracts. Existing Claude/Pi regression coverage is not a new claim of live testing those runtimes.
 2. Run a longer native-ingestion plus interactive-cockpit soak and the existing reconstruction pilot; measure missed requests, false attention, reconstruction mistakes and repeat use. The Store probe alone does not establish those outcomes.
 3. Reduce one-time rebuild latency, remaining session-history scalar lookups and index disk amplification without weakening readiness or source provenance. These refine the existing features.
+
+## Packaged and terminal checks
+
+The built wheel was installed into an isolated environment outside the source checkout. Imports, CLI help, migration/review selectors, automatic token discovery, authenticated cold `--once` and managed retention passed. An actual private tmux journey exercised two recorded prompts and the expanded inspector, followed by Workflow/history; all data and configuration paths were synthetic/isolated. HTML companions were rendered at 1280px light and 390px dark: 16 states, no page overflow or external assets.

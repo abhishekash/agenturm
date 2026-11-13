@@ -37,6 +37,13 @@ class MonitoringModelsTests(unittest.TestCase):
                         'body':{'stringValue':'old failure evidence' if i==0 else 'ok'},
                         'attributes':[{'key':key,'value':{'stringValue':value}} for key,value in attrs.items()]})
                 receiver.store.ingest_logs(normalize_otlp_logs({'resourceLogs':[{'scopeLogs':[{'logRecords':events}]}]}))
+                # Startup projections are intentionally asynchronous. Assert
+                # data behavior only after the receiver advertises readiness,
+                # rather than depending on a particular thread scheduling order.
+                deadline=time.monotonic()+5
+                while not feed.api.get('/api/health').get('indexing',{}).get('ready') and time.monotonic()<deadline:
+                    time.sleep(.01)
+                self.assertTrue(receiver.store.index_status()['ready'])
                 feed.session_id='local-session';feed.detail_enabled=False
                 feed.refresh()
                 self.assertFalse(feed.snapshot.error)

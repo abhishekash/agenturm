@@ -1,6 +1,6 @@
 # Reliability recovery implementation plan
 
-Status: implementation complete; final repository-wide validation and merge in progress. Baseline: main `d36446c`. Input: the consolidated `agenturm-review-notes.md` and the independently reproduced assessment. The work improves the existing monitor, evidence review, attention inbox and task CLI. Persistent notification services, model-generated briefs, collision detection, new dashboards and extra runtime integrations are deferred.
+Status: implementation and independent review complete. Exact-commit validation and delivery status are recorded in [PR #67](https://github.com/abhishekash/agenturm/pull/67). Baseline: main `d36446c`. Input: the consolidated `agenturm-review-notes.md` and the independently reproduced assessment. The work improves the existing monitor, evidence review, attention inbox and task CLI. Persistent notification services, model-generated briefs, collision detection, new dashboards and extra runtime integrations are deferred.
 
 ## Delivery rules
 
@@ -82,6 +82,6 @@ Acceptance: review JSON → task link → handoff works without a hand-authored 
 - Indexed reads: source Activity scalars/pointers, indexed MCP candidates, compact latest-run payloads, narrow per-run/session numeric aggregation and covering service indexes are implemented. Invalidations are transactional; interrupted background rebuilds resume; hydration and ownership share one SQLite snapshot. Readiness/progress is explicit. Benchmark results are recorded separately.
 - Attention: shared daemon work does not imply session progress/liveness; unknown remains visible separately from actionable attention. Recent/history completion filtering, frozen-ID bulk review and bounded graceful receipt drain are implemented. A real Textual teardown test verifies queued acknowledgements and seen errors survive a pending publication.
 - CLI/information/snapshot: Review JSON imports directly into task links, including bounded turn membership and overlap-safe accounting; command/result excerpts and unclassified shell records remain inspectable; --once has explicit ready/error/partial/interrupt outcomes without false empty snapshots.
-- Independent code review: approved after resolving parser, token, native streaming, provenance, readiness, hydration-race and shutdown findings. Final independent batch: 28 targeted tests passed. Final full-suite/CI result and merge will be appended after completion.
+- Independent code review: approved after resolving parser, token, native streaming, provenance, readiness, hydration-race and shutdown findings. Final independent batch: 28 targeted tests passed. Current full-suite/CI results and merge state are recorded in [PR #67 checks](https://github.com/abhishekash/agenturm/pull/67/checks).
 
 The [validation report](../reliability-recovery-validation.md) records representative history measurements, integration fixes, limitations and final CI status.
