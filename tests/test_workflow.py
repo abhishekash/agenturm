@@ -85,6 +85,44 @@ class WorkflowEvidenceTests(unittest.TestCase):
         self.assertEqual(workflow_reasons({'active':True},usage,snapshot,{'minutes':1},now=100),['Task elapsed-time threshold reached'])
 
 class WorkflowJourney(unittest.IsolatedAsyncioTestCase):
+    async def test_reopening_reuses_widgets_and_resets_history_settings_and_focus(self):
+        from textual.widgets import DataTable,Input,RichLog
+        app=ObservatoryApp(ManualFeed(),persist_preferences=False)
+        async with app.run_test(size=(120,36)) as pilot:
+            await pilot.pause();app.refresh_timer.stop()
+            previous=None
+            for size in ((120,36),(80,24),(60,18),(120,36),(60,18)):
+                await pilot.resize_terminal(*size)
+                app.action_workflow();await pilot.pause()
+                screen=app.screen
+                if previous is not None:self.assertIs(screen,previous)
+                self.assertFalse(screen._history)
+                self.assertFalse(screen._settings)
+                self.assertFalse(screen._detail)
+                self.assertIn(screen.focused,(screen.query_one(DataTable),screen.query_one(RichLog)))
+                self.assertEqual(len(app.screen_stack),2)
+                screen._history=True;screen._settings=True;screen._detail=True
+                screen.query_one('#workflow-tokens',Input).value='999'
+                # Back moves through local settings/detail before dismissal.
+                screen._settings=False;screen._detail=False
+                await pilot.press('escape');await pilot.pause()
+                self.assertEqual(len(app.screen_stack),1)
+                self.assertTrue(screen.is_mounted)
+                previous=screen
+            app.action_workflow();await pilot.pause()
+            self.assertEqual(app.screen.query_one('#workflow-tokens',Input).value,str(app.workflow_limits.get('tokens',0)))
+            from observatory.ui_review import ReviewScreen
+            workflow=app.screen;workflow._history=True
+            review=ReviewScreen(app,dict(id='worker',service='codex',agent_id='worker',session_id='s',trace_id='a'*32))
+            review.history.loaded=True
+            app.push_screen(review);await pilot.pause()
+            app.action_workflow();await pilot.pause()
+            self.assertIs(app.screen,review)
+            self.assertEqual(len(app.screen_stack),3)
+            self.assertTrue(workflow._history,'Reentry must not reset an inbox beneath a drill-down')
+            await pilot.press('escape');await pilot.pause()
+            self.assertIs(app.screen,workflow)
+
     async def test_terminal_uppercase_R_reviews_only_visible_completions(self):
         from observatory.attention import AttentionLedger as PureLedger
         from tests.test_attention import item, snapshot

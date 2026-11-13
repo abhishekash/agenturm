@@ -111,7 +111,13 @@ def child(mode, directory, port):
             stack.enter_context(patch.object(Store,'close',observed_close))
             from observatory.__main__ import main
             sys.argv = ['agenturm', '--db', str(base/'telemetry.db'), 'serve', '--port', str(port)]
-            main()
+            if os.environ.get('AGENTURM_SOAK_PROFILE')=='1':
+                import cProfile
+                profiler=cProfile.Profile();profiler.enable()
+                try:main()
+                finally:
+                    profiler.disable();profiler.dump_stats(str(base/f'receiver-{os.getpid()}.prof'))
+            else:main()
             return
         if mode != 'ui':
             raise ValueError(mode)
@@ -134,6 +140,13 @@ def child(mode, directory, port):
                 now = time.monotonic()
                 append(telemetry, dict(kind='heartbeat', at=time.time(), pid=os.getpid(),
                     interval=now-previous[0], error=app.feed.snapshot.error,
+                    receiver_id=app.feed.snapshot.receiver_id,updated=app.feed.snapshot.updated,
+                    read_errors=app.feed.snapshot.read_errors,sessions_error=app.feed.snapshot.sessions_error,
+                    session_count=len(app.feed.snapshot.sessions),mcp_calls=app.feed.snapshot.mcp_summary.get('calls',0),
+                    native_sessions=[row.get('session_id') for row in app.feed.snapshot.local_status.get('sessions',[])],
+                    initial_poll_complete=app.feed.snapshot.local_status.get('initial_poll_complete'),
+                    native_read_errors=app.feed.snapshot.local_status.get('read_errors',0),
+                    native_schema_errors=app.feed.snapshot.local_status.get('schema_errors',0),
                     states=[dict(session=item.get('session_id'), state=item.get('state'),
                                  request=item.get('request_id'), parent=item.get('parent_agent_id'))
                             for item in app.workflow_items()],

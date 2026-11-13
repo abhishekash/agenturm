@@ -191,6 +191,14 @@ class WorkflowScreen(ModalScreen):
                 yield Button('Refresh',id='workflow-refresh')
                 yield Button('Settings',id='workflow-settings')
 
+    def prepare_open(self):
+        """Reuse one installed widget tree; reopen in the recent inbox."""
+        self._history=False;self._settings=False;self._detail=False
+        self._table_signature=None;self._log_signature=None;self._layout_signature=None
+        if self.is_mounted:
+            for key in ('tokens','cost','minutes'):
+                self.query_one('#workflow-'+key,Input).value=str(self.owner.workflow_limits.get(key,0))
+
     def on_mount(self):
         self.query_one('#workflow-dialog').border_subtitle='h History · Shift+R Review listed completions'
         self.query_one('#workflow-too-small').display=False

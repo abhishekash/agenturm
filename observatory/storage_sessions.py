@@ -74,4 +74,14 @@ def session_projection(db, limit):
             if name.endswith(("_complete", "_reported")):
                 item[name] = bool(item[name])
         result[(item.pop("session_id"), item.pop("agent_id"))] = item
-    return heads, result
+    # Keep original-task lookup in this same ownership/content snapshot. One
+    # indexed batch also avoids opening a connection for every displayed actor.
+    initial_tasks = {}
+    for row in db.execute("""WITH original AS (
+        SELECT s.trace_id,s.session_id,s.agent_id,
+            ROW_NUMBER() OVER(PARTITION BY s.session_id,s.agent_id ORDER BY a.last_ns DESC,s.trace_id DESC) AS position
+        FROM live_run_stats_v1 s JOIN trace_activity a USING(trace_id)
+        WHERE s.initial_task IS NOT NULL AND s.initial_task!='' AND s.session_id IN ("""
+        + selected + ")) SELECT r.session_id,r.agent_id,s.initial_task FROM original r JOIN live_run_stats_v1 s USING(trace_id) WHERE r.position=1", (limit,)):
+        initial_tasks[(row['session_id'],row['agent_id'])]=row['initial_task']
+    return heads, result, initial_tasks

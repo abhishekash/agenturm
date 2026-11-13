@@ -831,7 +831,7 @@ def agent_list_text(item,selected=False,*,prefix='',summary=None,announced=False
     text.append('\n  '+continuation+'  ',style='#abb4a5')
     text.append(metadata,style='#abb4a5')
     # Preserve ancestor guides across the whitespace between task blocks.
-    text.append(('\n  '+continuation)*2,style='#abb4a5')
+    text.append('\n  '+continuation,style='#abb4a5')
     return text
 
 
@@ -999,7 +999,6 @@ class ResultsTable(DataTable):
         await super()._on_click(event)
 
     def agent_row_height(self):
-        if self.app.size.width>=120 and self.app.size.height>=36:return 4
         return 3 if self.app.size.height>=24 else 2
 
     def preview_height(self,values):
@@ -1836,7 +1835,8 @@ class ObservatoryApp(App):
         label=task_preview(item) or 'Untitled session' if item else (
             'All sessions' if self.layout_size.width<96 else 'All agent sessions')
         button=self.query_one('#scope',Button)
-        button.label=Text('▾ '+label,no_wrap=True,overflow='ellipsis')
+        caption=Text('▾ '+label,no_wrap=True,overflow='ellipsis')
+        if button.label!=caption:button.label=caption
         button.tooltip=(label+'\n'+self.scope_label()+'\nSession '+str(item.get('session_id') or item['id'])
                         if item else 'Choose agent session · Enter')
 
@@ -2345,6 +2345,9 @@ class ObservatoryApp(App):
         if not self.query('#usage-summary'):return
         usage,title,scope,identity=self.selected_task_usage()
         summary,details=task_usage_summary(usage,title,scope=scope,identity=identity,compact=self.size.width<100)
+        signature=(summary,details,self.theme)
+        if getattr(self,'_task_usage_signature',None)==signature:return
+        self._task_usage_signature=signature
         lines=summary.splitlines();lines[0]+=' · u Details'
         self.query_one('#usage-summary',Static).update('\n'.join(lines))
         self.query_one('#usage-summary').tooltip=details
@@ -3396,7 +3399,7 @@ class ObservatoryApp(App):
         state.append(' · '+age(item.get('stamp')),style='#b9afc5')
         fields=[('Agent',identity),('Status',state)]
         heading=self.query_one('#agent-heading',Static)
-        heading.update(title if expanded else 'Session inspector')
+        update_status_text(heading,Text(title if expanded else 'Session inspector'))
         heading.tooltip=title
         context=Text(identity+' · ',style='#b9afc5');context.append_text(state)
         update_status_text(self.query_one('#agent-context',Static),context)
@@ -4044,7 +4047,17 @@ class ObservatoryApp(App):
         self.push_screen(ReviewScreen(self,selected),self.resume_cockpit)
 
     def action_workflow(self):
-        self.push_screen(WorkflowScreen(self),self.resume_cockpit)
+        if isinstance(self.screen,WorkflowScreen):return
+        if any(isinstance(screen,WorkflowScreen) for screen in self.screen_stack):
+            self.notify('Workflow is already open below this view. Press Esc to return.')
+            return
+        if not self.is_screen_installed('agenturm-workflow'):
+            self.install_screen(WorkflowScreen(self),'agenturm-workflow')
+        screen=self.get_screen('agenturm-workflow')
+        screen.prepare_open()
+        self.push_screen('agenturm-workflow',self.resume_cockpit)
+        screen.call_after_refresh(screen.render_report)
+        screen.call_after_refresh(screen.focus_initial)
 
     def action_saved_tasks(self):
         from .ui_saved_tasks import SavedTasksScreen

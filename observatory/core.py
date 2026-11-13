@@ -1166,17 +1166,11 @@ class Store:
     def connections(self):
         now = time.time_ns()
         with self._connect() as db:
-            # A correlated comparison against c.source_id's TEXT affinity uses
-            # only the service prefix of spans_source, scanning that service for
-            # every connection. Group once; the cast preserves that comparison's
-            # text semantics, including sources reported as JSON numbers.
-            rows = db.execute("""WITH counts AS (
-                SELECT service,CAST(json_extract(resource_attributes,'$."observatory.source_id"') AS TEXT) AS source_id,
-                    COUNT(*) AS span_count FROM spans
-                GROUP BY service,CAST(json_extract(resource_attributes,'$."observatory.source_id"') AS TEXT)
-            ) SELECT c.*,COALESCE(counts.span_count,0) AS span_count
-                FROM agent_connections c LEFT JOIN counts
-                ON counts.service=c.service AND counts.source_id=c.source_id
+            # Match the indexed TEXT expression, including numeric source IDs.
+            rows = db.execute("""SELECT c.*,(SELECT COUNT(*) FROM spans s
+                WHERE s.service=c.service AND
+                CAST(json_extract(s.resource_attributes,'$."observatory.source_id"') AS TEXT)=c.source_id) AS span_count
+                FROM agent_connections c
                 ORDER BY c.last_seen_ns DESC LIMIT 50""").fetchall()
         return [{"source_id": r["source_id"], "service": r["service"], "runtime": r["runtime"],
                  "integrations": json.loads(r["integrations"]), "capture_content": bool(r["capture_content"]),
@@ -1285,33 +1279,35 @@ class Store:
             with self._connect() as db:
                 active_pattern_runs = {r[0] for r in db.execute(
                     "SELECT trace_id FROM trace_activity ORDER BY last_ns DESC,trace_id DESC LIMIT 20")}
-        for trace_id in set(trace_ids):
+        trace_ids = sorted(set(trace_ids))
+        # Amortize connection/fsync costs without holding SQLite's writer lock
+        # over an entire history rebuild. Each bounded chunk remains atomic
+        # against ingestion, pruning and other receiver processes.
+        for offset in range(0,len(trace_ids),16):
             with self._connect() as db:
-                # A process-local lock cannot protect against another Store or
-                # collector process. Serialize source reads and cache replacement
-                # with retention (and ingestion) using SQLite's writer lock.
                 db.execute("BEGIN IMMEDIATE")
-                derived = (derive_trace(db, trace_id, workflow_patterns=True) if trace_id in active_pattern_runs
-                           else derive_trace(db, trace_id))
-                if derived is None:
-                    db.execute("DELETE FROM trace_summaries WHERE trace_id=?", (trace_id,))
+                for trace_id in trace_ids[offset:offset+16]:
+                    derived = (derive_trace(db, trace_id, workflow_patterns=True) if trace_id in active_pattern_runs
+                               else derive_trace(db, trace_id))
+                    if derived is None:
+                        db.execute("DELETE FROM trace_summaries WHERE trace_id=?", (trace_id,))
+                        db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
+                        continue
+                    summary, activity, findings, timestamp = derived
+                    from .error_reminders import trace_error_references
+                    errors = trace_error_references(activity, trace_id)
+                    db.execute("INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id,error_refs_json) VALUES(?,?,?,?,?,?) "
+                               "ON CONFLICT(trace_id) DO UPDATE SET session_id=excluded.session_id,"
+                               "summary_json=excluded.summary_json,activity_json=excluded.activity_json,"
+                               "agent_id=excluded.agent_id,error_refs_json=excluded.error_refs_json",
+                               (trace_id, summary.get("session_id"), json.dumps(summary, separators=(",", ":")),
+                                json.dumps(activity, separators=(",", ":")), summary.get("agent_id"),
+                                json.dumps(errors, separators=(",", ":"))))
                     db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
-                    continue
-                summary, activity, findings, timestamp = derived
-                from .error_reminders import trace_error_references
-                errors = trace_error_references(activity, trace_id)
-                db.execute("INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id,error_refs_json) VALUES(?,?,?,?,?,?) "
-                           "ON CONFLICT(trace_id) DO UPDATE SET session_id=excluded.session_id,"
-                           "summary_json=excluded.summary_json,activity_json=excluded.activity_json,"
-                           "agent_id=excluded.agent_id,error_refs_json=excluded.error_refs_json",
-                           (trace_id, summary.get("session_id"), json.dumps(summary, separators=(",", ":")),
-                            json.dumps(activity, separators=(",", ":")), summary.get("agent_id"),
-                            json.dumps(errors, separators=(",", ":"))))
-                db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
-                db.executemany("INSERT INTO finding_cache(finding_id,trace_id,time_ns,finding_json) VALUES(?,?,?,?)",
-                               ((item["id"], trace_id, timestamp,
-                                 json.dumps({**item, "time_unix_nano": timestamp}, separators=(",", ":")))
-                                for item in findings))
+                    db.executemany("INSERT INTO finding_cache(finding_id,trace_id,time_ns,finding_json) VALUES(?,?,?,?)",
+                                   ((item["id"], trace_id, timestamp,
+                                     json.dumps({**item, "time_unix_nano": timestamp}, separators=(",", ":")))
+                                    for item in findings))
 
     def _refresh_after_write(self, trace_ids):
         trace_ids = set(trace_ids)
@@ -2696,7 +2692,7 @@ class Store:
         with self._connect() as db:
             db.execute('BEGIN')
             from .storage_sessions import session_projection
-            rows,session_totals=session_projection(db,int(limit))
+            rows,session_totals,initial_tasks=session_projection(db,int(limit))
             legacy_latest=[];seen_sessions=set()
             for row in rows:
                 key=(row['session_id'],row['agent_id'])
@@ -2838,9 +2834,7 @@ class Store:
                 # Recover the most recent recorded original task even if the
                 # latest two runs did not repeat that optional metadata.
                 if not grouped[key].get('initial_task'):
-                    with self._connect() as db:
-                        original=db.execute("SELECT c.initial_task FROM live_run_stats_v1 c JOIN trace_activity a USING(trace_id) WHERE c.session_id=? AND c.agent_id IS ? AND c.initial_task IS NOT NULL AND c.initial_task!='' ORDER BY a.last_ns DESC,c.trace_id DESC LIMIT 1",key).fetchone()
-                    if original:grouped[key]['initial_task']=original[0]
+                    if key in initial_tasks:grouped[key]['initial_task']=initial_tasks[key]
 
         # Some runtimes emit session-tagged events without trace context. Keep
         # those sessions visible in the roster instead of making Activity the

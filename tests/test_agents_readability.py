@@ -76,11 +76,12 @@ class AgentsReadabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('1 attention',table.get_row('s-root')[0].plain)
             await pilot.press('right');await pilot.pause()
             self.assertIn('s-c1',app.visible_agent_rows)
-            for size in ((120,36),(80,24),(60,20),(160,42)):
+            for size in ((120,36),(80,24),(60,18),(60,20),(160,42)):
                 await pilot.resize_terminal(*size);await pilot.pause()
                 self.assertEqual(app.selected_source,'s-root')
                 self.assertTrue(app.screen.region.contains_region(table.region),size)
                 self.assertGreater(table.size.height,3,size)
+                self.assertEqual(table.ordered_rows[0].height,3 if size[1]>=24 else 2)
                 await pilot.press('down');await pilot.pause()
                 self.assertNotEqual(app.selected_source,'s-root')
                 await pilot.press('up');await pilot.pause()
