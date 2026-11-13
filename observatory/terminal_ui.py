@@ -661,7 +661,7 @@ class SourcePreparation:
     """Two bounded snapshot preparations shared by this app's consumers.
 
     Equality against detached inputs catches nested in-place changes as well as
-    receiver/scope/policy replacement. No prompt cache survives a generation.
+    receiver/scope/policy replacement. Preparations never cross snapshot objects.
     Health, attention, review receipts and live sorting are never cached here.
     """
     def __init__(self):
