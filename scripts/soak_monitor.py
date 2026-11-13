@@ -21,7 +21,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import shlex
 import shutil
 import signal
 import socket
@@ -43,6 +42,13 @@ def write_json(path, value):
 def append(path, value):
     with path.open('a') as stream:
         stream.write(json.dumps(value, separators=(',', ':')) + '\n')
+
+
+def source_revision():
+    return dict(head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
+        dirty=bool(subprocess.run(['git','diff','HEAD','--quiet'],cwd=ROOT).returncode),
+        files={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in
+               ('scripts/soak_monitor.py','observatory/http_transport.py','observatory/ui_workflow.py')})
 
 
 def event(kind, payload, *, ago=0):
@@ -119,6 +125,8 @@ def child(mode, directory, port):
                     states=[dict(session=item.get('session_id'), state=item.get('state'),
                                  request=item.get('request_id'), parent=item.get('parent_agent_id'))
                             for item in app.workflow_items()],
+                    approval_requests=[item.get('request_id') for item,_,_ in app.workflow_ledger.rows
+                                       if item.get('state')=='Waiting' and item.get('_attention_kind')=='approval'],
                     warning=app.workflow_controller.warning))
                 previous[0] = now
             app.set_interval(1, heartbeat)
@@ -130,8 +138,11 @@ def child(mode, directory, port):
         if os.environ.get('AGENTURM_SOAK_PROFILE') == '1':
             import cProfile
             profiler=cProfile.Profile();profiler.enable()
+        app=ObservatoryApp(feed)
         try:
-            _run_terminal_app(ObservatoryApp(feed))
+            code=_run_terminal_app(app)
+            append(telemetry,dict(kind='exit',pid=os.getpid(),code=code,warning=app.workflow_controller.warning))
+            return code
         finally:
             if profiler:
                 profiler.disable();profiler.dump_stats(str(base/f'cockpit-{os.getpid()}.prof'))
@@ -240,12 +251,16 @@ def run(args):
     from observatory.terminal import Api
     from observatory.local_agents import identity
     from observatory.review_cli import collect_review
+    from observatory.workflow_evidence import ExecutionScope
+    from observatory.attention import classify
+    revision_start=source_revision()
     base=args.output.resolve();base.mkdir(mode=0o700)
     workload=Workload(base)
     channel='agenturm-soak-'+str(os.getpid())
     env={key:os.environ[key] for key in ('PATH','LANG','LC_ALL','LD_LIBRARY_PATH') if key in os.environ}
     env.update(XDG_STATE_HOME=str(base/'state'),XDG_CONFIG_HOME=str(base/'config'),
-               XDG_DATA_HOME=str(base/'data'),OPENCODE_DB=str(workload.database),TERM='xterm-256color',PYTHONUNBUFFERED='1')
+               XDG_DATA_HOME=str(base/'data'),OPENCODE_DB=str(workload.database),TERM='xterm-256color',PYTHONUNBUFFERED='1',
+               GEMINI_CLI_SYSTEM_SETTINGS_PATH=str(base/'config/gemini-system.json'))
     if args.profile_ui:env['AGENTURM_SOAK_PROFILE']='1'
     if args.eager_tls:env['AGENTURM_SOAK_EAGER_TLS']='1'
     with socket.socket() as sock:
@@ -253,11 +268,12 @@ def run(args):
     endpoint=f'http://127.0.0.1:{port}'
     command=[sys.executable,str(Path(__file__).resolve())]
     receiver=None;actor=None;streams=[];errors=[];samples=[];latencies={};verified=[];reconnects=[]
+    expected_reviews=set();rendered_approvals=set();ui_pids=[];exit_statuses=[]
     def spawn(mode):
         log=(base/(mode+'.log')).open('a');streams.append(log)
         return subprocess.Popen([*command,'_child',mode,str(base),str(port),'app-server'],env=env,cwd=base/'project',stdout=log,stderr=subprocess.STDOUT)
     def tmux(*values, capture=False):
-        result=subprocess.run(['tmux','-L',channel,*values],env=env,text=True,capture_output=True,timeout=5)
+        result=subprocess.run(['tmux','-L',channel,'-f','/dev/null',*values],env=env,text=True,capture_output=True,timeout=5)
         if result.returncode:raise RuntimeError('tmux: '+result.stderr)
         return result.stdout if capture else None
     def screen(label):
@@ -271,15 +287,22 @@ def run(args):
             tmux('send-keys','-t','monitor',value);time.sleep(.25)
     def start_ui(compact=False):
         width,height=('60','18') if compact else ('120','36')
-        tmux('new-session','-d','-s','monitor','-x',width,'-y',height,shlex.join([*command,'_child','ui',str(base),str(port)]))
+        # Multiple command arguments execute Python directly, without the user's
+        # default shell or its startup files. This server reads no tmux config.
+        tmux('new-session','-d','-s','monitor','-x',width,'-y',height,*command,'_child','ui',str(base),str(port))
         tmux('set-option','-t','monitor','remain-on-exit','on')
+        ui_pids.append(ui_pid())
     def ui_pid():
         return int(tmux('display-message','-p','-t','monitor','#{pane_pid}',capture=True).strip())
     def stop_ui():
         keys('Escape','Escape','q')
         deadline=time.monotonic()+8
         while time.monotonic()<deadline:
-            if tmux('display-message','-p','-t','monitor','#{pane_dead}',capture=True).strip()=='1':return
+            if tmux('display-message','-p','-t','monitor','#{pane_dead}',capture=True).strip()=='1':
+                status=tmux('display-message','-p','-t','monitor','#{pane_dead_status}',capture=True).strip()
+                exit_statuses.append(dict(role='cockpit',status=status))
+                if status!='0':errors.append('Cockpit exited unsuccessfully: '+status)
+                return
             time.sleep(.1)
         errors.append('cockpit did not finish graceful exit within eight seconds')
     def wait_ready(api, timeout=25):
@@ -298,6 +321,8 @@ def run(args):
             try:receiver.wait(timeout=20)
             except subprocess.TimeoutExpired:
                 receiver.kill();receiver.wait();errors.append('receiver required forced shutdown')
+            exit_statuses.append(dict(role='receiver',status=receiver.returncode))
+            if receiver.returncode!=0:errors.append(f'Receiver exited unsuccessfully: {receiver.returncode}')
     def request(api, path):
         before=time.monotonic()
         try:return api.get(path)
@@ -321,7 +346,13 @@ def run(args):
                 cycle,phase=divmod(phase_index,6)
                 if phase_index!=last_phase+1:errors.append(f'workload skipped phases: {last_phase} -> {phase_index}')
                 workload.phase(cycle,phase);last_phase=phase_index
-                if phase==1:pending_cycle=cycle
+                if phase==1:
+                    pending_cycle=cycle
+                    # Inspect the actual pending inbox, not just received data.
+                    time.sleep(2);keys('w');time.sleep(.8)
+                    pending_screen=screen(f'approval-{cycle}')
+                    if 'Approval' not in pending_screen:raise RuntimeError(f'Approval not rendered for cycle {cycle}')
+                    rendered_approvals.add(cycle);keys('Escape')
                 if phase==5:
                     keys('Escape','Escape','1','w')
                     time.sleep(1.2)
@@ -333,6 +364,9 @@ def run(args):
                         health=api.get('/api/health')
                         observed=next(row for row in health['local_agents']['sessions'] if row['session_id']=='soak-'+name)
                         projection=collect_review(api,service='codex',agent_id=observed['agent_id'],session_id='soak-'+name,trace_id=observed['trace_id'],pages=5)
+                        scope=ExecutionScope(**projection['scope'])
+                        incidents=classify({**observed,'state':'Completed'},scope,{}, {},now=time.time())
+                        expected_reviews.update(incident.id for incident in incidents if incident.kind=='completion')
                         if (len(projection['checks'])!=1 or len(projection['edits'])!=1
                             or projection['edits'][0]['path']!=f'src/{name}_{cycle}.py'
                             or projection['usage']['values']['input_tokens']!=100+cycle
@@ -343,6 +377,9 @@ def run(args):
                     rollup=api.get('/api/review-turn?trace_id='+trace)['turn']
                     owner=rollup.get('review_owner') or {}
                     projection=collect_review(api,service='opencode',agent_id=owner.get('agent_id'),session_id='soak-opencode',trace_id=trace,pages=5,whole_turn=True)
+                    observed=next(row for row in api.get('/api/health')['local_agents']['sessions'] if row['session_id']=='soak-opencode')
+                    scope=ExecutionScope(**projection['scope'])
+                    expected_reviews.update(incident.id for incident in classify({**observed,'state':'Completed'},scope,{}, {},now=time.time()) if incident.kind=='completion')
                     if (len(projection['checks'])!=1 or projection['usage']['values']['input_tokens']!=30
                         or projection['request']['text']!=f'Validate OpenCode cycle {cycle}'
                         or projection['agent_update']['text']!=f'Validated OpenCode cycle {cycle}'):
@@ -400,7 +437,7 @@ def run(args):
     finally:
         stop_receiver()
         if actor and actor.poll() is None:actor.terminate();actor.wait(timeout=5)
-        subprocess.run(['tmux','-L',channel,'kill-server'],capture_output=True)
+        subprocess.run(['tmux','-L',channel,'-f','/dev/null','kill-server'],capture_output=True)
         for stream in streams:stream.close()
     duration=time.monotonic()-started
     ui_events=[json.loads(line) for line in (base/'ui-events.jsonl').read_text().splitlines()] if (base/'ui-events.jsonl').exists() else []
@@ -415,20 +452,36 @@ def run(args):
     missing=accepted-persisted
     if missing:errors.append(f'{len(missing)} accepted reviews missing after shutdown')
     if not accepted:errors.append('No keyboard review acknowledgements were accepted')
+    if len(expected_reviews)!=len(workload.completed):errors.append('Completion identities do not cover every generated outcome')
+    if accepted!=expected_reviews:errors.append(f'Review acceptance differs from expected outcomes: missing={len(expected_reviews-accepted)}, extra={len(accepted-expected_reviews)}')
+    if persisted!=expected_reviews:errors.append(f'Durable reviews differ from expected outcomes: missing={len(expected_reviews-persisted)}, extra={len(persisted-expected_reviews)}')
     if len(verified)<3:errors.append('No complete three-worker cycle reconstructed')
     if len(verified)!=len(workload.completed):errors.append('Not every completed turn was reconstructed')
     missing_requests={cycle for cycle,_ in workload.requests}-{row['cycle'] for row in observed_requests}
     if missing_requests:errors.append(f'Unobserved approval request cycles: {sorted(missing_requests)}')
     false_working=[row for row in heartbeat if any(item['session']=='soak-stale' and item['state'] in {'Working','Working (quiet)','Processing','Possibly stalled'} for item in row['states'])]
     if false_working:errors.append(f'Shared daemon falsely advanced stale session in {len(false_working)} observations')
+    if not receiver_restart or not mid_restart:errors.append('Required receiver/cockpit restart did not occur')
+    if len(heartbeat)<args.duration*.65:errors.append('Insufficient heartbeat coverage')
+    for pid in ui_pids:
+        pid_beats=[row for row in heartbeat if row['pid']==pid]
+        if len(pid_beats)<3:errors.append(f'No sustained heartbeat for sampled cockpit process {pid}')
+        if not any(any(item['session']=='soak-stale' for item in row['states']) for row in pid_beats):errors.append('Stale-session observation missing after cockpit start/restart')
+    for role in ('receiver','cockpit','synthetic_daemon'):
+        if sum(role in row['processes'] for row in samples)<args.duration/args.phase_seconds*.5:errors.append(f'Insufficient {role} process samples')
     if any(row.get('read_errors') or row.get('schema_errors') for row in samples):errors.append('Native read/schema errors occurred')
     exits=[json.loads(line) for line in (base/'receiver-exits.jsonl').read_text().splitlines()] if (base/'receiver-exits.jsonl').exists() else []
     if not exits or any(row['pending_after'] for row in exits):errors.append('Derived work was not confirmed drained at receiver shutdown')
     request_ids={row['id'] for row in observed_requests}
-    ui_requests={item['request'] for row in heartbeat for item in row['states'] if item['request']}
+    ui_requests={request for row in heartbeat for request in row.get('approval_requests',[]) if request}
     if request_ids-ui_requests:errors.append('Not every observed native approval appeared in the cockpit')
     if receiver_restart and (not any(row['error'] for row in heartbeat) or not heartbeat or heartbeat[-1]['error']):
         errors.append('Cockpit disconnect/recovery was not observed')
+    if rendered_approvals!={cycle for cycle,_ in workload.requests}:errors.append('Not every approval had a rendered pending inbox')
+    ui_exits=[row for row in ui_events if row['kind']=='exit']
+    if len(ui_exits)!=2 or any(row['code']!=0 or row['warning'] for row in ui_exits):errors.append('Two successful warning-free cockpit shutdowns were not confirmed')
+    revision_end=source_revision()
+    if revision_start!=revision_end or revision_start['dirty']:errors.append('Measured source was dirty or changed during the run')
     resources={}
     for role in ('receiver','cockpit','synthetic_daemon'):
         values=[row['processes'][role] for row in samples if role in row['processes']]
@@ -448,21 +501,19 @@ def run(args):
                 last_minute_rss_median_mib=statistics.median(tail),
                 warm_to_tail_delta_mib=statistics.median(tail)-statistics.median(warm) if warm else None))
         resources[role]['rss_segments']=segments
-    result=dict(schema_version=1,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
-        tracked_source_dirty=bool(subprocess.run(['git','diff','--quiet'],cwd=ROOT).returncode),
-        source_sha256={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in
-                       ('scripts/soak_monitor.py','observatory/http_transport.py','observatory/ui_workflow.py')},
+    result=dict(schema_version=1,source_start=revision_start,source_end=revision_end,
         host=dict(system=platform.system(),architecture=platform.machine(),python=platform.python_version(),logical_cpus=os.cpu_count()),
         configured_seconds=args.duration,phase_seconds=args.phase_seconds,elapsed_seconds=duration,eager_tls=args.eager_tls,profile_ui=args.profile_ui,
         completed_turns=len(workload.completed),verified_turns=len(verified),approval_requests=len(workload.requests),observed_approval_requests=len({row['cycle'] for row in observed_requests}),
         accepted_review_ids=len(accepted),persisted_review_ids=len(persisted),missing_review_ids=len(missing),
+        expected_review_ids=len(expected_reviews),rendered_approval_inboxes=len(rendered_approvals),
         shared_daemon_false_progress=len(false_working),heartbeat_samples=len(heartbeat),
         heartbeat_interval_p95=percentile([row['interval'] for row in heartbeat],.95),
         heartbeat_interval_max=max((row['interval'] for row in heartbeat),default=0),
         connection_error_observations=sum(bool(row['error']) for row in heartbeat),
         recovered_after_outage=bool(any(row['error'] for row in heartbeat) and heartbeat and not heartbeat[-1]['error']),
         resources=resources,latency_ms={key:dict(median=statistics.median(values),p95=percentile(values,.95),max=max(values)) for key,values in latencies.items()},
-        reconnects=reconnects,receiver_shutdowns=exits,sample_count=len(samples),errors=errors,
+        reconnects=reconnects,receiver_shutdowns=exits,exit_statuses=exit_statuses,sample_count=len(samples),errors=errors,
         storage=dict(database_bytes=(base/'telemetry.db').stat().st_size,
             peak_database_plus_wal_bytes=max((row['database_bytes']+row['wal_bytes'] for row in samples),default=0),
             max_native_backlog_bytes=max((row.get('backlog_bytes') or 0 for row in samples),default=0),
@@ -475,7 +526,7 @@ def run(args):
 
 def main():
     if len(sys.argv)>1 and sys.argv[1]=='_child':
-        child(sys.argv[2],sys.argv[3],int(sys.argv[4]));return 0
+        return child(sys.argv[2],sys.argv[3],int(sys.argv[4])) or 0
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,required=True,help='new private artifact directory')
     parser.add_argument('--duration',type=float,default=3600,help='seconds after receiver readiness')
