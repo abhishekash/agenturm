@@ -17,14 +17,16 @@ def add_review_parser(sub):
     parser.add_argument('--service',required=True,help='exact producer/service name')
     parser.add_argument('--agent-id',default='',help='exact canonical agent identity; excludes workers and siblings')
     parser.add_argument('--session-id',default='',help='exact session identity; required if agent ID is unavailable')
-    parser.add_argument('--trace-id',required=True,help='exact recorded run trace ID; never follows a newer run')
+    selection=parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument('--trace-id',help='one exact recorded step trace; never follows a newer run')
+    selection.add_argument('--turn-of-trace',help='the recorded OpenCode user turn containing this step; no session-wide fallback')
     parser.add_argument('--pages',type=int,choices=range(1,6),default=1,help='maximum 200-record pages to read (default: 1; maximum: 5)')
     parser.add_argument('--format',choices=('text','json','markdown','html'),default='text')
     parser.add_argument('-o','--output',help='new .md/.html/.json destination; always writes Markdown and HTML companions; captured text is not redacted')
     return parser
 
 
-def collect_review(api, *, service, agent_id='', session_id='', trace_id, pages=1):
+def collect_review(api, *, service, agent_id='', session_id='', trace_id, pages=1, whole_turn=False):
     """Bounded reads, namespace binding and no fallback to a broader scope."""
     if not service or not trace_id or not (agent_id or session_id):
         raise ValueError('Provide --service, --trace-id and --agent-id or --session-id. Find identities in the session inspector Details or a Review JSON export.')
@@ -51,10 +53,36 @@ def collect_review(api, *, service, agent_id='', session_id='', trace_id, pages=
     if not isinstance(sessions,dict) or sessions.get('receiver_id')!=receiver or not isinstance(sessions.get('sessions'),list):
         raise ValueError('Session response identity changed or is unavailable; retry against the intended receiver.')
     snapshot.sessions=sessions['sessions']
+    exact_run={}
+    if health.get('review_run_summary'):
+        facts=api.get('/api/review-run?trace_id='+trace_id)
+        if facts.get('receiver_id')!=receiver:raise ValueError('Run response identity changed')
+        candidate=facts.get('run') or {}
+        if candidate and candidate.get('trace_id')!=trace_id:raise ValueError('Run response does not match selected trace')
+        exact_run=candidate
+        snapshot.traces=[candidate] if candidate else []
     # An omitted optional session ID must not make matching native metadata disappear.
     if native and not session_id:item['session_id']=native.get('session_id') or ''
     scope=scope_for(item,snapshot)
     item=refreshed_review_item(item,snapshot,scope)
+    if not whole_turn:
+        # An explicit trace selector always remains step-scoped.
+        item.pop('turn_id',None)
+        latest=exact_run or next((row.get('latest_run') or {} for row in snapshot.sessions if (row.get('latest_run') or {}).get('trace_id')==trace_id),{})
+        item['_review_usage']={key:value for key,value in latest.items() if key not in {'turn_id','turn_usage','turn_usage_complete'}}
+        scope=scope_for(item,snapshot)
+    if whole_turn:
+        if service!='opencode' or not health.get('review_turn_filter'):raise ValueError('Receiver cannot resolve a recorded OpenCode user turn; no broader review emitted')
+        turn_response=api.get('/api/review-turn?trace_id='+trace_id)
+        if turn_response.get('receiver_id')!=receiver:raise ValueError('Turn response identity changed')
+        turn=turn_response.get('turn')
+        if turn:
+            owner=turn.get('scope_owner') or {}
+            if owner.get('producer')!=service or (agent_id and owner.get('agent_id')!=agent_id) or (session_id and owner.get('session_id')!=session_id):
+                raise ValueError('Turn ownership is incomplete or does not match the requested identity')
+            item.update(turn_id=turn['turn_id'],_review_usage=turn,agent_id=owner['agent_id'],session_id=owner['session_id'])
+            scope=scope_for(item,snapshot)
+        else:raise ValueError('No authoritative user-parent membership for this step; use --trace-id for step evidence')
     history=ReviewHistory(scope,capture_revision=item.get('capture_revision',item.get('capture_content')))
     seen=set()
     for _ in range(pages):
@@ -80,8 +108,8 @@ def collect_review(api, *, service, agent_id='', session_id='', trace_id, pages=
 def run_review_command(args):
     from .terminal import Api, CockpitError
     try:
-        projection=collect_review(Api(args.endpoint,os.environ.get('OBSERVATORY_TOKEN')),service=args.service,
-            agent_id=args.agent_id,session_id=args.session_id,trace_id=args.trace_id,pages=args.pages)
+        projection=collect_review(Api(args.endpoint,os.environ.get('OBSERVATORY_TOKEN') or None),service=args.service,
+            agent_id=args.agent_id,session_id=args.session_id,trace_id=args.trace_id or args.turn_of_trace,pages=args.pages,whole_turn=bool(args.turn_of_trace))
         if args.output:
             paths=export_receipt(args.output,freeze_receipt(projection))
             print('Wrote '+', '.join(paths)+'. Captured content is not redacted.',file=sys.stderr)

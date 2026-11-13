@@ -25,15 +25,22 @@ class CockpitReadPathTests(unittest.TestCase):
                              'agent.activity.result':'failed' if i==1 else 'success'}),
                  '{}','fixture',None) for i in range(count)))
 
+        from observatory.storage_activity import drain
+        while True:
+            with self.store._connect() as db:
+                if not drain(db,1000):break
+
     def test_filters_precede_limits_and_merge_ties_without_losing_records(self):
         self.insert_logs(80)
         with self.store._connect() as db:
             for trace,service in (('a'*32,'codex'),('b'*32,'claude')):
-                events=[{'source':'span','source_id':'same-span','service':service,
-                    'time_unix_nano':79,'domain':'tool','action':'call','result':'success'}]
-                db.execute('INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id) VALUES(?,?,?,?,?)',
-                           (trace,'summary-session','{}',json.dumps(events),'agent-'+service))
-            # Summary identity still wins over an inconsistent raw log attribute.
+                from observatory.core import normalize_native
+                record=normalize_native(dict(trace_id=trace,span_id='a'*16,name='tool',start_unix_nano=79,end_unix_nano=79,
+                    attributes={'tool.name':'fixture','session.id':'summary-session'},events=[{'name':'agent.activity','time_unix_nano':79,
+                    'attributes':{'agent.activity.domain':'tool','agent.activity.action':'call','agent.activity.result':'success'}}]),service)
+                # Ingest outside this connection below.
+                self.store.ingest([record])
+            # An unrelated trace summary must not replace the log's own session.
             db.execute('UPDATE logs SET trace_id=?,agent_id=? WHERE digest=?',
                        ('a'*32,'log-agent',f'{78:064x}'))
         expected=self.store.activity_page(limit=500)['activity']
@@ -52,8 +59,8 @@ class CockpitReadPathTests(unittest.TestCase):
         self.assertEqual(failures[0]['time_unix_nano'],1)
         by_id=self.store.activity_page(limit=1,query=prompts[0]['source_id'])['activity']
         self.assertEqual(by_id,prompts)
-        self.assertEqual(len(self.store.activity_page(session_id='summary-session')['activity']),3)
-        self.assertNotIn(f'{78:064x}',{item['source_id'] for item in
+        self.assertEqual(len(self.store.activity_page(session_id='summary-session')['activity']),2)
+        self.assertIn(f'{78:064x}',{item['source_id'] for item in
             self.store.activity_page(session_id='history')['activity']})
         self.assertEqual(len(self.store.activity_page(service='claude')['activity']),1)
 

@@ -158,10 +158,10 @@ class WorkflowScreen(ModalScreen):
     #workflow-retention { height: auto; width: 1fr; }
     #workflow-too-small { height: 1fr; width: 1fr; content-align: center middle; }
     """
-    BINDINGS=[('escape','back','Back')]
+    BINDINGS=[('escape','back','Back'),('h','history','History'),('shift+r','review_completions','Review visible completions')]
 
     def __init__(self,owner):
-        super().__init__();self.owner=owner;self.selected_incident=None;self.rows_by_id={}
+        super().__init__();self.visible_rows=[];self._history=False;self.owner=owner;self.selected_incident=None;self.rows_by_id={}
         self._table_signature=None;self._log_signature=None;self._layout_signature=None;self._settings=False;self._detail=False
 
     def compose(self):
@@ -192,6 +192,7 @@ class WorkflowScreen(ModalScreen):
                 yield Button('Settings',id='workflow-settings')
 
     def on_mount(self):
+        self.query_one('#workflow-dialog').border_subtitle='h History · Shift+R Review listed completions'
         self.query_one('#workflow-too-small').display=False
         self.query_one('#workflow-settings-panel').display=False
         for key,title in (('tokens','Tokens'),('cost','USD'),('minutes','Minutes')):
@@ -205,6 +206,14 @@ class WorkflowScreen(ModalScreen):
 
     def on_resize(self):
         if self.is_mounted:self.call_after_refresh(self.render_report)
+
+    def action_history(self):
+        self._history=not self._history;self._table_signature=None;self.render_report()
+
+    def action_review_completions(self):
+        if self._settings or self.size.width<60 or self.size.height<18 or not self.query_one('#workflow-inbox',DataTable).display:return
+        ids=tuple(item['_attention_id'] for item,_,_ in self.visible_rows if item.get('_attention_kind')=='completion' and item.get('_attention_persistent'))
+        self.owner.workflow_controller.review_completions(ids)
 
     def action_back(self):
         if self._settings:
@@ -227,7 +236,9 @@ class WorkflowScreen(ModalScreen):
         self.query_one('#workflow-settings-panel').display=self._settings and not small
         self.query_one('#workflow-body').display=not self._settings and not small
         if small:return
-        rows=owner.workflow_ledger.rows
+        rows=[row for row in owner.workflow_ledger.rows if self._history or row[0].get('_attention_kind')!='completion' or
+            (row[0].get('_attention_source_time_ns') or int(row[2]*1e9))>=time.time_ns()-86400*10**9]
+        self.visible_rows=list(rows)
         self.rows_by_id={item['_attention_id']:(item,reasons,since) for item,reasons,since in rows}
         if self.selected_incident not in self.rows_by_id:
             self.selected_incident=next((key for key,(item,_,_) in self.rows_by_id.items() if item['id']==owner.selected_source),None)
@@ -238,7 +249,7 @@ class WorkflowScreen(ModalScreen):
         self.query_one('#workflow-body').display=not self._settings
         table.display=bool(rows) and (wide or not self._detail)
         self.query_one('#workflow-log').display=wide or self._detail or not rows
-        title='Workflow · '+('Settings' if self._settings else str(len(rows))+' items · Enter inspect' if rows else 'No attention items')+' · Esc back'
+        title='Workflow · '+('Settings · Esc Back' if self._settings else f'{len(rows)} items · ↑↓ · Enter Inspect · Esc Back' if rows else 'No attention items · Esc Back')
         warning=owner.workflow_controller.warning
         if 'capacity reached' in warning:title='Workflow · '+str(len(rows))+' items · Storage full · Esc back'
         elif warning and ('unavailable' in warning.lower() or 'disabled' in warning.lower()):title='Workflow · '+str(len(rows))+' items · Storage unavailable'
@@ -253,7 +264,8 @@ class WorkflowScreen(ModalScreen):
             for label,width in zip(('Task / project','Attention','Wait'),widths):table.add_column(label,width=width)
             for item,reasons,since in rows:
                 stamp=item.get('_attention_source_time_ns')
-                wait=f'{max(0,int((time.time()-(stamp/1e9 if stamp else since))/60))}m'+(' observed' if not stamp else '')
+                minutes=max(0,int((time.time()-(stamp/1e9 if stamp else since))/60))
+                wait=(f'{minutes//1440}d {minutes%1440//60}h' if minutes>=1440 else f'{minutes//60}h {minutes%60}m' if minutes>=60 else f'{minutes}m')+(' observed' if not stamp else '')
                 reason={'approval':'Approval requested','reply':'Reply requested','failure':'Reported failure',
                     'interruption':'Task interrupted','completion':'Completion review','stall':'Possible stall',
                     'tokens':'Token threshold','cost':'Cost threshold','minutes':'Time threshold'}.get(item.get('_attention_kind'),'; '.join(reasons))

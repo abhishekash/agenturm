@@ -840,7 +840,8 @@ def agent_status(item):
     phase=session_phase(item)
     label,style={'running':('In progress','#86e3b5'),
                  'attention':('Needs attention','#ffbd69'),
-                 'review':('Ready for review','#b9afc5')}[phase]
+                 'review':('Ready for review','#b9afc5'),
+                 'unknown':('Status unknown','#a0a0ad')}[phase]
     if phase=='attention' and item.get('state') in {'Error','Failed'}:style='#ff8799'
     return cell(label,style)
 
@@ -1948,8 +1949,9 @@ class ObservatoryApp(App):
         self.refresh_timer=self.set_interval(.5,self.refresh_data)
         self.action_page(self.preference_view)
 
-    def on_unmount(self):
-        self.workflow_controller.close()
+    async def on_unmount(self):
+        import asyncio
+        await asyncio.to_thread(self.workflow_controller.close)
         self.save_preferences()
         if self.refresh_timer:self.refresh_timer.stop()
         for timer in self.search_timers.values():timer.stop()
@@ -2258,7 +2260,9 @@ class ObservatoryApp(App):
                      if item.get('relationship_state') in {'unresolved','conflicted','invalid'} or
                      (item.get('parent_agent_id') and item.get('parent_agent_id') not in known_agents))
         runtimes={name:sum(item.get('runtime')==name for item in active) for name in sorted({item.get('runtime') or 'Agent' for item in active})}
+        unknown_status=sum(session_phase(item)=='unknown' for item in observed_work)
         session_detail=quantity(len(observed_work),'session')
+        if unknown_status:session_detail+=f' · {unknown_status} status unknown'
         if workers:session_detail+=' · '+quantity(workers,'worker')
         stat_width=(self.size.width-(4 if self.size.width>=140 else 2))//(2 if self.size.width<100 else 4)
         if cell_len(session_detail)>stat_width-(5 if self.size.width>=140 else 3):

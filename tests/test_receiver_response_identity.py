@@ -92,9 +92,9 @@ class ReceiverResponseTests(unittest.TestCase):
         class Response(io.BytesIO):
             headers={'X-Agenturm-Receiver-ID':'receiver-A'}
         api=Api('http://localhost:1234')
-        with patch('urllib.request.urlopen',return_value=Response(b'{"sessions":[]}')):
+        with patch('observatory.terminal.receiver_urlopen',return_value=Response(b'{"sessions":[]}')):
             self.assertEqual(api.get('/api/sessions')['receiver_id'],'receiver-A')
-        with patch('urllib.request.urlopen',return_value=Response(b'{"receiver_id":"receiver-B"}')):
+        with patch('observatory.terminal.receiver_urlopen',return_value=Response(b'{"receiver_id":"receiver-B"}')):
             with self.assertRaisesRegex(CockpitError,'identity'):api.get('/api/activity')
 
 

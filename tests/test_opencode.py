@@ -98,7 +98,7 @@ class OpenCodeReaderTests(unittest.TestCase):
         tool_activity=self.store.activity_page(session_id='ses_test',domain='mcp')['activity']
         self.assertIn('Input:',tool_activity[0]['detail'])
         self.assertIn('"query": "bug"',tool_activity[0]['detail'])
-        self.assertIn('"count": "2"',tool_activity[0]['detail'])
+        self.assertIn('"count": 2',tool_activity[0]['detail'])
         db = sqlite3.connect(self.database)
         self.assertEqual(db.execute("SELECT COUNT(*) FROM part").fetchone()[0], 1)
         db.close()
@@ -463,7 +463,7 @@ class OpenCodeReaderTests(unittest.TestCase):
         calls = self.store.mcp_page()["calls"]
         resolved = next(call for call in calls if call["tool"] == "add")
         self.assertEqual(resolved["server"], "mcp_everything")
-        self.assertEqual(json.loads(resolved["arguments"]), {"a": "3", "b": "4"})
+        self.assertEqual(json.loads(resolved["arguments"]), {"a": 3, "b": 4})
 
     def test_mcp_attribution_requires_a_unique_configured_prefix(self):
         self.assertEqual(_opencode_mcp_attributes("mcp_everything_add", ["mcp_everything"]), {

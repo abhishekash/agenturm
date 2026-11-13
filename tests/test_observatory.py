@@ -1335,7 +1335,7 @@ class ObservatoryTest(unittest.TestCase):
                 headers += f"Authorization: Bearer {token}\r\n"
             if data is not None:
                 headers += f"Content-Length: {len(data)}\r\n"
-            raw = f"{'POST' if data is not None else 'GET'} {path} HTTP/1.1\r\n{headers}\r\n".encode() + (data or b"")
+            raw = f"{'POST' if data is not None else 'GET'} {path} HTTP/1.1\r\nHost: localhost\r\n{headers}\r\n".encode() + (data or b"")
             sock = Socket(raw)
             handler_for(self.store, "secret")(sock, ("127.0.0.1", 1234), Server())
             head, payload = sock.output.getvalue().split(b"\r\n\r\n", 1)

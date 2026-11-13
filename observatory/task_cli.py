@@ -171,7 +171,7 @@ def run_task_command(args, parser):
                 if args.session_id or args.agent_id or args.trace_id or args.run_start_ns is not None or args.run_end_ns is not None or args.runtime or args.receiver or args.producer or args.state != 'Unknown':
                     raise TaskError('Use either --evidence-file or individual link fields.')
                 try:
-                    evidence = json.loads(_read(args.evidence_file, 128 * 1024))
+                    evidence = json.loads(_read(args.evidence_file, 3 * 1024 * 1024))
                 except (json.JSONDecodeError, RecursionError) as exc:
                     raise TaskError('Evidence file must contain one JSON object.') from exc
             else:

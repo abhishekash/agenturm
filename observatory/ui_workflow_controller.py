@@ -24,6 +24,10 @@ def prepared_item(item, snapshot):
         trace = next((t for t in snapshot.traces if t.get('trace_id') == usage['trace_id'] and
                       (not t.get('service') or t['service'] == item.get('service'))), {})
         usage = {**usage, 'start_unix_nano': trace.get('start_unix_nano')}
+    turn_owner=usage.get('scope_owner') or {}
+    if (usage.get('turn_id') and turn_owner.get('producer')==selected.get('service') and
+            turn_owner.get('agent_id')==selected.get('agent_id') and turn_owner.get('session_id')==selected.get('session_id')):
+        selected['turn_id']=usage['turn_id']
     selected['_workflow_usage'] = usage
     return selected
 
@@ -40,7 +44,8 @@ class WorkflowController:
         self._pending_error_seen = set()
         self._error_seen = OrderedDict()
         self.warning = ''
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._drained = threading.Condition(self._lock)
         self._queue = []
         self._running = False
         self._closed = False
@@ -50,7 +55,19 @@ class WorkflowController:
         self._storage_error = ''
 
     def close(self):
-        self._closed = True
+        # Stop observations/delivery; preserve already accepted user receipts.
+        with self._drained:
+            self._closed = True
+            self._queue = [job for job in self._queue if job[0] in {'ack', 'error_seen','review_completions'}]
+            deadline = time.monotonic()+3
+            while self._running:
+                remaining = deadline-time.monotonic()
+                if remaining<=0:
+                    self.warning = 'Workflow receipt flush timed out; durability is not confirmed.'
+                    import sys
+                    print(self.warning, file=sys.stderr)
+                    return
+                self._drained.wait(remaining)
 
     def update(self, items, snapshot, limits):
         if self._closed:
@@ -76,8 +93,9 @@ class WorkflowController:
     def _drain(self):
         while True:
             with self._lock:
-                if self._closed or not self._queue:
+                if not self._queue:
                     self._running = False
+                    self._drained.notify_all()
                     return
                 kind, args = self._queue.pop(0)
             message = ''
@@ -86,6 +104,8 @@ class WorkflowController:
                     self._observe(*args)
                 elif kind == 'ack':
                     self._ack(*args)
+                elif kind == 'review_completions':
+                    self._review_completions(args[0])
                 elif kind == 'error_seen':
                     self._open_storage(args[1])
                     self._remember_errors(args[0])
@@ -110,6 +130,9 @@ class WorkflowController:
             except (WorkflowStoreError, OSError, ValueError) as exc:
                 self.warning = 'Workflow action unavailable: ' + str(exc) + '. Monitoring continues.'
                 message = self.warning
+                if self._closed:
+                    import sys
+                    print(self.warning,file=sys.stderr)
             if self._closed:
                 continue
             rows = list(self.ledger.rows)
@@ -117,7 +140,8 @@ class WorkflowController:
             try:
                 self.owner.call_from_thread(self._publish, rows, receipts, self.warning, message, set(self._error_seen))
             except RuntimeError:
-                return
+                # UI teardown must not abandon accepted durable actions.
+                continue
 
     def _publish(self, rows, receipts, warning, message, error_seen=None):
         if self._closed:
@@ -210,6 +234,23 @@ class WorkflowController:
         scope = scope_for(prepared, self.owner.feed.snapshot, self.owner.feed.api.endpoint)
         self._enqueue(('ack', (scope.scope_key, prepared.get('_attention_id'), action)))
 
+    def review_completions(self, incident_ids):
+        # Freeze exact selected completion identities; later arrivals are excluded.
+        self._enqueue(('review_completions',(tuple(incident_ids),)))
+
+    def _review_completions(self, identities):
+        chosen=[self.ledger.incidents[identity] for identity in dict.fromkeys(identities)
+            if identity in self.ledger.incidents and self.ledger.incidents[identity].kind=='completion'
+            and not self.ledger.records.get(identity,{}).get('acknowledgement')]
+        if self.store:
+            if any(not incident.persistent or self.ledger.records.get(incident.id,{}).get('memory_only') for incident in chosen):
+                raise WorkflowStoreError('Selected completion lacks durable identity or capacity')
+            self.store.review_completions((incident.namespace,incident.id,incident.scope_key) for incident in chosen)
+            self.ledger.restore(self.store.load())
+        else:
+            for incident in chosen:self._ack(incident.scope_key,incident.id,'reviewed')
+        self.ledger.render_rows(snapshot=self._latest[1] if self._latest else None)
+
     def error_displayed(self, events, *, snapshot=None):
         """Only call after actual error details are opened, never for a count."""
         keys = {key for event in events if (key := event_receipt(
@@ -232,7 +273,8 @@ class WorkflowController:
 
     def _ack(self, scope_key, incident_id, action):
         chosen = [i for i in self.ledger.incidents.values() if i.scope_key == scope_key and
-                  (not incident_id or i.id == incident_id)]
+                  (i.id == incident_id if incident_id else i.kind in ({'completion'} if action=='reviewed' else {'approval','reply','failure','interruption','stall'}))]
+        if not incident_id and chosen:chosen=[min(chosen,key=lambda i:(i.priority,-i.source_time_ns))]
         if not chosen:
             raise WorkflowStoreError('No recorded attention incident is available for this execution')
         for incident in chosen:

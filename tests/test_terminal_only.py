@@ -22,6 +22,7 @@ class TerminalOnlyReceiverTests(unittest.TestCase):
         handler.command = 'GET'
         handler.path = path
         handler.headers = Message()
+        handler.headers["Host"]="localhost"
         handler.wfile = io.BytesIO()
         response = {'headers': {}}
         handler.send_response = lambda code: response.update(status=code)

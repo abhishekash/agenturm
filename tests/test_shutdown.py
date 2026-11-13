@@ -70,7 +70,7 @@ class CleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             return subprocess.run([sys.executable, '-c', textwrap.dedent(code),
                                    str(Path(directory) / 'test.db')],
-                                  capture_output=True, text=True, timeout=15)
+                                  capture_output=True, text=True, timeout=15, env={**os.environ,"XDG_STATE_HOME":directory,"OBSERVATORY_TOKEN":""})
 
     @unittest.skipUnless(os.name == 'posix', 'requires Unix SIGINT delivery')
     def test_repeated_sigint_during_actual_http_shutdown_wait(self):
@@ -114,19 +114,21 @@ class CleanupTests(unittest.TestCase):
         result = self.run_child('''
             import os, signal, urllib.error
             from unittest.mock import patch
-            from observatory.terminal import run_cockpit
+            from observatory.terminal import run_cockpit, Snapshot
+            from types import SimpleNamespace
             order = []
             def interrupted_close(name):
                 order.append(name)
                 for _ in range(3):
                     os.kill(os.getpid(), signal.SIGINT)
             class Feed:
-                def __init__(self, api): pass
+                def __init__(self, api): self.snapshot=Snapshot()
+                def refresh(self): pass
                 def close(self): interrupted_close('feed')
             class Receiver:
-                def __init__(self, *args, **kwargs): pass
+                def __init__(self, *args, **kwargs): self.store=SimpleNamespace(_derived_pending={})
                 def close(self): interrupted_close('receiver')
-            with patch('observatory.terminal.Api.get', side_effect=urllib.error.URLError('offline')), \\
+            with patch('observatory.terminal.Api.get', side_effect=[urllib.error.URLError('offline'), {'indexing': {'ready': True}}]), \\
                  patch('observatory.terminal.Feed', Feed), \\
                  patch('observatory.terminal.LocalReceiver', Receiver), \\
                  patch('observatory.terminal.print_snapshot'):

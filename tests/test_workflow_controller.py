@@ -106,3 +106,40 @@ class ControllerTests(unittest.TestCase):
         with patch('observatory.ui_workflow.desktop_notify') as delivery:
             self.controller.update([native],self.owner.feed.snapshot,{'tokens':50});self.owner.wait()
         self.assertEqual([row[0]['_attention_kind'] for row in self.owner.workflow_ledger.rows],['approval'])
+
+    def test_bulk_completion_review_is_frozen_idempotent_and_excludes_requests(self):
+        done=[item(id=f'done-{i}',agent_id=f'worker-{i}',trace_id=f'{i+1:032x}',state='Completed',waiting_for='') for i in range(100)]
+        approval=item(id='approval',agent_id='approval-worker',trace_id='e'*32)
+        self.update([*done,approval])
+        frozen=tuple(identity for identity,incident in self.controller.ledger.incidents.items() if incident.kind=='completion')
+        approval_id=next(identity for identity,incident in self.controller.ledger.incidents.items() if incident.kind=='approval')
+        late=item(id='late',agent_id='late-worker',trace_id='f'*32,state='Completed',waiting_for='')
+        self.update([*done,approval,late])
+        self.controller.review_completions([*frozen,approval_id,*frozen]);self.owner.wait()
+        records=self.controller.store.load()
+        self.assertEqual(sum(record.get('acknowledgement')=='reviewed' for record in records),100)
+        self.assertFalse(next(record for record in records if record['id']==approval_id).get('acknowledgement'))
+        late_id=next(identity for identity,incident in self.controller.ledger.incidents.items() if incident.scope_key not in {self.controller.ledger.incidents[key].scope_key for key in frozen} and incident.kind=='completion')
+        self.assertFalse(next(record for record in records if record['id']==late_id).get('acknowledgement'))
+        self.controller.review_completions(frozen);self.owner.wait()
+        self.assertEqual(sum(record.get('acknowledgement')=='reviewed' for record in self.controller.store.load()),100)
+
+    def test_authoritative_turn_receipt_survives_restart_and_assistant_step_change(self):
+        from observatory.attention import AttentionLedger
+        from observatory.ui_workflow_controller import prepared_item
+        from observatory.workflow_evidence import scope_for
+        first=item(service='opencode',agent_id='worker',trace_id='a'*32,state='Completed',waiting_for='')
+        turn=dict(trace_id='a'*32,turn_id='c'*32,scope_owner=dict(producer='opencode',agent_id='worker',session_id='session'),agent_count=1,agent_count_complete=False,step_trace_ids=['a'*32],turn_usage_complete=False)
+        data=snapshot(time.time(),sessions=[dict(session_id='session',agent_id='worker',services=['opencode'],latest_run=dict(trace_id='a'*32,turn_usage=turn))])
+        prepared=prepared_item(first,data);scope=scope_for(prepared,data)
+        self.assertEqual(scope.kind,'turn')
+        ledger=AttentionLedger();ledger.update([prepared],data,{})
+        from observatory.workflow_store import WorkflowStore
+        saved=WorkflowStore(self.path).observe(incident.to_record() for incident in ledger.incidents.values())
+        restored=AttentionLedger();restored.restore(saved.records)
+        self.assertEqual(set(restored.incidents),set(ledger.incidents))
+        self.assertEqual(restored.items[scope.scope_key]['turn_id'],'c'*32)
+        turn.update(trace_id='b'*32,step_trace_ids=['a'*32,'b'*32])
+        data.sessions[0]['latest_run']['trace_id']='b'*32
+        second=prepared_item({**first,'trace_id':'b'*32},data)
+        self.assertEqual(scope_for(second,data).scope_key,scope.scope_key)

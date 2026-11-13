@@ -73,7 +73,7 @@ class WorkflowBackendTests(unittest.TestCase):
         from observatory.terminal import Api, CockpitError
         payload=json.dumps({'data':'x'*(3*1024*1024)}).encode()
         api=Api('http://localhost:1234')
-        with patch('urllib.request.urlopen',side_effect=lambda *a,**k:io.BytesIO(payload)):
+        with patch('observatory.terminal.receiver_urlopen',side_effect=lambda *a,**k:io.BytesIO(payload)):
             with self.assertRaisesRegex(CockpitError,'2 MiB'):
                 api.get_review('/api/activity')
             self.assertEqual(len(api.get('/api/activity')['data']),3*1024*1024)

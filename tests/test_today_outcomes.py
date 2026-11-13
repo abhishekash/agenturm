@@ -157,8 +157,8 @@ class TodayRulesTests(unittest.TestCase):
                (self.item('Waiting',self.yesterday,waiting_for='User input'),'attention'),
                (self.item('Possibly stalled',self.yesterday),'attention'),
                (self.item('Completed'),'review'),(self.item('Interrupted'),'attention'),
-               (self.item('Unknown'),'attention'),(self.item('Completed',self.yesterday),''),
-               (self.item('Unconfirmed',task_outcome_ns=self.yesterday),'attention'),
+               (self.item('Unknown'),'unknown'),(self.item('Completed',self.yesterday),''),
+               (self.item('Unconfirmed',task_outcome_ns=self.yesterday),'unknown'),
                (self.item('Error',self.yesterday),''),
                (self.item('Completed',task_outcome_ns=self.yesterday),''),
                (self.item('Completed',_workflow_reviewed=True),'')]
@@ -172,7 +172,7 @@ class TodayRulesTests(unittest.TestCase):
         items=[self.item('Completed'),self.item('Unknown'),self.item('Interrupted'),
                self.item('Working',self.yesterday,active=True)]
         self.assertEqual([item['state'] for item in sorted(items,key=today_order_key)],
-                         ['Working','Interrupted','Unknown','Completed'])
+                         ['Working','Interrupted','Completed','Unknown'])
         feed=ManualFeed()
         self.assertEqual(workflow_reasons(self.item('Error',self.yesterday),{},feed.snapshot,{},self.now/1e9),[])
         self.assertEqual(workflow_reasons(self.item('Interrupted'),{},feed.snapshot,{},self.now/1e9),['Task interrupted'])
@@ -200,8 +200,8 @@ class TodayJourneyTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test(size=(120,36)) as pilot:
                 await pilot.pause()
                 self.assertEqual(app.agent_filter,'today')
-                self.assertEqual(app.visible_agent_rows,['running','waiting','unknown','done'])
-                self.assertIn('2 needs attention',app.query_one('#stat-attention').render().plain)
+                self.assertEqual(app.visible_agent_rows,['running','waiting','done','unknown'])
+                self.assertIn('1 needs attention',app.query_one('#stat-attention').render().plain)
                 self.assertIn('Ready for review',str(app.query_one('#agent-table',DataTable).get_row('done')[1]))
                 app.select_agent('done');await pilot.pause()
                 self.assertIn('checks are not verified',' '.join(app.query_one('#agent-detail').plain_text.split()))

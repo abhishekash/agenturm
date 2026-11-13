@@ -484,7 +484,7 @@ real zero. Summaries also expose `cache_read_input_tokens`,
 `cache_write_input_tokens`, and `reasoning_output_tokens`, each with a matching
 `*_reported` flag for the breakdown.
 
-By default the server binds only to loopback and the SQLite file is set to user-only permissions. For a shared deployment, set `OBSERVATORY_TOKEN` in the server environment and send `Authorization: Bearer VALUE` on API requests; set the same token in the terminal before starting the cockpit. Put the service behind TLS and a trusted reverse proxy. Trace attributes can contain prompts, tool outputs, or secrets, so choose what the producer emits. This local receiver does not redact or enforce multiuser access control.
+CLI receivers now use private common state storage, a generated local token and Host/Origin validation by default. New managed databases receive 14-day retention; existing explicit databases retain their policy. Python/Node clients discover local tokens; generic OTLP exporters must be configured with the bearer header. Remote receivers require an explicit token and `--allowed-host`, plus TLS and a trusted proxy. Native capture has best-effort redaction; arbitrary SDK/OTLP payloads remain producer-controlled. The token does not isolate same-user processes or provide multiuser authorization. See [receiver setup and migration](receiver.md).
 
 ## Verify
 
@@ -694,3 +694,10 @@ acknowledgement remain through its 90-day lifetime. Unresolved incidents are not
 automatically expired. **Workflow → Settings → Cleanup** applies retention;
 **Retry** explicitly retries a failed notification claim. Capacity and storage
 failures remain visible, with basic monitoring available.
+
+
+### Recent completion reviews and unknown status
+
+Unknown or unconfirmed lifecycle evidence stays visible as **Status unknown** and does not count as actionable attention. A shared Codex daemon is not proof that a particular session is advancing. Explicit approvals/replies, recorded failures and genuine possible stalls retain their evidence-based behavior.
+
+Workflow defaults to completion reviews from the last 24 hours. Press `h` to include older completions; pending requests remain visible. `Shift+R` reviews the exact completion IDs in the current filtered inbox together; it excludes approvals, replies, budget incidents and later arrivals. Ages use hours/days. Accepted acknowledgements and viewed-error receipts drain on graceful shutdown with a bounded failure notice; SIGKILL cannot provide that guarantee.

@@ -1,0 +1,48 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Receiver</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / Unreleased reliability recovery</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/receiver.md">Markdown source ↗</a></nav><h1>Receiver and OTLP</h1>
+<p>Start the local OTLP/HTTP receiver for the terminal cockpit:</p>
+<pre><code class="language-bash">agenturm serve --port 14318
+</code></pre>
+<p>The receiver defaults to <code>$XDG_STATE_HOME/agenturm/observatory.db</code>, or <code>~/.local/state/agenturm/observatory.db</code> when XDG state is unset (Windows: <code>%LOCALAPPDATA%/agenturm</code>). <code>--db</code> keeps an explicit path. The state directory and new database are owner-only. Its root address is a plain-text status message; inspect sessions in <code>agenturm</code>. It accepts OTLP traces, logs, and metrics at <code>/v1/traces</code>, <code>/v1/logs</code>, and <code>/v1/metrics</code> in protobuf or JSON.</p>
+<p>Point an OpenTelemetry SDK at the receiver:</p>
+<pre><code class="language-bash">export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:14318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+# Configure your exporter with Authorization: Bearer VALUE.
+# VALUE is in the private agenturm/receiver-14318.token state file,
+# or is the OBSERVATORY_TOKEN you explicitly configured.
+</code></pre>
+<p>The terminal cockpit starts a receiver if needed, and can also attach to an existing one:</p>
+<pre><code class="language-bash">agenturm cockpit --endpoint http://127.0.0.1:14318
+</code></pre>
+<p>CLI receivers authenticate by default. A generated owner-only <code>receiver-PORT.token</code> lives beside the managed database. The cockpit, Python launcher/SDK and Node client discover it for local endpoints. <code>OBSERVATORY_TOKEN</code> or an explicit SDK token overrides discovery. Generic OTLP exporters must send <code>Authorization: Bearer VALUE</code>; they do not automatically read Agenturm's token file. <code>serve --no-auth</code> explicitly disables bearer authentication while retaining Host/Origin validation.</p>
+<p>Requests require a loopback Host or an explicitly configured <code>--allowed-host</code>; browser Origins must match that authority. Receiver clients refuse redirects. For remote access, configure an explicit token, <code>--allowed-host exact.hostname</code>, TLS and a trusted reverse proxy. The token does not isolate other programs running as the same OS user, and the receiver does not provide multiuser authorization.</p>
+<p>The built-in receiver and cockpit receiver admit at most 32 concurrent request
+workers. Excess connections receive HTTP 503 with <code>Retry-After: 1</code>; exporters
+should retry with backoff. Requests have absolute header and body read deadlines
+of 10 and 15 seconds, respectively, plus 5-second socket/write timeouts. Stalled
+or slow-drip reads receive HTTP 408 when a response can still be sent. Shutdown
+interrupts active connections before closing storage. These limits do not make
+the local collector an internet-facing service.</p>
+<h3>JSONL file watching</h3>
+<p>Use <code>--watch-jsonl path/to/spans.jsonl</code> to follow native span records. Each poll
+reads at most 8 MiB; a large backlog is processed over successive polls. Records
+larger than 2 MiB are dropped through their terminating newline, including when
+the record spans multiple polls. Keep one complete JSON object per line.</p>
+<h3>Storage migration and retention</h3>
+<p>Existing <code>./observatory.db</code> is preserved. Agenturm prints a notice when it detects that legacy path; it never silently relocates or prunes it. Continue with <code>agenturm --db ./observatory.db</code>, or copy it explicitly:</p>
+<pre><code class="language-bash">agenturm migrate-db ./observatory.db
+# Optional: --destination /private/path/history.db
+</code></pre>
+<p>Migration uses SQLite backup, includes committed WAL data, checks integrity, refuses existing targets/sidecars, and leaves the source in place. A copy gets a new receiver namespace plus source provenance. To keep the old namespace and acknowledgement identity, stop the old receiver first and use <code>--preserve-identity --stopped-receiver</code>; that flag attests the old receiver will stay stopped. Do not run both copies with the same identity.</p>
+<p>Only a genuinely new database created at the managed default location automatically receives <strong>14-day retention</strong>. An existing or explicitly selected database is not newly enrolled, including after relocation. Explicit retention persists in database metadata and runs in both cockpit-owned and standalone receivers. SQLite history migration happens in resumable background batches; authenticated health reports indexing stage/progress, and data endpoints return 503 until the initial projection is ready. Stop older receiver versions before upgrading a shared database. Source-change triggers queue compatible older-writer invalidations rather than returning stale indexed text.</p>
+<pre><code class="language-bash">agenturm serve --retention-days 30
+agenturm prune --older-than-days 30
+</code></pre>
+<p>For complete OTLP field mappings, APIs, collector configuration, and examples, see the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/usage.md">full guide</a>.
+For framework-specific connection examples, see <a href="https://github.com/abhishekash/agenturm/blob/main/docs/frameworks.md">Connect agent frameworks</a>.</p>
+<p>Retention deletes whole inactive traces according to their latest recorded activity and older unlinked telemetry. It is an age policy, not a hard byte cap or secure erasure. SQLite can retain allocated free pages after deletion; it does not automatically compact an existing database. Saved tasks and workflow receipts have separate storage/retention.</p>
+<p><code>cockpit --once</code> waits up to 15 seconds for initial discovery/index readiness. Exit 0 means a ready snapshot, including a known empty store; 2 means an input/read failure; 3 means the readiness deadline expired; 130 means interruption. Non-ready output does not print false zero totals. A large first upgrade can take longer than this deadline; the receiver reports progress and resumes interrupted work.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

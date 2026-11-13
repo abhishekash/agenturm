@@ -18,7 +18,7 @@ from .task_workspace import capture_workspace, display_text
 
 MAX_NOTES = 32000
 MAX_LINKS = 64
-MAX_TASK_BYTES = 512 * 1024
+MAX_TASK_BYTES = 4 * 1024 * 1024
 MAX_DECISIONS = 128
 BRIEF_FIELDS = ('intent', 'acceptance_criteria', 'constraints', 'open_questions', 'next_action')
 DECISION_KINDS = ('accepted', 'rejected')
@@ -93,6 +93,14 @@ def _workspace(value):
 def _link(evidence):
     if not isinstance(evidence, dict):
         raise TaskError('Linked evidence must be an object.')
+    if evidence.get('format')=='agenturm-review-v1':
+        scope=evidence.get('scope')
+        if not isinstance(scope,dict):raise TaskError('Review scope must be an object.')
+        evidence={**{key:scope.get(key) for key in ('receiver','producer','agent_id','session_id','run_start_ns','run_end_ns')},
+            'trace_id':'' if scope.get('turn_id') else scope.get('run_id'),'turn_id':scope.get('turn_id'),
+            'step_trace_ids':(evidence.get('usage') or {}).get('step_trace_ids',[]),
+            'usage':(evidence.get('usage') or {}).get('values',{}),'task':evidence.get('title'),'state':evidence.get('reported_outcome'),
+            'review_snapshot':evidence}
     result = {}
     for key, limit in (('session_id', 512), ('agent_id', 512), ('parent_agent_id', 512), ('runtime', 120),
                        ('receiver', 2000), ('producer', 512),
@@ -105,6 +113,13 @@ def _link(evidence):
     if trace and (not isinstance(trace, str) or not re.fullmatch(r'[0-9a-fA-F]{32}', trace)):
         raise TaskError('trace_id must contain 32 hexadecimal characters.')
     result['trace_id'] = trace.lower()
+    turn=evidence.get('turn_id') or ''
+    if turn:
+        if trace or not isinstance(turn,str) or not re.fullmatch(r'[0-9a-f]{32}',turn):raise TaskError('Choose a recorded turn or a step trace; turn_id must be 32 hexadecimal characters.')
+        result['turn_id']=turn
+        members=evidence.get('step_trace_ids') or []
+        if not isinstance(members,list) or len(members)>1000 or any(not isinstance(value,str) or not re.fullmatch(r'[0-9a-f]{32}',value) for value in members):raise TaskError('Turn step identities must be bounded recorded trace IDs.')
+        result['step_trace_ids']=sorted(set(members))
     start = evidence.get('run_start_ns')
     if start is not None:
         start = _timestamp(start, 'Run lifecycle start')
@@ -122,7 +137,7 @@ def _link(evidence):
     if not (trace or result.get('session_id') or result.get('agent_id')):
         raise TaskError('Link a recorded trace or an identified session.')
     identity = '\0'.join(result.get(key, '') for key in ('runtime', 'session_id', 'agent_id'))
-    result['key'] = ('trace:' + trace.lower() if trace else
+    result['key'] = ('turn:'+turn if turn else 'trace:' + trace.lower() if trace else
         'native-run:' + hashlib.sha256(('\0'.join(result.get(key, '') for key in ('session_id', 'agent_id'))+'\0'+str(start)).encode()).hexdigest()[:24] if start else
         'session:' + hashlib.sha256(identity.encode()).hexdigest()[:24])
     if result.get('receiver'):
@@ -137,7 +152,7 @@ def _link(evidence):
         raise TaskError('Usage must be an object.')
     result['usage'] = {}
     # Session associations cannot be safely added to exact run totals.
-    if trace:
+    if trace or turn and result.get("step_trace_ids"):
         for field in TOKEN_FIELDS:
             if usage.get(field) is not None:
                 value = _number(usage[field], field)
@@ -178,7 +193,7 @@ def _link(evidence):
         if not isinstance(projection, dict):
             raise TaskError('Review snapshot must be an object.')
         scope = projection.get('scope') or {}
-        if (not (trace or start) or (scope.get('run_id') != trace if trace else scope.get('run_start_ns') != start) or
+        if (not (trace or start or turn) or (scope.get('turn_id') != turn if turn else scope.get('run_id') != trace if trace else scope.get('run_start_ns') != start) or
                 result.get('receiver') and scope.get('receiver') != result['receiver'] or
                 result.get('producer') and scope.get('producer') != result['producer'] or
                 result.get('agent_id') and scope.get('agent_id') != result['agent_id'] or
@@ -188,14 +203,14 @@ def _link(evidence):
             serialized = json.dumps(projection, ensure_ascii=False, allow_nan=False)
         except (ValueError, TypeError, RecursionError) as exc:
             raise TaskError('Review snapshot must contain bounded JSON evidence.') from exc
-        if len(serialized.encode()) > 256 * 1024:
-            raise TaskError('Review snapshot exceeds 256 KiB. Save a smaller explicit evidence selection or create the task without this link.')
+        if len(serialized.encode()) > 3 * 1024 * 1024:
+            raise TaskError('Review snapshot exceeds 3 MiB. Save a smaller explicit evidence selection or create the task without this link.')
         try:
             from .workflow_evidence import render_review
             if projection.get('format') != 'agenturm-review-v1':
                 raise ValueError('Unsupported review format')
             render_review(projection)
-            if (not trace and not scope.get('run_end_ns') and
+            if (not trace and not turn and not scope.get('run_end_ns') and
                     any(projection[key] for key in ('checks', 'edits', 'errors', 'context_events'))):
                 raise ValueError('Native review needs a recorded lifecycle end')
             if ('Metadata-only capture' in projection['window']['reasons'] and
@@ -209,19 +224,19 @@ def _link(evidence):
 
 def usage_summary(links):
     runs = {(link.get('receiver', ''), link.get('producer', ''), link.get('agent_id', ''),
-             link.get('session_id', ''), link.get('trace_id') or link.get('run_start_ns')): link
-            for link in links if link.get('trace_id') or link.get('run_start_ns')}
+             link.get('session_id', ''), ('turn:'+link['turn_id']) if link.get('turn_id') else link.get('trace_id') or link.get('run_start_ns')): link
+            for link in links if link.get('turn_id') or link.get('trace_id') or link.get('run_start_ns')}
     shared = {}
     for identity, link in runs.items():
-        if link.get('trace_id'):
-            shared.setdefault((link.get('receiver', ''), link['trace_id']), set()).add(identity)
+        members=link.get('step_trace_ids') if link.get('turn_id') else [link['trace_id']] if link.get('trace_id') else []
+        for member in members or []:shared.setdefault((link.get('receiver',''),member),set()).add(identity)
     overlapping = sum(len(scopes) > 1 for scopes in shared.values())
     recorded_agents = {(link.get('receiver', ''), link.get('agent_id')) for link in runs.values() if link.get('agent_id')}
     related = sum(bool(link.get('parent_agent_id')) and
                   (link.get('receiver', ''), link['parent_agent_id']) in recorded_agents
                   for link in runs.values())
     ambiguous = bool(overlapping or related)
-    unscoped = sum(not (link.get('trace_id') or link.get('run_start_ns')) for link in links)
+    unscoped = sum(not (link.get('turn_id') or link.get('trace_id') or link.get('run_start_ns')) for link in links)
     result = {'scope': 'Recorded linked runs only; snapshots update when linked evidence is refreshed.',
               'linked_runs': len(runs), 'unscoped_links': unscoped,
               'ambiguous_shared_traces': overlapping, 'related_run_scopes': related,
@@ -338,8 +353,11 @@ class TaskStore:
 
     @staticmethod
     def _check_size(task):
+        without_receipts={**task,'links':[{key:value for key,value in link.items() if key!='review_snapshot'} for link in task.get('links',[])]}
+        if len(json.dumps(without_receipts,ensure_ascii=False).encode())>512*1024:
+            raise TaskError('Saved task fields exceed the 512 KiB limit. Shorten this draft, unlink older evidence, or export it and start a new task; no saved decisions were removed.')
         if len(json.dumps(task, ensure_ascii=False).encode()) > MAX_TASK_BYTES:
-            raise TaskError('Saved task exceeds the 512 KiB limit. Shorten this draft, unlink older evidence, or export it and start a new task; no saved decisions were removed.')
+            raise TaskError('Saved task including review snapshots exceeds the 4 MiB limit. Export and unlink older receipts before adding more evidence.')
 
     def create(self, title, workspace='', notes='', link=None):
         now = time.time_ns()
@@ -456,7 +474,7 @@ class TaskStore:
                 # recorded scope fields. Unnamespaced legacy keys stay exact.
                 return (bool(entry.get('receiver')) and bool(link.get('receiver')) and
                     all(link.get(key) == entry.get(key) for key in
-                        ('receiver','producer','agent_id','session_id','trace_id','run_start_ns')))
+                        ('receiver','producer','agent_id','session_id','trace_id','run_start_ns','turn_id')))
             index = next((i for i, link in enumerate(task['links']) if link['key'] == entry['key'] or same_scope(link)), None)
             if index is None:
                 if len(task['links']) >= MAX_LINKS:

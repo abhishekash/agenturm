@@ -148,7 +148,7 @@ class StorageHardeningTests(unittest.TestCase):
             {"timeUnixNano": "200", "severityNumber": float("inf")}]}]}]}).encode()
         for payload in (body, b"[" * 2000 + b"]" * 2000):
             with self.subTest(payload_size=len(payload)):
-                request = (b"POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\n"
+                request = (b"POST /v1/logs HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
                            + f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload)
                 sock = Socket(request)
                 handler_for(self.store, quiet=True)(sock, ("127.0.0.1", 1234), object())

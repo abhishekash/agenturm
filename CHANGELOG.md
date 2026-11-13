@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Recover real native Review evidence: current Codex text/file/command shapes, safe check recognition, preserved operation results, bounded request/update context and readable unclassified commands. Add explicit OpenCode user-turn review alongside unchanged exact-step selection, with authoritative parent membership and conservative partial usage.
+- Index source Activity and MCP candidates, keep per-run numeric/live metadata projections, and decode recent session payloads instead of full historical summaries. Preserve source ownership and text in one SQLite snapshot; rebuild interrupted history projections in background batches with readiness/progress.
+- Move managed telemetry to private common state storage; generate local tokens, validate Host/Origin, refuse credential-bearing redirects and broaden native secret redaction while preserving JSON primitive types. Add explicit non-destructive SQLite migration and 14-day retention only for genuinely new managed stores.
+- Separate unknown status from actionable attention and stop shared-daemon activity from implying session progress/liveness. Add recent/history completion filtering, frozen-ID bulk review, graceful receipt draining, direct Review JSON task links and truthful bounded `--once` statuses.
+
 - Add headless `agenturm review` for one explicit producer/agent/session/trace, with bounded paging, receiver identity checks and the same evidence projection as terminal Review. Keep captured claims separate from recorded check results and disclose partial coverage.
 - Copy readable frozen evidence briefs, retain `j` Copy JSON, and preview non-overwriting private Markdown/HTML receipt pairs. Recheck identity-level capture policy across run changes, reads, formatting and export confirmation.
 - Exclude recognized informational commands from validation counts, share modifying-edit facts between Workflow and Review, and refresh exact-run lifecycle/usage alongside evidence. Require complete producer/agent/session ownership before allocating whole-trace facts; bound later-edit reference expansion.

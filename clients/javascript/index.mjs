@@ -1,3 +1,6 @@
+import { openSync, closeSync, readFileSync, fstatSync, constants } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -19,24 +22,49 @@ function errorType(error) {
   return error && error.constructor && error.constructor.name || typeof error || 'Error';
 }
 
+function receiverToken(endpoint, explicit) {
+  if (explicit !== undefined) return explicit;
+  if (process.env.OBSERVATORY_TOKEN) return process.env.OBSERVATORY_TOKEN;
+  const url = new URL(endpoint);
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  if (!['localhost', 'localhost.', '::1'].includes(host) && !/^127(?:\.\d{1,3}){3}$/.test(host)) return undefined;
+  const root = process.env.XDG_STATE_HOME || (process.platform === 'win32' ? process.env.LOCALAPPDATA : undefined) || join(homedir(), '.local', 'state');
+  const path = join(root, 'agenturm', `receiver-${url.port || (url.protocol === 'https:' ? 443 : 80)}.token`);
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
+    const info = fstatSync(descriptor);
+    if (!info.isFile() || info.size > 257 || (process.platform !== 'win32' && (info.mode & 0o077))) throw new Error('Local receiver token must be a private regular file');
+    const token = readFileSync(descriptor, 'utf8').trim();
+    if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw new Error('Local receiver token is malformed');
+    return token;
+  } catch (error) {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  } finally { if (descriptor !== undefined) closeSync(descriptor); }
+}
+
 export class Client {
   constructor({ endpoint = 'http://127.0.0.1:4318', service = 'node-agent', token,
                 timeoutMs = 3000, strict = false, resourceAttributes = {} } = {}) {
     this.endpoint = String(endpoint).replace(/\/+$/, '');
     this.service = String(service);
-    this.token = token;
+    this.configurationError = null;
+    try { this.token = receiverToken(this.endpoint, token); }
+    catch (error) { if (strict) throw error; this.configurationError = error; }
     this.timeoutMs = Math.max(1, Number(timeoutMs) || 3000);
     this.strict = Boolean(strict);
     this.resourceAttributes = { ...resourceAttributes };
-    this.lastError = null;
+    this.lastError = this.configurationError;
   }
 
   async _post(path, payload) {
     try {
+      if (this.configurationError) throw this.configurationError;
       const headers = { 'content-type': 'application/json' };
       if (this.token) headers.authorization = `Bearer ${this.token}`;
       const response = await fetch(`${this.endpoint}${path}`, {
-        method: 'POST', headers, body: JSON.stringify(payload),
+        method: 'POST', redirect: 'error', headers, body: JSON.stringify(payload),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
       if (!response.ok) throw new Error(`Goechala returned HTTP ${response.status}`);

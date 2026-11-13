@@ -1208,6 +1208,7 @@ class LocalAgents:
         self.hierarchy_write_errors = 0
         from .opencode import OpenCodeReader
         self.opencode = OpenCodeReader(store, capture_details=capture_details)
+        self.initial_poll_complete = False
         self.thread = threading.Thread(target=self.loop, name="observatory-local-agents", daemon=True)
 
     def discover(self):
@@ -1288,6 +1289,7 @@ class LocalAgents:
                 self.poll()
                 if not self.stop.is_set():
                     self.opencode.poll()
+                    self.initial_poll_complete = True
             except Exception:
                 self.errors += 1
             self.stop.wait(1)
@@ -1318,11 +1320,11 @@ class LocalAgents:
             for source, sample in samples.items():
                 previous = self.process_samples.get(source, {})
                 same_process = previous.get('identity') == sample['identity']
-                progressed = (same_process and
+                progressed = (sample.get("progress_attributed", True) and same_process and
                               (sample['cpu_seconds'] > previous.get('cpu_seconds', 0) or
                                sample['io_chars'] > previous.get('io_chars', 0)))
                 sample['observed_since_ns'] = previous.get('observed_since_ns', now_ns) if same_process else now_ns
-                sample['last_progress_ns'] = now_ns if progressed else previous.get('last_progress_ns', 0) if same_process else 0
+                sample['last_progress_ns'] = (now_ns if progressed else previous.get('last_progress_ns', 0) if same_process else 0) if sample.get('progress_attributed', True) else 0
                 sample['observed_at_ns'] = now_ns
             self.process_samples = samples
             self.runtime_updated = time.monotonic()
@@ -1403,7 +1405,7 @@ class LocalAgents:
                 context = contexts.get(item.get("parent_agent_id"))
                 if context:
                     item["parent_context"] = context
-        return {"enabled": True, "sources": len(sessions), "discovered_sources": self.discovered_sources,
+        return {"enabled": True, "initial_poll_complete": self.initial_poll_complete, "sources": len(sessions), "discovered_sources": self.discovered_sources,
                 "omitted_sources": self.omitted_sources, "read_errors": self.errors,
                 "skipped_records": sum(session.skipped for session in sessions),
                 "backlog_bytes": sum(session.backlog_bytes for session in sessions),
