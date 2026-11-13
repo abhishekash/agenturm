@@ -671,23 +671,32 @@ class SourcePreparation:
         self.entries.clear()
 
     @staticmethod
-    def within_budget(value):
-        """Bound retained scalar characters, nodes and nesting before copying."""
-        stack=[(value,0)];nodes=0;characters=0
-        while stack:
-            item,depth=stack.pop();nodes+=1
-            if nodes>20000 or depth>24:return False
-            if isinstance(item,str):characters+=len(item)
-            elif isinstance(item,dict):
-                if len(item)>20000-nodes:return False
-                stack.extend((child,depth+1) for pair in item.items() for child in pair)
-            elif isinstance(item,(tuple,list)):
-                if len(item)>20000-nodes:return False
-                stack.extend((child,depth+1) for child in item)
-            elif item is not None and not isinstance(item,(bool,int,float)):
-                return False
-            if characters>512000:return False
-        return True
+    def bounded_copy(value):
+        """Admit and detach JSON-shaped inputs in one bounded traversal."""
+        nodes=20000;characters=512000
+        def clone(item,depth=0):
+            nonlocal nodes,characters
+            nodes-=1
+            if nodes<0 or depth>24:raise ValueError('Preparation budget')
+            if isinstance(item,str):
+                characters-=len(item)
+                if characters<0:raise ValueError('Preparation text budget')
+                return item
+            if isinstance(item,dict):
+                if len(item)*2>nodes:raise ValueError('Preparation node budget')
+                return {clone(key,depth+1):clone(child,depth+1) for key,child in item.items()}
+            if isinstance(item,(tuple,list)):
+                if len(item)>nodes:raise ValueError('Preparation node budget')
+                copied=[clone(child,depth+1) for child in item]
+                return tuple(copied) if isinstance(item,tuple) else copied
+            if item is None or isinstance(item,(bool,int,float)):return item
+            raise ValueError('Unsupported preparation value')
+        try:return clone(value)
+        except ValueError:return None
+
+    @classmethod
+    def within_budget(cls,value):
+        return cls.bounded_copy((value,)) is not None
 
     def get(self,snapshot,include_reviews,denied_sources,policy_snapshot):
         inputs=(getattr(snapshot,'receiver_id',''),getattr(snapshot,'view_scope',()),
@@ -706,10 +715,11 @@ class SourcePreparation:
                 self.entries.pop(index)
                 break
         self.entries[:]=[entry for entry in self.entries if entry[0]() is not None]
-        if not bounded or not self.within_budget(inputs[:-1]):
+        frozen=self.bounded_copy(inputs[:-1]) if bounded else None
+        if frozen is None:
             return prepare_sources(snapshot,include_reviews,denied_sources=denied_sources,
                                    policy_snapshot=policy_snapshot)
-        frozen=deepcopy(inputs)
+        frozen=(*frozen,denied_sources)
         from types import SimpleNamespace
         detached=SimpleNamespace(agents=frozen[2],local_status={'sessions':frozen[3]},
                                  sessions=frozen[4],activity=frozen[5])
