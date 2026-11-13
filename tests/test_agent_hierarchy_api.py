@@ -29,7 +29,7 @@ class HierarchyApiTests(unittest.TestCase):
         class Server:
             server_name = "localhost"
             server_port = 4318
-        raw = f"GET {path} HTTP/1.1\r\n\r\n".encode()
+        raw = f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
         sock = Socket(raw)
         handler_for(self.store, quiet=True)(sock, ("127.0.0.1", 1234), Server())
         head, payload = sock.output.getvalue().split(b"\r\n\r\n", 1)

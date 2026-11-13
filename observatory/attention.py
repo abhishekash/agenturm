@@ -105,7 +105,7 @@ def classify(item, scope, usage, limits, *, now, stall_anchor='', events=()):
             anchor, int(stamp) if isinstance(stamp, int) and stamp > 0 else 0, now,
             PRIORITY[kind], REASONS[kind], persistent, persistent and kind != 'completion',
             dict(producer=scope.producer,agent_id=scope.agent_id,session_id=scope.session_id,
-                 run_id=scope.run_id,run_start_ns=scope.run_start_ns,kind=scope.kind,
+                 run_id=scope.run_id,run_start_ns=scope.run_start_ns,run_end_ns=scope.run_end_ns,turn_id=scope.turn_id,kind=scope.kind,
                  endpoint_fallback=scope.endpoint_fallback,source_id=str(item.get('id') or ''))))
     return incidents
 
@@ -144,7 +144,8 @@ class AttentionLedger:
                     continue
                 scope = ExecutionScope(record['namespace'],ref.get('producer',''),ref.get('agent_id',''),
                     ref.get('session_id',''),ref.get('run_id',''),ref.get('run_start_ns'),
-                    ref.get('kind','unavailable'),bool(ref.get('endpoint_fallback')))
+                    ref.get('kind','unavailable'),bool(ref.get('endpoint_fallback')),
+                    ref.get('run_end_ns'),str(ref.get('turn_id') or ''))
                 if scope.scope_key != record['scope_key']:
                     continue
                 self.incidents[record['id']] = Incident(**{k:record[k] for k in Incident.__dataclass_fields__})
@@ -153,7 +154,7 @@ class AttentionLedger:
                          'completion':'Completed','stall':'Possibly stalled'}.get(record['kind'],'Unknown')
                 self.items.setdefault(scope.scope_key,dict(id=ref.get('source_id') or record['id'],
                     service=scope.producer,agent_id=scope.agent_id,session_id=scope.session_id,
-                    trace_id=scope.run_id,run_start_ns=scope.run_start_ns,state=state,
+                    trace_id=scope.run_id,run_start_ns=scope.run_start_ns,turn_id=scope.turn_id,state=state,
                     task='Retained '+record['reason'].lower(),waiting_for='Approval' if record['kind']=='approval' else
                     'User input' if record['kind']=='reply' else ''))
 

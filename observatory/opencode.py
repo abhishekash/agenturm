@@ -138,13 +138,15 @@ def _user_message_text(db, message, data, session_id, part_columns):
     # Legacy databases store message content in linked part rows.
     if {"id", "session_id", "message_id", "data"} <= set(part_columns):
         part_order = ' ORDER BY "time_created","id"' if "time_created" in part_columns else ' ORDER BY "id"'
-        rows = db.execute(f'SELECT "data" FROM "part" WHERE "session_id"=? AND "message_id"=?'
-                          f'{part_order} LIMIT 200', (session_id, message["id"])).fetchall()
+        # Fixed total bytes as well as a row count; never transfer tool/giant
+        # parts merely to look for user-authored text.
+        rows=db.execute("SELECT substr(json_extract(data,'$.text'),1,8000) AS text FROM part "
+            "WHERE session_id=? AND message_id=? AND CASE WHEN length(CAST(data AS BLOB))<=? AND json_valid(data) "
+            "THEN json_extract(data,'$.type') END IN ('text','input_text')"+part_order+" LIMIT 32",
+            (session_id,message['id'],MAX_TASK_BYTES//32)).fetchall()
         text = []
         for row in rows:
-            block = _json(row["data"])
-            if block.get("type") in {"text", "input_text"} and isinstance(block.get("text"), str):
-                text.append(block["text"])
+            if isinstance(row["text"],str):text.append(row["text"])
         if text:
             return safe("\n".join(text), 8000).strip()
     return ""
@@ -207,6 +209,7 @@ class OpenCodeReader:
         # Fixed-size digests, bounded to the current session/message window.
         # Never keep tool payloads or an unbounded history in memory.
         self._message_revisions = {}
+        self._reply_revisions = {}
         self._prompt_revisions = {}
         self._initial_tasks = {}
         self._progress_revisions = {}
@@ -291,7 +294,7 @@ class OpenCodeReader:
             # Re-read persisted spans so newly discovered configuration can
             # enrich tool records that were initially ingested without it.
             self.fingerprint = None
-            self._message_revisions.clear()
+            self._message_revisions.clear();self._reply_revisions.clear()
             self._prompt_revisions.clear()
             self._part_revisions.clear()
 
@@ -401,7 +404,7 @@ class OpenCodeReader:
             self.discovered_sessions = 0
             self.omitted_sessions = 0
             self.fingerprint = None
-            self._message_revisions.clear()
+            self._message_revisions.clear();self._reply_revisions.clear()
             self._initial_tasks.clear()
             self._progress_revisions.clear()
             self._part_revisions.clear()
@@ -420,6 +423,7 @@ class OpenCodeReader:
         prompt_logs = []
         sessions = []
         message_revisions = dict(self._message_revisions)
+        reply_revisions = dict(self._reply_revisions)
         prompt_revisions = dict(self._prompt_revisions)
         initial_tasks = dict(self._initial_tasks)
         part_revisions = dict(self._part_revisions)
@@ -442,7 +446,7 @@ class OpenCodeReader:
                     self.sessions = []
                     self.discovered_sessions = 0
                     self.omitted_sessions = 0
-                    self._message_revisions.clear()
+                    self._message_revisions.clear();self._reply_revisions.clear()
                     self._initial_tasks.clear()
                     self._progress_revisions.clear()
                     self._part_revisions.clear()
@@ -673,6 +677,7 @@ class OpenCodeReader:
                                         "event_name": "agent.activity", "body": prompt,
                                         "attributes": {
                                             "session.id": session_id,
+                                            "agent.turn.id": identity("opencode-turn",self.source_id,session_id,message_id),
                                             "agent.id": agent_id,
                                             "agent.runtime": "OpenCode",
                                             **({"agent.session.task": item['initial_task']} if item.get('initial_task') else {}),
@@ -699,6 +704,17 @@ class OpenCodeReader:
                         message_id = str(message["id"])
                         trace_id = identity("opencode-trace", session_id, message_id)
                         root_id = identity("opencode-root", session_id, message_id, size=16)
+                        # Parent references are authoritative only when they name
+                        # a user message in this same session, never by proximity.
+                        parent_values = {str(value) for value in (message_data.get('parentID'),message_data.get('parent_id')) if value}
+                        turn_id = None
+                        if len(parent_values)==1:
+                            parent_id=next(iter(parent_values))
+                            role_sql="CASE WHEN json_valid(data) THEN json_extract(data,'$.role') END"
+                            if 'type' in read_columns:role_sql=f'COALESCE({role_sql},type)'
+                            parent=db.execute(f'SELECT {role_sql} FROM "{read_table}" WHERE session_id=? AND id=?',(session_id,parent_id)).fetchone()
+                            if parent and parent[0]=='user':
+                                turn_id=identity('opencode-turn',self.source_id,session_id,parent_id)
                         if message["_window_order"] < latest_order:
                             latest_trace, latest_root_id = trace_id, root_id
                             latest_order = message["_window_order"]
@@ -712,7 +728,7 @@ class OpenCodeReader:
                         part_params = (session_id, message_id, MAX_PARTS_PER_MESSAGE)
                         part_query = ' FROM "part" WHERE "session_id"=? AND "message_id"=?' + part_order + ' LIMIT ?'
                         revision = hashlib.sha256(json.dumps(
-                            (read_table, dict(message), data.get("title"), data.get("model"), project),
+                            (read_table, dict(message), data.get("title"), data.get("model"), project,turn_id),
                             ensure_ascii=False, sort_keys=True).encode()).digest()
                         key = (session_id, message_id)
                         message_changed = self._message_revisions.get(key) != revision
@@ -754,7 +770,7 @@ class OpenCodeReader:
                                       **({"agent.session.task": item['initial_task']} if item.get('initial_task') else {}),
                                       "agent.id": agent_id,
                                       "agent.runtime": "OpenCode",
-                                      "observatory.project": project}
+                                      "observatory.project": project, **({"agent.turn.id": turn_id} if turn_id else {})}
                         if parent_agent_id:
                             root_attrs["agent.parent_id"] = parent_agent_id
                         root = normalize_native({"trace_id": trace_id, "span_id": root_id, "parent_span_id": None,
@@ -763,14 +779,34 @@ class OpenCodeReader:
                             "resource_attributes": {"service.name": "opencode", "agent.runtime": "OpenCode",
                                 "observatory.source_id": self.source_id, "observatory.capture": "local-session-database"},
                             "scope_name": "observatory.opencode"}, "opencode")
-                        if message_changed:
+                        reply_changed=False
+                        if self.capture_details and (message_changed or parts):
+                            from .local_activity import plaintext
+                            reply=plaintext(message_data.get('content'))
+                            if not reply and has_parts:
+                                # Tool outputs never enter this text-only read.
+                                # _payload_rows accounts each transferred byte.
+                                text_filter="CASE WHEN length(CAST(data AS BLOB))<=? AND json_valid(data) THEN json_extract(data,'$.type') END IN ('text','output_text')"
+                                texts,_=self._payload_rows(db,'part',['id','data'],
+                                    ' WHERE session_id=? AND message_id=? AND '+text_filter+part_order+' LIMIT ?',
+                                    (session_id,message_id,MAX_PAYLOAD_BYTES,MAX_PARTS_PER_MESSAGE),
+                                    cursors=cursors,cursor_key=('reply',session_id,message_id),advance=False)
+                                reply=plaintext([self._decode(row['data']) for row in texts])
+                            digest=hashlib.sha256(reply.encode()).digest()
+                            reply_changed=self._reply_revisions.get(key)!=digest
+                            reply_revisions[key]=digest
+                            if reply:
+                                root['events']=[dict(name='agent.activity',time_unix_nano=end_ns,attributes={**root_attrs,
+                                    'agent.activity.domain':'message','agent.activity.action':'assistant',
+                                    'agent.activity.subject':reply,'agent.activity.detail':reply,'agent.activity.result':'observed'})]
+                        if message_changed or reply_changed:
                             accepted.append(root)
                         model = _model(message_data.get("modelID") or message_data.get("model") or data.get("model"))
                         tokens = message_data.get("tokens") if isinstance(message_data.get("tokens"), dict) else {}
                         model_id = None
                         if model or tokens:
                             model_data = message_data.get("model") if isinstance(message_data.get("model"), dict) else {}
-                            model_attrs = {"session.id": session_id, "gen_ai.operation.name": "chat",
+                            model_attrs = {"session.id": session_id, "agent.id": agent_id, "agent.runtime": "OpenCode", **({"agent.turn.id":turn_id} if turn_id else {}), "gen_ai.operation.name": "chat",
                                            "gen_ai.provider.name": str(message_data.get("providerID") or model_data.get("providerID") or "unknown"),
                                            "gen_ai.request.model": model or "Not reported"}
                             for source, target in (("input", "gen_ai.usage.input_tokens"),
@@ -840,6 +876,16 @@ class OpenCodeReader:
                                           "agent.activity.domain": "mcp" if mcp else "tool",
                                           "agent.activity.action": "call", "agent.activity.subject": tool_name,
                                           "agent.activity.result": "error" if tool_error else "success" if tool_status == "completed" else "unknown"}
+                            if turn_id:tool_attrs['agent.turn.id']=turn_id
+                            if tool_name.casefold() in {'bash','shell'} and self.capture_details:
+                                tool_input=tool_state.get('input') or {}
+                                command=tool_input.get('command') if isinstance(tool_input,dict) else None
+                                if isinstance(command,str):
+                                    tool_attrs.update({'gen_ai.tool.type':'shell','tool.action':'execute',
+                                        'agent.activity.domain':'shell','agent.activity.action':'execute',
+                                        'agent.activity.subject':safe(command,8000),
+                                        'agent.activity.detail':json.dumps({'command':safe(command,8000),'output':safe(tool_state.get('output',''),4000),
+                                            'exit_code':(tool_state.get('metadata') or {}).get('exit') if isinstance(tool_state.get('metadata'),dict) else None})})
                             tool_attrs.update(mcp)
                             metadata = part_data.get("metadata")
                             if isinstance(metadata, dict):
@@ -882,6 +928,7 @@ class OpenCodeReader:
             self.store.ingest_logs(prompt_logs)
         # Publish only after successful ingestion, so a failure can be retried.
         self._message_revisions = {key: value for key, value in message_revisions.items() if key in message_window}
+        self._reply_revisions = {key:value for key,value in reply_revisions.items() if key in message_window}
         self._prompt_revisions = {key: value for key, value in prompt_revisions.items() if key in message_window}
         self._part_revisions = {key: value for key, value in part_revisions.items()
                                 if key[:2] in message_window and

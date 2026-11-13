@@ -1,5 +1,6 @@
 """Small, dependency-free client for instrumenting Python agent code."""
 from __future__ import annotations
+from .http_transport import urlopen as receiver_urlopen
 
 import asyncio
 import contextvars
@@ -30,12 +31,18 @@ class Client:
                  resource_attributes=None):
         self.endpoint = endpoint.rstrip("/")
         self.service = str(service)
-        self.token = token
+        from .receiver_state import endpoint_token
+        self._configuration_error = None
+        try:self.token = endpoint_token(endpoint, token)
+        except (ValueError, OSError) as exc:
+            if strict:raise
+            self.token = None
+            self._configuration_error = exc
         self.timeout = float(timeout)
         self.strict = bool(strict)
         self.capture_exception_message = bool(capture_exception_message)
         self.resource_attributes = dict(resource_attributes or {})
-        self.last_error: Exception | None = None
+        self.last_error: Exception | None = self._configuration_error
 
     def trace(self, name="agent.run", *, task=None, session_id=None, attributes=None):
         return Run(self, name, task, session_id, attributes or {})
@@ -89,13 +96,14 @@ class Client:
 
     def _post(self, path, payload):
         try:
+            if self._configuration_error is not None:raise self._configuration_error
             data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             headers = {"Content-Type": "application/json"}
             if self.token:
                 headers["Authorization"] = f"Bearer {self.token}"
             request = urllib.request.Request(self.endpoint + path, data=data,
                                              headers=headers, method="POST")
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with receiver_urlopen(request, timeout=self.timeout) as response:
                 if not 200 <= response.status < 300:
                     raise OSError(f"Goechala returned HTTP {response.status}")
             return True

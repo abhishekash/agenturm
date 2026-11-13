@@ -26,7 +26,7 @@ ThreadingHTTPServer = BoundedHTTPServer
 MAX_BODY = 8 * 1024 * 1024
 
 
-def handler_for(store: Store, token: str | None = None, quiet=False):
+def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hosts=()):
     cache = ResponseCache(store.path)
     class Handler(DeadlineHandler, BaseHTTPRequestHandler):
         response_cache = cache
@@ -74,6 +74,11 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
 
         def _route(self):
             route = urlparse(self.path)
+            from .receiver_state import request_authority
+            try:request_authority(self.headers,allowed_hosts)
+            except ValueError as exc:
+                self._json(403,{'error':str(exc)})
+                return None
             # The root is a static, non-sensitive hint for someone who opens
             # the receiver URL in a browser. Keep every data/API route gated.
             if route.path != "/" and not self._authorized():
@@ -88,6 +93,11 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
             if route is None:
                 return
             path = route.path
+            if path not in {'/','/api/health'} and path.startswith('/api/') and hasattr(store,'index_status'):
+                indexing=store.index_status()
+                if not indexing.get('ready'):
+                    self._json(503,{'error':'History index is not ready','indexing':indexing})
+                    return
             # The fast recovery probe deliberately avoids SQLite. Full health
             # and all data reads bind their response to one receiver identity.
             if path != '/' and not (path == '/api/health' and parse_qs(route.query).get('probe') == ['1']):
@@ -117,7 +127,11 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                     self._json(200, {"ok": True})
                     return
                 local = getattr(store, "local_agent_monitor", None)
-                self._json(200, {"ok": True, "receiver_id": store.receiver_namespace() if hasattr(store,"receiver_namespace") else None, "review_trace_filter": True, "local_agents": local.status() if local else {"enabled": False}})
+                self._json(200, {"ok": True, "receiver_id": store.receiver_namespace() if hasattr(store,"receiver_namespace") else None, "review_trace_filter": True, "review_turn_filter": True, "review_run_summary": True,
+                    "security":{"authentication_required":bool(token),"host_validation":True},
+                    "storage":{"retention_days":getattr(store,"retention_days",None)},
+                    "indexing":store.index_status() if hasattr(store,"index_status") else {"ready":True},
+                    "local_agents": local.status() if local else {"enabled": False}})
             elif path == "/api/connections":
                 self._json(200, {"connections": store.connections()})
             elif path == "/api/hierarchy":
@@ -139,6 +153,14 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                     })
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
+            elif path == "/api/review-run":
+                query=parse_qs(route.query)
+                try:self._json(200,{'run':store.review_run(query.get('trace_id',[''])[0])})
+                except ValueError as exc:self._json(400,{'error':str(exc)})
+            elif path == "/api/review-turn":
+                query=parse_qs(route.query)
+                try:self._json(200,{'turn':store.review_turn(query.get('trace_id',[''])[0])})
+                except ValueError as exc:self._json(400,{'error':str(exc)})
             elif path == "/api/activity":
                 query = parse_qs(route.query)
                 try:
@@ -152,7 +174,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
                         agent_id=query.get("agent_id", [None])[0],
                         subtree=query.get("subtree", ["0"])[0]=="1",
                         scope_revision=query.get("scope_revision", [None])[0],
-                        trace_id=query.get("trace_id", [None])[0])
+                        trace_id=query.get("trace_id", [None])[0], turn_id=query.get("turn_id", [None])[0],
+                        review=query.get("review", ["0"])[0]=="1")
                     self._json(200, page)
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
@@ -389,12 +412,23 @@ def handler_for(store: Store, token: str | None = None, quiet=False):
     return Handler
 
 
-def serve(db_path="observatory.db", host="127.0.0.1", port=4318, token=None,
-          watch_jsonl=(), watch_service="agent-harness", retention_days=None, local_agents=True, metadata_only=False):
+def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
+          watch_jsonl=(), watch_service="agent-harness", retention_days=None, local_agents=True, metadata_only=False,
+          managed_db=False, no_auth=False, allowed_hosts=()):
+    if db_path is None:
+        from .receiver_state import telemetry_path,prepare_state_directory
+        prepare_state_directory();db_path=str(telemetry_path());managed_db=True
+    if not 1<=port<=65535:raise ValueError("Choose a receiver port between 1 and 65535.")
+    from .receiver_state import local_token,loopback_host,retention_policy
+    if not loopback_host(host) and not allowed_hosts:raise ValueError("An external bind requires --allowed-host with the exact receiver hostname.")
+    if not token and not no_auth:
+        if not loopback_host(host):raise ValueError('An externally bound receiver requires an explicit token and allowed Host configuration.')
+        token=local_token(port,create=True)
     store = Store(db_path, async_derived_refresh=True)
+    retention_days=retention_policy(store,managed=managed_db,requested=retention_days)
     if retention_days is not None:
         store.prune(retention_days)
-    server = ThreadingHTTPServer((host, port), handler_for(store, token))
+    server = ThreadingHTTPServer((host, port), handler_for(store, token,allowed_hosts=allowed_hosts))
     local = None
     if local_agents and host in {"127.0.0.1", "localhost", "::1"}:
         from .local_agents import LocalAgents
@@ -402,7 +436,7 @@ def serve(db_path="observatory.db", host="127.0.0.1", port=4318, token=None,
     store.local_agent_monitor = local
     watch = start_watchers(store, watch_jsonl, watch_service) if watch_jsonl else None
     maintenance = _start_retention(store, retention_days) if retention_days is not None else None
-    print(f"Goechala receiver listening at http://{host}:{server.server_port} (database: {db_path})", flush=True)
+    print(f"Agenturm receiver listening at http://{host}:{server.server_port} (database: {db_path})", flush=True)
     if local:
         print("Watching local Codex / Claude Code sessions · " + ("metadata only" if metadata_only else "activity and bounded, redacted content"), flush=True)
     try:

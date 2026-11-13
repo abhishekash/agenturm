@@ -53,7 +53,7 @@ def message_text(value, depth=0):
         text = _ANSI.sub('', value).replace('\r\n', '\n').replace('\r', '\n')
         return ''.join(c for c in text if c in '\n\t' or unicodedata.category(c) not in {'Cc','Cf'})
     if isinstance(value, dict):
-        if (value.get('type') in {'text','input_text','output_text'} or
+        if (str(value.get('type') or '').casefold() in {'text','input_text','output_text'} or
                 set(value)<= {'role','content','text','message','prompt','recorded_content'}):
             for key in ('text', 'content', 'message', 'prompt', 'recorded_content'):
                 if key in value:

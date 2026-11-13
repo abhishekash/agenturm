@@ -7,17 +7,13 @@ STALL_NS = 5 * 60 * 1_000_000_000
 
 
 def session_phase(item):
-    """Three scan labels; never changes lifecycle, process or incident evidence.
-
-    Attention includes unavailable status that merits inspection. It does not
-    imply an approval request, an error, or a notification-worthy incident.
-    """
+    """Unknown status is visible, but is not an actionable attention signal."""
     state = item.get('state')
     if state == 'Completed':
         return 'review'
     if state in {'Working', 'Processing', 'Tool running', 'Working (quiet)'}:
         return 'running'
-    return 'attention'
+    return 'attention' if state in {'Waiting','Possibly stalled','Error','Failed','Interrupted','Incomplete'} else 'unknown'
 
 
 def task_outcome(root):
@@ -75,7 +71,7 @@ def today_bucket(item, now_ns=None):
         return '' if reviewed else 'review'
     if state in {'Error', 'Failed', 'Interrupted', 'Incomplete'}:
         return '' if reviewed else 'attention'
-    return '' if reviewed else 'attention'
+    return '' if reviewed else 'unknown' if session_phase(item)=='unknown' else 'attention'
 
 
 def session_health(entry, now_ns):
@@ -88,9 +84,10 @@ def session_health(entry, now_ns):
     reported = str(entry.get("run_state") or "unknown").casefold()
     reason = str(entry.get("waiting_for") or "").casefold()
     process = entry.get("process") or {}
-    live = bool(process.get("pids")) and now_ns - process.get("observed_at_ns", 0) < 15 * 1_000_000_000
+    live = process.get("progress_attributed", True) and bool(process.get("pids")) and now_ns - process.get("observed_at_ns", 0) < 15 * 1_000_000_000
     process_quiet_ns = now_ns - max(process.get("last_progress_ns", 0), process.get("observed_since_ns", now_ns))
-    progressing = live and bool(process.get("last_progress_ns")) and now_ns - process["last_progress_ns"] < RECENT_NS
+    attributed = process.get("progress_attributed", True)
+    progressing = attributed and live and bool(process.get("last_progress_ns")) and now_ns - process["last_progress_ns"] < RECENT_NS
     evidence = entry.get("status_evidence") or "Status comes from recorded lifecycle events."
     active = False
     if reported in {"completed", "interrupted", "error", "failed", "incomplete", "idle"}:
@@ -109,7 +106,7 @@ def session_health(entry, now_ns):
             active = True
             evidence = ("The exact session's process or its children are using CPU / I/O." if progressing and not recent
                         else "Session records are advancing; the turn has not reported completion.")
-        elif quiet_ns < STALL_NS or live and process_quiet_ns < STALL_NS:
+        elif quiet_ns < STALL_NS or attributed and live and process_quiet_ns < STALL_NS:
             state, active = "Working (quiet)", True
             evidence = "The turn is unfinished. A quiet model or tool call is not evidence of a stall."
         elif live:

@@ -75,13 +75,15 @@ def _record(value):
     if not isinstance(source,dict):
         raise WorkflowStoreError('Invalid workflow execution reference')
     execution = {}
-    for key in ('producer','agent_id','session_id','run_id','kind','source_id'):
+    for key in ('producer','agent_id','session_id','run_id','turn_id','kind','source_id'):
         text = source.get(key) or ''
         execution[key] = _text(text,key) if text else ''
     start = source.get('run_start_ns')
     if start is not None and (not isinstance(start,int) or isinstance(start,bool) or not 0<start<2**63):
         raise WorkflowStoreError('Invalid workflow lifecycle reference')
-    execution.update(run_start_ns=start,endpoint_fallback=bool(source.get('endpoint_fallback')))
+    end=source.get('run_end_ns')
+    if end is not None and (type(end) is not int or end<=0):raise WorkflowStoreError('Invalid workflow execution end')
+    execution.update(run_start_ns=start,run_end_ns=end,endpoint_fallback=bool(source.get('endpoint_fallback')))
     record['execution'] = execution
     return record
 
@@ -278,6 +280,20 @@ class WorkflowStore:
             db.execute('''UPDATE workflow_incidents_v1 SET resolved_at=?
                 WHERE namespace=? AND id=? AND scope_key=? AND kind NOT IN ('approval','reply')''',
                 ((time.time() if now is None else float(now)) if enabled else None,namespace,incident_id,scope_key))
+
+    def review_completions(self, references, *, now=None):
+        """Atomically review a frozen set; approvals and future arrivals are excluded."""
+        references=tuple(dict.fromkeys(references))
+        if len(references)>MAX_INCIDENTS:raise WorkflowStoreError('Completion selection exceeds the incident limit')
+        stamp=time.time() if now is None else float(now)
+        with self._transaction() as db:
+            for namespace,identity,scope in references:
+                row=db.execute('SELECT kind FROM workflow_incidents_v1 WHERE namespace=? AND id=? AND scope_key=?',(namespace,identity,scope)).fetchone()
+                if row is None or row[0]!='completion':raise WorkflowStoreError('Only persisted completion incidents can be reviewed together')
+            db.executemany("INSERT INTO workflow_acknowledgements_v1 VALUES(?,?,?,'reviewed',?) ON CONFLICT(namespace,id) DO UPDATE SET action='reviewed',created_at=excluded.created_at,scope_key=excluded.scope_key",
+                [(namespace,identity,scope,stamp) for namespace,identity,scope in references])
+            db.executemany('UPDATE workflow_incidents_v1 SET resolved_at=? WHERE namespace=? AND id=? AND scope_key=?',
+                [(stamp,namespace,identity,scope) for namespace,identity,scope in references])
 
     def claim(self, namespace, incident_id, scope_key, *, retry=False, now=None):
         now = time.time() if now is None else float(now)

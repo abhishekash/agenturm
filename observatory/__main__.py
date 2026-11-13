@@ -12,7 +12,7 @@ from .server import serve
 def main():
     parser = argparse.ArgumentParser(prog="agenturm",
         description="Start the terminal cockpit with no subcommand, or choose a command below.")
-    parser.add_argument("--db", default="observatory.db")
+    parser.add_argument("--db", help="telemetry database (default: private Agenturm state directory)")
     sub = parser.add_subparsers(dest="command")
     from .task_cli import add_task_parser
     task_parser = add_task_parser(sub)
@@ -27,11 +27,19 @@ def main():
     cockpit.add_argument("--no-local-agents", dest="local_agents", action="store_false",
                          help="disable local Codex / Claude Code session discovery in a receiver started here")
     cockpit.add_argument("--metadata-only", action="store_true", help="omit native session text, commands and outputs")
+    cockpit.add_argument("--retention-days", type=float, help="opt in an existing database to age retention")
     server = sub.add_parser("serve", help="run the local OTLP/HTTP receiver used by the terminal cockpit")
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=4318)
     server.add_argument("--token", default=os.environ.get("OBSERVATORY_TOKEN"),
-                        help="optional bearer token (or OBSERVATORY_TOKEN environment variable)")
+                        help="bearer token (default: generated private local token)")
+    server.add_argument("--no-auth", action="store_true", help="explicitly disable bearer authentication; Host/Origin checks remain")
+    server.add_argument("--allowed-host", action="append", default=[], help="additional exact receiver hostname; repeatable")
+    migration = sub.add_parser("migrate-db", help="copy telemetry consistently without overwriting or deleting the source")
+    migration.add_argument("source", type=Path)
+    migration.add_argument("--destination", type=Path)
+    migration.add_argument("--preserve-identity", action="store_true")
+    migration.add_argument("--stopped-receiver", action="store_true", help="attest that the source receiver is stopped and will stay stopped")
     server.add_argument("--watch-jsonl", type=Path, action="append", default=[],
                         help="tail a harness JSONL file as spans are written; repeatable")
     server.add_argument("--watch-service", default="agent-harness")
@@ -57,7 +65,27 @@ def main():
     prune = sub.add_parser("prune", help="delete telemetry older than the retention period")
     prune.add_argument("--older-than-days", type=float, required=True)
     args = parser.parse_args()
-    if args.command == "review":
+    managed_db = args.db is None
+    if args.command not in {"task", "review", "run", "migrate-db"}:
+        from .receiver_state import telemetry_path,prepare_state_directory
+        if managed_db and Path('observatory.db').is_file() and Path('observatory.db').resolve()!=telemetry_path().resolve():
+            import sys
+            print('Existing ./observatory.db was preserved. Use --db ./observatory.db to read it, or migrate-db ./observatory.db to copy it into private state storage.',file=sys.stderr)
+        if managed_db:prepare_state_directory()
+        args.db = args.db or str(telemetry_path())
+    def local_store():
+        from .receiver_state import retention_policy
+        store=Store(args.db)
+        retention_policy(store,managed=managed_db)
+        return store
+
+    if args.command == "migrate-db":
+        from .receiver_state import migrate_database
+        try:
+            print(json.dumps(migrate_database(args.source, args.destination, preserve_identity=args.preserve_identity, stopped_receiver=args.stopped_receiver)))
+        except (OSError, ValueError) as exc:
+            parser.exit(2, f"Agenturm migration: {exc}\n")
+    elif args.command == "review":
         from .review_cli import run_review_command
         status=run_review_command(args)
         if status:parser.exit(status)
@@ -68,18 +96,22 @@ def main():
             parser.exit(status)
     elif args.command in {None, "cockpit"}:
         from .terminal import CockpitError, run_cockpit
-        options = {key: getattr(args, key) for key in ("port", "endpoint", "new_window", "once", "local_agents", "metadata_only")} if args.command else {
+        options = {key: getattr(args, key) for key in ("port", "endpoint", "new_window", "once", "local_agents", "metadata_only", "retention_days")} if args.command else {
             "endpoint": os.environ.get("OBSERVATORY_ENDPOINT"),
         }
         try:
-            status = run_cockpit(db_path=args.db, **options)
+            status = run_cockpit(db_path=args.db, managed_db=managed_db, **options)
             if status:
                 parser.exit(status)
-        except CockpitError as exc:
+        except (CockpitError, OSError, ValueError) as exc:
             parser.exit(2, f"Agenturm: {exc}\n")
     elif args.command == "serve":
-        serve(args.db, args.host, args.port, args.token, args.watch_jsonl,
-              args.watch_service, args.retention_days, args.local_agents, args.metadata_only)
+        try:
+            serve(args.db, args.host, args.port, args.token, args.watch_jsonl,
+                  args.watch_service, args.retention_days, args.local_agents, args.metadata_only,
+                  managed_db=managed_db, no_auth=args.no_auth, allowed_hosts=args.allowed_host)
+        except (OSError, ValueError) as exc:
+            parser.exit(2, f"Agenturm: {exc}\n")
     elif args.command == "run":
         from .auto import SetupError, run_agent
         try:
@@ -98,14 +130,14 @@ def main():
                         spans.append(normalize_native(json.loads(line), args.service))
                     except (ValueError, KeyError, TypeError) as exc:
                         parser.error(f"{args.path}:{number}: {exc}")
-        print(f"Imported {Store(args.db).ingest(spans)} spans")
+        print(f"Imported {local_store().ingest(spans)} spans")
     elif args.command == "import-evals":
         payload = json.loads(args.path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
             parser.error("expected results.json with a results array")
-        print(f"Imported {Store(args.db).ingest_outcomes(payload['results'], source=str(args.path))} outcomes")
+        print(f"Imported {local_store().ingest_outcomes(payload['results'], source=str(args.path))} outcomes")
     else:
-        deleted = Store(args.db).prune(args.older_than_days)
+        deleted = local_store().prune(args.older_than_days)
         print(json.dumps(deleted, sort_keys=True))
 
 

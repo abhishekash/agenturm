@@ -8,18 +8,22 @@ import re
 
 _SENSITIVE_FIELD = re.compile(
     r"(?:^|[._-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
-    r"client[_-]?secret|password|passwd|private[_-]?key|authorization|"
+    r"client[_-]?secret|[A-Za-z0-9_]+[_-](?:pass|token)(?=$)|password|passwd|private[_-]?key|authorization|"
     r"credential|secret|bearer)(?:$|[._-])", re.IGNORECASE)
 _TOKEN_FIELD = re.compile(r"(?:^|[.-])(?:auth[_-]?)?token(?:$|[.-])", re.IGNORECASE)
 _ASSIGNED_SECRET = re.compile(
     r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|"
-    r"password|passwd|private[_-]?key|authorization|credential|secret|bearer)"
-    r"(\s*[:=]\s*)([\"']?)([^\s\"'`,;]{4,})")
+    r"password|passwd|private[_-]?key|authorization|credential|secret|bearer|"
+    r"[A-Za-z][A-Za-z0-9_]*(?:_SECRET_ACCESS_KEY|_API_TOKEN|_PASS|_PASSWORD|_SECRET|_TOKEN))"
+    r"(\s*[:=]\s*)([\"']?)([^\s\"'`,;]{1,})")
+_DATABASE_CREDENTIAL = re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://[^\s/@:]*:)[^\s/@]+(@)")
+_MYSQL_PASSWORD = re.compile(r"(\bmysql(?:\s+[^\s;]+)*?\s+-p)(?!\s|$)([^\s;]+)")
 _BEARER_VALUE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]{8,}={0,}")
 _PRIVATE_KEY = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
     re.IGNORECASE)
 _TOKEN_PATTERNS = (
+    ("Stripe", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b")),
     ("OpenAI or compatible", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
     ("GitHub", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
     ("AWS access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
@@ -31,6 +35,8 @@ _TOKEN_PATTERNS = (
 def _safe_text(value):
     """Remove recognizable credential material before it enters a finding."""
     text = str(value)
+    text = _DATABASE_CREDENTIAL.sub(r"\1[REDACTED]\2", text)
+    text = _MYSQL_PASSWORD.sub(r"\1[REDACTED]", text)
     text = _PRIVATE_KEY.sub("[REDACTED PRIVATE KEY]", text)
     text = _BEARER_VALUE.sub("Bearer [REDACTED]", text)
     text = _ASSIGNED_SECRET.sub(lambda match: match.group(1) + match.group(2) + "[REDACTED]", text)
@@ -133,10 +139,15 @@ def analyze(spans, logs, outcome=None):
         reason = attrs.get("tool.error_message") or attrs.get("tool.error")
         failed = span["status"] == "ERROR" or attrs.get("tool.result_status") == "error" or bool(attrs.get("tool.error"))
         if failed:
-            title = f"Error in {attrs.get('tool.name') or span['name']}"
-            findings.append(_finding(trace_id, "span_error", title, "high",
+            command = attrs.get('process.command_line') or attrs.get('command') or attrs.get('tool.command')
+            code = attrs.get('process.exit.code', attrs.get('exit_code'))
+            output = attrs.get('tool.output') or attrs.get('tool.result') or attrs.get('stderr')
+            expected = bool(command and str(command).split()[0].rsplit('/',1)[-1] in {'grep','rg','diff'} and code in {1,'1'})
+            title = f"Non-zero search/comparison result" if expected else f"Error in {attrs.get('tool.name') or span['name']}"
+            reason = '\n'.join(str(x) for x in (command, f'Exit code: {code}' if code is not None else '', reason, output) if x)[:1500] or 'Span status is ERROR; command, exit code and output were not supplied.'
+            findings.append(_finding(trace_id, "span_error", title, "info" if expected else "high",
                                      [{"type": "span", "id": span["span_id"]}],
-                                     str(reason or "Span status is ERROR")[:500]))
+                                     str(reason)[:1500]))
             if attrs.get("tool.name"):
                 key = (str(attrs["tool.name"]), str(reason or attrs.get("tool.error") or "error"))
                 failures.setdefault(key, []).append(span["span_id"])

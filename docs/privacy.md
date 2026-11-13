@@ -1,6 +1,6 @@
 # Privacy and capture boundaries
 
-Agenturm is designed for local inspection. The receiver binds to loopback by default and stores telemetry in SQLite on the host running it.
+Agenturm is designed for local inspection. CLI receivers bind to loopback and authenticate by default. Telemetry uses an owner-only database in the common Agenturm state directory; explicit database paths remain supported. Local tokens are owner-only regular files and are published atomically. See [receiver setup and explicit migration](receiver.md).
 
 ## Native session discovery
 
@@ -11,8 +11,7 @@ The local MCP inventory parses known Codex, Claude Code, Cursor, Gemini CLI, Ope
 On Linux, session health checks same-user known agent processes for an exact open
 session-file match. Only matching PIDs, process start identity, and CPU/I/O counters
 (including bounded child-process observations) are used for activity hints. This
-does not inspect process arguments, environment variables, or file contents, and
-does not infer a match from a shared project directory. Process observations are
+does not retain process arguments or inspect environments/session-file contents for matching. A bounded Codex command-mode probe retains only whether the process is a shared app-server/daemon. Shared processes never establish per-session progress or liveness, even if only one session is observed; matches are not inferred from a shared project directory. Process observations are
 in-memory health metadata, not additional stored telemetry.
 
 Hierarchy capture stores only opaque canonical identities, native session/worker IDs, relationship kind/state, and bounded provenance (adapter and record reference). It does not store spawn arguments, environments, sidecar descriptions, or extra transcript content. Metadata-only mode retains structural relationships when a session header or sidecar supplies them; it still omits task text, prompts, arguments, and outputs. Hidden approval-review relationships are filtered out of visible cockpit rows, counts, and exports.
@@ -45,7 +44,7 @@ overwritten. You control whether and where they are shared.
 
 ## Network and retention
 
-The receiver binds to `127.0.0.1` by default. Do not expose it to a network without authentication and a protected TLS/reverse-proxy path. Retention is configurable; see [receiver setup](receiver.md).
+The receiver binds to `127.0.0.1` by default. Do not expose it to a network without authentication and a protected TLS/reverse-proxy path. New managed stores default to 14-day retention; existing explicit stores require an opt-in policy. Host/Origin validation applies even with explicit `--no-auth`. The local token is not a sandbox against other processes running as the same OS user. See [receiver setup](receiver.md).
 
 Retention performs logical deletion, not guaranteed secure erasure. Deleted
 content may remain in SQLite free pages, journals, filesystem snapshots, or

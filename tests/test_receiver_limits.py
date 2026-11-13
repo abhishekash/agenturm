@@ -58,7 +58,7 @@ class ReceiverLimitsTests(unittest.TestCase):
     def test_admission_rejects_before_thread_creation_and_recovers(self):
         server = self.start_server(max_workers=1)
         first = self.connect(server)
-        first.sendall(b"GET / HTTP/1.0\r\n")
+        first.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n")
         self.wait_for(lambda: len(server._connections) == 1)
         workers = list(server._threads)
         for _ in range(8):
@@ -69,12 +69,12 @@ class ReceiverLimitsTests(unittest.TestCase):
         self.assertEqual(self.response(first)[0], 408)
         self.wait_for(lambda: not server._connections)
         client = self.connect(server)
-        client.sendall(b"GET / HTTP/1.0\r\n\r\n")
+        client.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
         self.assertEqual(self.response(client)[0], 200)
 
     def test_idle_socket_and_stalled_headers_expire(self):
         server = self.start_server(max_workers=2)
-        for request in (b"", b"GET / HTTP/1.0\r\nHost: partial"):
+        for request in (b"", b"GET / HTTP/1.0\r\nHost: localhost\r\nHost: partial"):
             with self.subTest(request=request):
                 client = self.connect(server)
                 client.sendall(request)
@@ -106,7 +106,7 @@ class ReceiverLimitsTests(unittest.TestCase):
     def test_trickled_headers_have_absolute_deadline(self):
         server = self.start_server()
         client = self.connect(server)
-        client.sendall(b"GET / HTTP/1.0\r\nX-Slow: ")
+        client.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\nX-Slow: ")
         self.trickle(client, b"a" * 100)
         start = time.monotonic()
         self.assertEqual(self.response(client)[0], 408)
@@ -117,7 +117,7 @@ class ReceiverLimitsTests(unittest.TestCase):
         for trickled in (False, True):
             with self.subTest(trickled=trickled):
                 client = self.connect(server)
-                client.sendall(b"POST /api/spans HTTP/1.0\r\n"
+                client.sendall(b"POST /api/spans HTTP/1.0\r\nHost: localhost\r\n"
                                b"Content-Length: 100\r\n\r\n[")
                 if trickled:
                     self.trickle(client, b" " * 100)
@@ -129,10 +129,10 @@ class ReceiverLimitsTests(unittest.TestCase):
     def test_handler_remains_compatible_with_standard_server(self):
         server = self.start_server(StandardServer)
         client = self.connect(server)
-        client.sendall(b"POST /api/spans HTTP/1.0\r\nContent-Length: 10\r\n\r\n")
+        client.sendall(b"POST /api/spans HTTP/1.0\r\nHost: localhost\r\nContent-Length: 10\r\n\r\n")
         self.assertEqual(self.response(client)[0], 408)
         client = self.connect(server)
-        client.sendall(b"GET / HTTP/1.0\r\n\r\n")
+        client.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
         self.assertEqual(self.response(client)[0], 200)
 
     def test_nonreading_response_client_releases_worker(self):
@@ -140,7 +140,7 @@ class ReceiverLimitsTests(unittest.TestCase):
         self.store.connections.return_value = ["x" * (16 * 1024 * 1024)]
         client = self.connect(server)
         client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
-        client.sendall(b"GET /api/connections HTTP/1.0\r\n\r\n")
+        client.sendall(b"GET /api/connections HTTP/1.0\r\nHost: localhost\r\n\r\n")
         self.wait_for(lambda: len(server._connections) == 1)
         self.wait_for(lambda: not server._connections)
         self.assertFalse(any(thread.is_alive() for thread in server._threads))
@@ -150,8 +150,8 @@ class ReceiverLimitsTests(unittest.TestCase):
         server.RequestHandlerClass.socket_timeout = 60
         server.RequestHandlerClass.header_timeout = 60
         clients = [self.connect(server), self.connect(server)]
-        clients[0].sendall(b"GET / HTTP/1.0\r\n")
-        clients[1].sendall(b"POST /api/spans HTTP/1.0\r\nContent-Length: 100\r\n\r\n[")
+        clients[0].sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n")
+        clients[1].sendall(b"POST /api/spans HTTP/1.0\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n[")
         self.wait_for(lambda: len(server._connections) == 2)
         workers = list(server._threads)
         start = time.monotonic()

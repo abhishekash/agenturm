@@ -15,13 +15,17 @@ CONTENT_LIMIT = 8000
 
 
 def safe(value, limit=CONTENT_LIMIT):
-    if isinstance(value, dict):
-        value = {str(key): "[REDACTED]" if _SENSITIVE_FIELD.search(str(key)) or _TOKEN_FIELD.search(str(key))
-                 else "[opaque payload omitted]" if str(key) in {"encrypted_content", "signature", "raw_content"} or str(key) == "data" and isinstance(child, str) and len(child) > 1000
-                 else safe(child, 2000) for key, child in islice(value.items(), 60)}
-        value = json.dumps(value, ensure_ascii=False, indent=2)
-    elif isinstance(value, list):
-        value = json.dumps([safe(child, 2000) for child in value[:60]], ensure_ascii=False, indent=2)
+    def clean(item, depth=0):
+        if depth>=12:return '[nested payload omitted]'
+        if isinstance(item,dict):
+            return {str(key): '[REDACTED]' if _SENSITIVE_FIELD.search(str(key)) or _TOKEN_FIELD.search(str(key))
+                else '[opaque payload omitted]' if str(key) in {'encrypted_content','signature','raw_content'} or str(key)=='data' and isinstance(child,str) and len(child)>1000
+                else clean(child,depth+1) for key,child in islice(item.items(),60)}
+        if isinstance(item,list):return [clean(child,depth+1) for child in item[:60]]
+        if item is None or isinstance(item,(int,float,bool)):return item
+        return _safe_text(str(item))[:2000]
+    if isinstance(value,(dict,list)):
+        value=json.dumps(clean(value),ensure_ascii=False,indent=2)
     text = _safe_text(value)
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
     text = "".join(char for char in text if char in "\n\t" or ord(char) >= 32 and ord(char) != 127)
@@ -34,7 +38,7 @@ def plaintext(content):
     if not isinstance(content, list):
         return ""
     return safe("\n".join(str(block.get("text") or "") for block in content
-                         if isinstance(block, dict) and block.get("type") in {"text", "input_text", "output_text"}))
+                         if isinstance(block, dict) and str(block.get("type") or "").casefold() in {"text", "input_text", "output_text"}))
 
 
 def mcp_attributes(name):
@@ -183,6 +187,7 @@ def codex_activity(session, row, stamp):
             out.append(emit(session, row, stamp, "shell", "execute", command if session.capture_details else "Shell command",
                 {"command": command, "cwd": item.get("cwd"), "exit_code": code, "output": item.get("aggregated_output", "")}, result, extra))
         elif item_type == "FileChange":
+            if not failed and str(item.get("status", "")).lower() not in {"completed","success","ok"}:result="unknown"
             changes = item.get("changes") or {}
             if isinstance(changes, dict):
                 for path, change in list(changes.items())[:60]:

@@ -1,5 +1,6 @@
 """Launch a Python agent with model and framework instrumentation enabled."""
 from __future__ import annotations
+from .http_transport import urlopen as receiver_urlopen
 
 import importlib
 import importlib.metadata
@@ -43,7 +44,7 @@ def _receiver_endpoint(endpoint):
 def _check_receiver(endpoint, token):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        with urllib.request.urlopen(urllib.request.Request(endpoint + "/api/health", headers=headers),
+        with receiver_urlopen(urllib.request.Request(endpoint + "/api/health", headers=headers),
                                     timeout=3) as response:
             if response.status != 200:
                 raise SetupError("The Goechala receiver is not ready.")
@@ -112,7 +113,8 @@ def run_agent(target, arguments=(), *, endpoint="http://127.0.0.1:4318", service
     except ImportError as exc:
         raise SetupError('Automatic capture is not installed in this Python environment. Install this checkout with: python -m pip install ".[auto]"') from exc
 
-    token = os.environ.get("OBSERVATORY_TOKEN")
+    from .receiver_state import endpoint_token
+    token = endpoint_token(endpoint, os.environ.get("OBSERVATORY_TOKEN") or None)
     _check_receiver(endpoint, token)
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     source_id = secrets.token_hex(16)

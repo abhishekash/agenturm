@@ -442,6 +442,10 @@ def derive_trace(db, trace_id, workflow_patterns=False):
     summary["agent_count_complete"] = summary["evidence_window"]["complete"]
     summary['review_owner']=_review_owner(spans,logs,activity,
         complete=summary['agent_count_complete'] and summary['agent_count']==1 and counts['progress']==0)
+    turns={span.get('attributes',{}).get('agent.turn.id') for span in spans if span.get('name')=='agent.run' and span.get('scope_name')=='observatory.opencode'}
+    if len(turns)==1 and None not in turns:
+        summary['turn_id']=next(iter(turns))
+        summary['turn_membership']='recorded user parent'
     summary["findings_complete"] = summary["evidence_window"]["complete"]
     summary["search_terms_complete"] = summary["evidence_window"]["complete"]
     timestamp = db.execute("SELECT last_ns FROM trace_activity WHERE trace_id=?", (trace_id,)).fetchone()

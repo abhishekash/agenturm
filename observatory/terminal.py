@@ -1,5 +1,6 @@
 """Receiver lifecycle and live data for the terminal cockpit."""
 from __future__ import annotations
+from .http_transport import urlopen as receiver_urlopen
 
 import asyncio
 import json
@@ -72,7 +73,9 @@ class Api:
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
             raise CockpitError("Use a receiver HTTP address for --endpoint.")
         self.endpoint = endpoint.rstrip("/")
-        self.token = token
+        from .receiver_state import endpoint_token
+        try:self.token = endpoint_token(endpoint, token)
+        except (ValueError, OSError) as exc:raise CockpitError(str(exc)) from exc
 
     def get(self, path):
         return self._get(path, self.MAX_RESPONSE_BYTES)
@@ -84,7 +87,7 @@ class Api:
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         request = urllib.request.Request(self.endpoint + path, headers=headers)
         timeout=self.HEALTH_TIMEOUT if path=='/api/health?probe=1' else self.REQUEST_TIMEOUT
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with receiver_urlopen(request, timeout=timeout) as response:
             raw = response.read(max_bytes + 1)
             headers = getattr(response, 'headers', None)
             receiver = headers.get('X-Agenturm-Receiver-ID') if headers is not None else None
@@ -99,7 +102,7 @@ class Api:
 
 
 class LocalReceiver:
-    def __init__(self, db_path, port, token, local_agents=True, metadata_only=False):
+    def __init__(self, db_path, port, token, local_agents=True, metadata_only=False, managed_db=False, retention_days=None):
         from .core import Store
         from .server import BoundedHTTPServer, handler_for
         self.store = Store(db_path, async_derived_refresh=True)
@@ -108,15 +111,22 @@ class LocalReceiver:
         except OSError:
             self.store.close()
             raise
+        from .receiver_state import retention_policy
+        from .server import _start_retention
+        policy = retention_policy(self.store, managed=managed_db, requested=retention_days)
+        if policy is not None:self.store.prune(policy)
+        self.maintenance = _start_retention(self.store, policy) if policy is not None else None
         self.thread = threading.Thread(target=self.server.serve_forever, name="observatory-receiver", daemon=True)
-        self.thread.start()
         self.local = None
         if local_agents:
             from .local_agents import LocalAgents
             self.local = LocalAgents(self.store, capture_details=not metadata_only).start()
         self.store.local_agent_monitor = self.local
+        self.thread.start()
 
     def close(self):
+        if getattr(self,"maintenance",None):
+            self.maintenance[0].set();self.maintenance[1].join(timeout=2)
         complete_cleanup(
             *([self.local.close] if self.local else []),
             self.server.shutdown, self.server.server_close, self.thread.join,
@@ -345,6 +355,7 @@ class Feed:
                     self.wake.set();return
                 history_due=True
                 requests.prefetch([path for path in initial_paths if path!='/api/health']+['/api/sessions?limit=500'])
+            if health.get("indexing",{}).get("ready") is False:raise InterruptedError("Indexing stored history · "+health["indexing"].get("stage","pending"))
             local_status = health.get("local_agents", {})
             new_revision = str((local_status.get("hierarchy") or {}).get("revision") or "")
             if new_revision and self.hierarchy_revision and new_revision != self.hierarchy_revision:
@@ -711,8 +722,9 @@ def wrapped(text, width):
     return lines
 
 
-def print_snapshot(feed):
-    feed.refresh()
+def print_snapshot(feed, *, refresh=True):
+    if refresh:feed.refresh()
+    if feed.snapshot.error:raise CockpitError(feed.snapshot.error)
     snapshot = feed.snapshot
     totals = snapshot.totals
     def token_count(record, key):
@@ -795,12 +807,18 @@ def _run_terminal_app(app):
     return asyncio.run(run())
 
 
-def run_cockpit(*, db_path="observatory.db", port=14318, endpoint=None,
-                once=False, new_window=False, local_agents=True, metadata_only=False):
+def run_cockpit(*, db_path=None, port=14318, endpoint=None,
+                once=False, new_window=False, local_agents=True, metadata_only=False, managed_db=False, retention_days=None):
+    if db_path is None:
+        from .receiver_state import telemetry_path,prepare_state_directory
+        prepare_state_directory();db_path=str(telemetry_path());managed_db=True
     if not 1 <= port <= 65535:
         raise CockpitError("Choose a port between 1 and 65535.")
     if new_window:
         command = [sys.executable, "-m", "observatory", "--db", str(Path(db_path).resolve()), "cockpit", "--port", str(port)]
+        if managed_db:
+            command = [sys.executable,"-m","observatory","cockpit","--port",str(port)]
+        if retention_days is not None:command.extend(["--retention-days",str(retention_days)])
         if endpoint:
             command.extend(["--endpoint", endpoint])
         if not local_agents:
@@ -818,7 +836,7 @@ def run_cockpit(*, db_path="observatory.db", port=14318, endpoint=None,
             from .terminal_ui import ObservatoryApp
         except ImportError as exc:
             raise CockpitError("The terminal UI needs Textual. Reinstall the CLI, or install this checkout with: python -m pip install .") from exc
-    token = os.environ.get("OBSERVATORY_TOKEN")
+    token = os.environ.get("OBSERVATORY_TOKEN") or None
     receiver = feed = None
     api = Api(endpoint or f"http://127.0.0.1:{port}", token)
     try:
@@ -828,7 +846,9 @@ def run_cockpit(*, db_path="observatory.db", port=14318, endpoint=None,
             health = api.get("/api/health?probe=1")
             if not health.get("ok"):
                 raise CockpitError("The endpoint is not a ready Agenturm receiver.")
-            if metadata_only:health=api.get('/api/health')
+            health=api.get('/api/health')
+            if not (health.get('security') or {}).get('authentication_required'):
+                print('Receiver authentication is disabled or unavailable. Restart the receiver to enable the private local token.',file=sys.stderr)
             if metadata_only and health.get("local_agents", {}).get("capture_content"):
                 raise CockpitError("The existing receiver captures session content. Restart it with serve --metadata-only, then reconnect.")
         except urllib.error.HTTPError as exc:
@@ -842,12 +862,34 @@ def run_cockpit(*, db_path="observatory.db", port=14318, endpoint=None,
                 if not once:
                     print('Starting local receiver and loading stored sessions…',file=sys.stderr,flush=True)
                 try:
-                    receiver = LocalReceiver(db_path, port, token, local_agents=local_agents, metadata_only=metadata_only)
+                    from .receiver_state import local_token
+                    token = token or local_token(port, create=True)
+                    api.token = token
+                    receiver = LocalReceiver(db_path, port, token, local_agents=local_agents, metadata_only=metadata_only, managed_db=managed_db, retention_days=retention_days)
                 except OSError as bind_error:
                     raise CockpitError(f"Cannot start a local receiver on port {port}: {bind_error}") from bind_error
         feed = Feed(api)
         if once:
-            print_snapshot(feed)
+            deadline=time.monotonic()+15
+            while True:
+                progress=api.get('/api/health')
+                if progress.get('indexing',{}).get('ready') is False:
+                    if time.monotonic()>=deadline:
+                        print('Agenturm snapshot incomplete: history indexing did not become ready within 15 seconds. Restart to resume.',file=sys.stderr)
+                        return 3
+                    time.sleep(.1);continue
+                feed.refresh()
+                if feed.snapshot.error:raise CockpitError(feed.snapshot.error)
+                local=feed.snapshot.local_status
+                discovery_ready=not local.get('enabled') or local.get('initial_poll_complete') is True
+                derived_ready=receiver is None or not receiver.store._derived_pending
+                if discovery_ready and not local.get('backlog_bytes') and derived_ready:
+                    print_snapshot(feed,refresh=False)
+                    return 0
+                if time.monotonic()>=deadline:
+                    print('Agenturm snapshot incomplete: discovery or indexing did not become ready within 15 seconds. No complete snapshot emitted.',file=sys.stderr)
+                    return 3
+                time.sleep(.1)
         else:
             return _run_terminal_app(ObservatoryApp(feed))
     except KeyboardInterrupt:

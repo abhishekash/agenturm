@@ -141,7 +141,7 @@ Exact delegation is supported for documented Codex, Claude Code, and OpenCode sh
 
 ## Local storage, explicit sharing
 
-The built-in receiver defaults to **`127.0.0.1:14318`**. Local monitoring and recorded-progress summaries work without a cloud service. Saved tasks use a separate local database, so telemetry retention does not delete your brief or decisions.
+The built-in receiver defaults to **`127.0.0.1:14318`**. Local monitoring and recorded-progress summaries work without a cloud service. Telemetry now defaults to the private Agenturm state directory, with a local bearer token and 14-day retention for genuinely new managed stores. Existing explicit databases keep their retention policy. Saved tasks use a separate database, so telemetry retention does not delete your brief or decisions. [Storage, authentication and migration](docs/receiver.md).
 
 Captured messages, commands, and tool results can contain project secrets. Credential redaction is best effort. `--metadata-only` omits native session content from future ingestion; it does not erase existing records. Saved workspace captures and handoffs need your own review before sharing. [Capture and privacy boundaries](docs/privacy.md).
 

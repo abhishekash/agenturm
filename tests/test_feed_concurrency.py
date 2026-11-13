@@ -368,7 +368,7 @@ class ApiResponseBudgetTests(unittest.TestCase):
     def test_response_read_is_bounded_before_json_decode(self):
         response = MagicMock()
         response.__enter__.return_value = io.BytesIO(b' ' * 33)
-        with patch('observatory.terminal.urllib.request.urlopen', return_value=response), \
+        with patch('observatory.terminal.receiver_urlopen', return_value=response), \
                 patch.object(Api, 'MAX_RESPONSE_BYTES', 32):
             with self.assertRaisesRegex(CockpitError, 'response exceeded'):
                 Api('http://localhost:14318').get('/api/metrics')
@@ -376,5 +376,5 @@ class ApiResponseBudgetTests(unittest.TestCase):
     def test_small_json_response_is_accepted(self):
         response = MagicMock()
         response.__enter__.return_value = io.BytesIO(b'{"ok": true}')
-        with patch('observatory.terminal.urllib.request.urlopen', return_value=response):
+        with patch('observatory.terminal.receiver_urlopen', return_value=response):
             self.assertEqual(Api('http://localhost:14318').get('/api/health'), {'ok': True})

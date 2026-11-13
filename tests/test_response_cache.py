@@ -88,7 +88,7 @@ class CachedHttpTests(unittest.TestCase):
                     self.output.write(data)
 
             def get(path='/api/metrics', token='test-token'):
-                sock = Socket(f'GET {path} HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n'.encode())
+                sock = Socket(f'GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n'.encode())
                 handler(sock, ('127.0.0.1', 1), type('Server', (), {})())
                 head, body = sock.output.getvalue().split(b'\r\n\r\n', 1)
                 return int(head.split()[1]), json.loads(body)

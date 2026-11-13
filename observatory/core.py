@@ -223,7 +223,7 @@ def _activity_row(attrs, time_ns, source, source_id, span_id=None, service="unkn
                                 for key in SESSION_KEYS if _session_value(attrs.get(key)) is not None
                                 or _session_value(resource_attributes.get(key)) is not None), None),
             "service": str(service), "source": source, "source_id": str(source_id),
-            "span_id": span_id, "detail": body if isinstance(body, str) else "",
+            "span_id": span_id, "turn_id": value("agent.turn.id"), "detail": value("agent.activity.detail") or (body if isinstance(body, str) else ""),
             "mcp_server": value("mcp.server.name"), "mcp_tool": value("mcp.tool.name"),
             "duration_ms": attrs.get("duration_ms"), "metadata": cursor_metadata}
 
@@ -324,6 +324,7 @@ def _tool_activity(span):
         if value not in (None, ""):
             text=value if isinstance(value,str) else json.dumps(value,ensure_ascii=False,indent=2)
             evidence.append(f"{label}:\n{text[:4000]}")
+    normalized.update({key:attrs[key] for key in attrs if key.startswith("agent.activity.")})
     return _activity_row({**_span_activity_identity(span), **normalized}, span.get("end_unix_nano") or span.get("start_unix_nano"),
                          "span", span["span_id"], span["span_id"], span.get("service", "unknown"),
                          "\n".join(evidence), span.get("resource_attributes"))
@@ -379,7 +380,7 @@ def _native_event_activity(span, event, index):
 def _span_activity_identity(span):
     attrs = span.get('attributes') or {}
     return {key: attrs[key] for key in (*SESSION_KEYS, 'agent.id', 'agent.runtime',
-            'agent.namespace', 'agent.worker_id') if key in attrs}
+            'agent.namespace', 'agent.worker_id','agent.turn.id') if key in attrs}
 
 
 def _recorded_activity_agents(spans, logs=()):
@@ -565,17 +566,24 @@ class Store:
         self._derived_stopping = False
         self._derived_thread = None
         self.last_derived_error = None
+        self._migration_stop=threading.Event()
+        self._migration_thread=None
+        self.migration_status={"ready":False,"stage":"Preparing indexed history","processed":0}
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         # SQLite otherwise creates the file using the process umask, exposing
         # captured content until the chmod at the end of initialization.
         try:
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
-            pass
+            self.created_new=False
         else:
+            self.created_new=True
             os.close(fd)
         os.chmod(self.path, 0o600)
         with self._connect() as db:
+            # Readers bind ownership and content to one snapshot while native
+            # ingestion continues; SQLite manages checkpointing and sidecars.
+            db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS spans (
                     trace_id TEXT NOT NULL, span_id TEXT NOT NULL,
@@ -750,9 +758,12 @@ class Store:
                     ) GROUP BY trace_id""")
                 db.execute("INSERT INTO schema_meta(key,value) VALUES('trace_activity_v1','1')")
         os.chmod(self.path, 0o600)
-        self._backfill_summaries()
-        self._backfill_task_outcomes()
-        self._backfill_endpoints()
+        from .storage_activity import initialize as initialize_activity, drain
+        with self._connect() as db:initialize_activity(db)
+        if self._async_derived_refresh:
+            self._migration_thread=threading.Thread(target=self._finish_migration,name='agenturm-history-migration',daemon=True)
+            self._migration_thread.start()
+        else:self._finish_migration()
         if self.workflow_patterns:
             with self._connect() as db:
                 recent = [r[0] for r in db.execute("SELECT trace_id FROM trace_activity ORDER BY last_ns DESC LIMIT 20")]
@@ -761,6 +772,46 @@ class Store:
             self._derived_thread = threading.Thread(target=self._derived_refresh_worker,
                                                    name="observatory-derived-refresh", daemon=True)
             self._derived_thread.start()
+
+    def _finish_migration(self):
+        from .storage_activity import drain
+        try:
+            while not self._migration_stop.is_set():
+                with self._connect() as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    count=drain(db)
+                processed=self.migration_status['processed']+count
+                self.migration_status={**self.migration_status,'processed':processed,'stage':f'Indexing source records · {processed:,} indexed'}
+                if not count:break
+            if self._migration_stop.is_set():return
+            self.migration_status={**self.migration_status,'stage':'Refreshing ownership and run summaries'}
+            self._backfill_summaries()
+            if self._migration_stop.is_set():return
+            self._backfill_task_outcomes()
+            self._backfill_endpoints()
+            self.migration_status={**self.migration_status,'ready':True,'stage':'Ready'}
+            # Compatibility queue for another local receiver version writing
+            # this database. Work remains bounded and source transactions queue
+            # invalidations, so a reader never serves stale materialized text.
+            if self._async_derived_refresh:
+                while not self._migration_stop.wait(.25):
+                    with self._connect() as db:
+                        if db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone():
+                            db.execute('BEGIN IMMEDIATE')
+                            drain(db,limit=200)
+
+        except Exception as exc:
+            self.last_derived_error=str(exc)
+            self.migration_status={**self.migration_status,'stage':'History migration failed; restart to resume','error':str(exc)}
+            if not self._async_derived_refresh:raise
+
+    def index_status(self):
+        state=dict(self.migration_status)
+        with self._connect() as db:
+            dirty=bool(db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone())
+        if dirty:
+            state.update(ready=False,stage='Indexing incoming source changes')
+        return state
 
     def receiver_namespace(self):
         """Keep health cheap; refresh identity after atomic database replacement."""
@@ -1135,11 +1186,18 @@ class Store:
 
     def _backfill_summaries(self):
         with self._connect() as db:
-            complete = db.execute("""SELECT 1 FROM schema_meta WHERE key='trace_derived_v12'
+            complete = db.execute("""SELECT 1 FROM schema_meta WHERE key='trace_derived_v13'
                 AND EXISTS (SELECT 1 FROM schema_meta WHERE key='trace_derived_v11')""").fetchone()
         if not complete:
-            before = None
+            with self._connect() as db:
+                saved=db.execute("SELECT value FROM schema_meta WHERE key='trace_derived_v13_cursor'").fetchone()
+            before=json.loads(saved[0]) if saved else None
+            with self._connect() as db:
+                progress=db.execute("SELECT value FROM schema_meta WHERE key='trace_derived_v13_done'").fetchone()
+                total=db.execute('SELECT COUNT(*) FROM trace_activity').fetchone()[0]
+            done=int(progress[0]) if progress else 0
             while True:
+                if self._migration_stop.is_set():return
                 sql = "SELECT trace_id,last_ns FROM trace_activity"
                 params = []
                 if before:
@@ -1152,12 +1210,19 @@ class Store:
                     break
                 self._refresh_summaries(row["trace_id"] for row in rows)
                 before = (rows[-1]["last_ns"], rows[-1]["trace_id"])
+                done+=len(rows)
+                self.migration_status={**self.migration_status,'runs_refreshed':done,'total_runs':total,
+                    'stage':f'Refreshing run evidence · {done:,}/{total:,} runs'}
+                with self._connect() as db:
+                    db.execute("INSERT OR REPLACE INTO schema_meta VALUES('trace_derived_v13_cursor',?)",(json.dumps(before),))
+                    db.execute("INSERT OR REPLACE INTO schema_meta VALUES('trace_derived_v13_done',?)",(str(done),))
                 if len(rows) < 100:
                     break
         if not complete:
             with self._connect() as db:
-                db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v12','1')")
+                db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v13','1')")
                 db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v11','1')")
+                db.execute("DELETE FROM schema_meta WHERE key IN ('trace_derived_v13_cursor','trace_derived_v13_done')")
 
     def _backfill_task_outcomes(self):
         # Upgrade only lifecycle metadata. Replaying all historical model/tool
@@ -1295,6 +1360,8 @@ class Store:
                         self._derived_condition.notify()
 
     def close(self):
+        self._migration_stop.set()
+        if self._migration_thread and self._migration_thread.is_alive():self._migration_thread.join(timeout=15)
         if self._derived_thread is None:
             return
         with self._derived_condition:
@@ -1538,6 +1605,8 @@ class Store:
                 ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
                 [(s["trace_id"], s["end_unix_nano"]) for s in spans])
             self._update_endpoints(db, spans)
+            from .storage_activity import drain
+            drain(db,limit=10000)
         self._ingest_agent_nodes_from_spans(spans)
         self._refresh_after_write(s["trace_id"] for s in spans)
         return len(spans)
@@ -1677,6 +1746,8 @@ class Store:
                 ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
                 [(log["trace_id"], log["time_unix_nano"]) for log in records if log["trace_id"]])
             self._update_endpoints(db, records)
+            from .storage_activity import drain
+            drain(db,limit=10000)
         nodes = [_agent_node_from_attributes(log.get("attributes"), log.get("resource_attributes"),
                                              log.get("service"), log.get("time_unix_nano"),
                                              log.get("digest"))
@@ -1724,137 +1795,105 @@ class Store:
 
     def activity_page(self, limit=100, service=None, domain=None, query=None, session_id=None,
                       cursor=None, include_reviews=True, errors_only=False, action=None,
-                      agent_id=None, subtree=False, scope_revision=None, trace_id=None):
-        """Browse saved activity, including logs older than the trace preview window."""
-        limit = max(1, min(500, int(limit)))
-        before = self._event_cursor(cursor)
-        scope = None
+                      agent_id=None, subtree=False, scope_revision=None, trace_id=None, turn_id=None, review=False):
+        """Read indexed source events; never expand historical trace-summary JSON."""
+        from .storage_activity import drain
+        limit=max(1,min(500,int(limit)));before=self._event_cursor(cursor)
+        scope=None;clauses=[];params=[]
         if agent_id:
-            scope = self.resolve_agent_scope(agent_id, include_subagents=bool(subtree))
-            if scope_revision and scope_revision != scope["revision"]:
-                raise ValueError("hierarchy scope changed")
-            if not scope["agent_ids"]:
-                return {'activity': [], 'next_cursor': None, 'scope': 'agent subtree',
-                        'receiver_id': self.receiver_namespace(), 'agent_scope': scope}
-        if trace_id is not None:
-            trace_id = _id(trace_id, TRACE_ID, 'trace_id')
-        # Trace summaries contain span-derived activity. Read log activity from
-        # its source table so a busy trace's preview limit cannot hide history.
-        def attr(*keys, default="''"):
-            fields=[f"NULLIF(json_extract(l.attributes,'$.\"{key}\"'),'')" for key in keys]
-            return 'COALESCE(' + ','.join([*fields,default]) + ')'
-        fields={
-            'time_unix_nano':'l.time_ns', 'service':'l.service', 'source':"'log'",
-            'source_id':'l.digest', 'span_id':'l.span_id',
-            'domain':attr('agent.activity.domain','activity.domain',default="'other'"),
-            'action':attr('agent.activity.action','activity.action',default="'activity'"),
-            'subject':attr('agent.activity.subject','agent.activity.target','activity.subject','activity.target'),
-            'result':attr('agent.activity.result','activity.result',default="'unknown'"),
-            'actor':attr('agent.activity.actor','agent.actor'),
-            'mcp_server':attr('mcp.server.name'), 'mcp_tool':attr('mcp.tool.name'),
-            'duration_ms':"json_extract(l.attributes,'$.duration_ms')",
-            'detail':"CASE WHEN json_type(l.body)='text' THEN json_extract(l.body,'$') ELSE '' END",
-            'agent_id':'l.agent_id',
-            'metadata':"json_patch(COALESCE((SELECT json_group_object(key,value) FROM json_each(l.resource_attributes) "
-                "WHERE key LIKE 'cursor.%' AND key NOT LIKE 'cursor.user.%' AND key!='cursor.team.id'),json('{}')),"
-                "COALESCE((SELECT json_group_object(key,value) FROM json_each(l.attributes) "
-                "WHERE key LIKE 'cursor.%' AND key NOT LIKE 'cursor.user.%' AND key!='cursor.team.id'),json('{}')))",
-        }
-        log_value='json_object(' + ','.join(f"'{key}',{value}" for key,value in fields.items()) + ')'
-        session=_session_sql_expression('l')
-        def filters(columns):
-            conditions, params = [], []
-            if trace_id:
-                conditions.append(columns['trace_id']+'=?')
-                params.append(trace_id)
-            if scope is not None:
-                marks = ','.join('?' for _ in scope['agent_ids'])
-                conditions.append(columns['agent_id']+f' IN ({marks})')
-                params.extend(scope['agent_ids'])
-            for name, value in (('session_id',session_id),('service',service),('domain',domain)):
-                if value:
-                    conditions.append(columns[name]+'=?')
-                    params.append(value)
-            if action:
-                conditions.append('lower('+columns['action']+')=?')
-                params.append(str(action).casefold())
-            if not include_reviews:
-                conditions.append("COALESCE("+columns['service']+",'')!='codex-review'")
-            if errors_only:
-                conditions.append('lower('+columns['result']+") IN ('error','failed','denied','blocked','policy_denied','incomplete')")
-            if query:
-                conditions.append('instr(lower('+columns['value']+'),lower(?))>0')
-                params.append(query)
-            if before:
-                conditions.append(f"({columns['stamp']},{columns['key']}) < (?,?)")
-                params.extend(before)
-            return ''.join(' AND '+condition for condition in conditions), params
-
-        span_stamp="json_extract(e.value,'$.time_unix_nano')"
-        span_key="COALESCE(cached.trace_id,'log') || ':' || json_extract(e.value,'$.source_id')"
-        event_agent="NULLIF(json_extract(e.value,'$.agent_id'),'')"
-        scoped_payload="json_extract(e.value,'$.activity_scope_version')=1"
-        canonical_event=f"({event_agent} GLOB 'ag1_[0-9a-f]*' AND length({event_agent})=36)"
-        # New projections are authoritative even when identity is unavailable.
-        # Legacy rows may recover only through their own indexed source span.
-        span_agent=(f"CASE WHEN {scoped_payload} OR {canonical_event} THEN {event_agent} "
-            f"WHEN {event_agent} IS NULL OR {event_agent} IN ("
-            "json_extract(owner.attributes,'$.\"agent.id\"'),"
-            "json_extract(owner.resource_attributes,'$.\"agent.id\"')) "
-            f"THEN owner.agent_id ELSE {event_agent} END")
-        owner_session=_session_sql_expression('owner')
-        own_span_session=("CASE WHEN json_type(e.value,'$.session_id') IS NOT NULL "
-            f"THEN NULLIF(json_extract(e.value,'$.session_id'),'') ELSE {owner_session} END")
-        span_session=(f"CASE WHEN {scoped_payload} THEN NULLIF(json_extract(e.value,'$.session_id'),'') "
-            f"WHEN ({span_agent}) GLOB 'ag1_[0-9a-f]*' AND length({span_agent})=36 "
-            f"THEN {own_span_session} ELSE COALESCE({own_span_session},cached.session_id) END")
-        needs_owner=(f"COALESCE(json_extract(e.value,'$.activity_scope_version'),0)!=1 AND "
-            f"(NOT COALESCE({canonical_event},0) OR json_type(e.value,'$.session_id') IS NULL)")
-        span_where, span_params=filters({
-            **{name:f"json_extract(e.value,'$.{name}')" for name in ('service','domain','action','result')},
-            'session_id':span_session,'agent_id':span_agent,'trace_id':'cached.trace_id',
-            'value':'e.value','stamp':span_stamp,'key':span_key})
-        # Canonically owned records keep their own session inside a shared trace.
-        # Preserve historical trace-session fallback for untagged legacy logs.
-        log_session=(f"CASE WHEN l.agent_id GLOB 'ag1_[0-9a-f]*' AND length(l.agent_id)=36 "
-            f"THEN {session} ELSE COALESCE(cached.session_id,{session}) END")
-        log_key="COALESCE(l.trace_id,'log') || ':' || l.digest"
-        log_where, log_params=filters({**fields,'session_id':log_session,'agent_id':'l.agent_id',
-            'value':log_value,'stamp':'l.time_ns','key':log_key,'trace_id':'l.trace_id'})
-        # Select ordered candidates before constructing payloads. Extracting the
-        # timestamp from a full json_object forced every historical log's body
-        # and metadata through JSON serialization on every cockpit refresh.
-        # Every filter precedes each branch's limit, so old matching requests
-        # and tied timestamps remain reachable through the same global cursor.
-        activity_sql=f"""WITH span_candidates AS (
-            SELECT cached.trace_id,{span_session} AS session_id,e.value,{span_agent} AS agent_id,
-                {span_stamp} AS stamp,{span_key} AS event_key
-            FROM trace_summaries cached,json_each(cached.activity_json) e
-            LEFT JOIN spans owner ON owner.trace_id=cached.trace_id
-                AND owner.span_id=json_extract(e.value,'$.span_id') AND {needs_owner}
-            WHERE json_extract(e.value,'$.source')!='log'{span_where}
-            ORDER BY stamp DESC,event_key DESC LIMIT ?
-        ), log_candidates AS (
-            SELECT l.digest,l.trace_id,{log_session} AS session_id,l.time_ns AS stamp,{log_key} AS event_key
-            FROM logs l LEFT JOIN trace_summaries cached ON cached.trace_id=l.trace_id
-            WHERE l.event_name='agent.activity'{log_where}
-            ORDER BY stamp DESC,event_key DESC LIMIT ?
-        ) SELECT trace_id,session_id,json_set(value,'$.agent_id',agent_id) AS value,stamp,event_key FROM span_candidates
-            UNION ALL
-            SELECT candidate.trace_id,candidate.session_id,{log_value},candidate.stamp,candidate.event_key
-            FROM log_candidates candidate JOIN logs l ON l.digest=candidate.digest
-            ORDER BY stamp DESC,event_key DESC LIMIT ?"""
+            scope=self.resolve_agent_scope(agent_id,include_subagents=bool(subtree))
+            if scope_revision and scope_revision!=scope['revision']:raise ValueError('hierarchy scope changed')
+            agents=scope['agent_ids'] if subtree else [agent_id]
+            if not agents:clauses.append('0')
+            else:
+                clauses.append('agent_id IN ('+','.join('?' for _ in agents)+')');params.extend(agents)
+        if trace_id and turn_id:raise ValueError('Choose an exact trace or a recorded turn, not both')
+        if trace_id is not None:trace_id=_id(trace_id,TRACE_ID,'trace_id')
+        if turn_id is not None:turn_id=_id(turn_id,TRACE_ID,'turn_id')
+        for key,value in (('trace_id',trace_id),('session_id',session_id),('service',service),('domain',domain),('turn_id',turn_id)):
+            if value:clauses.append(key+'=?');params.append(value)
+        if action:clauses.append('lower(action)=?');params.append(str(action).casefold())
+        if not include_reviews:clauses.append("COALESCE(service,'')!='codex-review'")
+        if errors_only:clauses.append("lower(result) IN ('error','failed','denied','blocked','policy_denied','incomplete')")
+        if review:clauses.append("(domain IN ('message','file','shell','context') OR lower(result) IN ('error','failed','denied','blocked','policy_denied','incomplete'))")
+        if query:
+            clauses.append("(instr(lower(payload),lower(?))>0 OR EXISTS(SELECT 1 FROM logs raw WHERE kind='log' AND raw.digest=owner_key AND instr(lower(raw.body),lower(?))>0) OR EXISTS(SELECT 1 FROM spans raw WHERE kind='span' AND raw.trace_id=activity_index_v1.trace_id AND raw.trace_id||':'||raw.span_id=owner_key AND instr(lower(raw.attributes||raw.events),lower(?))>0))")
+            params.extend((query,query,query))
+        if before:clauses.append('(stamp,event_key)<(?,?)');params.extend(before)
+        where=' WHERE '+' AND '.join(clauses) if clauses else ''
         with self._connect() as db:
-            rows = db.execute(activity_sql, [*span_params,limit+1,*log_params,limit+1,limit+1]).fetchall()
-            receiver = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
-        items = [{**json.loads(row['value']), 'id': row['event_key'],
-                  'trace_id': row['trace_id'], 'session_id': row['session_id']} for row in rows[:limit]]
-        next_cursor = self._next_event_cursor(rows[limit-1]['stamp'],rows[limit-1]['event_key']) if len(rows)>limit else None
-        result = {'activity': items, 'next_cursor': next_cursor, 'scope': 'stored activity',
-                  'receiver_id': receiver}
-        if scope is not None:
-            result.update(scope='agent subtree' if subtree else 'this agent', agent_scope=scope)
+            # Bind indexed ownership, content pointers and context to one WAL snapshot.
+            db.execute('BEGIN')
+            # Repair older-writer changes transactionally and within a bounded
+            # read budget. Large upgrades are resumed at receiver startup.
+            if db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone():
+                db.rollback()
+                db.execute('BEGIN IMMEDIATE')
+                drain(db,limit=1000)
+            if db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone():
+                db.commit()
+                raise ValueError('Activity index is catching up; retry after receiver migration completes')
+            rows=db.execute('SELECT payload,stamp,event_key FROM activity_index_v1'+where+' ORDER BY stamp DESC,event_key DESC LIMIT ?',[*params,limit+1]).fetchall()
+            from .storage_activity import hydrate
+            items=hydrate(db,[json.loads(row['payload']) for row in rows[:limit]])
+            bounded=[];size=0
+            for item in items:
+                amount=len(json.dumps(item,ensure_ascii=False).encode())
+                if size+amount>(1536*1024 if review else 12*1024*1024):break
+                bounded.append(item);size+=amount
+            context=[]
+            if review and not cursor and not (domain or action or query or errors_only):
+                for message_action in ('user','assistant'):
+                    context_where=where+(' AND ' if where else ' WHERE ')+"domain='message' AND lower(action)=?"
+                    found=db.execute('SELECT payload FROM activity_index_v1'+context_where+' ORDER BY stamp DESC,event_key DESC LIMIT 1',[*params,message_action]).fetchone()
+                    if found:context.append(json.loads(found[0]))
+                context=hydrate(db,context)
+            receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+        result=dict(activity=bounded,review_context=context,
+            next_cursor=self._next_event_cursor(rows[len(bounded)-1]['stamp'],rows[len(bounded)-1]['event_key']) if bounded and len(rows)>len(bounded) else None,
+            scope='stored activity',receiver_id=receiver)
+        if scope is not None:result.update(scope='agent subtree' if subtree else 'this agent',agent_scope=scope)
         return result
+
+    def review_run(self, trace_id):
+        """Bounded exact-run facts without span bodies or historical search text."""
+        trace_id=_id(trace_id,TRACE_ID,'trace_id')
+        with self._connect() as db:
+            row=db.execute('SELECT summary_json FROM live_summaries_v1 WHERE trace_id=?',(trace_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def review_turn(self, trace_id):
+        """Authoritative OpenCode user-parent membership, preserving step traces.
+
+        Only adapter-tagged assistant messages contribute usage. Each message
+        owns its disjoint model/tool records; missing ownership keeps usage
+        unavailable rather than borrowing session totals.
+        """
+        trace_id=_id(trace_id,TRACE_ID,'trace_id')
+        with self._connect() as db:
+            root=db.execute("SELECT attributes,service,agent_id FROM spans WHERE trace_id=? AND name='agent.run' AND scope_name='observatory.opencode' LIMIT 1",(trace_id,)).fetchone()
+            if not root or root['service']!='opencode':return None
+            attrs=json.loads(root['attributes']);turn=attrs.get('agent.turn.id')
+            session=attrs.get('session.id');agent=root['agent_id']
+            if not turn or not session or not agent:return None
+            members=db.execute("SELECT s.trace_id,c.summary_json FROM spans s LEFT JOIN live_summaries_v1 c USING(trace_id) WHERE s.service='opencode' AND s.name='agent.run' AND s.scope_name='observatory.opencode' AND json_extract(s.attributes,'$.\"agent.turn.id\"')=? AND s.agent_id=? AND json_extract(s.attributes,'$.\"session.id\"')=? ORDER BY s.start_ns,s.trace_id LIMIT 1001",(turn,agent,session)).fetchall()
+        clipped=len(members)>1000
+        members=members[:1000]
+        rows=[json.loads(row['summary_json']) if row['summary_json'] else {} for row in members]
+        owner=dict(producer='opencode',agent_id=agent,session_id=session)
+        complete=bool(rows) and not clipped and all(row.get('review_owner')==owner and row.get('turn_id')==turn and row.get('usage_complete') is True for row in rows)
+        usage=dict(trace_id=trace_id,turn_id=turn,scope_owner=owner,turn_members_clipped=clipped,turn_usage_complete=complete,step_trace_ids=[row['trace_id'] for row in members],
+            agent_count=1,agent_count_complete=complete,review_owner=owner if complete else {},
+            usage_allocation='recorded user turn; disjoint assistant message usage' if complete else 'turn step ownership or indexing incomplete; usage unavailable')
+        if complete:
+            for field in ('input_tokens','output_tokens','cache_read_input_tokens','cache_write_input_tokens','reasoning_output_tokens'):
+                reported=all(row.get(field+'_reported') is True for row in rows)
+                usage[field]=sum(row.get(field) or 0 for row in rows) if reported else None
+                usage[field+'_reported']=reported
+            costs=[row.get('known_cost_usd') for row in rows]
+            usage.update(known_cost_usd=sum(value for value in costs if value is not None) if any(value is not None for value in costs) else None,
+                cost_complete=all(row.get('cost_complete') for row in rows),usage_complete=all(usage.get(field+'_reported') for field in ('input_tokens','output_tokens')))
+        return usage
 
     def mcp_calls(self, limit=100, service=None, session_id=None, query=None):
         return self.mcp_page(limit, service, session_id, query)['calls']
@@ -1868,10 +1907,8 @@ class Store:
         mcp_method = "json_extract(attributes,'$.\"mcp.method.name\"')"
         # Keep all MCP protocol methods, not only tool execution. Discovery,
         # prompts, and resource reads are useful agent activity too.
-        match = ("(attributes LIKE '%\"mcp.method.name\"%' OR "
-                 "attributes LIKE '%\"mcp.server.name\"%' OR "
-                 "attributes LIKE '%\"mcp.tool.name\"%' OR "
-                 "attributes LIKE '%\"rpc.system\": \"mcp\"%')")
+        from .storage_activity import MCP_PREDICATE
+        match = MCP_PREDICATE
         clauses, params = [match], []
         if service:
             clauses.append("service=?")
@@ -2657,14 +2694,9 @@ class Store:
         if not 1 <= int(limit) <= 500:
             raise ValueError("limit must be between 1 and 500")
         with self._connect() as db:
-            rows = db.execute("""SELECT s.session_id,s.trace_id,s.summary_json,s.agent_id AS agent_id,a.last_ns
-                FROM trace_summaries AS s JOIN trace_activity AS a USING(trace_id)
-                WHERE s.session_id IN (
-                    SELECT s2.session_id FROM trace_summaries AS s2
-                    JOIN trace_activity AS a2 USING(trace_id)
-                    WHERE s2.session_id IS NOT NULL GROUP BY s2.session_id
-                    ORDER BY MAX(a2.last_ns) DESC,s2.session_id DESC LIMIT ?)
-                ORDER BY a.last_ns DESC,s.session_id DESC""", (int(limit),)).fetchall()
+            db.execute('BEGIN')
+            from .storage_sessions import session_projection
+            rows,session_totals=session_projection(db,int(limit))
             legacy_latest=[];seen_sessions=set()
             for row in rows:
                 key=(row['session_id'],row['agent_id'])
@@ -2689,34 +2721,30 @@ class Store:
             if log_sessions:
                 session_ids = [session["session_id"] for session in log_sessions]
                 placeholders = ",".join("?" for _ in session_ids)
-                def json_values(keys):
-                    return [f"json_extract(l.attributes,'$.\"{key}\"')" for key in keys]
-                def json_present(keys):
-                    return " OR ".join(f"json_type(l.attributes,'$.\"{key}\"') IS NOT NULL" for key in keys)
-                input_expr = "COALESCE(" + ",".join(json_values(INPUT_TOKEN_KEYS)) + ",0)"
-                output_expr = "COALESCE(" + ",".join(json_values(OUTPUT_TOKEN_KEYS)) + ",0)"
-                select_usage = [
-                    f"COALESCE(SUM(MAX(0,CAST({input_expr} AS INTEGER))),0) AS input_tokens",
-                    f"COALESCE(SUM(MAX(0,CAST({output_expr} AS INTEGER))),0) AS output_tokens",
-                    f"MAX(CASE WHEN {json_present(INPUT_TOKEN_KEYS)} THEN 1 ELSE 0 END) AS input_tokens_reported",
-                    f"MAX(CASE WHEN {json_present(OUTPUT_TOKEN_KEYS)} THEN 1 ELSE 0 END) AS output_tokens_reported",
-                ]
-                for field, keys in TOKEN_BREAKDOWN_KEYS.items():
-                    paths = ",".join(json_values(keys))
-                    present = json_present(keys)
-                    select_usage.append(f"COALESCE(SUM(MAX(0,CAST(COALESCE({paths},0) AS INTEGER))),0) AS {field}")
-                    select_usage.append(f"MAX(CASE WHEN {present} THEN 1 ELSE 0 END) AS {field}_reported")
-                traced_session = f"NOT EXISTS (SELECT 1 FROM trace_summaries s WHERE s.session_id={session_expr})"
-                log_usage_rows = db.execute(f"""SELECT {session_expr} AS session_id,{','.join(select_usage)}
-                    FROM logs l WHERE l.event_name='agent.activity'
-                      AND {session_expr} IN ({placeholders}) AND {traced_session}
-                    GROUP BY {session_expr}""", session_ids).fetchall()
+                fields=('input_tokens','output_tokens','cache_read_input_tokens','cache_write_input_tokens','reasoning_output_tokens')
+                selected=[]
+                for field in fields:selected.extend([f'COALESCE(SUM(l.{field}),0) AS {field}',f'MAX(l.{field}_reported) AS {field}_reported'])
+                log_usage_rows=db.execute('SELECT l.session_id,'+','.join(selected)+' FROM live_log_usage_v1 l WHERE l.session_id IN ('+placeholders+') AND NOT EXISTS(SELECT 1 FROM live_summaries_v1 s WHERE s.session_id=l.session_id) GROUP BY l.session_id',session_ids).fetchall()
             for session in log_sessions:
-                log_rows.extend(db.execute(f"""SELECT l.digest,l.span_id,l.trace_id,l.time_ns,l.service,l.event_name,l.severity_number,
+                # Filter scalar source identities before reading any captured
+                # payload. Native logs already covered by a run summary need
+                # neither JSON parsing nor another preview of their bodies.
+                log_rows.extend(db.execute(f"""WITH candidates AS (
+                    SELECT activity.owner_key AS digest,activity.stamp AS stamp
+                    FROM activity_index_v1 activity
+                    WHERE activity.kind='log' AND activity.session_id=?
+                      AND NOT EXISTS (SELECT 1 FROM live_summaries_v1 covered JOIN trace_activity covered_time USING(trace_id)
+                        WHERE activity.agent_id IS NOT NULL AND covered.trace_id=activity.trace_id
+                          AND covered.agent_id=activity.agent_id AND covered_time.last_ns>=activity.stamp)
+                    UNION ALL
+                    SELECT l.digest,l.time_ns AS stamp FROM logs l
+                    WHERE {session_expr}=? AND l.event_name!='agent.activity'
+                    ORDER BY stamp DESC,digest DESC LIMIT 50)
+                    SELECT l.digest,l.span_id,l.trace_id,l.time_ns,l.service,l.event_name,l.severity_number,
                         l.attributes,l.resource_attributes,l.body,{session_expr} AS session_id
-                    FROM logs l WHERE {session_expr}=?
-                    ORDER BY time_ns DESC,digest DESC LIMIT 50""",
-                    (session["session_id"],)).fetchall())
+                    FROM candidates JOIN logs l USING(digest)
+                    ORDER BY candidates.stamp DESC,candidates.digest DESC""",
+                    (session['session_id'],session['session_id'])).fetchall())
             # Error reminders use bounded concrete evidence, never lifetime totals.
             # Read only the newest two traces for each execution identity.
             recent_traces = set()
@@ -2761,7 +2789,7 @@ class Store:
                               "input_tokens_reported","output_tokens_reported","cache_read_input_tokens_reported",
                               "cache_write_input_tokens_reported","reasoning_output_tokens_reported",
                               "known_cost_usd","cost_complete","usage_complete","task_outcome","task_outcome_ns",
-                              "agent_id","agent_count","agent_count_complete","review_owner","waiting_for")
+                              "agent_id","agent_count","agent_count_complete","review_owner","waiting_for","turn_id")
                 item["latest_run"]={key:summary[key] for key in usage_fields if key in summary}
                 item["latest_run"]["trace_id"]=row["trace_id"]
                 if row['trace_id'] in legacy_agent_counts:
@@ -2803,6 +2831,16 @@ class Store:
             from .storage_derived import merge_labels
             merge_labels(item, "services", summary.get("services", []), summary.get("services_complete", True))
             merge_labels(item, "models", summary.get("models", []), summary.get("models_complete", True))
+
+        for key,totals in session_totals.items():
+            if key in grouped:
+                grouped[key].update(totals)
+                # Recover the most recent recorded original task even if the
+                # latest two runs did not repeat that optional metadata.
+                if not grouped[key].get('initial_task'):
+                    with self._connect() as db:
+                        original=db.execute("SELECT c.initial_task FROM live_run_stats_v1 c JOIN trace_activity a USING(trace_id) WHERE c.session_id=? AND c.agent_id IS ? AND c.initial_task IS NOT NULL AND c.initial_task!='' ORDER BY a.last_ns DESC,c.trace_id DESC LIMIT 1",key).fetchone()
+                    if original:grouped[key]['initial_task']=original[0]
 
         # Some runtimes emit session-tagged events without trace context. Keep
         # those sessions visible in the roster instead of making Activity the
@@ -2975,6 +3013,10 @@ class Store:
             item["models"] = sorted(item["models"])
             result.append(item)
         result.sort(key=lambda item: (item["last_unix_nano"], item["session_id"]), reverse=True)
+        for item in result[:int(limit)]:
+            latest=item.get('latest_run') or {}
+            if latest.get('turn_id'):
+                latest['turn_usage']=self.review_turn(latest['trace_id'])
         return result[:int(limit)]
 
     def related_traces(self, trace_id):
@@ -3128,72 +3170,21 @@ class Store:
                   "known_cost_usd": 0.0, "unknown_cost_runs": 0,
                   "completed_tasks": 0, "costed_tasks": 0, "completed_task_cost_usd": 0.0,
                   "usage_complete": True, "status_complete": True}
-        cursor = None
-        while True:
-            page = self.trace_page(limit=500, cursor=cursor)
-            for run in page["traces"]:
-                totals["runs"] += 1
-                totals["errors"] += run["status"] == "ERROR"
-                totals["incomplete"] += run["status"] == "INCOMPLETE"
-                totals["running"] += run["status"] == "RUNNING"
-                totals["spans"] += run["span_count"]
-                totals["usage_complete"] &= run.get("usage_complete", True)
-                totals["status_complete"] &= run.get("status_complete", True)
-                totals["input_tokens"] += run["input_tokens"] or 0
-                totals["output_tokens"] += run["output_tokens"] or 0
-                totals["cache_read_input_tokens"] += int(run.get("cache_read_input_tokens") or 0)
-                totals["cache_write_input_tokens"] += int(run.get("cache_write_input_tokens") or 0)
-                totals["reasoning_output_tokens"] += int(run.get("reasoning_output_tokens") or 0)
-                for field in ("cache_read_input_tokens", "cache_write_input_tokens", "reasoning_output_tokens"):
-                    totals[f"{field}_reported"] |= bool(run.get(f"{field}_reported"))
-                totals["input_tokens_reported"] |= bool(run.get("input_tokens_reported"))
-                totals["output_tokens_reported"] |= bool(run.get("output_tokens_reported"))
-                totals["known_cost_usd"] += run["known_cost_usd"] or 0
-                totals["unknown_cost_runs"] += not run["cost_complete"]
-                # One recorded run (trace) is the accounting unit. Include
-                # finished failures, but never unfinished runs in the average.
-                if not run.get("active") and run["status"] not in {"RUNNING", "UNKNOWN"}:
-                    totals["completed_tasks"] += 1
-                    if run["cost_complete"] and run.get("known_cost_usd") is not None:
-                        totals["costed_tasks"] += 1
-                        totals["completed_task_cost_usd"] += run["known_cost_usd"]
-            cursor = page["next_cursor"]
-            if not cursor:
-                break
-        totals["known_cost_usd"] = round(totals["known_cost_usd"], 8)
+        fields=('input_tokens','output_tokens','cache_read_input_tokens','cache_write_input_tokens','reasoning_output_tokens')
+        selected=["COUNT(*) AS runs","COALESCE(SUM(status='ERROR'),0) AS errors","COALESCE(SUM(status='INCOMPLETE'),0) AS incomplete","COALESCE(SUM(status='RUNNING'),0) AS running","COALESCE(SUM(span_count),0) AS spans","COALESCE(MIN(usage_complete),1) AS usage_complete","COALESCE(MIN(status_complete),1) AS status_complete","SUM(known_cost_usd) AS known_cost_usd","COALESCE(SUM(NOT cost_complete),0) AS unknown_cost_runs","COALESCE(SUM(NOT active AND status NOT IN ('RUNNING','UNKNOWN')),0) AS completed_tasks","COALESCE(SUM(NOT active AND status NOT IN ('RUNNING','UNKNOWN') AND cost_complete AND known_cost_usd IS NOT NULL),0) AS costed_tasks","COALESCE(SUM(CASE WHEN NOT active AND status NOT IN ('RUNNING','UNKNOWN') AND cost_complete THEN known_cost_usd ELSE 0 END),0) AS completed_task_cost_usd"]
+        for field in fields:selected.extend([f'COALESCE(SUM({field}),0) AS {field}',f'COALESCE(MAX({field}_reported),0) AS {field}_reported'])
+        with self._connect() as db:totals.update(dict(db.execute('SELECT '+','.join(selected)+' FROM live_run_stats_v1').fetchone()))
+        for field in (*[name+'_reported' for name in fields],'usage_complete','status_complete'):totals[field]=bool(totals[field])
+        if totals['known_cost_usd'] is not None:totals['known_cost_usd']=round(totals['known_cost_usd'],8)
         totals["completed_task_cost_usd"] = round(totals["completed_task_cost_usd"], 8)
         totals["average_task_cost_usd"] = (round(totals["completed_task_cost_usd"] / totals["costed_tasks"], 8)
                                            if totals["costed_tasks"] else None)
         with self._connect() as db:
             totals["failed_outcomes"] = db.execute(
                 "SELECT COUNT(*) FROM outcomes WHERE passed=0").fetchone()[0]
-            session_expr = _session_sql_expression("l")
-            def json_values(keys):
-                return [f"json_extract(l.attributes,'$.\"{key}\"')" for key in keys]
-            def json_present(keys):
-                return " OR ".join(f"json_type(l.attributes,'$.\"{key}\"') IS NOT NULL" for key in keys)
-            input_expr = "COALESCE(" + ",".join(json_values(INPUT_TOKEN_KEYS)) + ",0)"
-            output_expr = "COALESCE(" + ",".join(json_values(OUTPUT_TOKEN_KEYS)) + ",0)"
-            input_present = json_present(INPUT_TOKEN_KEYS)
-            output_present = json_present(OUTPUT_TOKEN_KEYS)
-            breakdown_select = []
-            for field, keys in TOKEN_BREAKDOWN_KEYS.items():
-                expressions = json_values(keys)
-                present = json_present(keys)
-                breakdown_select.extend((
-                    f"COALESCE(SUM(MAX(0,CAST(COALESCE({','.join(expressions)},0) AS INTEGER))),0) AS {field}",
-                    f"MAX(CASE WHEN {present} THEN 1 ELSE 0 END) AS {field}_reported",
-                ))
-            log_usage = db.execute(f"""SELECT
-                    COALESCE(SUM(MAX(0,CAST({input_expr} AS INTEGER))),0) AS input_tokens,
-                    COALESCE(SUM(MAX(0,CAST({output_expr} AS INTEGER))),0) AS output_tokens,
-                    MAX(CASE WHEN {input_present} THEN 1 ELSE 0 END) AS input_tokens_reported,
-                    MAX(CASE WHEN {output_present} THEN 1 ELSE 0 END) AS output_tokens_reported,
-                    {','.join(breakdown_select)}
-                FROM logs l WHERE l.event_name='agent.activity'
-                    AND {session_expr} IS NOT NULL
-                    AND NOT EXISTS (SELECT 1 FROM trace_summaries s
-                                    WHERE s.session_id={session_expr})""").fetchone()
+            selected=[]
+            for field in fields:selected.extend([f'COALESCE(SUM(l.{field}),0) AS {field}',f'MAX(l.{field}_reported) AS {field}_reported'])
+            log_usage=db.execute('SELECT '+','.join(selected)+" FROM live_log_usage_v1 l WHERE l.session_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM live_summaries_v1 s WHERE s.session_id=l.session_id)").fetchone()
             totals["log_only_input_tokens"] = int(log_usage["input_tokens"] or 0)
             totals["log_only_output_tokens"] = int(log_usage["output_tokens"] or 0)
             totals["input_tokens"] += totals["log_only_input_tokens"]

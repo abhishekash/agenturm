@@ -106,7 +106,7 @@ class RecoveryTests(unittest.TestCase):
     def test_health_has_shorter_timeout_than_data_requests(self):
         response=MagicMock()
         response.__enter__.side_effect=lambda:io.BytesIO(b'{}')
-        with patch('observatory.terminal.urllib.request.urlopen',return_value=response) as open_url:
+        with patch('observatory.terminal.receiver_urlopen',return_value=response) as open_url:
             api=Api('http://localhost:14318')
             api.get('/api/health?probe=1');self.assertEqual(open_url.call_args.kwargs['timeout'],1)
             api.get('/api/health');self.assertEqual(open_url.call_args.kwargs['timeout'],3)

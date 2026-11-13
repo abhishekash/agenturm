@@ -31,10 +31,11 @@ def task_run_usage(sessions, item, traces=()):
     selected=item.get('trace_id') or item.get('latest_trace_id')
     latest=session.get('latest_run') or {}
     def allocated(row):
+        if row.get('turn_usage'):row=row['turn_usage']
         if not row.get('trace_id'):return {}
         count=row.get('agent_count')
         if type(count) is int and count==1 and row.get('agent_count_complete') is True:return row
-        return {key:row[key] for key in ('trace_id','agent_id','agent_count','agent_count_complete') if key in row} | {
+        return {key:row[key] for key in ('trace_id','agent_id','agent_count','agent_count_complete','turn_id','scope_owner','step_trace_ids','turn_usage_complete') if key in row} | {
             'usage_allocation':'shared trace; per-agent usage unavailable' if type(count) is int and count>1 else
                 'agent allocation unverified; per-agent usage unavailable'}
     if latest and (not selected or latest.get('trace_id')==selected):return allocated(latest)
@@ -78,6 +79,11 @@ def refreshed_review_item(original, snapshot, scope):
     for native in (getattr(snapshot, 'local_status', {}) or {}).get('sessions', ()):
         selected = {**native, **session_health(native, time.time_ns())}
         usage = task_run_usage(snapshot.sessions, selected, snapshot.traces)
+        if scope.turn_id:
+            membership=usage.get('scope_owner') or {}
+            if usage.get('turn_id')==scope.turn_id and membership.get('producer')==scope.producer and membership.get('agent_id')==scope.agent_id and membership.get('session_id')==scope.session_id:
+                selected['turn_id']=scope.turn_id
+                selected['_review_usage']=usage
         if usage.get('trace_id') and not selected.get('trace_id'):
             selected['trace_id'] = usage['trace_id']
         if scope_for(selected, snapshot).scope_key == scope.scope_key:
@@ -88,7 +94,7 @@ def refreshed_review_item(original, snapshot, scope):
         producer = original.get('service')
         latest=row.get('latest_run') or {}
         owner=latest.get('review_owner') or {}
-        if (scope.run_id and latest.get('trace_id')==scope.run_id and producer and
+        if (not scope.turn_id and scope.run_id and latest.get('trace_id')==scope.run_id and producer and
                 owner.get('producer')==producer and owner.get('agent_id')==scope.agent_id and
                 (not scope.session_id or owner.get('session_id')==scope.session_id)):
             outcome = latest.get('task_outcome') or 'unknown'

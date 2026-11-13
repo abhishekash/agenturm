@@ -1,4 +1,4 @@
-"""Local host and known agent process metadata; no environment or arguments."""
+"""Local host and known agent process metadata; no environment or arguments retained."""
 from __future__ import annotations
 
 import os
@@ -92,6 +92,18 @@ def snapshot(session_paths=None, proc_root=Path('/proc'), uid=None):
                             continue
                 except OSError:
                     pass
+                # Only retain a mode flag, never arguments or environments.
+                # A daemon can multiplex even when just one rollout is open.
+                multiplexed = len(matched)>1
+                if name.casefold() == 'codex':
+                    try:
+                        with (proc/'cmdline').open('rb') as stream:
+                            mode = stream.read(256).split(b'\0')
+                        multiplexed = multiplexed or b'app-server' in mode or b'--managed-daemon' in mode
+                    except OSError:
+                        # Without mode evidence Codex process work is not proof
+                        # that a particular session is advancing.
+                        multiplexed = True
                 # Include tool subprocess work. A sleeping agent can be waiting
                 # on a compiler; do not mislabel that session as stuck.
                 pending, seen = [proc.name], set()
@@ -113,6 +125,7 @@ def snapshot(session_paths=None, proc_root=Path('/proc'), uid=None):
                         continue
                 for source in matched:
                     sample = result['sessions'].setdefault(source, {'pids': [], 'identity': [], 'cpu_seconds': 0, 'io_chars': 0})
+                    sample['progress_attributed'] = sample.get('progress_attributed', True) and not multiplexed
                     sample['pids'].append(int(proc.name))
                     sample['identity'].append((int(proc.name), started))
                     sample['cpu_seconds'] += cpu

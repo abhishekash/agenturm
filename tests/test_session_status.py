@@ -13,7 +13,7 @@ class SessionHealthTests(unittest.TestCase):
         for state in ('Unknown','Unconfirmed','Monitor delayed','Catching up','Spawn recorded',
                       'Connected','Finished','Offline','Idle','Waiting','Failed','Interrupted'):
             # A stale/contradictory flag must not override the lifecycle evidence.
-            self.assertEqual(session_phase({'state':state,'active':True}),'attention',state)
+            self.assertEqual(session_phase({'state':state,'active':True}), 'attention' if state in {'Waiting','Failed','Interrupted'} else 'unknown',state)
         self.assertEqual(session_phase({'state':'Completed','active':True,'errors':8}),'review')
 
     def entry(self, seconds=120, **values):

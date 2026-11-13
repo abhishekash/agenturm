@@ -104,20 +104,12 @@ class SharedTraceActivityTests(unittest.TestCase):
         other=self.store.activity_page(agent_id=self.child,session_id='child-session',trace_id=self.trace)['activity']
         self.assertNotIn('pytest child log',{row['subject'] for row in other})
 
-    def test_explicit_unknown_session_stays_unknown_but_missing_legacy_field_uses_own_span(self):
+    def test_projection_uses_source_identity_even_if_disposable_cache_is_changed(self):
         self.install(child_session='child-session')
         with self.store._connect() as db:
             activity=json.loads(db.execute('SELECT activity_json FROM trace_summaries WHERE trace_id=?',(self.trace,)).fetchone()[0])
             selected=next(row for row in activity if row['subject']=='pytest child')
             selected['session_id']=None
-            db.execute('UPDATE trace_summaries SET activity_json=? WHERE trace_id=?',(json.dumps(activity),self.trace))
-        rows=self.store.activity_page(agent_id=self.child,trace_id=self.trace)['activity']
-        self.assertIsNone(next(row for row in rows if row['subject']=='pytest child')['session_id'])
-        rows=self.store.activity_page(agent_id=self.child,session_id='child-session',trace_id=self.trace)['activity']
-        self.assertNotIn('pytest child',{row['subject'] for row in rows})
-        selected.pop('session_id')
-        selected.pop('activity_scope_version',None)
-        with self.store._connect() as db:
             db.execute('UPDATE trace_summaries SET activity_json=? WHERE trace_id=?',(json.dumps(activity),self.trace))
         rows=self.store.activity_page(agent_id=self.child,session_id='child-session',trace_id=self.trace)['activity']
         self.assertIn('pytest child',{row['subject'] for row in rows})
