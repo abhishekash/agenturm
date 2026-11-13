@@ -28,10 +28,10 @@ class SessionScopePickerTests(unittest.IsolatedAsyncioTestCase):
             await pilot.click('#scope');await pilot.pause()
             self.assertIsInstance(app.screen,SessionScopeScreen)
             choices=app.screen.query_one(OptionList)
-            self.assertIs(app.screen.focused,choices)
+            self.assertIs(app.screen.focused,app.screen.query_one(Input))
             self.assertGreater(app.screen.query_one('#session-scope-dialog').size.width,34)
             self.assertIn('Fix checkout regression',choices.get_option('s-root').prompt.plain)
-            self.assertIn('Codex · checkout-api',choices.get_option('s-root').prompt.plain)
+            self.assertIn('checkout-api · Codex',choices.get_option('s-root').prompt.plain)
             await pilot.press('down');await pilot.pause()
             from observatory.themes import PALETTES
             for theme in ('Bright','Observation','Current'):
@@ -120,6 +120,62 @@ class SessionScopePickerTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press('enter');await pilot.pause()
             self.assertEqual(app.scope_value,'s-root')
             self.assertEqual(feed.scope_agent_id,app.source_map['s-root']['agent_id'])
+
+
+    async def test_large_roster_has_bounded_rows_searchable_full_text_and_stable_recent_order(self):
+        from rich.cells import cell_len
+        entries=[dict(id='all',task='All agent sessions',description='Clear the session filter')]
+        for index in range(146):
+            entries.append(dict(id=f's-{index:03}',task=('Long task 界 é 👩‍💻 '*80)+f' needle-{index}',
+                                description=f'project · Codex · Worker {index:08}',
+                                detail=f'Full task {index}\nSession full-session-{index}',stamp=index,
+                                status='Running',updated='1m ago'))
+        app=ObservatoryApp(HierarchyFeed(),persist_preferences=False)
+        async with app.run_test(size=(120,36)) as pilot:
+            await pilot.pause();app.refresh_timer.stop()
+            app.push_screen(SessionScopeScreen(entries,'s-003'));await pilot.pause()
+            screen=app.screen;choices=screen.query_one(OptionList)
+            self.assertEqual([e['id'] for e in screen.filtered[:3]],['all','s-145','s-144'])
+            self.assertIn('Current',choices.get_option('s-003').prompt.plain)
+            for width,height in ((120,36),(80,24),(60,18)):
+                await pilot.resize_terminal(width,height);await pilot.pause()
+                for index in range(choices.option_count):
+                    lines=choices.get_option_at_index(index).prompt.plain.splitlines()
+                    self.assertEqual(len(lines),2)
+                    self.assertTrue(all(cell_len(line)<=choices.content_size.width-4 for line in lines))
+                self.assertGreaterEqual(choices.size.height,4)
+                self.assertEqual(screen.filtered[choices.highlighted]['id'],'s-003')
+            screen.query_one(Input).value='needle-145';await pilot.pause()
+            self.assertEqual([e['id'] for e in screen.filtered],['s-145'])
+            self.assertIs(screen.focused,screen.query_one(Input))
+            screen.query_one(Input).value='';await pilot.pause()
+            await pilot.press('up');await pilot.pause()
+            self.assertEqual(screen.filtered[choices.highlighted]['id'],'s-004')
+            self.assertEqual(app.scope_value,'all')
+            await pilot.resize_terminal(50,14);await pilot.pause()
+            self.assertTrue(screen.query_one('#session-scope-small').display)
+            self.assertFalse(choices.display)
+            await pilot.press('escape');await pilot.pause()
+            self.assertNotIsInstance(app.screen,SessionScopeScreen)
+
+    async def test_untitled_workers_keep_identity_visible_in_a_narrow_picker(self):
+        feed=HierarchyFeed()
+        for row in feed.snapshot.local_status['sessions']:
+            row.update(task='',initial_task='',native_worker_id='worker-'+row['source_id'],
+                       project='very-long-project-name-'*20)
+        app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(60,18)) as pilot:
+            await pilot.pause();app.refresh_timer.stop();app.action_session_scope();await pilot.pause()
+            option=app.screen.query_one(OptionList).get_option('s-root').prompt.plain
+            self.assertIn('Worker r-s-root',option.splitlines()[0])
+            self.assertIn('Worker r-s-root',option.splitlines()[1])
+            self.assertNotIn('Untitled',option)
+            await pilot.press('escape');await pilot.pause()
+
+    def test_unknown_timestamps_sort_last_with_deterministic_ties(self):
+        screen=SessionScopeScreen([dict(id=key,stamp=stamp) for key,stamp in
+                                   [('z',0),('b',8),('a',8),('all',0),('x',None)]])
+        self.assertEqual([e['id'] for e in screen.entries],['all','a','b','x','z'])
 
 
 if __name__=='__main__':unittest.main()
