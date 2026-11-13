@@ -1,0 +1,62 @@
+{
+  "kind": "source-projection-microbenchmark",
+  "python": "3.12.3",
+  "source": "bc235988f4fc85e4f4630e9073fdf1619829a1c4",
+  "source_dirty": false,
+  "script_sha256": "55a7d084de6718ac07ac7986007a110070b2922c16d056be1b5c136c5f42df36",
+  "samples": 7,
+  "generations": 20,
+  "consumers": 1,
+  "cases": {
+    "canonical_title": {
+      "source_rows": 50,
+      "activity_rows": 200,
+      "equivalent": true,
+      "uncached_ms": [
+        101.759,
+        99.498,
+        97.765,
+        107.597,
+        104.311,
+        105.086,
+        98.895
+      ],
+      "prepared_ms": [
+        169.353,
+        163.516,
+        166.816,
+        178.757,
+        175.258,
+        184.44,
+        171.019
+      ],
+      "uncached_median_ms": 101.759,
+      "prepared_median_ms": 171.019
+    },
+    "prompt_fallback": {
+      "source_rows": 50,
+      "activity_rows": 200,
+      "equivalent": true,
+      "uncached_ms": [
+        152.748,
+        138.288,
+        139.018,
+        139.525,
+        137.703,
+        144.944,
+        141.603
+      ],
+      "prepared_ms": [
+        205.62,
+        199.686,
+        204.762,
+        201.696,
+        204.254,
+        210.173,
+        204.384
+      ],
+      "uncached_median_ms": 139.525,
+      "prepared_median_ms": 204.384
+    }
+  }
+}

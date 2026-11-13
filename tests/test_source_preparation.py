@@ -7,6 +7,7 @@ import threading
 import weakref
 import unittest
 from unittest.mock import patch
+from textual.screen import Screen
 
 from observatory.terminal_ui import ObservatoryApp, SourcePreparation, prepare_sources, sources
 from observatory.workflow_evidence import scope_for
@@ -105,7 +106,8 @@ class SourcePreparationTests(unittest.TestCase):
 
     def test_oversized_custom_feeds_bypass_retention(self):
         self.snapshot.activity*=101
-        with patch('observatory.terminal_ui.prepare_sources',wraps=prepare_sources) as prepare:
+        with patch('observatory.terminal_ui.prepare_sources',wraps=prepare_sources) as prepare, \
+                patch('observatory.terminal_ui.deepcopy',side_effect=AssertionError('Fresh result copied')):
             self.assertEqual(self.read(),self.read())
             self.assertEqual(prepare.call_count,2)
         self.assertEqual(self.cache.entries,[])
@@ -148,6 +150,19 @@ class SourcePreparationTests(unittest.TestCase):
 
 
 class CapturePolicyUITests(unittest.IsolatedAsyncioTestCase):
+    async def test_unrelated_modal_uses_uncached_single_consumer_projection(self):
+        app=ObservatoryApp(HierarchyFeed(),persist_preferences=False)
+        async with app.run_test(size=(120,36)) as pilot:
+            await pilot.pause();app.refresh_timer.stop();app.source_preparation.clear()
+            with patch('observatory.terminal_ui.prepare_sources',wraps=prepare_sources) as prepare:
+                app.workflow_items();app.workflow_items()
+                self.assertEqual(prepare.call_count,1)
+                app.push_screen(Screen());await pilot.pause()
+                app.workflow_items();app.workflow_items()
+                self.assertEqual(prepare.call_count,3)
+                self.assertEqual(app.source_preparation.entries,[])
+                app.pop_screen();await pilot.pause()
+
     async def test_inflight_ai_summary_rechecks_before_dispatch_and_publication(self):
         for stage in ('activity','provider'):
             with self.subTest(stage=stage):

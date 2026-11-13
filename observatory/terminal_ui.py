@@ -711,24 +711,24 @@ class SourcePreparation:
             if owner() is snapshot and reviews==include_reviews:
                 if bounded and frozen==inputs:
                     self.entries.append(self.entries.pop(index))
-                    return prepared
+                    return prepared,True
                 self.entries.pop(index)
                 break
         self.entries[:]=[entry for entry in self.entries if entry[0]() is not None]
         frozen=self.bounded_copy(inputs[:-1]) if bounded else None
         if frozen is None:
-            return prepare_sources(snapshot,include_reviews,denied_sources=denied_sources,
-                                   policy_snapshot=policy_snapshot)
+            return (prepare_sources(snapshot,include_reviews,denied_sources=denied_sources,
+                                    policy_snapshot=policy_snapshot),False)
         frozen=(*frozen,denied_sources)
         from types import SimpleNamespace
         detached=SimpleNamespace(agents=frozen[2],local_status={'sessions':frozen[3]},
                                  sessions=frozen[4],activity=frozen[5])
         prepared=prepare_sources(detached,include_reviews)
         try:owner=weakref.ref(snapshot)
-        except TypeError:return prepared
+        except TypeError:return prepared,False
         self.entries.append((owner,include_reviews,frozen,prepared))
         del self.entries[:-2]
-        return prepared
+        return prepared,True
 
 
 def sources(snapshot, include_reviews=False, *, preparation=None, policy_snapshot=None):
@@ -737,10 +737,13 @@ def sources(snapshot, include_reviews=False, *, preparation=None, policy_snapsho
     denied=frozenset(entry['source_id'] for entry in policy.local_status.get('sessions',[])
                      if entry.get('capture_content') is False) if same_receiver else frozenset()
     if same_receiver and policy.local_status.get('capture_content') is False:denied=denied|{None}
-    prepared=(preparation.get(snapshot,include_reviews,denied,policy if denied else None) if preparation is not None
-              else prepare_sources(snapshot,include_reviews,denied_sources=denied,
-                                   policy_snapshot=policy if denied else None))
-    result=deepcopy(prepared[0]) if preparation is not None else prepared[0]
+    if preparation is not None:
+        prepared,retained=preparation.get(snapshot,include_reviews,denied,policy if denied else None)
+    else:
+        prepared=prepare_sources(snapshot,include_reviews,denied_sources=denied,
+                                 policy_snapshot=policy if denied else None)
+        retained=False
+    result=deepcopy(prepared[0]) if retained else prepared[0]
     now=time.time_ns()
     for item in result:
         entry=prepared[1].get(item['id'])
@@ -3161,6 +3164,8 @@ class ObservatoryApp(App):
             status='Loading prompt history…'
         elif history.error:
             status='Could not load prompts · retry'
+        elif item.get('capture_content') is False:
+            status='Content capture disabled'
         elif not scope:
             status='Prompt history needs a session or agent ID'
         else:
@@ -4157,7 +4162,13 @@ class ObservatoryApp(App):
         self.refresh_data()
 
     def workflow_items(self):
-        return sources(self.feed.snapshot,self.feed.include_reviews,preparation=self.source_preparation)
+        # The roster and Workflow have multiple consumers per generation.
+        # An unrelated modal only updates the controller, so avoid admission's
+        # extra copy when that one read cannot amortize it.
+        shared=bool(self.screen_stack) and isinstance(self.screen,(ObservatoryScreen,WorkflowScreen))
+        if not shared:self.source_preparation.clear()
+        return sources(self.feed.snapshot,self.feed.include_reviews,
+                       preparation=self.source_preparation if shared else None)
 
     def review_state(self,item):
         acknowledged=self.workflow_controller.reviewed(item)

@@ -63,18 +63,23 @@ def main():
         source_dirty=bool(subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],text=True)),
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         samples=args.samples,generations=args.generations,consumers=args.consumers,cases={})
-    for name,fallback in [('canonical_title',False),('prompt_fallback',True)]:
-        snapshot=fixture(fallback);cache=SourcePreparation()
+    for name in ('canonical_title','prompt_fallback','metadata_only','oversized'):
+        snapshot=fixture(name=='prompt_fallback');cache=SourcePreparation()
+        if name=='metadata_only':
+            for row in snapshot.local_status['sessions']:row['capture_content']=False
+        if name=='oversized':snapshot.activity.append(dict(snapshot.activity[-1],id='beyond-budget'))
         expected=sources(snapshot)
         assert expected==sources(snapshot,preparation=cache)==sources(snapshot,preparation=cache)
-        assert len(cache.entries)==1,'Fixture exceeds admission budget'
+        retained=name in {'canonical_title','prompt_fallback'}
+        assert len(cache.entries)==int(retained),'Unexpected fixture admission'
         # Warm both paths; alternate ordering to reduce simple order bias.
         measure(snapshot,1,args.consumers,False);measure(snapshot,1,args.consumers,True)
         values={False:[],True:[]}
         for sample in range(args.samples):
             for cached in ([False,True] if sample%2==0 else [True,False]):
                 values[cached].append(round(measure(snapshot,args.generations,args.consumers,cached),3))
-        result['cases'][name]=dict(source_rows=50,activity_rows=200,equivalent=True,
+        result['cases'][name]=dict(source_rows=50,activity_rows=len(snapshot.activity),equivalent=True,
+            retained=retained,
             uncached_ms=values[False],prepared_ms=values[True],
             uncached_median_ms=statistics.median(values[False]),
             prepared_median_ms=statistics.median(values[True]))
