@@ -148,3 +148,9 @@ it is not a fixed heap ceiling under unlimited outstanding requests.
 The joint implementation report records comparative small, large and payload
 benchmarks from the same machine. Serialized review budgets are not Python heap
 ceilings; decoded objects and rendering require additional memory.
+
+## Retained-history review increment
+
+The [retained-history validation report](validation/history-read-economics.md) records the frozen-source comparison after PR #71. On the generated 35-day fixture, cold readiness fell from 184.38 to 112.96 seconds and complete-monitor idle CPU from 23.63% to 15.90% of one core. These remain above the under-30-second and under-5% targets. Sessions/MCP under-write p95 remain above 100 ms. Raw results include an intermediate CPU regression and a rejected reader-error run; do not treat Store-only CPU, a profiled run or a failed collection interval as a healthy whole-monitor budget.
+
+Metadata reads retain at most four idle read-only connections, with exclusive leases, closed cursors, no open transactions, replacement/symlink guards and shutdown cleanup. Active leases are distinct from that idle-handle bound. Writers retain their close-on-context lifecycle. Connection reuse caches no query results and does not replace SQLite snapshot, ownership or capture-policy checks.

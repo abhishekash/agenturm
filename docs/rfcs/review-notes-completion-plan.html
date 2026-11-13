@@ -21,7 +21,7 @@
 <tbody>
 <tr>
 <td>F1: CPU/RSS</td>
-<td>Partial. PR70 fixed HTTP/TLS overhead; the controlled hour measured receiver 28.69% and cockpit 17.75% of one core under ingestion, keyboard activity and extra probes.</td>
+<td>Partial. PR70 fixed HTTP/TLS overhead. PR72 candidate reduces generated-history idle CPU from 23.63% to 15.90% of one core and cold readiness from 184.38 to 112.96 s. The earlier active/probed hour is a different workload, not an idle baseline.</td>
 <td>Measure idle and normal-load budgets; profile readiness/read/render costs; B.</td>
 </tr>
 <tr>
@@ -41,8 +41,8 @@
 </tr>
 <tr>
 <td>F5: OpenCode step versus turn</td>
-<td>Implemented in reader, Review UI/CLI and provenance rollups; PR67.</td>
-<td>Fix remaining UI saved-link boundary; A.</td>
+<td>Implemented in reader, Review UI/CLI and provenance rollups; PR67. PR71 preserves full turn membership through the UI saved-link boundary.</td>
+<td>Preserve whole-turn scope through C/D.</td>
 </tr>
 <tr>
 <td>F6: Codex evidence omissions</td>
@@ -56,8 +56,8 @@
 </tr>
 <tr>
 <td>F8: useful information density</td>
-<td>Partial. Alternating blocks/hierarchy improved, but roster code still appends two blank lines.</td>
-<td>More useful rows and source-backed Overview at wide/floor sizes; B/D.</td>
+<td>Partial. PR72 candidate uses one separator at wide sizes and two-line compact rows, retaining shading, hierarchy and keyboard selection.</td>
+<td>Source-backed Overview at wide/floor sizes remains open; B/C/D.</td>
 </tr>
 <tr>
 <td>F9: old completion backlog</td>
@@ -112,7 +112,7 @@
 <tr>
 <td>F19: usage ownership</td>
 <td>Implemented for proved exact-run/turn allocation, unknown fields and partial costs; PR67.</td>
-<td>Prevent UI turn-link downgrade in A; explain usage in E.</td>
+<td>PR71 closed the UI turn-link downgrade; explain qualified usage in E.</td>
 </tr>
 <tr>
 <td>F20: assistant placeholders</td>
@@ -131,12 +131,12 @@
 </tr>
 <tr>
 <td>F23: Review/task mismatch</td>
-<td>CLI composition implemented. Independent review found UI capture drops turn membership and silently wraps a turn snapshot as a step.</td>
-<td>Repair the UI boundary and validate contradictory scopes, including legacy reads; A.</td>
+<td>Implemented in PR71: UI/CLI links preserve turn identity/membership/usage and reject contradictory snapshots. Older ambiguous links stay readable with untrusted totals until explicitly repaired.</td>
+<td>Preserve consent, provenance and authored fields through C/D.</td>
 </tr>
 <tr>
 <td>F24: passing suite / fixture gap</td>
-<td>Preserved strength; CI now 711 tests per supported Python, with 14 optional skips and separate SDK jobs.</td>
+<td>Preserved baseline strength; the PR72 candidate discovers 775 minimal-suite cases with 14 optional skips and separate SDK jobs. Focused native/UI gates pass; final full CI is pending.</td>
 <td>Current native-shaped golden journeys remain release gates, not test counts alone.</td>
 </tr>
 <tr>
@@ -175,7 +175,7 @@
 </tr>
 <tr>
 <td>R3: actionable failure diagnosis</td>
-<td>Structured command/exit/output/arguments, occurrence-preserving fingerprints, expected nonzero distinctions and matching-later-success evidence; C.</td>
+<td>Structured command/exit/output/arguments, occurrence-preserving fingerprints, expected nonzero distinctions and matching-later-success evidence and occurrence-owned Findings filtering/counts; C.</td>
 </tr>
 <tr>
 <td>R4: automatic continuity</td>
@@ -223,7 +223,9 @@
 <h2>Stage C — shared actionable operation and failure facts</h2>
 <p>Extract structured native command/result/output once for Findings, Review, diagnostics and later search/drafts. Group by a safe operation/error fingerprint while retaining every occurrence's actor/session/turn/source ID. Different arguments/errors and redacted-ambiguous inputs must not collapse into one supposed failure or recovery.</p>
 <p>Expected nonzero search/comparison results require actual command and exit evidence; unknown wrappers/compound failures cannot be declared informational. A passing retry is “later matching success observed,” not proof all consequences were repaired. Show bounded useful stderr/result excerpts and an exact event action. Keep current/previous-conversation unseen error reminders and incident receipts independent from archival findings and native approvals.</p>
-<p>Gate: wrapped/nested native shapes, masked failures, grep/diff versus validation errors, secrets, different workers, retries, stale history and later successes; exact source navigation preserves filters and selection.</p>
+<p>Peer-reviewed acceptance details: command/arguments and terminal results keep typed field provenance; arbitrary JSON in output must not become command or exit evidence. Conflicting exits/results remain uncertain, and combined output is never renamed stderr. Input equivalence includes captured cwd and tool/server identity, preserving types and list order; shell whitespace and quoting are not broadly normalized. Input and output clipping qualify matching independently. Redacted, missing or contradictory inputs and incomplete error signatures cannot prove equivalence. Only authoritative simple-shell terminal evidence can make exit code 1 informational; blocked/denied/MCP error evidence and compound failures remain visible. A matching success needs a strictly later comparable timestamp and the same receiver/actor/session/execution scope.</p>
+<p>Correlation fingerprints are versioned and computed after capture/redaction policy, never from raw secrets. Durable viewed-error receipts keep their occurrence identity. Findings page rows, counts and hydration must use each occurrence's actual producer/actor/session in one source snapshot, including shared parent/child traces; trace-summary ownership is insufficient. Turn references and capture revocation must survive every projection/export.</p>
+<p>Gate: wrapped/nested native shapes, masked failures, grep/diff versus validation errors, secrets, different workers/directories, retries, stale history, equal timestamps, clipped arguments, legacy references and later successes; exact source navigation preserves filters and selection.</p>
 <h2>Stage D — frozen Git correlation and approved handoff drafts</h2>
 <p>Reuse <code>capture_workspace()</code> and its bounded read-only Git safeguards. Require a proven local workspace binding or an explicit user-selected remote-to-local mapping; a remote receiver's cwd string is not proof that a local directory is its checkout. Freeze current branch/HEAD/status/diff, observation time, workspace/base provenance and clipping with the evidence receipt. Explicitly distinguish recorded agent paths from all current worktree changes, pre-existing work and concurrent edits. An earlier check does not validate the current worktree. Capture only on deliberate review/draft actions in a worker; no Git polling storm. Metadata-only or revoked source capture must not expose derived Git diff content through Review, drafts or exports; separately authored saved-task material keeps its own explicit ownership and consent boundary.</p>
 <p>Generate a clearly labelled editable draft from the original request, scoped evidence, captured Git and saved accepted/rejected human decisions. Drafting must remove repeated identifier entry. Preserve authored fields and require an explicit approve/save action for durable task updates; do not manufacture decisions, constraints or intent from assistant claims. Path-overlap observations use recorded modifying events within proved workspace/branch; handle rename pairs, failed attempts, separate worktrees and missing identity. Same-directory occupancy alone is not a collision.</p>
@@ -241,9 +243,11 @@
 <p>Prepare generated scenarios, expected answers, observer timing/error sheets, consent/data-handling instructions and reconstruction/resumption exercises using the existing pilot protocol. Include explicit approval versus unknown status, older check/later edit, turn membership, native terminal handoff, overlapping paths, reconnect and resumed decisions. No personal transcripts or participant identifiers belong in fixtures.</p>
 <p>Gate: investigations answer which session changed a path, which command failed and which agent received an instruction across producers, including renames, unicode, missing IDs, pagination and retention. CLI/UI source navigation agrees. Participant materials render at desktop/mobile sizes and clearly state proposed measures and zero observed participant outcomes.</p>
 <h2>External validation and completion ledger</h2>
-<h3>Stage A implementation</h3>
+<h3>Stage A implementation — merged <a href="https://github.com/abhishekash/agenturm/pull/71">PR #71</a></h3>
 <p>Terminal capture now uses the shared execution preparation and preserves the frozen turn boundary, member trace IDs and each check's source trace. Task import rejects contradictory wrapper/snapshot identity, kind, membership and usage. Existing inconsistent links stay readable and retain authored data; their usage is withheld with a repair warning until an explicit relink or unlink. Turn-plus-contained-step accounting remains ambiguous instead of double-counted.</p>
 <p>Validation includes an actual keyboard-driven Review → Save task → edit → Ctrl+S → task → handoff journey, UI/CLI import equality, later-member selection, contradictory imports, legacy reads/edits/explicit repair and metadata-only capture. Peer review exposed additional usage, consent and excerpt-provenance gaps: frozen usage now owns accounting; same-receiver capture revocation is rechecked before capture and task persistence without losing authored fields; decision excerpts retain their actual member trace instead of the turn anchor. Explicitly saving an older frozen receipt after receiver replacement retains only that receipt's facts. The focused gate passed 72 tests in 79.87 seconds; all 12 turn-continuity cases passed again after the final queued-save and frozen-namespace policy guards. HTML companions were rendered at 1280-pixel light and 390-pixel dark widths without document overflow or external assets. Stages B–G remain open; this stage does not complete the full review.</p>
+<h3>Stage B first increment — <a href="https://github.com/abhishekash/agenturm/pull/72">PR #72</a>, measurements complete; final compatibility gates in progress</h3>
+<p>The frozen source adds indexed MCP/source lookups, bounded original-title reads, fair resumable derived batches, denser roster rows and public-API Workflow reuse. Peer review also closed reproduced cross-worker MCP enrichment, collector retry/replacement and sticky internal-capture races. The 219-test combined gate and 66-test final native delta gate passed; independent final retry review passed 24 tests. The final healthy matched comparison measured cold readiness 184.38 → 112.96 seconds, complete idle CPU 23.63% → 15.90% of one core, session-under-write p95 373.58 → 284.90 ms and MCP-under-write p95 246.09 → 142.60 ms. All three targets remain open. The earlier <code>ca93</code> run is invalid for resource claims because native ingestion recorded SQLite lock failures. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/history-read-economics.md">measurement report</a> for source hashes, raw figures and limitations. Stage B remains open until its remaining useful-view and resource work is accounted for; C–G remain open.</p>
 <p>Participant recruitment/consent, live Claude/Pi data not available in this environment, measured human reconstruction/resumption time and voluntary repeat use cannot be manufactured by automated tests. Prepare the materials and report these dependencies with denominators; do not mark F10/adoption evidence complete without participants. Native integration capabilities unsupported by a runtime must be labelled rather than guessed.</p>
 <p>After each merged stage, update this reconciliation with concrete files, tests, measurements and PR links. Technical delivery and observed user outcomes are separate statuses. The final full-note record must account for every F1–F27 and R1–R11, preserve the stated limits, and identify any external dependency still open.</p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

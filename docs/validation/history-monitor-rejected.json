@@ -1,0 +1,51 @@
+{
+  "source": {
+    "head": "ca93a4de34af66b0d660c2487146adf58e00c5d5",
+    "dirty": false,
+    "files": {
+      "scripts/soak_monitor.py": "47ed0593c27b82df987772a6486bde5b0ce6c372198da074f082f7c9d1202465",
+      "observatory/http_transport.py": "6a31040bab9fda6e40e7c880e3c863d6bc778bc83f15c799f6c4a1182e2b8edd",
+      "observatory/ui_workflow.py": "9df056688df0a812ad19437a68d7d02525dd1ad020c17b77a1706e40a3f21e5d"
+    },
+    "harness_sha256": "6f8f4fc63a03bb09b9a2862ce105b842fe2340382e74d1b936a3016b40b780e2",
+    "untracked_code": []
+  },
+  "publishable": false,
+  "history": true,
+  "profiling": false,
+  "warmup_seconds": 15.0,
+  "initial_readiness_seconds": 107.3608247609809,
+  "requested_idle_seconds": 60.0,
+  "processes": {
+    "receiver": {
+      "cpu_one_core_percent": 15.34999117145414,
+      "sampled_seconds": 60.00003450899385,
+      "peak_sampled_rss_mib": 65.0625
+    },
+    "cockpit": {
+      "cpu_one_core_percent": 8.883337978144509,
+      "sampled_seconds": 59.99996862793341,
+      "peak_sampled_rss_mib": 71.50390625
+    },
+    "driver": {
+      "cpu_one_core_percent": 0.08333340625838125,
+      "sampled_seconds": 59.999947494012304,
+      "peak_sampled_rss_mib": 44.546875
+    }
+  },
+  "whole_monitor_idle_cpu_one_core_percent": 24.23332914959865,
+  "no_timed_api_or_keyboard_work": true,
+  "no_provider_calls": true,
+  "exit_status": {
+    "cockpit": {
+      "status": "0",
+      "signal": ""
+    },
+    "receiver": 0
+  },
+  "native_read_errors": 2,
+  "errors": [
+    "Timed cockpit lost fresh, correctly scoped fixture data",
+    "Native fixture read/schema errors"
+  ]
+}

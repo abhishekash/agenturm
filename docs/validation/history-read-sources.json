@@ -1,0 +1,15 @@
+{
+  "baseline_application": "ae9fa9c24f59eaaa647b7497b0f4032cd5172431",
+  "baseline_with_identical_harness": "49ab621c26083ac7295f14739d5d832358d22aef",
+  "first_healthy_increment": "d3f816a4908cb1d421c2229f18a3d9687353c122",
+  "pool_increment": "126b844467aea4ab98522b0926280b6842132840",
+  "final_measured_application": "7c569c13f59b84bf79e973a34200e085fe6d549c",
+  "test_expectations_head": "876d41c4f685ee56f3bcacd61e78b90a2dc2c6fe",
+  "application_diff_after_measurement": false,
+  "harness": {
+    "benchmark_monitor_idle.py": "342131fb4ac802466a377d6f64b67cb6127e27d718eb6202db3b1e7f6f34971b",
+    "benchmark_history.py": "5ad9649f371e34840f76ec7c03bce982965b3c91e36cc02a5aa71dbaf57325ef",
+    "soak_monitor.py": "47ed0593c27b82df987772a6486bde5b0ce6c372198da074f082f7c9d1202465"
+  },
+  "protocol": "Sequential frozen sources; fresh generated 35-day corpus; 15 s warmup and 60 s idle; 20 samples per read, idle and under paced writes. No heavy tests or profiling during valid intervals. No provider calls."
+}
