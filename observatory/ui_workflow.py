@@ -158,7 +158,7 @@ class WorkflowScreen(ModalScreen):
     #workflow-retention { height: auto; width: 1fr; }
     #workflow-too-small { height: 1fr; width: 1fr; content-align: center middle; }
     """
-    BINDINGS=[('escape','back','Back'),('h','history','History'),('shift+r','review_completions','Review visible completions')]
+    BINDINGS=[('escape','back','Back'),('h','history','History'),('R','review_completions','Review visible completions')]
 
     def __init__(self,owner):
         super().__init__();self.visible_rows=[];self._history=False;self.owner=owner;self.selected_incident=None;self.rows_by_id={}

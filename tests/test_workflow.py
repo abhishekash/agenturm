@@ -85,6 +85,28 @@ class WorkflowEvidenceTests(unittest.TestCase):
         self.assertEqual(workflow_reasons({'active':True},usage,snapshot,{'minutes':1},now=100),['Task elapsed-time threshold reached'])
 
 class WorkflowJourney(unittest.IsolatedAsyncioTestCase):
+    async def test_terminal_uppercase_R_reviews_only_visible_completions(self):
+        from observatory.attention import AttentionLedger as PureLedger
+        from tests.test_attention import item, snapshot
+        app=ObservatoryApp(ManualFeed(),persist_preferences=False)
+        async with app.run_test(size=(60,18)) as pilot:
+            await pilot.pause();app.refresh_timer.stop();app.workflow_controller.close()
+            ledger=PureLedger();now=time.time()
+            ledger.update([item(id='done',agent_id='done',state='Completed',waiting_for=''),
+                           item(id='approval',agent_id='approval')],snapshot(now),{},now)
+            app.workflow_ledger.rows=ledger.rows
+            app.action_workflow();await pilot.pause()
+            expected=tuple(row[0]['_attention_id'] for row in app.screen.visible_rows
+                           if row[0]['_attention_kind']=='completion')
+            self.assertEqual(len(expected),1)
+            with patch.object(app.workflow_controller,'review_completions') as review:
+                await pilot.press('R');await pilot.pause()
+                review.assert_called_once_with(expected)
+                review.reset_mock()
+                await pilot.resize_terminal(120,36);await pilot.pause()
+                await pilot.press('R');await pilot.pause()
+                review.assert_called_once_with(expected)
+
     async def test_queue_floor_preserves_incident_cursor_scroll_and_keyboard_drilldown(self):
         from observatory.attention import AttentionLedger as PureLedger
         from tests.test_attention import item,snapshot

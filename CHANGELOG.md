@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Make Workflow's Shift+R bulk-review action respond to the uppercase key sent by real terminals. Defer HTTPS handler setup during local HTTP polling while retaining standard HTTPS verification and redirect refusal.
+- Add an isolated complete-monitor soak with native ingestion, real terminal interaction, exact review/approval gates, reconnect and shutdown checks, retained-history load and matched polling measurements. Record the completed hour and remaining resource costs in the validation report.
+
 - Recover real native Review evidence: current Codex text/file/command shapes, safe check recognition, preserved operation results, bounded request/update context and readable unclassified commands. Add explicit OpenCode user-turn review alongside unchanged exact-step selection, with authoritative parent membership and conservative partial usage.
 - Index source Activity and MCP candidates, keep per-run numeric/live metadata projections, and decode recent session payloads instead of full historical summaries. Preserve source ownership and text in one SQLite snapshot; rebuild interrupted history projections in background batches with readiness/progress.
 - Move managed telemetry to private common state storage; generate local tokens, validate Host/Origin, refuse credential-bearing redirects and broaden native secret redaction while preserving JSON primitive types. Add explicit non-destructive SQLite migration and 14-day retention only for genuinely new managed stores.

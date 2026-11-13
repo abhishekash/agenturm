@@ -1,0 +1,12 @@
+{
+  "textual": "8.2.8",
+  "retained_after_gc": true,
+  "released_after_cache_clear": true,
+  "cache": {
+    "hits": 0,
+    "misses": 1,
+    "maxsize": 1024,
+    "currsize": 1
+  },
+  "scope": "isolated mechanism check; not memory attribution"
+}
