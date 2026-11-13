@@ -199,6 +199,19 @@ class HeadlessReviewTests(unittest.TestCase):
 
 
 class RefreshFactsTests(unittest.TestCase):
+    def test_internal_classification_revokes_capture_only_for_same_identity(self):
+        from observatory.review_facts import review_capture_policy
+        scope=ExecutionScope('receiver','codex','worker','session','run',kind='run')
+        original={'capture_content':True}
+        row=dict(service='codex-review',runtime='Codex',agent_id='worker',session_id='session',capture_content=False)
+        snapshot=SimpleNamespace(receiver_id='receiver',local_status={'sessions':[row]})
+        self.assertFalse(review_capture_policy(original,snapshot,scope)['capture_content'])
+        for change in ({'agent_id':'other'},{'session_id':'other'},{'runtime':'Other'}):
+            snapshot.local_status={'sessions':[{**row,**change}]}
+            self.assertTrue(review_capture_policy(original,snapshot,scope)['capture_content'])
+        snapshot.receiver_id='other';snapshot.local_status={'sessions':[row]}
+        self.assertTrue(review_capture_policy(original,snapshot,scope)['capture_content'])
+
     def test_same_run_facts_update_and_newer_run_does_not_bleed_back(self):
         original=dict(service='codex',agent_id='worker',session_id='session',trace_id='run',state='Working',capture_content=True,
             _review_usage=dict(trace_id='run',input_tokens=100))

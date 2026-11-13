@@ -16,14 +16,14 @@ Use the existing Agents → attention → evidence → continuity surfaces. Avoi
 
 | Finding | Current status and evidence | Remaining contract / stage |
 | --- | --- | --- |
-| F1: CPU/RSS | Partial. PR70 fixed HTTP/TLS overhead; the controlled hour measured receiver 28.69% and cockpit 17.75% of one core under ingestion, keyboard activity and extra probes. | Measure idle and normal-load budgets; profile readiness/read/render costs; B. |
+| F1: CPU/RSS | Partial. PR70 fixed HTTP/TLS overhead. PR72 candidate reduces generated-history idle CPU from 23.63% to 15.90% of one core and cold readiness from 184.38 to 112.96 s. The earlier active/probed hour is a different workload, not an idle baseline. | Measure idle and normal-load budgets; profile readiness/read/render costs; B. |
 | F2: retention | Implemented for new managed stores: 14-day age policy; existing stores need explicit opt-in. Migration/retention tests preserve legacy data. | Preserve policy during optimizations; B. Age retention is not a byte cap. |
 | F3: launch-directory telemetry | Implemented: private shared state, owner-only files, explicit safe legacy migration; PR67. | Preserve during watcher and hook work; F. |
 | F4: one-shot truthfulness | Implemented: readiness wait and distinct ready/error/partial/interrupt exits; PR67. | Include headless regressions in B/F. |
-| F5: OpenCode step versus turn | Implemented in reader, Review UI/CLI and provenance rollups; PR67. | Fix remaining UI saved-link boundary; A. |
+| F5: OpenCode step versus turn | Implemented in reader, Review UI/CLI and provenance rollups; PR67. PR71 preserves full turn membership through the UI saved-link boundary. | Preserve whole-turn scope through C/D. |
 | F6: Codex evidence omissions | Implemented: native edits/checks/text/usage reach authenticated API, Review/export and task-link fixtures; PR67. | Extend existing producer-shaped coverage; G. |
 | F7: noisy attention | Implemented for explicit requests/unknown separation; shared-daemon and incident-specific gates; PR67/70. | Preserve the same semantics without a cockpit; F. |
-| F8: useful information density | Partial. Alternating blocks/hierarchy improved, but roster code still appends two blank lines. | More useful rows and source-backed Overview at wide/floor sizes; B/D. |
+| F8: useful information density | Partial. PR72 candidate uses one separator at wide sizes and two-line compact rows, retaining shading, hierarchy and keyboard selection. | Source-backed Overview at wide/floor sizes remains open; B/C/D. |
 | F9: old completion backlog | Implemented: recent/history selection, readable ages, frozen-ID bulk review; real terminal R fixed and 294 receipts verified in PR70. | Reuse identical receipt behavior in headless runner; F. |
 | F10: no recorded continuity use | External adoption evidence absent. Headless Review-to-task composition works; no participants or voluntary reuse measured. | Reduce manual work via approved drafts; D. Prepare materials in G; participant outcomes stay open. |
 | F11: shared-daemon false progress | Implemented: multiplexed process work never proves per-session progress; old session stayed unconfirmed throughout the hour. | Preserve stronger-evidence requirements in F. |
@@ -34,12 +34,12 @@ Use the existing Agents → attention → evidence → continuity surfaces. Avoi
 | F16: local API/redaction | Implemented: local tokens, Host/Origin, redirect refusal and expanded redaction; PR67/70. | Mandatory invariants for indexes, exports, background runner and hooks. |
 | F17: native add/update | Implemented and regression tested; PR67. | Retain failed-attempt distinction in C/D/G. |
 | F18: wrapped checks | Implemented with conservative shell recognition and masked/compound/no-op negative cases; PR67. | Share command semantics in C. |
-| F19: usage ownership | Implemented for proved exact-run/turn allocation, unknown fields and partial costs; PR67. | Prevent UI turn-link downgrade in A; explain usage in E. |
+| F19: usage ownership | Implemented for proved exact-run/turn allocation, unknown fields and partial costs; PR67. | PR71 closed the UI turn-link downgrade; explain qualified usage in E. |
 | F20: assistant placeholders | Implemented for supported native text variants; placeholders suppressed; PR67. | Continue schema/version-shaped fixtures in G. |
 | F21: lost initiating intent | Implemented: bounded independent request/update context and explicit coverage; PR67. | Typed instruction investigation in G uses the same source references. |
 | F22: complete run shows no work | Implemented ingestion → API → Review/export contracts; 294 turn reconstructions in PR70. | Preserve through all later projections. |
-| F23: Review/task mismatch | CLI composition implemented. Independent review found UI capture drops turn membership and silently wraps a turn snapshot as a step. | Repair the UI boundary and validate contradictory scopes, including legacy reads; A. |
-| F24: passing suite / fixture gap | Preserved strength; CI now 711 tests per supported Python, with 14 optional skips and separate SDK jobs. | Current native-shaped golden journeys remain release gates, not test counts alone. |
+| F23: Review/task mismatch | Implemented in PR71: UI/CLI links preserve turn identity/membership/usage and reject contradictory snapshots. Older ambiguous links stay readable with untrusted totals until explicitly repaired. | Preserve consent, provenance and authored fields through C/D. |
+| F24: passing suite / fixture gap | Preserved baseline strength; the PR72 candidate discovers 775 minimal-suite cases with 14 optional skips and separate SDK jobs. Focused native/UI gates pass; final full CI is pending. | Current native-shaped golden journeys remain release gates, not test counts alone. |
 | F25: OpenCode prompt exclusion | Implemented via explicit recorded-turn membership; exact-step mode remains explicit. | A/C/D must preserve full turn scope. |
 | F26: idealized fixtures | Current Codex/OpenCode-shaped fixtures and end-to-end journeys implemented. | Extend deidentified, version-labelled supported-runtime coverage in G. Live Claude/Pi claims require actual evidence. |
 | F27: cockpit-bound delivery / native events / Git | Open outside the first recovery scope. A receiver collects independently but does not share durable attention delivery; Review lacks frozen current Git correlation. | Read-only Git D; shared headless attention and optional lifecycle F. |
@@ -50,7 +50,7 @@ Use the existing Agents → attention → evidence → continuity surfaces. Avoi
 | --- | --- |
 | R1: reliable cross-runtime attention | Existing classifier/terminal handoff plus persistent headless delivery with durable dedup; F. |
 | R2: truthful turn receipts + Git | Scope repair A; shared facts C; frozen read-only current Git correlation D. No worktree attribution or check certification. |
-| R3: actionable failure diagnosis | Structured command/exit/output/arguments, occurrence-preserving fingerprints, expected nonzero distinctions and matching-later-success evidence; C. |
+| R3: actionable failure diagnosis | Structured command/exit/output/arguments, occurrence-preserving fingerprints, expected nonzero distinctions and matching-later-success evidence and occurrence-owned Findings filtering/counts; C. |
 | R4: automatic continuity | Editable draft from observed request/edits/checks/errors, existing human decisions and captured Git; explicit approval before saving, no authored-field overwrite; D. |
 | R5: parallel collisions | Recorded modifying-path overlap only within proved workspace/branch, with rename/attempt/worktree/unknown handling and cross-agent check/edit chronology; D/E. |
 | R6: waste/loops | Conservative progression observations combining repeated failures/calls/compactions and usage with captured edit/check progress; E. No declaration that intentional work is waste. |
@@ -84,7 +84,11 @@ Extract structured native command/result/output once for Findings, Review, diagn
 
 Expected nonzero search/comparison results require actual command and exit evidence; unknown wrappers/compound failures cannot be declared informational. A passing retry is “later matching success observed,” not proof all consequences were repaired. Show bounded useful stderr/result excerpts and an exact event action. Keep current/previous-conversation unseen error reminders and incident receipts independent from archival findings and native approvals.
 
-Gate: wrapped/nested native shapes, masked failures, grep/diff versus validation errors, secrets, different workers, retries, stale history and later successes; exact source navigation preserves filters and selection.
+Peer-reviewed acceptance details: command/arguments and terminal results keep typed field provenance; arbitrary JSON in output must not become command or exit evidence. Conflicting exits/results remain uncertain, and combined output is never renamed stderr. Input equivalence includes captured cwd and tool/server identity, preserving types and list order; shell whitespace and quoting are not broadly normalized. Input and output clipping qualify matching independently. Redacted, missing or contradictory inputs and incomplete error signatures cannot prove equivalence. Only authoritative simple-shell terminal evidence can make exit code 1 informational; blocked/denied/MCP error evidence and compound failures remain visible. A matching success needs a strictly later comparable timestamp and the same receiver/actor/session/execution scope.
+
+Correlation fingerprints are versioned and computed after capture/redaction policy, never from raw secrets. Durable viewed-error receipts keep their occurrence identity. Findings page rows, counts and hydration must use each occurrence's actual producer/actor/session in one source snapshot, including shared parent/child traces; trace-summary ownership is insufficient. Turn references and capture revocation must survive every projection/export.
+
+Gate: wrapped/nested native shapes, masked failures, grep/diff versus validation errors, secrets, different workers/directories, retries, stale history, equal timestamps, clipped arguments, legacy references and later successes; exact source navigation preserves filters and selection.
 
 ## Stage D — frozen Git correlation and approved handoff drafts
 
@@ -120,11 +124,15 @@ Gate: investigations answer which session changed a path, which command failed a
 
 ## External validation and completion ledger
 
-### Stage A implementation
+### Stage A implementation — merged [PR #71](https://github.com/abhishekash/agenturm/pull/71)
 
 Terminal capture now uses the shared execution preparation and preserves the frozen turn boundary, member trace IDs and each check's source trace. Task import rejects contradictory wrapper/snapshot identity, kind, membership and usage. Existing inconsistent links stay readable and retain authored data; their usage is withheld with a repair warning until an explicit relink or unlink. Turn-plus-contained-step accounting remains ambiguous instead of double-counted.
 
 Validation includes an actual keyboard-driven Review → Save task → edit → Ctrl+S → task → handoff journey, UI/CLI import equality, later-member selection, contradictory imports, legacy reads/edits/explicit repair and metadata-only capture. Peer review exposed additional usage, consent and excerpt-provenance gaps: frozen usage now owns accounting; same-receiver capture revocation is rechecked before capture and task persistence without losing authored fields; decision excerpts retain their actual member trace instead of the turn anchor. Explicitly saving an older frozen receipt after receiver replacement retains only that receipt's facts. The focused gate passed 72 tests in 79.87 seconds; all 12 turn-continuity cases passed again after the final queued-save and frozen-namespace policy guards. HTML companions were rendered at 1280-pixel light and 390-pixel dark widths without document overflow or external assets. Stages B–G remain open; this stage does not complete the full review.
+
+### Stage B first increment — [PR #72](https://github.com/abhishekash/agenturm/pull/72), measurements complete; final compatibility gates in progress
+
+The frozen source adds indexed MCP/source lookups, bounded original-title reads, fair resumable derived batches, denser roster rows and public-API Workflow reuse. Peer review also closed reproduced cross-worker MCP enrichment, collector retry/replacement and sticky internal-capture races. The 219-test combined gate and 66-test final native delta gate passed; independent final retry review passed 24 tests. The final healthy matched comparison measured cold readiness 184.38 → 112.96 seconds, complete idle CPU 23.63% → 15.90% of one core, session-under-write p95 373.58 → 284.90 ms and MCP-under-write p95 246.09 → 142.60 ms. All three targets remain open. The earlier `ca93` run is invalid for resource claims because native ingestion recorded SQLite lock failures. See the [measurement report](../validation/history-read-economics.md) for source hashes, raw figures and limitations. Stage B remains open until its remaining useful-view and resource work is accounted for; C–G remain open.
 
 Participant recruitment/consent, live Claude/Pi data not available in this environment, measured human reconstruction/resumption time and voluntary repeat use cannot be manufactured by automated tests. Prepare the materials and report these dependencies with denominators; do not mark F10/adoption evidence complete without participants. Native integration capabilities unsupported by a runtime must be labelled rather than guessed.
 

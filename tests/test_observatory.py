@@ -757,7 +757,7 @@ class ObservatoryTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual((calls[0]["server"], calls[0]["tool"], calls[0]["status"]),
                          ("github", "search_issues", "ERROR"))
-        self.assertEqual(calls[0]["arguments"], '{"query":"release"}')
+        self.assertEqual(calls[0]["arguments"], {'query':'release'})
         activity = self.store.activity_page()["activity"]
         self.assertEqual(len(activity), 1)
         self.assertEqual((activity[0]["domain"], activity[0]["action"], activity[0]["result"]),
@@ -848,7 +848,7 @@ class ObservatoryTest(unittest.TestCase):
                          ("github", "search_issues", "ERROR"))
         self.assertEqual(calls[0]["duration_ms"], 19)
         self.assertEqual((calls[0]["arguments"], calls[0]["output"]),
-                         ('{"query":"build"}', '{"error":"denied"}'))
+                         ({'query':'build'}, {'error':'denied'}))
         self.assertEqual(calls[0]["metadata"]["cursor.grok_bot.tool_call.id"], "call-001")
         activity = self.store.activity_page(session_id="cursor-session-42")["activity"]
         self.assertEqual(len(activity), 5)

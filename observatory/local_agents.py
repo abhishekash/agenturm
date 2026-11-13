@@ -315,10 +315,39 @@ class Session:
         self.records_total = 0
         self.spans_total = 0
         self.logs_total = 0
+        self._pending_ingest = None
+        self._redaction_pending = False
+        self._pending_spans_done = False
+        self._pending_retry = False
+        self._current_record_offset = 0
+
+    @property
+    def last_activity(self):
+        value=self._last_activity
+        return {**value,'subject':'Approval review'} if self.internal and value else value
+
+    @last_activity.setter
+    def last_activity(self,value):
+        self._last_activity={**value,'subject':'Approval review'} if self.internal and value else value
+
+    def adopt_internal_policy(self):
+        self.internal=True;self.capture_details=False;self.service='codex-review'
+        self.tasks.clear();self.tool_inputs.clear();self.task_description=''
+        self.last_activity=self.last_activity
+
+    def refresh_capture_policy(self):
+        if hasattr(self.store,'internal_source_ids') and self.source_id in self.store.internal_source_ids([self.source_id]):
+            self.adopt_internal_policy()
+
+    def native_position(self):
+        if self.file_id is None:return {}
+        return {'observatory.native_file_id':':'.join(map(str,self.file_id)),
+            'observatory.native_file_offset':self._current_record_offset,
+            'observatory.native_mtime_ns':self.source_mtime_ns}
 
     def hierarchy(self):
         """Return the structural observation persisted by the receiver."""
-        coverage = "partial" if (self.schema_errors or self.skipped or self.backlog_bytes) else "complete"
+        coverage = "partial" if (self.schema_errors or self.skipped or self.backlog_bytes or self._pending_ingest is not None) else "complete"
         return {
             "agent_id": self.agent_id, "runtime": self.runtime,
             "source_namespace": self.agent_namespace, "source_id": self.source_id,
@@ -389,6 +418,7 @@ class Session:
                 "bytes_read": self.offset,
                 "skipped_oversized_records": self.skipped_oversized,
                 "schema_errors": self.schema_errors,
+                "pending_storage_records": sum(map(len,self._pending_ingest)) if self._pending_ingest is not None else 0,
                 "cache_evictions": sum(mapping.evictions for mapping in
                     (self.started, self.tasks, self.calls, self.tool_inputs, self.usage, self.pending_tools, self.pending_request_times)),
                 "cache_tracked_bytes": sum(mapping.tracked_bytes for mapping in
@@ -546,7 +576,7 @@ class Session:
             relationship["agent.parent_id"] = self.parent_agent_id
         attributes = {"session.id": self.session_id, "observatory.project": self.project,
                       "observatory.data_source": "local-session-log", **relationship,
-                      **(attrs or {})}
+                      **(attrs or {}), **self.native_position()}
         return normalize_native({
             "trace_id": identity(self.source_id, self.turn),
             "span_id": identity(self.source_id, key, size=16) if parent else identity(self.source_id, self.turn, "root", size=16),
@@ -745,12 +775,8 @@ class Session:
             self.turn = str(payload.get("turn_id") or self.turn)
             self.model = payload.get("model") or self.model
             if self.model == "codex-auto-review" and not self.internal:
-                self.internal = True
-                self.capture_details = False
-                self.service = "codex-review"
-                self.tasks.clear()
-                self.task_description = ''
-                self.store.redact_internal_source(self.source_id)
+                self.adopt_internal_policy()
+                self._redaction_pending = True
             self.project = Path(payload["cwd"]).name if payload.get("cwd") else self.project
         elif kind == "token_usage_record":
             self.modern_usage = True
@@ -964,6 +990,10 @@ class Session:
                 continue
 
     def poll(self):
+        # Parsing advances bounded reader state. Retry the same idempotent
+        # batch before reading more bytes if either storage transaction failed.
+        if self._pending_ingest is not None:
+            self.flush_pending_ingest()
         stat = self.path.stat()
         self.source_size_bytes = stat.st_size
         self.source_mtime_ns = stat.st_mtime_ns
@@ -1019,6 +1049,7 @@ class Session:
         if self.discarding_line:
             _, separator, data = data.partition(b"\n")
             self.discarding_line = not bool(separator)
+        line_offset=self.offset-len(data)-len(self.pending)
         chunks = (self.pending + data).split(b"\n")
         self.pending = chunks.pop()
         if len(self.pending) > MAX_LINE:
@@ -1026,8 +1057,9 @@ class Session:
             self.discarding_line = True
             self.skipped += 1
             self.skipped_oversized += 1
-        records = []
+        records = [];record_offsets=[]
         for line in chunks:
+            line_offset+=len(line)+1
             if len(line) > MAX_LINE:
                 self.skipped += 1
                 self.skipped_oversized += 1
@@ -1036,6 +1068,7 @@ class Session:
                 row = loads(line)
                 if isinstance(row, dict):
                     records.append(row)
+                    record_offsets.append(line_offset)
                 else:
                     self.skipped += 1
                     self.schema_errors += 1
@@ -1052,7 +1085,8 @@ class Session:
         prior_models = {}
         logs = []
         from .local_activity import codex_activity, claude_activity
-        for row in records:
+        for row,source_offset in zip(records,record_offsets):
+            self._current_record_offset=source_offset
             try:
                 stamp = timestamp(row.get("timestamp"))
                 self.last_record_ns = max(self.last_record_ns, stamp)
@@ -1068,12 +1102,14 @@ class Session:
                         if "observatory.native_usage" in span["attributes"]:
                             prior_models[(span["trace_id"], span["span_id"])] = span
                 if self.runtime == "Codex":
-                    logs.extend(codex_activity(self, row, stamp))
+                    activity=codex_activity(self, row, stamp)
                 elif self.runtime == "Pi":
                     from .local_activity import pi_activity
-                    logs.extend(pi_activity(self, row, stamp))
+                    activity=pi_activity(self, row, stamp)
                 else:
-                    logs.extend(claude_activity(self, row, stamp))
+                    activity=claude_activity(self, row, stamp)
+                for event in activity:event['attributes'].update(self.native_position())
+                logs.extend(activity)
                 self.observe_state(row, stamp)
                 if self.capture_details and self.turn in self.tasks and self.turn in self.started:
                     payload = row.get("payload") or {}
@@ -1085,21 +1121,53 @@ class Session:
                 self.skipped += 1
                 self.schema_errors += 1
         if self.internal:
+            from .native_policy import internal_review_attrs, internal_review_events
             for span in spans:
                 span['service'] = self.service
                 span['resource_attributes']['service.name'] = self.service
-                span['attributes'].pop('agent.session.task', None)
+                span['attributes']=internal_review_attrs(span['attributes'])
+                span['events']=internal_review_events(span.get('events') or [])
+                span['links']=[]
                 if span['name'] == 'agent.run':
                     span['attributes']['agent.task'] = 'Approval review'
+                else:span['name']='Approval review'
             for log in logs:
                 log['service'] = self.service
                 log['body'] = ''
-                log['attributes'].pop('agent.session.task', None)
-                log['attributes']['agent.activity.subject'] = 'Approval review'
-        if spans:
-            self.store.ingest(spans)
+                log['attributes']=internal_review_attrs(log['attributes'])
+        self._pending_ingest=(spans,logs)
+        self._pending_spans_done=False;self._pending_retry=False
+        self.flush_pending_ingest()
+        state = "running" if time.time() - stat.st_mtime < 35 else "stopped"
+        if time.monotonic() - self.last_heartbeat > 10 or state != self.last_state:
+            self.store.register_connection({"source_id": self.source_id, "service": self.service,
+                "runtime": self.runtime + " local sessions", "integrations": ["local-session-log"],
+                "capture_content": self.capture_details, "state": state})
+            self.last_heartbeat, self.last_state = time.monotonic(), state
+        return len(spans)
+
+    def flush_pending_ingest(self):
+        spans,logs=self._pending_ingest
+        try:
+            if spans or logs or self._redaction_pending:self.refresh_capture_policy()
+            if self.internal:
+                from .native_policy import scrub_record
+                spans=[scrub_record(row,'span') for row in spans]
+                logs=[scrub_record(row,'log') for row in logs]
+                self._pending_ingest=(spans,logs)
+            if self._redaction_pending:
+                self.store.redact_internal_source(self.source_id)
+                self._redaction_pending=False
+            if spans and not self._pending_spans_done:
+                self.store.ingest(spans,native_retry=self._pending_retry,native_source_path=self.path)
+                self._pending_spans_done=True
+            if logs:
+                self.store.ingest_logs(logs,native_retry=self._pending_retry,native_source_path=self.path)
+            if spans or logs:self.refresh_capture_policy()
+        except Exception:
+            self._pending_retry=True
+            raise
         if logs:
-            self.store.ingest_logs(logs)
             last = logs[-1]
             self.last_activity = {"time_unix_nano": last["time_unix_nano"],
                                   "domain": last["attributes"].get("agent.activity.domain"),
@@ -1111,13 +1179,7 @@ class Session:
         self.spans_total += len(spans)
         self.logs_total += len(logs)
         self.last_success_ns = time.time_ns()
-        state = "running" if time.time() - stat.st_mtime < 35 else "stopped"
-        if time.monotonic() - self.last_heartbeat > 10 or state != self.last_state:
-            self.store.register_connection({"source_id": self.source_id, "service": self.service,
-                "runtime": self.runtime + " local sessions", "integrations": ["local-session-log"],
-                "capture_content": self.capture_details, "state": state})
-            self.last_heartbeat, self.last_state = time.monotonic(), state
-        return len(spans)
+        self._pending_ingest=None
 
 
 CLAUDE_META_BYTES = 64 * 1024
@@ -1197,6 +1259,7 @@ class LocalAgents:
         self.discovered_sources = 0
         self.omitted_sources = 0
         self.errors = 0
+        self.last_error = None
         self.runtime_snapshot = {}
         self.runtime_updated = 0
         self.process_samples = {}
@@ -1211,12 +1274,20 @@ class LocalAgents:
         self.initial_poll_complete = False
         self.thread = threading.Thread(target=self.loop, name="observatory-local-agents", daemon=True)
 
+    def record_error(self, error, operation):
+        from .findings import _safe_text
+        self.errors+=1
+        self.last_error={'kind':type(error).__name__,'operation':operation,
+            'message':_safe_text(str(error))[:300],'at_ns':time.time_ns()}
+
     def discover(self):
         roots = [(Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))/"sessions", "Codex"),
                  (Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home()/".claude")))/"projects", "Claude Code"),
                  (Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home()/".pi"/"agent")))/"sessions", "Pi")]
         cutoff = time.time() - 86400
         self.discovered_sources = 0
+        pending_sources={path for path,session in self.sessions.items() if session._pending_ingest is not None}
+        discovered_pending=set()
         def recent():
             for root, runtime in roots:
                 if not root.is_dir():
@@ -1240,14 +1311,16 @@ class LocalAgents:
                                         modified = entry.stat().st_mtime
                                         if modified >= cutoff:
                                             self.discovered_sources += 1
+                                            if Path(entry.path) in pending_sources:discovered_pending.add(Path(entry.path))
                                             yield modified, Path(entry.path), runtime
-                                except OSError:
-                                    self.errors += 1
-                    except OSError:
-                        self.errors += 1
+                                except OSError as exc:
+                                    self.record_error(exc,'Inspecting native source entry')
+                    except OSError as exc:
+                        self.record_error(exc,'Discovering native source directory')
         selected = heapq.nlargest(MAX_SOURCES, recent(), key=lambda row: row[0])
-        self.omitted_sources = max(0, self.discovered_sources - len(selected))
-        keys = {path for _, path, _ in selected}
+        selected=[row for row in selected if row[1] not in pending_sources][:max(0,MAX_SOURCES-len(pending_sources))]
+        keys={path for _,path,_ in selected}|pending_sources
+        self.omitted_sources=max(0,self.discovered_sources-len(selected)-len(discovered_pending))
         self.sessions = {path: session for path, session in self.sessions.items() if path in keys}
         for _, path, runtime in selected:
             if path not in self.sessions:
@@ -1260,8 +1333,8 @@ class LocalAgents:
                 break
             try:
                 accepted += session.poll()
-            except OSError:
-                self.errors += 1
+            except OSError as exc:
+                self.record_error(exc,'Reading native source')
         return accepted
 
     def loop(self):
@@ -1290,8 +1363,8 @@ class LocalAgents:
                 if not self.stop.is_set():
                     self.opencode.poll()
                     self.initial_poll_complete = True
-            except Exception:
-                self.errors += 1
+            except Exception as exc:
+                self.record_error(exc,'Polling native sources')
             self.stop.wait(1)
 
     def start(self):
@@ -1312,6 +1385,10 @@ class LocalAgents:
 
     def status(self):
         sessions = list(self.sessions.values())
+        internal=(self.store.internal_source_ids([session.source_id for session in sessions])
+                  if hasattr(self.store,'internal_source_ids') else set())
+        for session in sessions:
+            if session.source_id in internal:session.adopt_internal_policy()
         if time.monotonic() - self.runtime_updated >= 5:
             from .local_runtime import snapshot
             self.runtime_snapshot = snapshot({session.path: session.source_id for session in sessions})
@@ -1407,6 +1484,7 @@ class LocalAgents:
                     item["parent_context"] = context
         return {"enabled": True, "initial_poll_complete": self.initial_poll_complete, "sources": len(sessions), "discovered_sources": self.discovered_sources,
                 "omitted_sources": self.omitted_sources, "read_errors": self.errors,
+                "last_read_error": self.last_error,
                 "skipped_records": sum(session.skipped for session in sessions),
                 "backlog_bytes": sum(session.backlog_bytes for session in sessions),
                 "schema_errors": sum(session.schema_errors for session in sessions),

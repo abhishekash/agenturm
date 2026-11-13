@@ -1,0 +1,48 @@
+{
+  "source": {
+    "head": "d3f816a4908cb1d421c2229f18a3d9687353c122",
+    "dirty": false,
+    "files": {
+      "scripts/soak_monitor.py": "47ed0593c27b82df987772a6486bde5b0ce6c372198da074f082f7c9d1202465",
+      "observatory/http_transport.py": "6a31040bab9fda6e40e7c880e3c863d6bc778bc83f15c799f6c4a1182e2b8edd",
+      "observatory/ui_workflow.py": "9df056688df0a812ad19437a68d7d02525dd1ad020c17b77a1706e40a3f21e5d"
+    },
+    "harness_sha256": "342131fb4ac802466a377d6f64b67cb6127e27d718eb6202db3b1e7f6f34971b",
+    "untracked_code": []
+  },
+  "publishable": true,
+  "history": true,
+  "profiling": false,
+  "warmup_seconds": 15.0,
+  "initial_readiness_seconds": 124.79286817496177,
+  "requested_idle_seconds": 60.0,
+  "processes": {
+    "receiver": {
+      "cpu_one_core_percent": 18.016629057278905,
+      "sampled_seconds": 60.00012524891645,
+      "peak_sampled_rss_mib": 66.00390625
+    },
+    "cockpit": {
+      "cpu_one_core_percent": 9.183321441090964,
+      "sampled_seconds": 60.00007769896183,
+      "peak_sampled_rss_mib": 64.94921875
+    },
+    "driver": {
+      "cpu_one_core_percent": 0.11666655484180566,
+      "sampled_seconds": 60.00005750998389,
+      "peak_sampled_rss_mib": 45.65234375
+    }
+  },
+  "whole_monitor_idle_cpu_one_core_percent": 27.19995049836987,
+  "no_timed_api_or_keyboard_work": true,
+  "no_provider_calls": true,
+  "exit_status": {
+    "cockpit": {
+      "status": "0",
+      "signal": ""
+    },
+    "receiver": 0
+  },
+  "native_read_errors": 0,
+  "errors": []
+}

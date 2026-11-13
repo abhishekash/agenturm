@@ -27,9 +27,9 @@ class InvestigationCoverageTests(unittest.TestCase):
         for control in ('\x1b', '\x9b', '\u202e'):
             self.assertNotIn(control, result)
         self.assertIn('/local/', result)
-        self.assertIn('2 records · 1 spans · 1 activity events', result)
+        self.assertIn('2 records · 1 generated spans · 1 generated activity events', result)
         self.assertIn('bytes read / size: 100 / 100', result)
-        self.assertIn('Since monitor start: 100 bytes · 2 records · 1 spans · 1 activity events', result)
+        self.assertIn('Parsed since monitor start: 100 bytes · 2 records · 1 generated spans · 1 generated activity events', result)
 
     def test_failed_write_does_not_leave_a_truncated_export(self):
         with tempfile.TemporaryDirectory() as directory:

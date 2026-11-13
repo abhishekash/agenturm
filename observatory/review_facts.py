@@ -56,7 +56,9 @@ def review_capture_policy(original, snapshot, scope):
     if getattr(snapshot,'receiver_id','')!=scope.receiver:return policy
     local=getattr(snapshot,'local_status',{}) or {}
     for row in local.get('sessions',()):
-        if row.get('service')!=scope.producer:continue
+        if row.get('service')!=scope.producer:
+            if not (scope.producer=='codex' and row.get('service')=='codex-review'
+                    and row.get('runtime')=='Codex' and row.get('capture_content') is False):continue
         if scope.agent_id:
             if row.get('agent_id')!=scope.agent_id:continue
         elif row.get('agent_id') or row.get('session_id')!=scope.session_id:continue

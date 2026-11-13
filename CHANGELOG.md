@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep MCP scope, call identity, hydration and execution enrichment in one source snapshot. Separate producer/worker/session/server collisions, retain ambiguous calls, and expose typed recorded payloads without borrowing trace-root ownership.
+- Retry native batches after partial storage failures; fence stale collector positions and file replacements. Persist internal-review capture revocation, scrub derived text atomically and reject content-bearing legacy writes to those sources. Upgrade all collectors that share the database.
+- Index MCP and connection lookups, bound original-task reads, share fair atomic history batches and reuse bounded read-only metadata connections. Record the healthy retained-history measurements and the still-open resource targets.
+- Use denser three-line wide Agents rows and reuse Workflow's installed widget tree while preserving short-terminal hierarchy, keyboard navigation and selection.
+
 - Preserve whole-turn identity, recorded step membership, checks and usage when saving terminal Review into a task. Reject contradictory frozen scopes; keep older inconsistent links readable while withholding ambiguous totals until explicitly relinked or removed.
 - Make Workflow's Shift+R bulk-review action respond to the uppercase key sent by real terminals. Defer HTTPS handler setup during local HTTP polling while retaining standard HTTPS verification and redirect refusal.
 - Add an isolated complete-monitor soak with native ingestion, real terminal interaction, exact review/approval gates, reconnect and shutdown checks, retained-history load and matched polling measurements. Record the completed hour and remaining resource costs in the validation report.

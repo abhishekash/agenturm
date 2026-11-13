@@ -125,8 +125,8 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 table=app.query_one('#agent-table',DataTable)
                 self.assertNotIn('Waiting on',[str(column.label) for column in table.columns.values()])
                 self.assertGreater(table.column_widths[0],table.column_widths[1])
-                self.assertEqual(table.rows['source-1'].height,4)
-                self.assertEqual(table.rows['source-2'].height,4)
+                self.assertEqual(table.rows['source-1'].height,3)
+                self.assertEqual(table.rows['source-2'].height,3)
                 task_cell=table.get_row('source-1')[0]
                 self.assertTrue(task_cell.no_wrap)
                 rendered='\n'.join(table.render_line(row).text for row in range(table.size.height))
@@ -145,7 +145,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
             app.last_update=-1
             app.refresh_data()
             await pilot.pause()
-            self.assertEqual(table.rows['source-1'].height,4)
+            self.assertEqual(table.rows['source-1'].height,3)
             self.assertEqual(table.get_row('source-1')[0].plain.splitlines()[0].strip(), 'Fix checkout')
 
     async def test_columns_waiting_and_summary_are_bound_to_selected_session(self):

@@ -7,7 +7,7 @@ latency promise. Retention is deliberately disabled for this explicit fixture.
 """
 
 from __future__ import annotations
-import argparse, json, os, platform, resource, statistics, threading, time
+import argparse, json, math, os, platform, resource, statistics, threading, time
 from pathlib import Path
 from observatory.core import Store, normalize_native, _agent_id_from_attributes
 
@@ -148,6 +148,7 @@ def build(path, traces=5751, span_count=31000, log_count=41000):
 def measure(store, count=10):
     result = {}
     for name, call in [
+        ("connections", store.connections),
         ("activity", lambda: store.activity_page(limit=200)),
         ("sessions", lambda: store.sessions(limit=500)),
         ("metrics", store.metrics),
@@ -159,7 +160,9 @@ def measure(store, count=10):
             call()
             values.append((time.perf_counter() - started) * 1000)
         result[name] = {
+            "samples": len(values),
             "median_ms": round(statistics.median(values), 2),
+            "p95_ms": round(sorted(values)[max(0,math.ceil(len(values)*.95)-1)], 2),
             "max_ms": round(max(values), 2),
         }
     return result
@@ -170,8 +173,9 @@ def main():
     parser.add_argument("--db", type=Path, required=True)
     parser.add_argument("--build", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--samples", type=int, default=10)
+    parser.add_argument("--samples", type=int, default=20)
     args = parser.parse_args()
+    if args.samples<1:parser.error('Samples must be positive')
     if args.build:
         build(args.db)
     started = time.monotonic()

@@ -90,7 +90,7 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
                 styles=[table.get_component_rich_style(name).bgcolor for name in
                         ('datatable--odd-row','datatable--even-row','datatable--cursor')]
                 self.assertEqual(len(set(styles)),3,theme)
-            for size,height in (((150,40),4),((150,24),3),((150,40),4),((80,24),3),((60,18),2)):
+            for size,height in (((150,40),3),((150,24),3),((150,40),3),((80,24),3),((60,18),2)):
                 await pilot.resize_terminal(*size);await pilot.pause()
                 self.assertTrue(all(row.height==height for row in table.rows.values()),size)
                 self.assertEqual(app.selected_source,'s-c1')

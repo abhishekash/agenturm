@@ -47,6 +47,20 @@ def initialize(db):
         db.execute(
             f"CREATE INDEX IF NOT EXISTS {table}_mcp_time_v1 ON {table}({stamp} DESC) WHERE {MCP_PREDICATE}"
         )
+    # Hydrate selected MCP call keys through expression indexes, rather than
+    # recomputing identities over every retained payload for each page.
+    from .storage_mcp import call_key_sql
+    db.execute(f'CREATE INDEX IF NOT EXISTS spans_mcp_owner_trace_v1 ON spans(trace_id,service,agent_id) WHERE {MCP_PREDICATE}')
+    db.execute('''CREATE INDEX IF NOT EXISTS spans_mcp_execution_v1 ON spans(trace_id,service,agent_id,
+        json_extract(attributes,'$."gen_ai.tool.name"'))
+        WHERE lower(json_extract(attributes,'$."gen_ai.tool.type"'))='mcptool' ''')
+    for kind,table in (('span','spans'),('log','logs')):
+        db.execute(f'CREATE INDEX IF NOT EXISTS {table}_mcp_owner_lookup_v4 ON {table}({call_key_sql(kind)})')
+        db.execute(f'DROP INDEX IF EXISTS {table}_mcp_owner_lookup_v3')
+        db.execute(f'DROP INDEX IF EXISTS {table}_mcp_owner_lookup_v2')
+        db.execute(f'DROP INDEX IF EXISTS {table}_mcp_lookup_v1')
+    db.execute('''CREATE INDEX IF NOT EXISTS spans_source_text_v1 ON spans(
+        service,CAST(json_extract(resource_attributes,'$."observatory.source_id"') AS TEXT))''')
     from .core import INPUT_TOKEN_KEYS, OUTPUT_TOKEN_KEYS, TOKEN_BREAKDOWN_KEYS
 
     usage_fields = {

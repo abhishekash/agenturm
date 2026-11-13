@@ -463,7 +463,7 @@ class OpenCodeReaderTests(unittest.TestCase):
         calls = self.store.mcp_page()["calls"]
         resolved = next(call for call in calls if call["tool"] == "add")
         self.assertEqual(resolved["server"], "mcp_everything")
-        self.assertEqual(json.loads(resolved["arguments"]), {"a": 3, "b": 4})
+        self.assertEqual(resolved["arguments"], {"a": 3, "b": 4})
 
     def test_mcp_attribution_requires_a_unique_configured_prefix(self):
         self.assertEqual(_opencode_mcp_attributes("mcp_everything_add", ["mcp_everything"]), {

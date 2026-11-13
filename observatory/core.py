@@ -11,7 +11,7 @@ import sqlite3
 import time
 import base64
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from .agent_hierarchy import (AGENT_ID, HierarchyGraph, canonical_agent_id, normalize_node,
@@ -556,6 +556,8 @@ def normalize_otlp(body):
 class Store:
     def __init__(self, path, async_derived_refresh=False, workflow_patterns=None):
         self.path = str(path)
+        from .read_connections import ReadConnections
+        self._read_connections = ReadConnections(path)
         self.workflow_patterns = (os.environ.get("AGENTURM_WORKFLOW_PATTERNS", "0") == "1"
                                   if workflow_patterns is None else bool(workflow_patterns))
         self._async_derived_refresh = bool(async_derived_refresh)
@@ -759,7 +761,19 @@ class Store:
                 db.execute("INSERT INTO schema_meta(key,value) VALUES('trace_activity_v1','1')")
         os.chmod(self.path, 0o600)
         from .storage_activity import initialize as initialize_activity, drain
-        with self._connect() as db:initialize_activity(db)
+        with self._connect() as db:
+            from .native_policy import initialize as initialize_native_policy
+            initialize_native_policy(db)
+            initialize_activity(db)
+        with self._connect() as db:
+            migrated=db.execute("SELECT 1 FROM schema_meta WHERE key='native_internal_policy_v1'").fetchone()
+            legacy_sources=[] if migrated else [row[0] for row in db.execute('''SELECT DISTINCT source_id FROM (
+                SELECT json_extract(resource_attributes,'$."observatory.source_id"') AS source_id FROM spans WHERE service='codex-review'
+                UNION SELECT json_extract(resource_attributes,'$."observatory.source_id"') FROM logs WHERE service='codex-review')
+                WHERE source_id IS NOT NULL''') if isinstance(row[0],str) and TRACE_ID.fullmatch(row[0])]
+        for source in legacy_sources:self.redact_internal_source(source)
+        if not migrated:
+            with self._connect() as db:db.execute("INSERT OR REPLACE INTO schema_meta VALUES('native_internal_policy_v1','1')")
         if self._async_derived_refresh:
             self._migration_thread=threading.Thread(target=self._finish_migration,name='agenturm-history-migration',daemon=True)
             self._migration_thread.start()
@@ -807,7 +821,7 @@ class Store:
 
     def index_status(self):
         state=dict(self.migration_status)
-        with self._connect() as db:
+        with self._read() as db:
             dirty=bool(db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone())
         if dirty:
             state.update(ready=False,stage='Indexing incoming source changes')
@@ -845,6 +859,9 @@ class Store:
             raise
         finally:
             db.close()
+
+    def _read(self):
+        return self._read_connections.read()
 
     def register_connection(self, record):
         source_id = _id(record.get("source_id"), TRACE_ID, "source_id")
@@ -1047,15 +1064,15 @@ class Store:
                 json.dumps(unique, separators=(",", ":")), discovery, coverage,
                 review, observed_ns, first_seen, now)
 
-    def hierarchy_revision(self):
-        with self._connect() as db:
+    def hierarchy_revision(self, *, _db=None):
+        with (self._read() if _db is None else nullcontext(_db)) as db:
             row = db.execute("SELECT value FROM schema_meta WHERE key='agent_hierarchy_revision'").fetchone()
         return "h" + (str(row[0]) if row else "0")
 
-    def agent_nodes(self, limit=2000, include_reviews=True):
+    def agent_nodes(self, limit=2000, include_reviews=True, *, _db=None):
         limit = max(1, min(10000, int(limit)))
         where = "" if include_reviews else " WHERE is_review=0"
-        with self._connect() as db:
+        with (self._connect() if _db is None else nullcontext(_db)) as db:
             rows = db.execute("SELECT * FROM agent_nodes" + where +
                               " ORDER BY observed_ns DESC,agent_id LIMIT ?",
                               (limit,)).fetchall()
@@ -1109,7 +1126,7 @@ class Store:
             }
         return result
 
-    def resolve_agent_scope(self, agent_id, include_subagents=True):
+    def resolve_agent_scope(self, agent_id, include_subagents=True, *, _db=None):
         """Resolve canonical subtree membership for evidence queries.
 
         This is the only backend scope resolver.  It never guesses from service
@@ -1119,7 +1136,7 @@ class Store:
             raise ValueError("invalid agent_id")
         if not isinstance(include_subagents, bool):
             raise ValueError("invalid subtree scope")
-        nodes = self.agent_nodes(limit=10000)
+        nodes = self.agent_nodes(limit=10000,_db=_db)
         graph = HierarchyGraph(nodes)
         ids = graph.scope_ids(agent_id, include_subagents=include_subagents)
         by_id = {node["agent_id"]: node for node in nodes}
@@ -1133,50 +1150,51 @@ class Store:
                 session_ids.append(native)
         return {"agent_id": agent_id, "agent_ids": ids, "session_ids": session_ids,
                 "include_subagents": include_subagents,
-                "revision": self.hierarchy_revision(),
+                "revision": self.hierarchy_revision(_db=_db),
                 "nodes": len(ids), "known": agent_id in by_id,
                 "coverage": "partial" if not ids or len(nodes) >= 10000 else "complete"}
 
     def redact_internal_source(self, source_id):
         """Keep internal approval reviews as metadata, including older captures."""
         source_id = _id(source_id, TRACE_ID, "source_id")
+        from .native_policy import internal_review_attrs, internal_review_events
         affected = set()
         with self._connect() as db:
-            rows = db.execute("SELECT digest,trace_id,attributes FROM logs WHERE instr(resource_attributes,?)>0", (source_id,)).fetchall()
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('INSERT OR REPLACE INTO native_source_policy_v1 VALUES(?,1)',(source_id,))
+            rows = db.execute('''SELECT digest,trace_id,attributes FROM logs
+                WHERE json_extract(resource_attributes,'$."observatory.source_id"')=?''', (source_id,)).fetchall()
             for row in rows:
-                attrs = json.loads(row["attributes"])
-                attrs["agent.activity.subject"] = "Approval review"
-                attrs.pop("agent.session.task", None)
+                attrs = internal_review_attrs(json.loads(row["attributes"]))
                 db.execute("UPDATE logs SET body=?,attributes=?,service='codex-review' WHERE digest=?",
                            (json.dumps(""), json.dumps(attrs), row["digest"]))
                 if row["trace_id"]:
                     affected.add(row["trace_id"])
-            rows = db.execute("SELECT trace_id,span_id,attributes,name FROM spans WHERE instr(resource_attributes,?)>0", (source_id,)).fetchall()
+            rows = db.execute('''SELECT trace_id,span_id,attributes,name,events FROM spans
+                WHERE json_extract(resource_attributes,'$."observatory.source_id"')=?''', (source_id,)).fetchall()
             for row in rows:
-                attrs = json.loads(row["attributes"])
-                attrs.pop("agent.session.task", None)
+                attrs = internal_review_attrs(json.loads(row["attributes"]))
                 if row["name"] == "agent.run":
                     attrs["agent.task"] = "Approval review"
-                db.execute("UPDATE spans SET attributes=?,service='codex-review' WHERE trace_id=? AND span_id=?",
-                           (json.dumps(attrs), row["trace_id"], row["span_id"]))
+                db.execute("UPDATE spans SET attributes=?,events=?,links='[]',name=?,service='codex-review' WHERE trace_id=? AND span_id=?",
+                           (json.dumps(attrs),json.dumps(internal_review_events(json.loads(row['events']))),
+                            'agent.run' if row['name']=='agent.run' else 'Approval review',row["trace_id"],row["span_id"]))
                 affected.add(row["trace_id"])
+            # Raw source policy and derived content invalidate together; a
+            # delayed/failed async rebuild cannot expose the previous prompt.
+            db.executemany('DELETE FROM trace_summaries WHERE trace_id=?',((trace,) for trace in affected))
+            db.executemany('DELETE FROM finding_cache WHERE trace_id=?',((trace,) for trace in affected))
         if affected:
             self._refresh_after_write(affected)
 
     def connections(self):
         now = time.time_ns()
-        with self._connect() as db:
-            # A correlated comparison against c.source_id's TEXT affinity uses
-            # only the service prefix of spans_source, scanning that service for
-            # every connection. Group once; the cast preserves that comparison's
-            # text semantics, including sources reported as JSON numbers.
-            rows = db.execute("""WITH counts AS (
-                SELECT service,CAST(json_extract(resource_attributes,'$."observatory.source_id"') AS TEXT) AS source_id,
-                    COUNT(*) AS span_count FROM spans
-                GROUP BY service,CAST(json_extract(resource_attributes,'$."observatory.source_id"') AS TEXT)
-            ) SELECT c.*,COALESCE(counts.span_count,0) AS span_count
-                FROM agent_connections c LEFT JOIN counts
-                ON counts.service=c.service AND counts.source_id=c.source_id
+        with self._read() as db:
+            # Match the indexed TEXT expression, including numeric source IDs.
+            rows = db.execute("""SELECT c.*,(SELECT COUNT(*) FROM spans s
+                WHERE s.service=c.service AND
+                CAST(json_extract(s.resource_attributes,'$."observatory.source_id"') AS TEXT)=c.source_id) AS span_count
+                FROM agent_connections c
                 ORDER BY c.last_seen_ns DESC LIMIT 50""").fetchall()
         return [{"source_id": r["source_id"], "service": r["service"], "runtime": r["runtime"],
                  "integrations": json.loads(r["integrations"]), "capture_content": bool(r["capture_content"]),
@@ -1285,33 +1303,40 @@ class Store:
             with self._connect() as db:
                 active_pattern_runs = {r[0] for r in db.execute(
                     "SELECT trace_id FROM trace_activity ORDER BY last_ns DESC,trace_id DESC LIMIT 20")}
-        for trace_id in set(trace_ids):
+        trace_ids = sorted(set(trace_ids))
+        # Amortize connection/fsync costs without holding SQLite's writer lock
+        # over an entire history rebuild. Each bounded chunk remains atomic
+        # against ingestion, pruning and other receiver processes.
+        for offset in range(0,len(trace_ids),16):
             with self._connect() as db:
-                # A process-local lock cannot protect against another Store or
-                # collector process. Serialize source reads and cache replacement
-                # with retention (and ingestion) using SQLite's writer lock.
                 db.execute("BEGIN IMMEDIATE")
-                derived = (derive_trace(db, trace_id, workflow_patterns=True) if trace_id in active_pattern_runs
-                           else derive_trace(db, trace_id))
-                if derived is None:
-                    db.execute("DELETE FROM trace_summaries WHERE trace_id=?", (trace_id,))
+                for trace_id in trace_ids[offset:offset+16]:
+                    derived = (derive_trace(db, trace_id, workflow_patterns=True) if trace_id in active_pattern_runs
+                               else derive_trace(db, trace_id))
+                    if derived is None:
+                        db.execute("DELETE FROM trace_summaries WHERE trace_id=?", (trace_id,))
+                        db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
+                        continue
+                    summary, activity, findings, timestamp = derived
+                    from .error_reminders import trace_error_references
+                    errors = trace_error_references(activity, trace_id)
+                    db.execute("INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id,error_refs_json) VALUES(?,?,?,?,?,?) "
+                               "ON CONFLICT(trace_id) DO UPDATE SET session_id=excluded.session_id,"
+                               "summary_json=excluded.summary_json,activity_json=excluded.activity_json,"
+                               "agent_id=excluded.agent_id,error_refs_json=excluded.error_refs_json",
+                               (trace_id, summary.get("session_id"), json.dumps(summary, separators=(",", ":")),
+                                json.dumps(activity, separators=(",", ":")), summary.get("agent_id"),
+                                json.dumps(errors, separators=(",", ":"))))
                     db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
-                    continue
-                summary, activity, findings, timestamp = derived
-                from .error_reminders import trace_error_references
-                errors = trace_error_references(activity, trace_id)
-                db.execute("INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id,error_refs_json) VALUES(?,?,?,?,?,?) "
-                           "ON CONFLICT(trace_id) DO UPDATE SET session_id=excluded.session_id,"
-                           "summary_json=excluded.summary_json,activity_json=excluded.activity_json,"
-                           "agent_id=excluded.agent_id,error_refs_json=excluded.error_refs_json",
-                           (trace_id, summary.get("session_id"), json.dumps(summary, separators=(",", ":")),
-                            json.dumps(activity, separators=(",", ":")), summary.get("agent_id"),
-                            json.dumps(errors, separators=(",", ":"))))
-                db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
-                db.executemany("INSERT INTO finding_cache(finding_id,trace_id,time_ns,finding_json) VALUES(?,?,?,?)",
-                               ((item["id"], trace_id, timestamp,
-                                 json.dumps({**item, "time_unix_nano": timestamp}, separators=(",", ":")))
-                                for item in findings))
+                    db.executemany("INSERT INTO finding_cache(finding_id,trace_id,time_ns,finding_json) VALUES(?,?,?,?)",
+                                   ((item["id"], trace_id, timestamp,
+                                     json.dumps({**item, "time_unix_nano": timestamp}, separators=(",", ":")))
+                                    for item in findings))
+            if offset+16<len(trace_ids):
+                # SQLite's busy handler is not a fair writer queue. Give a
+                # waiting native collector/other receiver a real acquisition
+                # window instead of immediately reacquiring through history.
+                time.sleep(.025)
 
     def _refresh_after_write(self, trace_ids):
         trace_ids = set(trace_ids)
@@ -1360,6 +1385,10 @@ class Store:
                         self._derived_condition.notify()
 
     def close(self):
+        try:self._close_workers()
+        finally:self._read_connections.close()
+
+    def _close_workers(self):
         self._migration_stop.set()
         if self._migration_thread and self._migration_thread.is_alive():self._migration_thread.join(timeout=15)
         if self._derived_thread is None:
@@ -1581,10 +1610,49 @@ class Store:
         return {"days": days, "step": step, "service": service, "session_id": session_id,
                 "points": points}
 
-    def ingest(self, spans):
+    def internal_source_ids(self,source_ids,*,_db=None):
+        ids=sorted({value for value in source_ids if isinstance(value,str)})
+        result=set()
+        if not ids:return result
+        with (self._read() if _db is None else nullcontext(_db)) as db:
+            for offset in range(0,len(ids),200):
+                chunk=ids[offset:offset+200];marks=','.join('?' for _ in chunk)
+                result.update(row[0] for row in db.execute(f'SELECT source_id FROM native_source_policy_v1 WHERE internal=1 AND source_id IN ({marks})',chunk))
+        return result
+
+    def _policy_records(self,records,kind,db):
+        from .native_policy import scrub_record
+        source_ids=[(row.get('resource_attributes') or {}).get('observatory.source_id') for row in records]
+        internal=self.internal_source_ids(source_ids,_db=db)
+        return [scrub_record(row,kind) if isinstance(source,str) and source in internal else row for row,source in zip(records,source_ids)]
+
+    @staticmethod
+    def _stale_native_generation(records,native_retry,native_source_path):
+        if not native_retry and native_source_path is None:return False
+        try:
+            info=Path(native_source_path).stat() if native_source_path is not None else None
+            current=f'{info.st_dev}:{info.st_ino}' if info is not None else None
+        except OSError:current=None
+        versions={row.get('attributes',{}).get('observatory.native_file_id') for row in records}
+        return current is None or versions!={current}
+
+    @staticmethod
+    def _write_ingest_rows(db,sql,records,rows):
+        # Native ordering fences may deliberately ignore stale replacements.
+        # Only accepted writes may update activity/endpoints or derived facts.
+        if not any(row.get('scope_name')=='observatory.local_agents' for row in records):
+            db.executemany(sql,rows)
+            return records
+        return [record for record,row in zip(records,rows) if db.execute(sql,row).rowcount]
+
+    def ingest(self, spans, *, native_retry=False, native_source_path=None):
         spans = list(spans)
+        from .native_policy import native_update_guard
         with self._connect() as db:
-            db.executemany("""INSERT INTO spans
+            db.execute('BEGIN IMMEDIATE')
+            spans=self._policy_records(spans,'span',db)
+            stale_generation=self._stale_native_generation(spans,native_retry,native_source_path)
+            sql=f"""INSERT INTO spans
                 (trace_id,span_id,parent_span_id,name,start_ns,end_ns,status,service,
                  attributes,events,links,resource_attributes,scope_name,agent_id)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -1594,13 +1662,14 @@ class Store:
                 status=excluded.status, service=excluded.service,
                 attributes=excluded.attributes, events=excluded.events,
                 links=excluded.links, resource_attributes=excluded.resource_attributes,
-                scope_name=excluded.scope_name,agent_id=excluded.agent_id""",
-                [(s["trace_id"], s["span_id"], s["parent_span_id"], s["name"],
+                scope_name=excluded.scope_name,agent_id=excluded.agent_id WHERE {native_update_guard('spans',stale_generation)}"""
+            rows=[(s["trace_id"], s["span_id"], s["parent_span_id"], s["name"],
                   s["start_unix_nano"], s["end_unix_nano"], s["status"], s["service"],
                   json.dumps(s["attributes"]), json.dumps(s["events"]),
                   json.dumps(s.get("links", [])), json.dumps(s.get("resource_attributes", {})),
                   s.get("scope_name", ""), _agent_id_from_attributes(s.get("attributes"),
-                      s.get("resource_attributes"), s.get("service"))) for s in spans])
+                      s.get("resource_attributes"), s.get("service"))) for s in spans]
+            spans=self._write_ingest_rows(db,sql,spans,rows)
             db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
                 ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
                 [(s["trace_id"], s["end_unix_nano"]) for s in spans])
@@ -1701,38 +1770,32 @@ class Store:
         deleted["cutoff_unix_nano"] = cutoff_ns
         return deleted
 
-    def ingest_logs(self, records):
+    def ingest_logs(self, records, *, native_retry=False, native_source_path=None):
         records = list(records)
-        rows = []
-        native_ids = []
-        for log in records:
-            canonical = json.dumps(log, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-            digest = hashlib.sha256(canonical.encode()).hexdigest()
-            record_id = log['attributes'].get('observatory.record_id')
-            if log['scope_name']=='observatory.local_agents' and isinstance(record_id,str) and TRACE_ID.fullmatch(record_id):
-                digest = hashlib.sha256(('local-session:'+record_id).encode()).hexdigest()
-                native_ids.append((record_id,digest))
-            cursor_event_id = log['attributes'].get('cursor.event.id')
-            if isinstance(cursor_event_id, str) and cursor_event_id:
-                digest = hashlib.sha256(('cursor-event:'+cursor_event_id).encode()).hexdigest()
-            rows.append((digest, log["trace_id"], log["span_id"], log["time_unix_nano"],
-                         log["service"], log["severity_number"], log["severity_text"],
-                         log["event_name"], json.dumps(log["body"]),
-                         json.dumps(log["attributes"]), json.dumps(log["resource_attributes"]),
-                         log["scope_name"], _agent_id_from_attributes(
-                             log.get("attributes"), log.get("resource_attributes"), log.get("service"))))
+        from .native_policy import native_update_guard
         with self._connect() as db:
-            db.executemany("""DELETE FROM logs WHERE scope_name='observatory.local_agents'
-                AND json_extract(attributes,'$."observatory.record_id"')=? AND digest<>?""", native_ids)
+            db.execute('BEGIN IMMEDIATE')
+            records=self._policy_records(records,'log',db)
+            stale_generation=self._stale_native_generation(records,native_retry,native_source_path)
+            rows = []
+            native_ids = []
             for log in records:
-                attrs=log['attributes']
-                if log['scope_name']=='observatory.local_agents' and log.get('span_id') and attrs.get('mcp.server.name'):
-                    db.execute("""DELETE FROM logs WHERE scope_name='observatory.local_agents'
-                        AND trace_id=? AND time_ns=? AND span_id IS NULL
-                        AND json_extract(attributes,'$."mcp.server.name"')=?
-                        AND json_extract(attributes,'$."agent.activity.action"')=?""",
-                        (log['trace_id'],log['time_unix_nano'],attrs['mcp.server.name'],attrs.get('mcp.tool.name')))
-            db.executemany("""INSERT INTO logs
+                canonical = json.dumps(log, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                digest = hashlib.sha256(canonical.encode()).hexdigest()
+                record_id = log['attributes'].get('observatory.record_id')
+                if log['scope_name']=='observatory.local_agents' and isinstance(record_id,str) and TRACE_ID.fullmatch(record_id):
+                    digest = hashlib.sha256(('local-session:'+record_id).encode()).hexdigest()
+                    native_ids.append((record_id,digest))
+                cursor_event_id = log['attributes'].get('cursor.event.id')
+                if isinstance(cursor_event_id, str) and cursor_event_id:
+                    digest = hashlib.sha256(('cursor-event:'+cursor_event_id).encode()).hexdigest()
+                rows.append((digest, log["trace_id"], log["span_id"], log["time_unix_nano"],
+                             log["service"], log["severity_number"], log["severity_text"],
+                             log["event_name"], json.dumps(log["body"]),
+                             json.dumps(log["attributes"]), json.dumps(log["resource_attributes"]),
+                             log["scope_name"], _agent_id_from_attributes(
+                                 log.get("attributes"), log.get("resource_attributes"), log.get("service"))))
+            sql=f"""INSERT INTO logs
                 (digest,trace_id,span_id,time_ns,service,severity_number,severity_text,
                  event_name,body,attributes,resource_attributes,scope_name,agent_id)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(digest) DO UPDATE SET
@@ -1741,7 +1804,14 @@ class Store:
                 severity_text=excluded.severity_text,event_name=excluded.event_name,
                 body=excluded.body,attributes=excluded.attributes,
                 resource_attributes=excluded.resource_attributes,scope_name=excluded.scope_name,
-                agent_id=excluded.agent_id""", rows)
+                agent_id=excluded.agent_id WHERE {native_update_guard('logs',stale_generation)}"""
+            records=self._write_ingest_rows(db,sql,records,rows)
+            accepted_ids={log['attributes'].get('observatory.record_id') for log in records
+                          if log['scope_name']=='observatory.local_agents'
+                          and isinstance(log['attributes'].get('observatory.record_id'),str)}
+            db.executemany("""DELETE FROM logs WHERE scope_name='observatory.local_agents'
+                AND json_extract(attributes,'$."observatory.record_id"')=? AND digest<>?""",
+                [(record_id,digest) for record_id,digest in native_ids if record_id in accepted_ids])
             db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
                 ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
                 [(log["trace_id"], log["time_unix_nano"]) for log in records if log["trace_id"]])
@@ -1757,7 +1827,7 @@ class Store:
         if nodes:
             self.upsert_agent_nodes(nodes[:5000])
         self._refresh_after_write(log["trace_id"] for log in records if log["trace_id"])
-        return len(rows)
+        return len(records)
 
     def logs(self, trace_id=None, limit=100):
         with self._connect() as db:
@@ -1775,12 +1845,12 @@ class Store:
                  "scope_name": r["scope_name"]} for r in rows]
 
     @staticmethod
-    def _event_cursor(cursor):
+    def _event_cursor(cursor, *, max_key=512):
         if not cursor:
             return None
         try:
             stamp, key = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
-            if not isinstance(stamp, int) or not isinstance(key, str) or len(key) > 512:
+            if not isinstance(stamp, int) or not isinstance(key, str) or len(key) > max_key:
                 raise ValueError
             return stamp, key
         except (ValueError, TypeError, UnicodeDecodeError) as exc:
@@ -1901,49 +1971,48 @@ class Store:
     def mcp_page(self, limit=100, service=None, session_id=None, query=None, cursor=None,
                  include_reviews=True, agent_id=None, subtree=False, scope_revision=None):
         """Page complete MCP calls, keeping all evidence for each call together."""
+        with self._connect() as db:
+            db.execute('BEGIN')
+            return self._mcp_page(db,limit,service,session_id,query,cursor,
+                include_reviews,agent_id,subtree,scope_revision)
+
+    def _mcp_page(self, db, limit, service, session_id, query, cursor,
+                  include_reviews, agent_id, subtree, scope_revision):
         limit = max(1, min(200, int(limit)))
-        before = self._event_cursor(cursor)
+        # Scoped provider IDs may each occupy 512 characters. SQL JSON escapes
+        # control characters, with the server/call tuple nested once more in
+        # the outer ownership key; the decoded key can exceed 10 KiB.
+        before = self._event_cursor(cursor,max_key=16384)
         scope = None
         mcp_method = "json_extract(attributes,'$.\"mcp.method.name\"')"
         # Keep all MCP protocol methods, not only tool execution. Discovery,
         # prompts, and resource reads are useful agent activity too.
         from .storage_activity import MCP_PREDICATE
+        from .storage_mcp import call_key_sql, session_sql, execution_match_sql, text_sql, text_value
         match = MCP_PREDICATE
         clauses, params = [match], []
         if service:
             clauses.append("service=?")
             params.append(service)
         if session_id:
-            session_attrs = ','.join(
-                f"NULLIF(json_extract(attributes,'$.\"{key}\"'),'')"
-                for key in SESSION_KEYS
-            )
-            clauses.append(
-                f"(COALESCE({session_attrs})=? OR trace_id IN "
-                "(SELECT trace_id FROM trace_summaries WHERE session_id=?))"
-            )
-            params.extend((session_id, session_id))
+            clauses.append(session_sql()+'=?')
+            params.append(session_id)
         if agent_id:
-            scope = self.resolve_agent_scope(agent_id, include_subagents=bool(subtree))
+            scope = self.resolve_agent_scope(agent_id, include_subagents=bool(subtree),_db=db)
             if scope_revision and scope_revision != scope["revision"]:
                 raise ValueError("hierarchy scope changed")
             if not scope["agent_ids"]:
                 return {'calls': [], 'next_cursor': None, 'summary': {}, 'agent_scope': scope}
             marks = ','.join('?' for _ in scope["agent_ids"])
-            clauses.append(f"(agent_id IN ({marks}) OR trace_id IN "
-                           f"(SELECT trace_id FROM trace_summaries WHERE agent_id IN ({marks})))")
-            params.extend([*scope["agent_ids"], *scope["agent_ids"]])
+            clauses.append(f"agent_id IN ({marks})")
+            params.extend(scope['agent_ids'])
         if not include_reviews:
             clauses.append("service!='codex-review'")
         where = ' AND '.join(clauses)
-        span_key = "trace_id || ':' || span_id"
-        cursor_call_key = "NULLIF(json_extract(attributes,'$.\"observatory.mcp.call_id\"'),'')"
-        log_key = (f"CASE WHEN {cursor_call_key} IS NOT NULL THEN 'cursor-mcp:' || {cursor_call_key} "
-                   "WHEN trace_id IS NOT NULL AND span_id IS NOT NULL THEN trace_id || ':' || span_id "
-                   "ELSE digest END")
+        span_key,log_key=call_key_sql('span'),call_key_sql('log')
         def mcp_identity(alias):
             def value(key):
-                return f"NULLIF(json_extract({alias}.attributes,'$.\"{key}\"'),'')"
+                return text_sql(alias,key)
             if alias == 'spans':
                 tool_from_name = (
                     f"CASE WHEN {value('mcp.method.name')}='tools/call' "
@@ -1958,17 +2027,15 @@ class Store:
                     f"{value('tool.name')},{value('agent.activity.action')},"
                     f"{tool_from_name},'Not reported')")
         server,tool=mcp_identity('logs')
-        linked_server,linked_tool=mcp_identity('linked')
-        unique_log=f"""(span_id IS NOT NULL OR NOT EXISTS (
-            SELECT 1 FROM logs linked WHERE linked.trace_id=logs.trace_id
-            AND linked.time_ns=logs.time_ns AND linked.span_id IS NOT NULL
-            AND {linked_server}={server} AND {linked_tool}={tool}))"""
+        # A timestamp/tool match cannot establish that two source calls are
+        # duplicates. Explicit scoped call keys already merge linked I/O.
+        unique_log='1'
         query_filter = ' HAVING MAX(instr(lower(evidence),lower(?)))>0' if query else ''
         cursor_filter = ' WHERE (stamp,call_key) < (?,?)' if before else ''
         values = [*params, *params, *([query] if query else []), *(before or ()), limit+1]
         span_server, span_tool = mcp_identity('spans')
         mcp_result_error_sql = " OR ".join(
-            f"(json_extract(execution.attributes,'$.\"{flag}\"')=1)"
+            f"(json_type(execution.attributes,'$.\"{flag}\"')='true')"
             for flag in ("mcp.tool.is_error", "mcp.is_error")
         )
         for result_key in ("gcp.vertex.agent.tool_response", "gen_ai.tool.call.result",
@@ -1979,23 +2046,29 @@ class Store:
             # inventory query fail with malformed JSON.
             mcp_result_error_sql += (
                 f" OR CASE WHEN json_valid({result_value}) THEN "
-                f"(json_extract({result_value},'$.isError')=1 "
-                f"OR json_extract({result_value},'$.is_error')=1) ELSE 0 END"
+                f"(json_type({result_value},'$.isError')='true' "
+                f"OR json_type({result_value},'$.is_error')='true') ELSE 0 END"
             )
-        mcp_tool_failed = f"""EXISTS (
-            SELECT 1 FROM spans execution
-            WHERE execution.trace_id=spans.trace_id
-              AND json_extract(execution.attributes,'$.\"gen_ai.tool.type\"')='MCPTool'
-              AND json_extract(execution.attributes,'$.\"gen_ai.tool.name\"')={span_tool}
-              AND ({mcp_result_error_sql})
-        )"""
+        mcp_tool_failed = f"EXISTS (SELECT 1 FROM spans execution WHERE {execution_match_sql()} AND ({mcp_result_error_sql}))"
+        body_value="json_extract(body,'$')"
+        direction_sql="json_extract(attributes,'$.\"observatory.mcp.io.direction\"')"
+        no_output_attributes=' AND '.join(
+            f"json_type(attributes,'$.\"{key}\"') IS NULL"
+            for key in ('output.value','gen_ai.tool.call.result','gcp.vertex.agent.tool_response','tool.result'))
+        chosen_body_result=f"""CASE WHEN {direction_sql}='result' THEN {body_value}
+            WHEN COALESCE({direction_sql},'')='' AND json_valid({body_value})
+            THEN json_extract({body_value},'$.result') END"""
+        body_errors=' OR '.join(f"json_type(({chosen_body_result}),'$.{key}')='true'" for key in ('isError','is_error'))
+        log_body_error=f"""CASE WHEN ({no_output_attributes}) AND json_valid(({chosen_body_result}))
+            THEN ({body_errors}) ELSE 0 END"""
         summary_sql = f"""WITH evidence AS (
             SELECT {span_key} AS call_key, {span_server} AS server, {span_tool} AS tool,
-                   (status IN ('ERROR','FAILED') OR {mcp_tool_failed}) AS failed
+                   (status IN ('ERROR','FAILED') OR COALESCE(({mcp_result_error_sql.replace('execution.','spans.')}),0) OR {mcp_tool_failed}) AS failed
             FROM spans WHERE {where}
             UNION ALL
             SELECT {log_key}, {server}, {tool},
-                   COALESCE(json_extract(attributes,'$."agent.activity.result"') IN ('error','failed','denied','blocked'),0)
+                   COALESCE(json_extract(attributes,'$."agent.activity.result"') IN ('error','failed','denied','blocked')
+                     OR ({mcp_result_error_sql.replace('execution.','logs.')}) OR ({log_body_error}),0)
             FROM logs WHERE {where} AND {unique_log}
         ), calls AS (
             SELECT call_key, COALESCE(MAX(NULLIF(server,'Not reported')),'Not reported') AS server,
@@ -2004,129 +2077,128 @@ class Store:
         ) SELECT server, COUNT(*) AS calls, SUM(failed) AS errors,
                  COUNT(DISTINCT NULLIF(tool,'Not reported')) AS tools
           FROM calls GROUP BY server ORDER BY server"""
-        with self._connect() as db:
-            inventory = [dict(row) for row in db.execute(summary_sql, [*params, *params])]
-            metric_servers = []
-            if not session_id and not agent_id:
-                metric_filter = "" if not service else " AND service=?"
-                metric_params = [] if not service else [service]
-                metric_rows = db.execute(f"""SELECT digest,time_ns,temporality,attributes,
-                        resource_attributes,scope_name,data,
-                        COALESCE(NULLIF(json_extract(attributes,'$.\"cursor.mcp.server.name\"'),''),'Not reported') AS server
-                    FROM metric_points
-                    WHERE name='cursor.tool.calls' AND service='cursor'
-                      AND kind='sum' AND temporality IN (1,2)
-                      AND json_extract(data,'$.isMonotonic')=1
-                      AND json_extract(attributes,'$.\"cursor.tool.kind\"')='mcp'{metric_filter}
-                    ORDER BY time_ns,digest""", metric_params).fetchall()
-                # DELTA (1) values cover disjoint collection intervals, so add
-                # every point. CUMULATIVE (2) values are running totals; retain
-                # only the latest point in each attribute/resource time series.
-                cumulative = {}
-                totals = {}
+        inventory = [dict(row) for row in db.execute(summary_sql, [*params, *params])]
+        metric_servers = []
+        if not session_id and not agent_id:
+            metric_filter = "" if not service else " AND service=?"
+            metric_params = [] if not service else [service]
+            metric_rows = db.execute(f"""SELECT digest,time_ns,temporality,attributes,
+                    resource_attributes,scope_name,data,
+                    COALESCE(NULLIF(json_extract(attributes,'$.\"cursor.mcp.server.name\"'),''),'Not reported') AS server
+                FROM metric_points
+                WHERE name='cursor.tool.calls' AND service='cursor'
+                  AND kind='sum' AND temporality IN (1,2)
+                  AND json_extract(data,'$.isMonotonic')=1
+                  AND json_extract(attributes,'$.\"cursor.tool.kind\"')='mcp'{metric_filter}
+                ORDER BY time_ns,digest""", metric_params).fetchall()
+            # DELTA (1) values cover disjoint collection intervals, so add
+            # every point. CUMULATIVE (2) values are running totals; retain
+            # only the latest point in each attribute/resource time series.
+            cumulative = {}
+            totals = {}
 
-                def add_metric_point(row):
-                    attributes = json.loads(row['attributes'])
-                    data = json.loads(row['data'])
-                    try:
-                        if int(data.get('flags', 0)) & 1:
-                            return
-                        calls = max(0, int(float(data.get('value', 0))))
-                    except (TypeError, ValueError, OverflowError):
+            def add_metric_point(row):
+                attributes = json.loads(row['attributes'])
+                data = json.loads(row['data'])
+                try:
+                    if int(data.get('flags', 0)) & 1:
                         return
-                    server = row['server']
-                    bucket = totals.setdefault(server, {'server':server,'calls':0,'errors':0,'tools':set()})
-                    bucket['calls'] += calls
-                    if str(attributes.get('cursor.tool.status','')).casefold() in {'failure','failed','error'}:
-                        bucket['errors'] += calls
-                    tool = attributes.get('cursor.tool.name')
-                    if tool:
-                        bucket['tools'].add(str(tool))
+                    calls = max(0, int(float(data.get('value', 0))))
+                except (TypeError, ValueError, OverflowError):
+                    return
+                server = row['server']
+                bucket = totals.setdefault(server, {'server':server,'calls':0,'errors':0,'tools':set()})
+                bucket['calls'] += calls
+                if str(attributes.get('cursor.tool.status','')).casefold() in {'failure','failed','error'}:
+                    bucket['errors'] += calls
+                tool = attributes.get('cursor.tool.name')
+                if tool:
+                    bucket['tools'].add(str(tool))
 
-                for row in metric_rows:
-                    if row['temporality'] == 1:
-                        add_metric_point(row)
-                        continue
-                    identity = (row['server'],
-                        json.dumps(json.loads(row['attributes']),sort_keys=True,separators=(',',':')),
-                        json.dumps(json.loads(row['resource_attributes']),sort_keys=True,separators=(',',':')),
-                        row['scope_name'])
-                    previous = cumulative.get(identity)
-                    if previous is None or (row['time_ns'],row['digest']) > (previous['time_ns'],previous['digest']):
-                        cumulative[identity] = row
-                for row in cumulative.values():
+            for row in metric_rows:
+                if row['temporality'] == 1:
                     add_metric_point(row)
-                metric_servers = [{**row,'tools':len(row['tools'])}
-                                  for row in sorted(totals.values(),key=lambda item:item['server'].casefold())]
-            summary = {'calls': sum(row['calls'] for row in inventory),
-                       'errors': sum(row['errors'] for row in inventory),
-                       'tools': sum(row['tools'] for row in inventory),
-                       'servers': [row for row in inventory if row['server'] != 'Not reported'],
-                       'unknown_server_calls': sum(row['calls'] for row in inventory if row['server'] == 'Not reported'),
-                       'unknown_server_errors': sum(row['errors'] for row in inventory if row['server'] == 'Not reported'),
-                       'unknown_server_tools': sum(row['tools'] for row in inventory if row['server'] == 'Not reported'),
-                       'metric_calls': sum(row['calls'] for row in metric_servers),
-                       'metric_servers': metric_servers,
-                       'metric_scope': 'all sessions; Cursor metrics have no session IDs'}
-            candidates = db.execute(f"""WITH evidence AS (
-                SELECT {span_key} AS call_key,end_ns AS stamp,attributes || name || service AS evidence FROM spans WHERE {where}
-                UNION ALL
-                SELECT {log_key} AS call_key,time_ns AS stamp,attributes || body || service AS evidence FROM logs WHERE {where} AND {unique_log}
-            ), calls AS (
-                SELECT call_key,MAX(stamp) AS stamp FROM evidence GROUP BY call_key {query_filter}
-            ) SELECT * FROM calls {cursor_filter} ORDER BY stamp DESC,call_key DESC LIMIT ?""", values).fetchall()
-            selected_keys = [row['call_key'] for row in candidates[:limit]]
-            if not selected_keys:
-                result = {'calls': [], 'next_cursor': None, 'summary': summary}
-                if scope is not None:
-                    result.update(scope='agent subtree' if subtree else 'this agent', agent_scope=scope)
-                return result
-            placeholders = ','.join('?' for _ in selected_keys)
-            spans = db.execute(f"SELECT * FROM spans WHERE {span_key} IN ({placeholders})",selected_keys).fetchall()
-            logs = db.execute(f"SELECT * FROM logs WHERE {log_key} IN ({placeholders}) ORDER BY time_ns DESC,digest DESC",selected_keys).fetchall()
-            trace_ids = sorted({row['trace_id'] for row in [*spans, *logs] if row['trace_id']})
-            trace_session_ids = {}
-            if trace_ids:
-                trace_placeholders = ','.join('?' for _ in trace_ids)
-                trace_session_ids = {
-                    row['trace_id']: row['session_id']
-                    for row in db.execute(
-                        f"SELECT trace_id,session_id FROM trace_summaries "
-                        f"WHERE trace_id IN ({trace_placeholders}) AND session_id IS NOT NULL",
-                        trace_ids,
-                    ).fetchall()
-                }
+                    continue
+                identity = (row['server'],
+                    json.dumps(json.loads(row['attributes']),sort_keys=True,separators=(',',':')),
+                    json.dumps(json.loads(row['resource_attributes']),sort_keys=True,separators=(',',':')),
+                    row['scope_name'])
+                previous = cumulative.get(identity)
+                if previous is None or (row['time_ns'],row['digest']) > (previous['time_ns'],previous['digest']):
+                    cumulative[identity] = row
+            for row in cumulative.values():
+                add_metric_point(row)
+            metric_servers = [{**row,'tools':len(row['tools'])}
+                              for row in sorted(totals.values(),key=lambda item:item['server'].casefold())]
+        summary = {'calls': sum(row['calls'] for row in inventory),
+                   'errors': sum(row['errors'] for row in inventory),
+                   'tools': sum(row['tools'] for row in inventory),
+                   'servers': [row for row in inventory if row['server'] != 'Not reported'],
+                   'unknown_server_calls': sum(row['calls'] for row in inventory if row['server'] == 'Not reported'),
+                   'unknown_server_errors': sum(row['errors'] for row in inventory if row['server'] == 'Not reported'),
+                   'unknown_server_tools': sum(row['tools'] for row in inventory if row['server'] == 'Not reported'),
+                   'metric_calls': sum(row['calls'] for row in metric_servers),
+                   'metric_servers': metric_servers,
+                   'metric_scope': 'all sessions; Cursor metrics have no session IDs'}
+        candidates = db.execute(f"""WITH evidence AS (
+            SELECT {span_key} AS call_key,end_ns AS stamp,attributes || name || service AS evidence FROM spans WHERE {where}
+            UNION ALL
+            SELECT {log_key} AS call_key,time_ns AS stamp,attributes || body || service AS evidence FROM logs WHERE {where} AND {unique_log}
+        ), calls AS (
+            SELECT call_key,MAX(stamp) AS stamp FROM evidence GROUP BY call_key {query_filter}
+        ) SELECT * FROM calls {cursor_filter} ORDER BY stamp DESC,call_key DESC LIMIT ?""", values).fetchall()
+        selected_keys = [row['call_key'] for row in candidates[:limit]]
+        if not selected_keys:
+            result = {'calls': [], 'next_cursor': None, 'summary': summary}
+            if scope is not None:
+                result.update(scope='agent subtree' if subtree else 'this agent', agent_scope=scope)
+            return result
+        placeholders = ','.join('?' for _ in selected_keys)
+        spans = db.execute(f"SELECT *,{span_key} AS mcp_key,{session_sql()} AS mcp_session FROM spans WHERE {span_key} IN ({placeholders}) AND {where}",[*selected_keys,*params]).fetchall()
+        logs = db.execute(f"SELECT *,{log_key} AS mcp_key,{session_sql()} AS mcp_session FROM logs WHERE {log_key} IN ({placeholders}) AND {where} ORDER BY time_ns DESC,digest DESC",[*selected_keys,*params]).fetchall()
+        def decode_tool_payload(value):
+            if not isinstance(value, str):
+                return value
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return value
+
+        def recorded_payload(attrs,keys):
+            return next((decode_tool_payload(attrs[key]) for key in keys if key in attrs), '')
+
+        argument_keys=('input.value','gen_ai.tool.call.arguments','gcp.vertex.agent.tool_call_args')
+        output_keys=('output.value','gen_ai.tool.call.result','gcp.vertex.agent.tool_response','tool.result')
+
         calls = {}
-        call_bounds = {}
         for span in spans:
             attrs = json.loads(span['attributes'])
-            key = span['trace_id']+':'+span['span_id']
-            call_bounds[key] = (span['start_ns'], span['end_ns'])
-            tool = (attrs.get('mcp.tool.name') or attrs.get('gen_ai.tool.name') or
-                    attrs.get('tool.name'))
-            method = attrs.get('mcp.method.name') or attrs.get('rpc.method') or 'tools/call'
+            key = span['mcp_key']
+            tool = text_value(attrs,'mcp.tool.name','gen_ai.tool.name','tool.name')
+            method = text_value(attrs,'mcp.method.name','rpc.method',default='tools/call')
             if not tool and method == 'tools/call':
                 name_prefix = 'mcp send tools/call '
                 if span['name'].lower().startswith(name_prefix):
                     tool = span['name'][len(name_prefix):].strip()
             elif not tool:
-                tool = attrs.get('agent.activity.action') or 'Not reported'
+                tool = text_value(attrs,'agent.activity.action',default='Not reported')
             calls[key] = {'id': key, 'trace_id': span['trace_id'], 'span_id': span['span_id'],
-                'session_id': next((attrs.get(key) for key in SESSION_KEYS if attrs.get(key)),
-                                   trace_session_ids.get(span['trace_id'])),
+                'session_id': span['mcp_session'],'agent_id':span['agent_id'],
                 'service': span['service'],
-                'server': attrs.get('mcp.server.name') or attrs.get('server.address') or 'Not reported',
-                'tool': tool or attrs.get('agent.activity.action') or span['name'],
-                'method': method, 'status': span['status'],
+                'server': text_value(attrs,'mcp.server.name','server.address',default='Not reported'),
+                'tool': tool or text_value(attrs,'agent.activity.action',default=span['name']),
+                'method': method, 'status': 'ERROR' if mcp_result_error(attrs) else span['status'],
                 'time_unix_nano': span['end_ns'],
                 'duration_ms': None if attrs.get('observatory.duration_unknown') else max(0, (span['end_ns']-span['start_ns'])/1e6),
-                'arguments': attrs.get('input.value') or '', 'output': attrs.get('output.value') or '',
+                'arguments': recorded_payload(attrs,argument_keys),
+                'arguments_reported': any(name in attrs for name in argument_keys),
+                'output': recorded_payload(attrs,output_keys),
+                'output_reported': any(name in attrs for name in output_keys),
                 'source': 'span', 'log_id': None}
         for log in reversed(logs):
             attrs = json.loads(log['attributes'])
             call_id = attrs.get('observatory.mcp.call_id')
-            key = (f"cursor-mcp:{call_id}" if call_id else
-                   log['trace_id']+':'+log['span_id'] if log['trace_id'] and log['span_id'] else log['digest'])
+            key = log['mcp_key']
             body = json.loads(log['body'])
             try:
                 details = json.loads(body) if isinstance(body, str) else body
@@ -2139,92 +2211,72 @@ class Store:
             state = 'ERROR' if result in {'error','failed','denied','blocked'} else 'RUNNING' if result=='started' else 'OK' if result in {'success','completed'} else old.get('status') or 'OK'
             if old.get('time_unix_nano', 0) > log['time_ns']:
                 state = old.get('status') or state
+            own_arguments=any(name in attrs for name in argument_keys)
+            own_output=any(name in attrs for name in output_keys)
+            direction=attrs.get('observatory.mcp.io.direction')
+            envelope=direction is None or direction==''
             calls[key] = {**old, 'id': key, 'trace_id': log['trace_id'], 'span_id': log['span_id'],
-                'session_id': next((attrs.get(key) for key in SESSION_KEYS if attrs.get(key)),
-                                   trace_session_ids.get(log['trace_id'])),
+                'session_id': log['mcp_session'],'agent_id':log['agent_id'],
                 'service': log['service'],
-                'server': attrs.get('mcp.server.name') or attrs.get('server.address') or old.get('server') or 'Not reported',
-                'tool': attrs.get('mcp.tool.name') or attrs.get('tool.name') or old.get('tool') or attrs.get('agent.activity.action') or 'Not reported',
-                'method': attrs.get('mcp.method.name') or attrs.get('rpc.method') or old.get('method') or 'tools/call',
+                'server': text_value(attrs,'mcp.server.name','server.address',default=old.get('server') or 'Not reported'),
+                'tool': text_value(attrs,'mcp.tool.name','gen_ai.tool.name','tool.name',default=old.get('tool') or text_value(attrs,'agent.activity.action',default='Not reported')),
+                'method': text_value(attrs,'mcp.method.name','rpc.method',default=old.get('method') or 'tools/call'),
                 'status': state,
                 'time_unix_nano': max(log['time_ns'],old.get('time_unix_nano',0)), 'duration_ms': attrs.get('duration_ms', old.get('duration_ms')),
-                'arguments': (attrs.get('gen_ai.tool.call.arguments') or
-                              (body if attrs.get('observatory.mcp.io.direction') == 'arguments' else None) or
-                              details.get('arguments') or old.get('arguments') or ''),
-                'output': ((body if attrs.get('observatory.mcp.io.direction') == 'result' else None) or
-                           details.get('result') or old.get('output') or ''),
+                'arguments': (recorded_payload(attrs,argument_keys) if own_arguments else
+                              decode_tool_payload(body) if direction=='arguments' else
+                              details['arguments'] if envelope and 'arguments' in details else old.get('arguments','')),
+                'arguments_reported': own_arguments or direction=='arguments' or (envelope and 'arguments' in details) or old.get('arguments_reported',False),
+                'output': (recorded_payload(attrs,output_keys) if own_output else
+                           decode_tool_payload(body) if direction=='result' else
+                           details['result'] if envelope and 'result' in details else old.get('output','')),
+                'output_reported': own_output or direction=='result' or (envelope and 'result' in details) or old.get('output_reported',False),
                 'metadata': {**old.get('metadata', {}), **{
                     name: value for name, value in attrs.items()
                     if name.startswith('cursor.') and not name.startswith('cursor.user.')
                     and name != 'cursor.team.id' and value is not None}},
                 'source': 'session log + span' if 'span' in old.get('source', '') else 'session log', 'log_id': log['digest']}
+            if mcp_result_error(attrs) or mcp_result_error({'tool.result':calls[key]['output']}):
+                calls[key]['status']='ERROR'
         # Some agent frameworks emit the MCP transport and the agent's tool
         # execution as separate spans. Join those records so the MCP view can
         # show arguments and results that the transport span itself omits.
-        call_trace_ids = sorted({item['trace_id'] for item in calls.values() if item.get('trace_id')})
         execution_spans = []
-        if call_trace_ids:
-            placeholders = ','.join('?' for _ in call_trace_ids)
-            with self._connect() as db:
-                execution_spans = db.execute(
-                    f"""SELECT trace_id,span_id,start_ns,end_ns,attributes FROM spans
-                        WHERE trace_id IN ({placeholders})
-                        AND lower(json_extract(attributes,'$.\"gen_ai.tool.type\"'))='mcptool'
-                        AND json_extract(attributes,'$.\"gen_ai.tool.name\"') IS NOT NULL""",
-                    call_trace_ids,
-                ).fetchall()
-        executions_by_trace_tool = {}
+        span_keys=[row['mcp_key'] for row in spans]
+        if span_keys:
+            placeholders=','.join('?' for _ in span_keys)
+            execution_spans=db.execute(f"""SELECT {call_key_sql('span','spans')} AS call_key,
+                execution.trace_id,execution.span_id,execution.attributes,
+                CASE WHEN execution.parent_span_id=spans.span_id OR spans.parent_span_id=execution.span_id
+                    THEN 'explicit span linkage' ELSE 'single compatible recorded pair' END AS basis
+                FROM spans JOIN spans execution ON {execution_match_sql()}
+                WHERE {call_key_sql('span','spans')} IN ({placeholders})""",span_keys).fetchall()
+        executions_by_call = {}
         for execution in execution_spans:
-            attrs = json.loads(execution['attributes'])
-            identity = (execution['trace_id'], attrs.get('gen_ai.tool.name'))
-            executions_by_trace_tool.setdefault(identity, []).append((execution, attrs))
+            executions_by_call.setdefault(execution['call_key'],[]).append(execution)
 
-        def decode_tool_payload(value):
-            if not isinstance(value, str):
-                return value
-            try:
-                return json.loads(value)
-            except (json.JSONDecodeError, TypeError):
-                return value
-
-        used_executions = set()
-        for key, call in sorted(
-            calls.items(), key=lambda pair: call_bounds.get(pair[0], (0, 0))[0]
-        ):
-            tool_candidates = executions_by_trace_tool.get(
-                (call.get('trace_id'), call.get('tool')), []
-            )
-            tool_candidates = [candidate for candidate in tool_candidates
-                               if (candidate[0]['trace_id'], candidate[0]['span_id']) not in used_executions]
-            if not tool_candidates:
+        for key, call in calls.items():
+            candidates_for_call=executions_by_call.get(key,[])
+            if len(candidates_for_call)!=1:
+                call['execution_basis']='Not associated; execution evidence is missing or ambiguous'
                 continue
-            bounds = call_bounds.get(key, (call.get('time_unix_nano', 0),) * 2)
-            execution, attrs = min(
-                tool_candidates,
-                key=lambda candidate: abs(candidate[0]['end_ns'] - bounds[1]),
-            )
-            used_executions.add((execution['trace_id'], execution['span_id']))
-            arguments = (attrs.get('gen_ai.tool.call.arguments') or
-                         attrs.get('gcp.vertex.agent.tool_call_args') or
-                         attrs.get('input.value'))
-            output = (attrs.get('gen_ai.tool.call.result') or
-                      attrs.get('gcp.vertex.agent.tool_response') or
-                      attrs.get('output.value'))
-            if not call.get('arguments') and arguments is not None:
-                call['arguments'] = decode_tool_payload(arguments)
-            if not call.get('output') and output is not None:
-                call['output'] = decode_tool_payload(output)
+            execution=candidates_for_call[0]
+            attrs=json.loads(execution['attributes'])
+            call['execution_basis']=execution['basis']
+            call['execution_source']={'trace_id':execution['trace_id'],'span_id':execution['span_id']}
+            arguments_reported=any(name in attrs for name in argument_keys)
+            output_reported=any(name in attrs for name in output_keys)
+            if not call.get('arguments_reported') and arguments_reported:
+                call['arguments'] = recorded_payload(attrs,argument_keys)
+                call['arguments_reported']=True
+            if not call.get('output_reported') and output_reported:
+                call['output'] = recorded_payload(attrs,output_keys)
+                call['output_reported']=True
             if mcp_result_error(attrs):
                 call['status'] = 'ERROR'
-            if arguments is not None or output is not None:
+            if arguments_reported or output_reported:
                 call['source'] = 'agent + MCP spans' if call.get('source') == 'span' else call.get('source')
-        # Older adapters recorded a log without its span ID. Prefer the linked
-        # record for the same exact event; preserve distinct explicit spans.
-        linked = {(item['trace_id'],item['server'],item['tool'],item['time_unix_nano'])
-                  for item in calls.values() if item.get('span_id')}
-        items = sorted((item for item in calls.values() if item.get('span_id') or
-                        (item['trace_id'],item['server'],item['tool'],item['time_unix_nano']) not in linked),
-                       key=lambda item:item['time_unix_nano'], reverse=True)
+        items = sorted(calls.values(),key=lambda item:item['time_unix_nano'],reverse=True)
         by_id = {item['id']: item for item in items}
         items = [by_id[key] for key in selected_keys if key in by_id]
         next_cursor = self._next_event_cursor(candidates[limit-1]['stamp'],candidates[limit-1]['call_key']) if len(candidates)>limit else None
@@ -2696,7 +2748,7 @@ class Store:
         with self._connect() as db:
             db.execute('BEGIN')
             from .storage_sessions import session_projection
-            rows,session_totals=session_projection(db,int(limit))
+            rows,session_totals,initial_tasks=session_projection(db,int(limit))
             legacy_latest=[];seen_sessions=set()
             for row in rows:
                 key=(row['session_id'],row['agent_id'])
@@ -2838,9 +2890,7 @@ class Store:
                 # Recover the most recent recorded original task even if the
                 # latest two runs did not repeat that optional metadata.
                 if not grouped[key].get('initial_task'):
-                    with self._connect() as db:
-                        original=db.execute("SELECT c.initial_task FROM live_run_stats_v1 c JOIN trace_activity a USING(trace_id) WHERE c.session_id=? AND c.agent_id IS ? AND c.initial_task IS NOT NULL AND c.initial_task!='' ORDER BY a.last_ns DESC,c.trace_id DESC LIMIT 1",key).fetchone()
-                    if original:grouped[key]['initial_task']=original[0]
+                    if key in initial_tasks:grouped[key]['initial_task']=initial_tasks[key]
 
         # Some runtimes emit session-tagged events without trace context. Keep
         # those sessions visible in the roster instead of making Activity the

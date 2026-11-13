@@ -278,7 +278,7 @@ class HistoryStoreTest(unittest.TestCase):
         spans=[];logs=[]
         for i in range(8):
             span=f'{i+1:016x}'
-            attrs={'mcp.server.name':'github','mcp.tool.name':f'tool-{i}',
+            attrs={'session.id':'session-old','mcp.server.name':'github','mcp.tool.name':f'tool-{i}',
                    'input.value':json.dumps({'query':f'needle-{i}'})}
             spans.append(normalize_native({'trace_id':'a'*32,'span_id':span,'name':f'tool-{i}',
                 'start_unix_nano':100+i,'end_unix_nano':200+i,'attributes':attrs,'events':[]},service='codex'))
@@ -291,9 +291,13 @@ class HistoryStoreTest(unittest.TestCase):
             calls.extend(page['calls'])
             cursor=page['next_cursor']
             if not cursor:break
-        self.assertEqual(len(calls),8)
-        self.assertEqual(len({call['id'] for call in calls}),8)
-        self.assertTrue(all(call['source']=='session log + span' for call in calls))
+        # Matching physical span + ownership merges the eight source pairs.
+        # The extra unlinked record has no call ID: time proximity cannot
+        # establish that it duplicates one of those calls.
+        self.assertEqual(len(calls),9)
+        self.assertEqual(len({call['id'] for call in calls}),9)
+        self.assertEqual(sum(call['source']=='session log + span' for call in calls),8)
+        self.assertEqual(sum(call['source']=='session log' for call in calls),1)
         self.assertTrue(all(call['arguments'] for call in calls))
 
 
