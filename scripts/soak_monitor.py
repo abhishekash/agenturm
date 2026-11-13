@@ -256,6 +256,11 @@ def run(args):
     revision_start=source_revision()
     base=args.output.resolve();base.mkdir(mode=0o700)
     workload=Workload(base)
+    preparation_started=time.monotonic()
+    if args.history:
+        from scripts.benchmark_history import build
+        build(base/'telemetry.db')
+    preparation_seconds=time.monotonic()-preparation_started
     channel='agenturm-soak-'+str(os.getpid())
     env={key:os.environ[key] for key in ('PATH','LANG','LC_ALL','LD_LIBRARY_PATH') if key in os.environ}
     env.update(XDG_STATE_HOME=str(base/'state'),XDG_CONFIG_HOME=str(base/'config'),
@@ -269,6 +274,7 @@ def run(args):
     command=[sys.executable,str(Path(__file__).resolve())]
     receiver=None;actor=None;streams=[];errors=[];samples=[];latencies={};verified=[];reconnects=[]
     expected_reviews=set();rendered_approvals=set();ui_pids=[];exit_statuses=[]
+    checked_receivers=set()
     def spawn(mode):
         log=(base/(mode+'.log')).open('a');streams.append(log)
         return subprocess.Popen([*command,'_child',mode,str(base),str(port),'app-server'],env=env,cwd=base/'project',stdout=log,stderr=subprocess.STDOUT)
@@ -316,13 +322,15 @@ def run(args):
         raise RuntimeError('Receiver readiness deadline exceeded')
     def stop_receiver():
         nonlocal receiver
+        if not receiver or receiver.pid in checked_receivers:return
         if receiver and receiver.poll() is None:
             receiver.send_signal(signal.SIGINT)
             try:receiver.wait(timeout=20)
             except subprocess.TimeoutExpired:
                 receiver.kill();receiver.wait();errors.append('receiver required forced shutdown')
-            exit_statuses.append(dict(role='receiver',status=receiver.returncode))
-            if receiver.returncode!=0:errors.append(f'Receiver exited unsuccessfully: {receiver.returncode}')
+        checked_receivers.add(receiver.pid)
+        exit_statuses.append(dict(role='receiver',status=receiver.returncode))
+        if receiver.returncode!=0:errors.append(f'Receiver exited unsuccessfully: {receiver.returncode}')
     def request(api, path):
         before=time.monotonic()
         try:return api.get(path)
@@ -335,7 +343,9 @@ def run(args):
             if token_file.exists():break
             if receiver.poll() is not None:raise RuntimeError('Receiver failed; see receiver.log')
             time.sleep(.1)
-        api=Api(endpoint,token_file.read_text().strip());wait_ready(api);start_ui()
+        api=Api(endpoint,token_file.read_text().strip());wait_ready(api,timeout=600 if args.history else 25)
+        initial_readiness_seconds=time.monotonic()-started
+        start_ui()
         # Timed workload begins after first receiver readiness.
         started=time.monotonic();next_sample=started;sample_interval=args.phase_seconds
         previous={};pending_cycle=None;next_phase=started
@@ -403,7 +413,7 @@ def run(args):
                     database_bytes=(base/'telemetry.db').stat().st_size,
                     wal_bytes=(base/'telemetry.db-wal').stat().st_size if (base/'telemetry.db-wal').exists() else 0,
                     processes={})
-                for role,pid in [('receiver',receiver.pid),('cockpit',ui_pid()),('synthetic_daemon',actor.pid)]:
+                for role,pid in [('receiver',receiver.pid),('cockpit',ui_pid()),('synthetic_daemon',actor.pid),('driver',os.getpid())]:
                     value=process_sample(pid)
                     if value:
                         old=previous.get(role)
@@ -467,11 +477,12 @@ def run(args):
         pid_beats=[row for row in heartbeat if row['pid']==pid]
         if len(pid_beats)<3:errors.append(f'No sustained heartbeat for sampled cockpit process {pid}')
         if not any(any(item['session']=='soak-stale' for item in row['states']) for row in pid_beats):errors.append('Stale-session observation missing after cockpit start/restart')
-    for role in ('receiver','cockpit','synthetic_daemon'):
+    for role in ('receiver','cockpit','synthetic_daemon','driver'):
         if sum(role in row['processes'] for row in samples)<args.duration/args.phase_seconds*.5:errors.append(f'Insufficient {role} process samples')
     if any(row.get('read_errors') or row.get('schema_errors') for row in samples):errors.append('Native read/schema errors occurred')
     exits=[json.loads(line) for line in (base/'receiver-exits.jsonl').read_text().splitlines()] if (base/'receiver-exits.jsonl').exists() else []
-    if not exits or any(row['pending_after'] for row in exits):errors.append('Derived work was not confirmed drained at receiver shutdown')
+    if len(exits)!=2 or any(row['pending_after'] for row in exits):errors.append('Derived work was not confirmed drained at both receiver shutdowns')
+    if len([row for row in exit_statuses if row['role']=='receiver'])!=2:errors.append('Two receiver exit statuses were not confirmed')
     request_ids={row['id'] for row in observed_requests}
     ui_requests={request for row in heartbeat for request in row.get('approval_requests',[]) if request}
     if request_ids-ui_requests:errors.append('Not every observed native approval appeared in the cockpit')
@@ -483,7 +494,7 @@ def run(args):
     revision_end=source_revision()
     if revision_start!=revision_end or revision_start['dirty']:errors.append('Measured source was dirty or changed during the run')
     resources={}
-    for role in ('receiver','cockpit','synthetic_daemon'):
+    for role in ('receiver','cockpit','synthetic_daemon','driver'):
         values=[row['processes'][role] for row in samples if role in row['processes']]
         cpus=[row['cpu_percent_one_core'] for row in values if 'cpu_percent_one_core' in row]
         resources[role]=dict(cpu_median=statistics.median(cpus) if cpus else None,cpu_p95=percentile(cpus,.95),
@@ -504,6 +515,8 @@ def run(args):
     result=dict(schema_version=1,source_start=revision_start,source_end=revision_end,
         host=dict(system=platform.system(),architecture=platform.machine(),python=platform.python_version(),logical_cpus=os.cpu_count()),
         configured_seconds=args.duration,phase_seconds=args.phase_seconds,elapsed_seconds=duration,eager_tls=args.eager_tls,profile_ui=args.profile_ui,
+        seeded_history=dict(traces=5751,spans=31000,logs=41000,days=35) if args.history else None,
+        fixture_preparation_seconds=preparation_seconds,initial_readiness_seconds=locals().get('initial_readiness_seconds'),
         completed_turns=len(workload.completed),verified_turns=len(verified),approval_requests=len(workload.requests),observed_approval_requests=len({row['cycle'] for row in observed_requests}),
         accepted_review_ids=len(accepted),persisted_review_ids=len(persisted),missing_review_ids=len(missing),
         expected_review_ids=len(expected_reviews),rendered_approval_inboxes=len(rendered_approvals),
@@ -533,11 +546,15 @@ def main():
     parser.add_argument('--phase-seconds',type=float,default=5,help='six phases per completed workload cycle')
     parser.add_argument('--profile-ui',action='store_true',help='diagnostic cProfile; do not compare its CPU timings to unprofiled runs')
     parser.add_argument('--eager-tls',action='store_true',help='diagnostic baseline: restore pre-fix per-request TLS handler initialization in the cockpit')
+    parser.add_argument('--history',action='store_true',help='seed the existing synthetic 35-day / 31k-span / 41k-log fixture before timing the live monitor')
     args=parser.parse_args()
     if args.duration<args.phase_seconds*6 or args.phase_seconds<2:parser.error('Use at least one cycle and phases >=2 seconds')
     if sys.platform!='linux' or not shutil.which('tmux'):parser.error('This measurement harness requires Linux /proc and tmux')
     if args.output.exists():parser.error('Output directory must not exist')
-    return run(args)
+    # Coordinator reads are loopback-only too; do not inherit proxy routing for
+    # the generated local token or synthetic prompt/check payloads.
+    with patch('urllib.request.getproxies',return_value={}):
+        return run(args)
 
 
 if __name__=='__main__':
