@@ -136,6 +136,7 @@ def measure(args):
             time.sleep(min(1,max(.01,args.seconds-(time.monotonic()-started))))
         idle_end=time.time()
         health=api.get('/api/health')
+        (base/'final-health.json').write_text(json.dumps(health,indent=2)+'\n')
         (base/'final-screen.txt').write_text(tmux('capture-pane','-p','-t','monitor'))
         for key in ('Escape','Escape','q'):
             tmux('send-keys','-t','monitor',key);time.sleep(.25)

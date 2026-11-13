@@ -759,7 +759,19 @@ class Store:
                 db.execute("INSERT INTO schema_meta(key,value) VALUES('trace_activity_v1','1')")
         os.chmod(self.path, 0o600)
         from .storage_activity import initialize as initialize_activity, drain
-        with self._connect() as db:initialize_activity(db)
+        with self._connect() as db:
+            from .native_policy import initialize as initialize_native_policy
+            initialize_native_policy(db)
+            initialize_activity(db)
+        with self._connect() as db:
+            migrated=db.execute("SELECT 1 FROM schema_meta WHERE key='native_internal_policy_v1'").fetchone()
+            legacy_sources=[] if migrated else [row[0] for row in db.execute('''SELECT DISTINCT source_id FROM (
+                SELECT json_extract(resource_attributes,'$."observatory.source_id"') AS source_id FROM spans WHERE service='codex-review'
+                UNION SELECT json_extract(resource_attributes,'$."observatory.source_id"') FROM logs WHERE service='codex-review')
+                WHERE source_id IS NOT NULL''') if isinstance(row[0],str) and TRACE_ID.fullmatch(row[0])]
+        for source in legacy_sources:self.redact_internal_source(source)
+        if not migrated:
+            with self._connect() as db:db.execute("INSERT OR REPLACE INTO schema_meta VALUES('native_internal_policy_v1','1')")
         if self._async_derived_refresh:
             self._migration_thread=threading.Thread(target=self._finish_migration,name='agenturm-history-migration',daemon=True)
             self._migration_thread.start()
@@ -1140,26 +1152,33 @@ class Store:
     def redact_internal_source(self, source_id):
         """Keep internal approval reviews as metadata, including older captures."""
         source_id = _id(source_id, TRACE_ID, "source_id")
+        from .native_policy import internal_review_attrs, internal_review_events
         affected = set()
         with self._connect() as db:
-            rows = db.execute("SELECT digest,trace_id,attributes FROM logs WHERE instr(resource_attributes,?)>0", (source_id,)).fetchall()
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('INSERT OR REPLACE INTO native_source_policy_v1 VALUES(?,1)',(source_id,))
+            rows = db.execute('''SELECT digest,trace_id,attributes FROM logs
+                WHERE json_extract(resource_attributes,'$."observatory.source_id"')=?''', (source_id,)).fetchall()
             for row in rows:
-                attrs = json.loads(row["attributes"])
-                attrs["agent.activity.subject"] = "Approval review"
-                attrs.pop("agent.session.task", None)
+                attrs = internal_review_attrs(json.loads(row["attributes"]))
                 db.execute("UPDATE logs SET body=?,attributes=?,service='codex-review' WHERE digest=?",
                            (json.dumps(""), json.dumps(attrs), row["digest"]))
                 if row["trace_id"]:
                     affected.add(row["trace_id"])
-            rows = db.execute("SELECT trace_id,span_id,attributes,name FROM spans WHERE instr(resource_attributes,?)>0", (source_id,)).fetchall()
+            rows = db.execute('''SELECT trace_id,span_id,attributes,name,events FROM spans
+                WHERE json_extract(resource_attributes,'$."observatory.source_id"')=?''', (source_id,)).fetchall()
             for row in rows:
-                attrs = json.loads(row["attributes"])
-                attrs.pop("agent.session.task", None)
+                attrs = internal_review_attrs(json.loads(row["attributes"]))
                 if row["name"] == "agent.run":
                     attrs["agent.task"] = "Approval review"
-                db.execute("UPDATE spans SET attributes=?,service='codex-review' WHERE trace_id=? AND span_id=?",
-                           (json.dumps(attrs), row["trace_id"], row["span_id"]))
+                db.execute("UPDATE spans SET attributes=?,events=?,links='[]',name=?,service='codex-review' WHERE trace_id=? AND span_id=?",
+                           (json.dumps(attrs),json.dumps(internal_review_events(json.loads(row['events']))),
+                            'agent.run' if row['name']=='agent.run' else 'Approval review',row["trace_id"],row["span_id"]))
                 affected.add(row["trace_id"])
+            # Raw source policy and derived content invalidate together; a
+            # delayed/failed async rebuild cannot expose the previous prompt.
+            db.executemany('DELETE FROM trace_summaries WHERE trace_id=?',((trace,) for trace in affected))
+            db.executemany('DELETE FROM finding_cache WHERE trace_id=?',((trace,) for trace in affected))
         if affected:
             self._refresh_after_write(affected)
 
@@ -1308,6 +1327,11 @@ class Store:
                                    ((item["id"], trace_id, timestamp,
                                      json.dumps({**item, "time_unix_nano": timestamp}, separators=(",", ":")))
                                     for item in findings))
+            if offset+16<len(trace_ids):
+                # SQLite's busy handler is not a fair writer queue. Give a
+                # waiting native collector/other receiver a real acquisition
+                # window instead of immediately reacquiring through history.
+                time.sleep(.025)
 
     def _refresh_after_write(self, trace_ids):
         trace_ids = set(trace_ids)
@@ -1577,10 +1601,48 @@ class Store:
         return {"days": days, "step": step, "service": service, "session_id": session_id,
                 "points": points}
 
-    def ingest(self, spans):
+    def internal_source_ids(self,source_ids,*,_db=None):
+        ids=sorted({value for value in source_ids if isinstance(value,str)})
+        result=set()
+        with (self._connect() if _db is None else nullcontext(_db)) as db:
+            for offset in range(0,len(ids),200):
+                chunk=ids[offset:offset+200];marks=','.join('?' for _ in chunk)
+                result.update(row[0] for row in db.execute(f'SELECT source_id FROM native_source_policy_v1 WHERE internal=1 AND source_id IN ({marks})',chunk))
+        return result
+
+    def _policy_records(self,records,kind,db):
+        from .native_policy import scrub_record
+        source_ids=[(row.get('resource_attributes') or {}).get('observatory.source_id') for row in records]
+        internal=self.internal_source_ids(source_ids,_db=db)
+        return [scrub_record(row,kind) if isinstance(source,str) and source in internal else row for row,source in zip(records,source_ids)]
+
+    @staticmethod
+    def _stale_native_generation(records,native_retry,native_source_path):
+        if not native_retry and native_source_path is None:return False
+        try:
+            info=Path(native_source_path).stat() if native_source_path is not None else None
+            current=f'{info.st_dev}:{info.st_ino}' if info is not None else None
+        except OSError:current=None
+        versions={row.get('attributes',{}).get('observatory.native_file_id') for row in records}
+        return current is None or versions!={current}
+
+    @staticmethod
+    def _write_ingest_rows(db,sql,records,rows):
+        # Native ordering fences may deliberately ignore stale replacements.
+        # Only accepted writes may update activity/endpoints or derived facts.
+        if not any(row.get('scope_name')=='observatory.local_agents' for row in records):
+            db.executemany(sql,rows)
+            return records
+        return [record for record,row in zip(records,rows) if db.execute(sql,row).rowcount]
+
+    def ingest(self, spans, *, native_retry=False, native_source_path=None):
         spans = list(spans)
+        from .native_policy import native_update_guard
         with self._connect() as db:
-            db.executemany("""INSERT INTO spans
+            db.execute('BEGIN IMMEDIATE')
+            spans=self._policy_records(spans,'span',db)
+            stale_generation=self._stale_native_generation(spans,native_retry,native_source_path)
+            sql=f"""INSERT INTO spans
                 (trace_id,span_id,parent_span_id,name,start_ns,end_ns,status,service,
                  attributes,events,links,resource_attributes,scope_name,agent_id)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -1590,13 +1652,14 @@ class Store:
                 status=excluded.status, service=excluded.service,
                 attributes=excluded.attributes, events=excluded.events,
                 links=excluded.links, resource_attributes=excluded.resource_attributes,
-                scope_name=excluded.scope_name,agent_id=excluded.agent_id""",
-                [(s["trace_id"], s["span_id"], s["parent_span_id"], s["name"],
+                scope_name=excluded.scope_name,agent_id=excluded.agent_id WHERE {native_update_guard('spans',stale_generation)}"""
+            rows=[(s["trace_id"], s["span_id"], s["parent_span_id"], s["name"],
                   s["start_unix_nano"], s["end_unix_nano"], s["status"], s["service"],
                   json.dumps(s["attributes"]), json.dumps(s["events"]),
                   json.dumps(s.get("links", [])), json.dumps(s.get("resource_attributes", {})),
                   s.get("scope_name", ""), _agent_id_from_attributes(s.get("attributes"),
-                      s.get("resource_attributes"), s.get("service"))) for s in spans])
+                      s.get("resource_attributes"), s.get("service"))) for s in spans]
+            spans=self._write_ingest_rows(db,sql,spans,rows)
             db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
                 ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
                 [(s["trace_id"], s["end_unix_nano"]) for s in spans])
@@ -1697,38 +1760,32 @@ class Store:
         deleted["cutoff_unix_nano"] = cutoff_ns
         return deleted
 
-    def ingest_logs(self, records):
+    def ingest_logs(self, records, *, native_retry=False, native_source_path=None):
         records = list(records)
-        rows = []
-        native_ids = []
-        for log in records:
-            canonical = json.dumps(log, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-            digest = hashlib.sha256(canonical.encode()).hexdigest()
-            record_id = log['attributes'].get('observatory.record_id')
-            if log['scope_name']=='observatory.local_agents' and isinstance(record_id,str) and TRACE_ID.fullmatch(record_id):
-                digest = hashlib.sha256(('local-session:'+record_id).encode()).hexdigest()
-                native_ids.append((record_id,digest))
-            cursor_event_id = log['attributes'].get('cursor.event.id')
-            if isinstance(cursor_event_id, str) and cursor_event_id:
-                digest = hashlib.sha256(('cursor-event:'+cursor_event_id).encode()).hexdigest()
-            rows.append((digest, log["trace_id"], log["span_id"], log["time_unix_nano"],
-                         log["service"], log["severity_number"], log["severity_text"],
-                         log["event_name"], json.dumps(log["body"]),
-                         json.dumps(log["attributes"]), json.dumps(log["resource_attributes"]),
-                         log["scope_name"], _agent_id_from_attributes(
-                             log.get("attributes"), log.get("resource_attributes"), log.get("service"))))
+        from .native_policy import native_update_guard
         with self._connect() as db:
-            db.executemany("""DELETE FROM logs WHERE scope_name='observatory.local_agents'
-                AND json_extract(attributes,'$."observatory.record_id"')=? AND digest<>?""", native_ids)
+            db.execute('BEGIN IMMEDIATE')
+            records=self._policy_records(records,'log',db)
+            stale_generation=self._stale_native_generation(records,native_retry,native_source_path)
+            rows = []
+            native_ids = []
             for log in records:
-                attrs=log['attributes']
-                if log['scope_name']=='observatory.local_agents' and log.get('span_id') and attrs.get('mcp.server.name'):
-                    db.execute("""DELETE FROM logs WHERE scope_name='observatory.local_agents'
-                        AND trace_id=? AND time_ns=? AND span_id IS NULL
-                        AND json_extract(attributes,'$."mcp.server.name"')=?
-                        AND json_extract(attributes,'$."agent.activity.action"')=?""",
-                        (log['trace_id'],log['time_unix_nano'],attrs['mcp.server.name'],attrs.get('mcp.tool.name')))
-            db.executemany("""INSERT INTO logs
+                canonical = json.dumps(log, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                digest = hashlib.sha256(canonical.encode()).hexdigest()
+                record_id = log['attributes'].get('observatory.record_id')
+                if log['scope_name']=='observatory.local_agents' and isinstance(record_id,str) and TRACE_ID.fullmatch(record_id):
+                    digest = hashlib.sha256(('local-session:'+record_id).encode()).hexdigest()
+                    native_ids.append((record_id,digest))
+                cursor_event_id = log['attributes'].get('cursor.event.id')
+                if isinstance(cursor_event_id, str) and cursor_event_id:
+                    digest = hashlib.sha256(('cursor-event:'+cursor_event_id).encode()).hexdigest()
+                rows.append((digest, log["trace_id"], log["span_id"], log["time_unix_nano"],
+                             log["service"], log["severity_number"], log["severity_text"],
+                             log["event_name"], json.dumps(log["body"]),
+                             json.dumps(log["attributes"]), json.dumps(log["resource_attributes"]),
+                             log["scope_name"], _agent_id_from_attributes(
+                                 log.get("attributes"), log.get("resource_attributes"), log.get("service"))))
+            sql=f"""INSERT INTO logs
                 (digest,trace_id,span_id,time_ns,service,severity_number,severity_text,
                  event_name,body,attributes,resource_attributes,scope_name,agent_id)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(digest) DO UPDATE SET
@@ -1737,7 +1794,14 @@ class Store:
                 severity_text=excluded.severity_text,event_name=excluded.event_name,
                 body=excluded.body,attributes=excluded.attributes,
                 resource_attributes=excluded.resource_attributes,scope_name=excluded.scope_name,
-                agent_id=excluded.agent_id""", rows)
+                agent_id=excluded.agent_id WHERE {native_update_guard('logs',stale_generation)}"""
+            records=self._write_ingest_rows(db,sql,records,rows)
+            accepted_ids={log['attributes'].get('observatory.record_id') for log in records
+                          if log['scope_name']=='observatory.local_agents'
+                          and isinstance(log['attributes'].get('observatory.record_id'),str)}
+            db.executemany("""DELETE FROM logs WHERE scope_name='observatory.local_agents'
+                AND json_extract(attributes,'$."observatory.record_id"')=? AND digest<>?""",
+                [(record_id,digest) for record_id,digest in native_ids if record_id in accepted_ids])
             db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
                 ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
                 [(log["trace_id"], log["time_unix_nano"]) for log in records if log["trace_id"]])
@@ -1753,7 +1817,7 @@ class Store:
         if nodes:
             self.upsert_agent_nodes(nodes[:5000])
         self._refresh_after_write(log["trace_id"] for log in records if log["trace_id"])
-        return len(rows)
+        return len(records)
 
     def logs(self, trace_id=None, limit=100):
         with self._connect() as db:

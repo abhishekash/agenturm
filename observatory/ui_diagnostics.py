@@ -31,6 +31,9 @@ def diagnostics_text(local):
              f"Read errors: {local.get('read_errors', 0)} · OpenCode read errors: {local.get('opencode_read_errors', 0)}",
              f"Omitted older sources: {local.get('omitted_sources', 0)} · OpenCode: {local.get('opencode_omitted_sessions', 0)}"]
     hierarchy = local.get('hierarchy') or {}
+    error=local.get('last_read_error') or {}
+    if error:
+        lines.append(f"Last collection error: {error.get('operation','Unknown stage')} · {error.get('kind','Error')} · {error.get('message','No detail reported')} · Unix ns {error.get('at_ns','not reported')}")
     if hierarchy:
         lines.append(
             f"Hierarchy: {hierarchy.get('nodes', 0)} nodes · {hierarchy.get('announced', 0)} spawn announcements · "
@@ -48,10 +51,11 @@ def diagnostics_text(local):
         lines.extend(['', str(path),
                       f"Last successful read (Unix ns): {record.get('last_success_ns') or 'not reported'}",
                       f"Last source write (Unix ns): {record.get('source_mtime_ns') or 'not reported'} · bytes read / size: {record.get('bytes_read', 'not reported')} / {record.get('source_size_bytes', 'not reported')}",
-                      f"Last poll: {record.get('records_last_poll', 'not reported')} records · {record.get('spans_last_poll', 'not reported')} spans · {record.get('logs_last_poll', 'not reported')} activity events",
-                      f"Since monitor start: {record.get('bytes_read_total', 'not reported')} bytes · {record.get('records_total', 'not reported')} records · {record.get('spans_total', 'not reported')} spans · {record.get('logs_total', 'not reported')} activity events",
+                      f"Last parsed batch: {record.get('records_last_poll', 'not reported')} records · {record.get('spans_last_poll', 'not reported')} generated spans · {record.get('logs_last_poll', 'not reported')} generated activity events",
+                      f"Parsed since monitor start: {record.get('bytes_read_total', 'not reported')} bytes · {record.get('records_total', 'not reported')} records · {record.get('spans_total', 'not reported')} generated spans · {record.get('logs_total', 'not reported')} generated activity events",
                       f"OpenCode sessions: {record.get('sessions_last_poll', 'not reported')} · latest session update (Unix ns): {record.get('latest_session_update_ns', 'not reported')} · payload bytes last poll: {record.get('payload_bytes_last_poll', 'not reported')}",
                       f"Backlog bytes: {record.get('backlog_bytes', 'not reported')} · skipped oversized: {record.get('skipped_oversized_records', 'not reported')}",
+                      f"Records awaiting storage retry: {record.get('pending_storage_records', 'not reported')}",
                       f"Schema errors: {record.get('schema_errors', 'not reported')} · skipped records: {record.get('skipped_records', 'not reported')}"])
     if not seen:
         lines.extend(['', 'Per-source read diagnostics not reported by this receiver.'])
