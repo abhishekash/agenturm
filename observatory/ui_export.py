@@ -79,14 +79,17 @@ class ExportScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id='export-dialog'):
             yield Static('PRIVACY PREVIEW · Nothing has been written.\nThis exact JSON may contain prompts, outputs, paths, session/trace IDs, or secrets recorded by your agent. It is NOT redacted. Review before sharing. Only the selected record is included; no receiver credentials or background history are added.', id='export-warning', markup=False)
-            yield RichLog(id='export-preview', wrap=True, markup=False)
+            yield RichLog(id='export-preview', min_width=1, wrap=True, markup=False, auto_scroll=False)
             yield Input(placeholder='Destination file (must not already exist)', id='export-path')
             with Horizontal(id='export-actions'):
                 yield Button('Cancel', id='export-cancel')
                 yield Button('Write reviewed export', id='export-confirm', variant='warning')
 
     def on_mount(self):
-        self.query_one(RichLog).write(Text(self.content))
+        preview=self.query_one(RichLog)
+        # Let RichLog defer measuring until layout; on_mount may have width 0.
+        preview.write(Text(self.content))
+        preview.scroll_home(animate=False)
         self.query_one('#export-cancel', Button).focus()
 
     @on(Button.Pressed, '#export-cancel')
@@ -95,12 +98,16 @@ class ExportScreen(ModalScreen):
 
     @on(Button.Pressed, '#export-confirm')
     def confirm(self):
+        if not self.can_write():return
         path = self.query_one('#export-path', Input).value.strip()
         if not path:
             self.notify('Choose a destination file first.', severity='warning')
             return
         self.query_one('#export-confirm',Button).disabled=True
         self.write_export(path)
+
+    def can_write(self):
+        return True
 
     @work(thread=True,exclusive=True,exit_on_error=False)
     def write_export(self,path):
@@ -120,3 +127,46 @@ class ExportScreen(ModalScreen):
         if error:self.notify(error,severity='error');return
         self.dismiss()
         self.app.notify('Selected investigation exported. Review again before sharing.')
+
+
+class ReceiptExportScreen(ExportScreen):
+    """Preview the frozen Markdown; write its HTML companion from the same snapshot."""
+    DEFAULT_CSS='''
+    ReceiptExportScreen #export-dialog { width: 100%; height: 100%; padding: 0 1; }
+    ReceiptExportScreen #export-warning { height: 3; margin-bottom: 0; }
+    ReceiptExportScreen #export-actions Button { min-width: 0; }
+    '''
+
+    def __init__(self, formats, *, valid=None):
+        super().__init__('review',{},content=formats['markdown'])
+        self.formats=dict(formats)
+        self.valid=valid
+
+    def on_mount(self):
+        super().on_mount()
+        self.query_one('#export-warning',Static).update('Frozen evidence · not redacted. Review before sharing.\nWrites new private Markdown + HTML files; existing files are preserved. Esc Cancel · Tab Controls')
+        self.query_one('#export-path',Input).placeholder='New receipt.md (or .html / .json)'
+        self.query_one('#export-confirm',Button).label='Write MD + HTML'
+
+    def can_write(self):
+        if self.valid is not None and not self.valid():
+            self.notify('Capture policy changed. Reopen Review before exporting.',severity='warning')
+            self.dismiss();return False
+        return True
+
+    @work(thread=True,exclusive=True,exit_on_error=False)
+    def write_export(self,path):
+        from .work_receipts import export_receipt
+        error=''
+        try:export_receipt(path,self.formats)
+        except FileExistsError:error='A destination already exists. Choose a new name; nothing was overwritten.'
+        except ValueError as exc:error=str(exc)
+        except OSError:error='Could not write receipt. Check the destination and permissions.'
+        try:self.app.call_from_thread(self.finish_export,error)
+        except RuntimeError:pass
+
+    def finish_export(self,error):
+        if not self.is_mounted:return
+        self.query_one('#export-confirm',Button).disabled=False
+        if error:self.notify(error,severity='error');return
+        self.dismiss();self.app.notify('Frozen Markdown and HTML receipt exported. Review before sharing.')

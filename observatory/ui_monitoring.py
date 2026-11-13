@@ -7,6 +7,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
+from .review_facts import session_usage, task_run_usage
 from .terminal import clean
 from .themes import PALETTES, CURRENT
 
@@ -164,48 +165,6 @@ def usage_summary(totals):
         'Press Esc to return.',
     ])
     return '\n'.join(lines), details
-
-
-def session_usage(sessions, item):
-    """Require producer/session provenance even when canonical agent IDs match."""
-    if not item:return {}
-    def same_producer(row):
-        producer=item.get('service')
-        return not producer or producer in (row.get('services') or [row.get('service')])
-    def same_session(row):
-        return not item.get('session_id') or row.get('session_id')==item['session_id']
-    if item.get('agent_id'):
-        exact=next((row for row in sessions if row.get('agent_id')==item['agent_id']
-                    and same_producer(row) and same_session(row)),None)
-        if exact is not None:return exact
-        if not item.get('agent_id_inferred'):return {}
-    return next((row for row in sessions if item.get('session_id')
-                 and row.get('session_id')==item['session_id']
-                 and same_producer(row) and not row.get('agent_id')), {})
-
-
-def task_run_usage(sessions, item, traces=()):
-    session=session_usage(sessions,item)
-    if item.get('run_start_ns') and not item.get('trace_id'):return {}
-    selected=item.get('trace_id') or item.get('latest_trace_id')
-    latest=session.get('latest_run') or {}
-    def allocated(row):
-        if not row.get('trace_id'):return {}
-        count=row.get('agent_count')
-        if type(count) is int and count==1 and row.get('agent_count_complete') is True:return row
-        return {key:row[key] for key in ('trace_id','agent_id','agent_count','agent_count_complete') if key in row} | {
-            'usage_allocation':'shared trace; per-agent usage unavailable' if type(count) is int and count>1 else
-                'agent allocation unverified; per-agent usage unavailable'}
-    if latest and (not selected or latest.get('trace_id')==selected):return allocated(latest)
-    trace_id=selected or session.get('latest_trace_id')
-    def exact(row):
-        if not trace_id or row.get('trace_id')!=trace_id:return False
-        if item.get('service') and item['service'] not in (row.get('services') or [row.get('service')]):return False
-        if item.get('session_id') and row.get('session_id') and row['session_id']!=item['session_id']:return False
-        if item.get('agent_id') and not item.get('agent_id_inferred') and row.get('agent_id')!=item['agent_id']:return False
-        return True
-    candidate=next((row for row in traces if exact(row)),{})
-    return allocated(candidate) if candidate else {}
 
 
 def task_usage_label(usage, *, compact=False):

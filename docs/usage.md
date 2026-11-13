@@ -635,6 +635,30 @@ that command; later recorded edits and incomplete capture qualify its freshness.
 Assistant claims remain reported statements. Review stays frozen until Refresh;
 copy and export use that preview. The monitor/review floor is 60×18.
 
+On **main / Unreleased**, `c` copies a readable Markdown evidence brief, `j` copies
+the frozen JSON projection, and `x` previews a private Markdown/HTML export pair.
+The latest captured request for the selected run is separate from its stable
+session task label. Recognized informational commands do not count as validation;
+file reads do not count as edits. A shared or incompletely attributed trace does
+not supply individual-agent usage or a trace-wide outcome to a selected worker.
+
+The same projection is available without the cockpit:
+
+```sh
+agenturm review --service SERVICE --agent-id AGENT_ID --session-id SESSION_ID \
+  --trace-id TRACE_ID --pages 2 --format json
+```
+
+Use recorded identities from Details or Review JSON. The command reads an existing
+receiver, with `--endpoint` / `OBSERVATORY_ENDPOINT` and `OBSERVATORY_TOKEN` as needed.
+It reads one 200-record page by default, at most five pages / 1,000 events / 2 MiB
+of loaded source records. Partial coverage is explicit. Exit 0 means inspection
+succeeded, including captured failures; it does not mean validation passed.
+`--output review.md` writes new Markdown and HTML companions; `.json` also retains
+the machine projection. Captured content is not redacted for sharing. These
+additions require the checkout and updated receiver; they are not in 0.2.3.
+See [execution evidence contracts and limits](work-receipts.md).
+
 The Workflow inbox uses incident identities and local seen/reviewed state.
 A seen approval or reply stays visible until fresh native evidence resolves it.
 Each newly observed execution establishes a silent inventory baseline, including
