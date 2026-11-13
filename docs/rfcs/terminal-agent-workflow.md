@@ -107,7 +107,7 @@ Open checks / Open edits / Save task
 
 At 120 columns and sufficient height, retain list plus preview. At 80×24 and 60-column splits, the list wins and Enter opens detail. Monitor and review support a 60×18 floor; structured editors use the saved-task floor of 60×20. Below the relevant floor, show the required size and retain unsaved data. Escape returns to the previous screen; resizing never discards edits.
 
-**Clutter budget:** at most one enclosing content border; one text status and optional semantic color per state; no marker on every leaf row; no missing-cost placeholders in task rows; no repeated full IDs or stacked permanent action bars. At 60×20, list header, navigation and hints consume at most six rows, leaving at least fourteen rows for the list body, including its column heading. Validate actual rendered frames rather than relying on the sketch.
+**Clutter budget:** at most one enclosing content border; one text status and optional semantic color per state; no marker on every leaf row; no missing-cost placeholders in task rows; no repeated full IDs or stacked permanent action bars. At 60×20, surrounding headers, navigation, controls, framing and hints consume at most nine rows, leaving at least eleven rows for the list body, including its column heading. Validate actual rendered frames rather than relying on the sketch.
 
 ### Screen states
 
