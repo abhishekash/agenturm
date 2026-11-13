@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "source_start": {
+    "head": "f73b8ba0da38fd23a7a9e7c75bc3da27c4ce301c",
+    "dirty": false,
+    "files": {
+      "scripts/soak_monitor.py": "a1f701813e697a90ce04fdf27a485af4fc92cdcf8aa71d0e08e4593469c9bbf8",
+      "observatory/http_transport.py": "6a31040bab9fda6e40e7c880e3c863d6bc778bc83f15c799f6c4a1182e2b8edd",
+      "observatory/ui_workflow.py": "3c51504b3a510221489041cdd2d31ee83689e07c33cdcecb727bf883c7b6d171"
+    }
+  },
+  "source_end": {
+    "head": "f73b8ba0da38fd23a7a9e7c75bc3da27c4ce301c",
+    "dirty": false,
+    "files": {
+      "scripts/soak_monitor.py": "a1f701813e697a90ce04fdf27a485af4fc92cdcf8aa71d0e08e4593469c9bbf8",
+      "observatory/http_transport.py": "6a31040bab9fda6e40e7c880e3c863d6bc778bc83f15c799f6c4a1182e2b8edd",
+      "observatory/ui_workflow.py": "3c51504b3a510221489041cdd2d31ee83689e07c33cdcecb727bf883c7b6d171"
+    }
+  },
+  "host": {
+    "system": "Linux",
+    "architecture": "x86_64",
+    "python": "3.12.3",
+    "logical_cpus": 8
+  },
+  "configured_seconds": 3600.0,
+  "phase_seconds": 5,
+  "elapsed_seconds": 3609.813176849042,
+  "eager_tls": false,
+  "profile_ui": false,
+  "seeded_history": {
+    "traces": 5751,
+    "spans": 31000,
+    "logs": 41000,
+    "days": 35,
+    "newest_age_days": 2
+  },
+  "fixture_preparation_seconds": 13.77418050810229,
+  "initial_readiness_seconds": 186.77848196204286,
+  "completed_turns": 294,
+  "verified_turns": 294,
+  "approval_requests": 98,
+  "observed_approval_requests": 98,
+  "accepted_review_ids": 294,
+  "persisted_review_ids": 294,
+  "missing_review_ids": 0,
+  "expected_review_ids": 294,
+  "rendered_approval_inboxes": 98,
+  "approval_visible_latency_ms": {
+    "median": 2729.8541470081545,
+    "p95": 3350.473570986651,
+    "max": 3754.8466549487785
+  },
+  "shared_daemon_false_progress": 0,
+  "heartbeat_samples": 3602,
+  "heartbeat_interval_p95": 1.2369182950351387,
+  "heartbeat_interval_max": 1.5691010339651257,
+  "connection_error_observations": 9,
+  "recovered_after_outage": true,
+  "resources": {
+    "receiver": {
+      "cpu_median": 29.30463097282846,
+      "cpu_p95": 38.9115458287591,
+      "cpu_mean_weighted": 28.68966926802048,
+      "rss_max_mib": 64.125,
+      "peak_rss_mib": 64.50390625,
+      "rss_segments": [
+        {
+          "observed_seconds": 1206.2133978899801,
+          "warm_rss_median_mib": 63.06640625,
+          "last_minute_rss_median_mib": 63.90234375,
+          "warm_to_tail_delta_mib": 0.8359375
+        },
+        {
+          "observed_seconds": 2373.0234486620175,
+          "warm_rss_median_mib": 61.33203125,
+          "last_minute_rss_median_mib": 64.125,
+          "warm_to_tail_delta_mib": 2.79296875
+        }
+      ]
+    },
+    "cockpit": {
+      "cpu_median": 14.732458657521537,
+      "cpu_p95": 29.548838284111362,
+      "cpu_mean_weighted": 17.75374015671589,
+      "rss_max_mib": 131.91796875,
+      "peak_rss_mib": 131.91796875,
+      "rss_segments": [
+        {
+          "observed_seconds": 2395.587766324985,
+          "warm_rss_median_mib": 76.107421875,
+          "last_minute_rss_median_mib": 131.20703125,
+          "warm_to_tail_delta_mib": 55.099609375
+        },
+        {
+          "observed_seconds": 1192.3541763949906,
+          "warm_rss_median_mib": 72.482421875,
+          "last_minute_rss_median_mib": 97.70703125,
+          "warm_to_tail_delta_mib": 25.224609375
+        }
+      ]
+    },
+    "synthetic_daemon": {
+      "cpu_median": 0.578042278258542,
+      "cpu_p95": 0.7507096355840125,
+      "cpu_mean_weighted": 0.5740288436701647,
+      "rss_max_mib": 29.66015625,
+      "peak_rss_mib": 29.66015625,
+      "rss_segments": [
+        {
+          "observed_seconds": 3599.1656227349304,
+          "warm_rss_median_mib": 29.66015625,
+          "last_minute_rss_median_mib": 29.66015625,
+          "warm_to_tail_delta_mib": 0.0
+        }
+      ]
+    },
+    "driver": {
+      "cpu_median": 0.3830258421016327,
+      "cpu_p95": 0.7970217583205895,
+      "cpu_mean_weighted": 0.43066057302416005,
+      "rss_max_mib": 43.15234375,
+      "peak_rss_mib": 43.91015625,
+      "rss_segments": [
+        {
+          "observed_seconds": 3599.1656227349304,
+          "warm_rss_median_mib": 41.466796875,
+          "last_minute_rss_median_mib": 43.10546875,
+          "warm_to_tail_delta_mib": 1.638671875
+        }
+      ]
+    }
+  },
+  "latency_ms": {
+    "/api/health": {
+      "median": 8.56185401789844,
+      "p95": 56.20254611130804,
+      "max": 188.68154205847532
+    },
+    "/api/sessions": {
+      "median": 354.66140299104154,
+      "p95": 464.4086890621111,
+      "max": 690.2681550709531
+    },
+    "/api/activity?limit=50": {
+      "median": 11.225135065615177,
+      "p95": 18.72765796724707,
+      "max": 30.222682980820537
+    },
+    "/api/metrics": {
+      "median": 40.10913701495156,
+      "p95": 63.306389027275145,
+      "max": 135.62685600481927
+    },
+    "/api/mcp?limit=20": {
+      "median": 222.74230100447312,
+      "p95": 307.2803230024874,
+      "max": 417.9073079722002
+    }
+  },
+  "reconnects": [
+    {
+      "kind": "receiver",
+      "at": 1211.0771074469667,
+      "seconds": 11.233339358004741
+    },
+    {
+      "kind": "cockpit",
+      "at": 2400.439440491027
+    }
+  ],
+  "receiver_shutdowns": [
+    {
+      "pending_before": 0,
+      "pending_after": 0
+    },
+    {
+      "pending_before": 0,
+      "pending_after": 0
+    }
+  ],
+  "exit_statuses": [
+    {
+      "role": "receiver",
+      "status": 0
+    },
+    {
+      "role": "cockpit",
+      "status": "0",
+      "signal": ""
+    },
+    {
+      "role": "cockpit",
+      "status": "0",
+      "signal": ""
+    },
+    {
+      "role": "receiver",
+      "status": 0
+    }
+  ],
+  "sample_count": 588,
+  "errors": [],
+  "storage": {
+    "database_bytes": 448602112,
+    "peak_database_plus_wal_bytes": 454621464,
+    "max_native_backlog_bytes": 0,
+    "max_opencode_backlog_records": 0
+  },
+  "limitations": [
+    "Synthetic native records; no live provider or agent runtime.",
+    "Host process inventory is real; project config reads restricted to synthetic project.",
+    "Heartbeat and review-queue instrumentation add small overhead.",
+    "No daily-use or human reconstruction-pilot conclusion."
+  ]
+}

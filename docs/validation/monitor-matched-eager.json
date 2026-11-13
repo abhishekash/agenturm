@@ -1,0 +1,211 @@
+{
+  "schema_version": 1,
+  "source_start": {
+    "head": "f73b8ba0da38fd23a7a9e7c75bc3da27c4ce301c",
+    "dirty": false,
+    "files": {
+      "scripts/soak_monitor.py": "a1f701813e697a90ce04fdf27a485af4fc92cdcf8aa71d0e08e4593469c9bbf8",
+      "observatory/http_transport.py": "6a31040bab9fda6e40e7c880e3c863d6bc778bc83f15c799f6c4a1182e2b8edd",
+      "observatory/ui_workflow.py": "3c51504b3a510221489041cdd2d31ee83689e07c33cdcecb727bf883c7b6d171"
+    }
+  },
+  "source_end": {
+    "head": "f73b8ba0da38fd23a7a9e7c75bc3da27c4ce301c",
+    "dirty": false,
+    "files": {
+      "scripts/soak_monitor.py": "a1f701813e697a90ce04fdf27a485af4fc92cdcf8aa71d0e08e4593469c9bbf8",
+      "observatory/http_transport.py": "6a31040bab9fda6e40e7c880e3c863d6bc778bc83f15c799f6c4a1182e2b8edd",
+      "observatory/ui_workflow.py": "3c51504b3a510221489041cdd2d31ee83689e07c33cdcecb727bf883c7b6d171"
+    }
+  },
+  "host": {
+    "system": "Linux",
+    "architecture": "x86_64",
+    "python": "3.12.3",
+    "logical_cpus": 8
+  },
+  "configured_seconds": 120.0,
+  "phase_seconds": 5,
+  "elapsed_seconds": 121.15532141609583,
+  "eager_tls": true,
+  "profile_ui": false,
+  "seeded_history": null,
+  "fixture_preparation_seconds": 1.7129350453615189e-06,
+  "initial_readiness_seconds": 0.7335932389833033,
+  "completed_turns": 9,
+  "verified_turns": 9,
+  "approval_requests": 3,
+  "observed_approval_requests": 3,
+  "accepted_review_ids": 9,
+  "persisted_review_ids": 9,
+  "missing_review_ids": 0,
+  "expected_review_ids": 9,
+  "rendered_approval_inboxes": 3,
+  "approval_visible_latency_ms": {
+    "median": 2523.2349099824205,
+    "p95": 2523.2349099824205,
+    "max": 2530.386227997951
+  },
+  "shared_daemon_false_progress": 0,
+  "heartbeat_samples": 115,
+  "heartbeat_interval_p95": 1.0223928079940379,
+  "heartbeat_interval_max": 1.032633077003993,
+  "connection_error_observations": 10,
+  "recovered_after_outage": true,
+  "resources": {
+    "receiver": {
+      "cpu_median": 7.233475320038798,
+      "cpu_p95": 9.080855075068781,
+      "cpu_mean_weighted": 6.982596919617247,
+      "rss_max_mib": 41.3203125,
+      "peak_rss_mib": 41.3203125,
+      "rss_segments": [
+        {
+          "observed_seconds": 58.39592075999826,
+          "warm_rss_median_mib": null,
+          "last_minute_rss_median_mib": 41.02734375,
+          "warm_to_tail_delta_mib": null
+        },
+        {
+          "observed_seconds": 41.780402294010855,
+          "warm_rss_median_mib": null,
+          "last_minute_rss_median_mib": 40.5859375,
+          "warm_to_tail_delta_mib": null
+        }
+      ]
+    },
+    "cockpit": {
+      "cpu_median": 43.745369403185386,
+      "cpu_p95": 75.07573278950653,
+      "cpu_mean_weighted": 48.025216298874085,
+      "rss_max_mib": 80.5625,
+      "peak_rss_mib": 80.5625,
+      "rss_segments": [
+        {
+          "observed_seconds": 75.32372106797993,
+          "warm_rss_median_mib": 74.7265625,
+          "last_minute_rss_median_mib": 73.87109375,
+          "warm_to_tail_delta_mib": -0.85546875
+        },
+        {
+          "observed_seconds": 36.473223940934986,
+          "warm_rss_median_mib": null,
+          "last_minute_rss_median_mib": 72.953125,
+          "warm_to_tail_delta_mib": null
+        }
+      ]
+    },
+    "synthetic_daemon": {
+      "cpu_median": 0.5894407795643495,
+      "cpu_p95": 0.7834936976376458,
+      "cpu_mean_weighted": 0.5718112617410419,
+      "rss_max_mib": 29.6875,
+      "peak_rss_mib": 29.6875,
+      "rss_segments": [
+        {
+          "observed_seconds": 117.10412336199079,
+          "warm_rss_median_mib": 29.68359375,
+          "last_minute_rss_median_mib": 29.68359375,
+          "warm_to_tail_delta_mib": 0.0
+        }
+      ]
+    },
+    "driver": {
+      "cpu_median": 0.3793523822243316,
+      "cpu_p95": 0.5948631733702405,
+      "cpu_mean_weighted": 0.38405291135649966,
+      "rss_max_mib": 32.89453125,
+      "peak_rss_mib": 32.89453125,
+      "rss_segments": [
+        {
+          "observed_seconds": 117.10412336199079,
+          "warm_rss_median_mib": 32.75,
+          "last_minute_rss_median_mib": 32.74609375,
+          "warm_to_tail_delta_mib": -0.00390625
+        }
+      ]
+    }
+  },
+  "latency_ms": {
+    "/api/health": {
+      "median": 39.851509500294924,
+      "p95": 65.54931995924562,
+      "max": 76.10233698505908
+    },
+    "/api/sessions": {
+      "median": 16.12331293290481,
+      "p95": 33.947460004128516,
+      "max": 38.533295039087534
+    },
+    "/api/activity?limit=50": {
+      "median": 9.970190469175577,
+      "p95": 18.804416060447693,
+      "max": 20.240830024704337
+    },
+    "/api/metrics": {
+      "median": 15.139638970140368,
+      "p95": 43.84058399591595,
+      "max": 67.71732494235039
+    },
+    "/api/mcp?limit=20": {
+      "median": 7.566390966530889,
+      "p95": 9.405625984072685,
+      "max": 16.68111199978739
+    }
+  },
+  "reconnects": [
+    {
+      "kind": "receiver",
+      "at": 63.32817235903349,
+      "seconds": 8.526374825974926
+    },
+    {
+      "kind": "cockpit",
+      "at": 79.34931776602753
+    }
+  ],
+  "receiver_shutdowns": [
+    {
+      "pending_before": 0,
+      "pending_after": 0
+    },
+    {
+      "pending_before": 0,
+      "pending_after": 0
+    }
+  ],
+  "exit_statuses": [
+    {
+      "role": "receiver",
+      "status": 0
+    },
+    {
+      "role": "cockpit",
+      "status": "0",
+      "signal": ""
+    },
+    {
+      "role": "cockpit",
+      "status": "0",
+      "signal": ""
+    },
+    {
+      "role": "receiver",
+      "status": 0
+    }
+  ],
+  "sample_count": 20,
+  "errors": [],
+  "storage": {
+    "database_bytes": 667648,
+    "peak_database_plus_wal_bytes": 4730408,
+    "max_native_backlog_bytes": 0,
+    "max_opencode_backlog_records": 0
+  },
+  "limitations": [
+    "Synthetic native records; no live provider or agent runtime.",
+    "Host process inventory is real; project config reads restricted to synthetic project.",
+    "Heartbeat and review-queue instrumentation add small overhead.",
+    "No daily-use or human reconstruction-pilot conclusion."
+  ]
+}
