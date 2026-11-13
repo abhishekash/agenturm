@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reuse read-only leases for the background compatibility watcher’s empty probe, releasing them before transactional repair. Preserve the polling interval, bounded drain and live external-writer invalidation.
+
 - Keep MCP scope, call identity, hydration and execution enrichment in one source snapshot. Separate producer/worker/session/server collisions, retain ambiguous calls, and expose typed recorded payloads without borrowing trace-root ownership.
 - Retry native batches after partial storage failures; fence stale collector positions and file replacements. Persist internal-review capture revocation, scrub derived text atomically and reject content-bearing legacy writes to those sources. Upgrade all collectors that share the database.
 - Index MCP and connection lookups, bound original-task reads, share fair atomic history batches and reuse bounded read-only metadata connections. Record the healthy retained-history measurements and the still-open resource targets.
