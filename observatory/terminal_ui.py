@@ -1841,10 +1841,10 @@ class ObservatoryApp(App):
 
     def action_session_scope(self):
         if not isinstance(self.screen,ObservatoryScreen):return
-        entries=[dict(id='all',task='All agent sessions',description='Show every available session',
-                      detail='All agent sessions · remove the individual session scope')]
+        entries=[dict(id='all',task='All agent sessions',description='Clear the session filter',
+                      detail='Show all available sessions · clears the filter')]
         for item in getattr(self,'source_map',{}).values():
-            title=task_preview(item) or 'Untitled session'
+            title=task_preview(item)
             runtime=item.get('runtime') or item.get('service') or 'Agent'
             service=item.get('service') or ''
             if runtime in {'OpenTelemetry','SDK / OTLP'} and service:
@@ -1855,11 +1855,16 @@ class ObservatoryApp(App):
             agent=item.get('agent_id')
             identity=('Worker '+str(worker)[-8:] if worker else
                       'Agent '+str(agent)[-8:] if agent else 'Session '+session[-8:])
-            description=f'{runtime} · {project} · {identity}'
+            title=title or ('Worker '+str(worker)[-8:] if worker else 'Session '+session[-8:])
+            description=f'{project} · {runtime} · {identity}'
+            parent=item.get('parent_agent_id') if item.get('relationship_state')=='confirmed' else None
             entries.append(dict(id=item['id'],task=title,description=description,
                 detail=title+'\n'+f'{runtime} / {project} · Session {session}'+
-                       (' · Worker '+str(worker) if worker else ''),
-                session_id=session,service=service,agent_id=item.get('agent_id') or '',worker_id=worker or ''))
+                       (' · Worker '+str(worker) if worker else '')+
+                       (' · Parent '+str(parent) if parent else ''),
+                stamp=item.get('stamp') or 0,status=item.get('state') or 'Unknown',
+                updated=age(item['stamp']) if item.get('stamp') else 'Unknown update',
+                project=project,runtime=runtime,identity=identity,session_id=session,service=service,agent_id=item.get('agent_id') or '',worker_id=worker or ''))
         return_focus=self.focused
         self.push_screen(SessionScopeScreen(entries,self.scope_value),
                          lambda choice:self.choose_session_scope(choice,return_focus))

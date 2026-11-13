@@ -343,14 +343,15 @@ class SessionScopeScreen(ModalScreen):
     """A readable, keyboard-first choice of existing session scope."""
     DEFAULT_CSS='''
     SessionScopeScreen { align: center middle; background: $background 70%; }
-    #session-scope-dialog { width: 88; max-width: 94%; height: 80%; max-height: 32; min-height: 14;
+    #session-scope-dialog { width: 104; max-width: 96%; height: 80%; max-height: 32; min-height: 14;
         border: round $primary; background: $surface; padding: 1 2; }
     #session-scope-title, #session-scope-count, #session-scope-hint { height: 1; }
     #session-scope-title { text-style: bold; }
     #session-scope-search { height: 1; border: none; padding: 0; background: $agent-panel; }
     #session-scope-options { height: 1fr; min-height: 4; border: none; padding: 0; background: $surface; }
     #session-scope-options > .option-list--option-highlighted { background: $agent-cursor; color: $agent-on-cursor; }
-    #session-scope-description { height: 2; color: $agent-muted; }
+    #session-scope-description { height: 3; color: $agent-muted; overflow-y: auto; }
+    #session-scope-small { display: none; height: 2; }
     #session-scope-count, #session-scope-hint { color: $agent-muted; }
     '''
     BINDINGS=[('escape','cancel','Cancel'),('/','focus_search','Search')]
@@ -359,34 +360,52 @@ class SessionScopeScreen(ModalScreen):
         super().__init__()
         # Freeze the chooser while reading; resolve the chosen identity against
         # the current roster only after returning to the monitor.
-        self.entries=[dict(entry) for entry in entries]
+        self.entries=sorted((dict(entry) for entry in entries),
+                            key=lambda entry:(entry['id']!='all',-int(entry.get('stamp') or 0),entry['id']))
         self.selected=selected
         self.filtered=[]
 
     def compose(self):
         with Vertical(id='session-scope-dialog'):
-            yield Static('Choose agent session',id='session-scope-title')
+            yield Static('Filter agent sessions',id='session-scope-title')
+            yield Static('Terminal too small · resize to 60×18 · Esc Cancel',id='session-scope-small')
             yield SessionScopeSearch(placeholder='Search task, project, runtime or session ID…',id='session-scope-search')
             yield Static('',id='session-scope-count')
             yield OptionList(id='session-scope-options',markup=False)
             yield Static('',id='session-scope-description',markup=False)
-            yield Static('↑↓ Choose · Enter Apply · / Search · Esc Cancel',id='session-scope-hint')
+            yield Static('↑↓ Browse · Enter Apply · Esc Cancel · / Search',id='session-scope-hint')
 
     def on_mount(self):
         self.app.theme_changed_signal.subscribe(self,self.theme_changed)
         self.fit_dialog()
         self.filter_entries('')
-        self.query_one(OptionList).focus()
+        self.query_one(Input).focus()
 
     def on_unmount(self):self.app.theme_changed_signal.unsubscribe(self)
 
     def fit_dialog(self):
-        self.query_one('#session-scope-dialog').styles.height=min(
-            32,max(14,10+2*len(self.entries)),max(14,int(self.size.height*.8)))
+        small=self.size.width<60 or self.size.height<18
+        self.query_one('#session-scope-small').display=small
+        for selector in ('#session-scope-search','#session-scope-count','#session-scope-options',
+                         '#session-scope-description','#session-scope-hint'):
+            self.query_one(selector).display=not small
+        dialog=self.query_one('#session-scope-dialog')
+        dialog.styles.min_height=0 if small else 14
+        dialog.styles.height=min(self.size.height,32,max(14,12+2*len(self.entries)))
+        self.query_one('#session-scope-description').styles.height=2 if self.size.width<90 else 3
+        self.query_one('#session-scope-hint',Static).update(
+            '↑↓ Browse · Enter Apply · Esc Cancel'+(' · / Search' if self.size.width>=90 else ''))
+
+    def refresh_labels(self):
+        options=self.query_one(OptionList)
+        index=options.highlighted
+        identity=self.filtered[index]['id'] if index is not None and index<len(self.filtered) else self.selected
+        self.filter_entries(self.query_one(Input).value,identity)
+        options.scroll_to_highlight()
 
     def on_resize(self):
         self.fit_dialog()
-        self.call_after_refresh(self.query_one(OptionList).scroll_to_highlight)
+        self.call_after_refresh(self.refresh_labels)
 
     def theme_changed(self,theme):
         options=self.query_one(OptionList)
@@ -401,25 +420,54 @@ class SessionScopeScreen(ModalScreen):
         options=self.query_one(OptionList)
         colors=PALETTES.get(self.app.theme,CURRENT)
         labels=[]
+        # OptionList measures renderables before drawing; clip each physical line
+        # explicitly so long prompts cannot inflate the height of an option.
+        width=max(8,options.content_size.width-4)
         for entry in self.filtered:
+            marker='Current · ' if entry['id']==self.selected else ''
+            title=Text(marker+' '.join(clean(entry['task']).split()),style='bold')
+            title.truncate(width,overflow='ellipsis')
+            metadata=entry['description']
+            if entry.get('project') and entry.get('runtime'):
+                identity=entry.get('identity','')
+                runtime=Text(entry['runtime']);runtime.truncate(14,overflow='ellipsis')
+                project=Text(entry['project'])
+                project.truncate(max(4,width-runtime.cell_len-Text(identity).cell_len-8),overflow='ellipsis')
+                metadata=f'{project.plain} · {runtime.plain} · {identity}'
+            if entry.get('status') and self.size.width>=90:
+                metadata+=' · '+entry['status']+' · '+entry.get('updated','Unknown update')
+            description=Text('  '+' '.join(clean(metadata).split()),style=colors['muted'])
+            description.truncate(width,overflow='ellipsis')
             text=Text(no_wrap=True,overflow='ellipsis')
-            text.append('✓ ' if entry['id']==self.selected else '  ',style=colors['secondary'])
-            text.append(clean(entry['task']),style='bold')
-            text.append('\n  '+clean(entry['description']),style=colors['muted'])
+            text.append_text(title);text.append('\n');text.append_text(description)
             labels.append(Option(text,id=entry['id']))
         options.clear_options().add_options(labels)
         options.highlighted=next((i for i,entry in enumerate(self.filtered) if entry['id']==(highlight or self.selected)),
                                  0 if self.filtered else None)
+        count=sum(entry['id']!='all' for entry in self.filtered)
         self.query_one('#session-scope-count',Static).update(
-            f'{len(self.filtered)} '+('choice' if len(self.filtered)==1 else 'choices')
-            if self.filtered else 'No matching sessions · clear search to see all')
+            f'{count} '+('session' if count==1 else 'sessions')+' · Most recently updated'
+            if self.filtered else 'No matches · clear search')
         self.show_description()
 
     def show_description(self):
         index=self.query_one(OptionList).highlighted
         entry=self.filtered[index] if index is not None and index<len(self.filtered) else None
-        self.query_one('#session-scope-description',Static).update(
-            '\n'.join(clean(line) for line in (entry.get('detail') or entry['task']).splitlines()) if entry else '')
+        if entry:
+            lines=(entry.get('detail') or entry['task']).splitlines()
+            if entry.get('status'):
+                lines.append(entry['status']+' · '+entry.get('updated','Unknown update'))
+            preview=Text(no_wrap=True,overflow='ellipsis')
+            width=max(8,self.query_one('#session-scope-description').content_size.width)
+            for index,line in enumerate(lines):
+                part=Text(('Preview: ' if index==0 else '')+' '.join(clean(line).split()))
+                part.truncate(width,overflow='ellipsis')
+                if index:preview.append('\n')
+                preview.append_text(part)
+        else:preview=Text('No matching sessions. Clear search to browse again.')
+        widget=self.query_one('#session-scope-description',Static)
+        widget.update(preview)
+        widget.tooltip=entry.get('detail') if entry else None
 
     @on(Input.Changed,'#session-scope-search')
     def search_changed(self,event):self.filter_entries(event.value)
@@ -437,7 +485,11 @@ class SessionScopeScreen(ModalScreen):
 
     def on_key(self,event:events.Key):
         if self.focused is self.query_one(Input) and event.key in {'up','down'}:
-            self.query_one(OptionList).focus()
+            options=self.query_one(OptionList)
+            if self.filtered:
+                index=options.highlighted if options.highlighted is not None else 0
+                options.highlighted=max(0,min(len(self.filtered)-1,index+(1 if event.key=='down' else -1)))
+                options.scroll_to_highlight()
             event.stop();event.prevent_default()
 
     def action_focus_search(self):self.query_one(Input).focus()
