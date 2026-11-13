@@ -4,6 +4,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from textual.widgets import Button, DataTable, Input, Static, TabbedContent
 from observatory.core import Store, normalize_native
@@ -15,6 +16,21 @@ from tests.test_terminal_search import ManualFeed, ExampleApi
 
 
 class MonitoringModelsTests(unittest.TestCase):
+    def test_mcp_inspector_distinguishes_recorded_null_and_empty_from_unavailable(self):
+        for value,reported,expected in ((None,True,'null (recorded)'),('',True,'Empty text (recorded)'),
+                                        (None,False,None),('',False,'')):
+            with self.subTest(value=value,reported=reported):
+                captured=[]
+                item=dict(server='fixture',tool='search',method='tools/call',status='OK',
+                    arguments=value,arguments_reported=reported,output=value,output_reported=reported)
+                owner=SimpleNamespace(table_data={'mcp-table':{'call':item}},selected_mcp='call',
+                    query_one=lambda *args:SimpleNamespace(disabled=False),
+                    inspect=lambda *args,**kwargs:captured.append(args))
+                ObservatoryApp.show_mcp(owner)
+                sections=dict(captured[0][3])
+                self.assertEqual(sections['Arguments'],expected)
+                self.assertEqual(sections['Response'],expected)
+
     def test_paused_history_uses_the_displayed_page_boundary(self):
         feed=Feed(ExampleApi())
         feed.snapshot=Snapshot(pagination={'activity':{'next_cursor':'new-boundary'}})

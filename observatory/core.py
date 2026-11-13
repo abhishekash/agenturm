@@ -1845,12 +1845,12 @@ class Store:
                  "scope_name": r["scope_name"]} for r in rows]
 
     @staticmethod
-    def _event_cursor(cursor):
+    def _event_cursor(cursor, *, max_key=512):
         if not cursor:
             return None
         try:
             stamp, key = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
-            if not isinstance(stamp, int) or not isinstance(key, str) or len(key) > 512:
+            if not isinstance(stamp, int) or not isinstance(key, str) or len(key) > max_key:
                 raise ValueError
             return stamp, key
         except (ValueError, TypeError, UnicodeDecodeError) as exc:
@@ -1979,7 +1979,10 @@ class Store:
     def _mcp_page(self, db, limit, service, session_id, query, cursor,
                   include_reviews, agent_id, subtree, scope_revision):
         limit = max(1, min(200, int(limit)))
-        before = self._event_cursor(cursor)
+        # Scoped provider IDs may each occupy 512 characters. SQL JSON escapes
+        # control characters, with the server/call tuple nested once more in
+        # the outer ownership key; the decoded key can exceed 10 KiB.
+        before = self._event_cursor(cursor,max_key=16384)
         scope = None
         mcp_method = "json_extract(attributes,'$.\"mcp.method.name\"')"
         # Keep all MCP protocol methods, not only tool execution. Discovery,
@@ -2047,13 +2050,25 @@ class Store:
                 f"OR json_type({result_value},'$.is_error')='true') ELSE 0 END"
             )
         mcp_tool_failed = f"EXISTS (SELECT 1 FROM spans execution WHERE {execution_match_sql()} AND ({mcp_result_error_sql}))"
+        body_value="json_extract(body,'$')"
+        direction_sql="json_extract(attributes,'$.\"observatory.mcp.io.direction\"')"
+        no_output_attributes=' AND '.join(
+            f"json_type(attributes,'$.\"{key}\"') IS NULL"
+            for key in ('output.value','gen_ai.tool.call.result','gcp.vertex.agent.tool_response','tool.result'))
+        chosen_body_result=f"""CASE WHEN {direction_sql}='result' THEN {body_value}
+            WHEN COALESCE({direction_sql},'')='' AND json_valid({body_value})
+            THEN json_extract({body_value},'$.result') END"""
+        body_errors=' OR '.join(f"json_type(({chosen_body_result}),'$.{key}')='true'" for key in ('isError','is_error'))
+        log_body_error=f"""CASE WHEN ({no_output_attributes}) AND json_valid(({chosen_body_result}))
+            THEN ({body_errors}) ELSE 0 END"""
         summary_sql = f"""WITH evidence AS (
             SELECT {span_key} AS call_key, {span_server} AS server, {span_tool} AS tool,
                    (status IN ('ERROR','FAILED') OR COALESCE(({mcp_result_error_sql.replace('execution.','spans.')}),0) OR {mcp_tool_failed}) AS failed
             FROM spans WHERE {where}
             UNION ALL
             SELECT {log_key}, {server}, {tool},
-                   COALESCE(json_extract(attributes,'$."agent.activity.result"') IN ('error','failed','denied','blocked'),0)
+                   COALESCE(json_extract(attributes,'$."agent.activity.result"') IN ('error','failed','denied','blocked')
+                     OR ({mcp_result_error_sql.replace('execution.','logs.')}) OR ({log_body_error}),0)
             FROM logs WHERE {where} AND {unique_log}
         ), calls AS (
             SELECT call_key, COALESCE(MAX(NULLIF(server,'Not reported')),'Not reported') AS server,
@@ -2152,6 +2167,9 @@ class Store:
         def recorded_payload(attrs,keys):
             return next((decode_tool_payload(attrs[key]) for key in keys if key in attrs), '')
 
+        argument_keys=('input.value','gen_ai.tool.call.arguments','gcp.vertex.agent.tool_call_args')
+        output_keys=('output.value','gen_ai.tool.call.result','gcp.vertex.agent.tool_response','tool.result')
+
         calls = {}
         for span in spans:
             attrs = json.loads(span['attributes'])
@@ -2172,8 +2190,10 @@ class Store:
                 'method': method, 'status': 'ERROR' if mcp_result_error(attrs) else span['status'],
                 'time_unix_nano': span['end_ns'],
                 'duration_ms': None if attrs.get('observatory.duration_unknown') else max(0, (span['end_ns']-span['start_ns'])/1e6),
-                'arguments': recorded_payload(attrs,('input.value','gen_ai.tool.call.arguments','gcp.vertex.agent.tool_call_args')),
-                'output': recorded_payload(attrs,('output.value','gen_ai.tool.call.result','gcp.vertex.agent.tool_response','tool.result')),
+                'arguments': recorded_payload(attrs,argument_keys),
+                'arguments_reported': any(name in attrs for name in argument_keys),
+                'output': recorded_payload(attrs,output_keys),
+                'output_reported': any(name in attrs for name in output_keys),
                 'source': 'span', 'log_id': None}
         for log in reversed(logs):
             attrs = json.loads(log['attributes'])
@@ -2191,6 +2211,10 @@ class Store:
             state = 'ERROR' if result in {'error','failed','denied','blocked'} else 'RUNNING' if result=='started' else 'OK' if result in {'success','completed'} else old.get('status') or 'OK'
             if old.get('time_unix_nano', 0) > log['time_ns']:
                 state = old.get('status') or state
+            own_arguments=any(name in attrs for name in argument_keys)
+            own_output=any(name in attrs for name in output_keys)
+            direction=attrs.get('observatory.mcp.io.direction')
+            envelope=direction is None or direction==''
             calls[key] = {**old, 'id': key, 'trace_id': log['trace_id'], 'span_id': log['span_id'],
                 'session_id': log['mcp_session'],'agent_id':log['agent_id'],
                 'service': log['service'],
@@ -2199,16 +2223,21 @@ class Store:
                 'method': text_value(attrs,'mcp.method.name','rpc.method',default=old.get('method') or 'tools/call'),
                 'status': state,
                 'time_unix_nano': max(log['time_ns'],old.get('time_unix_nano',0)), 'duration_ms': attrs.get('duration_ms', old.get('duration_ms')),
-                'arguments': (attrs.get('gen_ai.tool.call.arguments') or
-                              (body if attrs.get('observatory.mcp.io.direction') == 'arguments' else None) or
-                              details.get('arguments') or old.get('arguments') or ''),
-                'output': ((body if attrs.get('observatory.mcp.io.direction') == 'result' else None) or
-                           details.get('result') or old.get('output') or ''),
+                'arguments': (recorded_payload(attrs,argument_keys) if own_arguments else
+                              decode_tool_payload(body) if direction=='arguments' else
+                              details['arguments'] if envelope and 'arguments' in details else old.get('arguments','')),
+                'arguments_reported': own_arguments or direction=='arguments' or (envelope and 'arguments' in details) or old.get('arguments_reported',False),
+                'output': (recorded_payload(attrs,output_keys) if own_output else
+                           decode_tool_payload(body) if direction=='result' else
+                           details['result'] if envelope and 'result' in details else old.get('output','')),
+                'output_reported': own_output or direction=='result' or (envelope and 'result' in details) or old.get('output_reported',False),
                 'metadata': {**old.get('metadata', {}), **{
                     name: value for name, value in attrs.items()
                     if name.startswith('cursor.') and not name.startswith('cursor.user.')
                     and name != 'cursor.team.id' and value is not None}},
                 'source': 'session log + span' if 'span' in old.get('source', '') else 'session log', 'log_id': log['digest']}
+            if mcp_result_error(attrs) or mcp_result_error({'tool.result':calls[key]['output']}):
+                calls[key]['status']='ERROR'
         # Some agent frameworks emit the MCP transport and the agent's tool
         # execution as separate spans. Join those records so the MCP view can
         # show arguments and results that the transport span itself omits.
@@ -2235,19 +2264,17 @@ class Store:
             attrs=json.loads(execution['attributes'])
             call['execution_basis']=execution['basis']
             call['execution_source']={'trace_id':execution['trace_id'],'span_id':execution['span_id']}
-            arguments = (attrs.get('gen_ai.tool.call.arguments') or
-                         attrs.get('gcp.vertex.agent.tool_call_args') or
-                         attrs.get('input.value'))
-            output = (attrs.get('gen_ai.tool.call.result') or
-                      attrs.get('gcp.vertex.agent.tool_response') or
-                      attrs.get('output.value'))
-            if not call.get('arguments') and arguments is not None:
-                call['arguments'] = decode_tool_payload(arguments)
-            if not call.get('output') and output is not None:
-                call['output'] = decode_tool_payload(output)
+            arguments_reported=any(name in attrs for name in argument_keys)
+            output_reported=any(name in attrs for name in output_keys)
+            if not call.get('arguments_reported') and arguments_reported:
+                call['arguments'] = recorded_payload(attrs,argument_keys)
+                call['arguments_reported']=True
+            if not call.get('output_reported') and output_reported:
+                call['output'] = recorded_payload(attrs,output_keys)
+                call['output_reported']=True
             if mcp_result_error(attrs):
                 call['status'] = 'ERROR'
-            if arguments is not None or output is not None:
+            if arguments_reported or output_reported:
                 call['source'] = 'agent + MCP spans' if call.get('source') == 'span' else call.get('source')
         items = sorted(calls.values(),key=lambda item:item['time_unix_nano'],reverse=True)
         by_id = {item['id']: item for item in items}

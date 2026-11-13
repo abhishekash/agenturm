@@ -3600,11 +3600,17 @@ class ObservatoryApp(App):
             self.inspect('mcp-detail',title,[('Scope',self.scope_label())],[('How to proceed',note)])
             return
         operation=item.get('tool') if item.get('tool') not in ('', 'Not reported') else item.get('method') or 'MCP operation'
+        def captured(field):
+            value=item.get(field)
+            if item.get(field+'_reported'):
+                if value is None:return 'null (recorded)'
+                if value=='':return 'Empty text (recorded)'
+            return value
         self.inspect('mcp-detail',item['server']+' / '+operation,[
             ('Result',str(status(item.get('status')))+' · '+timing(item.get('duration_ms'))),
             ('Agent',(item.get('service') or 'Not reported')+' · '+str(item.get('session_id') or 'Unknown session')[-12:]),
             ('Method',item.get('method') or 'Not reported'),('Observed',when(item.get('time_unix_nano') or 0))],
-            [('Arguments',item.get('arguments')),('Response',item.get('output')),
+            [('Arguments',captured('arguments')),('Response',captured('output')),
              ('Runtime metadata',item.get('metadata')),
              ('Evidence',item.get('source')),('Session ID',item.get('session_id')),
              ('Trace ID',item.get('trace_id') or 'Not linked'),('Span ID',item.get('span_id') or 'Not linked')])

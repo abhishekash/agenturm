@@ -26,7 +26,7 @@ try:
 except ImportError:  # pragma: no cover - minimal-install CI job
     GOOGLE_ADK_OTEL_AVAILABLE = False
 
-from observatory.core import Store
+from observatory.core import Store, SESSION_KEYS
 from observatory.server import handler_for
 
 
@@ -191,7 +191,15 @@ class GoogleAdkOtelEndToEndTests(unittest.TestCase):
         self.assertEqual(mcp_page["summary"]["unknown_server_tools"], 1)
         self.assertEqual(mcp_page["summary"]["unknown_server_errors"], 0)
         self.assertEqual(tool_call["trace_id"], run["trace_id"])
-        self.assertEqual(tool_call["session_id"], "adk-session-17")
+        transport=next(span for span in spans if span['span_id']==tool_call['span_id'])
+        def recorded_session(span):
+            return next((container[key].strip() for key in SESSION_KEYS
+                for container in (span['attributes'],span.get('resource_attributes') or {})
+                if isinstance(container.get(key),str) and container[key].strip()),None)
+        # ADK's MCP transport can omit session ownership even when the agent
+        # root reports it. Keep that absence visible; a shared trace is not
+        # proof that every transport belongs to the root's conversation.
+        self.assertEqual(tool_call['session_id'],recorded_session(transport))
         execution_attrs = tool_spans[0]["attributes"]
         arguments_exported = any(
             execution_attrs.get(key) is not None
@@ -215,7 +223,10 @@ class GoogleAdkOtelEndToEndTests(unittest.TestCase):
         else:
             self.assertEqual(tool_call["output"], "")
         scoped_mcp_page = self.store.mcp_page(session_id="adk-session-17")
-        self.assertEqual(scoped_mcp_page["summary"]["calls"], len(expected_methods))
+        scoped_methods=[span['attributes']['mcp.method.name'] for span in spans
+            if span['attributes'].get('mcp.method.name') and recorded_session(span)=='adk-session-17']
+        self.assertEqual(scoped_mcp_page["summary"]["calls"],len(scoped_methods))
+        self.assertCountEqual([call['method'] for call in scoped_mcp_page['calls']],scoped_methods)
         self.assertTrue(all(call["trace_id"] == run["trace_id"]
                             for call in scoped_mcp_page["calls"]))
         model_spans = [

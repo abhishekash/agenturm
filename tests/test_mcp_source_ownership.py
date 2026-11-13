@@ -27,6 +27,96 @@ def record(number,actor,session,*,tool=False,execution=False,output='',parent=No
 
 
 class MCPSourceOwnershipTests(unittest.TestCase):
+    def test_log_payloads_are_direct_evidence_and_preserve_false_zero_empty_and_null(self):
+        logs=[]
+        for index,value in enumerate((False,0,{},[],None),1):
+            logs.append(dict(trace_id=TRACE,span_id=None,time_unix_nano=index,service='svc',
+                severity_number=9,severity_text='INFO',event_name='agent.activity',body='',
+                attributes={'session.id':'session','mcp.server.name':'fixture','mcp.tool.name':f'tool-{index}',
+                    'mcp.method.name':'tools/call','input.value':json.dumps(value),'output.value':json.dumps(value)},
+                resource_attributes={},scope_name='fixture'))
+        self.store.ingest_logs(logs)
+        calls=self.store.mcp_page(session_id='session')['calls']
+        self.assertEqual(len(calls),5)
+        by_tool={call['tool']:call for call in calls}
+        for index,value in enumerate((False,0,{},[],None),1):
+            call=by_tool[f'tool-{index}']
+            self.assertEqual(call['arguments'],value);self.assertEqual(call['output'],value)
+            self.assertIs(type(call['arguments']),type(value));self.assertIs(type(call['output']),type(value))
+            self.assertTrue(call['arguments_reported']);self.assertTrue(call['output_reported'])
+            self.assertEqual(call['source'],'session log')
+
+    def test_owned_log_error_flags_agree_between_inventory_and_call_details(self):
+        for location in ('attribute','result_body','string_result_body','io_body'):
+            for index,value in enumerate((1,'true',False,True),1):
+                with self.subTest(location=location,value=value):
+                    session=f'{location}-{index}'
+                    attrs={'session.id':session,'mcp.server.name':'fixture','mcp.tool.name':'search','mcp.method.name':'tools/call'}
+                    result={'isError':value,'content':[{'type':'text','text':'Recorded result'}]}
+                    body=''
+                    if location=='attribute':attrs['output.value']=json.dumps(result)
+                    elif location=='result_body':body={'result':result}
+                    elif location=='string_result_body':body={'result':json.dumps(result)}
+                    else:attrs['observatory.mcp.io.direction']='result';body=json.dumps(result)
+                    self.store.ingest_logs([dict(trace_id=TRACE,span_id=None,time_unix_nano=index,
+                        service='svc',severity_number=9,severity_text='INFO',event_name='agent.activity',
+                        body=body,attributes=attrs,resource_attributes={},scope_name='fixture')])
+                    page=self.store.mcp_page(session_id=session)
+                    self.assertEqual(page['summary']['errors'],int(value is True))
+                    self.assertEqual(page['calls'][0]['status'],'ERROR' if value is True else 'OK')
+
+    def test_argument_bodies_cannot_become_result_evidence(self):
+        for index,body in enumerate(({'isError':True},{'result':{'isError':True}},
+                                      {'arguments':{'a':1},'result':{'isError':True}}),1):
+            attrs={'session.id':str(index),'mcp.server.name':'fixture','mcp.tool.name':'search',
+                   'mcp.method.name':'tools/call','observatory.mcp.io.direction':'arguments',
+                   'agent.activity.result':'success'}
+            self.store.ingest_logs([dict(trace_id=TRACE,span_id=None,time_unix_nano=index,
+                service='svc',severity_number=9,severity_text='INFO',event_name='agent.activity',
+                body=json.dumps(body),attributes=attrs,resource_attributes={},scope_name='fixture')])
+            page=self.store.mcp_page(session_id=str(index));call=page['calls'][0]
+            self.assertEqual(page['summary']['errors'],0);self.assertEqual(call['status'],'OK')
+            self.assertEqual(call['arguments'],body);self.assertFalse(call['output_reported'])
+            self.assertEqual(call['output'],'')
+
+    def test_chosen_attribute_result_takes_precedence_over_body_result(self):
+        self.store.ingest_logs([dict(trace_id=TRACE,span_id=None,time_unix_nano=1,service='svc',
+            severity_number=9,severity_text='INFO',event_name='agent.activity',
+            body={'result':{'isError':True}},attributes={'session.id':'s','mcp.server.name':'fixture',
+                'mcp.tool.name':'search','mcp.method.name':'tools/call','output.value':json.dumps({'isError':False})},
+            resource_attributes={},scope_name='fixture')])
+        page=self.store.mcp_page(session_id='s')
+        self.assertEqual(page['summary']['errors'],0)
+        self.assertEqual(page['calls'][0]['status'],'OK')
+        self.assertEqual(page['calls'][0]['output'],{'isError':False})
+
+    def test_result_body_cannot_supply_request_arguments_or_nested_error_flag(self):
+        output={'arguments':{'RESPONSE_FIELD':1},'result':{'isError':True},'isError':False}
+        self.store.ingest_logs([dict(trace_id=TRACE,span_id=None,time_unix_nano=1,service='svc',
+            severity_number=9,severity_text='INFO',event_name='agent.activity',body=json.dumps(output),
+            attributes={'session.id':'s','mcp.server.name':'fixture','mcp.tool.name':'search',
+                'mcp.method.name':'tools/call','observatory.mcp.io.direction':'result'},
+            resource_attributes={},scope_name='fixture')])
+        page=self.store.mcp_page(session_id='s');call=page['calls'][0]
+        self.assertEqual(page['summary']['errors'],0);self.assertEqual(call['status'],'OK')
+        self.assertFalse(call['arguments_reported']);self.assertEqual(call['arguments'],'')
+        self.assertEqual(call['output'],output)
+
+    def test_long_scoped_call_identity_can_page_without_cursor_truncation(self):
+        for escaped in (False,True):
+            with self.subTest(escaped=escaped):
+                server='\x02'*512 if escaped else 's'*450
+                logs=[self.log_call(i,('\x01'*511 if escaped else 'c\\"'*150)+str(i),server=server) for i in range(3)]
+                for log in logs:log['attributes']['session.id']='\x03'*512 if escaped else 'session-'+'x'*440
+                self.store.ingest_logs(logs)
+                calls=[];cursor=None
+                while True:
+                    page=self.store.mcp_page(limit=1,cursor=cursor,session_id=logs[0]['attributes']['session.id'])
+                    calls.extend(page['calls']);cursor=page['next_cursor']
+                    if not cursor:break
+                self.assertEqual(len(calls),3)
+                self.assertEqual(len({call['id'] for call in calls}),3)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.store=Store(Path(self.temp.name)/'mcp.db');self.addCleanup(self.store.close)
