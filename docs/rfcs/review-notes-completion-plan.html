@@ -21,7 +21,7 @@
 <tbody>
 <tr>
 <td>F1: CPU/RSS</td>
-<td>Partial. PR70 fixed HTTP/TLS overhead. PR72 candidate reduces generated-history idle CPU from 23.63% to 15.90% of one core and cold readiness from 184.38 to 112.96 s. The earlier active/probed hour is a different workload, not an idle baseline.</td>
+<td>Partial. PR70 fixed HTTP/TLS overhead. PR72 reduces generated-history idle CPU from 23.63% to 15.90% of one core and cold readiness from 184.38 to 112.96 s. The earlier active/probed hour is a different workload, not an idle baseline.</td>
 <td>Measure idle and normal-load budgets; profile readiness/read/render costs; B.</td>
 </tr>
 <tr>
@@ -56,7 +56,7 @@
 </tr>
 <tr>
 <td>F8: useful information density</td>
-<td>Partial. PR72 candidate uses one separator at wide sizes and two-line compact rows, retaining shading, hierarchy and keyboard selection.</td>
+<td>Partial. Merged PR72 uses one separator at wide sizes and two-line compact rows, retaining shading, hierarchy and keyboard selection.</td>
 <td>Source-backed Overview at wide/floor sizes remains open; B/C/D.</td>
 </tr>
 <tr>
@@ -136,7 +136,7 @@
 </tr>
 <tr>
 <td>F24: passing suite / fixture gap</td>
-<td>Preserved baseline strength; the PR72 candidate discovers 775 minimal-suite cases with 14 optional skips and separate SDK jobs. Focused native/UI gates pass; final full CI is pending.</td>
+<td>Preserved baseline strength; PR72 passed all 12 final CI jobs: 775 minimal-suite cases per supported Python version with 14 optional skips, plus separate SDK jobs.</td>
 <td>Current native-shaped golden journeys remain release gates, not test counts alone.</td>
 </tr>
 <tr>
@@ -246,8 +246,10 @@
 <h3>Stage A implementation — merged <a href="https://github.com/abhishekash/agenturm/pull/71">PR #71</a></h3>
 <p>Terminal capture now uses the shared execution preparation and preserves the frozen turn boundary, member trace IDs and each check's source trace. Task import rejects contradictory wrapper/snapshot identity, kind, membership and usage. Existing inconsistent links stay readable and retain authored data; their usage is withheld with a repair warning until an explicit relink or unlink. Turn-plus-contained-step accounting remains ambiguous instead of double-counted.</p>
 <p>Validation includes an actual keyboard-driven Review → Save task → edit → Ctrl+S → task → handoff journey, UI/CLI import equality, later-member selection, contradictory imports, legacy reads/edits/explicit repair and metadata-only capture. Peer review exposed additional usage, consent and excerpt-provenance gaps: frozen usage now owns accounting; same-receiver capture revocation is rechecked before capture and task persistence without losing authored fields; decision excerpts retain their actual member trace instead of the turn anchor. Explicitly saving an older frozen receipt after receiver replacement retains only that receipt's facts. The focused gate passed 72 tests in 79.87 seconds; all 12 turn-continuity cases passed again after the final queued-save and frozen-namespace policy guards. HTML companions were rendered at 1280-pixel light and 390-pixel dark widths without document overflow or external assets. Stages B–G remain open; this stage does not complete the full review.</p>
-<h3>Stage B first increment — <a href="https://github.com/abhishekash/agenturm/pull/72">PR #72</a>, measurements complete; final compatibility gates in progress</h3>
+<h3>Stage B first increment — merged <a href="https://github.com/abhishekash/agenturm/pull/72">PR #72</a></h3>
 <p>The frozen source adds indexed MCP/source lookups, bounded original-title reads, fair resumable derived batches, denser roster rows and public-API Workflow reuse. Peer review also closed reproduced cross-worker MCP enrichment, collector retry/replacement and sticky internal-capture races. The 219-test combined gate and 66-test final native delta gate passed; independent final retry review passed 24 tests. The final healthy matched comparison measured cold readiness 184.38 → 112.96 seconds, complete idle CPU 23.63% → 15.90% of one core, session-under-write p95 373.58 → 284.90 ms and MCP-under-write p95 246.09 → 142.60 ms. All three targets remain open. The earlier <code>ca93</code> run is invalid for resource claims because native ingestion recorded SQLite lock failures. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/history-read-economics.md">measurement report</a> for source hashes, raw figures and limitations. Stage B remains open until its remaining useful-view and resource work is accounted for; C–G remain open.</p>
+<h3>Stage B compatibility watcher increment — validation complete, PR preparation</h3>
+<p>The empty compatibility-queue probe reuses a read-only lease and releases it before writer acquisition. A fresh matched pair measured whole-monitor idle CPU 17.80% → 14.90% of one core, with unchanged cold readiness/read latency and all health/drain gates passing. Seven new concurrency/lifecycle cases, a 32-test focused gate and independent 18-test review passed. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/idle-history-watch.md">separate measurements</a>. Resource targets, static source preparation and source-backed Overview remain open; C–G remain open.</p>
 <p>Participant recruitment/consent, live Claude/Pi data not available in this environment, measured human reconstruction/resumption time and voluntary repeat use cannot be manufactured by automated tests. Prepare the materials and report these dependencies with denominators; do not mark F10/adoption evidence complete without participants. Native integration capabilities unsupported by a runtime must be labelled rather than guessed.</p>
 <p>After each merged stage, update this reconciliation with concrete files, tests, measurements and PR links. Technical delivery and observed user outcomes are separate statuses. The final full-note record must account for every F1–F27 and R1–R11, preserve the stated limits, and identify any external dependency still open.</p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

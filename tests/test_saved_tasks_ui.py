@@ -116,7 +116,11 @@ class SavedTaskJourney(unittest.IsolatedAsyncioTestCase):
             for widget in editor.query('Input, TextArea, Button, #task-status'):
                 self.assertTrue(editor.region.contains_region(widget.region), (widget.id, widget.region))
             await pilot.press('ctrl+s')
-            await self.ready(pilot, lambda: isinstance(app.screen, SavedTasksScreen) and not app.screen.busy)
+            # Dismissal exposes the list before its save callback starts the
+            # asynchronous reload. Wait for the saved row, not that brief
+            # pre-reload idle state.
+            await self.ready(pilot, lambda: isinstance(app.screen, SavedTasksScreen)
+                and not app.screen.busy and app.screen.query_one(DataTable).row_count==1)
             self.assertEqual(app.screen.query_one(DataTable).row_count, 1)
             await pilot.press('enter')
             await self.ready(pilot, lambda: isinstance(app.screen, TaskDetailScreen))

@@ -6,6 +6,9 @@
 <h2>Unreleased</h2>
 <ul>
 <li>
+<p>Reuse read-only leases for the background compatibility watcher’s empty probe, releasing them before transactional repair. Preserve the polling interval, bounded drain and live external-writer invalidation.</p>
+</li>
+<li>
 <p>Keep MCP scope, call identity, hydration and execution enrichment in one source snapshot. Separate producer/worker/session/server collisions, retain ambiguous calls, and expose typed recorded payloads without borrowing trace-root ownership.</p>
 </li>
 <li>

@@ -809,15 +809,24 @@ class Store:
             # invalidations, so a reader never serves stale materialized text.
             if self._async_derived_refresh:
                 while not self._migration_stop.wait(.25):
-                    with self._connect() as db:
-                        if db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone():
-                            db.execute('BEGIN IMMEDIATE')
-                            drain(db,limit=200)
+                    self._drain_external_activity()
 
         except Exception as exc:
             self.last_derived_error=str(exc)
             self.migration_status={**self.migration_status,'stage':'History migration failed; restart to resume','error':str(exc)}
             if not self._async_derived_refresh:raise
+
+    def _drain_external_activity(self):
+        # The usual empty probe must not repeatedly rebuild SQLite connection
+        # state. Release the read lease before trying to acquire a writer;
+        # another receiver may already have consumed the observed work.
+        with self._read() as db:
+            dirty=db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone()
+        if not dirty:return 0
+        from .storage_activity import drain
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            return drain(db,limit=200)
 
     def index_status(self):
         state=dict(self.migration_status)

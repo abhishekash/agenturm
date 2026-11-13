@@ -1,0 +1,58 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Idle History Watch</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.3</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/idle-history-watch.md">Markdown source ↗</a></nav><h1>Idle compatibility watcher measurements</h1>
+<p>13 November 2026. A separate Stage B increment after merged <a href="https://github.com/abhishekash/agenturm/pull/72">PR #72</a>. This narrows one recurring idle cost; the full implementation plan remains open.</p>
+<h2>Change and correctness</h2>
+<p>The compatibility watcher checked the source-index dirty queue every 250 ms using a new SQLite connection. Its usually empty probe now leases a read-only connection. The lease and every cursor close before writer acquisition. When work exists, a separate close-on-context writer starts <code>BEGIN IMMEDIATE</code> and re-reads the real queue through the existing bounded 200-record drain. The probe is only a hint; no dirty state or query result is cached.</p>
+<p>A write arriving after an empty probe waits for the next tick. Another receiver can consume observed work first; the second drain safely returns zero. Foreground Activity keeps its existing coherent source read/repair path. Polling interval, capture policy, ownership and shutdown rules are unchanged.</p>
+<p>Seven new regressions cover idle connection reuse, external writes, both queue races, lease-before-writer ordering, background repair, shutdown and replacement. The focused source/cache/lease/receiver gate passed 32 tests in 5.48 seconds; independent peer verification passed 18 in 5.12 seconds. A previously flaky saved-task test now waits for the saved row rather than the short pre-reload idle state after modal dismissal; the actual Python 3.13 journey passed in 7.25 seconds. This changes the test's readiness barrier, not task persistence.</p>
+<h2>Controlled comparison</h2>
+<p>The same three measurement scripts run sequentially in clean frozen checkouts with fresh generated 35-day corpora: 5,751 traces, 31,000 spans and 41,000 logs plus four native fixture sessions. No provider calls, personal transcript roots, tests or profiling run during the valid monitor intervals. Each uses a 15-second warmup and 60-second idle window with no driver API or keyboard activity. Native snapshots, namespace, terminal heartbeat, normal exits and derived-work drain all pass. Reads use 20 samples per operation, idle and under paced synthetic writes.</p>
+<p>Baseline: <code>8ff10863f28869d11d4a6f37fb823fb5652cfe52</code> (merged PR #72). Candidate: <code>6376339b7db616290aa779b4a0be84ab43552392</code>. Harness SHA-256: <code>342131fb4ac802466a377d6f64b67cb6127e27d718eb6202db3b1e7f6f34971b</code>; all three script files match between the two checkouts. Both runs are healthy and publishable under this protocol.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Measurement</th>
+<th>Before</th>
+<th>After</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Whole monitor idle CPU, one core</td>
+<td>17.80%</td>
+<td>14.90%</td>
+</tr>
+<tr>
+<td>Receiver idle CPU, one core</td>
+<td>9.38%</td>
+<td>6.53%</td>
+</tr>
+<tr>
+<td>Cockpit idle CPU, one core</td>
+<td>8.42%</td>
+<td>8.37%</td>
+</tr>
+<tr>
+<td>Cold readiness</td>
+<td>107.50 s</td>
+<td>107.31 s</td>
+</tr>
+<tr>
+<td>Sessions under writes p95</td>
+<td>278.15 ms</td>
+<td>279.24 ms</td>
+</tr>
+<tr>
+<td>Mcp under writes p95</td>
+<td>146.96 ms</td>
+<td>149.09 ms</td>
+</tr>
+</tbody>
+</table></div>
+<p>The whole-monitor reduction is about 16% within this pair, mainly in the receiver. The nearly unchanged cockpit, cold readiness and session/MCP reads are consistent with the narrow change. The under-5% idle CPU, under-30-second readiness and under-100-ms session/MCP p95 targets remain open. This is not a whole-monitor completion claim.</p>
+<p>These sequential 60-second samples and empirical p95 values are host-specific. The merged PR #72 baseline measured 15.90% in its earlier run and 17.80% here; do not splice different runs into a stronger comparison. Read-probe CPU is Store-only and is separate from the monitor CPU. Write batches vary with read duration. Sampled RSS and a single interval cannot establish long-run allocation behavior. Private health snapshots and databases are excluded from published artifacts.</p>
+<p>Raw generated data: <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/idle-watch-monitor-before.json">before monitor</a>, <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/idle-watch-monitor-after.json">after monitor</a>, <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/idle-watch-reads-before.json">before reads</a>, <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/idle-watch-reads-after.json">after reads</a>. The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/history-read-economics.md">earlier retained-history report</a> preserves the original baseline, intermediate regression and rejected reader-error run.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
