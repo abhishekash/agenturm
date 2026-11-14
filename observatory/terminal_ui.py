@@ -2209,7 +2209,28 @@ class ObservatoryApp(App):
     def refresh_task_usage(self):
         if not self.query('#usage-summary'):return
         usage,title,scope,identity=self.selected_task_usage()
+        from .review_facts import review_capture_policy
+        from .usage_render_key import usage_render_key
+        page=self.query_one('#pages',TabbedContent).active
+        selection=self.selected_source if page=='agents' or self.scope_value=='all' else self.scope_value
+        item=getattr(self,'source_map',{}).get(selection) or {}
+        policy=review_capture_policy(item,self.data,scope_for(item,self.data,self.feed.api.endpoint))
+        # Capture checks stay live. Denied sources retain no content-derived key,
+        # and a stale run title cannot reappear in the usage tooltip.
+        if policy.get('capture_content') is False:title='Selected execution (metadata-only)'
+        owner={key:item.get(key) for key in ('id','source_id','service','agent_id','session_id',
+            'trace_id','turn_id','run_start_ns','run_end_ns','capture_content','capture_revision')}
+        inputs=None
+        if policy.get('capture_content') is not False:
+            inputs=usage_render_key(usage,title,scope,identity,dict(receiver=self.data.receiver_id,
+                page=page,selection=selection,scope_value=self.scope_value,owner=owner,policy=policy,
+                capture_content=self.data.local_status.get('capture_content'),
+                capture_revision=self.data.local_status.get('capture_revision'),
+                theme=self.theme,width=self.size.width,rates=getattr(self,'cost_estimate_rates',None)))
+        if inputs is not None and getattr(self,'_task_usage_inputs',None)==inputs:return
+        self._task_usage_inputs=None
         summary,details=task_usage_summary(usage,title,scope=scope,identity=identity,compact=self.size.width<100)
+        self._task_usage_inputs=inputs
         signature=(summary,details,self.theme)
         if getattr(self,'_task_usage_signature',None)==signature:return
         self._task_usage_signature=signature
