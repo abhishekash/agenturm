@@ -540,6 +540,7 @@ def run(args):
         previous={};pending_cycle=None;next_phase=started
         while time.monotonic()-started<args.duration or last_phase%6!=5:
             now=time.monotonic();elapsed=now-started
+            completed_phase_five=False
             phase_index=last_phase+1
             if now>=next_phase:
                 cycle,phase=divmod(phase_index,6)
@@ -587,8 +588,10 @@ def run(args):
                         errors.append(f'OpenCode reconstruction mismatch: cycle {cycle}')
                     else:verified.append(f'opencode:{cycle}')
                     if cycle%5==0:screen(f'cycle-{cycle}')
+                    completed_phase_five=True
                 next_phase=time.monotonic()+args.phase_seconds
-            if now>=next_sample:
+            sample_now=time.monotonic()
+            if completed_phase_five or sample_now>=next_sample:
                 disk_gate(base,reserve_bytes=int(getattr(args,'minimum_free_mib',4096))*1024**2)
                 health=request(api,'/api/health');index_observed_elapsed=time.monotonic()-started
                 local=health.get('local_agents',{})
@@ -600,7 +603,7 @@ def run(args):
                         pending_cycle=None
                 for path in ('/api/sessions','/api/activity?limit=50','/api/metrics','/api/mcp?limit=20'):
                     request(api,path)
-                record=dict(elapsed=elapsed,index_observed_elapsed=index_observed_elapsed,
+                record=dict(elapsed=sample_now-started,index_observed_elapsed=index_observed_elapsed,
                     cycle=last_phase//6,phase=last_phase%6,backlog_bytes=local.get('backlog_bytes'),
                     opencode_backlog=local.get('opencode_diagnostics',{}).get('backlog_records'),
                     read_errors=local.get('read_errors'),schema_errors=local.get('schema_errors'),
@@ -624,7 +627,7 @@ def run(args):
                             value['cpu_percent_one_core']=value['cpu_delta_seconds']/value['sample_seconds']*100
                         previous[role]=((pid,value['start_ticks']),value['cpu_seconds'],value['sampled_at']);record['processes'][role]=value
                 samples.append(record);append(base/'samples.jsonl',record)
-                next_sample=now+sample_interval
+                next_sample=sample_now+sample_interval
             # Restart at phase 5 boundaries, never skip a pending input phase.
             if last_phase%6==5 and elapsed>args.duration*.33 and not receiver_restart:
                 before=time.monotonic();old_id=health['receiver_id'];stop_receiver()
