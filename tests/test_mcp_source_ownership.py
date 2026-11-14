@@ -139,6 +139,8 @@ class MCPSourceOwnershipTests(unittest.TestCase):
         original=self.store._connect;changed=[]
         class Proxy:
             def __init__(self,db):self.db=db
+            @property
+            def in_transaction(self):return self.db.in_transaction
             def execute(proxy,sql,args=()):
                 if ' AS mcp_key' in sql and ' FROM spans WHERE ' in sql and not changed:
                     self.assertTrue(proxy.db.in_transaction)

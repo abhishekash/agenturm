@@ -43,6 +43,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 try:
                     current = store.receiver_namespace()
                     changed = current != receiver or body_receiver and body_receiver != receiver
+                    identity=getattr(self,'_mcp_file_identity',None)
+                    if identity is not None:changed=changed or store._mcp_file_identity()!=identity
                 except (OSError, ValueError, sqlite3.Error):
                     changed = True
                 if changed:
@@ -96,15 +98,23 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
         def _read_GET(self):
             self._cache_version = None
             self._get_receiver_id = None
+            self._mcp_file_identity = None
             route = self._route()
             if route is None:
                 return
             path = route.path
+            # Scope selector presence is conservative, including blank/false
+            # values and duplicates. Only raw inventory has this dependency.
+            certified_mcp=(path=='/api/mcp'and callable(getattr(store,'certify_initial_mcp',None)))
+            raw_mcp=(certified_mcp and
+                not {'agent_id','subtree','scope_revision'}.intersection(parse_qs(route.query,keep_blank_values=True)))
+            mcp_cache_ready=True
             if path not in {'/','/api/health'} and path.startswith('/api/') and hasattr(store,'index_status'):
                 indexing=store.index_status()
-                if not indexing.get('ready') and callable(getattr(store,'catch_up_incoming',None)):
+                mcp_cache_ready=indexing.get('ready')is True
+                if not raw_mcp and not indexing.get('ready') and callable(getattr(store,'catch_up_incoming',None)):
                     indexing=store.catch_up_incoming(indexing)
-                if not indexing.get('ready'):
+                if not raw_mcp and not indexing.get('ready'):
                     self._json(503,{'error':'History index is not ready','indexing':indexing})
                     return
             # The fast recovery probe deliberately avoids SQLite. Full health
@@ -117,7 +127,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     except (OSError, ValueError, sqlite3.Error):
                         self._json(503, {'error': 'Receiver identity is temporarily unavailable. Retry the request.'})
                         return
-            if cache.eligible(path):
+            if certified_mcp:self._mcp_file_identity=store.certify_initial_mcp(self._get_receiver_id,strict=not raw_mcp)
+            if cache.eligible(path)and(not raw_mcp or mcp_cache_ready):
                 self._cache_version, cached = cache.get(self.path)
                 if cached is not None:
                     self._json_bytes(200, cached)
@@ -198,13 +209,15 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
             elif path == "/api/mcp":
                 query = parse_qs(route.query)
                 try:
+                    certificate=({'_initial_receiver':self._get_receiver_id,'_initial_file':self._mcp_file_identity,
+                                  '_strict_read':not raw_mcp}if certified_mcp else {})
                     page = store.mcp_page(limit=int(query.get('limit', [100])[0]),
                         service=query.get('service', [None])[0], session_id=query.get('session_id', [None])[0],
                         query=query.get('q', [None])[0], cursor=query.get('cursor', [None])[0],
                         include_reviews=query.get('include_reviews', ['1'])[0]!='0',
                         agent_id=query.get('agent_id', [None])[0],
                         subtree=query.get('subtree', ['0'])[0]=='1',
-                        scope_revision=query.get('scope_revision', [None])[0])
+                        scope_revision=query.get('scope_revision', [None])[0],**certificate)
                     self._json(200, {**page, 'scope': page.get('scope', 'stored MCP operations')})
                 except ValueError as exc:
                     self._json(400, {'error': str(exc)})
