@@ -53,8 +53,15 @@ def current_capture_context(owner, context):
     result = deepcopy(context)
     scope = ExecutionScope(str(result.get('receiver') or ''), str(result.get('producer') or ''),
         str(result.get('agent_id') or ''), str(result.get('session_id') or ''))
-    policy = review_capture_policy(result, owner.feed.snapshot, scope)
+    binding=result.get('_capture_binding')
     projection=result.get('review_snapshot')
+    if not isinstance(binding,dict)and 'capture_safety_revision'not in result and isinstance(projection,dict):
+        owned=projection.get('scope')or {}
+        if isinstance(owned,dict)and all(owned.get(key)==result.get(key)for key in ('receiver','producer','agent_id','session_id')):
+            bindings=_projection_policy_bindings(projection)
+            binding=next(iter(bindings.values()),None)
+    original={**result,**binding}if isinstance(binding,dict)else result
+    policy = review_capture_policy(original, owner.feed.snapshot, scope)
     if projection and projection.get('parallel_path_observations'):
         from .review_continuity import content_allowed
         if not content_allowed(projection,task_source_policy(owner)):policy['capture_content']=False
@@ -138,39 +145,64 @@ def capture_selected_run(owner, *, item_override=None, review_snapshot=None):
             'captured_ns': time.time_ns(), 'usage': deepcopy(usage) if trace or scope.turn_id else {},
             'capture_content': item.get('capture_content'),
             'checks': checks[-8:], 'resume_command': resume_command({**item, 'working_directory': workspace})}
+    for field in ('capture_revision','capture_safety_revision','capture_source_revision'):
+        if field in item:result[field]=item[field]
     if frozen_review is not None:
         result['review_snapshot'] = frozen_review
+        from .review_facts import capture_revision_binding
+        frozen_revision=(frozen_review.get('window')or {}).get('capture_revision')
+        result['capture_revision']=frozen_revision
+        result['capture_safety_revision']=capture_revision_binding(frozen_revision)
 
     if scope.turn_id:
         result.update(turn_id=scope.turn_id, step_trace_ids=members)
     return current_capture_context(owner,result)
 
 
-def task_source_policy(owner):
-    """Freeze policy for one render; callers recheck before publishing/writing."""
+def _projection_policy_bindings(projection):
+    from .review_facts import capture_revision_binding
+    if not isinstance(projection,dict):return {}
+    own=projection.get('scope')or {};window=projection.get('window')or {}
+    if not isinstance(own,dict)or not isinstance(window,dict):return {}
+    revision=window.get('capture_revision')
+    binding=capture_revision_binding(revision)
+    if binding is None:return {}
+    key=tuple(own.get(name)for name in ('receiver','producer','agent_id','session_id','run_id','turn_id','run_start_ns','run_end_ns'))
+    return {key:dict(capture_safety_revision=binding,capture_revision=revision)}
+
+
+def task_source_policy(owner,*,bindings=None):
+    """Freeze one live policy; authorize each projection by its frozen generation."""
     from .review_facts import review_capture_policy
     from .workflow_evidence import ExecutionScope
     from types import SimpleNamespace
     live=owner.feed.snapshot
-    snapshot=SimpleNamespace(receiver_id=getattr(live,'receiver_id',''),local_status=deepcopy(getattr(live,'local_status',{}) or {}))
-    def state(scope):
-        if not scope.get('receiver') or snapshot.receiver_id!=scope['receiver']:return dict(receiver_changed=True,receiver_id=snapshot.receiver_id)
-        try:execution=ExecutionScope(**scope)
-        except TypeError:return dict(receiver_changed=True)
-        return dict(receiver_id=snapshot.receiver_id,**review_capture_policy({},snapshot,execution))
-    def allowed(scope):
-        policy=state(scope)
-        return not policy.get('receiver_changed') and policy.get('capture_content') is not False
-    allowed.state=state
-    return allowed
+    snapshot=SimpleNamespace(receiver_id=getattr(live,'receiver_id',''),local_status=deepcopy(getattr(live,'local_status',{})or {}))
+    def bound(bindings):
+        def state(scope):
+            if not scope.get('receiver')or snapshot.receiver_id!=scope['receiver']:
+                return dict(receiver_changed=True,receiver_id=snapshot.receiver_id)
+            try:execution=ExecutionScope(**scope)
+            except TypeError:return dict(receiver_changed=True)
+            key=tuple(scope.get(name)for name in ('receiver','producer','agent_id','session_id','run_id','turn_id','run_start_ns','run_end_ns'))
+            return dict(receiver_id=snapshot.receiver_id,**review_capture_policy((bindings or {}).get(key,{}),snapshot,execution))
+        def allowed(scope):
+            policy=state(scope)
+            return not policy.get('receiver_changed')and policy.get('capture_content')is not False
+        allowed.state=state
+        allowed.for_projection=lambda projection:bound(_projection_policy_bindings(projection))
+        return allowed
+    return bound(bindings)
 
 
 def projection_policy_state(owner,projection,*,strict=False):
     """Immutable policy generation for every contributor, including receiver identity."""
     from .review_continuity import content_scopes
     import json
-    policy=task_source_policy(owner)
+    policy=task_source_policy(owner).for_projection(projection)
     if not isinstance(projection,dict):
+        return False,('unreadable-source-policy',str(getattr(owner.feed.snapshot,'receiver_id','')))
+    if not isinstance(projection.get('scope')or {},dict)or not isinstance(projection.get('window')or {},dict):
         return False,('unreadable-source-policy',str(getattr(owner.feed.snapshot,'receiver_id','')))
     try:
         # Legacy session-only receipts contain no Git/comparison material. Preserve
@@ -687,6 +719,16 @@ class TaskEditor(TaskJobs, ModalScreen):
             self.query_one(TextArea).focus()
         else:self.query_one('#task-name', Input).focus()
         if self.continuity_draft:self.status('Ctrl+S explicitly approves a versioned draft. Authored notes, brief and decisions are preserved.')
+        if self.context:self.set_interval(.25,self.check_source_prefill)
+
+    def check_source_prefill(self):
+        if not self.context or current_capture_context(self.owner,self.context).get('capture_content')is not False:return
+        title,workspace,notes=self.values()
+        if not self.record:
+            if title==self.initial[0]:self.query_one('#task-name',Input).value='Metadata-only execution'
+            if workspace==self.initial[1]:self.query_one('#task-workspace',Input).value=''
+        if self.continuity_draft and notes==self.initial[2]:self.query_one(TextArea).load_text('')
+        self.status('Source content withheld: capture policy or receiver changed. Independently edited text is preserved.')
 
     def on_resize(self):
         self.set_class(self.size.width < 60 or self.size.height < 20, 'too-small')
@@ -830,9 +872,14 @@ class TaskBriefEditor(TaskEditor):
     @on(Button.Pressed, '#brief-copy')
     def copy_draft(self, event):
         import json
-        self.owner.copy_to_clipboard(json.dumps(self.values(), ensure_ascii=False, indent=2))
+        values=self.values()
+        if not self.can_copy_draft(values):event.stop();return
+        self.owner.copy_to_clipboard(json.dumps(values, ensure_ascii=False, indent=2))
         self.status('Copied the unsaved draft. On a conflict, cancel and reload the task before applying it.')
         event.stop()
+
+    def can_copy_draft(self,values):
+        return True
 
 
 class TaskDecisionEditor(TaskBriefEditor):
@@ -859,6 +906,25 @@ class TaskDecisionEditor(TaskBriefEditor):
     def values(self):
         return {**super().values(), 'kind': self.query_one('#decision-kind', Select).value}
 
+    def on_mount(self):
+        super().on_mount()
+        if self.source:self.set_interval(.25,self.check_source_excerpt)
+
+    def check_source_excerpt(self):
+        if not self.source or current_capture_context(self.owner,self.source).get('capture_content')is not False:return False
+        values=self.values();unchanged=values['text']==self.initial['text']
+        if unchanged:
+            self.draft['text']=''
+            if self.field=='text':self.query_one(TextArea).load_text('')
+        self.status('Source content withheld: capture policy or receiver changed. Independently edited text is preserved.')
+        return unchanged
+
+    def can_copy_draft(self,values):
+        if self.check_source_excerpt():
+            self.status('Source capture was revoked. Enter your own decision text or cancel; the excerpt cannot be copied.')
+            return False
+        return True
+
     @on(Select.Changed, '#decision-kind')
     def kind_changed(self):
         self.discard_armed = False
@@ -882,6 +948,7 @@ class TaskDecisionEditor(TaskBriefEditor):
                 if values['text'] == self.initial['text']:
                     raise TaskError('Source capture was revoked. Enter your own decision text or cancel; the excerpt cannot be saved.')
                 safe_source = None
+            if safe_source:safe_source={key:value for key,value in safe_source.items()if key!='_capture_binding'}
             return store.add_decision(task['id'], **values, source=safe_source,
                 supersedes_id=self.supersedes['id'] if self.supersedes else None,
                 expected_revision=task['revision'])

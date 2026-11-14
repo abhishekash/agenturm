@@ -1,5 +1,9 @@
 """Receiver lifecycle and live data for the terminal cockpit."""
 from __future__ import annotations
+from copy import deepcopy
+import math
+import hashlib
+import secrets
 from .http_transport import urlopen as receiver_urlopen
 
 import asyncio
@@ -177,6 +181,80 @@ class Snapshot:
     native_lifecycle_prepared: bool = False
 
 
+_POLICY_ID_FIELDS=('source_id','service','agent_id','session_id','runtime','source_namespace',
+    'native_session_id','native_worker_id','parent_agent_id','trace_id','turn_id')
+_POLICY_METADATA_FIELDS=(*_POLICY_ID_FIELDS,'run_state','state_since_ns','last_record_ns',
+    'last_update_ns','run_start_ns','request_id','request_time_ns','outcome_id','outcome_time_ns',
+    'relationship_kind','relationship_state','discovery_state','coverage','observed_ns',
+    'capture_content','capture_revision','capture_safety_revision')
+
+
+def _capture_identity(row):
+    """A malformed explicit actor must never turn into a session-wide policy."""
+    if not isinstance(row,dict):return None
+    def text(key):
+        value=row.get(key)
+        return value if isinstance(value,str)and 0<len(value)<=512 else None
+    service=text('service');actor=text('agent_id');session=text('session_id')
+    if row.get('agent_id')not in (None,'')and actor is None:return None
+    if row.get('session_id')not in (None,'')and session is None:return None
+    return (service,actor or '',session or '')if service and(actor or session)else None
+
+
+def _capture_metadata(row):
+    return {key:value for key,value in row.items()if key in _POLICY_METADATA_FIELDS and
+        (isinstance(value,str)and len(value)<=512 or type(value)is bool or
+         type(value)is int and 0<=value<2**63 or type(value)is float and math.isfinite(value)and 0<=value<2**63)}
+
+
+def _capture_denial(row,key):
+    identity={'source_id','service','agent_id','session_id','runtime','source_namespace','native_session_id','native_worker_id','capture_revision'}
+    result={field:value for field,value in _capture_metadata(row).items()if field in identity}
+    result.setdefault('source_id','capture-policy:'+hashlib.sha256(json.dumps(key).encode()).hexdigest()[:32])
+    result['capture_content']=False
+    return result
+
+
+def _capture_may_match(row,key,denial,*,aggregate=False):
+    """Unknown ownership cannot establish that captured content is unrelated."""
+    if not isinstance(row,dict):return True
+    owner=row.get('review_owner')or row.get('scope_owner')or {}
+    if not isinstance(owner,dict):owner={}
+    service=owner.get('producer')or row.get('service')or row.get('producer')
+    services=row.get('services')
+    producers=set(services)if isinstance(services,list)and all(isinstance(value,str)for value in services)else set()
+    if service:producers.add(service)
+    denied_producers={key[0]}
+    if key[0]=='codex-review'and denial.get('runtime')=='Codex':denied_producers.add('codex')
+    if producers and producers.isdisjoint(denied_producers):return False
+    proven=not aggregate or bool(owner)
+    actor=(owner.get('agent_id')or row.get('agent_id'))if proven else None
+    session=(owner.get('session_id')or row.get('session_id'))if proven else None
+    if key[1]and actor and actor!=key[1]:return False
+    if not key[1]and actor:return False
+    if key[2]and session and session!=key[2]:return False
+    return True
+
+
+def _capture_policy_matches(row,key,denial):
+    producer=row.get('service')
+    if producer!=key[0]and not(producer=='codex'and key[0]=='codex-review'and denial.get('runtime')=='Codex'):
+        return False
+    if key[1]:
+        if row.get('agent_id')!=key[1]:return False
+    elif row.get('agent_id'):return False
+    return not key[2]or row.get('session_id')==key[2]
+
+
+def _capture_purge(snapshot,local_status):
+    """A negative policy update is not a successful data refresh."""
+    return replace(snapshot,local_status=local_status,totals={},agents=[],traces=[],detail={},findings=[],
+        finding_results=[],activity=[],sessions=[],mcp=[],mcp_summary={},metric_catalog=[],metric_points=[],
+        usage_series=[],metric_history=[],activity_results=[],mcp_results=[],pagination={},read_updated={},
+        read_errors={},sessions_updated=0,sessions_error='',
+        native_lifecycle=[],native_lifecycle_warning='',native_lifecycle_prepared=False,indexing_ready=False)
+
+
 class Feed:
     POLL_SECONDS = 2
     EXTRA_POLL_SECONDS = 5
@@ -229,6 +307,170 @@ class Feed:
         self.connection = ConnectionProgress(started=time.monotonic())
         self.connection_failures = 0
         self.retry_requested = False
+        self._capture_lock=threading.RLock()
+        # A new Feed cannot accidentally reuse another lifetime's first
+        # revocation token and revive a persisted frozen source.
+        self._capture_epoch=secrets.randbits(62)+1
+        self._capture_receiver=''
+        self._capture_global_denied=False
+        self._capture_overflow=False
+        self._capture_denials={}
+        self._capture_revisions={}
+        self._capture_global_revision=0
+
+    def _clear_content_caches(self):
+        self.sessions_cache=None;self.sessions_attempted=None;self.sessions_updated=0;self.sessions_error=''
+        self.extra_cache=None;self.extra_scope=None;self.extra_updated=0
+        self.findings_cache=None;self.findings_scope=None;self.findings_updated=0
+
+    def _capture_local(self,local,*,metadata=False):
+        if (not metadata and isinstance(local,dict)and not self._capture_global_denied and not self._capture_denials
+            and not self._capture_global_revision and not self._capture_revisions and not any(key in local for key in
+                ('capture_policy_schema','capture_policy_revisions','capture_global_revision'))):
+            return local
+        local=deepcopy(local)if isinstance(local,dict)else {}
+        rows=local.get('sessions')if isinstance(local.get('sessions'),list)else []
+        if metadata:
+            local={key:value for key,value in local.items()if type(value)in(bool,int,float)}
+            rows=[_capture_metadata(row)for row in rows if isinstance(row,dict)]
+        known=set()
+        for row in rows:
+            matching={key for key,denial in self._capture_denials.items()if _capture_policy_matches(row,key,denial)}
+            known.update(matching)
+            if self._capture_global_denied or matching:row['capture_content']=False
+        source_ids={row.get('source_id')for row in rows}
+        for key,denial in self._capture_denials.items():
+            if key not in known:
+                tombstone=dict(denial)
+                if tombstone.get('source_id')in source_ids:
+                    tombstone['source_id']='capture-policy:'+hashlib.sha256(json.dumps(key).encode()).hexdigest()[:32]
+                rows.append(tombstone);source_ids.add(tombstone['source_id'])
+        local['sessions']=rows
+        if self._capture_global_denied:local['capture_content']=False
+        if self._capture_overflow:local['capture_policy_warning']='Capture-policy scope limit reached; receiver content is withheld.'
+        for key in ('capture_policy_schema','capture_policy_revisions','capture_global_revision'):local.pop(key,None)
+        if self._capture_global_revision or self._capture_revisions:
+            local.update(capture_policy_schema=1,capture_global_revision=self._capture_global_revision,
+                capture_policy_revisions=[dict(row)for row in self._capture_revisions.values()])
+            from .review_facts import capture_safety_revision
+            from types import SimpleNamespace
+            policy=SimpleNamespace(receiver_id=self._capture_receiver,local_status=local)
+            for row in rows:
+                scope=SimpleNamespace(receiver=self._capture_receiver,producer=row.get('service'),
+                    agent_id=row.get('agent_id'),session_id=row.get('session_id'))
+                revision=capture_safety_revision(policy,scope)
+                if revision is not None:row['capture_safety_revision']=revision
+                else:row.pop('capture_safety_revision',None)
+        return local
+
+    def _capture_note_revisions(self,new_keys,new_global):
+        for key in new_keys:
+            if len(self._capture_revisions)>=500 and key not in self._capture_revisions:
+                self._capture_overflow=True;self._capture_global_denied=True;continue
+            denial=self._capture_denials[key]
+            self._capture_revisions[key]={field:value for field,value in denial.items()if field in
+                ('service','agent_id','session_id','runtime')}
+            self._capture_revisions[key]['capture_safety_revision']=self._capture_epoch
+        if new_global or self._capture_overflow:self._capture_global_revision=self._capture_epoch
+
+    def _capture_from_health(self,health):
+        """Publish new DENY only, independently of data readiness/navigation."""
+        if not isinstance(health,dict):return False
+        receiver=health.get('receiver_id');local=health.get('local_agents')
+        with self._capture_lock:
+            if not receiver or receiver!=self.snapshot.receiver_id or not isinstance(local,dict):return False
+            if self._capture_receiver!=receiver:
+                self._capture_receiver=receiver;self._capture_global_denied=False;self._capture_denials={};self._capture_overflow=False
+                self._capture_revisions={};self._capture_global_revision=0
+            previous=(self._capture_global_denied,set(self._capture_denials))
+            changed=False
+            if local.get('capture_content')is False and not self._capture_global_denied:
+                self._capture_global_denied=True;changed=True
+            rows=local.get('sessions')if isinstance(local.get('sessions'),list)else []
+            for row in rows:
+                if not isinstance(row,dict)or row.get('capture_content')is not False:continue
+                for key in ((_capture_identity(row),) if _capture_identity(row) else ()):
+                    if key in self._capture_denials:continue
+                    if len(self._capture_denials)>=500:
+                        self._capture_overflow=True
+                        if not self._capture_global_denied:self._capture_global_denied=True;changed=True
+                        break
+                    self._capture_denials[key]=_capture_denial({**row,**({'session_id':key[2]}if key[2]else {})},key);changed=True
+            if not changed:return False
+            self._capture_epoch+=1;self.generation+=1
+            self._capture_note_revisions(set(self._capture_denials)-previous[1],self._capture_global_denied and not previous[0])
+            old_local=self._capture_local(self.snapshot.local_status,metadata=True)
+            self.snapshot=_capture_purge(self.snapshot,old_local)
+            self.snapshot.error='Capture policy changed; waiting for a coherent receiver refresh.'
+            self._clear_content_caches();self.wake.set()
+            return True
+
+    def _capture_guard(self,epoch):
+        with self._capture_lock:
+            if epoch!=self._capture_epoch:raise InterruptedError('Capture policy changed during this refresh')
+
+    def _capture_commit(self,candidate,health,epoch,*,complete):
+        with self._capture_lock:
+            if epoch!=self._capture_epoch:return False
+            receiver=candidate.receiver_id
+            namespace_changed=bool(self.snapshot.receiver_id and self.snapshot.receiver_id!=receiver)
+            if self._capture_receiver!=receiver:
+                self._capture_receiver=receiver;self._capture_global_denied=False;self._capture_denials={};self._capture_overflow=False
+                self._capture_revisions={};self._capture_global_revision=0
+            previous=(self._capture_global_denied,set(self._capture_denials))
+            local=health.get('local_agents')or {}
+            if not complete and(self._capture_global_denied or self._capture_denials):
+                self.snapshot=_capture_purge(self.snapshot,self._capture_local(self.snapshot.local_status,metadata=True))
+                self.snapshot.error=self.snapshot.error or 'Capture policy changed; waiting for a coherent receiver refresh.'
+                self._clear_content_caches()
+                return False
+            if complete:
+                if local.get('capture_content')is True and not self._capture_overflow:self._capture_global_denied=False
+                for row in local.get('sessions',[]):
+                    key=_capture_identity(row)
+                    if key and row.get('capture_content')is True:self._capture_denials.pop(key,None)
+            # Bootstrap/new namespace policies apply only to their own fully
+            # attributed snapshot, never to the preceding receiver's content.
+            if local.get('capture_content')is False:self._capture_global_denied=True
+            for row in local.get('sessions',[]):
+                if isinstance(row,dict)and row.get('capture_content')is False:
+                    for key in ((_capture_identity(row),) if _capture_identity(row) else ()):
+                        if key in self._capture_denials:continue
+                        if len(self._capture_denials)<500:self._capture_denials[key]=_capture_denial({**row,**({'session_id':key[2]}if key[2]else {})},key)
+                        else:self._capture_global_denied=True;self._capture_overflow=True
+            if namespace_changed or (self._capture_global_denied and not previous[0])or set(self._capture_denials)-previous[1]:
+                self._capture_epoch+=1;self.generation+=1
+                self._capture_note_revisions(set(self._capture_denials)-previous[1],self._capture_global_denied and not previous[0])
+            candidate.local_status=self._capture_local(candidate.local_status)
+            if self._capture_global_denied or self._capture_denials:
+                def allowed(row,aggregate=False):
+                    return not self._capture_global_denied and not any(_capture_may_match(row,key,value,aggregate=aggregate)
+                        for key,value in self._capture_denials.items())
+                for field in ('agents','activity','activity_results','mcp','mcp_results','findings','finding_results',
+                              'metric_catalog','metric_points','metric_history','usage_series','native_lifecycle'):
+                    setattr(candidate,field,[row for row in getattr(candidate,field)or []if allowed(row)])
+                candidate.sessions=[row for row in candidate.sessions if allowed(row,True)]
+                candidate.traces=[row for row in candidate.traces if allowed(row,True)]
+                if candidate.detail and not allowed(candidate.detail.get('summary')or {},True):candidate.detail={}
+                for row in candidate.local_status['sessions']:
+                    if not allowed(row):
+                        safe=_capture_metadata(row);row.clear();row.update(safe)
+                if self._capture_global_denied:candidate.totals={};candidate.mcp_summary={}
+                # Keep only the sanitized cache generation. Repeated native
+                # metadata-only sessions must not force a new history scan.
+                self.sessions_cache=candidate.sessions
+                if self.extra_cache is not None:
+                    old_page=self.extra_cache[3]
+                    page={key:old_page[key]for key in ('next_cursor','agent_scope','receiver_id')if key in old_page}
+                    page.update(calls=candidate.mcp_results,summary=candidate.mcp_summary)
+                    self.extra_cache=(candidate.mcp,candidate.mcp_results,candidate.mcp_available,page,candidate.mcp_summary,
+                        candidate.metric_catalog,candidate.metric_points,candidate.metrics_available,candidate.usage_series,
+                        candidate.usage_service,candidate.usage_session_id)
+                if self.findings_cache is not None:
+                    self.findings_cache={key:self.findings_cache[key]for key in ('next_cursor','agent_scope','receiver_id')if key in self.findings_cache}
+                    self.findings_cache['findings']=candidate.finding_results
+            self.snapshot=candidate
+            return True
 
     def connection_stage(self, stage):
         self.connection=replace(self.connection,stage=stage)
@@ -242,7 +484,9 @@ class Feed:
         self.connection=ConnectionProgress(
             phase='reconnecting' if self.snapshot.error else 'loading' if self.snapshot.updated else 'connecting',
             attempt=self.connection_failures+1,started=time.monotonic())
-        requested_scope = FeedScope.capture(self)
+        with self._capture_lock:
+            requested_scope = FeedScope.capture(self)
+            capture_epoch=self._capture_epoch
         load_mcp=requested_scope.active_page in {None,'mcp'}
         load_metrics=requested_scope.active_page in {None,'metrics'}
         load_findings=requested_scope.active_page in {None,'findings'}
@@ -335,6 +579,7 @@ class Feed:
             if history_due:initial_paths.append('/api/sessions?limit=500')
             requests.prefetch(initial_paths)
             health=get('/api/health')
+            if self._capture_from_health(health):return
             receiver_id=str(health.get('receiver_id') or '')
             receiver_confirmed=True
             receiver_changed=self.cache_receiver_id is not None and self.cache_receiver_id!=receiver_id
@@ -412,10 +657,14 @@ class Feed:
                     sessions = history_response['sessions']
                     if not isinstance(sessions,list) or any(not isinstance(row,dict) for row in sessions):
                         raise ValueError('Invalid session history response')
-                    self.sessions_cache = sessions
-                    self.sessions_updated = time.time()
-                    self.sessions_error = ''
-                self.sessions_attempted = time.monotonic()
+                    with self._capture_lock:
+                        self._capture_guard(capture_epoch)
+                        self.sessions_cache = sessions
+                        self.sessions_updated = time.time()
+                        self.sessions_error = ''
+                with self._capture_lock:
+                    self._capture_guard(capture_epoch)
+                    self.sessions_attempted = time.monotonic()
             sessions = self.sessions_cache if self.sessions_cache is not None else []
             scope = (service, session_id, mcp_query, include_reviews, history['mcp'],requested_scope.active_page)
             if self.extra_cache is None or scope != self.extra_scope or time.monotonic()-self.extra_updated>self.EXTRA_POLL_SECONDS:
@@ -475,10 +724,12 @@ class Feed:
                         if exc.code != 404:
                             raise
                         usage_series, usage_service, usage_session_id = [], None, None
-                self.extra_cache = (mcp,mcp_results,mcp_available,mcp_page,mcp_summary,
-                                    metric_catalog,metric_points,metrics_available,usage_series,usage_service,
-                                    usage_session_id)
-                self.extra_scope,self.extra_updated = scope,time.monotonic()
+                with self._capture_lock:
+                    self._capture_guard(capture_epoch)
+                    self.extra_cache = (mcp,mcp_results,mcp_available,mcp_page,mcp_summary,
+                                        metric_catalog,metric_points,metrics_available,usage_series,usage_service,
+                                        usage_session_id)
+                    self.extra_scope,self.extra_updated = scope,time.monotonic()
             (mcp,mcp_results,mcp_available,mcp_page,mcp_summary,
              metric_catalog,metric_points,metrics_available,usage_series,usage_service,
              usage_session_id)=self.extra_cache
@@ -525,9 +776,11 @@ class Feed:
                     finding_page=get('/api/findings?'+urlencode(finding_params))
                     if isinstance(finding_page.get('agent_scope'),dict):
                         scope_revisions.append(finding_page['agent_scope'].get('revision'))
-                    self.findings_cache=finding_page
-                    self.findings_scope=findings_scope
-                    self.findings_updated=time.monotonic()
+                    with self._capture_lock:
+                        self._capture_guard(capture_epoch)
+                        self.findings_cache=finding_page
+                        self.findings_scope=findings_scope
+                        self.findings_updated=time.monotonic()
                 else:
                     finding_page=self.findings_cache
             page_result('findings',finding_page)
@@ -572,6 +825,9 @@ class Feed:
                 confirmed=shared_get(self.api,'/api/health',cancelled=self.stop.is_set)
                 if confirmed.get('receiver_id')!=receiver_id:
                     raise ValueError('Receiver identity changed during native inventory read; retrying')
+                if self._capture_from_health(confirmed):return
+                if confirmed.get('indexing',{}).get('ready')is False:
+                    raise InterruptedError('Indexing stored history; metadata refresh deferred')
                 if confirmed.get('native_lifecycle_v1') is not True:
                     inventory_warning='Native lifecycle inventory capability changed during the read.'
                 health=confirmed;local_status=health.get('local_agents') or {}
@@ -586,8 +842,7 @@ class Feed:
             native_warning=inventory_warning or native_warning
             if old.receiver_id==receiver_id and old.native_lifecycle_warning.startswith('Native lifecycle evidence reached'):
                 native_warning=native_warning or old.native_lifecycle_warning
-            self.selected_trace = selected
-            self.snapshot = Snapshot(totals, agents, traces, detail, findings, updated=time.time(), local_status=local_status, activity=activity,
+            candidate = Snapshot(totals, agents, traces, detail, findings, updated=time.time(), local_status=local_status, activity=activity,
                                      sessions=sessions,receiver_id=health.get("receiver_id") or "",
                                      receiver_time_ns=receiver_time,indexing_ready=isinstance(indexing,dict) and indexing.get("ready") is True,
                                      native_lifecycle=native,native_lifecycle_warning=native_warning,native_lifecycle_prepared=True,
@@ -607,6 +862,10 @@ class Feed:
                                       activity_errors=activity_errors,
                                       view_scope=view_scope,read_errors=read_errors,read_updated=read_updated,
                                       hierarchy=local_status.get('hierarchy',{}))
+            complete=(health.get('indexing',{}).get('ready')is True and not read_errors and not self.sessions_error)
+            if not self._capture_commit(candidate,health,capture_epoch,complete=complete):
+                self.wake.set();return
+            self.selected_trace = selected
             self.connection_failures=0
             self.connection=replace(self.connection,phase='live',stage='Connected',retry_at=0)
         except Exception as exc:
@@ -618,8 +877,14 @@ class Feed:
                 message = 'Loading delayed: '+clean(str(exc))+'. Retrying.'
             else:
                 message = "Receiver unavailable. Retrying: " + clean(str(exc))
-            old = self.snapshot
-            self.snapshot = replace(old,error=message)
+            with self._capture_lock:
+                if capture_epoch!=self._capture_epoch:
+                    self.wake.set();return
+                old=self.snapshot
+                if old.receiver_id==self._capture_receiver and(self._capture_global_denied or self._capture_denials):
+                    old=_capture_purge(old,self._capture_local(old.local_status,metadata=True))
+                    self._clear_content_caches()
+                self.snapshot=replace(old,error=message)
             self.extra_cache=None
             self.findings_cache=None
             self.connection_failures+=1
