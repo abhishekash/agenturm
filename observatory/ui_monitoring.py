@@ -187,7 +187,9 @@ def task_usage_label(usage, *, compact=False):
     return f'Tokens {tokens} · Cost {money}'.replace('Not reported','—')
 
 
-def task_usage_summary(usage, title='', *, scope='session', identity='', compact=False):
+def task_usage_summary(usage, title='', *, scope='session', identity='', compact=False,
+                       rates=None, model='', allocation_proven=False, explanations=False,
+                       context=None, scope_owner=None):
     known=lambda key: usage.get(key) is not None and usage.get(key+'_reported') is not False
     partial=usage.get('usage_complete') is False
     token=lambda key: f"{int(usage[key]):,}"+('+' if partial else '') if known(key) else 'Not reported'
@@ -232,6 +234,24 @@ def task_usage_summary(usage, title='', *, scope='session', identity='', compact
         'Cost is reported USD for this task, not an all-history total or a subscription bill estimate.',
         *([usage['usage_allocation']+' · Whole-trace totals remain available in Traces.'] if usage.get('usage_allocation') else []),
         'Press Esc to return.'])
+    if rates is not None:
+        from .evidence_explanations import configured_estimate
+        estimate=configured_estimate(usage,model=model,rates=rates,allocation_proven=allocation_proven)
+        if estimate.get('available'):
+            label=f"Configured estimate ${estimate['estimated_usd']:,.4f}"
+            lines.append(label+' · explicit user rates')
+            details+='\n\n'+label+'\n'+estimate['kind']+'\n'+estimate['assumption']+'\n'+estimate['note']
+        else:
+            details+='\n\nConfigured estimate unavailable: '+str(estimate.get('reason') or 'allocation or rate not proven')
+    if explanations:
+        from .evidence_explanations import usage_explanation
+        explanation=usage_explanation(usage,scope=scope,context=context,scope_owner=scope_owner)
+        cache=explanation['cache'];occupancy=explanation['context']
+        fraction=cache['cached_input_fraction']
+        cache_label=f'{fraction:.0%} of reported input' if fraction is not None else 'Unavailable from compatible complete token breakdowns'
+        context_label=(f"{occupancy['used_tokens']:,} / {occupancy['capacity_tokens']:,} tokens ({occupancy['fraction']:.0%})"
+                       if occupancy['available'] else occupancy['reason'])
+        details+='\n\nRECORDED USAGE INTERPRETATION\nCached input: '+cache_label+'\n'+cache['note']+'\nContext occupancy: '+context_label+'\n'+explanation['retry_cost']['note']
     return '\n'.join(lines),details
 
 
