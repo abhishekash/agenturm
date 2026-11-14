@@ -102,6 +102,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
             path = route.path
             if path not in {'/','/api/health'} and path.startswith('/api/') and hasattr(store,'index_status'):
                 indexing=store.index_status()
+                if not indexing.get('ready') and callable(getattr(store,'catch_up_incoming',None)):
+                    indexing=store.catch_up_incoming(indexing)
                 if not indexing.get('ready'):
                     self._json(503,{'error':'History index is not ready','indexing':indexing})
                     return
@@ -133,13 +135,16 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 if parse_qs(route.query).get('probe')==['1']:
                     self._json(200, {"ok": True})
                     return
+                indexing=store.index_status() if hasattr(store,'index_status') else {"ready":True}
+                if not indexing.get('ready') and callable(getattr(store,'catch_up_incoming',None)):
+                    indexing=store.catch_up_incoming(indexing)
                 local = getattr(store, "local_agent_monitor", None)
                 self._json(200, {"ok": True,"observed_time_unix_nano":time.time_ns(), "receiver_id": store.receiver_namespace() if hasattr(store,"receiver_namespace") else None, "review_trace_filter": True, "review_turn_filter": True, "review_run_summary": True,
                     "investigation_index_v1":getattr(store,'investigation_index_v1',False),
                     "native_lifecycle_v1":callable(getattr(store,'native_lifecycle_inventory',None)),
                     "security":{"authentication_required":bool(token),"host_validation":True},
                     "storage":{"retention_days":getattr(store,"retention_days",None)},
-                    "indexing":store.index_status() if hasattr(store,"index_status") else {"ready":True},
+                    "indexing":indexing,
                     "local_agents": local.status() if local else {"enabled": False}})
             elif path == "/api/connections":
                 self._json(200, {"connections": store.connections()})
