@@ -1,0 +1,54 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Keyboard Signal Validation</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.3</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/keyboard-signal-validation.md">Markdown source ↗</a></nav><h1>Real-terminal keyboard and signal validation</h1>
+<p>This is a generated-fixture functional check of runtime <code>55c6244bf0c1caad2a22cd5c826020f50a677e54</code> with committed harness <code>5ee3185528cce588d3bbee5c66b0ae240f38a046</code>. It is not a CPU/RSS or live-agent result. The later read-snapshot and capture-safety fixes need their final combined candidate checks separately.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Exit path</th>
+<th>Observed wrapper status</th>
+<th>Terminal restored</th>
+<th>Checks passed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Normal quit from reader</td>
+<td>0</td>
+<td>Yes</td>
+<td>26</td>
+</tr>
+<tr>
+<td>SIGINT from reader</td>
+<td>130</td>
+<td>Yes</td>
+<td>26</td>
+</tr>
+<tr>
+<td>SIGTERM from reader</td>
+<td>143</td>
+<td>Yes</td>
+<td>26</td>
+</tr>
+<tr>
+<td>SIGINT during startup</td>
+<td>130</td>
+<td>Yes</td>
+<td>1 restoration check plus explicit signal journal</td>
+</tr>
+<tr>
+<td>SIGTERM during startup</td>
+<td>143</td>
+<td>Yes</td>
+<td>1 restoration check plus explicit signal journal</td>
+</tr>
+</tbody>
+</table></div>
+<p>Reader journeys use actual tmux input at 120×36, 80×24 and 60×18, with a 50×14 too-small frame and return. They cover prompt Up/Down/Home/End, section changes, reading, help, resize and restored terminal output. Each process uses the production terminal wrapper, isolated fixture home/config/state and synthetic Feed data. No provider, native agent, personal transcript or user tmux session is used.</p>
+<p>The initial development harness incorrectly assigned <code>on_mount</code> on an instance; Textual dispatches declared class handlers, so the intended startup signal was never sent. The corrected fixture declares the lifecycle handler on a subclass and journals the actual signal before sending it. Earlier failed startup attempts remain failed artifacts, rather than being reported as product signal failures.</p>
+<p>The resize test also relied on a captured title before focus had settled. A passive public-state journal now confirms the actual terminal size, populated table and restored table focus before Enter. It does not mutate framework state, prepare sources or substitute for visible prompt assertions. The History selection is explicit because these fixture sessions have unknown lifecycle and are correctly absent from Today; titles come from the first captured request.</p>
+<p>Raw result directories are <code>/tmp/agenturm-final-keyboard-c-matrix-{q,sigint,sigterm}-reader</code> and <code>/tmp/agenturm-final-keyboard-c-matrix-{sigint,sigterm}-startup</code>. Each records exact source/harness/dependency manifests and the actual application/fixture module paths. The wrapper status is recorded separately from the fixture process, which writes the result and restored-output marker. The checks ran sequentially after the harness correction; no failed attempt was silently converted into a passing result.</p>
+<p>This matrix proves these functional terminal paths on the named runtime and reference host. It does not establish a modal memory plateau, native provider compatibility, durable receipts under every failure, or the final resource budgets.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
