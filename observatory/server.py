@@ -143,9 +143,25 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                         self._json(503, {'error': 'Receiver identity is temporarily unavailable. Retry the request.'})
                         return
             if certified_mcp:self._mcp_file_identity=store.certify_initial_mcp(self._get_receiver_id,strict=not raw_mcp)
-            if certified_activity:self._activity_file_identity=store.certify_initial_activity(self._get_receiver_id,strict=not indexed_activity)
-            if certified_metrics:self._metrics_file_identity=store.certify_initial_metrics(self._get_receiver_id)
-            if certified_sessions:self._sessions_file_identity=store.certify_initial_sessions(self._get_receiver_id)
+            def certificate(read,**options):
+                nonlocal independent_cache_ready
+                try:return read(self._get_receiver_id,**options)
+                except IndexNotReady as exc:
+                    # Preserve the existing single 75 ms worker-demand budget
+                    # when this endpoint's own incoming dependencies are dirty.
+                    # The failed certificate released its read lease already;
+                    # unrelated work never arms this wait, and stale data is
+                    # still rejected by a fresh certificate after the budget.
+                    catch_up=getattr(store,'catch_up_incoming',None)
+                    if (not independent_read or exc.indexing.get('error')or
+                            exc.indexing.get('stage')!='Indexing incoming source changes'or not callable(catch_up)):
+                        raise
+                    independent_cache_ready=False
+                    catch_up(exc.indexing)
+                    return read(self._get_receiver_id,**options)
+            if certified_activity:self._activity_file_identity=certificate(store.certify_initial_activity,strict=not indexed_activity)
+            if certified_metrics:self._metrics_file_identity=certificate(store.certify_initial_metrics)
+            if certified_sessions:self._sessions_file_identity=certificate(store.certify_initial_sessions)
             if cache.eligible(path)and(not independent_read or independent_cache_ready):
                 self._cache_version, cached = cache.get(self.path)
                 if cached is not None:
