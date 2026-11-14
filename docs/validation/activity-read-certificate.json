@@ -1,6 +1,6 @@
 {
   "base": "52fe6715496d3a3a8ce2828b939e0ff377296cf5",
-  "scope": "Narrow Activity HTTP dependency certificate; no retained workload or performance acceptance",
+  "scope": "Activity, Metrics and Sessions HTTP dependency certificates with retained synthetic functional validation; no resource/hour/live-runtime acceptance",
   "before": {
     "base": "52fe6715496d3a3a8ce2828b939e0ff377296cf5",
     "core_sha256": "b1f5b304d2f20e63f593e4e0651fb16533ebee71a48b5e23dab069a11e920866",
@@ -13,11 +13,6 @@
       "resource_warnings": "error"
     },
     "qualification": "Generated realStore/authenticatedHTTP dependency observations; no retained workload/performance claims."
-  },
-  "candidate_sha256": {
-    "observatory/core.py": "1ddb50f05fc4726f5ac92e82265969ba9695bc0b4021d2b71d60d5f0ded51a8d",
-    "observatory/server.py": "c6251eb06cb776349d35fc0a524fedf2c7f19644cc32b870e34d7d6766757328",
-    "tests/test_activity_dependency_contract.py": "e981765f0612b8dfd76ea8dbcefb3d59519c47e93bc542d2b470b4fea3a0a079"
   },
   "negative_control": {
     "source_root": "/tmp/agenturm-candidate-9bee",
@@ -68,7 +63,232 @@
       "candidate_seconds": 1.065,
       "baseline_result": "desired200 failed with503",
       "baseline_seconds": 0.891,
-      "qualification": "Separate test-only input commit bc318bd; candidate passed and baseline failed as recorded. No new run performed for this push."
+      "qualification": "Integrated as62a8000 and included in the181-test gate; baseline failure remains historical evidence."
+    },
+    "current_focused": {
+      "tests": 181,
+      "seconds": 78.889,
+      "python": "3.12.3",
+      "resource_warnings": "error",
+      "result": "passed",
+      "log_sha256": "8a6b087b7f2e3e13ec965f31025362f533845aa218c2edfb57c65ecb53d9537c"
+    },
+    "current_harness": {
+      "tests": 17,
+      "seconds": 1.818,
+      "python": "3.12.3",
+      "resource_warnings": "error",
+      "result": "passed",
+      "log_sha256": "38678a787861597826bcc7ae12be488efbe7f5bfe7bd6b43234c68ed61def29d"
+    },
+    "retained_functional": {
+      "configured_seconds": 60.0,
+      "phase_seconds": 2.0,
+      "elapsed_seconds": 72.75814245198853,
+      "initial_readiness_seconds": 240.28607999603264,
+      "completed_turns": 9,
+      "verified_turns": 9,
+      "approval_requests": 3,
+      "observed_approval_requests": 3,
+      "accepted_review_ids": 9,
+      "persisted_review_ids": 9,
+      "missing_review_ids": 0,
+      "expected_review_ids": 9,
+      "rendered_approval_inboxes": 3,
+      "shared_daemon_false_progress": 0,
+      "heartbeat_samples": 71,
+      "recovered_after_outage": true,
+      "sample_count": 20,
+      "errors": [],
+      "receiver_shutdowns": [
+        {
+          "pending_before": 0,
+          "pending_after": 0
+        },
+        {
+          "pending_before": 0,
+          "pending_after": 0
+        }
+      ],
+      "exit_statuses": [
+        {
+          "role": "receiver",
+          "status": 0
+        },
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ],
+      "application_commit": "346fd39ac7a6140789ac39ce432065b0225ad87c",
+      "harness_commit": "346fd39ac7a6140789ac39ce432065b0225ad87c",
+      "source_start_end_exact_match": true,
+      "original_results_sha256": "df94f9f1033b32536ad65fe52e82d0e88b631e16249334c23317ac06542eb289",
+      "registration_sha256": "3d81877c02207cfa745354d309dda6d3b7f85dec797c762135a15deb56e80d2d",
+      "analyzer_sha256": "a5146a98874d08a64290a2790210755fcda3a5d616fc83b6b2338498a78570fa",
+      "strict_proof_sha256": "2a49c2fe1b536925e112c9351370ac09cd078244e53fa8e2c21cbdce8c965d05",
+      "strict_coverage": "complete",
+      "strict_checks": {
+        "source_certificate": true,
+        "original_run_has_no_errors": true,
+        "result_shape": true,
+        "receiver_two_unambiguous_lifetimes": true,
+        "cockpit_two_unambiguous_lifetimes": true,
+        "synthetic_daemon_known_single_lifetime": true,
+        "driver_known_single_lifetime": true,
+        "no_active_owned_process": true,
+        "workflow_read_only_proof": true,
+        "receiver_imports_match": true,
+        "cockpit_imports_match": true,
+        "three_fresh_replacement_ui_heartbeats": true,
+        "post_body_observation_clocks": true,
+        "phase0_to5_after_both_replacements": true,
+        "all_completed_turns_reconstructed": true,
+        "exact_all_role_cycle_incident_identities": true,
+        "exact_expected_accepted_persisted_receipts": true,
+        "post_restart_cycle_receipts_after_new_ui": true,
+        "two_clean_receiver_exits": true,
+        "two_clean_cockpit_exits": true,
+        "both_receiver_drains": true,
+        "final_coherent_receiver_ready": true
+      },
+      "post_restart_cycles": [
+        2
+      ],
+      "all_registered_processes_stopped": true,
+      "artifacts_unchanged": true,
+      "qualification": "Allowlisted synthetic functional evidence. Raw health, native content, configuration, credentials, process inventory and logs are not published. No performance, live-runtime or hour-soak acceptance.",
+      "independent_peer_proof_sha256": "2a49c2fe1b536925e112c9351370ac09cd078244e53fa8e2c21cbdce8c965d05",
+      "independent_checks": 22,
+      "independent_all_checks_passed": true,
+      "common_seed": {
+        "sha256": "5418206cd39d72e397dbf0104fafe16a1c6ad298e4c3b9dd4b8cdfe9c8d8b682",
+        "raw_sha256": "a7834f8369c95c9160d16fe1d4d1c23b401e76a58c68507ce8b4bafa43948588",
+        "counts": {
+          "spans": 31000,
+          "logs": 41000,
+          "trace_activity": 5751
+        },
+        "bytes": 188383232
+      },
+      "production_indexes_equal": true
+    },
+    "strengthened_metrics": {
+      "tests": 8,
+      "seconds": 2.685,
+      "result": "passed",
+      "log_sha256": "f188e66f5f3a14b9a94bfc444e6ec20221557bd0f9d7ba10bb5ee9a1bc8089a0",
+      "qualification": "Overlaps88-test gate; final additions assert no cache access under unrelated dirtiness and migration-stop rejection"
+    },
+    "preceding_failed_attempt": {
+      "application_commit": "b9e2a4ac11c0955d46b5adb9b73d4d1fac921c3a",
+      "result": "failed",
+      "original_results_sha256": "5b686071309e28a1b38c7bab498dd06147b7e6f451c96b4cdff3c64432ff944d",
+      "first_failure": {
+        "path": "/api/metrics",
+        "status": 503,
+        "phase_index": 9
+      },
+      "completed_turns": 3,
+      "verified_turns": 3,
+      "error_count": 10,
+      "qualification": "Activity passed first full cycle; historical incoming dirty queue was not attributed. Result remains failed."
+    },
+    "metrics_peer": {
+      "tests": 22,
+      "seconds": 16.826,
+      "result": "passed",
+      "source_review": "No blocking findings on finalcf7f source",
+      "log_sha256": "ae391a230324ff3c1c350e361a3ef5c3b2eba665855cf088805a6f6de0435e5d"
+    },
+    "sessions_peer": {
+      "tests": 34,
+      "seconds": 23.203,
+      "result": "passed",
+      "source_review": "No blocker on finalf411 source; includes two real collect_review HTTP tests",
+      "log_sha256": "32f4404b1fe926f1576884243e956fd413cc3a9aa9a5d246423475d372a4720f"
+    },
+    "preceding_sessions_failed_attempt": {
+      "application_commit": "cf7fdb8039bd4dddb253666e27120ba40f8a6dcc",
+      "result": "failed",
+      "original_results_sha256": "fc681f339d1730e155d5aa43398b99f74c999871b8f99a6d385cd5d746a32f35",
+      "first_failure": {
+        "path": "/api/sessions",
+        "status": 503,
+        "phase_index": 9
+      },
+      "completed_turns": 3,
+      "verified_turns": 3,
+      "error_count": 10,
+      "qualification": "Original readinessstage unavailable in safeallowlist; actual dirtyqueue not inferred. Preserved failed result."
+    },
+    "preceding_budget_failed_attempt": {
+      "application_commit": "f4112aface187c026bebb946054e9a529fc2d0f1",
+      "result": "failed",
+      "original_results_sha256": "41c2c00b54cce7f5a812270031f996c48003ec3e9008ea898d5b767b4707a7a1",
+      "first_failure": {
+        "path": "/api/metrics",
+        "status": 503,
+        "phase_index": 3
+      },
+      "completed_turns": 0,
+      "verified_turns": 0,
+      "error_count": 12,
+      "qualification": "Required dirty projection remained503; new independent preflight had also skipped existing75ms demand. Original run failed, sourcecertificate independently verified before changes."
+    },
+    "budget_peer": {
+      "tests": 46,
+      "seconds": 37.422,
+      "result": "passed",
+      "source_review": "No blocker on final9f9f source",
+      "log_sha256": "0ea46d9eb377d887757d94b1f75dc8f03c0e565eda845cdbdb8388098e976f62"
+    },
+    "preceding_async_gap_failed_attempt": {
+      "application_commit": "9f9f5e75361027af0a3ec879f3def50341650892",
+      "result": "failed",
+      "original_results_sha256": "627ad83943cbeb47be89136aa3315007c3b20530cefe4d223509afe6cf43d8c3",
+      "first_failure": {
+        "path": "/api/metrics",
+        "status": 503,
+        "phase_index": 4
+      },
+      "completed_turns": 3,
+      "verified_turns": 0,
+      "error_count": 14,
+      "qualification": "Existing75ms demand restored, but actual projectiondirty stillfailed. Preserved result and independent source/coverageaudit."
+    },
+    "atomic_peer": {
+      "tests": 50,
+      "seconds": 40.339,
+      "result": "passed",
+      "source_review": "No blocker on atomic346fd39 source",
+      "log_sha256": "47384c9736e4bd2ebd48a6120fd47d62c59d722835fa1cd563472c115671401f"
+    },
+    "atomic_negative_control": {
+      "base": "9f9f5e75361027af0a3ec879f3def50341650892",
+      "test": "accepted spans/logs visible while another thread holds derivedlock",
+      "expected": "ready after accepted write",
+      "actual": "not ready",
+      "tests": 1,
+      "result": "desired assertion failed on baseline",
+      "log_sha256": "97ea68309fa66dcd535c84bb2f86a1321e619540080be0abe97a278c83d09d74"
+    },
+    "activity_peer_checkpoint": {
+      "tests": 32,
+      "seconds": 19.445,
+      "result": "passed",
+      "source_review": "No blocking source findings; final functional evidence separately reviewed",
+      "log_sha256": "b4cdf9162e57639e977bdba56e45881199ba7ce2410be9973f3a84a0667cd471"
     }
   },
   "strict_selector_presence": [
@@ -95,10 +315,41 @@
   "limitations": [
     "The queue responsible for historical9bee503 was not recorded and is not inferred",
     "Genuine Activitydirty remains503",
-    "No retained run, one-hour, resource, live-provider or universal-runtime acceptance",
-    "No stronger post-BEGIN live-policy freshness guarantee"
+    "No stronger post-BEGIN live-policy freshness guarantee",
+    "No one-hour, resource, live-provider or universal-runtime acceptance"
   ],
   "publishable_performance": false,
-  "delivery_status": "WIP: preserved for review, not merged or accepted",
-  "html_qa": "Not performed"
+  "delivery_status": "Validated for PR review and merge; retained synthetic functional gate passed",
+  "html_qa": "Headless Chrome desktop1280x1000 and mobile390x1000 renders; top viewport layout visually inspected. This is not a full-page browser audit or functional proof.",
+  "activity_only_checkpoint_sha256": {
+    "observatory/core.py": "1ddb50f05fc4726f5ac92e82265969ba9695bc0b4021d2b71d60d5f0ded51a8d",
+    "observatory/server.py": "c6251eb06cb776349d35fc0a524fedf2c7f19644cc32b870e34d7d6766757328",
+    "tests/test_activity_dependency_contract.py": "e981765f0612b8dfd76ea8dbcefb3d59519c47e93bc542d2b470b4fea3a0a079"
+  },
+  "candidate_sha256": {
+    "observatory/core.py": "dbe2c90a47e92b9fc1e3683ef730e1ebc6ec1a21dd441c0bc526f2ac55523cbe",
+    "observatory/server.py": "f87e4468f634ee052a1d6e4baae4722afddef237c572207f709b7780f39456e8",
+    "tests/test_activity_dependency_contract.py": "e981765f0612b8dfd76ea8dbcefb3d59519c47e93bc542d2b470b4fea3a0a079",
+    "tests/test_metrics_initial_certificate.py": "0dc6a6c56a88c1ca7596e021ae805722d5f58ea17c62847dda9e5e3cc3c79eeb",
+    "tests/test_derived_readiness_snapshot.py": "4ee3fa3f168ca67d40afc02f57bc027a023a32e3989702941e89a3c69f98147e",
+    "tests/test_sessions_initial_certificate.py": "3ba75f63c27e1d5b2b83c3a0e54339c5e0d04c69ce06da89c08b13c36aac4d4e",
+    "tests/test_atomic_native_publication.py": "64e6118f71b06a9b5bce3b666dcbf3122a0ba74f72f07935c631c0431ccc2863",
+    "tests/test_atomic_native_publication_safety.py": "cac29d92adbc97518485f7e30b9cdb656913113cc4c38518e88397f4bfed17c8",
+    "tests/test_incoming_catchup.py": "4892b1bb142e74701c96e5b3d3d45471a37a8d511b468b52cbecb54b36e5d438"
+  },
+  "atomic_native_limits": {
+    "accepted_records": 64,
+    "affected_incoming_traces": 4,
+    "retained_raw_rows_per_trace": 256,
+    "raw_payload_bytes_per_trace": 524288,
+    "raw_payload_bytes_total": 1048576,
+    "raw_tables": [
+      "spans",
+      "logs",
+      "progress",
+      "outcomes"
+    ],
+    "workflow_patterns": "existingasyncfallback",
+    "large_cold_fatal_mixed_non_native": "existingasyncfallback"
+  }
 }
