@@ -1,0 +1,76 @@
+{
+  "publishable_performance": false,
+  "kind": "Unprofiled short synthetic development diagnostic; not API/cold/CPU acceptance",
+  "fixture": {
+    "traces": 96,
+    "spans": 576,
+    "logs": 672,
+    "chunks": 16
+  },
+  "rows": [
+    {
+      "role": "B",
+      "elapsed_s": 3.4247489699628204,
+      "source": "/tmp/agenturm-final-candidate-95",
+      "module": "/tmp/agenturm-final-candidate-95/observatory/__init__.py",
+      "source_sha256": "07a1991b6e77a9834eaa9a1297e5ad9b5b2b681981195e786eafb60904b1ca09",
+      "output_sha256": "4d2498326ae07a0ae466467a60525a151cb750b718ce0ec14f6fa1558a1bf441"
+    },
+    {
+      "role": "C",
+      "elapsed_s": 2.627798991976306,
+      "source": "/tmp/agenturm-fact-sanitization",
+      "module": "/tmp/agenturm-fact-sanitization/observatory/__init__.py",
+      "source_sha256": "7ec1e1efa6f938325069a75d503db762f3612d74c171cb27ca309a51f27dcea9",
+      "output_sha256": "4d2498326ae07a0ae466467a60525a151cb750b718ce0ec14f6fa1558a1bf441"
+    },
+    {
+      "role": "C",
+      "elapsed_s": 2.6394219000358135,
+      "source": "/tmp/agenturm-fact-sanitization",
+      "module": "/tmp/agenturm-fact-sanitization/observatory/__init__.py",
+      "source_sha256": "7ec1e1efa6f938325069a75d503db762f3612d74c171cb27ca309a51f27dcea9",
+      "output_sha256": "4d2498326ae07a0ae466467a60525a151cb750b718ce0ec14f6fa1558a1bf441"
+    },
+    {
+      "role": "B",
+      "elapsed_s": 3.180915068020113,
+      "source": "/tmp/agenturm-final-candidate-95",
+      "module": "/tmp/agenturm-final-candidate-95/observatory/__init__.py",
+      "source_sha256": "07a1991b6e77a9834eaa9a1297e5ad9b5b2b681981195e786eafb60904b1ca09",
+      "output_sha256": "4d2498326ae07a0ae466467a60525a151cb750b718ce0ec14f6fa1558a1bf441"
+    },
+    {
+      "role": "B",
+      "elapsed_s": 3.351600158959627,
+      "source": "/tmp/agenturm-final-candidate-95",
+      "module": "/tmp/agenturm-final-candidate-95/observatory/__init__.py",
+      "source_sha256": "07a1991b6e77a9834eaa9a1297e5ad9b5b2b681981195e786eafb60904b1ca09",
+      "output_sha256": "4d2498326ae07a0ae466467a60525a151cb750b718ce0ec14f6fa1558a1bf441"
+    },
+    {
+      "role": "C",
+      "elapsed_s": 2.6000475370092317,
+      "source": "/tmp/agenturm-fact-sanitization",
+      "module": "/tmp/agenturm-fact-sanitization/observatory/__init__.py",
+      "source_sha256": "7ec1e1efa6f938325069a75d503db762f3612d74c171cb27ca309a51f27dcea9",
+      "output_sha256": "4d2498326ae07a0ae466467a60525a151cb750b718ce0ec14f6fa1558a1bf441"
+    },
+    {
+      "role": "C",
+      "elapsed_s": 2.8044041680404916,
+      "source": "/tmp/agenturm-fact-sanitization",
+      "module": "/tmp/agenturm-fact-sanitization/observatory/__init__.py",
+      "source_sha256": "7ec1e1efa6f938325069a75d503db762f3612d74c171cb27ca309a51f27dcea9",
+      "output_sha256": "4d2498326ae07a0ae466467a60525a151cb750b718ce0ec14f6fa1558a1bf441"
+    },
+    {
+      "role": "B",
+      "elapsed_s": 3.2879222609335557,
+      "source": "/tmp/agenturm-final-candidate-95",
+      "module": "/tmp/agenturm-final-candidate-95/observatory/__init__.py",
+      "source_sha256": "07a1991b6e77a9834eaa9a1297e5ad9b5b2b681981195e786eafb60904b1ca09",
+      "output_sha256": "4d2498326ae07a0ae466467a60525a151cb750b718ce0ec14f6fa1558a1bf441"
+    }
+  ]
+}

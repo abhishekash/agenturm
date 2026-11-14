@@ -25,6 +25,8 @@ COMMAND_KEYS=('process.command_line','tool.command','command')
 EXIT_KEYS=('process.exit.code','exit_code')
 QUOTED_FIELDS=(re.compile(r'"((?:\\.|[^"\\\r\n])*)"\s*:'),
                re.compile(r"'((?:\\.|[^'\\\r\n])*)'\s*:"))
+_ASCII_KEY_CONTROLS=re.compile(r'[\x00-\x1f\x7f]')
+_ASCII_TEXT_CONTROLS=re.compile(r'[\x00-\x08\x0b-\x1f\x7f]')
 
 
 def credential_key(key):
@@ -34,7 +36,8 @@ def credential_key(key):
         try:key=json.loads('"'+key+'"')
         except (ValueError,TypeError):return True
         if '\\' in key:return True
-    key=''.join(char for char in key if unicodedata.category(char) not in {'Cc','Cf'})
+    key=(_ASCII_KEY_CONTROLS.sub('',key) if key.isascii() else
+        ''.join(char for char in key if unicodedata.category(char) not in {'Cc','Cf'}))
     return bool(_SENSITIVE_FIELD.search(key) or _TOKEN_FIELD.search(key))
 
 
@@ -64,7 +67,8 @@ def safe_value(value):
                 complete=False;return '[REDACTED credential-bearing text]'
             text=_safe_text(item)
             text=re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',text)
-            text=''.join(char for char in text if char in '\n\t' or unicodedata.category(char) not in {'Cc','Cf'})
+            text=(_ASCII_TEXT_CONTROLS.sub('',text) if text.isascii() else
+                ''.join(char for char in text if char in '\n\t' or unicodedata.category(char) not in {'Cc','Cf'}))
             if text!=item or re.search(r'(?i)\[(?:redact|[^\]]*(?:omitted|truncated|clipped))',text):complete=False
             return text
         if item is None or type(item) is bool:return item
