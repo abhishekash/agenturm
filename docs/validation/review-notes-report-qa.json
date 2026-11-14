@@ -1,0 +1,102 @@
+{
+  "E_head": "928cae06ea9f8703966c105aa02d42b2dd179f12",
+  "replay_head": "3368e09cdf6cb7a4cb582e588e0959fc76ef5f40",
+  "results": [
+    {
+      "name": "evidence-explanations",
+      "mode": "light",
+      "pageWidth": 1280,
+      "contentWidth": 1280,
+      "assets": 0,
+      "brokenAnchors": 0,
+      "externalRequests": 0
+    },
+    {
+      "name": "evidence-explanations",
+      "mode": "dark",
+      "pageWidth": 390,
+      "contentWidth": 390,
+      "assets": 0,
+      "brokenAnchors": 0,
+      "externalRequests": 0
+    },
+    {
+      "name": "reported-usage-progress",
+      "mode": "light",
+      "pageWidth": 1280,
+      "contentWidth": 1280,
+      "assets": 0,
+      "brokenAnchors": 0,
+      "externalRequests": 0
+    },
+    {
+      "name": "reported-usage-progress",
+      "mode": "dark",
+      "pageWidth": 390,
+      "contentWidth": 390,
+      "assets": 0,
+      "brokenAnchors": 0,
+      "externalRequests": 0
+    },
+    {
+      "name": "activity-linked-index",
+      "mode": "light",
+      "pageWidth": 1280,
+      "contentWidth": 1280,
+      "assets": 0,
+      "brokenAnchors": 0,
+      "externalRequests": 0
+    },
+    {
+      "name": "activity-linked-index",
+      "mode": "dark",
+      "pageWidth": 390,
+      "contentWidth": 390,
+      "assets": 0,
+      "brokenAnchors": 0,
+      "externalRequests": 0
+    },
+    {
+      "name": "error-reference-projection",
+      "mode": "light",
+      "pageWidth": 1280,
+      "contentWidth": 1280,
+      "assets": 0,
+      "brokenAnchors": 0,
+      "externalRequests": 0
+    },
+    {
+      "name": "error-reference-projection",
+      "mode": "dark",
+      "pageWidth": 390,
+      "contentWidth": 390,
+      "assets": 0,
+      "brokenAnchors": 0,
+      "externalRequests": 0
+    },
+    {
+      "name": "completion-plan",
+      "mode": "light",
+      "pageWidth": 1280,
+      "contentWidth": 1280,
+      "assets": 0,
+      "brokenAnchors": 0,
+      "externalRequests": 0
+    },
+    {
+      "name": "completion-plan",
+      "mode": "dark",
+      "pageWidth": 390,
+      "contentWidth": 390,
+      "assets": 0,
+      "brokenAnchors": 0,
+      "externalRequests": 0
+    }
+  ],
+  "visual_inspection": [
+    "evidence-explanations dark 390px",
+    "activity-linked-index dark 390px",
+    "completion-plan dark 390px"
+  ],
+  "scope": "Document rendering only; no product or resource acceptance inferred."
+}

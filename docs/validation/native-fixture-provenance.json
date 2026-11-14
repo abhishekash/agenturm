@@ -1,8 +1,8 @@
 {
   "format": "agenturm-fixture-provenance-v1",
-  "recorded_at_utc": "2026-11-14T11:09:48+00:00",
+  "recorded_at_utc": "2026-11-14T11:28:47+00:00",
   "status": "partial; upstream version provenance unavailable",
-  "repository_contract_commit": "5e0c39786066fb88c0e270418573e361aeb6cf9a",
+  "repository_contract_commit": "728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c",
   "tested_reader_commit": "920f44e517bc5f8583521dbae5664fe3fff37d1e",
   "tested_pr": 79,
   "tested_ci": "All 12 required checks succeeded at this head; this does not imply producer compatibility outside the tested contract.",
