@@ -24,7 +24,7 @@ import urllib.request
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from scripts.validation_support import (bind_application,cleanup_clone,clone_seed,create_owned_directory,
-    disk_gate,harness_manifest,isolated_env,raw_manifest,storage_snapshot,application_revision,nearest_rank)
+    disk_gate,harness_manifest,isolated_env,raw_manifest,storage_snapshot,application_revision,nearest_rank,strict_heartbeat_errors)
 from scripts.soak_monitor import Workload,process_sample,seed_history,append,write_json,event,native
 
 
@@ -109,9 +109,12 @@ class FixtureSession:
             beats=self.beats(role)
             if not beats:return None
             row=beats[-1]
-            if row.get('error') or row.get('read_errors') or row.get('sessions_error') or row.get('native_inventory_warning'):
-                raise RuntimeError('Cockpit read/inventory failure: '+json.dumps(row))
-            return row if row.get('pid')==self.roles[role] and row.get('receiver_id')==self.health['receiver_id'] and row.get('states') and time.time()-row.get('updated',0)<6 else None
+            if row.get('pid')!=self.roles[role]:return None
+            failures=strict_heartbeat_errors(row,self.health['receiver_id'])
+            if failures:raise RuntimeError('Cockpit validation failure: '+ '; '.join(failures))
+            now=time.time()
+            if not 0<=now-row['at']<=2.5 or not 0<=now-row['updated']<=6:return None
+            return row if row.get('states') else None
         return until(ready,'Cockpit '+role)
     def keys(self,role,*keys):
         for key in keys:self.tmux('send-keys','-t',role,key);time.sleep(.15)
