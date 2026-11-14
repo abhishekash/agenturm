@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import uuid
 import hashlib
+import heapq
 import math
 import os
 import re
@@ -650,6 +651,8 @@ class Store:
         # Refresh reads and cache writes must not straddle a retention delete.
         self._derived_lock = threading.RLock()
         self._derived_pending = {}
+        self._derived_demand_until = 0.0
+        self._derived_generation = 0
         self._derived_stopping = False
         self._derived_thread = None
         self.last_derived_error = None
@@ -940,6 +943,7 @@ class Store:
         except Exception as exc:
             self.last_derived_error=str(exc)
             self.migration_status={**self.migration_status,'stage':'History migration failed; restart to resume','error':str(exc)}
+            self._notify_derived_progress()
             if not self._async_derived_refresh:raise
 
     def _drain_external_activity(self):
@@ -951,12 +955,15 @@ class Store:
                 (' UNION ALL SELECT 1 FROM investigation_dirty_v1' if self.investigation_index_v1 else '')+' LIMIT 1').fetchone()
         if not dirty:return 0
         from .storage_activity import drain
-        with self._connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            count=drain(db,limit=200)
-            traces=[row[0] for row in db.execute('SELECT trace_id FROM finding_dirty_v1 ORDER BY trace_id LIMIT 16')]
-        if traces:self._refresh_summaries(traces)
-        return count  # Preserve the Activity drain-count contract; derived repair is additional.
+        try:
+            with self._connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                count=drain(db,limit=200)
+                traces=[row[0] for row in db.execute('SELECT trace_id FROM finding_dirty_v1 ORDER BY trace_id LIMIT 16')]
+            if traces:self._refresh_summaries(traces)
+            return count  # Preserve the Activity drain-count contract; derived repair is additional.
+        finally:
+            self._notify_derived_progress()
 
     def index_status(self):
         state=dict(self.migration_status)
@@ -966,6 +973,88 @@ class Store:
         if dirty:
             state.update(ready=False,stage='Indexing incoming source changes')
         return state
+
+    def _incoming_status(self, deadline):
+        """Bounded metadata only; never keep this connection while waiting."""
+        state=dict(self.migration_status)
+        if (not state.get('ready') or state.get('error') or self.last_derived_error or
+                self._derived_stopping or not self._async_derived_refresh):
+            if self.last_derived_error:
+                state.update(error=self.last_derived_error,stage='Incoming derivation failed')
+            elif self._derived_stopping:state['stage']='Receiver is stopping'
+            state['ready']=False
+            return state,False
+        remaining=deadline-time.monotonic()
+        if remaining<=0:return None,False
+        path=Path(self.path).absolute()
+        db=None
+        try:
+            before=path.stat();identity=(before.st_dev,before.st_ino)
+            db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=remaining)
+            db.set_progress_handler(lambda:int(time.monotonic()>=deadline),1000)
+            def query(sql):
+                remaining=deadline-time.monotonic()
+                if remaining<=0:raise TimeoutError('Incoming catch-up budget expired')
+                # A successful earlier statement must not reset a later busy
+                # handler to the original 75 ms budget.
+                db.execute('PRAGMA busy_timeout='+str(int(remaining*1000)))
+                return db.execute(sql).fetchone()
+            db.execute('BEGIN')
+            complete=query("SELECT 1 FROM schema_meta WHERE key='trace_derived_v15' AND value='1'")
+            dirty=query('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 UNION ALL SELECT 1 FROM native_lifecycle_dirty_v1'+
+                (' UNION ALL SELECT 1 FROM investigation_dirty_v1' if self.investigation_index_v1 else '')+' LIMIT 1')
+            after=path.stat()
+            if identity!=(after.st_dev,after.st_ino):
+                state.update(ready=False,stage='Receiver identity changed during incoming catch-up')
+                return state,False
+            if time.monotonic()>=deadline:return None,False
+            if not complete:
+                state.update(ready=False,stage='Refreshing ownership and run summaries')
+                return state,False
+            if dirty:state.update(ready=False,stage='Indexing incoming source changes')
+            return state,True
+        except (OSError,sqlite3.Error,TimeoutError):
+            state.update(ready=False,stage='Incoming index readiness is unavailable')
+            return state,False
+        finally:
+            if db is not None:db.close()
+
+    def catch_up_incoming(self, indexing):
+        """One 75 ms demand budget; a fresh guarded read remains authoritative."""
+        deadline=time.monotonic()+.075
+        fallback=dict(indexing)
+        if fallback.get('ready'):return fallback
+        if (not self._async_derived_refresh or not self.migration_status.get('ready') or
+                self.migration_status.get('error') or self.last_derived_error or self._derived_stopping or
+                self._derived_thread is None or not self._derived_thread.is_alive()):return fallback
+        status,eligible=self._incoming_status(deadline)
+        if status is not None:fallback=status
+        if not eligible or fallback.get('ready'):return fallback
+        if not self._derived_condition.acquire(timeout=max(0,deadline-time.monotonic())):return fallback
+        try:
+            generation=self._derived_generation
+            self._derived_demand_until=max(self._derived_demand_until,deadline)
+            self._derived_condition.notify_all()
+        finally:self._derived_condition.release()
+        while time.monotonic()<deadline:
+            status,eligible=self._incoming_status(deadline)
+            if status is not None:fallback=status
+            if not eligible or fallback.get('ready'):return fallback
+            if not self._derived_condition.acquire(timeout=max(0,deadline-time.monotonic())):return fallback
+            try:
+                if self._derived_generation!=generation:
+                    generation=self._derived_generation
+                    continue
+                remaining=deadline-time.monotonic()
+                if remaining<=0:break
+                self._derived_condition.wait(timeout=remaining)
+            finally:self._derived_condition.release()
+        return fallback
+
+    def _notify_derived_progress(self):
+        with self._derived_condition:
+            self._derived_generation+=1
+            self._derived_condition.notify_all()
 
     def _require_index_ready(self, db):
         # Certify this exact read snapshot, not an earlier HTTP preflight.
@@ -1558,8 +1647,13 @@ class Store:
                 if self._derived_stopping and not self._derived_pending:
                     return
                 now = time.monotonic()
-                ready = [trace_id for trace_id, (first, last, _) in self._derived_pending.items()
-                         if self._derived_stopping or now - last >= quiet_period or now - first >= max_delay]
+                if not self._derived_stopping and now<self._derived_demand_until:
+                    ready=heapq.nsmallest(16,self._derived_pending,
+                        key=lambda trace:self._derived_pending[trace][0])
+                    self._derived_demand_until=0.0
+                else:
+                    ready = [trace_id for trace_id, (first, last, _) in self._derived_pending.items()
+                             if self._derived_stopping or now - last >= quiet_period or now - first >= max_delay]
                 if not ready:
                     wait_for = min(min(quiet_period - (now - last), max_delay - (now - first))
                                    for first, last, _ in self._derived_pending.values())
@@ -1578,6 +1672,8 @@ class Store:
                             if attempts < 4 and trace_id not in self._derived_pending:
                                 self._derived_pending[trace_id] = (first, now, attempts + 1)
                         self._derived_condition.notify()
+            finally:
+                self._notify_derived_progress()
 
     def close(self):
         try:self._close_workers()
