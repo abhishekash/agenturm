@@ -57,6 +57,43 @@ def error_reference(event,*,facts=None):
 
 
 def trace_error_references(activity, trace_id, *, receiver='', operation_preparation=None):
+    fast=_successful_references(activity,trace_id,receiver,operation_preparation)
+    if fast is not None:return fast
+    return _trace_error_references(activity,trace_id,receiver=receiver,operation_preparation=operation_preparation)
+
+
+def _successful_references(activity,trace_id,receiver,operation_preparation):
+    from .operation_preparation import canonical_terminal_candidate,canonical_terminal
+    # Inspect the complete shape before decoding anything. In particular, a
+    # later aliased mutable detail must retain the old normalization order.
+    if type(activity)not in(list,tuple)or any(not canonical_terminal_candidate(event)
+            or event.get('source_id')and type(event['source_id'])is not str for event in activity):return None
+    try:
+        eligible=[event for event in activity if event.get('source_id')]
+        for event in eligible:
+            terminal=canonical_terminal(event)
+            if (terminal is None or failure(event)or terminal['result']!='passed'
+                    or terminal['result_conflict']or terminal['has_code_one']):return None
+    except Exception:
+        return None
+    successful=set();references=[]
+    # This is intentionally the second legacy scan's stable stamp-only
+    # order, not pending_failures' additional identity tie breaker.
+    for event in sorted(eligible,key=lambda event:operation_stamp(event)or 0,reverse=True):
+        facts=operation_preparation.correlation(event)if operation_preparation is not None else correlation_facts(event)
+        wrapped={**event,'trace_id':trace_id,'id':trace_id+':'+str(event.get('source_id')or ''),'receiver_id':receiver}
+        compact=error_reference(wrapped,facts=facts)
+        compact['status']=''
+        confirmed=correlation_facts(compact)
+        key=operation_key(compact,receiver=receiver,facts=confirmed)
+        if confirmed['result']!='passed'or confirmed['result_conflict']or not key or not operation_stamp(compact):continue
+        if key in successful:continue
+        successful.add(key);references.append(error_reference(compact))
+        if len(successful)>=20:break
+    return references
+
+
+def _trace_error_references(activity, trace_id, *, receiver='', operation_preparation=None):
     # Qualify each source once, then reuse the existing payload-free reference
     # protocol for both scans. Optional sanitized preparation is trace-local;
     # neither source payloads nor full facts become stored error references.
