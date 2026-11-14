@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm bounded incoming catch-up</title><style>
+    :root {color-scheme:light dark;--bg:#faf9f6;--fg:#22252a;--line:#d4d9df;--panel:#eef0f3;--link:#175bbb}
+    @media(prefers-color-scheme:dark){:root{--bg:#10151c;--fg:#e2e7ef;--line:#394552;--panel:#1b2430;--link:#9ac5ff}}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.65 system-ui,sans-serif}
+    main{max-width:960px;margin:auto;padding:40px 24px 80px}h1,h2,h3{line-height:1.25;overflow-wrap:anywhere}
+    h2{margin-top:2.5rem;border-top:1px solid var(--line);padding-top:1rem}a{color:var(--link)}
+    pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere}
+    code{font:14px/1.65 ui-monospace,monospace}table{border-collapse:collapse;width:100%;display:block;overflow:auto}
+    th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line)}
+    @media(max-width:600px){main{padding:20px 14px 48px}body{font-size:16px}pre{padding:10px}}
+    </style></head><body><main><h1>Bounded incoming derivation catch-up</h1>
+<p>This follow-up to <a href="derived-readiness-snapshot.html">the snapshot-fidelity fix</a> lets an asynchronous receiver briefly request existing worker progress before rejecting an incoming read. It does <strong>not</strong> serve old cached usage as current, hide 503s, or claim the final latency/resource targets are met.</p>
+<h2>Why this is needed</h2>
+<p>The normal worker waits for 250 ms of quiet, with a one-second maximum delay. With writes arriving at 10 Hz, a full health request can repeatedly see pending derivation and keep the cockpit in its loading state. The earlier correctness fix deliberately retained that truthful unavailability. A small, bounded demand allows the existing worker to try a normal derivation sooner.</p>
+<h2>Contract and bounds</h2>
+<ul>
+<li>A non-ready data preflight or full health request may use <strong>one absolute 75 ms catch-up budget</strong>. Initial migrations, recorded worker/migration failures, shutdown, synchronous receivers and lightweight <code>health?probe=1</code> do not request work. The historical run-summary marker must be durably complete.</li>
+<li>Demand uses the existing condition and pending dictionary: one shared deadline and a completion generation counter, with no second job queue, additional worker, retained result cache or schema/index change. Overlapping requests share existing jobs; an expired demand cannot turn into an always-on priority mode.</li>
+<li>The worker may select at most <strong>16 oldest pending trace IDs</strong> using a bounded heap, derive them through the existing implementation, then return to its normal quiet-period policy. Existing per-trace first timestamps, deduplication, retries, transactional derivation and shutdown drain remain in force. Selection scans pending keys but retains only 16 heap entries.</li>
+<li>Metadata checks use a short read-only SQLite connection, close it before waiting, and check durable readiness plus <strong>all existing global dirty queues</strong>. SQLite busy timeouts shrink with the remaining deadline; successful statements and completion wakeups never reset the budget. No pooled read lease or SQLite transaction remains while the HTTP request waits on the existing condition.</li>
+<li>Completion wakes waiters after normal or compatibility derivation, including failure. An empty Python pending dictionary never certifies readiness: popped/in-flight work and external-writer queues remain unavailable until the actual database snapshot is clean.</li>
+<li>A successful catch-up still goes through the existing data snapshot guard. A new source commit after catch-up can therefore produce a genuine 503. A commit after the guarded read begins can produce a coherent older snapshot, as documented by the earlier fix.</li>
+<li>Full health composes its receiver time, receiver identity, capture status and local-reader status after the attempt, using the actual checked indexing result. Existing final receiver-publication checks remain authoritative. Authentication, Host/Origin checks, content policy and raw MCP query semantics are unchanged.</li>
+</ul>
+<p>The 75 ms is the catch-up allowance, <strong>not</strong> a whole-request latency promise or a hard real-time scheduling guarantee. Existing HTTP authentication, readiness preflight, response construction, final policy/namespace checks, SQLite work and scheduler delays are all charged to the request. A budget expiration, large backlog, missing marker, unknown/error state or incomplete external queue remains non-ready; data requests return 503 rather than a fabricated empty or stale complete response.</p>
+<h2>Functional verification</h2>
+<p>The new availability cases plus the previous source-snapshot regression gate passed <strong>17 tests in 17.367 seconds</strong>. A separate compatibility, recovery, retention, receiver replacement, read-pool and response-cache gate passed <strong>32 tests in 7.305 seconds</strong>. These are functional tests under development load, not controlled or publishable performance measurements. Integration CI and peer review are separate gates.</p>
+<p>The new cases cover:</p>
+<ul>
+<li>Eight accepted writes scheduled at 100 ms intervals through a generated two-span fixture, using authenticated real HTTP health and Sessions reads. Every successful Sessions total matches its returned source timestamp/counter, including a potentially coherent older view. The final total is eight and the source still contains two spans.</li>
+<li>A held slow worker returning visible 503 within a bounded functional deadline, with no read lease retained during the condition wait; the later settled result is 999.</li>
+<li>Four concurrent timed-out requests sharing one existing trace job, all four returning 503, followed by the settled 999 result. No duplicated job or token contribution is introduced.</li>
+<li>An external dirty source with an empty local pending dictionary staying unavailable until normal compatibility drain.</li>
+<li>Initial migration, migration error, recorded worker failure, absent durable marker and lightweight health probe never arming demand.</li>
+<li>Database replacement during a full-health catch-up returning 409 instead of publishing the old receiver identity with the new state.</li>
+<li>Forty queued jobs: the priority batch contains exactly the oldest sixteen, with all forty drained once through the existing worker.</li>
+<li>An injected derivation failure preserving the original retry path and completion notifications, then clearing the error only after successful normal derivation.</li>
+</ul>
+<p><a href="incoming-catchup-smoke.json">The complete tiny-fixture smoke results</a> retain every HTTP status, including intentionally unavailable slow-worker, concurrent and external-only cases. They include source hashes and explicitly set <code>publishable_performance: false</code>. No result is discarded because it is unavailable. No personal source corpus, native runtime, user configuration or provider service is used.</p>
+<pre><code class="language-sh">python -m unittest tests.test_incoming_catchup tests.test_derived_readiness_snapshot -v
+python -m unittest tests.test_idle_history_watch tests.test_recovery_index tests.test_storage_receiver_hardening tests.test_read_connections tests.test_response_cache -v
+</code></pre>
+<h2>Cost and remaining acceptance</h2>
+<p>Demand can reduce write coalescing: a foreground reader may cause a trace to be derived on each request instead of waiting for a quiet interval. This can increase CPU, write transactions, fsync/checkpoint work and contention. Dirty requests also open bounded metadata connections and inspect existing queue heads. No idle timer or periodic extra query is added, but those active-load costs still require measurement.</p>
+<p>The small fixture demonstrates a useful functional path, not a p95 improvement, a large-corpus availability target, whole-monitor CPU/RSS compliance or a storage/WAL bound. All final frozen-candidate HTTP, idle/active monitor, cold-readiness, modal-retention, soak, shutdown and storage gates remain open. Larger/external workloads may still legitimately return 503. Feed and UI policy semantics are outside this change.</p>
+</main></body></html>

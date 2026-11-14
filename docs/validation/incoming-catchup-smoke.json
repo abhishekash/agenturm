@@ -1,0 +1,203 @@
+{
+  "kind": "generated functional development smoke, not controlled performance",
+  "publishable_performance": false,
+  "base_commit": "58362a6dc11dface3bea57695412daa5bc157e95",
+  "python": "3.12.3",
+  "accepted_continuous_writes": 8,
+  "source_spans": 2,
+  "errors": [],
+  "responses": {
+    "continuous": [
+      {
+        "accepted_counter": 1,
+        "path": "/api/health",
+        "status": 200,
+        "elapsed_seconds": 0.07724363903980702,
+        "ready": true
+      },
+      {
+        "accepted_counter": 1,
+        "path": "/api/sessions?limit=500",
+        "status": 200,
+        "elapsed_seconds": 0.024369243066757917,
+        "source_counter": 1,
+        "input_tokens": 1
+      },
+      {
+        "accepted_counter": 2,
+        "path": "/api/health",
+        "status": 200,
+        "elapsed_seconds": 0.059408096014522016,
+        "ready": true
+      },
+      {
+        "accepted_counter": 2,
+        "path": "/api/sessions?limit=500",
+        "status": 200,
+        "elapsed_seconds": 0.021788432030007243,
+        "source_counter": 2,
+        "input_tokens": 2
+      },
+      {
+        "accepted_counter": 3,
+        "path": "/api/health",
+        "status": 200,
+        "elapsed_seconds": 0.030352436006069183,
+        "ready": true
+      },
+      {
+        "accepted_counter": 3,
+        "path": "/api/sessions?limit=500",
+        "status": 200,
+        "elapsed_seconds": 0.008069638977758586,
+        "source_counter": 3,
+        "input_tokens": 3
+      },
+      {
+        "accepted_counter": 4,
+        "path": "/api/health",
+        "status": 200,
+        "elapsed_seconds": 0.03265989094506949,
+        "ready": true
+      },
+      {
+        "accepted_counter": 4,
+        "path": "/api/sessions?limit=500",
+        "status": 200,
+        "elapsed_seconds": 0.008579451008699834,
+        "source_counter": 4,
+        "input_tokens": 4
+      },
+      {
+        "accepted_counter": 5,
+        "path": "/api/health",
+        "status": 200,
+        "elapsed_seconds": 0.038571538985706866,
+        "ready": true
+      },
+      {
+        "accepted_counter": 5,
+        "path": "/api/sessions?limit=500",
+        "status": 200,
+        "elapsed_seconds": 0.008703935076482594,
+        "source_counter": 5,
+        "input_tokens": 5
+      },
+      {
+        "accepted_counter": 6,
+        "path": "/api/health",
+        "status": 200,
+        "elapsed_seconds": 0.03470508102327585,
+        "ready": true
+      },
+      {
+        "accepted_counter": 6,
+        "path": "/api/sessions?limit=500",
+        "status": 200,
+        "elapsed_seconds": 0.008352602017112076,
+        "source_counter": 6,
+        "input_tokens": 6
+      },
+      {
+        "accepted_counter": 7,
+        "path": "/api/health",
+        "status": 200,
+        "elapsed_seconds": 0.032794440048746765,
+        "ready": true
+      },
+      {
+        "accepted_counter": 7,
+        "path": "/api/sessions?limit=500",
+        "status": 200,
+        "elapsed_seconds": 0.00840977393090725,
+        "source_counter": 7,
+        "input_tokens": 7
+      },
+      {
+        "accepted_counter": 8,
+        "path": "/api/health",
+        "status": 200,
+        "elapsed_seconds": 0.03292465303093195,
+        "ready": true
+      },
+      {
+        "accepted_counter": 8,
+        "path": "/api/sessions?limit=500",
+        "status": 200,
+        "elapsed_seconds": 0.009060299023985863,
+        "source_counter": 8,
+        "input_tokens": 8
+      }
+    ],
+    "slow_worker": {
+      "status": 503,
+      "indexing": {
+        "ready": false,
+        "stage": "Indexing incoming source changes",
+        "processed": 0,
+        "runs_refreshed": 1,
+        "total_runs": 0
+      },
+      "elapsed_seconds": 0.07782938599120826
+    },
+    "concurrent": [
+      {
+        "status": 503,
+        "indexing": {
+          "ready": false,
+          "stage": "Indexing incoming source changes",
+          "processed": 0,
+          "runs_refreshed": 1,
+          "total_runs": 0
+        }
+      },
+      {
+        "status": 503,
+        "indexing": {
+          "ready": false,
+          "stage": "Incoming index readiness is unavailable",
+          "processed": 0,
+          "runs_refreshed": 1,
+          "total_runs": 0
+        }
+      },
+      {
+        "status": 503,
+        "indexing": {
+          "ready": false,
+          "stage": "Indexing incoming source changes",
+          "processed": 0,
+          "runs_refreshed": 1,
+          "total_runs": 0
+        }
+      },
+      {
+        "status": 503,
+        "indexing": {
+          "ready": false,
+          "stage": "Incoming index readiness is unavailable",
+          "processed": 0,
+          "runs_refreshed": 1,
+          "total_runs": 0
+        }
+      }
+    ],
+    "external_only": {
+      "status": 503,
+      "indexing": {
+        "ready": false,
+        "stage": "Indexing incoming source changes",
+        "processed": 0,
+        "runs_refreshed": 1,
+        "total_runs": 0
+      }
+    }
+  },
+  "final_continuous_input_tokens": 8,
+  "source_hashes": {
+    "observatory/core.py": "1a859acdb0c909aa1b8d5981037bfd559e631f264cf35eccc00958ecb6aafc95",
+    "observatory/server.py": "eb718e2ec11f1a935dd8182374af89232174d55ddde6b35074d057a653f74871",
+    "tests/test_incoming_catchup.py": "a7ed03380a7ef63e2cd952bfe17e822594838fb1fb1b240f3596f2932e4c81d9"
+  },
+  "scheduled_write_cadence_seconds": 0.1
+}
