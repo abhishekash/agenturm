@@ -27,11 +27,14 @@ QUOTED_FIELDS=(re.compile(r'"((?:\\.|[^"\\\r\n])*)"\s*:'),
                re.compile(r"'((?:\\.|[^'\\\r\n])*)'\s*:"))
 _ASCII_KEY_CONTROLS=re.compile(r'[\x00-\x1f\x7f]')
 _ASCII_TEXT_CONTROLS=re.compile(r'[\x00-\x08\x0b-\x1f\x7f]')
+_PLAIN_SCHEMA_WORDS=frozenset(('command','arguments','cwd','tool','server','domain','action',
+    'inputs','commands','exits','outputs'))
 
 
 def credential_key(key):
     from .findings import _SENSITIVE_FIELD,_TOKEN_FIELD
     if len(key)>MAX_TEXT:return True
+    if type(key)is str and key in _PLAIN_SCHEMA_WORDS:return False
     if '\\' in key:
         try:key=json.loads('"'+key+'"')
         except (ValueError,TypeError):return True
@@ -57,12 +60,14 @@ def safe_value(value):
         if isinstance(item,str):
             if len(item)>bytes_left:
                 complete=False;return '[text omitted: projection limit]'
-            try:size=len(item.encode('utf-8'))
+            plain_word=type(item)is str and item in _PLAIN_SCHEMA_WORDS
+            try:size=len(item)if plain_word else len(item.encode('utf-8'))
             except UnicodeEncodeError:
                 complete=False;return '[invalid Unicode omitted]'
             if size>bytes_left:
                 complete=False;return '[text omitted: projection byte limit]'
             bytes_left-=size
+            if plain_word:return item
             if any(credential_key(match.group(1)) for pattern in QUOTED_FIELDS for match in pattern.finditer(item)):
                 complete=False;return '[REDACTED credential-bearing text]'
             text=_safe_text(item)
