@@ -94,11 +94,11 @@ class HistoryReadEconomicsTests(unittest.TestCase):
         with self.store._connect() as db:
             db.execute("UPDATE trace_summaries SET summary_json=json_set(summary_json,'$.task','Stale task')")
         calls=0
-        def interrupted(db,trace):
+        def interrupted(db,trace,**kwargs):
             nonlocal calls
             calls+=1
             if calls==20:raise RuntimeError('Simulated rebuild interruption')
-            return derive_trace(db,trace)
+            return derive_trace(db,trace,**kwargs)
         ids=[row['trace_id'] for row in records]
         with patch('observatory.storage_derived.derive_trace',side_effect=interrupted),self.assertRaises(RuntimeError):
             self.store._refresh_summaries(ids)

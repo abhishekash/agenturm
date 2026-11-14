@@ -66,8 +66,8 @@ class StorageHardeningTests(unittest.TestCase):
         prune_started = threading.Event()
         prune_finished = threading.Event()
         failures = []
-        def paused_derive(db, trace_id):
-            result = derive_trace(db, trace_id)
+        def paused_derive(db, trace_id,**kwargs):
+            result = derive_trace(db, trace_id,**kwargs)
             read_complete.set()
             if not allow_refresh.wait(5):
                 raise RuntimeError("refresh test timed out")

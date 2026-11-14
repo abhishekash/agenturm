@@ -46,25 +46,30 @@ def pending_failures(events, limit=5, *, receiver=''):
     return result[:limit]
 
 
-def error_reference(event):
+def error_reference(event,*,facts=None):
     reference = {key: event.get(key) for key in
         ('id', 'source_id', 'trace_id', 'span_id', 'service', 'session_id', 'agent_id',
          'time_unix_nano','domain','action','result','source','turn_id','receiver_id')}
     domain=event.get('domain')
     reference['subject']=('Shell operation' if domain=='shell' else 'MCP operation' if domain=='mcp' else 'Recorded operation')
-    reference.update(operation_metadata(event))
+    reference.update(operation_metadata(event,facts=facts))
     return reference
 
 
-def trace_error_references(activity, trace_id, *, receiver=''):
+def trace_error_references(activity, trace_id, *, receiver='', operation_preparation=None):
     # Qualify each source once, then reuse the existing payload-free reference
-    # protocol for both scans. No source text or full fact cache is retained.
-    events = [{**error_reference({**event, 'trace_id': trace_id,
-               'id': trace_id + ':' + str(event.get('source_id') or ''),'receiver_id':receiver}),
-               # Legacy/unknown compact references may report only status.
-               # Keep that classification without retaining another payload.
-               'status': 'error' if failure(event) else ''} for event in activity
-              if event.get('source_id')]
+    # protocol for both scans. Optional sanitized preparation is trace-local;
+    # neither source payloads nor full facts become stored error references.
+    events=[]
+    for event in activity:
+        if not event.get('source_id'):continue
+        # Fetch by the original canonical object's identity, before creating
+        # the payload-free occurrence wrapper with its trace-local identity.
+        facts=operation_preparation.correlation(event) if operation_preparation is not None else None
+        wrapped={**event,'trace_id':trace_id,'id':trace_id+':'+str(event.get('source_id') or ''),'receiver_id':receiver}
+        events.append({**error_reference(wrapped,facts=facts),
+            # Legacy/unknown compact references may report only status.
+            'status':'error'if failure(event)else''})
     references = [error_reference(event) for event in pending_failures(events,limit=20,receiver=receiver)]
     # Carry bounded, payload-free retry context across traces in one turn.
     # Otherwise a successful step is discarded before owner-level correlation.

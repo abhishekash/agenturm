@@ -1601,15 +1601,17 @@ class Store:
                             'SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM trace_summaries WHERE trace_id=?) LIMIT 1',
                             (trace_id,trace_id)).fetchone():continue
                     db.execute('DELETE FROM finding_dirty_v1 WHERE trace_id=?',(trace_id,))
-                    derived = (derive_trace(db, trace_id, workflow_patterns=True) if trace_id in active_pattern_runs
-                               else derive_trace(db, trace_id))
-                    if derived is None:
-                        db.execute("DELETE FROM trace_summaries WHERE trace_id=?", (trace_id,))
-                        db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
-                        continue
-                    summary, activity, findings, timestamp = derived
-                    from .error_reminders import trace_error_references
-                    errors = trace_error_references(activity,trace_id,receiver=receiver)
+                    from .operation_preparation import OperationPreparation
+                    with OperationPreparation() as preparation:
+                        derived = (derive_trace(db, trace_id, workflow_patterns=True,operation_preparation=preparation)
+                                   if trace_id in active_pattern_runs else derive_trace(db,trace_id,operation_preparation=preparation))
+                        if derived is None:
+                            db.execute("DELETE FROM trace_summaries WHERE trace_id=?", (trace_id,))
+                            db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
+                            continue
+                        summary, activity, findings, timestamp = derived
+                        from .error_reminders import trace_error_references
+                        errors = trace_error_references(activity,trace_id,receiver=receiver,operation_preparation=preparation)
                     db.execute("INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id,error_refs_json) VALUES(?,?,?,?,?,?) "
                                "ON CONFLICT(trace_id) DO UPDATE SET session_id=excluded.session_id,"
                                "summary_json=excluded.summary_json,activity_json=excluded.activity_json,"
