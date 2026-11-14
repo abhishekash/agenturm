@@ -1,0 +1,74 @@
+{
+  "format": "agenturm-fixture-provenance-v1",
+  "recorded_at_utc": "2026-11-14T11:09:48+00:00",
+  "status": "partial; upstream version provenance unavailable",
+  "repository_contract_commit": "5e0c39786066fb88c0e270418573e361aeb6cf9a",
+  "tested_reader_commit": "920f44e517bc5f8583521dbae5664fe3fff37d1e",
+  "tested_pr": 79,
+  "tested_ci": "All 12 required checks succeeded at this head; this does not imply producer compatibility outside the tested contract.",
+  "data_origin": "Synthetic/schema-derived repository fixtures; no raw personal transcript copied.",
+  "upstream_producer_version": null,
+  "upstream_schema_revision": null,
+  "unknown_reason": "The repository fixtures do not record the originating upstream producer build or schema revision. Installed hook-research CLI versions are not fixture-capture provenance.",
+  "contracts": [
+    {
+      "producer": "Codex",
+      "fixture": "tests/fixtures/native_review/codex.jsonl",
+      "origin": "Synthetic native-shaped JSONL using session_meta and event_msg/text/command/file/token records; not a version-labelled live capture.",
+      "upstream_version": null,
+      "schema_revision": null,
+      "reader": "observatory/local_agents.py",
+      "end_to_end_test": "tests/test_native_review_contract.py"
+    },
+    {
+      "producer": "OpenCode",
+      "fixture_constructors": [
+        "tests/test_opencode.py",
+        "tests/test_opencode_turn_review.py"
+      ],
+      "origin": "Test-generated SQLite native-schema contracts with recorded user-parent/assistant-step relationships; not a version-labelled live database capture.",
+      "upstream_version": null,
+      "schema_revision": null,
+      "reader": "observatory/opencode.py",
+      "end_to_end_test": "tests/test_opencode_turn_review.py"
+    }
+  ],
+  "files": [
+    {
+      "path": "observatory/local_agents.py",
+      "sha256": "12602f8c1e9c1c4d5c47c616aad7f8eb08bf271a4704394a5e49f62908cd4c8c",
+      "git_blob": "21a5b1840959cf89db23818d6296784aeeedd932",
+      "equal_to_tested_head": "920f44e517bc5f8583521dbae5664fe3fff37d1e"
+    },
+    {
+      "path": "observatory/opencode.py",
+      "sha256": "cc444be5c2521c0e59089d55930c249e65b1d8e78ea27191a8e24e4bfa5e16bd",
+      "git_blob": "9add82a3ddc634a18025ecb2ef247b603152acfe",
+      "equal_to_tested_head": "920f44e517bc5f8583521dbae5664fe3fff37d1e"
+    },
+    {
+      "path": "tests/fixtures/native_review/codex.jsonl",
+      "sha256": "cfb73258d9824e36b7d9240d3bc2d49b2c7f001dbc12f338e79db182aee682ab",
+      "git_blob": "380e300d1113a9e3b3a3c4910cd5da06e72a80de",
+      "equal_to_tested_head": "920f44e517bc5f8583521dbae5664fe3fff37d1e"
+    },
+    {
+      "path": "tests/test_opencode.py",
+      "sha256": "bc065e066131d8e89c04da2ad1690389c0b256f0d5d2cdf9f8e927ebfdc8a186",
+      "git_blob": "17dfaddab2cc3c39c036916aebeada5e8b376876",
+      "equal_to_tested_head": "920f44e517bc5f8583521dbae5664fe3fff37d1e"
+    },
+    {
+      "path": "tests/test_opencode_turn_review.py",
+      "sha256": "892bc2a828c96f12b6d4f25ada2b603eec50ccb3d79479724d01fae1039cc62b",
+      "git_blob": "ff6ce8ef6194e71d1c52be41c87ef92b85d28fa9",
+      "equal_to_tested_head": "920f44e517bc5f8583521dbae5664fe3fff37d1e"
+    }
+  ],
+  "remaining": [
+    "Obtain consent-safe producer-version-labelled golden source records for the claimed current producer versions.",
+    "Record upstream producer/schema revision at fixture capture, rather than infer it after the fact.",
+    "Validate ingestion\u2192Store\u2192authenticated API\u2192Review/export at those labelled versions.",
+    "Live Claude Code/Pi compatibility has not been exercised; unit fixtures and inspected installed versions do not close this gap."
+  ]
+}

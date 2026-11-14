@@ -1,0 +1,392 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Agenturm · review-notes acceptance audit</title><style>*{box-sizing:border-box}html{color-scheme:light dark;scroll-behavior:smooth}body{margin:0;background:#f4f6f8;color:#172333;font:16px/1.65 system-ui,sans-serif}main{max-width:1120px;margin:auto;padding:42px 28px 80px}h1{font-size:clamp(2rem,5vw,3.5rem);line-height:1.12;letter-spacing:-.035em;max-width:20ch}h2{margin-top:3rem;padding-top:1rem;border-top:1px solid #cad4df;font-size:1.7rem;line-height:1.2}h3{margin-top:2rem;line-height:1.3;color:#145c70}p,li{overflow-wrap:anywhere}a{color:#075b99;text-underline-offset:3px}code{font-size:.86em;background:#e4eaf0;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}table{display:block;overflow-x:auto;border-collapse:collapse;font-size:.9rem;margin:1.5rem 0;width:100%}th,td{text-align:left;vertical-align:top;border:1px solid #ccd5df;padding:10px;min-width:120px}th{background:#e4eaf0}td:last-child{min-width:180px}nav{display:flex;flex-wrap:wrap;gap:10px;margin:24px 0;padding:14px 0;border-bottom:1px solid #cad4df}nav a{border:1px solid #cad4df;padding:6px 10px;border-radius:5px;font-size:.9rem}footer{border-top:1px solid #cad4df;margin-top:3rem;padding-top:1rem;font-size:.9rem;color:#526375}@media(prefers-color-scheme:dark){body{background:#101721;color:#dce4ee}h2,nav,footer{border-color:#344254}h3{color:#86c9da}a{color:#8fc6ff}code,th{background:#243143}th,td,nav a{border-color:#3b4b60}footer{color:#a9b6c7}}@media(max-width:600px){main{padding:24px 18px 50px}body{font-size:15px}h2{font-size:1.4rem}th,td{padding:8px}nav{gap:8px}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}</style></head><body><main><nav aria-label="Report sections"><a href="#decision">Decision</a><a href="#integration">CI / merge</a><a href="#resources">Resources</a><a href="#findings">27 findings</a><a href="#recommendations">11 recommendations</a><a href="#provenance">Provenance</a><a href="#remaining">Remaining gates</a></nav><h1>Review-notes acceptance audit</h1>
+<p>Frozen audit snapshot: <strong>2026-11-14T11:09:48+00:00</strong>. Base main: <code>5e0c39786066fb88c0e270418573e361aeb6cf9a</code>. This report records implementation, tests, integration state and external outcomes separately. It is not a declaration that the complete plan has passed acceptance.</p>
+<h2 id="decision">Decision at this snapshot</h2>
+<p>The tested native Review, ownership, local security, task continuity and indexed-read repairs address much of the original failure surface. The plan still has material delivery and acceptance gates: E visible wiring/follow-up CI, F production CLI/source-pass regressions, resource targets, current-producer version provenance and external pilot/live-runtime evidence.</p>
+<p><strong>Do not mark all F/R items closed.</strong> “Implemented” below describes an inspected code/test contract; it does not mean every upstream version, final combined build, desktop environment or adoption outcome is validated.</p>
+<h2>Audit basis</h2>
+<ul>
+<li>Original user-owned notes: <code>agenturm-review-notes.md</code>, SHA-256 <code>8352ce8a78edaea075083e59850ddd96bb70868164e3c146b11cd97b0a617ce3</code>; read-only and unchanged. Original review was main <code>d36446c</code>, 13 November 2026, version 0.2.3.</li>
+<li>Accepted scope: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/docs/rfcs/review-notes-completion-plan.md">review-notes completion plan</a>. This separate ledger does not rewrite the user notes or the global plan.</li>
+<li>Coverage: <strong>27 findings and 11 recommendations</strong>, with exact code/test links frozen to the inspected commit. Links identify evidence, not an assertion that every linked test ran on the final combined tree.</li>
+<li>Sources: main through PR79, merged G PR80, open E/F/MCP branches PR81–83, delivered local follow-ups 81e8582/bc1a42b and a921c10, plus the recorded validation reports. Unpushed root corrections are reported as pending, not substituted into frozen branch links.</li>
+</ul>
+<h2 id="integration">Integration and CI ledger</h2>
+<table>
+<thead>
+<tr>
+<th>PR</th>
+<th>State</th>
+<th>Exact tested head</th>
+<th>CI at snapshot</th>
+<th>Merge commit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/79">#79</a></td>
+<td>MERGED</td>
+<td><code>920f44e517bc5f8583521dbae5664fe3fff37d1e</code></td>
+<td>12 success</td>
+<td><code>5e0c39786066fb88c0e270418573e361aeb6cf9a</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/80">#80</a></td>
+<td>MERGED</td>
+<td><code>0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7</code></td>
+<td>12 success</td>
+<td><code>1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/81">#81</a></td>
+<td>OPEN</td>
+<td><code>fd88ce595d02266e812d9418596c39a5282c728e</code></td>
+<td>4 failure, 8 success</td>
+<td>—</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/82">#82</a></td>
+<td>OPEN</td>
+<td><code>bd90dcb7809a1575ef8cccfef3452cef32a3724c</code></td>
+<td>4 failure, 8 success</td>
+<td>—</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/83">#83</a></td>
+<td>MERGED</td>
+<td><code>ca9b51918a7932b492a1f67ccb2d066dde34ca95</code></td>
+<td>12 success</td>
+<td><code>728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c</code></td>
+</tr>
+</tbody>
+</table>
+<p>The PR81 original failures include legacy positive fixtures without the newly required owner/typed-argument proof. Corrections and the source-complete usage/progress hook are in the root worktree; new-head CI is required before closure. Strict matching must remain intact.</p>
+<p>PR82 original full Python matrix consistently reports <strong>945 cases, two failures and one error, 14 skips</strong>. A real authenticated headless Review subprocess crashes because <code>native_snapshot()</code> assumes <code>snapshot.activity</code>, while the CLI constructs a lightweight snapshot without that field. The same assumption breaks receipt refresh. A separate budget test counts 800 visits for 400 Activity entries because native lifecycle preparation introduces a second traversal. Root was notified; these are delivery blockers at the recorded head, not ignored fixture noise.</p>
+<p>Focused gates are useful but overlap: G integrated gates 69 cases/43.433 s and 33 delta cases/5.600 s; E original integration 39 cases/61.255 s, then the delivered follow-up 49 cases/10.318 s; F local native inventory fence gate 25 cases/5.522 s and later root 100-case integration gate; MCP 91 cases/38.339 s. These do not sum to independent coverage or replace full new-head CI.</p>
+<h2 id="resources">Resource acceptance ledger</h2>
+<p>The targets remain <strong>cold readiness &lt;30 s</strong>, <strong>complete-monitor idle CPU &lt;5% of one core</strong>, and <strong>Sessions/MCP p95 &lt;100 ms</strong> on a matched corpus/reference host. Different corpora and workloads are kept separate.</p>
+<table>
+<thead>
+<tr>
+<th>Experiment</th>
+<th>What is supported</th>
+<th>What remains open</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/docs/validation/history-read-economics.md">PR72 retained-history pair</a></td>
+<td>Cold 184.38→112.96 s; idle CPU 23.63→15.90%; under-write Sessions p95 373.58→284.90 ms and MCP 246.09→142.60 ms on that pair.</td>
+<td>All stated targets remain missed. Earlier lock-failure comparison was rejected.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/docs/validation/idle-history-watch.md">PR73 idle watch</a></td>
+<td>Matched idle CPU 17.80→14.90%.</td>
+<td>No new cold/read or final combined memory claim.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/docs/validation/source-preparation.md">PR74 source preparation</a></td>
+<td>Three measured consumers: median 21% canonical / 34% fallback preparation reduction; individual regressions are retained.</td>
+<td>This isolated work is not whole-monitor CPU or a general speedup.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/docs/validation/session-projection-batch.md">PR79 normalized Sessions pair</a></td>
+<td>Separate 6,047-trace synthetic corpus: idle p95 312.93→220.50 ms; under-write p95 441.02→286.34 ms; 91 accepted writes, 89 during reads, zero errors.</td>
+<td>Still &gt;100 ms. Excludes receiver HTTP/UI/native discovery/cold/RSS.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/blob/ca9b51918a7932b492a1f67ccb2d066dde34ca95/docs/validation/mcp-inventory-grouping.md">PR83 shared MCP grouping</a></td>
+<td>Same 6,047-trace corpus: both pairs lower median; first under-write p95 230.88→239.96 ms, unchanged-source repeat 343.53→307.98 ms.</td>
+<td>Mixed tails; no general p95 improvement, both &gt;100 ms. Retained inventory remains proportional to source population.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/docs/validation/typed-investigations.md">G isolated index cost</a></td>
+<td>6,000 synthetic events: median build 608.53→4,017.29 ms; DB +19.4%; typed reads measured in isolation.</td>
+<td>Predates final identity/dirty-queue/rename integration. No combined monitor resource acceptance.</td>
+</tr>
+<tr>
+<td>Local a921c10 source qualification</td>
+<td>Frozen serialized output equivalence across 14 fixture groups; raw operation-fact projections 237→134; 46 focused tests pass.</td>
+<td>Diagnostic profiler samples only; no controlled whole-cold or monitor CPU claim.</td>
+</tr>
+</tbody>
+</table>
+<p>The earlier one-hour generated active/probed run reported DB 427.82 MiB and max DB+WAL 433.56 MiB, but it predates the final E/F/G/MCP combination. It does <strong>not</strong> establish a final normal-load memory plateau or WAL-growth bound. Final combined cold readiness, CPU, sustained RSS and DB/WAL acceptance have not been measured.</p>
+<h2>User-reachable paths and conservative boundaries</h2>
+<ul>
+<li>Review: open the selected execution; <code>g</code>/<code>m</code> explicitly map/capture Git, <code>d</code> prepares the continuity draft and explicit approval appends an immutable version. CLI Review JSON composes with saved-task links. Frozen evidence must recheck every contributing source and receiver at copy/export/save.</li>
+<li>Investigations: Activity History, <code>Ctrl+F</code>, command palette or <code>agenturm investigate</code>; typed query, bounded paging, exact pinned source. No match is not proof of no activity.</li>
+<li>MCP/Usage: existing inspectors, not extra dashboards. Loaded-window reliability describes recorded protocol/tool outcomes, never response correctness. Optional estimates require explicit exact-model rates and proven allocation; absence never recommends deleting a tool.</li>
+<li>Repetition/progress: <code>AGENTURM_WORKFLOW_PATTERNS=1</code> is opt-in. Later matching success retains both source records; reported usage contribution context must be source-complete, exact-owner/execution and strictly timed. It is neither waste attribution, a repaired-task claim, cumulative-counter delta nor context occupancy.</li>
+<li>Persistent attention: <code>agenturm attention watch --endpoint … [--desktop]</code>; shared durable claims, quiet baseline and optional native metadata. Native approval remains in the actual agent terminal. Unsupported runtime approval mapping, ambiguous clocks or capacity defer rather than invent authority.</li>
+</ul>
+<h2 id="findings">Findings F1–F27</h2>
+<h3>F1 · CPU/RSS economics</h3>
+<p><strong>Open resource acceptance</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/70">#70</a>–<a href="https://github.com/abhishekash/agenturm/pull/79">#79</a>; MCP <a href="https://github.com/abhishekash/agenturm/pull/83">#83</a> open; local <code>a921c10</code> reduces duplicate qualification.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/storage_activity.py">storage_activity.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/storage_sessions.py">storage_sessions.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/storage_mcp.py">storage_mcp.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/read_connections.py">read_connections.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_history_read_economics.py">test_history_read_economics.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_idle_history_watch.py">test_idle_history_watch.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_session_projection_batch.py">test_session_projection_batch.py</a>.</p>
+<p>Cold &lt;30 s, complete-monitor idle &lt;5%, endpoint p95 &lt;100 ms and final combined memory/WAL acceptance remain open. Endpoint/call-count results do not prove whole-monitor improvement.</p>
+<p>Controlled reports retain workload/source boundaries; see the separate resource ledger below.</p>
+<h3>F2 · No default retention</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/receiver_state.py">receiver_state.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/server.py">server.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/core.py">core.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_recovery_defaults.py">test_recovery_defaults.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_storage_receiver_hardening.py">test_storage_receiver_hardening.py</a>.</p>
+<p>New managed stores use a 14-day age policy; existing stores require explicit opt-in. Age retention is not a byte cap, immediate file shrink or proof of a memory/WAL plateau.</p>
+<h3>F3 · Telemetry in the launch directory</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/receiver_state.py">receiver_state.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/__main__.py"><strong>main</strong>.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_recovery_defaults.py">test_recovery_defaults.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_storage_receiver_hardening.py">test_storage_receiver_hardening.py</a>.</p>
+<p>Private XDG state and explicit non-destructive legacy migration are provided. Explicit --db remains an intentional user override; captured content is still sensitive.</p>
+<h3>F4 · Unreliable one-shot scripting</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> and follow-up <a href="https://github.com/abhishekash/agenturm/pull/70">#70</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/terminal.py">terminal.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/__main__.py"><strong>main</strong>.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_recovery_once.py">test_recovery_once.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_snapshot_unknown_usage.py">test_snapshot_unknown_usage.py</a>.</p>
+<p>Readiness/error/partial/interrupt are distinguished; missing data is not a zero-success snapshot. Discovery/readiness can exceed the deadline and return partial rather than pretend success.</p>
+<h3>F5 · OpenCode step mistaken for turn</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/71">#71</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/opencode.py">opencode.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/workflow_evidence.py">workflow_evidence.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/review_facts.py">review_facts.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_opencode_turn_review.py">test_opencode_turn_review.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_turn_task_continuity.py">test_turn_task_continuity.py</a>.</p>
+<p>Recorded user-parent membership joins prompt and assistant/tool steps; exact-step mode remains explicit. Missing/contradictory membership stays unknown; no time-proximity join.</p>
+<h3>F6 · Codex Review omits real evidence</h3>
+<p><strong>Implemented for tested contracts</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/local_agents.py">local_agents.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/operation_facts.py">operation_facts.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/workflow_evidence.py">workflow_evidence.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_native_review_contract.py">test_native_review_contract.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_operation_hydration.py">test_operation_hydration.py</a>.</p>
+<p>Native-shaped ingestion→Store→authenticated API→Review/export assertions cover edits/checks/text/usage. This is not universal producer-version compatibility; F26 provenance remains qualified.</p>
+<h3>F7 · Noisy attention signal</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/70">#70</a>; persistent reuse in <a href="https://github.com/abhishekash/agenturm/pull/82">#82</a> open.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/attention.py">attention.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/session_status.py">session_status.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/ui_workflow.py">ui_workflow.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_attention.py">test_attention.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_session_status.py">test_session_status.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_today_outcomes.py">test_today_outcomes.py</a>.</p>
+<p>Explicit request/unknown separation and incident identity are present. Advisory stalled/failed states are not native approval authority; unsupported clocks/coverage defer reliable delivery.</p>
+<h3>F8 · Low roster/Overview information density</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/72">#72</a> / <a href="https://github.com/abhishekash/agenturm/pull/74">#74</a> / <a href="https://github.com/abhishekash/agenturm/pull/78">#78</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/terminal_ui.py">terminal_ui.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/overview.py">overview.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/source_projection.py">source_projection.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_agents_readability.py">test_agents_readability.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_overview_facts.py">test_overview_facts.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_overview_ui.py">test_overview_ui.py</a>.</p>
+<p>Compact/expanded inspectors show recorded paths/checks/issues before assistant claims; hierarchy/shading/keyboard behavior retained. Loaded bounded evidence is not a full-history summary.</p>
+<h3>F9 · Old completion backlog</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/70">#70</a>; same receipts used by open <a href="https://github.com/abhishekash/agenturm/pull/82">#82</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/ui_workflow.py">ui_workflow.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/workflow_store.py">workflow_store.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/session_status.py">session_status.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_today_outcomes.py">test_today_outcomes.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_workflow_store.py">test_workflow_store.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_keyboard_navigation.py">test_keyboard_navigation.py</a>.</p>
+<p>Today/history, human-readable ages and frozen-ID bulk review exist. Marking reviewed is neither native approval nor proof of resolution; old archived records remain inspectable.</p>
+<h3>F10 · No observed continuity adoption</h3>
+<p><strong>External outcome open</strong></p>
+<p>Technical drafts merged <a href="https://github.com/abhishekash/agenturm/pull/77">#77</a>; pilot materials in merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/review_continuity.py">review_continuity.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/saved_tasks.py">saved_tasks.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/ui_saved_tasks.py">ui_saved_tasks.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_review_continuity_ui.py">test_review_continuity_ui.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_turn_task_continuity.py">test_turn_task_continuity.py</a>.</p>
+<p>No new participant, author-use or voluntary repeat-use observation is established. Pilot denominator is 0 participants / 0 sessions / 0 repeat-use observations; do not infer adoption from tests.</p>
+<h3>F11 · Shared daemon falsely proves progress</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/70">#70</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/local_runtime.py">local_runtime.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/local_agents.py">local_agents.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/session_status.py">session_status.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_local_runtime.py">test_local_runtime.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_session_status.py">test_session_status.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_soak_monitor.py">test_soak_monitor.py</a>.</p>
+<p>Multiplexed/app-server activity is not per-session progress; unconfirmed status remains possible. Linux process evidence and the generated soak do not cover every runtime/platform.</p>
+<h3>F12 · Unknown children counted as actionable</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/attention.py">attention.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/session_status.py">session_status.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/terminal_ui.py">terminal_ui.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_attention.py">test_attention.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_today_outcomes.py">test_today_outcomes.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_session_status.py">test_session_status.py</a>.</p>
+<p>Unknown/unlinked coverage is separated from explicit requests. New collision/loop/native heuristics must not silently turn it into an approval request.</p>
+<h3>F13 · Strong MCP screen lacks qualified recommendations</h3>
+<p><strong>Partial; follow-up in progress</strong></p>
+<p>Open <a href="https://github.com/abhishekash/agenturm/pull/81">#81</a>; shared-query economics in open <a href="https://github.com/abhishekash/agenturm/pull/83">#83</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/observatory/terminal_ui.py">terminal_ui.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/observatory/evidence_explanations.py">evidence_explanations.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/tests/test_explanation_integration.py">test_explanation_integration.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/tests/test_evidence_explanations.py">test_evidence_explanations.py</a>.</p>
+<p>Selected-tool loaded-page outcome/duration counts and small-sample limits are wired. At the audited head, configured-unobserved context and helper source-reference arrays are not rendered as user navigation; root is adding that bounded wiring.</p>
+<h3>F14 · Generic failures without useful evidence</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a> / <a href="https://github.com/abhishekash/agenturm/pull/76">#76</a>; local <code>a921c10</code> preserves references while reducing repeated parsing.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/operation_facts.py">operation_facts.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/findings.py">findings.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/finding_sources.py">finding_sources.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/ui_findings.py">ui_findings.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_operation_facts.py">test_operation_facts.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_owned_findings.py">test_owned_findings.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_finding_sources_ui.py">test_finding_sources_ui.py</a>.</p>
+<p>Commands/exits/output roles, occurrence ownership, safe fingerprints and exact sources are implemented. Unknown/redacted/clipped inputs cannot prove equivalence; a later success does not prove complete repair.</p>
+<h3>F15 · Historical JSON expansion/read cost</h3>
+<p><strong>Partial resource acceptance</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/72">#72</a>–<a href="https://github.com/abhishekash/agenturm/pull/79">#79</a>; open <a href="https://github.com/abhishekash/agenturm/pull/83">#83</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/storage_activity.py">storage_activity.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/storage_derived.py">storage_derived.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/storage_sessions.py">storage_sessions.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/storage_mcp.py">storage_mcp.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_cockpit_read_paths.py">test_cockpit_read_paths.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_session_projection_batch.py">test_session_projection_batch.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_history_read_economics.py">test_history_read_economics.py</a>.</p>
+<p>Indexed Activity/scalar rollups and bounded source reads replace repeated full-history Activity expansion. Remaining retained MCP grouping, cold migration and combined monitor cost are material and not closed.</p>
+<h3>F16 · Local API/privacy/redaction defaults</h3>
+<p><strong>Implemented safeguards; continuous invariant</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/70">#70</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a>–<a href="https://github.com/abhishekash/agenturm/pull/77">#77</a>; inherited by open E/F/G.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/receiver_state.py">receiver_state.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/server.py">server.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/http_transport.py">http_transport.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/operation_facts.py">operation_facts.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/ui_export.py">ui_export.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_recovery_defaults.py">test_recovery_defaults.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_http_transport.py">test_http_transport.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_receipt_export_policy.py">test_receipt_export_policy.py</a>.</p>
+<p>Private token/Host/Origin/redirect checks, expanded best-effort redaction and late-egress capture fences exist. No universal secret-detection or security guarantee follows; new paths still need combined-source gates.</p>
+<h3>F17 · Native add/update edits discarded</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Native actions merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a>; typed rename integration in merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/observatory/command_evidence.py">command_evidence.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/observatory/workflow_evidence.py">workflow_evidence.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/observatory/recorded_paths.py">recorded_paths.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/tests/test_native_review_contract.py">test_native_review_contract.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/tests/test_investigation_store.py">test_investigation_store.py</a>.</p>
+<p>Failed/unknown file attempts do not prove a persisted change. Both explicit rename paths survive typed argument projection in G; no arrow/path equivalence guessing.</p>
+<h3>F18 · Wrapped native checks not recognized</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/command_evidence.py">command_evidence.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/operation_facts.py">operation_facts.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/workflow_evidence.py">workflow_evidence.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_native_review_contract.py">test_native_review_contract.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_operation_facts.py">test_operation_facts.py</a>.</p>
+<p>Recognized wrappers/qualified compound success are supported; no-op, masked, unknown or ambiguous failure remains unverified. Recorded success does not certify later worktree changes.</p>
+<h3>F19 · Exact usage rejected or misallocated</h3>
+<p><strong>Implemented allocation; labels follow-up</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/71">#71</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a>; explanation wiring in open <a href="https://github.com/abhishekash/agenturm/pull/81">#81</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/review_facts.py">review_facts.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/workflow_evidence.py">workflow_evidence.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/core.py">core.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_agent_usage_allocation.py">test_agent_usage_allocation.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_turn_task_continuity.py">test_turn_task_continuity.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_native_review_contract.py">test_native_review_contract.py</a>.</p>
+<p>Single-owner/turn usage, unknown fields and partial costs are preserved. R8 label/selection work is separate from accounting; no shared-trace allocation or zero from missing data.</p>
+<h3>F20 · Assistant-message placeholders</h3>
+<p><strong>Implemented for tested contracts</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/local_agents.py">local_agents.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/session_text.py">session_text.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_native_review_contract.py">test_native_review_contract.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_native_sessions.py">test_native_sessions.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_session_text.py">test_session_text.py</a>.</p>
+<p>Supported native text blocks reach Review and generic placeholders are suppressed. New upstream schemas and live Claude/Pi compatibility are not proven by these synthetic contracts.</p>
+<h3>F21 · Initiating request crowded out</h3>
+<p><strong>Implemented, bounded</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a>; instruction investigation in merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/core.py">core.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/workflow_evidence.py">workflow_evidence.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/review_facts.py">review_facts.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_workflow_evidence.py">test_workflow_evidence.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_opencode_turn_review.py">test_opencode_turn_review.py</a>.</p>
+<p>Independent request/update context and paging expose intent within explicit source limits. Pruned, uncaptured or clipped intent remains unavailable, never reconstructed by guesswork.</p>
+<h3>F22 · Complete captured run shows zero work</h3>
+<p><strong>Implemented for tested contracts</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/70">#70</a> / <a href="https://github.com/abhishekash/agenturm/pull/71">#71</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/local_agents.py">local_agents.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/workflow_evidence.py">workflow_evidence.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/work_receipts.py">work_receipts.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_native_review_contract.py">test_native_review_contract.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_workflow_evidence.py">test_workflow_evidence.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_turn_task_continuity.py">test_turn_task_continuity.py</a>.</p>
+<p>End-to-end native-shaped checks/edits/text/usage and generated reconstructions are verified. Coverage limits and unsupported producer variants remain explicit; tests are not current live participant evidence.</p>
+<h3>F23 · Review JSON/task-link mismatch</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/71">#71</a> / <a href="https://github.com/abhishekash/agenturm/pull/77">#77</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/saved_tasks.py">saved_tasks.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/task_cli.py">task_cli.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/ui_saved_tasks.py">ui_saved_tasks.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_turn_task_continuity.py">test_turn_task_continuity.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_saved_task_scope_links.py">test_saved_task_scope_links.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_task_cli.py">test_task_cli.py</a>.</p>
+<p>Raw Review JSON composes without retyping IDs; turn members/check source traces/accounting survive. Contradictory links reject; legacy ambiguous data stays readable without trusted totals until explicit repair.</p>
+<h3>F24 · Passing suite hid fixture mismatch</h3>
+<p><strong>Strength preserved; final matrix pending</strong></p>
+<p>Main through <a href="https://github.com/abhishekash/agenturm/pull/79">#79</a> merged; merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>–<a href="https://github.com/abhishekash/agenturm/pull/83">#83</a> have separate CI states.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/operation_facts.py">operation_facts.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/workflow_evidence.py">workflow_evidence.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_native_review_contract.py">test_native_review_contract.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_opencode_turn_review.py">test_opencode_turn_review.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_owned_findings.py">test_owned_findings.py</a>.</p>
+<p>Counts alone do not close fidelity. PR80 is merged with all 12 checks green; PR81 and PR82 each have four failed Python jobs at their original head, while PR83 has all 12 green but remains open. Root follow-up fixes and final combined-tree packaging/security/ownership/capture/terminal checks remain delivery gates.</p>
+<h3>F25 · OpenCode prompts excluded by trace</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/71">#71</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/opencode.py">opencode.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/workflow_evidence.py">workflow_evidence.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/review_cli.py">review_cli.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_opencode_turn_review.py">test_opencode_turn_review.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_turn_task_continuity.py">test_turn_task_continuity.py</a>.</p>
+<p>Whole-turn scope uses recorded membership and includes the initiating prompt. Exact-step mode can intentionally omit other steps; absent parent/turn evidence is not invented.</p>
+<h3>F26 · Idealized rather than version-labelled goldens</h3>
+<p><strong>Partial provenance / external coverage</strong></p>
+<p>Native-shaped tests merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a>; G pilot/search in merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/local_agents.py">local_agents.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/opencode.py">opencode.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/workflow_evidence.py">workflow_evidence.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_native_review_contract.py">test_native_review_contract.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_opencode_turn_review.py">test_opencode_turn_review.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_native_sessions.py">test_native_sessions.py</a>.</p>
+<p>Repository-native synthetic contracts are tested, but upstream producer/schema versions were not recorded for these fixtures. A truthful provenance manifest records unknown rather than assigning installed versions. Live Claude/Pi and future-version compatibility remain open.</p>
+<h3>F27 · Cockpit-bound delivery, native events and Git</h3>
+<p><strong>Implemented branches; merge/external gates open</strong></p>
+<p>Git/drafts merged <a href="https://github.com/abhishekash/agenturm/pull/77">#77</a>; persistent/native delivery open <a href="https://github.com/abhishekash/agenturm/pull/82">#82</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/observatory/attention_runner.py">attention_runner.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/observatory/attention_cli.py">attention_cli.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/observatory/native_lifecycle.py">native_lifecycle.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/observatory/storage_native_lifecycle.py">storage_native_lifecycle.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/tests/test_native_inventory.py">test_native_inventory.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/tests/test_native_activity_integration.py">test_native_activity_integration.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/tests/test_attention_runner.py">test_attention_runner.py</a>.</p>
+<p>Authenticated watcher and shared claims work without a cockpit; native input is optional metadata only. Actual desktop delivery was mocked; runtime approval IDs/capacity/clock limits remain. Codex notify is completion-only; unsupported hooks are not guessed. PR82 currently also fails the real headless Review CLI due to a new missing-Activity snapshot assumption and doubles the existing Activity traversal; both need correction before delivery.</p>
+<h2 id="recommendations">Recommendations R1–R11</h2>
+<h3>R1 · Reliable cross-runtime attention</h3>
+<p><strong>Implemented branches; external gate open</strong></p>
+<p>Main classifier plus open <a href="https://github.com/abhishekash/agenturm/pull/82">#82</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/observatory/attention_runner.py">attention_runner.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/observatory/attention.py">attention.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/observatory/native_lifecycle.py">native_lifecycle.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/observatory/__main__.py"><strong>main</strong>.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/tests/test_attention_runner.py">test_attention_runner.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/tests/test_native_inventory.py">test_native_inventory.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/tests/test_native_activity_integration.py">test_native_activity_integration.py</a>.</p>
+<p>Use <code>agenturm attention watch --endpoint … [--desktop]</code>. Quiet baseline, offline eligible requests and durable dedup are tested; native terminal approval remains manual. Mock delivery is not measured alert precision or live OS delivery. PR82 delivery remains blocked by the production Review CLI regression and source-pass budget failure identified in full CI.</p>
+<h3>R2 · Truthful per-turn receipts with frozen Git</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/71">#71</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a> / <a href="https://github.com/abhishekash/agenturm/pull/77">#77</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/workflow_evidence.py">workflow_evidence.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/review_continuity.py">review_continuity.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/work_receipts.py">work_receipts.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_turn_task_continuity.py">test_turn_task_continuity.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_review_continuity_ui.py">test_review_continuity_ui.py</a>.</p>
+<p>Review g/m explicitly maps/captures read-only Git; earlier checks do not certify the current checkout. Recorded edits and all worktree changes/pre-existing/concurrent work stay distinct.</p>
+<h3>R3 · Actionable failure diagnosis</h3>
+<p><strong>Implemented; additional positive context pending</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a> / <a href="https://github.com/abhishekash/agenturm/pull/76">#76</a>; open <a href="https://github.com/abhishekash/agenturm/pull/81">#81</a> follow-up local <code>81e8582</code>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/operation_facts.py">operation_facts.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/findings.py">findings.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/finding_sources.py">finding_sources.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/ui_findings.py">ui_findings.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_operation_correlation.py">test_operation_correlation.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_owned_findings.py">test_owned_findings.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_finding_sources_ui.py">test_finding_sources_ui.py</a>.</p>
+<p>Current/previous unseen reminders remain separate from archival Findings. Exact source s/container trace t, expected nonzero and later-success evidence retain source scope; no repaired-task conclusion.</p>
+<h3>R4 · Approved automatic continuity</h3>
+<p><strong>Implemented; adoption external</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/77">#77</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/review_continuity.py">review_continuity.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/saved_tasks.py">saved_tasks.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/ui_saved_tasks.py">ui_saved_tasks.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/task_cli.py">task_cli.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_review_continuity_ui.py">test_review_continuity_ui.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_review_continuity_cli.py">test_review_continuity_cli.py</a>.</p>
+<p>Review d prepares source-backed editable text, then explicit approval appends an immutable version. Human title/notes/brief/decisions are not overwritten; no human decision or intent is invented.</p>
+<h3>R5 · Parallel-work overlap awareness</h3>
+<p><strong>Implemented, qualified</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/77">#77</a>; typed rename pair fidelity in merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/observatory/review_continuity.py">review_continuity.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/observatory/ui_review.py">ui_review.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/observatory/recorded_paths.py">recorded_paths.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/tests/test_review_continuity.py">test_review_continuity.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/tests/test_review_continuity_ui.py">test_review_continuity_ui.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/tests/test_investigation_store.py">test_investigation_store.py</a>.</p>
+<p>Explicit mapped checkouts/recorded paths and strict check-before-other-edit chronology are shown. Historical branch identity often remains unverified; unknown overlap is not collision proof. Different worktrees, failed attempts and ambiguous paths do not become confirmed collisions.</p>
+<h3>R6 · Progression and repeated-work evidence</h3>
+<p><strong>Partial integration in progress</strong></p>
+<p>Open <a href="https://github.com/abhishekash/agenturm/pull/81">#81</a>; pure follow-up local <code>81e8582</code> delivered.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/observatory/evidence_explanations.py">evidence_explanations.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/observatory/workflow_patterns.py">workflow_patterns.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/tests/test_evidence_explanations.py">test_evidence_explanations.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/tests/test_workflow_patterns.py">test_workflow_patterns.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/tests/test_workflow_backend.py">test_workflow_backend.py</a>.</p>
+<p>Opt in via AGENTURM_WORKFLOW_PATTERNS=1. Pure follow-up 81e8582 is locally integrated as bc1a42b; source_complete and workflow_patterns_v2 repair tests are added in the root worktree but not yet verified as a pushed CI head. Actual failed/success sources and strict per-record leaf-usage context must retain ownership/timing/completeness gates. No always-on usage finding, waste/cost conclusion or context-occupancy inference.</p>
+<h3>R7 · Qualified MCP recommendations</h3>
+<p><strong>Partial visible wiring in progress</strong></p>
+<p>Open <a href="https://github.com/abhishekash/agenturm/pull/81">#81</a> / <a href="https://github.com/abhishekash/agenturm/pull/83">#83</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/observatory/evidence_explanations.py">evidence_explanations.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/observatory/terminal_ui.py">terminal_ui.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/tests/test_explanation_integration.py">test_explanation_integration.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/tests/test_evidence_explanations.py">test_evidence_explanations.py</a>.</p>
+<p>Selected-tool outcome/duration denominators and small samples are visible. Root is adding actual configured-server shape normalization, window-qualified unobserved context and flagged-call navigation. No recommendation to delete configuration from absence; no response-correctness claim.</p>
+<h3>R8 · Usage scope, cache and optional estimates</h3>
+<p><strong>Partial label/wiring follow-up</strong></p>
+<p>Allocation merged; open <a href="https://github.com/abhishekash/agenturm/pull/81">#81</a> carries explanations and scope follow-up.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/observatory/ui_monitoring.py">ui_monitoring.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/observatory/terminal_ui.py">terminal_ui.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/observatory/evidence_explanations.py">evidence_explanations.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/tests/test_task_usage.py">test_task_usage.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/tests/test_explanation_integration.py">test_explanation_integration.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/fd88ce595d02266e812d9418596c39a5282c728e/tests/test_agent_usage_allocation.py">test_agent_usage_allocation.py</a>.</p>
+<p>Root is fixing whole-turn labels/step count, contrasting exact-owner captured session lifetime and declaring exact-agent calendar-day data unavailable rather than borrowing shared/global totals. Retry cost and current context occupancy remain unavailable without authoritative evidence. Rates are explicit exact-model inputs, separate from recorded cost.</p>
+<h3>R9 · Global retrospective investigations</h3>
+<p><strong>Implemented and merged; resource limits remain</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/observatory/investigation.py">investigation.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/observatory/storage_investigation.py">storage_investigation.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/observatory/investigation_cli.py">investigation_cli.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/observatory/ui_investigations.py">ui_investigations.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/observatory/__main__.py"><strong>main</strong>.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/tests/test_investigation_store.py">test_investigation_store.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/tests/test_investigation_cli.py">test_investigation_cli.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/tests/test_ui_investigations.py">test_ui_investigations.py</a>.</p>
+<p>Activity History / Ctrl+F / palette and <code>agenturm investigate</code> are wired. Typed retained path/command/instruction queries, bounded paging, FTS availability and pinned exact source reader are tested. No match proves no activity; old lookup/index-cost data excludes final combined-source overhead.</p>
+<h3>R10 · Safe local collection defaults</h3>
+<p><strong>Implemented safeguards; combined gates open</strong></p>
+<p>Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/70">#70</a>; new open paths inherit invariants.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/receiver_state.py">receiver_state.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/server.py">server.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/native_policy.py">native_policy.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/observatory/http_transport.py">http_transport.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_recovery_defaults.py">test_recovery_defaults.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_storage_receiver_hardening.py">test_storage_receiver_hardening.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/5e0c39786066fb88c0e270418573e361aeb6cf9a/tests/test_http_transport.py">test_http_transport.py</a>.</p>
+<p>Private state/token, Host/Origin, best-effort redaction, capture fences and age retention exist. No all-secrets guarantee, hard disk cap or automatic purge of independently authored task content.</p>
+<h3>R11 · Optional native lifecycle integration</h3>
+<p><strong>Implemented supported contract; coverage qualified</strong></p>
+<p>Open <a href="https://github.com/abhishekash/agenturm/pull/82">#82</a>.</p>
+<p>Code: <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/observatory/native_lifecycle.py">native_lifecycle.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/observatory/attention_cli.py">attention_cli.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/observatory/storage_native_lifecycle.py">storage_native_lifecycle.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/observatory/server.py">server.py</a>.</p>
+<p>Contract tests: <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/tests/test_native_lifecycle.py">test_native_lifecycle.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/tests/test_native_inventory.py">test_native_inventory.py</a>, <a href="https://github.com/abhishekash/agenturm/blob/bd90dcb7809a1575ef8cccfef3452cef32a3724c/tests/test_native_activity_integration.py">test_native_activity_integration.py</a>.</p>
+<p>Generic-v1 is explicit exact metadata; Codex notify adapter is completion-only with independently checked turns. Claude/Pi/OpenCode approval contracts without authoritative request/order mapping remain unsupported/uncertain. Installed version inspection is not live compatibility testing.</p>
+<h2 id="provenance">F26: fixture provenance, with unknowns retained</h2>
+<p>The <a href="native-fixture-provenance.json">machine-readable manifest</a> fingerprints the actual repository contracts and readers. Codex JSONL and generated OpenCode SQLite fixtures are synthetic/schema-derived. Their originating upstream producer build and schema revision were <strong>not recorded</strong>. Inspected installed CLI versions used for hook research cannot be retroactively assigned to these fixtures.</p>
+<p>The readers and listed fixtures at main <code>5e0c39786066fb88c0e270418573e361aeb6cf9a</code> are byte-identical to the head <code>920f44e517bc5f8583521dbae5664fe3fff37d1e</code> tested by PR79 with all 12 checks green. This establishes which repository contract was tested; it does not establish which upstream release emitted a live record.</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>SHA-256</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>observatory/local_agents.py</code></td>
+<td><code>12602f8c1e9c1c4d5c47c616aad7f8eb08bf271a4704394a5e49f62908cd4c8c</code></td>
+</tr>
+<tr>
+<td><code>observatory/opencode.py</code></td>
+<td><code>cc444be5c2521c0e59089d55930c249e65b1d8e78ea27191a8e24e4bfa5e16bd</code></td>
+</tr>
+<tr>
+<td><code>tests/fixtures/native_review/codex.jsonl</code></td>
+<td><code>cfb73258d9824e36b7d9240d3bc2d49b2c7f001dbc12f338e79db182aee682ab</code></td>
+</tr>
+<tr>
+<td><code>tests/test_opencode.py</code></td>
+<td><code>bc065e066131d8e89c04da2ad1690389c0b256f0d5d2cdf9f8e927ebfdc8a186</code></td>
+</tr>
+<tr>
+<td><code>tests/test_opencode_turn_review.py</code></td>
+<td><code>892bc2a828c96f12b6d4f25ada2b603eec50ccb3d79479724d01fae1039cc62b</code></td>
+</tr>
+</tbody>
+</table>
+<p>F26 remains <strong>partial</strong> until consent-safe, producer/schema-version-labelled goldens cover the claimed supported versions through ingestion → Store → authenticated API → Review/export. Live Claude Code and Pi validation remains unavailable at this snapshot.</p>
+<h2 id="remaining">External outcomes and remaining acceptance work</h2>
+<p>The <a href="https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/docs/pilot-kit.md">pilot kit</a> is a protocol and generated fixture, not a study: <strong>0 participants / 0 sessions / 0 repeat-use observations</strong>. No willingness-to-pay, developer adoption, author-repeat-use or alert-precision result was manufactured. Actual OS desktop delivery was mocked; no native approval was executed for testing.</p>
+<p>The remaining work stays inside the accepted scope: correct and validate E/F delivery blockers; verify full new-head and combined-tree packaging/security/ownership/capture/terminal behavior; measure combined retained-history cold/CPU/RSS/WAL and endpoint tails; collect version-labelled producer goldens and consented live/pilot observations. These gates strengthen the existing features rather than add dashboards or speculative automation.</p>
+<h2>Report verification</h2>
+<p>This report enumerates F1–F27 and R1–R11 exactly once, checks referenced local source/test paths exist, freezes remote code links to inspected heads, verifies fixture/reader hashes against the tested head, and snapshots actual PR state/check conclusions. Responsive light/dark HTML is generated from the same Markdown. Document rendering checks do not stand in for product tests.</p>
+<footer>Snapshot report · no external fonts, scripts or assets · source and machine-readable ledger accompany this file.</footer></main></body></html>
