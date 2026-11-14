@@ -1,13 +1,13 @@
 # Review-notes acceptance audit
 
-Current snapshot: **2026-11-14T12:23:07.335342+00:00**, main **`55c6244bf0c1caad2a22cd5c826020f50a677e54`**. Core E/F/G, replay, the acceptance harness, Sessions lookup and source-derived current native formats are merged. **All 12 current main CI checks passed; the complete plan is not yet accepted:** final HTTP/resource/soak/storage/terminal acceptance and external live/pilot evidence remain open.
+Current snapshot: **2026-11-14T13:32:52.180353+00:00**, merged main **`e389889ff7ff7ad92716fa5fb889a0a8ea8760a8`** after PRs #88–91. This is an audit checkpoint, **not the final frozen performance candidate**. Previous main `55c6244` passed all 12 CI jobs; newer readiness/harness runs failed, and current combined CI remains pending. Privacy review, final HTTP/resource/soak/storage/terminal acceptance and live/pilot evidence remain open.
 
 ## Current decision
 
-- **Delivered:** source-backed Overview; exact operation/Findings evidence; frozen Git and approved drafts; evidence-qualified MCP/Usage/progression; typed investigations; persistent shared headless attention; isolated acceptance harness.
-- **CI:** [main `55c6244` run 43592577149](https://github.com/abhishekash/agenturm/actions/runs/43592577149) completed successfully with all 12 jobs; [earlier main e434 run 43591334638](https://github.com/abhishekash/agenturm/actions/runs/43591334638) also completed all 12. Earlier corrected E/F green heads and six intentionally cancelled superseded duplicate runs remain historical, separately attributed.
-- **New merged delivery:** #86 Sessions lookup at `8e9d46f` and #87 source-derived current native formats/proof/provenance at `55c6244`. Remaining work is final accepted validation, not another runtime feature.
-- **Acceptance still open:** matched cold/idle/API targets, final one-hour soak, sustained RSS/modal retention, index/WAL growth and drains, live Claude/Pi, and consented reconstruction/resumption/repeat-use outcomes. Pilot denominator remains **0 participants / 0 sessions / 0 repeat-use observations**.
+- **Delivered:** the existing E/F/G, native/proof and Sessions increments plus same-snapshot cached reads (#88), actual separate-process HTTP/raw-schema/lifecycle harness (#89), bounded incoming worker catch-up (#90) and explicit-readiness privacy/monitoring fixtures (#91).
+- **Current CI:** main #88 run [43598456489](https://github.com/abhishekash/agenturm/actions/runs/43598456489) and #89 run [43598608082](https://github.com/abhishekash/agenturm/actions/runs/43598608082) failed four Python jobs each. Main #90 [43599416680](https://github.com/abhishekash/agenturm/actions/runs/43599416680) and #91 [43599761424](https://github.com/abhishekash/agenturm/actions/runs/43599761424) each have eight successes and four Python jobs pending at this snapshot. No older green matrix certifies these heads.
+- **Pending safety/harness review:** Feed capture-policy/generation revocation and busy-host scheduled-slot smoke classification. Retained actor denial and deny/restore publication/copy/export behavior must pass before final freeze.
+- **Acceptance still open:** cold/idle/API targets, final one-hour soak, sustained RSS/modal retention, index/WAL growth/drains, final terminal lifecycle, live Claude/Pi, and consented reconstruction/resumption/repeat-use outcomes. Pilot denominator remains **0 participants / 0 sessions / 0 repeat-use observations**.
 
 ## Audit basis
 
@@ -26,10 +26,26 @@ The user-owned `agenturm-review-notes.md` is read-only and unchanged: SHA-256 `8
 | [#85](https://github.com/abhishekash/agenturm/pull/85) | MERGED | `b56a353654696941489a1d0853d1c68f1fc94c4c` | 4 cancelled, 8 success | `1aa1948f9723ac4da88a0b5e0ea93322bb8f0f39` |
 | [#86](https://github.com/abhishekash/agenturm/pull/86) | MERGED | `bdda67dceef40221f6ba704d205fe3cc6c4f59e7` | 12 success | `8e9d46fd0f75218705ac581447d69fc862b69d44` |
 | [#87](https://github.com/abhishekash/agenturm/pull/87) | MERGED | `e2c6a4d0a0a2a70a7e01e55acb228f0e0dbc22e9` | 11 success, 1 failure | `55c6244bf0c1caad2a22cd5c826020f50a677e54` |
+| [#88](https://github.com/abhishekash/agenturm/pull/88) | MERGED | `cae0f363b0041825fd628235acc3a6f56e137a41` | 4 failure, 8 success | `ebcd03390bbbe57d18470165a4dbdb919de39357` |
+| [#89](https://github.com/abhishekash/agenturm/pull/89) | MERGED | `0acc227de04319058333de895f6b0558bb00f29c` | 4 failure, 8 success | `f124e2e971919000fb2d7e40f293dacf6ffc72f0` |
+| [#90](https://github.com/abhishekash/agenturm/pull/90) | MERGED | `23f8c035e7ee97df2892b0895551e025a2d1c957` | 4 in_progress, 8 success | `e594a2a83c7d9d6da63e63aa497d88a8ff27b73b` |
+| [#91](https://github.com/abhishekash/agenturm/pull/91) | MERGED | `7b2f45cb9872e5f396adb9009017e5a837766db3` | 4 in_progress, 8 success | `e389889ff7ff7ad92716fa5fb889a0a8ea8760a8` |
 
-Earlier corrected E/F heads had complete green matrices before rebasing. Merged PR81/82/85 duplicate runs were cancelled intentionally; completed full main e434 and main `55c6244` matrices are the combined evidence. PR84, PR86 and the earlier PR79/80/83 head matrices remain historical successes. PR87 head `e2c6a4d` retains one [Python 3.14 failure](https://github.com/abhishekash/agenturm/actions/runs/43592510668/job/132440055787); the later full main `55c6244` matrix passed independently. The earlier failure is neither removed nor assigned an unverified cause. The all-green claim applies exactly to those completed main matrices, not cancelled PR-head runs or unexecuted resource tests.
+Earlier corrected E/F heads had complete green matrices before rebasing. Merged PR81/82/85 duplicate runs were cancelled intentionally; completed full main e434 and main `55c6244` matrices remain historical combined evidence. PR84, PR86 and the earlier PR79/80/83 head matrices remain historical successes. PR87 head `e2c6a4d` retains one [Python 3.14 failure](https://github.com/abhishekash/agenturm/actions/runs/43592510668/job/132440055787); the later full main `55c6244` matrix passed independently. The earlier failure is neither removed nor assigned an unverified cause. The all-green claim applies exactly to those completed main matrices, not cancelled PR-head runs or unexecuted resource tests.
 
 The original E failures exposed positive fixtures missing required receiver/single-owner/typed-command proof. The corrected contract retained strict negative safeguards. The original F matrix exposed a real lightweight headless Review crash and doubled Activity traversal; the fix restored exact once-per-refresh visits and Review/native parity. These failure histories are retained in the JSON ledger and linked implementation reports. Focused gates overlap and are not summed as independent coverage.
+
+## Readiness, availability and CI follow-ups
+
+PR88 prevents an authenticated ready preflight from racing a source write and returning stale cached usage as complete. Sessions, cached run/trace/metrics/usage reads certify source and derived facts in one transaction; missing or dirty dependencies return typed 503. Raw MCP query semantics remain unchanged. [The frozen report](https://github.com/abhishekash/agenturm/blob/ebcd03390bbbe57d18470165a4dbdb919de39357/docs/validation/derived-readiness-snapshot.html) retains the before-fix race and both commit orders.
+
+PR90 requests at most 16 oldest existing worker jobs under one 75 ms catch-up allowance for incoming work, outside any retained database read lease. Initial migration/error/probe semantics and the final guarded read remain. [The report](https://github.com/abhishekash/agenturm/blob/e594a2a83c7d9d6da63e63aa497d88a8ff27b73b/docs/validation/incoming-catchup.html) retains real 503s and explicitly leaves active CPU/write-coalescing/WAL cost and p95 unknown. This is not a whole-request 75 ms guarantee.
+
+CI exposed three fixtures relying on a cached read to repair asynchronous work, or calling public Sessions during deliberately pending redaction/legacy edits. PR91 changes fixtures only: immediate raw/derived-text scrubbing, zero derived caches and public `IndexNotReady` are checked before normal refresh/drain; final public privacy assertions remain. The affected 24-test gate passed 38.882 s and read-only peer review found no blocker. [The report](https://github.com/abhishekash/agenturm/blob/e389889ff7ff7ad92716fa5fb889a0a8ea8760a8/docs/validation/readiness-ci-fixtures.html) is local evidence, not a completed new-head matrix.
+
+The full-cadence tiny HTTP v2 run is **invalid**: B missed scheduled write 25 and stopped with 25 attempts, C completed 30, and genuine 503 reads remain failures. The coordinator's smoke assertion correction must verify exact missed-slot/no-burst evidence and all attempts, preserve identical request-hash prefixes, and require the source mismatch error when sequences differ. Passing that functional invalid-result classification is not passing the performance protocol.
+
+The capture-policy follow-up remains under review. No current audit claim treats retained actor denial without session scope or rapid deny/allow stale-view/copy/export behavior as fixed. Final runtime/harness/corpus registration and all long resource windows wait for the coordinator's actual merged candidate.
 
 ## Functional preflights
 
@@ -46,7 +62,7 @@ Raw local paths, exact source/harness heads and result hashes are recorded in th
 ## Resource acceptance ledger
 
 
-The targets remain **cold readiness <30 s**, **complete-monitor idle CPU <5% of one core**, and **Sessions/MCP p95 <100 ms** on a matched corpus/reference host. Different corpora and workloads are kept separate. The PR79 Sessions and PR83 MCP numbers below are direct Store-method comparisons, **not actual HTTP**. Separate-process authenticated HTTP validation and production-index-normalized clones are being prepared before final quiet-window registration; no new accepted HTTP samples are reported here.
+The targets remain **cold readiness <30 s**, **complete-monitor idle CPU <5% of one core**, and **Sessions/MCP p95 <100 ms** on a matched corpus/reference host. Different corpora and workloads are kept separate. The PR79 Sessions and PR83 MCP numbers below are direct Store-method comparisons, **not actual HTTP**. Separate-process authenticated HTTP validation and production-index-normalized clones are implemented in #89; the busy-host smoke classification and final registration follow-up remain in coordinator review. The tiny full-cadence run is invalid, not accepted HTTP evidence. No final quiet-window samples are reported here.
 
 | Experiment | What is supported | What remains open |
 | --- | --- | --- |
@@ -76,15 +92,15 @@ The earlier one-hour generated active/probed run reported DB 427.82 MiB and max 
 
 **Open resource acceptance**
 
-Read/source increments merged through #84; harness #85 and covered-lookup #86 are merged. Final combined main `55c6244` CI passed all 12 checks.
+Read/source increments through #86, same-snapshot readiness #88, external HTTP harness #89 and bounded incoming catch-up #90 are merged; readiness fixture corrections #91 are merged. Current combined CI is pending.
 
 Code: [storage_activity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_activity.py), [storage_sessions.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_sessions.py), [storage_mcp.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_mcp.py), [read_connections.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/read_connections.py).
 
-Contract tests: [test_history_read_economics.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_history_read_economics.py), [test_idle_history_watch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_idle_history_watch.py), [test_session_projection_batch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_projection_batch.py).
+Contract tests: [test_history_read_economics.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_history_read_economics.py), [test_idle_history_watch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_idle_history_watch.py), [test_session_projection_batch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_projection_batch.py), [test_derived_readiness_snapshot.py](https://github.com/abhishekash/agenturm/blob/ebcd03390bbbe57d18470165a4dbdb919de39357/tests/test_derived_readiness_snapshot.py), [test_incoming_catchup.py](https://github.com/abhishekash/agenturm/blob/e594a2a83c7d9d6da63e63aa497d88a8ff27b73b/tests/test_incoming_catchup.py).
 
 Cold readiness <30 s, complete-monitor idle CPU <5%, Sessions/MCP actual HTTP under-write p95 <100 ms and final combined memory/WAL acceptance remain open. Direct Store/query-work results do not prove those HTTP or whole-monitor targets.
 
-Historical controlled results retain workload boundaries. The #86 query VM diagnostic is not API latency; tiny baseline/candidate idle smokes are non-publishable. Actual separate-process HTTP and final frozen resource acceptance remain open.
+Historical controlled results keep their workload boundaries. Tiny generated HTTP smokes retain unavailable responses and missed slots; B 25 / C 30 source mismatch is invalid. Neither catch-up nor query-work diagnostics close latency or complete-monitor targets.
 
 ### F2 · No default retention
 
@@ -224,7 +240,7 @@ Unknown/unlinked coverage is separated from explicit requests. New collision/loo
 
 ### F13 · Strong MCP screen lacks qualified recommendations
 
-**Implemented and merged; current main CI passed**
+**Implemented and merged; current matrix pending**
 
 Merged #81 at 093bf878; shared-query economics merged #83 at 728e0ba.
 
@@ -232,7 +248,7 @@ Code: [terminal_ui.py](https://github.com/abhishekash/agenturm/blob/928cae06ea9f
 
 Contract tests: [test_explanation_integration.py](https://github.com/abhishekash/agenturm/blob/928cae06ea9f8703966c105aa02d42b2dd179f12/tests/test_explanation_integration.py), [test_evidence_explanations.py](https://github.com/abhishekash/agenturm/blob/928cae06ea9f8703966c105aa02d42b2dd179f12/tests/test_evidence_explanations.py).
 
-Selected-tool loaded-page outcome/duration denominators, small samples, actual configured-server unobserved context and keyboard flagged-call navigation are visible and tested. No response-correctness, all-history reliability or tool-deletion conclusion follows. Earlier corrected E head and current main `55c6244` each passed all 12 checks; final resources/live outcomes remain separate.
+Selected-tool loaded-page outcome/duration denominators, small samples, actual configured-server unobserved context and keyboard flagged-call navigation are visible and tested. No response-correctness, all-history reliability or tool-deletion conclusion follows. Earlier corrected E head and previous main `55c6244` each passed all 12 checks; final resources/live outcomes remain separate.
 
 ### F14 · Generic failures without useful evidence
 
@@ -250,11 +266,11 @@ Commands/exits/output roles, occurrence ownership, safe fingerprints and exact s
 
 **Partial resource acceptance**
 
-Indexed/scalar/source/Sessions/MCP/replay increments and validation harness are merged through #86.
+Indexed/scalar/source/Sessions/MCP/replay increments are merged through #86; same-source snapshot certification #88 and bounded incoming availability #90 are merged.
 
 Code: [storage_activity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_activity.py), [storage_derived.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_derived.py), [storage_sessions.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_sessions.py), [storage_mcp.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_mcp.py).
 
-Contract tests: [test_cockpit_read_paths.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_cockpit_read_paths.py), [test_session_projection_batch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_projection_batch.py), [test_history_read_economics.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_history_read_economics.py).
+Contract tests: [test_cockpit_read_paths.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_cockpit_read_paths.py), [test_session_projection_batch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_projection_batch.py), [test_history_read_economics.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_history_read_economics.py), [test_derived_readiness_snapshot.py](https://github.com/abhishekash/agenturm/blob/ebcd03390bbbe57d18470165a4dbdb919de39357/tests/test_derived_readiness_snapshot.py), [test_incoming_catchup.py](https://github.com/abhishekash/agenturm/blob/e594a2a83c7d9d6da63e63aa497d88a8ff27b73b/tests/test_incoming_catchup.py).
 
 Indexed Activity/scalar rollups and bounded source reads replace repeated full-history Activity expansion. Remaining retained MCP grouping, cold migration and combined monitor cost are material and not closed.
 
@@ -262,15 +278,15 @@ The #86 covered query removes one redundant aggregation with unchanged payload a
 
 ### F16 · Local API/privacy/redaction defaults
 
-**Implemented safeguards; continuous invariant**
+**Safeguards implemented; privacy follow-up open**
 
-Merged safeguards through #77; merged E/F/G paths inherit the same invariants.
+Merged safeguards through #77 plus source-snapshot checks #88 and immediate-redaction fixture corrections #91. Feed capture-policy/generation follow-up remains under review.
 
 Code: [receiver_state.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/receiver_state.py), [server.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/server.py), [http_transport.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/http_transport.py), [operation_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/operation_facts.py), [ui_export.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/ui_export.py).
 
-Contract tests: [test_recovery_defaults.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_recovery_defaults.py), [test_http_transport.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_http_transport.py), [test_receipt_export_policy.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_receipt_export_policy.py).
+Contract tests: [test_recovery_defaults.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_recovery_defaults.py), [test_http_transport.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_http_transport.py), [test_receipt_export_policy.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_receipt_export_policy.py), [test_native_storage_retry.py](https://github.com/abhishekash/agenturm/blob/e389889ff7ff7ad92716fa5fb889a0a8ea8760a8/tests/test_native_storage_retry.py).
 
-Private token/Host/Origin/redirect checks, expanded best-effort redaction and late-egress capture fences exist. No universal secret-detection or security guarantee follows; new paths still need combined-source gates.
+Private token/Host/Origin/redirect checks, redaction and late-egress fences remain required. Actor denial without session scope and rapid deny/allow must invalidate retained view/copy/export; that follow-up is not accepted as fixed here. No universal secret-detection or security guarantee follows.
 
 ### F17 · Native add/update edits discarded
 
@@ -366,15 +382,15 @@ Raw Review JSON composes without retyping IDs; turn members/check source traces/
 
 ### F24 · Passing suite hid fixture mismatch
 
-**Current combined matrix passed; fidelity remains qualified**
+**Current CI pending; historical failures retained**
 
-Implementation #79–#87 merged. Main e434 run 43591334638 and main `55c6244` run 43592577149 each completed all 12 checks successfully.
+Implementation #79–#91 merged. Previous main55/e434 full matrices passed; PR88/89 and their main runs failed four Python jobs. PR90/91 main matrices remain pending at this snapshot.
 
 Code: [operation_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/operation_facts.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/workflow_evidence.py).
 
-Contract tests: [test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_opencode_turn_review.py), [test_owned_findings.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_owned_findings.py).
+Contract tests: [test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_opencode_turn_review.py), [test_owned_findings.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_owned_findings.py), [test_derived_readiness_snapshot.py](https://github.com/abhishekash/agenturm/blob/ebcd03390bbbe57d18470165a4dbdb919de39357/tests/test_derived_readiness_snapshot.py), [test_incoming_catchup.py](https://github.com/abhishekash/agenturm/blob/e594a2a83c7d9d6da63e63aa497d88a8ff27b73b/tests/test_incoming_catchup.py).
 
-Earlier E/F and cancelled superseded PR-head runs remain separately recorded. Full main `55c6244` green establishes that matrix, not live compatibility, resource budgets, final sustained terminal/soak/storage behavior or user outcomes. Source-derived current fixtures close selected schema gaps without inventing observed upstream versions.
+The three readiness fixture failures are corrected by #91 without weakening immediate privacy or typed unavailable assertions. Busy-host HTTP smoke classification is a separate harness follow-up. Historical failures, current pending jobs, synthetic runtime qualification and resource/live/pilot acceptance remain distinct.
 
 ### F25 · OpenCode prompts excluded by trace
 
@@ -573,11 +589,11 @@ The current-format fixture verifies inclusive 30 input / 13 output, cache-read 9
 
 ## Remaining acceptance and external outcomes
 
-The approved [final validation protocol](final-monitor-protocol.html) uses B=`5e0c397` and candidate runtime `55c6244`, with the exact combined C/HTTP harness/normalized raw clones still to be registered before quiet execution, one committed harness/common raw seed and balanced 60-second warmup plus 300-second idle pairs. The harness/preflights are delivered; the final matched resource runs have not been accepted. Final one-hour active soak, modal retained-memory series, complete storage/index/WAL/drain accounting and candidate signal/navigation checks remain open. Existing historical resource and profiler results retain their own source/workload boundaries.
+The approved [final validation protocol](final-monitor-protocol.html) keeps B=`5e0c397`; the former `55c6244` candidate freeze was withdrawn for required readiness/privacy fixes. The exact final combined C/HTTP harness/normalized raw clones remain to be registered before quiet execution, one committed harness/common raw seed and balanced 60-second warmup plus 300-second idle pairs. The harness/preflights are delivered; the final matched resource runs have not been accepted. Final one-hour active soak, modal retained-memory series, complete storage/index/WAL/drain accounting and candidate signal/navigation checks remain open. Existing historical resource and profiler results retain their own source/workload boundaries.
 
 The pilot kit is a protocol and generated scenario, not a study. No willingness-to-pay, measured reconstruction/resumption improvement, alert precision, author repeat use or voluntary adoption result is inferred from tests. Actual OS desktop delivery remains mocked. Live Claude Code and Pi remain untested; unsupported authoritative request/order mappings remain unsupported.
 
-The next update must record the frozen candidate/harness/normalized corpus and actual HTTP, matched resource, sustained terminal/modal/soak/storage results. Native/Sessions merges and main `55c6244` full CI are now recorded; they do not substitute for those acceptance measurements. No additional dashboard or speculative automation is required to finish this scope.
+The next update must record the frozen candidate/harness/normalized corpus and actual HTTP, matched resource, sustained terminal/modal/soak/storage results. Native/Sessions and PR88–91 merges, historical main `55c6244` full CI, newer failed runs and current pending matrices are now recorded; they do not substitute for those acceptance measurements. No additional dashboard or speculative automation is required to finish this scope.
 
 ## Verification of this audit
 

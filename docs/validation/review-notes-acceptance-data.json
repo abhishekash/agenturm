@@ -1,7 +1,7 @@
 {
-  "base": "55c6244bf0c1caad2a22cd5c826020f50a677e54",
+  "base": "e389889ff7ff7ad92716fa5fb889a0a8ea8760a8",
   "heads": {
-    "main": "55c6244bf0c1caad2a22cd5c826020f50a677e54",
+    "main": "e389889ff7ff7ad92716fa5fb889a0a8ea8760a8",
     "G": "0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7",
     "E": "928cae06ea9f8703966c105aa02d42b2dd179f12",
     "F": "1c0b795c842a7f41a12f2b562a558bc44e3b5610",
@@ -12,7 +12,11 @@
     "replay_merge": "11a3b7b72e0e18f8d92650d6e14f57f3a8a72d3d",
     "harness_merge": "1aa1948f9723ac4da88a0b5e0ea93322bb8f0f39",
     "sessions_merge": "8e9d46fd0f75218705ac581447d69fc862b69d44",
-    "native_proof_merge": "55c6244bf0c1caad2a22cd5c826020f50a677e54"
+    "native_proof_merge": "55c6244bf0c1caad2a22cd5c826020f50a677e54",
+    "snapshot_readiness_merge": "ebcd03390bbbe57d18470165a4dbdb919de39357",
+    "external_http_harness_merge": "f124e2e971919000fb2d7e40f293dacf6ffc72f0",
+    "incoming_catchup_merge": "e594a2a83c7d9d6da63e63aa497d88a8ff27b73b",
+    "readiness_ci_fixtures_merge": "e389889ff7ff7ad92716fa5fb889a0a8ea8760a8"
   },
   "notes_sha256": "8352ce8a78edaea075083e59850ddd96bb70868164e3c146b11cd97b0a617ce3",
   "rows": [
@@ -21,10 +25,10 @@
       "title": "CPU/RSS economics",
       "status": "Open resource acceptance",
       "code": "[storage_activity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_activity.py), [storage_sessions.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_sessions.py), [storage_mcp.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_mcp.py), [read_connections.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/read_connections.py)",
-      "tests": "[test_history_read_economics.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_history_read_economics.py), [test_idle_history_watch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_idle_history_watch.py), [test_session_projection_batch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_projection_batch.py)",
-      "delivery": "Read/source increments merged through #84; harness #85 and covered-lookup #86 are merged. Final combined main `55c6244` CI passed all 12 checks.",
+      "tests": "[test_history_read_economics.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_history_read_economics.py), [test_idle_history_watch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_idle_history_watch.py), [test_session_projection_batch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_projection_batch.py), [test_derived_readiness_snapshot.py](https://github.com/abhishekash/agenturm/blob/ebcd03390bbbe57d18470165a4dbdb919de39357/tests/test_derived_readiness_snapshot.py), [test_incoming_catchup.py](https://github.com/abhishekash/agenturm/blob/e594a2a83c7d9d6da63e63aa497d88a8ff27b73b/tests/test_incoming_catchup.py)",
+      "delivery": "Read/source increments through #86, same-snapshot readiness #88, external HTTP harness #89 and bounded incoming catch-up #90 are merged; readiness fixture corrections #91 are merged. Current combined CI is pending.",
       "limits": "Cold readiness <30 s, complete-monitor idle CPU <5%, Sessions/MCP actual HTTP under-write p95 <100 ms and final combined memory/WAL acceptance remain open. Direct Store/query-work results do not prove those HTTP or whole-monitor targets.",
-      "evidence": "Historical controlled results retain workload boundaries. The #86 query VM diagnostic is not API latency; tiny baseline/candidate idle smokes are non-publishable. Actual separate-process HTTP and final frozen resource acceptance remain open.",
+      "evidence": "Historical controlled results keep their workload boundaries. Tiny generated HTTP smokes retain unavailable responses and missed slots; B 25 / C 30 source mismatch is invalid. Neither catch-up nor query-work diagnostics close latency or complete-monitor targets.",
       "implementation_state": "merged tested contract; qualified by stated limits",
       "acceptance_state": "OPEN: resource targets"
     },
@@ -38,7 +42,7 @@
       "limits": "New managed stores use a 14-day age policy; existing stores require explicit opt-in. Age retention is not a byte cap, immediate file shrink or proof of a memory/WAL plateau.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F3",
@@ -50,7 +54,7 @@
       "limits": "Private XDG state and explicit non-destructive legacy migration are provided. Explicit --db remains an intentional user override; captured content is still sensitive.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F4",
@@ -62,7 +66,7 @@
       "limits": "Readiness/error/partial/interrupt are distinguished; missing data is not a zero-success snapshot. Discovery/readiness can exceed the deadline and return partial rather than pretend success.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F5",
@@ -86,7 +90,7 @@
       "limits": "Native-shaped ingestion\u2192Store\u2192authenticated API\u2192Review/export assertions cover edits/checks/text/usage. This is not universal producer-version compatibility; F26 provenance remains qualified.",
       "evidence": "Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F7",
@@ -98,7 +102,7 @@
       "limits": "Explicit request/unknown separation and incident identity are present. Advisory stalled/failed states are not native approval authority; unsupported clocks/coverage defer reliable delivery.",
       "evidence": "Generated real-process preflight: two cockpits plus watcher, one fixture notification, acknowledgement/restart and exact remote resolution pass; no live desktop or alert-precision claim.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F8",
@@ -110,7 +114,7 @@
       "limits": "Compact/expanded inspectors show recorded paths/checks/issues before assistant claims; hierarchy/shading/keyboard behavior retained. Loaded bounded evidence is not a full-history summary.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F9",
@@ -122,7 +126,7 @@
       "limits": "Today/history, human-readable ages and frozen-ID bulk review exist. Marking reviewed is neither native approval nor proof of resolution; old archived records remain inspectable.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F10",
@@ -146,7 +150,7 @@
       "limits": "Multiplexed/app-server activity is not per-session progress; unconfirmed status remains possible. Linux process evidence and the generated soak do not cover every runtime/platform.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F12",
@@ -158,19 +162,19 @@
       "limits": "Unknown/unlinked coverage is separated from explicit requests. New collision/loop/native heuristics must not silently turn it into an approval request.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F13",
       "title": "Strong MCP screen lacks qualified recommendations",
-      "status": "Implemented and merged; current main CI passed",
+      "status": "Implemented and merged; current matrix pending",
       "code": "[terminal_ui.py](https://github.com/abhishekash/agenturm/blob/928cae06ea9f8703966c105aa02d42b2dd179f12/observatory/terminal_ui.py), [evidence_explanations.py](https://github.com/abhishekash/agenturm/blob/928cae06ea9f8703966c105aa02d42b2dd179f12/observatory/evidence_explanations.py)",
       "tests": "[test_explanation_integration.py](https://github.com/abhishekash/agenturm/blob/928cae06ea9f8703966c105aa02d42b2dd179f12/tests/test_explanation_integration.py), [test_evidence_explanations.py](https://github.com/abhishekash/agenturm/blob/928cae06ea9f8703966c105aa02d42b2dd179f12/tests/test_evidence_explanations.py)",
       "delivery": "Merged #81 at 093bf878; shared-query economics merged #83 at 728e0ba.",
-      "limits": "Selected-tool loaded-page outcome/duration denominators, small samples, actual configured-server unobserved context and keyboard flagged-call navigation are visible and tested. No response-correctness, all-history reliability or tool-deletion conclusion follows. Earlier corrected E head and current main `55c6244` each passed all 12 checks; final resources/live outcomes remain separate.",
+      "limits": "Selected-tool loaded-page outcome/duration denominators, small samples, actual configured-server unobserved context and keyboard flagged-call navigation are visible and tested. No response-correctness, all-history reliability or tool-deletion conclusion follows. Earlier corrected E head and previous main `55c6244` each passed all 12 checks; final resources/live outcomes remain separate.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F14",
@@ -182,15 +186,15 @@
       "limits": "Commands/exits/output roles, occurrence ownership, safe fingerprints and exact sources are implemented. Unknown/redacted/clipped inputs cannot prove equivalence; a later success does not prove complete repair.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F15",
       "title": "Historical JSON expansion/read cost",
       "status": "Partial resource acceptance",
       "code": "[storage_activity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_activity.py), [storage_derived.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_derived.py), [storage_sessions.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_sessions.py), [storage_mcp.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_mcp.py)",
-      "tests": "[test_cockpit_read_paths.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_cockpit_read_paths.py), [test_session_projection_batch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_projection_batch.py), [test_history_read_economics.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_history_read_economics.py)",
-      "delivery": "Indexed/scalar/source/Sessions/MCP/replay increments and validation harness are merged through #86.",
+      "tests": "[test_cockpit_read_paths.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_cockpit_read_paths.py), [test_session_projection_batch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_projection_batch.py), [test_history_read_economics.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_history_read_economics.py), [test_derived_readiness_snapshot.py](https://github.com/abhishekash/agenturm/blob/ebcd03390bbbe57d18470165a4dbdb919de39357/tests/test_derived_readiness_snapshot.py), [test_incoming_catchup.py](https://github.com/abhishekash/agenturm/blob/e594a2a83c7d9d6da63e63aa497d88a8ff27b73b/tests/test_incoming_catchup.py)",
+      "delivery": "Indexed/scalar/source/Sessions/MCP/replay increments are merged through #86; same-source snapshot certification #88 and bounded incoming availability #90 are merged.",
       "limits": "Indexed Activity/scalar rollups and bounded source reads replace repeated full-history Activity expansion. Remaining retained MCP grouping, cold migration and combined monitor cost are material and not closed.",
       "evidence": "The #86 covered query removes one redundant aggregation with unchanged payload and about 14% fewer VM steps in a private-copy diagnostic. Actual HTTP and final combined monitor economics remain open.",
       "implementation_state": "merged tested contract; qualified by stated limits",
@@ -199,14 +203,14 @@
     {
       "id": "F16",
       "title": "Local API/privacy/redaction defaults",
-      "status": "Implemented safeguards; continuous invariant",
+      "status": "Safeguards implemented; privacy follow-up open",
       "code": "[receiver_state.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/receiver_state.py), [server.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/server.py), [http_transport.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/http_transport.py), [operation_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/operation_facts.py), [ui_export.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/ui_export.py)",
-      "tests": "[test_recovery_defaults.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_recovery_defaults.py), [test_http_transport.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_http_transport.py), [test_receipt_export_policy.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_receipt_export_policy.py)",
-      "delivery": "Merged safeguards through #77; merged E/F/G paths inherit the same invariants.",
-      "limits": "Private token/Host/Origin/redirect checks, expanded best-effort redaction and late-egress capture fences exist. No universal secret-detection or security guarantee follows; new paths still need combined-source gates.",
+      "tests": "[test_recovery_defaults.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_recovery_defaults.py), [test_http_transport.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_http_transport.py), [test_receipt_export_policy.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_receipt_export_policy.py), [test_native_storage_retry.py](https://github.com/abhishekash/agenturm/blob/e389889ff7ff7ad92716fa5fb889a0a8ea8760a8/tests/test_native_storage_retry.py)",
+      "delivery": "Merged safeguards through #77 plus source-snapshot checks #88 and immediate-redaction fixture corrections #91. Feed capture-policy/generation follow-up remains under review.",
+      "limits": "Private token/Host/Origin/redirect checks, redaction and late-egress fences remain required. Actor denial without session scope and rapid deny/allow must invalidate retained view/copy/export; that follow-up is not accepted as fixed here. No universal secret-detection or security guarantee follows.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "OPEN: reviewed capture-policy follow-up plus combined CI and continuous privacy invariants"
     },
     {
       "id": "F17",
@@ -218,7 +222,7 @@
       "limits": "Failed/unknown file attempts do not prove a persisted change. Both explicit rename paths survive typed argument projection in G; no arrow/path equivalence guessing.",
       "evidence": "Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F18",
@@ -230,7 +234,7 @@
       "limits": "Recognized wrappers/qualified compound success are supported; no-op, masked, unknown or ambiguous failure remains unverified. Recorded success does not certify later worktree changes.",
       "evidence": "Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F19",
@@ -254,7 +258,7 @@
       "limits": "Supported native text blocks reach Review and generic placeholders are suppressed. New upstream schemas and live Claude/Pi compatibility are not proven by these synthetic contracts.",
       "evidence": "Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F21",
@@ -266,7 +270,7 @@
       "limits": "Independent request/update context and paging expose intent within explicit source limits. Pruned, uncaptured or clipped intent remains unavailable, never reconstructed by guesswork.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F22",
@@ -278,7 +282,7 @@
       "limits": "End-to-end native-shaped checks/edits/text/usage and generated reconstructions are verified. Coverage limits and unsupported producer variants remain explicit; tests are not current live participant evidence.",
       "evidence": "Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F23",
@@ -290,19 +294,19 @@
       "limits": "Raw Review JSON composes without retyping IDs; turn members/check source traces/accounting survive. Contradictory links reject; legacy ambiguous data stays readable without trusted totals until explicit repair.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "F24",
       "title": "Passing suite hid fixture mismatch",
-      "status": "Current combined matrix passed; fidelity remains qualified",
+      "status": "Current CI pending; historical failures retained",
       "code": "[operation_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/operation_facts.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/workflow_evidence.py)",
-      "tests": "[test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_opencode_turn_review.py), [test_owned_findings.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_owned_findings.py)",
-      "delivery": "Implementation #79\u2013#87 merged. Main e434 run 43591334638 and main `55c6244` run 43592577149 each completed all 12 checks successfully.",
-      "limits": "Earlier E/F and cancelled superseded PR-head runs remain separately recorded. Full main `55c6244` green establishes that matrix, not live compatibility, resource budgets, final sustained terminal/soak/storage behavior or user outcomes. Source-derived current fixtures close selected schema gaps without inventing observed upstream versions.",
+      "tests": "[test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_opencode_turn_review.py), [test_owned_findings.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_owned_findings.py), [test_derived_readiness_snapshot.py](https://github.com/abhishekash/agenturm/blob/ebcd03390bbbe57d18470165a4dbdb919de39357/tests/test_derived_readiness_snapshot.py), [test_incoming_catchup.py](https://github.com/abhishekash/agenturm/blob/e594a2a83c7d9d6da63e63aa497d88a8ff27b73b/tests/test_incoming_catchup.py)",
+      "delivery": "Implementation #79\u2013#91 merged. Previous main55/e434 full matrices passed; PR88/89 and their main runs failed four Python jobs. PR90/91 main matrices remain pending at this snapshot.",
+      "limits": "The three readiness fixture failures are corrected by #91 without weakening immediate privacy or typed unavailable assertions. Busy-host HTTP smoke classification is a separate harness follow-up. Historical failures, current pending jobs, synthetic runtime qualification and resource/live/pilot acceptance remain distinct.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "Current combined CI passed; final runtime/resource/external gates open"
+      "acceptance_state": "OPEN: current combined CI; final runtime/privacy/resource/external gates open"
     },
     {
       "id": "F25",
@@ -338,7 +342,7 @@
       "limits": "Headless watcher, shared claims, receiver-owned native inventory and shared Review parity are merged. Generated two-cockpit+watcher preflight passed with one fixture notification and 210 unrelated records per transition, ack/restart and exact resolution. Current main CI passed; live request-contract/clock/capacity/desktop precision remain qualified; native approval stays manual.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "R1",
@@ -350,7 +354,7 @@
       "limits": "Quiet inventory, durable dedup, remote pending/resolution catch-up and acknowledgement/restart passed a generated real two-cockpit+watcher preflight. This is one functional scenario with a fixture notification sink, not measured alert precision, OS desktop delivery or live cross-runtime approval support.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "R2",
@@ -362,7 +366,7 @@
       "limits": "Review g/m explicitly maps/captures read-only Git; earlier checks do not certify the current checkout. Recorded edits and all worktree changes/pre-existing/concurrent work stay distinct.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "R3",
@@ -374,7 +378,7 @@
       "limits": "Current/previous unseen reminders remain separate from archival Findings. Exact source s/container trace t, expected nonzero and later-success evidence retain source scope; no repaired-task conclusion.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "R4",
@@ -386,7 +390,7 @@
       "limits": "Review d prepares source-backed editable text, then explicit approval appends an immutable version. Human title/notes/brief/decisions are not overwritten; no human decision or intent is invented.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "R5",
@@ -398,7 +402,7 @@
       "limits": "Explicit mapped checkouts/recorded paths and strict check-before-other-edit chronology are shown. Historical branch identity often remains unverified; unknown overlap is not collision proof. Different worktrees, failed attempts and ambiguous paths do not become confirmed collisions.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "R6",
@@ -410,7 +414,7 @@
       "limits": "Opt in via AGENTURM_WORKFLOW_PATTERNS=1. Later matching success includes failed and successful sources. Repetition observations may attach strictly timed leaf-model reported contributions only with complete exact owner/execution/source proof. Actual Store publication and resumable workflow_patterns_v2 repair are tested; unknown/partial input remains unavailable. No new always-on usage finding, waste/retry-cost attribution, cumulative delta or context-occupancy inference.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "R7",
@@ -422,7 +426,7 @@
       "limits": "Current loaded-page outcome/duration denominators, small samples, configured-unobserved context and keyboard flagged-call navigation are wired in the existing MCP inspector. Exact receiver/capture checks remain. An observed protocol/tool success does not evaluate response correctness; absence never recommends deleting configuration.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "R8",
@@ -434,7 +438,7 @@
       "limits": "Whole-turn ID/member-step labels are distinct from one trace. Exact-owner captured session lifetime is separate; exact-agent calendar-day data is explicitly unavailable. Retry cost and current occupancy remain unavailable without authoritative evidence. Exact-model explicit-rate estimates stay separate from recorded cost and require complete unambiguous allocation.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "R9",
@@ -446,7 +450,7 @@
       "limits": "Activity History / Ctrl+F / palette and `agenturm investigate` are wired. Typed retained path/command/instruction queries, bounded paging, FTS availability and pinned exact source reader are tested. No match proves no activity; old lookup/index-cost data excludes final combined-source overhead.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "R10",
@@ -458,7 +462,7 @@
       "limits": "Private state/token, Host/Origin, best-effort redaction, capture fences and age retention exist. No all-secrets guarantee, hard disk cap or automatic purge of independently authored task content. Main55 full CI passed; final sustained resource/terminal and external evidence remain separate.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     },
     {
       "id": "R11",
@@ -470,10 +474,10 @@
       "limits": "Generic-v1 is explicit exact metadata; Codex notify adapter is completion-only with independently checked turns. Claude/Pi/OpenCode approval contracts without authoritative request/order mapping remain unsupported/uncertain. Installed version inspection is not live compatibility testing.",
       "evidence": "Optional lifecycle approval authority is distinct from transcript format parsing. #87 qualifies selected source-derived OpenCode 2.2.5/Codex 0.167.1 records, not a live native approval-hook mapping. Generic native-race preflight and installed/runtime research retain their separate limits.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main CI passed; listed final/live/resource limits remain"
+      "acceptance_state": "qualified implementation; current combined CI pending; listed final/live/resource limits remain"
     }
   ],
-  "snapshot_utc": "2026-11-14T12:23:07.335342+00:00",
+  "snapshot_utc": "2026-11-14T13:32:52.180353+00:00",
   "prs": [
     {
       "headRefOid": "920f44e517bc5f8583521dbae5664fe3fff37d1e",
@@ -1227,6 +1231,346 @@
         }
       ],
       "ci_qualification": "Exact PR-head checks; completed full main55 matrix is recorded separately."
+    },
+    {
+      "number": 88,
+      "title": "Certify derived API data inside the same source snapshot",
+      "state": "MERGED",
+      "url": "https://github.com/abhishekash/agenturm/pull/88",
+      "headRefOid": "cae0f363b0041825fd628235acc3a6f56e137a41",
+      "mergedAt": "2026-11-14T13:10:48Z",
+      "mergeCommit": {
+        "oid": "ebcd03390bbbe57d18470165a4dbdb919de39357"
+      },
+      "checks": [
+        {
+          "name": "Python 3.11",
+          "status": "COMPLETED",
+          "conclusion": "FAILURE",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376/job/132455854671"
+        },
+        {
+          "name": "Python 3.12",
+          "status": "COMPLETED",
+          "conclusion": "FAILURE",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376/job/132455854799"
+        },
+        {
+          "name": "Python 3.13",
+          "status": "COMPLETED",
+          "conclusion": "FAILURE",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376/job/132455854738"
+        },
+        {
+          "name": "Python 3.14",
+          "status": "COMPLETED",
+          "conclusion": "FAILURE",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376/job/132455854699"
+        },
+        {
+          "name": "Node.js 22",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376/job/132455854650"
+        },
+        {
+          "name": "Node.js 24",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376/job/132455854569"
+        },
+        {
+          "name": "OpenTelemetry OTLP end-to-end",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376/job/132455854644"
+        },
+        {
+          "name": "Pydantic AI native instrumentation",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376/job/132455854538"
+        },
+        {
+          "name": "Google ADK OTLP interoperability",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376/job/132455854530"
+        },
+        {
+          "name": "OpenAI Agents SDK local tracing",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376/job/132455854548"
+        },
+        {
+          "name": "LangChain callback interoperability",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376/job/132455854620"
+        },
+        {
+          "name": "Automatic SDK capture through CLI",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376/job/132455854491"
+        }
+      ]
+    },
+    {
+      "number": 89,
+      "title": "Validate external HTTP, raw history preparation and terminal lifecycle faithfully",
+      "state": "MERGED",
+      "url": "https://github.com/abhishekash/agenturm/pull/89",
+      "headRefOid": "0acc227de04319058333de895f6b0558bb00f29c",
+      "mergedAt": "2026-11-14T13:12:34Z",
+      "mergeCommit": {
+        "oid": "f124e2e971919000fb2d7e40f293dacf6ffc72f0"
+      },
+      "checks": [
+        {
+          "name": "Python 3.11",
+          "status": "COMPLETED",
+          "conclusion": "FAILURE",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598460934/job/132457895568"
+        },
+        {
+          "name": "Python 3.12",
+          "status": "COMPLETED",
+          "conclusion": "FAILURE",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598460934/job/132457895696"
+        },
+        {
+          "name": "Python 3.13",
+          "status": "COMPLETED",
+          "conclusion": "FAILURE",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598460934/job/132457895596"
+        },
+        {
+          "name": "Python 3.14",
+          "status": "COMPLETED",
+          "conclusion": "FAILURE",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598460934/job/132457895670"
+        },
+        {
+          "name": "Node.js 22",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598460934/job/132457895501"
+        },
+        {
+          "name": "Node.js 24",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598460934/job/132457895582"
+        },
+        {
+          "name": "OpenTelemetry OTLP end-to-end",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598460934/job/132457895377"
+        },
+        {
+          "name": "Pydantic AI native instrumentation",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598460934/job/132457895635"
+        },
+        {
+          "name": "Google ADK OTLP interoperability",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598460934/job/132457895591"
+        },
+        {
+          "name": "OpenAI Agents SDK local tracing",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598460934/job/132457895482"
+        },
+        {
+          "name": "LangChain callback interoperability",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598460934/job/132457895553"
+        },
+        {
+          "name": "Automatic SDK capture through CLI",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598460934/job/132457895633"
+        }
+      ]
+    },
+    {
+      "number": 90,
+      "title": "Bound incoming read catch-up without serving stale derived data",
+      "state": "MERGED",
+      "url": "https://github.com/abhishekash/agenturm/pull/90",
+      "headRefOid": "23f8c035e7ee97df2892b0895551e025a2d1c957",
+      "mergedAt": "2026-11-14T13:22:09Z",
+      "mergeCommit": {
+        "oid": "e594a2a83c7d9d6da63e63aa497d88a8ff27b73b"
+      },
+      "checks": [
+        {
+          "name": "Python 3.11",
+          "status": "IN_PROGRESS",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599397783/job/132460701648"
+        },
+        {
+          "name": "Python 3.12",
+          "status": "IN_PROGRESS",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599397783/job/132460701717"
+        },
+        {
+          "name": "Python 3.13",
+          "status": "IN_PROGRESS",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599397783/job/132460701604"
+        },
+        {
+          "name": "Python 3.14",
+          "status": "IN_PROGRESS",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599397783/job/132460702012"
+        },
+        {
+          "name": "Node.js 22",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599397783/job/132460701553"
+        },
+        {
+          "name": "Node.js 24",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599397783/job/132460701632"
+        },
+        {
+          "name": "OpenTelemetry OTLP end-to-end",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599397783/job/132460701571"
+        },
+        {
+          "name": "Pydantic AI native instrumentation",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599397783/job/132460701694"
+        },
+        {
+          "name": "Google ADK OTLP interoperability",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599397783/job/132460701366"
+        },
+        {
+          "name": "OpenAI Agents SDK local tracing",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599397783/job/132460701607"
+        },
+        {
+          "name": "LangChain callback interoperability",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599397783/job/132460701688"
+        },
+        {
+          "name": "Automatic SDK capture through CLI",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599397783/job/132460701651"
+        }
+      ]
+    },
+    {
+      "number": 91,
+      "title": "Align privacy and monitoring fixtures with explicit index readiness",
+      "state": "MERGED",
+      "url": "https://github.com/abhishekash/agenturm/pull/91",
+      "headRefOid": "7b2f45cb9872e5f396adb9009017e5a837766db3",
+      "mergedAt": "2026-11-14T13:26:19Z",
+      "mergeCommit": {
+        "oid": "e389889ff7ff7ad92716fa5fb889a0a8ea8760a8"
+      },
+      "checks": [
+        {
+          "name": "Python 3.11",
+          "status": "IN_PROGRESS",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599706963/job/132461628476"
+        },
+        {
+          "name": "Python 3.12",
+          "status": "IN_PROGRESS",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599706963/job/132461628487"
+        },
+        {
+          "name": "Python 3.13",
+          "status": "IN_PROGRESS",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599706963/job/132461628366"
+        },
+        {
+          "name": "Python 3.14",
+          "status": "IN_PROGRESS",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599706963/job/132461628486"
+        },
+        {
+          "name": "Node.js 22",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599706963/job/132461628368"
+        },
+        {
+          "name": "Node.js 24",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599706963/job/132461628613"
+        },
+        {
+          "name": "OpenTelemetry OTLP end-to-end",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599706963/job/132461628440"
+        },
+        {
+          "name": "Pydantic AI native instrumentation",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599706963/job/132461628374"
+        },
+        {
+          "name": "Google ADK OTLP interoperability",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599706963/job/132461628547"
+        },
+        {
+          "name": "OpenAI Agents SDK local tracing",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599706963/job/132461628460"
+        },
+        {
+          "name": "LangChain callback interoperability",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599706963/job/132461628300"
+        },
+        {
+          "name": "Automatic SDK capture through CLI",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599706963/job/132461628174"
+        }
+      ]
     }
   ],
   "historical_audit_snapshot": {
@@ -1736,84 +2080,84 @@
     ]
   },
   "combined_ci": {
-    "conclusion": "success",
-    "headSha": "55c6244bf0c1caad2a22cd5c826020f50a677e54",
+    "headSha": "e389889ff7ff7ad92716fa5fb889a0a8ea8760a8",
+    "status": "in_progress",
+    "conclusion": "",
+    "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424",
     "jobs": [
-      {
-        "name": "Google ADK OTLP interoperability",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264389"
-      },
-      {
-        "name": "Node.js 24",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264496"
-      },
-      {
-        "name": "Pydantic AI native instrumentation",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264498"
-      },
       {
         "name": "OpenAI Agents SDK local tracing",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264504"
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796729"
+      },
+      {
+        "name": "Python 3.11",
+        "status": "in_progress",
+        "conclusion": "",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796866"
       },
       {
         "name": "LangChain callback interoperability",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264538"
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796881"
       },
       {
-        "name": "Node.js 22",
+        "name": "Pydantic AI native instrumentation",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264569"
-      },
-      {
-        "name": "Python 3.14",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264584"
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796899"
       },
       {
         "name": "OpenTelemetry OTLP end-to-end",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264591"
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796918"
       },
       {
         "name": "Automatic SDK capture through CLI",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264622"
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796931"
+      },
+      {
+        "name": "Node.js 24",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796946"
+      },
+      {
+        "name": "Node.js 22",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796967"
+      },
+      {
+        "name": "Python 3.14",
+        "status": "in_progress",
+        "conclusion": "",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796993"
       },
       {
         "name": "Python 3.13",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264687"
-      },
-      {
-        "name": "Python 3.11",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264694"
+        "status": "in_progress",
+        "conclusion": "",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461797013"
       },
       {
         "name": "Python 3.12",
+        "status": "in_progress",
+        "conclusion": "",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461797050"
+      },
+      {
+        "name": "Google ADK OTLP interoperability",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264705"
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461797053"
       }
-    ],
-    "status": "completed",
-    "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149"
+    ]
   },
   "ci_history": [
     {
@@ -1974,11 +2318,53 @@
         "head": "55c6244bf0c1caad2a22cd5c826020f50a677e54",
         "root": "/tmp/agenturm-final-candidate"
       }
+    },
+    {
+      "kind": "actual HTTP full-cadence tiny smoke v2",
+      "path": "/tmp/agenturm-http-catchup-smoke-v2/results.json",
+      "publishable": false,
+      "accepted_as_performance": false,
+      "writer_inputs_equal": false,
+      "errors": [
+        "B invalid: Writer missed its slot period; refusing burst catchup; Fixed writer count/acceptance failed; Loaded HTTP response failed",
+        "C invalid: Loaded HTTP response failed",
+        "B/C writer inputs differ"
+      ],
+      "counts": {
+        "B": {
+          "reads": 4,
+          "writes": 25,
+          "missed_slots": [
+            {
+              "kind": "write",
+              "sequence": 25,
+              "scheduled_ns": 712407246845412,
+              "observed_ns": 712407355703182
+            }
+          ]
+        },
+        "C": {
+          "reads": 4,
+          "writes": 30,
+          "missed_slots": []
+        }
+      },
+      "claim": "Invalid generated functional run: B missed write25 and stopped at25, C30; source mismatch and genuine503 remain failures. No p95/resource claim.",
+      "sha256": "7085f1fa66dbe7af9e46efdb6cfd4b48acc5165ac34a3877b1c3e105cddec4d7"
     }
   ],
-  "pending_delivery": [],
+  "pending_delivery": [
+    {
+      "work": "Feed capture-policy revocation/generation follow-up",
+      "state": "Under review, not claimed merged/accepted. Actor denial without session scope and rapid deny/allow must revoke retained view/copy/export."
+    },
+    {
+      "work": "Final harness registration and busy-host deadline smoke classification",
+      "state": "Coordinator integration pending; smoke explicitly invalidates missed scheduled slots/source mismatch and retains genuine503s. No resource pass."
+    }
+  ],
   "remaining_acceptance": [
-    "Final freeze and actual HTTP separate-process transport validation on production-index-normalized clones before registered quiet comparisons",
+    "Finish privacy/CI/harness follow-ups, then freeze exact runtime/harness/common raw corpus and complete registered separate-process HTTP/monitor comparisons",
     "Matched cold readiness <30 seconds and untouched complete-monitor idle CPU <5% of one core",
     "Sessions/MCP under-write actual HTTP p95 <100 ms on matched workload; earlier direct Store comparisons are not HTTP",
     "Final sustained RSS/modal retention, one-hour soak, index/WAL growth and clean drains",
@@ -1990,7 +2376,7 @@
     "rows": 38,
     "finding_ids": 27,
     "recommendation_ids": 11,
-    "frozen_source_test_paths_checked": 128,
+    "frozen_source_test_paths_checked": 125,
     "missing_paths": [],
     "notes_sha256_unchanged": true,
     "adapter_manifest_modified": false,
@@ -2000,7 +2386,9 @@
       "responsive table scrolling",
       "unique heading IDs; navigation anchors resolve"
     ],
-    "browser_render": "Not rerun for this current snapshot; prior browser QA remains historical."
+    "browser_render": "Not rerun for this checkpoint; prior browser QA remains historical. No heavy browser work during preparation.",
+    "final_candidate_hash_refresh": "Deferred until coordinator freezes/integrates final candidate; frozen historical evidence references are preserved.",
+    "frozen_path_scope": "125 unique commit:path pairs in ledger row code/tests links; older128-path check is separately preserved with its original snapshot."
   },
   "head_roles": {
     "E": "Earlier corrected tested head, not current rebased PR81 head",
@@ -2008,7 +2396,7 @@
     "G": "Original tested PR80 head",
     "MCP": "Tested PR83 head",
     "replay": "Tested PR84 head",
-    "main": "Current merged runtime55 with all12 main-matrix checks successful; final resource acceptance remains open."
+    "main": "Current audit snapshot after merged PR88\u201391; main90/main91 matrix pending at snapshot. Not final frozen resource candidate."
   },
   "previous_acceptance_snapshot": {
     "base": "e434fcf54b83a19ecdbb94a1e1712f4a43772ec6",
@@ -2238,5 +2626,448 @@
     "failed_job": "Python 3.14",
     "url": "https://github.com/abhishekash/agenturm/actions/runs/43592510668/job/132440055787",
     "qualification": "Earlier exact PR-head failure retained. Completed main55 run43592577149 is separately all12 successful; no unverified cause or failure erasure."
+  },
+  "previous_main55_snapshot": {
+    "base": "55c6244bf0c1caad2a22cd5c826020f50a677e54",
+    "snapshot_utc": "2026-11-14T12:23:07.335342+00:00",
+    "combined_ci": {
+      "conclusion": "success",
+      "headSha": "55c6244bf0c1caad2a22cd5c826020f50a677e54",
+      "jobs": [
+        {
+          "name": "Google ADK OTLP interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264389"
+        },
+        {
+          "name": "Node.js 24",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264496"
+        },
+        {
+          "name": "Pydantic AI native instrumentation",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264498"
+        },
+        {
+          "name": "OpenAI Agents SDK local tracing",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264504"
+        },
+        {
+          "name": "LangChain callback interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264538"
+        },
+        {
+          "name": "Node.js 22",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264569"
+        },
+        {
+          "name": "Python 3.14",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264584"
+        },
+        {
+          "name": "OpenTelemetry OTLP end-to-end",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264591"
+        },
+        {
+          "name": "Automatic SDK capture through CLI",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264622"
+        },
+        {
+          "name": "Python 3.13",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264687"
+        },
+        {
+          "name": "Python 3.11",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264694"
+        },
+        {
+          "name": "Python 3.12",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149/job/132440264705"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/abhishekash/agenturm/actions/runs/43592577149"
+    }
+  },
+  "main_ci_followups": {
+    "88": {
+      "headSha": "ebcd03390bbbe57d18470165a4dbdb919de39357",
+      "status": "completed",
+      "conclusion": "failure",
+      "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489",
+      "jobs": [
+        {
+          "name": "OpenTelemetry OTLP end-to-end",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489/job/132457882879"
+        },
+        {
+          "name": "Node.js 22",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489/job/132457883027"
+        },
+        {
+          "name": "Python 3.13",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489/job/132457883028"
+        },
+        {
+          "name": "OpenAI Agents SDK local tracing",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489/job/132457883029"
+        },
+        {
+          "name": "LangChain callback interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489/job/132457883037"
+        },
+        {
+          "name": "Python 3.14",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489/job/132457883046"
+        },
+        {
+          "name": "Node.js 24",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489/job/132457883052"
+        },
+        {
+          "name": "Python 3.12",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489/job/132457883081"
+        },
+        {
+          "name": "Pydantic AI native instrumentation",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489/job/132457883084"
+        },
+        {
+          "name": "Google ADK OTLP interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489/job/132457883106"
+        },
+        {
+          "name": "Python 3.11",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489/job/132457883162"
+        },
+        {
+          "name": "Automatic SDK capture through CLI",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598456489/job/132457883759"
+        }
+      ]
+    },
+    "89": {
+      "headSha": "f124e2e971919000fb2d7e40f293dacf6ffc72f0",
+      "status": "completed",
+      "conclusion": "failure",
+      "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082",
+      "jobs": [
+        {
+          "name": "OpenAI Agents SDK local tracing",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082/job/132458328106"
+        },
+        {
+          "name": "Python 3.13",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082/job/132458328337"
+        },
+        {
+          "name": "OpenTelemetry OTLP end-to-end",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082/job/132458328344"
+        },
+        {
+          "name": "Google ADK OTLP interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082/job/132458328358"
+        },
+        {
+          "name": "Pydantic AI native instrumentation",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082/job/132458328386"
+        },
+        {
+          "name": "Node.js 24",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082/job/132458328402"
+        },
+        {
+          "name": "Node.js 22",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082/job/132458328425"
+        },
+        {
+          "name": "Python 3.11",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082/job/132458328429"
+        },
+        {
+          "name": "LangChain callback interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082/job/132458328450"
+        },
+        {
+          "name": "Python 3.14",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082/job/132458328460"
+        },
+        {
+          "name": "Automatic SDK capture through CLI",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082/job/132458328465"
+        },
+        {
+          "name": "Python 3.12",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43598608082/job/132458328645"
+        }
+      ]
+    },
+    "90": {
+      "headSha": "e594a2a83c7d9d6da63e63aa497d88a8ff27b73b",
+      "status": "in_progress",
+      "conclusion": "",
+      "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680",
+      "jobs": [
+        {
+          "name": "OpenTelemetry OTLP end-to-end",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680/job/132460754373"
+        },
+        {
+          "name": "Pydantic AI native instrumentation",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680/job/132460754508"
+        },
+        {
+          "name": "Node.js 22",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680/job/132460754544"
+        },
+        {
+          "name": "Python 3.13",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680/job/132460754549"
+        },
+        {
+          "name": "Automatic SDK capture through CLI",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680/job/132460754563"
+        },
+        {
+          "name": "Google ADK OTLP interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680/job/132460754584"
+        },
+        {
+          "name": "Node.js 24",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680/job/132460754622"
+        },
+        {
+          "name": "OpenAI Agents SDK local tracing",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680/job/132460754627"
+        },
+        {
+          "name": "Python 3.14",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680/job/132460754628"
+        },
+        {
+          "name": "Python 3.11",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680/job/132460754640"
+        },
+        {
+          "name": "LangChain callback interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680/job/132460754642"
+        },
+        {
+          "name": "Python 3.12",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599416680/job/132460754647"
+        }
+      ]
+    },
+    "91": {
+      "headSha": "e389889ff7ff7ad92716fa5fb889a0a8ea8760a8",
+      "status": "in_progress",
+      "conclusion": "",
+      "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424",
+      "jobs": [
+        {
+          "name": "OpenAI Agents SDK local tracing",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796729"
+        },
+        {
+          "name": "Python 3.11",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796866"
+        },
+        {
+          "name": "LangChain callback interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796881"
+        },
+        {
+          "name": "Pydantic AI native instrumentation",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796899"
+        },
+        {
+          "name": "OpenTelemetry OTLP end-to-end",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796918"
+        },
+        {
+          "name": "Automatic SDK capture through CLI",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796931"
+        },
+        {
+          "name": "Node.js 24",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796946"
+        },
+        {
+          "name": "Node.js 22",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796967"
+        },
+        {
+          "name": "Python 3.14",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461796993"
+        },
+        {
+          "name": "Python 3.13",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461797013"
+        },
+        {
+          "name": "Python 3.12",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461797050"
+        },
+        {
+          "name": "Google ADK OTLP interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43599761424/job/132461797053"
+        }
+      ]
+    }
+  },
+  "readiness_followups": {
+    "snapshot_report": {
+      "commit": "ebcd03390bbbe57d18470165a4dbdb919de39357",
+      "path": "docs/validation/derived-readiness-snapshot.html",
+      "contract": "Guard cached+raw reads in the same BEGIN; typed503 rather than stale complete usage."
+    },
+    "incoming_report": {
+      "commit": "e594a2a83c7d9d6da63e63aa497d88a8ff27b73b",
+      "path": "docs/validation/incoming-catchup.html",
+      "contract": "One 75 ms incoming demand via existing worker/heap16, final guarded read, all genuine503s retained; CPU/write coalescing unmeasured."
+    },
+    "ci_fixtures_report": {
+      "commit": "e389889ff7ff7ad92716fa5fb889a0a8ea8760a8",
+      "path": "docs/validation/readiness-ci-fixtures.html",
+      "focused_tests": 24,
+      "seconds": 38.882,
+      "contract": "Immediate raw/cache redaction+zero derived rows+IndexNotReady before intentional settle; final public privacy assertion retained."
+    },
+    "performance_acceptance": false
+  },
+  "historical_document_validation": {
+    "historical_fixture_reader_hashes_checked": 5,
+    "rows": 38,
+    "finding_ids": 27,
+    "recommendation_ids": 11,
+    "frozen_source_test_paths_checked": 128,
+    "missing_paths": [],
+    "notes_sha256_unchanged": true,
+    "adapter_manifest_modified": false,
+    "html_checks": [
+      "self-contained embedded CSS; no external assets",
+      "light/dark styles",
+      "responsive table scrolling",
+      "unique heading IDs; navigation anchors resolve"
+    ],
+    "browser_render": "Not rerun for this current snapshot; prior browser QA remains historical."
   }
 }
