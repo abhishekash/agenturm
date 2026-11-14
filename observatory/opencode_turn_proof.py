@@ -52,3 +52,45 @@ def turn_coverage(selected, members, trace_ids, *, clipped=False):
     if any({key:item.get(PREFIX+key) for key in FIELDS}!=proof for item in members):
         reasons.append('Assistant steps disagree about their native turn boundary or membership')
     return reasons
+
+
+def _path(key):
+    return "'$.\""+key+"\"'"
+
+
+def _scalar(column,key,kind='text',limit=1024):
+    path=_path(key)
+    guard=f'length(CAST({column} AS BLOB))<=65536'
+    if kind=='boolean':
+        return f"json(CASE WHEN {guard} THEN CASE json_type({column},{path}) WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' ELSE 'null' END ELSE 'null' END)"
+    if kind=='integer':return f"CASE WHEN {guard} AND json_type({column},{path})='integer' THEN json_extract({column},{path}) END"
+    if kind=='number':return f"CASE WHEN {guard} AND json_type({column},{path}) IN ('integer','real') THEN json_extract({column},{path}) END"
+    return f"CASE WHEN {guard} AND json_type({column},{path})='text' THEN substr(json_extract({column},{path}),1,{limit+1}) END"
+
+
+def proof_sql(column):
+    """Project fixed-size scalar proof only; never transfer full root attributes."""
+    pairs=[]
+    for key in FIELDS:
+        kind='boolean' if key in {'closed','source_complete'} else 'integer' if key in {'schema','boundary_seq','closed_seq','expected_assistants'} else 'text'
+        pairs.extend(("'"+PREFIX+key+"'",_scalar(column,PREFIX+key,kind)))
+    present=f"EXISTS(SELECT 1 FROM json_each({column}) WHERE key GLOB '{PREFIX}*')"
+    return f"CASE WHEN length(CAST({column} AS BLOB))>65536 THEN '{{\"{PREFIX}schema\":0}}' WHEN {present} THEN json_object({','.join(pairs)}) ELSE '{{}}' END"
+
+
+def usage_sql(column):
+    """Keep only numeric allocation fields and bounded exact owner identity."""
+    pairs=[]
+    for key in ('input_tokens','output_tokens','cache_read_input_tokens','cache_write_input_tokens','reasoning_output_tokens','known_cost_usd','agent_count'):
+        pairs.extend(("'"+key+"'",_scalar(column,key,'number')))
+    for key in ('input_tokens_reported','output_tokens_reported','cache_read_input_tokens_reported','cache_write_input_tokens_reported','reasoning_output_tokens_reported','cost_complete','usage_complete','agent_count_complete'):
+        pairs.extend(("'"+key+"'",_scalar(column,key,'boolean')))
+    pairs.extend(("'turn_id'",_scalar(column,'turn_id')))
+    owner=[]
+    for key in ('producer','agent_id','session_id'):owner.extend(("'"+key+"'",_scalar(column,'review_owner.'+key)))
+    # Nested owner keys require ordinary JSON paths, rather than a dotted flat key.
+    owner_sql='json_object('+','.join(owner)+')'
+    for key in ('producer','agent_id','session_id'):
+        owner_sql=owner_sql.replace(_path('review_owner.'+key),"'$.review_owner."+key+"'")
+    pairs.extend(("'review_owner'",owner_sql))
+    return f"CASE WHEN {column} IS NOT NULL THEN json_object({','.join(pairs)}) ELSE '{{}}' END"
