@@ -18,7 +18,7 @@ def _fingerprint(value, *, sanitize=True):
     return digest(value) if complete else None
 
 
-def analyze_patterns(spans, logs, outcome=None, *, receiver='', activity=None):
+def analyze_patterns(spans, logs, outcome=None, *, receiver='', activity=None, source_complete=False):
     """Opt-in semantic observations, qualified by shared operation facts.
 
     No raw argument hash, generic tool label, or completion status proves an
@@ -26,7 +26,7 @@ def analyze_patterns(spans, logs, outcome=None, *, receiver='', activity=None):
     """
     from .core import _activity_for,_agent_id_from_attributes,_activity_session
     from .operation_facts import operation_facts,operation_key,operation_stamp
-    from .evidence_explanations import progress_observations,label
+    from .evidence_explanations import progress_observations,reported_usage_context,label
     candidates=[('span',row) for row in spans if isinstance(row,dict)]+[('log',row) for row in logs if isinstance(row,dict)]
     def stamp(pair):
         row=pair[1];value=row.get('end_unix_nano') or row.get('time_unix_nano') or row.get('start_unix_nano') or 0
@@ -84,23 +84,34 @@ def analyze_patterns(spans, logs, outcome=None, *, receiver='', activity=None):
     explanation=progress_observations(rows,receiver=receiver)
     partial=partial or explanation['coverage']['input_clipped'] or bool(explanation['coverage']['unknown_scope_records'])
     results=[]
-    def emit(kind,selected,note,basis):
+    def emit(kind,selected,note,basis,usage_context=None):
         first=selected[0];trace=first.get('trace_id')
-        if not trace:return
+        if not trace or any(row.get('trace_id')!=trace for row in selected):return
         refs=[dict(type=row.get('source') or 'activity',id=row.get('source_id') or row.get('id')) for row in selected[:20]]
         title={'repeated_compaction':'Repeated recorded compaction','repeated_tool_error':'Repeated matching operation failures',
-            'repeated_equivalent_call':'Repeated equivalent tool calls','completion_unresolved_error':'Completion with recovery unobserved'}[kind]
-        item=_finding(trace,kind,title,'medium',refs,note+' Observation over captured evidence; recovery or intentional repetition may be unobserved.')
+            'repeated_equivalent_call':'Repeated equivalent tool calls','later_matching_success':'Later matching success recorded','completion_unresolved_error':'Completion with recovery unobserved'}[kind]
+        item=_finding(trace,kind,title,'info' if kind=='later_matching_success' else 'medium',refs,note+' Observation over captured evidence; recovery or intentional repetition may be unobserved.')
         item.update(workflow_pattern=True,analysis_partial=partial,scope_kind='agent',agent_id=first.get('agent_id'),
-            producer=first.get('service'),session_id=first.get('session_id'),group_basis=basis,attention=False)
+            producer=first.get('service'),session_id=first.get('session_id'),turn_id=first.get('turn_id') or None,group_basis=basis,attention=False)
+        if usage_context is not None:
+            item['reported_usage_context']=usage_context
+            if usage_context['available']:
+                for ref in usage_context['references']:
+                    evidence=dict(type=ref['type'],id=ref['id'])
+                    if evidence not in item['evidence'] and len(item['evidence'])<20:item['evidence'].append(evidence)
         results.append(item)
     by_reference={(row.get('id') or row.get('source_id')):row for row in rows}
     for observation in explanation['observations']:
         kind=observation['kind']
-        if kind not in {'repeated_compaction','repeated_tool_error','repeated_equivalent_call'}:continue
+        if kind not in {'repeated_compaction','repeated_tool_error','repeated_equivalent_call','later_matching_success'}:continue
         selected_rows=[by_reference.get(ref.get('id') or ref.get('source_id')) for ref in observation['references']]
         selected_rows=[row for row in selected_rows if row]
-        if selected_rows:emit(kind,selected_rows,observation['note'],'semantic observation' if kind=='repeated_compaction' else 'complete sanitized operation equivalence')
+        if selected_rows:
+            context=None;note=observation['note']
+            if kind!='later_matching_success':
+                context=reported_usage_context(source_spans,rows,observation,receiver=receiver,source_complete=source_complete is True and not partial)
+                note+=' Reported usage context: '+(context['note'] if context['available'] else 'unavailable — '+context['reason'])
+            emit(kind,selected_rows,note,'semantic observation' if kind=='repeated_compaction' else 'complete sanitized operation equivalence',context)
     groups=defaultdict(list)
     for row in rows:
         values=(row.get('receiver_id'),row.get('service'),row.get('agent_id'),row.get('session_id'),row.get('turn_id') or row.get('trace_id'))

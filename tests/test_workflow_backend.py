@@ -15,7 +15,8 @@ class WorkflowBackendTests(unittest.TestCase):
             owners=[]
             for worker,base in (('worker-two',10),('worker-three',20)):
                 attrs={'agent.id':worker,'agent.parent_id':'root-worker','session.id':worker+'-session',
-                       'tool.name':'build','tool.error':'repeated failure'}
+                       'tool.name':'Bash','gen_ai.tool.type':'shell','process.command_line':'python build.py',
+                       'process.working_directory':'/fixture','process.exit.code':1,'tool.error':'repeated failure'}
                 owners.append(_agent_id_from_attributes(attrs,{},'fixture'))
                 for n in range(3):
                     rows.append(normalize_native(dict(trace_id='a'*32,span_id=f'{base+n:016x}',
@@ -88,7 +89,9 @@ class WorkflowBackendTests(unittest.TestCase):
                 rows.append(normalize_native(dict(trace_id='a'*32,span_id=f'{n+1:016x}',
                     name='tool',start_unix_nano=(n+1)*1_000_000_000,
                     end_unix_nano=(n+1)*1_000_000_000+1,status='ERROR',
-                    attributes={'agent.id':'worker','tool.name':'build','tool.error':'broken'}),'fixture'))
+                    attributes={'agent.id':'worker','session.id':'session','tool.name':'Bash',
+                        'gen_ai.tool.type':'shell','process.command_line':'python build.py',
+                        'process.working_directory':'/fixture','process.exit.code':1,'tool.error':'broken'}),'fixture'))
             store.ingest(rows)
             self.assertTrue(any(f.get('workflow_pattern') for f in store.findings()))
             store.close()
