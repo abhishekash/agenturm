@@ -251,6 +251,7 @@ class HeadlessReceiverJourney(unittest.TestCase):
     def test_actual_http_auth_worker_scope_stdout_and_frozen_exports(self):
         import subprocess
         import sys
+        import threading
         from observatory.core import normalize_native
         from observatory.agent_hierarchy import canonical_agent_id
         from observatory.terminal import LocalReceiver
@@ -274,13 +275,31 @@ class HeadlessReceiverJourney(unittest.TestCase):
             # fixture deterministically; this journey tests HTTP scope/auth,
             # not a read-after-ingest timing guarantee.
             receiver.store._refresh_summaries([trace])
+            # A manual summary refresh does not finish initial migration or
+            # certify the other derived queues required by the HTTP preflight.
+            deadline=time.monotonic()+5
+            while True:
+                indexing=receiver.store.index_status()
+                self.assertNotIn('error',indexing,indexing)
+                self.assertIsNone(receiver.store.last_derived_error)
+                if indexing.get('ready') is True:break
+                if time.monotonic()>=deadline:self.fail('Indexed fixture did not become ready: '+repr(indexing))
+                time.sleep(.01)
             endpoint='http://127.0.0.1:'+str(receiver.server.server_address[1])
             destination=Path(directory)/'review.json'
             command=[sys.executable,'-m','observatory','review','--endpoint',endpoint,'--service','svc',
                 '--agent-id',canonical_agent_id('SDK','svc','worker'),'--session-id','shared','--trace-id',trace,
                 '--format','json','--output',str(destination)]
-            result=subprocess.run(command,env={**os.environ,'OBSERVATORY_TOKEN':'test-token','NO_COLOR':'1'},capture_output=True,text=True,timeout=15)
-            self.assertEqual(result.returncode,0,result.stderr)
+            responses=[];response_lock=threading.Lock()
+            handler=receiver.server.RequestHandlerClass;send_response=handler.send_response
+            def observed_response(request,code,message=None):
+                # Record actual wire statuses, without queries, tokens or bodies,
+                # so a future generic CLI error has a useful fixture diagnosis.
+                with response_lock:responses.append((request.path.split('?',1)[0],code))
+                return send_response(request,code,message)
+            with patch.object(handler,'send_response',observed_response):
+                result=subprocess.run(command,env={**os.environ,'OBSERVATORY_TOKEN':'test-token','NO_COLOR':'1'},capture_output=True,text=True,timeout=15)
+            self.assertEqual(result.returncode,0,dict(stderr=result.stderr,http=responses,indexing_before=indexing))
             projection=json.loads(result.stdout)
             self.assertEqual([check['command'] for check in projection['checks']],['pytest worker'])
             self.assertEqual(projection['checks'][0]['later_edit_count'],1)
