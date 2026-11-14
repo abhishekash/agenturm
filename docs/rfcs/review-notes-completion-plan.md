@@ -162,7 +162,7 @@ Explicit workspace mapping, frozen bounded Git receipts, editable source-backed 
 
 ### Stage C source-backed Overview — implementation ready for review
 
-The compact and expanded Agents inspectors show recorded edits, paths, check outcomes and issues before assistant claims. The shared Review projection enforces exact source/execution ownership, typed results and bounded partial coverage. Source preparation is UI-free for headless parity, and native log batches can pin receiver identity transactionally. The 44-test source/cache/session-view gate, latest 11-test pure delta, three-frame actual-app journey and three receiver-fence cases passed. See the [implementation and limits](../validation/source-backed-overview.md). Independent final review and PR CI remain pending; no resource target is closed by this UI change.
+The compact and expanded Agents inspectors show recorded edits, paths, check outcomes and issues before assistant claims. The shared Review projection enforces exact source/execution ownership, typed results and bounded partial coverage. Source preparation is UI-free for headless parity, and native log batches can pin receiver identity transactionally. The 44-test source/cache/session-view gate, latest 11-test pure delta, three-frame actual-app journey and three receiver-fence cases passed. See the [implementation and limits](../validation/source-backed-overview.md). Independent final review found no blocker; its pure overview/source gate passed eight tests in 0.971 seconds. [PR #78](https://github.com/abhishekash/agenturm/pull/78) is in CI; no resource target is closed by this UI change.
 
 ### Parallel implementation ownership and remaining acceptance gates
 
