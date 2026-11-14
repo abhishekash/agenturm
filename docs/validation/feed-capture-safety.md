@@ -35,3 +35,6 @@ Focused results and independent peer review are recorded with the implementation
 - Additional CLI compatibility coverage: 15 tests passed in 7.038 s. The independent peer reproduced the original rapid-reallow, actor-wide unlisted-session and replacement-receiver failures before the fixes, then verified their repaired behavior and fresh positive continuity journeys.
 
 The full combined application, CI and final performance protocols remain integration gates owned by the main implementation. These overlapping local counts are individual test runs, not an additive count of unique tests.
+
+
+Root integration on main through PR93, including same-snapshot readiness and bounded incoming catch-up, passed **102 tests in 106.887 seconds**. The report HTML was checked at 1280/light and 390/dark with no page overflow or external assets. These integration checks overlap earlier focused suites and must not be added into a unique-case total. New-head full CI and final frozen resource/one-hour acceptance remain separate gates.
