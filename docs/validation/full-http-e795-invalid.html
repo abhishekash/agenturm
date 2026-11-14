@@ -1,0 +1,43 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Full Http E795 Invalid</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.3</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/full-http-e795-invalid.md">Markdown source ↗</a></nav><h1>Failed full-history HTTP checkpoint at e795</h1>
+<p>The registered B→C run used the immutable common generated corpus: 5,751 traces, 31,000 spans and 41,000 logs. B was <code>5e0c39786066fb88c0e270418573e361aeb6cf9a</code>; C and harness were <code>e795f064c861cd59b54d1180697e4b19c9959b34</code>. Separate receiver processes built their own production schema from identical registered raw clones. Authentication, namespaces, index manifests, source invariance, orderly drains and clone cleanup passed.</p>
+<p><strong>Both loaded arms failed. No loaded p95, resource win or readiness target is accepted.</strong> Each first long POST caused the next fixed 100 ms slot to be missed. The writer refused burst catch-up and stopped; most subsequent read attempts therefore ran after actual writer progress ended. Those fast responses are not loaded-latency evidence.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Arm</th>
+<th style="text-align:right">Preparation + receiver readiness (s)</th>
+<th style="text-align:right">Accepted write batches / 420</th>
+<th style="text-align:right">Reads begun before final accepted write finished</th>
+<th style="text-align:right">Successful among those reads</th>
+<th style="text-align:right">Later reads after writer stopped</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B</td>
+<td style="text-align:right">430.143</td>
+<td style="text-align:right">44 / 420</td>
+<td style="text-align:right">10</td>
+<td style="text-align:right">0</td>
+<td style="text-align:right">70</td>
+</tr>
+<tr>
+<td>C</td>
+<td style="text-align:right">353.820</td>
+<td style="text-align:right">35 / 420</td>
+<td style="text-align:right">8</td>
+<td style="text-align:right">4</td>
+<td style="text-align:right">72</td>
+</tr>
+</tbody>
+</table></div>
+<p>The readiness field above includes child clone/schema preparation and probing. It is <strong>not</strong> the primary logical-cold or first-useful-TUI measurement, whose preparation exclusion and native-monitor/UI coverage are different. The latter gates remain open.</p>
+<p>Accepted writer inputs differed, the writer did not span the read windows, and genuine 503s remained. The harness correctly set both arm validity and overall publication to false and left target results null. No request or failure was filtered out, retried or silently replaced. The measured rate and deadline policy are unchanged.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/full-http-e795-invalid.json.gz">The complete generated-only result</a> is retained compressed; authentication configurations were excluded, and credential-key/Bearer checks ran before packaging. Uncompressed SHA-256: <code>29eff78d42425e9a014250e1b766feb90204ccb08fba2f350e12249fd457411b</code>.</p>
+<h2>Follow-up, not a pass</h2>
+<p>Short diagnostics found ingestion waiting behind long derivations, duplicate local/compatibility repair, repeated SQL setup and repeated semantic-fact projection. Coalescing, atomic raw/identity publication, connection-local preparation and bounded one-trace fact reuse are being tested with exact serialized-output parity. Each component diagnostic has a distinct source/fixture scope. Fresh combined controlled HTTP, cold/idle, storage, terminal and one-hour validation is still required. This failed run remains part of the evidence after any fix.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

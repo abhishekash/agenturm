@@ -109,7 +109,7 @@ class IncomingHTTPTests(unittest.TestCase):
         end=time.monotonic()+3
         while self.store._derived_pending and time.monotonic()<end:time.sleep(.01)
         refresh=self.store._refresh_summaries;batches=[];barrier=threading.Barrier(4)
-        def derived(ids):batches.append(tuple(ids));return refresh(ids)
+        def derived(ids,**kwargs):batches.append(tuple(ids));return refresh(ids,**kwargs)
         def request():barrier.wait(timeout=3);return self.get('/api/sessions')
         with patch.object(self.store,'_refresh_summaries',derived),patch.object(self.store,'_drain_external_activity',return_value=0):
             with self.store._derived_lock:
@@ -162,17 +162,24 @@ class IncomingHTTPTests(unittest.TestCase):
 
 
 class IncomingWorkerTests(unittest.TestCase):
+    @staticmethod
+    def stop_fixture_worker(store,worker):
+        with store._derived_condition:
+            store._derived_stopping=True;store._derived_pending.clear();store._derived_condition.notify_all()
+        worker.join(timeout=3)
+
     def test_priority_is_capped_oldest_first_and_existing_queue_drains_once(self):
         store=Store.__new__(Store);store._derived_condition=threading.Condition()
         now=time.monotonic();store._derived_pending={str(n):(now+n*.0001,now,0) for n in range(40)}
         store._derived_demand_until=now+.075;store._derived_generation=0;store._derived_stopping=False
         store.last_derived_error=None;batches=[]
-        def refresh(ids):
+        def refresh(ids,**kwargs):
             batches.append(list(ids))
             with store._derived_condition:
                 store._derived_stopping=True;store._derived_condition.notify_all()
         store._refresh_summaries=refresh
-        worker=threading.Thread(target=store._derived_refresh_worker);worker.start();worker.join(timeout=3)
+        worker=threading.Thread(target=store._derived_refresh_worker);worker.start()
+        self.addCleanup(self.stop_fixture_worker,store,worker);worker.join(timeout=3)
         self.assertFalse(worker.is_alive());self.assertEqual(batches[0],[str(n) for n in range(16)])
         flattened=[value for batch in batches for value in batch]
         self.assertEqual(len(flattened),40);self.assertEqual(set(flattened),set(map(str,range(40))))
@@ -183,12 +190,13 @@ class IncomingWorkerTests(unittest.TestCase):
         now=time.monotonic();store._derived_pending={'fixture':(now,now,0)}
         store._derived_demand_until=now+.075;store._derived_generation=0;store._derived_stopping=False
         store.last_derived_error=None;calls=[];first=threading.Event()
-        def refresh(ids):
+        def refresh(ids,**kwargs):
             calls.append(tuple(ids))
             if len(calls)==1:first.set();raise RuntimeError('Fixture derive failure')
             with store._derived_condition:store._derived_stopping=True;store._derived_condition.notify_all()
         store._refresh_summaries=refresh
         worker=threading.Thread(target=store._derived_refresh_worker);worker.start()
+        self.addCleanup(self.stop_fixture_worker,store,worker)
         self.assertTrue(first.wait(3));worker.join(timeout=3)
         self.assertFalse(worker.is_alive());self.assertEqual(calls,[('fixture',),('fixture',)])
         self.assertEqual(store._derived_generation,2);self.assertIsNone(store.last_derived_error)
