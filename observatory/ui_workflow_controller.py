@@ -55,7 +55,7 @@ class WorkflowController:
                 self._drained.wait(remaining)
 
     def update(self, items, snapshot, limits):
-        if self._closed:
+        if self._closed or getattr(snapshot,'native_bootstrap',False):
             return
         options = dict(endpoint=self.owner.feed.api.endpoint,
             notify=bool(self.owner.workflow_notify and not self.owner.is_headless),
@@ -161,6 +161,7 @@ class WorkflowController:
             self.owner.screen.render_report()
 
     def _observe(self, items, snapshot, limits, options):
+        if getattr(snapshot,'native_bootstrap',False):return
         self._latest = (items, snapshot, limits, options)
         self._open_storage(options['persist'])
         self.runner.update(items,snapshot,limits,endpoint=options['endpoint'],store=self.store)
@@ -205,11 +206,13 @@ class WorkflowController:
                    if incident.kind in {'approval', 'reply'})
 
     def acknowledge(self, item, *, action='seen'):
+        if getattr(self.owner.feed.snapshot,'native_bootstrap',False):return
         prepared = prepared_item(item, self.owner.feed.snapshot)
         scope = scope_for(prepared, self.owner.feed.snapshot, self.owner.feed.api.endpoint)
         self._enqueue(('ack', (scope.scope_key, prepared.get('_attention_id'), action)))
 
     def review_completions(self, incident_ids):
+        if getattr(self.owner.feed.snapshot,'native_bootstrap',False):return
         # Freeze exact selected completion identities; later arrivals are excluded.
         self._enqueue(('review_completions',(tuple(incident_ids),)))
 
@@ -228,6 +231,8 @@ class WorkflowController:
 
     def error_displayed(self, events, *, snapshot=None):
         """Only call after actual error details are opened, never for a count."""
+        if (getattr(self.owner.feed.snapshot,'native_bootstrap',False)or
+                getattr(snapshot,'native_bootstrap',False)):return
         keys = {key for event in events if (key := event_receipt(
             event, snapshot if snapshot is not None else self.owner.feed.snapshot, self.owner.feed.api.endpoint))}
         keys -= self.error_seen
@@ -270,6 +275,7 @@ class WorkflowController:
         self.ledger.render_rows(snapshot=self._latest[1] if self._latest else None)
 
     def retry(self, item):
+        if getattr(self.owner.feed.snapshot,'native_bootstrap',False):return
         self._enqueue(('retry', (item.get('_attention_id'),)))
 
     def cleanup(self):

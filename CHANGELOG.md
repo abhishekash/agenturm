@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show fresh, read-only native agent observations while initial history indexes. Keep task text, history totals and workflow actions unavailable, with truthful keyboard-reachable loading states on every view and normal behavior restored after coherent data arrives.
+
 - Keep locally queued and in-flight derivation with its worker, fence source commits through queue publication, and bound fair repair batches. Preserve external-writer reconciliation and truthful unavailable reads while growing-trace latency remains under validation.
 
 - Publish ingested span identities atomically, coalesce already-completed derived repairs, reuse bounded sanitized per-trace facts and connection-local aggregation state, and skip provably empty MCP execution joins. Preserve redaction, source ownership and snapshot certification; retain failed cadence measurements while full resource acceptance remains open.

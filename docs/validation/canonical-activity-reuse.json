@@ -1,0 +1,1631 @@
+{
+  "report_version": 1,
+  "status": "diagnostic-only; no runtime change",
+  "documentation_base": "250030bd82aa143e72860f4a392504133bac4c88",
+  "generated_only": true,
+  "publishable": false,
+  "performance_targets_closed": false,
+  "fixture": {
+    "protocol": "agenturm-authenticated-http-tails-v1",
+    "factory": "scripts/benchmark_http_tails.py:payload",
+    "base_ns": 1800000000000000000,
+    "trace_id": "52349924f50f8353d3ddf1f101972042",
+    "source_batches": [
+      140,
+      280
+    ],
+    "source_spans": [
+      141,
+      281
+    ],
+    "canonical_activity": [
+      140,
+      256
+    ]
+  },
+  "attribution": {
+    "before": {
+      "root": "/tmp/agenturm-ownership-integration",
+      "commit": "52392147f6ded3d02e5094741ab7f65295c6c222",
+      "generated_only": true,
+      "diagnostic_only": true,
+      "publishable": false,
+      "profiles": [
+        {
+          "writes": 140,
+          "source_spans": 141,
+          "canonical_activity": 140,
+          "refs": 20,
+          "stored_projection_sha256": "2bcaeb2d59b056b42ce3eeda8a96fbc036e8e7b8618452d332887c682aacc932",
+          "instrumented_total_seconds": 0.47409690700000007,
+          "functions": [
+            {
+              "file": "findings.py",
+              "line": 155,
+              "name": "credentials",
+              "primitive": 141,
+              "total": 141,
+              "own_seconds": 0.000170089,
+              "cumulative_seconds": 0.026713393000000002,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "analyze",
+                  "calls": 141,
+                  "cumulative_seconds": 0.026713393000000002
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 91,
+              "name": "_agent_node_from_attributes",
+              "primitive": 705,
+              "total": 705,
+              "own_seconds": 0.014514440000000002,
+              "cumulative_seconds": 0.038971396000000005,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_agent_id_from_attributes",
+                  "calls": 705,
+                  "cumulative_seconds": 0.038971396000000005
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 204,
+              "name": "_activity_row",
+              "primitive": 281,
+              "total": 281,
+              "own_seconds": 0.010238633,
+              "cumulative_seconds": 0.051777592000000004,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_tool_activity",
+                  "calls": 140,
+                  "cumulative_seconds": 0.03093022
+                },
+                {
+                  "file": "findings.py",
+                  "name": "source_owner",
+                  "calls": 141,
+                  "cumulative_seconds": 0.020847372000000003
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 456,
+              "name": "_recorded_activity_agents",
+              "primitive": 3,
+              "total": 3,
+              "own_seconds": 0.0007748690000000001,
+              "cumulative_seconds": 0.015384085,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "summarize",
+                  "calls": 2,
+                  "cumulative_seconds": 0.007641292
+                },
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.007742793
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 473,
+              "name": "_review_owner",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.0005461320000000001,
+              "cumulative_seconds": 0.009597194,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.009597194
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 310,
+              "name": "_tool_activity",
+              "primitive": 141,
+              "total": 141,
+              "own_seconds": 0.006638558,
+              "cumulative_seconds": 0.17713109800000001,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_activity_for",
+                  "calls": 141,
+                  "cumulative_seconds": 0.17713109800000001
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 489,
+              "name": "_activity_for",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.0011857010000000002,
+              "cumulative_seconds": 0.179010575,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.179010575
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 48,
+              "name": "_credential_hits",
+              "primitive": 141,
+              "total": 1684,
+              "own_seconds": 0.011936565000000001,
+              "cumulative_seconds": 0.026543304,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "credentials",
+                  "calls": 141,
+                  "cumulative_seconds": 0.026543304
+                },
+                {
+                  "file": "findings.py",
+                  "name": "_credential_hits",
+                  "calls": 1543,
+                  "cumulative_seconds": 0.018423185
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 124,
+              "name": "analyze",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.0018485320000000002,
+              "cumulative_seconds": 0.20752408200000003,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.20752408200000003
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 3717,
+              "name": "summarize",
+              "primitive": 2,
+              "total": 2,
+              "own_seconds": 0.0011973860000000002,
+              "cumulative_seconds": 0.016283011,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 2,
+                  "cumulative_seconds": 0.016283011
+                }
+              ]
+            },
+            {
+              "file": "storage_derived.py",
+              "line": 345,
+              "name": "derive_trace",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.003844328,
+              "cumulative_seconds": 0.44202115900000005,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_refresh_summaries_locked",
+                  "calls": 1,
+                  "cumulative_seconds": 0.44202115900000005
+                }
+              ]
+            },
+            {
+              "file": "operation_preparation.py",
+              "line": 28,
+              "name": "full",
+              "primitive": 280,
+              "total": 280,
+              "own_seconds": 0.0027333080000000003,
+              "cumulative_seconds": 0.160845969,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "analyze",
+                  "calls": 140,
+                  "cumulative_seconds": 0.15672533900000002
+                },
+                {
+                  "file": "operation_preparation.py",
+                  "name": "correlation",
+                  "calls": 140,
+                  "cumulative_seconds": 0.00412063
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 303,
+              "name": "normalized_evidence",
+              "primitive": 280,
+              "total": 280,
+              "own_seconds": 0.0016447880000000001,
+              "cumulative_seconds": 0.011668983,
+              "callers": [
+                {
+                  "file": "operation_facts.py",
+                  "name": "normalize_operation_result",
+                  "calls": 140,
+                  "cumulative_seconds": 0.005938531
+                },
+                {
+                  "file": "operation_facts.py",
+                  "name": "operation_facts",
+                  "calls": 140,
+                  "cumulative_seconds": 0.0057304520000000005
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 155,
+              "name": "evidence_detail",
+              "primitive": 140,
+              "total": 140,
+              "own_seconds": 0.004119908,
+              "cumulative_seconds": 0.11705358,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_tool_activity",
+                  "calls": 140,
+                  "cumulative_seconds": 0.11705358
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 388,
+              "name": "operation_facts",
+              "primitive": 140,
+              "total": 140,
+              "own_seconds": 0.009805979000000001,
+              "cumulative_seconds": 0.149478848,
+              "callers": [
+                {
+                  "file": "operation_preparation.py",
+                  "name": "full",
+                  "calls": 140,
+                  "cumulative_seconds": 0.149478848
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 51,
+              "name": "safe_value",
+              "primitive": 700,
+              "total": 700,
+              "own_seconds": 0.002943527,
+              "cumulative_seconds": 0.21174710300000002,
+              "callers": [
+                {
+                  "file": "operation_facts.py",
+                  "name": "evidence_detail",
+                  "calls": 280,
+                  "cumulative_seconds": 0.10079336500000001
+                },
+                {
+                  "file": "operation_facts.py",
+                  "name": "operation_facts",
+                  "calls": 420,
+                  "cumulative_seconds": 0.11095373800000001
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 79,
+              "name": "_agent_id_from_attributes",
+              "primitive": 705,
+              "total": 705,
+              "own_seconds": 0.0025077840000000003,
+              "cumulative_seconds": 0.042690395000000006,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_activity_row",
+                  "calls": 281,
+                  "cumulative_seconds": 0.02140571
+                },
+                {
+                  "file": "core.py",
+                  "name": "_recorded_activity_agents",
+                  "calls": 283,
+                  "cumulative_seconds": 0.014122003000000001
+                },
+                {
+                  "file": "core.py",
+                  "name": "_review_owner",
+                  "calls": 141,
+                  "cumulative_seconds": 0.007162682
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 150,
+              "name": "source_owner",
+              "primitive": 141,
+              "total": 141,
+              "own_seconds": 0.000622919,
+              "cumulative_seconds": 0.021774875000000003,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "analyze",
+                  "calls": 141,
+                  "cumulative_seconds": 0.021774875000000003
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "writes": 280,
+          "source_spans": 281,
+          "canonical_activity": 256,
+          "refs": 20,
+          "stored_projection_sha256": "3579907da9f1e3f18e3efbf2f29320a859035482beff27210a4103eadb165cca",
+          "instrumented_total_seconds": 0.7879732669999997,
+          "functions": [
+            {
+              "file": "findings.py",
+              "line": 155,
+              "name": "credentials",
+              "primitive": 257,
+              "total": 257,
+              "own_seconds": 0.000283876,
+              "cumulative_seconds": 0.041759644000000005,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "analyze",
+                  "calls": 257,
+                  "cumulative_seconds": 0.041759644000000005
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 91,
+              "name": "_agent_node_from_attributes",
+              "primitive": 1028,
+              "total": 1028,
+              "own_seconds": 0.021706795,
+              "cumulative_seconds": 0.057736537000000004,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_agent_id_from_attributes",
+                  "calls": 1028,
+                  "cumulative_seconds": 0.057736537000000004
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 204,
+              "name": "_activity_row",
+              "primitive": 513,
+              "total": 513,
+              "own_seconds": 0.015769441000000002,
+              "cumulative_seconds": 0.079708081,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_tool_activity",
+                  "calls": 256,
+                  "cumulative_seconds": 0.046830053
+                },
+                {
+                  "file": "findings.py",
+                  "name": "source_owner",
+                  "calls": 257,
+                  "cumulative_seconds": 0.032878028000000004
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 456,
+              "name": "_recorded_activity_agents",
+              "primitive": 3,
+              "total": 3,
+              "own_seconds": 0.001749319,
+              "cumulative_seconds": 0.033381699,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "summarize",
+                  "calls": 2,
+                  "cumulative_seconds": 0.020063631000000002
+                },
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.013318068
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 473,
+              "name": "_review_owner",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 4.800000000000001e-07,
+              "cumulative_seconds": 4.800000000000001e-07,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 4.800000000000001e-07
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 310,
+              "name": "_tool_activity",
+              "primitive": 257,
+              "total": 257,
+              "own_seconds": 0.010106278,
+              "cumulative_seconds": 0.270044756,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_activity_for",
+                  "calls": 257,
+                  "cumulative_seconds": 0.270044756
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 489,
+              "name": "_activity_for",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.0018280100000000001,
+              "cumulative_seconds": 0.272936727,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.272936727
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 48,
+              "name": "_credential_hits",
+              "primitive": 257,
+              "total": 3076,
+              "own_seconds": 0.018938289,
+              "cumulative_seconds": 0.041475768,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "credentials",
+                  "calls": 257,
+                  "cumulative_seconds": 0.041475768
+                },
+                {
+                  "file": "findings.py",
+                  "name": "_credential_hits",
+                  "calls": 2819,
+                  "cumulative_seconds": 0.028731288
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 124,
+              "name": "analyze",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.0029707590000000003,
+              "cumulative_seconds": 0.351761549,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.351761549
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 3717,
+              "name": "summarize",
+              "primitive": 2,
+              "total": 2,
+              "own_seconds": 0.0036281610000000004,
+              "cumulative_seconds": 0.047677931,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 2,
+                  "cumulative_seconds": 0.047677931
+                }
+              ]
+            },
+            {
+              "file": "storage_derived.py",
+              "line": 345,
+              "name": "derive_trace",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.006698797,
+              "cumulative_seconds": 0.7334019580000001,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_refresh_summaries_locked",
+                  "calls": 1,
+                  "cumulative_seconds": 0.7334019580000001
+                }
+              ]
+            },
+            {
+              "file": "operation_preparation.py",
+              "line": 28,
+              "name": "full",
+              "primitive": 512,
+              "total": 512,
+              "own_seconds": 0.004884013,
+              "cumulative_seconds": 0.280161618,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "analyze",
+                  "calls": 256,
+                  "cumulative_seconds": 0.271950175
+                },
+                {
+                  "file": "operation_preparation.py",
+                  "name": "correlation",
+                  "calls": 256,
+                  "cumulative_seconds": 0.008211443
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 303,
+              "name": "normalized_evidence",
+              "primitive": 512,
+              "total": 512,
+              "own_seconds": 0.002658997,
+              "cumulative_seconds": 0.018980848,
+              "callers": [
+                {
+                  "file": "operation_facts.py",
+                  "name": "normalize_operation_result",
+                  "calls": 256,
+                  "cumulative_seconds": 0.00903614
+                },
+                {
+                  "file": "operation_facts.py",
+                  "name": "operation_facts",
+                  "calls": 256,
+                  "cumulative_seconds": 0.009944708
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 155,
+              "name": "evidence_detail",
+              "primitive": 256,
+              "total": 256,
+              "own_seconds": 0.0063517750000000005,
+              "cumulative_seconds": 0.17898576300000002,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_tool_activity",
+                  "calls": 256,
+                  "cumulative_seconds": 0.17898576300000002
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 388,
+              "name": "operation_facts",
+              "primitive": 256,
+              "total": 256,
+              "own_seconds": 0.016878865,
+              "cumulative_seconds": 0.259438512,
+              "callers": [
+                {
+                  "file": "operation_preparation.py",
+                  "name": "full",
+                  "calls": 256,
+                  "cumulative_seconds": 0.259438512
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 51,
+              "name": "safe_value",
+              "primitive": 1280,
+              "total": 1280,
+              "own_seconds": 0.0048127280000000005,
+              "cumulative_seconds": 0.347647105,
+              "callers": [
+                {
+                  "file": "operation_facts.py",
+                  "name": "evidence_detail",
+                  "calls": 512,
+                  "cumulative_seconds": 0.15438332100000002
+                },
+                {
+                  "file": "operation_facts.py",
+                  "name": "operation_facts",
+                  "calls": 768,
+                  "cumulative_seconds": 0.19326378400000002
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 79,
+              "name": "_agent_id_from_attributes",
+              "primitive": 1028,
+              "total": 1028,
+              "own_seconds": 0.003723081,
+              "cumulative_seconds": 0.06334139100000001,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_activity_row",
+                  "calls": 513,
+                  "cumulative_seconds": 0.032907608000000005
+                },
+                {
+                  "file": "core.py",
+                  "name": "_recorded_activity_agents",
+                  "calls": 515,
+                  "cumulative_seconds": 0.030433783000000002
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 150,
+              "name": "source_owner",
+              "primitive": 257,
+              "total": 257,
+              "own_seconds": 0.001005849,
+              "cumulative_seconds": 0.034348313000000005,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "analyze",
+                  "calls": 257,
+                  "cumulative_seconds": 0.034348313000000005
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "module_sha256": {
+        "observatory/core.py": "41d9096b372989e25269db5351ec18779e3809524ef65cfb7ff153abef691be3",
+        "observatory/findings.py": "c969d7563e4f956456fdbff3d81e76c3ad75cb140467667b6e9105d8a4c04a36",
+        "observatory/operation_facts.py": "48b1e304576474ad385a419e55864bb49e33980de0be64c64b243c276a56b45b",
+        "observatory/operation_preparation.py": "ebb0c75635c3dde28df026af0412719ad2060391276655fdf21092224f39cb9d",
+        "observatory/error_reminders.py": "9a7d4747a25530bc4e8fc5990a83d860bc757385b688e24ed560c3f0de5bb954",
+        "observatory/storage_derived.py": "ac29357423102f72bd3d30846da861659e070ac36b9dba6c4f374654831e1ab0",
+        "scripts/benchmark_http_tails.py": "7ef62e70cd6bc91bdfe4c01fe849fe2acca8015830cf8fed1688c0c1a015ef5c"
+      }
+    },
+    "after": {
+      "root": "/tmp/agenturm-success-integration",
+      "commit": "9f3d1d76282328905f4427e57be81276a366d955",
+      "generated_only": true,
+      "diagnostic_only": true,
+      "publishable": false,
+      "profiles": [
+        {
+          "writes": 140,
+          "source_spans": 141,
+          "canonical_activity": 140,
+          "refs": 20,
+          "stored_projection_sha256": "2bcaeb2d59b056b42ce3eeda8a96fbc036e8e7b8618452d332887c682aacc932",
+          "instrumented_total_seconds": 0.287775106,
+          "functions": [
+            {
+              "file": "core.py",
+              "line": 91,
+              "name": "_agent_node_from_attributes",
+              "primitive": 705,
+              "total": 705,
+              "own_seconds": 0.012776545,
+              "cumulative_seconds": 0.034230670000000005,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_agent_id_from_attributes",
+                  "calls": 705,
+                  "cumulative_seconds": 0.034230670000000005
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 204,
+              "name": "_activity_row",
+              "primitive": 281,
+              "total": 281,
+              "own_seconds": 0.008091731000000001,
+              "cumulative_seconds": 0.041748854,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_tool_activity",
+                  "calls": 140,
+                  "cumulative_seconds": 0.025856664
+                },
+                {
+                  "file": "findings.py",
+                  "name": "source_owner",
+                  "calls": 141,
+                  "cumulative_seconds": 0.01589219
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 456,
+              "name": "_recorded_activity_agents",
+              "primitive": 3,
+              "total": 3,
+              "own_seconds": 0.0007375260000000001,
+              "cumulative_seconds": 0.014747424,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "summarize",
+                  "calls": 2,
+                  "cumulative_seconds": 0.0074120670000000005
+                },
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.007335357000000001
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 473,
+              "name": "_review_owner",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.000507584,
+              "cumulative_seconds": 0.009084367000000001,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.009084367000000001
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 310,
+              "name": "_tool_activity",
+              "primitive": 141,
+              "total": 141,
+              "own_seconds": 0.005515291,
+              "cumulative_seconds": 0.147434895,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_activity_for",
+                  "calls": 141,
+                  "cumulative_seconds": 0.147434895
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 489,
+              "name": "_activity_for",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.000994101,
+              "cumulative_seconds": 0.149025082,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.149025082
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 156,
+              "name": "credentials",
+              "primitive": 141,
+              "total": 141,
+              "own_seconds": 0.000139719,
+              "cumulative_seconds": 0.020011505000000002,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "analyze",
+                  "calls": 141,
+                  "cumulative_seconds": 0.020011505000000002
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 48,
+              "name": "_credential_hits",
+              "primitive": 141,
+              "total": 1684,
+              "own_seconds": 0.00912837,
+              "cumulative_seconds": 0.019871786000000002,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "credentials",
+                  "calls": 141,
+                  "cumulative_seconds": 0.019871786000000002
+                },
+                {
+                  "file": "findings.py",
+                  "name": "_credential_hits",
+                  "calls": 1543,
+                  "cumulative_seconds": 0.013786442000000001
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 3717,
+              "name": "summarize",
+              "primitive": 2,
+              "total": 2,
+              "own_seconds": 0.00115051,
+              "cumulative_seconds": 0.015728707,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 2,
+                  "cumulative_seconds": 0.015728707
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 124,
+              "name": "analyze",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.00115499,
+              "cumulative_seconds": 0.04499658,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.04499658
+                }
+              ]
+            },
+            {
+              "file": "storage_derived.py",
+              "line": 345,
+              "name": "derive_trace",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.0038046670000000003,
+              "cumulative_seconds": 0.24741622100000002,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_refresh_summaries_locked",
+                  "calls": 1,
+                  "cumulative_seconds": 0.24741622100000002
+                }
+              ]
+            },
+            {
+              "file": "operation_preparation.py",
+              "line": 55,
+              "name": "full",
+              "primitive": 20,
+              "total": 20,
+              "own_seconds": 0.00037041300000000005,
+              "cumulative_seconds": 0.02024484,
+              "callers": [
+                {
+                  "file": "operation_preparation.py",
+                  "name": "correlation",
+                  "calls": 20,
+                  "cumulative_seconds": 0.02024484
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 155,
+              "name": "evidence_detail",
+              "primitive": 140,
+              "total": 140,
+              "own_seconds": 0.003544513,
+              "cumulative_seconds": 0.09743546700000001,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_tool_activity",
+                  "calls": 140,
+                  "cumulative_seconds": 0.09743546700000001
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 303,
+              "name": "normalized_evidence",
+              "primitive": 160,
+              "total": 160,
+              "own_seconds": 0.000792873,
+              "cumulative_seconds": 0.005727434,
+              "callers": [
+                {
+                  "file": "operation_facts.py",
+                  "name": "normalize_operation_result",
+                  "calls": 140,
+                  "cumulative_seconds": 0.005003854
+                },
+                {
+                  "file": "operation_facts.py",
+                  "name": "operation_facts",
+                  "calls": 20,
+                  "cumulative_seconds": 0.00072358
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 388,
+              "name": "operation_facts",
+              "primitive": 20,
+              "total": 20,
+              "own_seconds": 0.001320505,
+              "cumulative_seconds": 0.01919597,
+              "callers": [
+                {
+                  "file": "operation_preparation.py",
+                  "name": "full",
+                  "calls": 20,
+                  "cumulative_seconds": 0.01919597
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 51,
+              "name": "safe_value",
+              "primitive": 340,
+              "total": 340,
+              "own_seconds": 0.0012180370000000002,
+              "cumulative_seconds": 0.09811391600000001,
+              "callers": [
+                {
+                  "file": "operation_facts.py",
+                  "name": "evidence_detail",
+                  "calls": 280,
+                  "cumulative_seconds": 0.083963732
+                },
+                {
+                  "file": "operation_facts.py",
+                  "name": "operation_facts",
+                  "calls": 60,
+                  "cumulative_seconds": 0.014150184000000001
+                }
+              ]
+            },
+            {
+              "file": "operation_preparation.py",
+              "line": 22,
+              "name": "canonical_terminal",
+              "primitive": 280,
+              "total": 280,
+              "own_seconds": 0.001396066,
+              "cumulative_seconds": 0.014049743000000002,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "analyze",
+                  "calls": 140,
+                  "cumulative_seconds": 0.006920183000000001
+                },
+                {
+                  "file": "error_reminders.py",
+                  "name": "_successful_references",
+                  "calls": 140,
+                  "cumulative_seconds": 0.00712956
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 79,
+              "name": "_agent_id_from_attributes",
+              "primitive": 705,
+              "total": 705,
+              "own_seconds": 0.002204237,
+              "cumulative_seconds": 0.037473515,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_activity_row",
+                  "calls": 281,
+                  "cumulative_seconds": 0.017169594
+                },
+                {
+                  "file": "core.py",
+                  "name": "_recorded_activity_agents",
+                  "calls": 283,
+                  "cumulative_seconds": 0.013542807
+                },
+                {
+                  "file": "core.py",
+                  "name": "_review_owner",
+                  "calls": 141,
+                  "cumulative_seconds": 0.006761114
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 151,
+              "name": "source_owner",
+              "primitive": 141,
+              "total": 141,
+              "own_seconds": 0.00048500100000000004,
+              "cumulative_seconds": 0.01659098,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "analyze",
+                  "calls": 141,
+                  "cumulative_seconds": 0.01659098
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "writes": 280,
+          "source_spans": 281,
+          "canonical_activity": 256,
+          "refs": 20,
+          "stored_projection_sha256": "3579907da9f1e3f18e3efbf2f29320a859035482beff27210a4103eadb165cca",
+          "instrumented_total_seconds": 0.497314434,
+          "functions": [
+            {
+              "file": "core.py",
+              "line": 91,
+              "name": "_agent_node_from_attributes",
+              "primitive": 1028,
+              "total": 1028,
+              "own_seconds": 0.019619962,
+              "cumulative_seconds": 0.052384953000000005,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_agent_id_from_attributes",
+                  "calls": 1028,
+                  "cumulative_seconds": 0.052384953000000005
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 204,
+              "name": "_activity_row",
+              "primitive": 513,
+              "total": 513,
+              "own_seconds": 0.015405109,
+              "cumulative_seconds": 0.07889062000000001,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_tool_activity",
+                  "calls": 256,
+                  "cumulative_seconds": 0.049213547
+                },
+                {
+                  "file": "findings.py",
+                  "name": "source_owner",
+                  "calls": 257,
+                  "cumulative_seconds": 0.029677073
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 456,
+              "name": "_recorded_activity_agents",
+              "primitive": 3,
+              "total": 3,
+              "own_seconds": 0.0013719090000000001,
+              "cumulative_seconds": 0.027484548,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "summarize",
+                  "calls": 2,
+                  "cumulative_seconds": 0.013713744000000002
+                },
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.013770804000000001
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 473,
+              "name": "_review_owner",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 3.3100000000000004e-07,
+              "cumulative_seconds": 3.3100000000000004e-07,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 3.3100000000000004e-07
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 310,
+              "name": "_tool_activity",
+              "primitive": 257,
+              "total": 257,
+              "own_seconds": 0.010527675,
+              "cumulative_seconds": 0.280896544,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_activity_for",
+                  "calls": 257,
+                  "cumulative_seconds": 0.280896544
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 489,
+              "name": "_activity_for",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.0018512340000000002,
+              "cumulative_seconds": 0.28387996800000004,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.28387996800000004
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 156,
+              "name": "credentials",
+              "primitive": 257,
+              "total": 257,
+              "own_seconds": 0.000247395,
+              "cumulative_seconds": 0.03733363,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "analyze",
+                  "calls": 257,
+                  "cumulative_seconds": 0.03733363
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 48,
+              "name": "_credential_hits",
+              "primitive": 257,
+              "total": 3076,
+              "own_seconds": 0.017146049,
+              "cumulative_seconds": 0.037086235,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "credentials",
+                  "calls": 257,
+                  "cumulative_seconds": 0.037086235
+                },
+                {
+                  "file": "findings.py",
+                  "name": "_credential_hits",
+                  "calls": 2819,
+                  "cumulative_seconds": 0.025805084000000002
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 3717,
+              "name": "summarize",
+              "primitive": 2,
+              "total": 2,
+              "own_seconds": 0.001994782,
+              "cumulative_seconds": 0.028509042000000002,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 2,
+                  "cumulative_seconds": 0.028509042000000002
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 124,
+              "name": "analyze",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.0021767080000000003,
+              "cumulative_seconds": 0.083970743,
+              "callers": [
+                {
+                  "file": "storage_derived.py",
+                  "name": "derive_trace",
+                  "calls": 1,
+                  "cumulative_seconds": 0.083970743
+                }
+              ]
+            },
+            {
+              "file": "storage_derived.py",
+              "line": 345,
+              "name": "derive_trace",
+              "primitive": 1,
+              "total": 1,
+              "own_seconds": 0.006968687,
+              "cumulative_seconds": 0.447149279,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_refresh_summaries_locked",
+                  "calls": 1,
+                  "cumulative_seconds": 0.447149279
+                }
+              ]
+            },
+            {
+              "file": "operation_preparation.py",
+              "line": 55,
+              "name": "full",
+              "primitive": 20,
+              "total": 20,
+              "own_seconds": 0.00034161,
+              "cumulative_seconds": 0.020110967,
+              "callers": [
+                {
+                  "file": "operation_preparation.py",
+                  "name": "correlation",
+                  "calls": 20,
+                  "cumulative_seconds": 0.020110967
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 155,
+              "name": "evidence_detail",
+              "primitive": 256,
+              "total": 256,
+              "own_seconds": 0.0067060800000000005,
+              "cumulative_seconds": 0.185627343,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_tool_activity",
+                  "calls": 256,
+                  "cumulative_seconds": 0.185627343
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 303,
+              "name": "normalized_evidence",
+              "primitive": 276,
+              "total": 276,
+              "own_seconds": 0.0013992850000000001,
+              "cumulative_seconds": 0.010212956,
+              "callers": [
+                {
+                  "file": "operation_facts.py",
+                  "name": "normalize_operation_result",
+                  "calls": 256,
+                  "cumulative_seconds": 0.009443492000000001
+                },
+                {
+                  "file": "operation_facts.py",
+                  "name": "operation_facts",
+                  "calls": 20,
+                  "cumulative_seconds": 0.0007694640000000001
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 388,
+              "name": "operation_facts",
+              "primitive": 20,
+              "total": 20,
+              "own_seconds": 0.0014198560000000002,
+              "cumulative_seconds": 0.019113810000000002,
+              "callers": [
+                {
+                  "file": "operation_preparation.py",
+                  "name": "full",
+                  "calls": 20,
+                  "cumulative_seconds": 0.019113810000000002
+                }
+              ]
+            },
+            {
+              "file": "operation_facts.py",
+              "line": 51,
+              "name": "safe_value",
+              "primitive": 572,
+              "total": 572,
+              "own_seconds": 0.00203722,
+              "cumulative_seconds": 0.174365876,
+              "callers": [
+                {
+                  "file": "operation_facts.py",
+                  "name": "evidence_detail",
+                  "calls": 512,
+                  "cumulative_seconds": 0.16047324000000002
+                },
+                {
+                  "file": "operation_facts.py",
+                  "name": "operation_facts",
+                  "calls": 60,
+                  "cumulative_seconds": 0.013892636000000002
+                }
+              ]
+            },
+            {
+              "file": "operation_preparation.py",
+              "line": 22,
+              "name": "canonical_terminal",
+              "primitive": 512,
+              "total": 512,
+              "own_seconds": 0.002583731,
+              "cumulative_seconds": 0.025926638000000002,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "analyze",
+                  "calls": 256,
+                  "cumulative_seconds": 0.012858697
+                },
+                {
+                  "file": "error_reminders.py",
+                  "name": "_successful_references",
+                  "calls": 256,
+                  "cumulative_seconds": 0.013067941000000001
+                }
+              ]
+            },
+            {
+              "file": "core.py",
+              "line": 79,
+              "name": "_agent_id_from_attributes",
+              "primitive": 1028,
+              "total": 1028,
+              "own_seconds": 0.0034239580000000004,
+              "cumulative_seconds": 0.057475203,
+              "callers": [
+                {
+                  "file": "core.py",
+                  "name": "_activity_row",
+                  "calls": 513,
+                  "cumulative_seconds": 0.032313560000000005
+                },
+                {
+                  "file": "core.py",
+                  "name": "_recorded_activity_agents",
+                  "calls": 515,
+                  "cumulative_seconds": 0.025161643
+                }
+              ]
+            },
+            {
+              "file": "findings.py",
+              "line": 151,
+              "name": "source_owner",
+              "primitive": 257,
+              "total": 257,
+              "own_seconds": 0.000884883,
+              "cumulative_seconds": 0.030965269000000004,
+              "callers": [
+                {
+                  "file": "findings.py",
+                  "name": "analyze",
+                  "calls": 257,
+                  "cumulative_seconds": 0.030965269000000004
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "module_sha256": {
+        "observatory/core.py": "41d9096b372989e25269db5351ec18779e3809524ef65cfb7ff153abef691be3",
+        "observatory/findings.py": "c486c1a892f787b3bdf3be0866c3907111c7b4cc72bc2a402ae1651ecd9b9150",
+        "observatory/operation_facts.py": "48b1e304576474ad385a419e55864bb49e33980de0be64c64b243c276a56b45b",
+        "observatory/operation_preparation.py": "10426ef790c121137182c5970eb09e2ebb836675ff755cdb53ac3dd8e79ca712",
+        "observatory/error_reminders.py": "0a8a965514e8a42ea9e3863dfde7f99a3030aebbf8071d09566505788169da07",
+        "observatory/storage_derived.py": "ac29357423102f72bd3d30846da861659e070ac36b9dba6c4f374654831e1ab0",
+        "scripts/benchmark_http_tails.py": "7ef62e70cd6bc91bdfe4c01fe849fe2acca8015830cf8fed1688c0c1a015ef5c"
+      }
+    },
+    "method": "Separate source-import subprocesses; generated temporary Stores; startup/source preparation and one warm derivation outside profile; one cProfile derivation per arm/size; full stored summary/Activity/error-reference/Findings hashes with no excluded fields."
+  },
+  "index_counterexamples": {
+    "generated_only": true,
+    "diagnostic_only": true,
+    "publishable": false,
+    "cases": {
+      "immutable-index-metadata-cannot-certify-full-body": {
+        "index_payload_equal": true,
+        "canonical_activity_equal": false,
+        "index_detail": "",
+        "canonical_detail_bytes": 339,
+        "hydrate_activity_constructor_calls": 1,
+        "activity_dirty": 0,
+        "v15": true
+      },
+      "index-supersession-outside-derived-log-window": {
+        "raw_logs": 257,
+        "bounded_log_window": 256,
+        "canonical_span_rows": 1,
+        "indexed_span_rows": 0,
+        "activity_dirty": 0,
+        "v15": true
+      },
+      "bounded-raw-record-omission": {
+        "canonical_activity_rows": 0,
+        "indexed_activity_rows": 1,
+        "activity_dirty": 0,
+        "v15": true
+      }
+    }
+  },
+  "counterexample_source": {
+    "root": "/tmp/agenturm-success-integration",
+    "commit": "9f3d1d76282328905f4427e57be81276a366d955",
+    "module_sha256": {
+      "observatory/core.py": "41d9096b372989e25269db5351ec18779e3809524ef65cfb7ff153abef691be3",
+      "observatory/storage_activity.py": "5fc913845e4f37c7356da854fca7c36a7411a6c754c7613a0cff64a851c9369a",
+      "observatory/storage_derived.py": "ac29357423102f72bd3d30846da861659e070ac36b9dba6c4f374654831e1ab0",
+      "observatory/operation_facts.py": "48b1e304576474ad385a419e55864bb49e33980de0be64c64b243c276a56b45b"
+    }
+  },
+  "fixture_ids": {
+    "changed_benchmark_input_output": "52349924f50f8353d3ddf1f101972042",
+    "linked_log_outside_window": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "oversized_record": "cccccccccccccccccccccccccccccccc",
+    "span_id": "1111111111111111"
+  },
+  "conclusions": [
+    "Existing metadata-only index cannot certify equal canonical detail, supersession window or raw-record coverage.",
+    "Hydration reconstructs Activity; it does not avoid evidence_detail sanitization.",
+    "Lazy Findings owner construction was not pursued: about6% instrumented attribution plus malformed-input exception risk.",
+    "No new retained content, cache, schema, migration or runtime behavior was implemented."
+  ],
+  "unimplemented_options": [
+    {
+      "option": "Ephemeral exact-source sanitized-fragment reuse",
+      "approval": "not approved",
+      "required_proofs": [
+        "exact source version and selected window",
+        "capture/redaction and revocation",
+        "receiver namespace",
+        "bounded ownership and lifetime",
+        "async coalescing/restart/external-writer fallback"
+      ]
+    },
+    {
+      "option": "Versioned canonical projection preserving existing bounds",
+      "approval": "not approved",
+      "required_proofs": [
+        "full serialized output parity",
+        "64KiB-record/2MiB-signal/256-record window",
+        "exact linked-log supersession",
+        "retention/privacy and storage budget",
+        "migration and older-writer invalidation"
+      ]
+    }
+  ],
+  "reproduction": {
+    "attribution": {
+      "original_path": "/tmp/agenturm-success-attribution.py",
+      "sha256": "55e7f287c4afe0656b5c994f537a24e5248d4fe3a12bf254911dd33afaf51c7a",
+      "python_source": "import cProfile,hashlib,json,pathlib,pstats,subprocess,sys,tempfile,time\nroot=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(root))\nfrom scripts.benchmark_http_tails import payload,TRACE\nfrom observatory.core import Store,normalize_native\nselected={'derive_trace','analyze','source_owner','credentials','_credential_hits','_activity_for','_activity_row','_tool_activity','evidence_detail','safe_value','_recorded_activity_agents','_review_owner','summarize','_agent_id_from_attributes','_agent_node_from_attributes','full','operation_facts','canonical_terminal','normalized_evidence'}\nrows=[]\nfor writes in (140,280):\n with tempfile.TemporaryDirectory(prefix='agenturm-success-attribution-')as directory:\n  store=Store(pathlib.Path(directory)/'generated.db')\n  try:\n   with store._connect()as db:db.execute(\"UPDATE schema_meta SET value=? WHERE key='receiver_id'\",('f'*32,))\n   latest={}\n   for sequence in range(writes):\n    body=payload(sequence,1_800_000_000_000_000_000)\n    for span in body['spans']:latest[span['span_id']]=normalize_native(span,body['service'])\n   store.ingest(list(latest.values()));store._refresh_summaries([TRACE])\n   profile=cProfile.Profile();profile.enable();store._refresh_summaries([TRACE]);profile.disable()\n   stats=pstats.Stats(profile)\n   functions=[]\n   for (filename,line,name),(primitive,total,own,cumulative,callers)in stats.stats.items():\n    if name not in selected:continue\n    functions.append(dict(file=pathlib.Path(filename).name,line=line,name=name,primitive=primitive,total=total,own_seconds=own,cumulative_seconds=cumulative,\n      callers=[dict(file=pathlib.Path(key[0]).name,name=key[2],calls=value[0]if isinstance(value,tuple)else value,\n        cumulative_seconds=value[3]if isinstance(value,tuple)and len(value)>3 else None)for key,value in callers.items()]))\n   with store._read()as db:\n    summary=db.execute('SELECT summary_json,activity_json,error_refs_json FROM trace_summaries WHERE trace_id=?',(TRACE,)).fetchone()\n    findings=[row[0]for row in db.execute('SELECT finding_json FROM finding_cache WHERE trace_id=? ORDER BY finding_id',(TRACE,))]\n   serial=json.dumps(dict(summary=json.loads(summary[0]),activity=json.loads(summary[1]),refs=json.loads(summary[2]),findings=[json.loads(item)for item in findings]),sort_keys=True,separators=(',',':'))\n   rows.append(dict(writes=writes,source_spans=len(latest),canonical_activity=len(json.loads(summary[1])),refs=len(json.loads(summary[2])),\n    stored_projection_sha256=hashlib.sha256(serial.encode()).hexdigest(),instrumented_total_seconds=stats.total_tt,functions=functions))\n  finally:store.close()\nprint(json.dumps(dict(root=str(root),commit=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip(),generated_only=True,diagnostic_only=True,publishable=False,profiles=rows),indent=2))\n"
+    },
+    "counterexamples": {
+      "original_path": "/tmp/agenturm-activity-reuse-proof.py",
+      "sha256": "1f86ea97809cb9933f8427f423c41c434c1fab1c28be78630ee81f3e227f5f22",
+      "python_source": "import json,pathlib,sys,tempfile,hashlib\nsys.path.insert(0,'/tmp/agenturm-success-integration')\nfrom observatory.core import Store,normalize_native\nfrom scripts.benchmark_http_tails import payload,TRACE\nfrom observatory.storage_activity import hydrate\nfrom unittest.mock import patch\nfrom observatory import core\nreport=dict(generated_only=True,diagnostic_only=True,publishable=False,cases={})\ndef state(store,trace):\n with store._read()as db:\n  activity=json.loads(db.execute('SELECT activity_json FROM trace_summaries WHERE trace_id=?',(trace,)).fetchone()[0])\n  indexed=[json.loads(r[0])for r in db.execute('SELECT payload FROM activity_index_v1 WHERE trace_id=? ORDER BY event_key',(trace,))]\n  return activity,indexed,dict(activity_dirty=db.execute('SELECT COUNT(*) FROM activity_dirty_v1').fetchone()[0],v15=bool(db.execute(\"SELECT 1 FROM schema_meta WHERE key='trace_derived_v15' AND value='1'\").fetchone()))\nwith tempfile.TemporaryDirectory(prefix='agenturm-activity-reuse-proof-')as directory:\n store=Store(pathlib.Path(directory)/'generated.db')\n try:\n  body=payload(0,1800000000000000000);records=[normalize_native(x,body['service'])for x in body['spans']];store.ingest(records)\n  before,ib,proof=state(store,TRACE)\n  records[1]['attributes']['input.value']={'query':'changed-generated-input'};records[1]['attributes']['output.value']={'count':999};store.ingest([records[1]])\n  after,ia,proof=state(store,TRACE)\n  with store._read()as db,patch.object(core,'_activity_for',wraps=core._activity_for)as full:\n   hydrated=hydrate(db,[dict(x)for x in ia]);hydrate_calls=full.call_count\n  report['cases']['immutable-index-metadata-cannot-certify-full-body']=dict(index_payload_equal=ib==ia,canonical_activity_equal=before==after,\n   index_detail=ia[0]['detail'],canonical_detail_bytes=len(after[0]['detail'].encode()),hydrate_activity_constructor_calls=hydrate_calls,**proof)\n  trace='b'*32;span='1'*16;owner={'agent.id':'fixture-worker','session.id':'fixture-session'}\n  store.ingest([normalize_native(dict(trace_id=trace,span_id=span,name='Bash',start_unix_nano=1,end_unix_nano=2,status='UNSET',attributes={**owner,'tool.name':'Bash'},events=[]),'fixture')])\n  logs=[dict(trace_id=trace,span_id=span,time_unix_nano=2,service='fixture',event_name='agent.activity',body='Generated finished operation',severity_number=9,severity_text='INFO',scope_name='fixture',resource_attributes={},attributes={**owner,'agent.activity.domain':'tool','agent.activity.action':'call','agent.activity.subject':'Bash','agent.activity.result':'success'})]\n  logs.extend(dict(trace_id=trace,span_id=None,time_unix_nano=n+3,service='fixture',event_name='generated.noise',body='Generated non-Activity log',severity_number=9,severity_text='INFO',scope_name='fixture',resource_attributes={},attributes=owner)for n in range(256))\n  store.ingest_logs(logs);activity,indexed,proof=state(store,trace)\n  report['cases']['index-supersession-outside-derived-log-window']=dict(raw_logs=257,bounded_log_window=256,canonical_span_rows=sum(x['source']=='span'for x in activity),indexed_span_rows=sum(x['source']=='span'for x in indexed),**proof)\n  trace='c'*32\n  store.ingest([normalize_native(dict(trace_id=trace,span_id=span,name='Bash',start_unix_nano=1,end_unix_nano=2,status='OK',attributes={**owner,'tool.name':'Bash','input.value':{'padding':'x'*70000},'output.value':'Generated result'},events=[]),'fixture')])\n  activity,indexed,proof=state(store,trace)\n  report['cases']['bounded-raw-record-omission']=dict(canonical_activity_rows=len(activity),indexed_activity_rows=len(indexed),**proof)\n finally:store.close()\nprint(json.dumps(report,indent=2))\n"
+    }
+  }
+}
