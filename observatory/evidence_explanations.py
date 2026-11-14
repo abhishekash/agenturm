@@ -65,7 +65,7 @@ def mcp_window(calls,*,configured=(),window=None,complete=False):
         if server:observed_servers.add((producer,server))
         identity=row.get('id') or row.get('source_id')
         occurrence=(label(row.get('receiver_id')),producer,label(row.get('agent_id')),label(row.get('session_id')),identity,server,tool)
-        if isinstance(identity,str) and identity:
+        if namespace and label(identity):
             if occurrence in seen:continue
             seen.add(occurrence)
         key=(namespace,producer,server,tool) if all((namespace,producer,server,tool)) else ('incomplete',ordinal)
