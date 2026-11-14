@@ -3270,8 +3270,16 @@ class ObservatoryApp(App):
         update_status_text(self.query_one('#agent-context',Static),context)
         short_hierarchy=[(label,value) for label,value in hierarchy_sections
                          if label in {'Direct children','Subtree summary','Child telemetry','Parent relationship','Relationship'}]
+        work_facts=None
+        if not expanded or self.session_mode=='overview':
+            from .overview import overview_facts,overview_summary
+            evidence=self.session_evidence
+            work_facts=overview_facts(item,self.data,actions,loaded=evidence.loaded and evidence.scope==scope,
+                partial=evidence.partial,usage=run_usage,endpoint=getattr(self.feed.api,'endpoint',''))
         if not expanded:
             sections=[]
+            observed=overview_summary(work_facts)
+            if observed:sections.append(('Recorded work · loaded evidence',observed))
             if assistant:
                 sections.append(('Agent reported',session_excerpt(recorded_message_text(assistant),lines=3)))
             elif recorded or latest:
@@ -3325,6 +3333,13 @@ class ObservatoryApp(App):
                 identity=(item['id'],'details'),context_in_header=True)
             return
         sections=[]
+        observed=overview_summary(work_facts)
+        if observed:sections.append(('Recorded work · loaded evidence',observed))
+        if work_facts['paths']:
+            paths=work_facts['paths'];shown=paths[:5]
+            sections.append(('Recorded paths','\n'.join(shown)+(f'\n+{len(paths)-len(shown)} more · Open Review work' if len(paths)>len(shown) else '')))
+        if work_facts['checks']:
+            sections.append(('Recent validation','\n'.join(check['result']+' · '+check['command'] for check in list(reversed(work_facts['checks']))[:3])))
         if input_required(item):sections.append(('Needs you',wait_summary(item)))
         if assistant:
             sections.append(('Agent reported · '+when(assistant.get('time_unix_nano')),
@@ -3353,18 +3368,7 @@ class ObservatoryApp(App):
                 lines.append(f"{when(event.get('time_unix_nano'))}  {result}  {brief_activity(event)}")
             sections.append((f'Recent work · latest {min(6,len(work))} of {len(work)} loaded actions','\n'.join(lines)))
         sections+=short_hierarchy
-        review_scope=scope_for(item,self.data,getattr(self.feed.api,'endpoint',''))
-        review_history=ReviewHistory(review_scope,events={str(index):event for index,event in enumerate(actions)
-            if review_scope.matches(event)},loaded=evidence.loaded,cursor='earlier' if evidence.partial else None)
-        review_projection=review_history.projection({**item,'_review_usage':run_usage})
-        if review_projection['checks']:
-            checks=review_projection['checks']
-            counts={state:sum(check['result']==state for check in checks) for state in ('passed','failed','unknown')}
-            later=sum(bool(check['later_edits']) for check in checks)
-            sections.append(('Loaded review evidence',
-                ' · '.join(str(counts[state])+' '+state for state in counts)+
-                (' · '+str(later)+' checks have later recorded edits' if later else '')+
-                '\nPartial preview · Open Review work for scoped paging and source references.'))
+        sections.append(('Evidence window',(str(work_facts['source_count'])+' owned records' if work_facts['source_count'] else 'No owned records loaded yet')+' · '+work_facts['coverage']+' Open Review work for scoped paging and exact source references.'))
         if item['state']=='Completed':
             sections.append(('Review','Agent reported completion; changes and checks are not independently verified here.'+
                              (' Reviewed for this run.' if reviewed else ' r Mark reviewed.')))

@@ -148,7 +148,7 @@ All 12 final CI jobs passed for PR #74. The isolated projection benchmark includ
 
 Review, Activity failure grouping and recent reminders now share bounded typed command/result/output facts, conservative sanitized fingerprints and exact receiver/producer/actor/session/turn boundaries. Existing indexed results and derived summaries have a resumable versioned upgrade. Later matching success is an observation, not a repaired-task assertion; receipt IDs remain stable. The first focused gate passed 67 tests, with a further 56-test source/native/Review gate passing and independent peer signoff; all twelve final CI jobs passed. Merge commit: `a601ad2236f22ef75600129e920ff763883bee7c`. See the [implementation and limits](../validation/operation-evidence.md).
 
-C1 is merged and validated. C2 is implemented and peer-reviewed in the next increment below; C3, resource targets and stages D–G remain open.
+C1 and C2 are merged and validated; C3 implementation is recorded below. Resource targets and stages D–G remain open.
 
 ### Stage C occurrence-owned Findings — merged [PR #76](https://github.com/abhishekash/agenturm/pull/76)
 
@@ -159,6 +159,10 @@ The 157-test storage/API/ownership/native/receipt/UI gate passed in 94.587 secon
 ### Stage D Git and approved drafts — implemented and integrated, PR preparation
 
 Explicit workspace mapping, frozen bounded Git receipts, editable source-backed drafts, additive approval versions and qualified parallel-path/check observations are implemented. Authored task title/workspace/notes/brief/decisions remain intact. Every contributing source and receiver is rechecked at formatting, preview, copy and final export worker; peer-only revocation and restoration cannot revive a denied preview. Integrated baseline 64 tests and final privacy/UI/CLI 13 tests passed; independent review found no remaining Stage D blocker. See the [implementation report](../validation/frozen-git-continuity.md). CI and merge remain pending; implementation is not observed adoption.
+
+### Stage C source-backed Overview — implementation ready for review
+
+The compact and expanded Agents inspectors show recorded edits, paths, check outcomes and issues before assistant claims. The shared Review projection enforces exact source/execution ownership, typed results and bounded partial coverage. Source preparation is UI-free for headless parity, and native log batches can pin receiver identity transactionally. The 44-test source/cache/session-view gate, latest 11-test pure delta, three-frame actual-app journey and three receiver-fence cases passed. See the [implementation and limits](../validation/source-backed-overview.md). Independent final review and PR CI remain pending; no resource target is closed by this UI change.
 
 ### Parallel implementation ownership and remaining acceptance gates
 
