@@ -10,21 +10,26 @@ FIELDS = (
 
 
 def session_projection(db, limit):
-    selected = """SELECT c.session_id FROM live_run_stats_v1 c JOIN trace_activity a USING(trace_id)
+    # Materialize this bounded identity list once. All following reads remain
+    # in the caller's transaction; no cross-snapshot/result cache is retained.
+    selected = [row[0] for row in db.execute("""SELECT c.session_id FROM live_run_stats_v1 c JOIN trace_activity a USING(trace_id)
         WHERE c.session_id IS NOT NULL GROUP BY c.session_id
-        ORDER BY MAX(a.last_ns) DESC,c.session_id DESC LIMIT ?"""
+        ORDER BY MAX(a.last_ns) DESC,c.session_id DESC LIMIT ?""", (limit,))]
+    if not selected:
+        return [], {}, {}
+    marks = ','.join('?' for _ in selected)
     heads = db.execute(
         """WITH ranked AS (
         SELECT c.trace_id,c.session_id,c.agent_id,a.last_ns,
             ROW_NUMBER() OVER(PARTITION BY c.session_id,c.agent_id ORDER BY a.last_ns DESC,c.trace_id DESC) AS position
         FROM live_run_stats_v1 c JOIN trace_activity a USING(trace_id)
         WHERE c.session_id IN ("""
-        + selected
+        + marks
         + """))
         SELECT r.session_id,r.trace_id,c.summary_json,r.agent_id,r.last_ns
         FROM ranked r JOIN live_summaries_v1 c USING(trace_id)
         WHERE position<=2 ORDER BY r.last_ns DESC,r.session_id DESC,r.trace_id DESC""",
-        (limit,),
+        selected,
     ).fetchall()
     values = [
         "COUNT(*) AS trace_count",
@@ -52,23 +57,44 @@ def session_projection(db, limit):
         "SELECT s.session_id,s.agent_id,"
         + ",".join(values)
         + " FROM live_run_stats_v1 s WHERE s.session_id IN ("
-        + selected
+        + marks
         + ") GROUP BY s.session_id,s.agent_id",
-        (limit,),
+        selected,
     ).fetchall()
+    labels = {}
+    # One bounded transfer for both fields and all selected owners replaces
+    # two json_each statements per owner. Group clipped-prefix collisions
+    # before the cap so one label cannot consume two positions.
+    label_rows = db.execute("""WITH scoped AS (
+        SELECT session_id,agent_id,services_json,models_json FROM live_run_stats_v1
+        WHERE session_id IN (""" + marks + """)), distinct_labels AS (
+        SELECT source.session_id,source.agent_id,'services' AS field,
+            substr(CAST(entry.value AS TEXT),1,128) AS label,
+            MIN(length(CAST(entry.value AS TEXT))<=128) AS complete
+        FROM scoped source,json_each(source.services_json) entry
+        GROUP BY source.session_id,source.agent_id,label
+        UNION ALL
+        SELECT source.session_id,source.agent_id,'models' AS field,
+            substr(CAST(entry.value AS TEXT),1,128) AS label,
+            MIN(length(CAST(entry.value AS TEXT))<=128) AS complete
+        FROM scoped source,json_each(source.models_json) entry
+        GROUP BY source.session_id,source.agent_id,label), ranked AS (
+        SELECT *,ROW_NUMBER() OVER(PARTITION BY session_id,agent_id,field ORDER BY label) AS position
+        FROM distinct_labels)
+        SELECT session_id,agent_id,field,label,complete FROM ranked WHERE position<=129
+        ORDER BY session_id,agent_id,field,position""", selected)
+    for row in label_rows:
+        labels.setdefault((row['session_id'], row['agent_id'], row['field']), []).append(row)
     result = {}
     for row in aggregates:
         item = dict(row)
         for field in ("services", "models"):
-            labels = db.execute(
-                f"SELECT DISTINCT substr(CAST(label.value AS TEXT),1,128) AS label,length(CAST(label.value AS TEXT))<=128 AS complete FROM live_run_stats_v1 source,json_each(source.{field}_json) label WHERE source.session_id=? AND source.agent_id IS ? ORDER BY label LIMIT 129",
-                (item["session_id"], item["agent_id"]),
-            ).fetchall()
-            item[field] = {row["label"] for row in labels[:128]}
+            entries = labels.get((item['session_id'], item['agent_id'], field), [])
+            item[field] = {row["label"] for row in entries[:128]}
             item[field + "_complete"] = (
                 bool(item[field + "_complete"])
-                and len(labels) <= 128
-                and all(row["complete"] for row in labels)
+                and len(entries) <= 128
+                and all(row["complete"] for row in entries)
             )
         for name in tuple(item):
             if name.endswith(("_complete", "_reported")):
@@ -82,6 +108,6 @@ def session_projection(db, limit):
             ROW_NUMBER() OVER(PARTITION BY s.session_id,s.agent_id ORDER BY a.last_ns DESC,s.trace_id DESC) AS position
         FROM live_run_stats_v1 s JOIN trace_activity a USING(trace_id)
         WHERE s.initial_task IS NOT NULL AND s.initial_task!='' AND s.session_id IN ("""
-        + selected + ")) SELECT r.session_id,r.agent_id,s.initial_task FROM original r JOIN live_run_stats_v1 s USING(trace_id) WHERE r.position=1", (limit,)):
+        + marks + ")) SELECT r.session_id,r.agent_id,s.initial_task FROM original r JOIN live_run_stats_v1 s USING(trace_id) WHERE r.position=1", selected):
         initial_tasks[(row['session_id'],row['agent_id'])]=row['initial_task']
     return heads, result, initial_tasks
