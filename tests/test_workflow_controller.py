@@ -97,6 +97,29 @@ class ControllerTests(unittest.TestCase):
         self.controller.cleanup();self.owner.wait()
         self.assertTrue(self.path.exists());self.assertIn('Unresolved incidents were kept',self.controller.warning)
 
+    def test_enabled_delivery_explains_incomplete_inventory_without_alerting(self):
+        for changes,reason in (({'receiver_time_ns':0},'clock metadata'),
+                ({'indexing_ready':False},'indexing'),
+                ({'read_errors':{'sessions':'private error'}},'reads are incomplete')):
+            with self.subTest(changes=changes),patch('observatory.ui_workflow.desktop_notify') as delivery:
+                data=snapshot(time.time(),**changes)
+                self.controller.update([item()],data,{});self.owner.wait()
+                self.assertIn('Desktop delivery deferred:',self.controller.warning)
+                self.assertIn(reason,self.controller.warning)
+                self.assertNotIn('private error',self.controller.warning)
+                self.assertEqual(len(self.owner.workflow_ledger.rows),1)
+                self.assertEqual(self.owner.messages,[])
+                delivery.assert_not_called()
+        self.update([item()])
+        self.assertEqual(self.controller.warning,'')
+
+    def test_disabled_delivery_does_not_add_inventory_diagnostic(self):
+        self.owner.workflow_notify=False
+        self.controller.update([item()],snapshot(time.time(),receiver_time_ns=0,indexing_ready=False),{})
+        self.owner.wait()
+        self.assertEqual(self.controller.warning,'')
+        self.assertEqual(len(self.owner.workflow_ledger.rows),1)
+
     def test_stale_retained_usage_cannot_create_threshold_from_fresh_health(self):
         native=item(run_state='waiting',diagnostics={'last_success_ns':time.time_ns()})
         self.update([])

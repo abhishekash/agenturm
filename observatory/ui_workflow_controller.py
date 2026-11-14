@@ -11,7 +11,7 @@ from .workflow_store import WorkflowStore, WorkflowStoreError
 from .error_reminders import event_receipt
 
 
-from .attention_runner import AttentionRunner,prepared_item
+from .attention_runner import AttentionRunner,prepared_item,inventory_deferral_reason
 
 
 class WorkflowController:
@@ -160,6 +160,8 @@ class WorkflowController:
         self._open_storage(options['persist'])
         self.runner.update(items,snapshot,limits,endpoint=options['endpoint'],store=self.store)
         self._persist()
+        if options['notify'] and (reason:=inventory_deferral_reason(snapshot)):
+            self.warning=' '.join(filter(None,(self.warning,'Desktop delivery deferred: '+reason+'.')))
         if self.store and options['notify'] and time.time() >= options['snooze'] and not self._closed:
             self._deliver(self.runner.delivery_candidates())
 
