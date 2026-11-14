@@ -1,0 +1,163 @@
+{
+  "diagnostic_only": true,
+  "synthetic": true,
+  "baseline": "5e0c397",
+  "sqlite_version": "3.45.1",
+  "ddl": "CREATE INDEX logs_activity_linked_v1 ON logs(trace_id,span_id,service,agent_id,time_ns DESC,digest DESC)\n WHERE event_name='agent.activity' AND length(CAST(attributes AS BLOB))+length(CAST(resource_attributes AS BLOB))+length(CAST(body AS BLOB))<=65536",
+  "build": {
+    "wall_ms": 217.49422,
+    "cpu_ms": 178.496023,
+    "index_bytes": 7303168
+  },
+  "query": "SELECT digest,trace_id,span_id,service,time_ns, attributes,resource_attributes,body FROM logs WHERE trace_id=? AND span_id=? AND service=? AND agent_id=? AND event_name='agent.activity' AND length(CAST(attributes AS BLOB))+length(CAST(resource_attributes AS BLOB))+ length(CAST(body AS BLOB))<=65536 ORDER BY time_ns DESC,digest DESC LIMIT 16",
+  "plans": {
+    "current": [
+      "SEARCH logs USING INDEX logs_agent_id (agent_id=?)",
+      "USE TEMP B-TREE FOR RIGHT PART OF ORDER BY"
+    ],
+    "trace_forced": [
+      "SEARCH logs USING INDEX logs_trace (trace_id=?)",
+      "USE TEMP B-TREE FOR RIGHT PART OF ORDER BY"
+    ],
+    "composite": [
+      "SEARCH logs USING INDEX logs_activity_linked_v1 (trace_id=? AND span_id=? AND service=? AND agent_id=?)"
+    ]
+  },
+  "results": {
+    "current": [
+      {
+        "wall_ms": 454.630386,
+        "cpu_ms": 431.567437,
+        "approx_vm_steps": 1312000,
+        "queries": 500,
+        "rows": 148,
+        "max_rows": 1
+      },
+      {
+        "wall_ms": 456.010939,
+        "cpu_ms": 455.187519,
+        "approx_vm_steps": 1313000,
+        "queries": 500,
+        "rows": 148,
+        "max_rows": 1
+      },
+      {
+        "wall_ms": 412.928923,
+        "cpu_ms": 412.785568,
+        "approx_vm_steps": 1312000,
+        "queries": 500,
+        "rows": 148,
+        "max_rows": 1
+      }
+    ],
+    "trace_forced": [
+      {
+        "wall_ms": 22.828193,
+        "cpu_ms": 13.785469,
+        "approx_vm_steps": 28000,
+        "queries": 500,
+        "rows": 148,
+        "max_rows": 1
+      },
+      {
+        "wall_ms": 10.787199,
+        "cpu_ms": 10.791627,
+        "approx_vm_steps": 29000,
+        "queries": 500,
+        "rows": 148,
+        "max_rows": 1
+      },
+      {
+        "wall_ms": 10.222745,
+        "cpu_ms": 10.225423,
+        "approx_vm_steps": 29000,
+        "queries": 500,
+        "rows": 148,
+        "max_rows": 1
+      }
+    ],
+    "composite": [
+      {
+        "wall_ms": 10.0805,
+        "cpu_ms": 10.081987,
+        "approx_vm_steps": 10000,
+        "queries": 500,
+        "rows": 148,
+        "max_rows": 1
+      },
+      {
+        "wall_ms": 5.930728,
+        "cpu_ms": 5.910343,
+        "approx_vm_steps": 11000,
+        "queries": 500,
+        "rows": 148,
+        "max_rows": 1
+      },
+      {
+        "wall_ms": 5.314393,
+        "cpu_ms": 5.318093,
+        "approx_vm_steps": 11000,
+        "queries": 500,
+        "rows": 148,
+        "max_rows": 1
+      }
+    ]
+  },
+  "write_results": {
+    "current": [
+      {
+        "wall_ms": 91.83416,
+        "cpu_ms": 66.219926,
+        "rows": 500
+      },
+      {
+        "wall_ms": 73.100534,
+        "cpu_ms": 63.070054,
+        "rows": 500
+      },
+      {
+        "wall_ms": 54.606442,
+        "cpu_ms": 51.213437,
+        "rows": 500
+      },
+      {
+        "wall_ms": 57.729876,
+        "cpu_ms": 53.560658,
+        "rows": 500
+      },
+      {
+        "wall_ms": 59.238411,
+        "cpu_ms": 53.661023,
+        "rows": 500
+      }
+    ],
+    "composite": [
+      {
+        "wall_ms": 69.818994,
+        "cpu_ms": 61.805597,
+        "rows": 500
+      },
+      {
+        "wall_ms": 74.088346,
+        "cpu_ms": 67.070013,
+        "rows": 500
+      },
+      {
+        "wall_ms": 60.253991,
+        "cpu_ms": 56.777029,
+        "rows": 500
+      },
+      {
+        "wall_ms": 64.896775,
+        "cpu_ms": 59.187349,
+        "rows": 500
+      },
+      {
+        "wall_ms": 86.866203,
+        "cpu_ms": 81.057086,
+        "rows": 500
+      }
+    ]
+  },
+  "limitations": "Noncontrolled instrumented/query and generated committed500log-insert maintenance samples. Raw writes include current production source triggers/indexes and fsync commit, exclude Activity drain/semantic derivation and pending G/F hooks; cleanup excluded. Cache, shared host load and file layouts affect timing. Not a receiver or whole-monitor resource result."
+}
