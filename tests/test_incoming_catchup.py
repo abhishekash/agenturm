@@ -170,6 +170,7 @@ class IncomingWorkerTests(unittest.TestCase):
 
     def test_priority_is_capped_oldest_first_and_existing_queue_drains_once(self):
         store=Store.__new__(Store);store._derived_condition=threading.Condition()
+        store._derived_inflight=set()
         now=time.monotonic();store._derived_pending={str(n):(now+n*.0001,now,0) for n in range(40)}
         store._derived_demand_until=now+.075;store._derived_generation=0;store._derived_stopping=False
         store.last_derived_error=None;batches=[]
@@ -187,6 +188,7 @@ class IncomingWorkerTests(unittest.TestCase):
 
     def test_failed_priority_job_uses_existing_retry_and_completion_notification(self):
         store=Store.__new__(Store);store._derived_condition=threading.Condition()
+        store._derived_inflight=set()
         now=time.monotonic();store._derived_pending={'fixture':(now,now,0)}
         store._derived_demand_until=now+.075;store._derived_generation=0;store._derived_stopping=False
         store.last_derived_error=None;calls=[];first=threading.Event()
