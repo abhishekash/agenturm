@@ -37,6 +37,7 @@ class WorkflowController:
         self._memory = False
         self._storage_error = ''
         self.native_observations=[]
+        self.native_receiver='';self.native_warning=''
 
     def close(self):
         # Stop observations/delivery; preserve already accepted user receipts.
@@ -122,20 +123,24 @@ class WorkflowController:
             rows = list(self.ledger.rows)
             receipts = {key: dict(value) for key, value in self.ledger.records.items()}
             try:
-                self.owner.call_from_thread(self._publish, rows, receipts, self.warning, message, set(self._error_seen),list(self.runner.native_observations))
+                self.owner.call_from_thread(self._publish, rows, receipts, self.warning, message, set(self._error_seen),
+                    [dict(row) for row in self.runner.native_observations[:1000]],
+                    getattr(self.runner.latest[1],'receiver_id','') if self.runner.latest else '',self.runner.native_warning)
             except RuntimeError:
                 # UI teardown must not abandon accepted durable actions.
                 continue
 
-    def _publish(self, rows, receipts, warning, message, error_seen=None,native_observations=None):
+    def _publish(self, rows, receipts, warning, message, error_seen=None,native_observations=None,native_receiver='',native_warning=''):
         if self._closed:
             return
         def presentation(values):
             return tuple(sorted((key, r.get('scope_key'), r.get('acknowledgement'),
                                  r.get('delivery_status')) for key, r in values.items()
                                 if r.get('acknowledgement') or r.get('delivery_status')))
-        native_changed=self.native_observations!=(native_observations or [])
-        self.native_observations=list(native_observations or [])
+        native_changed=(self.native_observations!=(native_observations or []) or
+            self.native_receiver!=native_receiver or self.native_warning!=native_warning)
+        self.native_observations=[dict(row) for row in (native_observations or [])[:1000]]
+        self.native_receiver=native_receiver;self.native_warning=native_warning
         changed = (native_changed or presentation(self.receipts) != presentation(receipts)
                    or getattr(self, '_published_warning', '') != warning
                    or bool(set(error_seen or ()) - self.error_seen))

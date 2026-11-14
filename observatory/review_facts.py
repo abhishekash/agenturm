@@ -103,6 +103,12 @@ def refreshed_review_item(original, snapshot, scope):
             health = session_health(dict(run_state=outcome, waiting_for=latest.get('waiting_for') or '',
                 last_record_ns=row.get('last_unix_nano') or 0), time.time_ns())
             candidate = {**original, **health, 'trace_id': scope.run_id}
+    if candidate is not None:
+        from .source_projection import native_snapshot
+        from .native_lifecycle import overlay_observations
+        native=native_snapshot(snapshot)
+        observed,_=overlay_observations([candidate],getattr(native,'native_lifecycle',()),scope.receiver)
+        candidate=observed[0]
     if candidate is None or not fresh_observation(candidate, snapshot, time.time()):
         return {**deepcopy(original), '_review_metadata_note':
             'Live metadata for this execution is unavailable or stale; outcome and usage remain from the previous snapshot.'}
@@ -115,6 +121,9 @@ def refreshed_review_item(original, snapshot, scope):
     for key in ('state','waiting_for','stamp','run_end_ns','outcome_time_ns','task_outcome_ns'):
         if key in candidate:
             selected[key] = deepcopy(candidate[key])
+    for key in ('request_id','request_time_ns','request_clock','_native_request_key'):
+        if key in candidate:selected[key]=deepcopy(candidate[key])
+        else:selected.pop(key,None)
     selected['_review_usage'] = deepcopy(usage)
     selected.pop('_review_metadata_note', None)
     return selected
