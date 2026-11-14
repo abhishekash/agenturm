@@ -1235,6 +1235,8 @@ class ObservatoryApp(App):
     .inspector-actions { height: 1; margin: 1 0; }
     .inspector-actions Button { width: 1fr; height: 1; padding: 0; border: none; color: $agent-secondary; background: $agent-surface; }
     .inspector-actions Button:focus { color: $agent-primary; background: $agent-focus; }
+    #activity-inspector .inspector-actions { layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 1; height: 2; }
+    #activity-inspector .inspector-actions Button { min-width: 0; }
     #agent-bottom .inspector-actions { layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 1; height: auto; }
     #agent-reviewed, #agent-dismissed, #agent-summary { column-span: 2; }
     .expand-button { min-width: 12; }
@@ -1331,6 +1333,7 @@ class ObservatoryApp(App):
               Binding('alt+right','inspect_next_attention','Next descendant needing attention',show=False),
               Binding('X','dismiss_attention','Dismiss attention',show=False),
               Binding('1','page("agents")','Agents',show=False),
+              Binding('ctrl+f','investigate','Investigate history',show=False),
               Binding('2','page("activity")','Activity',show=False),Binding('3','page("mcp")','MCP',show=False),
               Binding('4','page("traces")','Traces',show=False),Binding('5','page("host")','Host',show=False),
               Binding('6','page("metrics")','Metrics',show=False),Binding('7','page("findings")','Findings',show=False)]
@@ -1538,6 +1541,7 @@ class ObservatoryApp(App):
                         with Horizontal(classes='inspector-actions'):
                             yield Button(Text('Trace · t'),id='activity-trace',tooltip='Follow the selected event into its trace')
                             yield Button(Text('Copy · c'),id='activity-copy')
+                            yield Button('History · Ctrl+F',id='activity-investigate',tooltip='Search recorded paths, commands or instructions across retained history')
                             yield Button(Text('Expand · e'),id='expand-activity',classes='expand-button')
             with TabPane('3  MCP Calls',id='mcp'):
                 yield ResultsTable(id='mcp-servers',classes='box',cursor_type='row',zebra_stripes=True)
@@ -1598,6 +1602,7 @@ class ObservatoryApp(App):
             ('Go to Host','Inspect known local processes',lambda:self.action_page('host')),
             ('Go to Metrics','Inspect recorded telemetry metrics',lambda:self.action_page('metrics')),
             ('Go to Findings','Review recorded findings',lambda:self.action_page('findings')),
+            ('Investigate retained history','Search recorded paths, commands or user instructions · Ctrl+F',self.action_investigate),
             ('Toggle internal review sessions','Include or hide internal approval reviews · v',self.action_reviews),
             ('Show Today','Current work, needs you, and reported completions awaiting review',lambda:self.set_agent_filter('today')),
             ('Show active sessions','Show only working sessions',lambda:self.set_agent_filter('active')),
@@ -3834,6 +3839,7 @@ class ObservatoryApp(App):
         elif event.button.id=='agent-reviewed':self.action_review_attention()
         elif event.button.id=='agent-dismissed':self.action_dismiss_attention()
         elif event.button.id=='agent-summary':self.request_ai_summary()
+        elif event.button.id=='activity-investigate':self.action_investigate()
         elif event.button.id in {'activity-trace','mcp-trace','metrics-trace','finding-trace'}:self.action_open_trace()
         elif event.button.id in {'activity-copy','mcp-copy','metrics-copy','finding-copy'}:self.action_copy()
 
@@ -3979,6 +3985,12 @@ class ObservatoryApp(App):
         item=dict(item)
         result=terminal_handoff(item)
         self.call_from_thread(self.notify,result)
+
+    def action_investigate(self):
+        from .ui_investigations import InvestigationsScreen
+        if isinstance(self.screen,InvestigationsScreen):return
+        if not isinstance(self.screen,ObservatoryScreen):return
+        self.push_screen(InvestigationsScreen(self),self.resume_cockpit)
 
     def action_usage(self):
         usage,title,scope,identity=self.selected_task_usage()

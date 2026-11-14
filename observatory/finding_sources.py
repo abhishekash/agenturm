@@ -40,13 +40,15 @@ def read_sources(db, finding):
                     record=dict(name=row['name'],status=row['status'],attributes=json.loads(row['attributes']),
                         resource_attributes=resource)
                 scope=_activity_row(attrs,0,'span',identity,parts[0],row['service'],resource_attributes=resource)
+                scope['trace_id']=row['trace_id']
         elif kind=='log':
-            row=db.execute('SELECT '+_bounded_columns('logs')+' FROM logs WHERE digest=? AND trace_id=?',
+            row=db.execute('SELECT '+_bounded_columns('logs')+' FROM logs WHERE digest=? AND trace_id IS ?',
                 (identity,finding['trace_id'])).fetchone()
             if row:
                 complete=bool(row['payload_complete'])
                 if not complete:reason='Source payload exceeds the 64 KiB record limit'
-                scope=_activity_row(json.loads(row['attributes']),0,'log',identity,service=row['service'],resource_attributes=json.loads(row['resource_attributes']))
+                scope=_activity_row(json.loads(row['attributes']),0,'log',identity,row['span_id'],service=row['service'],resource_attributes=json.loads(row['resource_attributes']))
+                scope['trace_id']=row['trace_id']
                 record=dict(event_name=row['event_name'],severity=row['severity_text'],body=json.loads(row['body']),
                     attributes=json.loads(row['attributes']),resource_attributes=json.loads(row['resource_attributes']))
         elif kind=='outcome' and identity==finding['trace_id']:
@@ -57,7 +59,8 @@ def read_sources(db, finding):
                 FROM outcomes WHERE trace_id=?''',(finding['trace_id'],)).fetchone()
             if row:
                 complete=bool(row['complete']);scope=finding;record=dict(passed=bool(row['passed']),scores=json.loads(row['scores']),error=row['error'])
-        owner={key:scope.get(key) for key in ('service','agent_id','session_id')}
+        owner={key:scope.get(key) for key in ('service','agent_id','session_id','trace_id','span_id','turn_id')}
+        owner['turn_id']=owner['turn_id'] or None
         if record is not None:
             bounded,unclipped=safe_value(record)
             encoded=json.dumps(bounded,ensure_ascii=False)

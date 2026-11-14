@@ -856,6 +856,8 @@ class Store:
             from .native_policy import initialize as initialize_native_policy
             initialize_native_policy(db)
             initialize_activity(db)
+            available=db.execute("SELECT value FROM schema_meta WHERE key='investigation_available_v1'").fetchone()
+            self.investigation_index_v1 = bool(available and available[0]=='1')
         with self._connect() as db:
             migrated=db.execute("SELECT 1 FROM schema_meta WHERE key='native_internal_policy_v1'").fetchone()
             legacy_sources=[] if migrated else [row[0] for row in db.execute('''SELECT DISTINCT source_id FROM (
@@ -922,7 +924,8 @@ class Store:
         # state. Release the read lease before trying to acquire a writer;
         # another receiver may already have consumed the observed work.
         with self._read() as db:
-            dirty=db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 LIMIT 1').fetchone()
+            dirty=db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1'+
+                (' UNION ALL SELECT 1 FROM investigation_dirty_v1' if self.investigation_index_v1 else '')+' LIMIT 1').fetchone()
         if not dirty:return 0
         from .storage_activity import drain
         with self._connect() as db:
@@ -935,7 +938,8 @@ class Store:
     def index_status(self):
         state=dict(self.migration_status)
         with self._read() as db:
-            dirty=bool(db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 LIMIT 1').fetchone())
+            dirty=bool(db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1'+
+                (' UNION ALL SELECT 1 FROM investigation_dirty_v1' if self.investigation_index_v1 else '')+' LIMIT 1').fetchone())
         if dirty:
             state.update(ready=False,stage='Indexing incoming source changes')
         return state
@@ -2726,6 +2730,52 @@ class Store:
                 "outcome": outcome, "findings": self._trace_findings(trace_id),
                 "session_id": summary.get("session_id") if summary else None,
                 "summary": summary}
+
+    def investigation_page(self, kind, query, *, limit=50, cursor=None, service=None,
+                           failed=False, agent_id=None, subtree=False, scope_revision=None):
+        from .storage_investigation import read_page
+        with self._connect() as db:
+            db.execute('BEGIN')
+            self._investigation_ready(db)
+            receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+            scope=self.resolve_agent_scope(agent_id,include_subagents=bool(subtree),_db=db) if agent_id else None
+            if scope_revision and (scope is None or scope_revision!=scope['revision']):
+                raise ValueError('hierarchy scope changed')
+            result=read_page(db,kind,query,limit=limit,cursor=cursor,receiver=receiver,
+                service=service,failed=failed,agent_ids=scope['agent_ids'] if scope else None)
+            if scope is not None:result['agent_scope']=scope
+            return result
+
+    def _investigation_ready(self, db):
+        available=db.execute("SELECT value FROM schema_meta WHERE key='investigation_available_v1'").fetchone()
+        if not available or available[0]!='1':
+            raise ValueError('Typed investigations require SQLite FTS5; no history-scan fallback is available.')
+        if db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM investigation_dirty_v1 LIMIT 1').fetchone():
+            raise ValueError('Investigation index is catching up; retry after receiver migration completes')
+
+    def investigation_source(self, event_id, receiver_id, reference):
+        from .investigation import decode_reference, reference_matches, source_reference
+        from .finding_sources import read_sources
+        expected=decode_reference(reference)
+        if expected['event_id']!=event_id or expected['receiver_id']!=receiver_id:
+            raise ValueError('Source reference differs from the selected event/receiver')
+        with self._connect() as db:
+            db.execute('BEGIN')
+            self._investigation_ready(db)
+            receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+            if receiver!=receiver_id:raise ValueError('Receiver identity changed; source is withheld')
+            row=db.execute('SELECT * FROM activity_index_v1 WHERE event_key=?',(event_id,)).fetchone()
+            if not row:raise ValueError('Source is no longer retained')
+            event=json.loads(row['payload'])
+            event.update({key:row[key] for key in ('trace_id','turn_id','service','agent_id','session_id')})
+            current=source_reference({**event,'id':event_id},receiver)
+            if not reference_matches(expected,current):raise ValueError('Source execution changed; evidence is withheld')
+            result=read_sources(db,dict(trace_id=current['trace_id'],evidence=[dict(type=current['source'],id=current['source_id'])]))
+            keys=('service','agent_id','session_id','trace_id','span_id','turn_id')
+            if any(any(key not in source.get('scope',{}) or source['scope'][key]!=current.get(key) for key in keys)
+                   for source in result['sources']):
+                raise ValueError('Actual source execution differs from the pinned reference')
+            return dict(receiver_id=receiver,event_id=event_id,source_reference=current,**result)
 
     def findings(self, limit=100):
         return self.finding_page(limit=limit)["findings"]

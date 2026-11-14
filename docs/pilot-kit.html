@@ -1,0 +1,186 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Pilot Kit</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.3</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/pilot-kit.md">Markdown source ↗</a></nav><h1>Evidence reconstruction and continuation pilot kit</h1>
+<p><strong>Prepared protocol. Participants observed: 0. Sessions observed: 0. Repeat-use observations: 0.</strong></p>
+<p>This kit contains generated scenarios, expected answers and blank observer sheets. It is not evidence of adoption, measured time savings, alert precision, or live Claude/Pi compatibility. Product tests and synthetic records cannot supply those outcomes. The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/workflow-pilot.md">pilot protocol</a> defines the proposed paired study; this kit makes that protocol runnable without personal transcripts or provider accounts.</p>
+<h2>Consent and data handling</h2>
+<p>Read this before recruitment or timing: “We are evaluating whether recorded agent evidence helps you reconstruct and continue work. Participation is optional. You may stop, skip a task or withdraw your notes at any time. We will use synthetic tasks first. We will not install collection hooks, run an agent, approve a native request, record your screen or collect personal transcripts without separate explicit consent. We are measuring the interface, not your performance.”</p>
+<p>Agree who may see notes, whether recording is permitted, the withdrawal contact, the deletion date and the form of any published aggregate before starting. Keep signed consent and identifying information outside the repository, separate from observation notes. Use anonymous codes on private sheets; never commit participant identifiers, recordings, actual transcripts, tokens or credentials. Publish counts only with consent, denominators and limitations. This repository contains no participant results.</p>
+<h2>Materials and safe setup</h2>
+<p>The scenario below is fully specified in this document, so an observer can run a paper reconstruction exercise offline. For an interactive product exercise, an operator can explicitly create a new synthetic database:</p>
+<pre><code class="language-sh">python scripts/generate_pilot_fixture.py --output /tmp/agenturm-pilot-new.db
+agenturm --db /tmp/agenturm-pilot-new.db serve --host 127.0.0.1 --port 19418 --no-local-agents
+</code></pre>
+<p>Use a dedicated new file. Existing destinations are refused. The generator reads no transcript directories, starts no receiver or agent, invokes no provider and overwrites no database. The receiver command disables local discovery to keep real sessions out of the exercise. Keep authentication enabled; use the receiver's existing private-token mechanism. Stop that dedicated receiver and remove only the explicitly created synthetic files after the exercise. Never use an actual telemetry database as a pilot fixture.</p>
+<p>Connect the cockpit explicitly to <code>http://127.0.0.1:19418</code>. Typed CLI examples, once the corresponding receiver integration is installed:</p>
+<pre><code class="language-sh">agenturm investigate path src/retry.py --endpoint http://127.0.0.1:19418 --format json
+agenturm investigate command &quot;python migrate.py&quot; --failed --endpoint http://127.0.0.1:19418
+agenturm investigate instruction &quot;public API stable&quot; --endpoint http://127.0.0.1:19418
+agenturm investigate path src/古い.py --endpoint http://127.0.0.1:19418
+</code></pre>
+<p>Use the returned <code>source_command</code> (<code>agenturm investigate source EVENT_ID --reference TOKEN</code>) to inspect the exact bounded record. The reference pins the selected receiver, owner and execution; if any identity changes, rerun the search rather than broadening the source read. The token is encoded identity metadata, not encryption or authentication. Query matching is not workspace proof: a recorded relative path in two sessions does not establish that they edited the same checkout. Source reads and search results are retained observations, with capture, redaction and pruning limits.</p>
+<h2>Generated scenario and task cards</h2>
+<p>All names, producers, paths and commands here are synthetic. The database includes nine explicit Activity records and two generated OpenCode-shaped step anchors. It is not a live-runtime interoperability test.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Order</th>
+<th>Recorded owner</th>
+<th>Observation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Codex / synthetic-review</td>
+<td>User: “Keep the public API stable.”</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Same owner</td>
+<td><code>pytest tests/retry.py</code>, recorded exit 0.</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Same owner</td>
+<td>File edit of <code>src/retry.py</code>, recorded success, after the check.</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Claude / synthetic-worker</td>
+<td><code>python migrate.py</code>, recorded exit 1; stderr “Synthetic migration rejected”.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>OpenCode / synthetic-overlap</td>
+<td>Rename <code>src/古い.py</code> to <code>src/新しい.py</code>, recorded success; step trace <code>cccc…</code>.</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Same OpenCode owner</td>
+<td>File edit attempt on <code>src/retry.py</code>, result unknown; step trace <code>dddd…</code>. Both steps explicitly belong to generated turn <code>bbbb…</code>.</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Claude / synthetic-worker</td>
+<td>Assistant: “All checks passed.” No check invocation accompanies this claim.</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Codex / synthetic-review</td>
+<td>Explicit recorded <code>agent.waiting_for=Approval</code> message. No native approval action is performed and no real process/terminal is linked.</td>
+</tr>
+<tr>
+<td>9</td>
+<td>SDK / owner and session not reported</td>
+<td>User: “Preserve the retry budget.”</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>A — Find the request.</strong> Identify the recorded approval evidence and explain what is unknown. Ask the participant to distinguish this explicit captured wait from an unrelated unknown/stale status. Attempt native handoff only when the interface proves a real target; this fixture has none. Do not supply a fabricated PID or press an approval control.</p>
+<p><strong>B — Review the completion.</strong> Reconstruct check → later edit → reported result. Ask whether the earlier passing check verifies the later file contents, and whether the assistant's claim supplies another passing check. Inspect the failure's command, exit and actual source. Record any unsupported verification conclusion.</p>
+<p><strong>C — Investigate retained history.</strong> Find who received the public-API instruction, which sessions recorded a modification attempt on <code>src/retry.py</code>, which command failed, and the source of the old Unicode rename path. Inspect the unknown-owner instruction without assigning it to the shared trace's root. Repeat a query with a small page size and continue its cursor.</p>
+<p><strong>D — Preserve a turn and continue.</strong> Review the generated OpenCode turn containing step <code>cccc…</code>; inspect both step references. Save a task and a handoff only after the participant deliberately edits and approves it. Use these supplied scenario decisions: “Keep public API signatures” (accepted constraint), “Do not raise retry counts without measured evidence” (rejected approach), “Inspect the failed migration before changing behavior” (next action). They are task-card inputs, not claims about a real human decision. Reopen the saved task in a fresh session/view and count corrections or missing context. Never silently replace authored text.</p>
+<p><strong>E — Challenge provenance.</strong> Two sessions mention <code>src/retry.py</code>, but the fixture has no proved shared workspace/branch binding. Ask what can and cannot be concluded about overlap. The OpenCode edit has an unknown result. Do not claim a confirmed collision or successful persistent change from these observations alone.</p>
+<p><strong>F — Reconnect and recover.</strong> Stop and restart only the dedicated synthetic receiver while a cockpit is open. Record whether the UI indicates loss/staleness and recovers against the same namespace. Marking a request seen is not native approval or proof that the request was resolved. Repeat a saved-decision handoff after reconnection. For a real native-terminal exercise, use separately consented local evidence; mark this measure unavailable for the synthetic fixture.</p>
+<h2>Observer answer key</h2>
+<ul>
+<li>The public-API instruction belongs to Codex / synthetic-review. The retry-budget instruction has no reported owner; shared trace membership supplies no owner.</li>
+<li>The passing check precedes the Codex edit, so it cannot certify the later state. “All checks passed” is an assistant statement, not terminal evidence of a test.</li>
+<li>The failed command is Claude's <code>python migrate.py</code>, exit 1. Search/comparison exit 1 is a separate informational case; it must not be generalized to this command.</li>
+<li>Both Unicode rename paths are explicit. The OpenCode steps are distinct traces in one generated recorded turn; saving a whole-turn receipt must preserve both, without merging another producer's shared trace.</li>
+<li>Codex records a successful file edit; OpenCode records an unknown-result attempt. Their relative path agreement is insufficient for a collision claim or shared Git attribution.</li>
+<li>The fixture records an approval wait but proves no native terminal target. A correct answer states this limitation. No native action should occur.</li>
+<li>Retention, disabled capture, unsupported shapes or clipped text can remove search evidence. Zero matches cannot establish that no matching work occurred.</li>
+</ul>
+<h2>Blank observation sheet</h2>
+<p>Print or copy this sheet privately for each consented exercise. Do not fill it with repository fixtures or invented results.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Measure</th>
+<th>Baseline</th>
+<th>Agenturm</th>
+<th>Notes / corrections</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Task card / anonymous code</td>
+<td>______</td>
+<td>______</td>
+<td>Consent and retention recorded separately</td>
+</tr>
+<tr>
+<td>Reconstruction start / finish</td>
+<td>______</td>
+<td>______</td>
+<td>Same scenario difficulty; counterbalance task order</td>
+</tr>
+<tr>
+<td>Incorrect owner/session selections</td>
+<td>______</td>
+<td>______</td>
+<td>Count unknown correctly distinguished</td>
+</tr>
+<tr>
+<td>Unsupported verification conclusions</td>
+<td>______</td>
+<td>______</td>
+<td>Check-after-edit and assistant-claim probes</td>
+</tr>
+<tr>
+<td>Failure source reached / wrong source</td>
+<td>______</td>
+<td>______</td>
+<td>Preserve exact event identity</td>
+</tr>
+<tr>
+<td>Native target verified / unavailable</td>
+<td>______</td>
+<td>______</td>
+<td>Never count a synthetic target as success</td>
+</tr>
+<tr>
+<td>Saved-task corrections on reopening</td>
+<td>______</td>
+<td>______</td>
+<td>Include lost accepted/rejected decisions</td>
+</tr>
+<tr>
+<td>Repeated rejected approach</td>
+<td>______</td>
+<td>______</td>
+<td>Record observable behavior, not assumed intent</td>
+</tr>
+<tr>
+<td>Missed explicit requests / known requests</td>
+<td>______ / ______</td>
+<td>______ / ______</td>
+<td>Supply denominators</td>
+</tr>
+<tr>
+<td>Actionable alerts / rated alerts</td>
+<td>______ / ______</td>
+<td>______ / ______</td>
+<td>Keep heuristic observations separate</td>
+</tr>
+<tr>
+<td>Reconnect recovery and stale-state mistakes</td>
+<td>______</td>
+<td>______</td>
+<td>Record version and source coverage</td>
+</tr>
+<tr>
+<td>One-week voluntary reuse</td>
+<td>Not observed</td>
+<td>______</td>
+<td>Contact only with separate consent</td>
+</tr>
+</tbody>
+</table></div>
+<h2>Reporting limits and completion boundary</h2>
+<p>Recruitment, consent, actual measurements, live Claude/Pi coverage, willingness to pay and voluntary repeat use remain open external work. Prepared scripts, rendered HTML and automated assertions do not change the observed participant count from zero. Report paired individual measurements, missing observations and sample selection before aggregate percentages. Do not describe proposed 90% actionable-alert precision as achieved. Archive synthetic technical validation separately from consented human-study results.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

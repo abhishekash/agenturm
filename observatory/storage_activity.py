@@ -237,6 +237,21 @@ def initialize(db):
         )
 
 
+    from .storage_investigation import initialize as initialize_investigation, MARKER
+    try:
+        backfill = initialize_investigation(db)
+    except ValueError:
+        # Missing FTS5 disables search; collection has no history-scan fallback.
+        for trigger in ('investigation_insert_v1','investigation_delete_v1'):
+            db.execute('DROP TRIGGER IF EXISTS '+trigger)
+        db.execute("INSERT OR REPLACE INTO schema_meta VALUES('investigation_available_v1','0')")
+        return
+    db.execute("INSERT OR REPLACE INTO schema_meta VALUES('investigation_available_v1','1')")
+    if backfill:
+        db.execute("INSERT OR IGNORE INTO activity_dirty_v1 SELECT 'span',trace_id||':'||span_id FROM spans")
+        db.execute("INSERT OR IGNORE INTO activity_dirty_v1 SELECT 'log',digest FROM logs")
+        db.execute('INSERT OR REPLACE INTO schema_meta VALUES(?,?)',(MARKER,'1'))
+
 def drain(db, limit=200):
     from .core import (
         _activity_for,
@@ -247,11 +262,17 @@ def drain(db, limit=200):
         TOKEN_BREAKDOWN_KEYS,
     )
 
+    investigations = db.execute("SELECT value FROM schema_meta WHERE key='investigation_available_v1'").fetchone()
+    investigations = bool(investigations and investigations[0]=='1')
+    if investigations:
+        db.execute('''INSERT OR IGNORE INTO activity_dirty_v1
+            SELECT kind,owner_key FROM investigation_dirty_v1 ORDER BY kind,owner_key LIMIT ?''',(limit,))
     jobs = db.execute(
         "SELECT kind,owner_key FROM activity_dirty_v1 ORDER BY kind,owner_key LIMIT ?",
         (limit,),
     ).fetchall()
     for kind, key in jobs:
+        investigation_rows = []
         db.execute(
             "DELETE FROM activity_index_v1 WHERE kind=? AND owner_key=?", (kind, key)
         )
@@ -360,6 +381,7 @@ def drain(db, limit=200):
                 )
                 event_key = (r["trace_id"] or "log") + ":" + row["source_id"]
                 row["id"] = event_key
+                investigation_rows.append((event_key,dict(row)))
                 db.execute(
                     "INSERT OR REPLACE INTO activity_index_v1 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
@@ -387,9 +409,11 @@ def drain(db, limit=200):
                         ),
                     ),
                 )
-        db.execute(
-            "DELETE FROM activity_dirty_v1 WHERE kind=? AND owner_key=?", (kind, key)
-        )
+        if investigations:
+            from .storage_investigation import replace_owner
+            replace_owner(db,kind,key,investigation_rows)
+            db.execute('DELETE FROM investigation_dirty_v1 WHERE kind=? AND owner_key=?',(kind,key))
+        db.execute("DELETE FROM activity_dirty_v1 WHERE kind=? AND owner_key=?", (kind, key))
     return len(jobs)
 
 
