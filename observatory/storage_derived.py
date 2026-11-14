@@ -445,7 +445,8 @@ def derive_trace(db, trace_id, workflow_patterns=False):
     turns={span.get('attributes',{}).get('agent.turn.id') for span in spans if span.get('name')=='agent.run' and span.get('scope_name')=='observatory.opencode'}
     if len(turns)==1 and None not in turns:
         summary['turn_id']=next(iter(turns))
-        summary['turn_membership']='recorded user parent'
+        current=any('observatory.opencode.turn.schema' in span.get('attributes',{}) for span in spans)
+        summary['turn_membership']='recorded idle-boundary interval' if current else 'recorded user parent'
     summary["findings_complete"] = summary["evidence_window"]["complete"]
     summary["search_terms_complete"] = summary["evidence_window"]["complete"]
     timestamp = db.execute("SELECT last_ns FROM trace_activity WHERE trace_id=?", (trace_id,)).fetchone()
