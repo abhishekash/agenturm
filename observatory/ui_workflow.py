@@ -244,6 +244,20 @@ class WorkflowScreen(ModalScreen):
         self.query_one('#workflow-settings-panel').display=self._settings and not small
         self.query_one('#workflow-body').display=not self._settings and not small
         if small:return
+        if getattr(owner.feed.snapshot,'native_bootstrap',False):
+            self._table_signature=None;self._log_signature=None;self._layout_signature=None
+            if getattr(self,'_bootstrap_presentation',False):return
+            self._bootstrap_presentation=True
+            self.visible_rows=[];self.rows_by_id={};self.selected_incident=None
+            table.clear();table.display=False
+            self.query_one('#workflow-log').display=True
+            log=self.query_one(RichLog);log.clear()
+            log.write('History indexing · native metadata only. Workflow history, acknowledgements and lifecycle resolution are unavailable until a coherent receiver snapshot arrives.')
+            self.query_one('#workflow-title',Label).update('Workflow · History indexing · Esc Back')
+            for name in ('workflow-seen','workflow-retry','workflow-review'):
+                self.query_one('#'+name,Button).disabled=True
+            return
+        self._bootstrap_presentation=False
         rows=[row for row in owner.workflow_ledger.rows if self._history or row[0].get('_attention_kind')!='completion' or
             (row[0].get('_attention_source_time_ns') or int(row[2]*1e9))>=time.time_ns()-86400*10**9]
         self.visible_rows=list(rows)

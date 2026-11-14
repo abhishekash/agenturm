@@ -24,7 +24,18 @@ For SDK/OTLP agents, point the producer at your local receiver using the
 integration guide in docs/receiver.md. Agenturm observes; it does not run agents.'''
 
 
-def diagnostics_text(local):
+def diagnostics_text(local,*,native_bootstrap=False):
+    if native_bootstrap:
+        lines=['LOCAL COLLECTION DIAGNOSTICS · PARTIAL','History indexing · native observations only.',
+            'Historical read-error, source and hierarchy totals: unavailable.',
+            f"Observed native rows: {len(local.get('sessions')or [])}"]
+        for row in local.get('sessions')or []:
+            diagnostics=row.get('diagnostics')or {}
+            lines.extend(['',str(row.get('runtime')or 'Native')+' · '+str(row.get('agent_id')or '')[-8:],
+                'Last successful collector read (Unix ns): '+str(row.get('collector_updated_ns')or 'not reported'),
+                'Backlog bytes: '+str(diagnostics.get('backlog_bytes','not reported')),
+                'Pending storage records: '+str(diagnostics.get('pending_storage_records','not reported'))])
+        return '\n'.join(lines)
     lines = ['LOCAL COLLECTION DIAGNOSTICS',
              'Local paths may identify projects/users. No endpoint credentials or raw events are shown.',
              f"Discovery: {'enabled' if local.get('enabled') else 'disabled or not reported'} · lookback {local.get('lookback_hours', 'not reported')}h",
@@ -73,9 +84,10 @@ class DiagnosticsScreen(ModalScreen):
     '''
     BINDINGS = [('escape', 'dismiss', 'Close')]
 
-    def __init__(self, local):
+    def __init__(self, local, *, native_bootstrap=False):
         super().__init__()
         self.local = local
+        self.native_bootstrap=native_bootstrap
 
     def compose(self) -> ComposeResult:
         with Vertical(id='diagnostics-dialog'):
@@ -83,7 +95,7 @@ class DiagnosticsScreen(ModalScreen):
             yield Button('Close · Esc', id='diagnostics-close')
 
     def on_mount(self):
-        self.query_one(RichLog).write(Text(diagnostics_text(self.local)))
+        self.query_one(RichLog).write(Text(diagnostics_text(self.local,native_bootstrap=self.native_bootstrap)))
 
     @on(Button.Pressed, '#diagnostics-close')
     def close_dialog(self):

@@ -16,6 +16,7 @@ FAILURES = {'error', 'failed', 'denied', 'blocked', 'policy_denied', 'incomplete
 
 
 def session_history_feedback(snapshot):
+    if getattr(snapshot,'native_bootstrap',False):return 'History indexing · historical counts and evidence are unavailable; native observations only.'
     notes=[]
     for kind,error in snapshot.read_errors.items():
         stamp=snapshot.read_updated.get(kind,0)
@@ -35,6 +36,12 @@ def connection_feedback(feed):
     progress=feed.connection
     elapsed=max(0,int(time.monotonic()-progress.started))
     snapshot=feed.snapshot
+    if getattr(snapshot,'native_bootstrap',False):
+        age=max(0,int(time.time()-snapshot.bootstrap_updated))
+        if snapshot.error:
+            label='Authentication'if progress.phase=='auth'else 'Native observations stale'
+            return label,f'{label} · {age}s since native observation\n'+snapshot.error,False
+        return 'History indexing',f'History indexing · native observations only · {age}s old\nHistorical counts, usage and recorded evidence are unavailable.'+(' '+snapshot.error if snapshot.error else ''),False
     if snapshot.read_errors and snapshot.updated and not snapshot.error:
         heading=('Retry requested · waiting for current request' if feed.retry_requested else
                  'Partial data · showing available agents')

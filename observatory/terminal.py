@@ -179,6 +179,8 @@ class Snapshot:
     native_lifecycle: list = field(default_factory=list)
     native_lifecycle_warning: str = ""
     native_lifecycle_prepared: bool = False
+    native_bootstrap: bool = False
+    bootstrap_updated: float = 0
 
 
 _POLICY_ID_FIELDS=('source_id','service','agent_id','session_id','runtime','source_namespace',
@@ -186,7 +188,7 @@ _POLICY_ID_FIELDS=('source_id','service','agent_id','session_id','runtime','sour
 _POLICY_METADATA_FIELDS=(*_POLICY_ID_FIELDS,'run_state','state_since_ns','last_record_ns',
     'last_update_ns','run_start_ns','request_id','request_time_ns','outcome_id','outcome_time_ns',
     'relationship_kind','relationship_state','discovery_state','coverage','observed_ns',
-    'capture_content','capture_revision','capture_safety_revision')
+    'capture_content','capture_revision','capture_safety_revision','collector_updated_ns')
 
 
 def _capture_identity(row):
@@ -413,13 +415,15 @@ class Feed:
         with self._capture_lock:
             if epoch!=self._capture_epoch:return False
             receiver=candidate.receiver_id
+            bootstrap_owners={tuple(row.get(key)or ''for key in ('source_id','service','agent_id','session_id'))
+                for row in candidate.local_status.get('sessions',())}if candidate.native_bootstrap else set()
             namespace_changed=bool(self.snapshot.receiver_id and self.snapshot.receiver_id!=receiver)
             if self._capture_receiver!=receiver:
                 self._capture_receiver=receiver;self._capture_global_denied=False;self._capture_denials={};self._capture_overflow=False
                 self._capture_revisions={};self._capture_global_revision=0
             previous=(self._capture_global_denied,set(self._capture_denials))
             local=health.get('local_agents')or {}
-            if not complete and(self._capture_global_denied or self._capture_denials):
+            if not complete and not candidate.native_bootstrap and(self._capture_global_denied or self._capture_denials):
                 self.snapshot=_capture_purge(self.snapshot,self._capture_local(self.snapshot.local_status,metadata=True))
                 self.snapshot.error=self.snapshot.error or 'Capture policy changed; waiting for a coherent receiver refresh.'
                 self._clear_content_caches()
@@ -469,8 +473,43 @@ class Feed:
                 if self.findings_cache is not None:
                     self.findings_cache={key:self.findings_cache[key]for key in ('next_cursor','agent_scope','receiver_id')if key in self.findings_cache}
                     self.findings_cache['findings']=candidate.finding_results
+            if candidate.native_bootstrap:
+                from .native_bootstrap import published_metadata
+                candidate.local_status=published_metadata(candidate.local_status)
+                candidate.local_status['sessions']=[row for row in candidate.local_status['sessions']
+                    if tuple(row.get(key)or ''for key in ('source_id','service','agent_id','session_id'))in bootstrap_owners]
             self.snapshot=candidate
             return True
+
+    def _publish_native_bootstrap(self,initial,confirmed,scope,epoch):
+        from .native_bootstrap import native_metadata
+        local=native_metadata(confirmed)
+        receiver=confirmed.get('receiver_id')
+        if local is None or receiver!=initial.get('receiver_id'):return False
+        # Both authenticated observations can revoke; neither partial positive
+        # is allowed to restore an existing Feed denial.
+        policy=dict(local);denials=[]
+        for health in (initial,confirmed):
+            source=health.get('local_agents')or {}
+            if source.get('capture_content')is False:policy['capture_content']=False
+            rows=source.get('sessions')or []
+            if len(rows)>500:policy['capture_content']=False
+            denials.extend(_capture_denial(row,key)for row in rows[:500]if isinstance(row,dict)
+                and row.get('capture_content')is False and(key:=_capture_identity(row)))
+        policy['sessions']=[*local['sessions'],*denials]
+        with self._capture_lock:
+            if epoch!=self._capture_epoch or self.stop.is_set()or scope!=FeedScope.capture(self):return False
+            # A concurrent coherent refresh wins even when navigation did not
+            # change. An old bootstrap callback may never replace that frame.
+            if self.snapshot.updated:return False
+            if self.snapshot.receiver_id and self.snapshot.receiver_id!=receiver:return False
+            self._clear_content_caches()
+            candidate=Snapshot(local_status=local,receiver_id=receiver,
+                receiver_time_ns=confirmed['observed_time_unix_nano'],native_bootstrap=True,
+                bootstrap_updated=time.time(),native_lifecycle_prepared=True,
+                sessions_error='History indexing · native observations only',
+                read_errors={'history':'Initial history indexing is incomplete.'})
+            return self._capture_commit(candidate,{'local_agents':policy},epoch,complete=False)
 
     def connection_stage(self, stage):
         self.connection=replace(self.connection,stage=stage)
@@ -577,7 +616,7 @@ class Feed:
                            '/api/activity?' + urlencode(activity_params), trace_path]
             if requested_scope.include_global_totals:initial_paths.append('/api/metrics')
             if history_due:initial_paths.append('/api/sessions?limit=500')
-            requests.prefetch(initial_paths)
+            requests.prefetch(['/api/health'] if not old.updated else initial_paths)
             health=get('/api/health')
             if self._capture_from_health(health):return
             receiver_id=str(health.get('receiver_id') or '')
@@ -604,8 +643,35 @@ class Feed:
                     self.history={page:[None] for page in self.history}
                     self.wake.set();return
                 history_due=True
-                requests.prefetch([path for path in initial_paths if path!='/api/health']+['/api/sessions?limit=500'])
-            if health.get("indexing",{}).get("ready") is False:raise InterruptedError("Indexing stored history · "+health["indexing"].get("stage","pending"))
+            if health.get('indexing',{}).get('ready')is False:
+                from .native_bootstrap import ready_native
+                initial=health
+                if (not old.updated or old.receiver_id!=receiver_id)and ready_native(initial):
+                    # A RequestBatch Future is cached; this independent health
+                    # response is the only positive bootstrap observation used.
+                    from .feed_requests import shared_get
+                    confirmed=shared_get(self.api,'/api/health',cancelled=self.stop.is_set)
+                    if confirmed.get('receiver_id')!=receiver_id:
+                        raise ValueError('Receiver identity changed during native bootstrap; retrying')
+                    if self._capture_from_health(confirmed):return
+                    if confirmed.get('indexing',{}).get('ready')is False:
+                        if self._publish_native_bootstrap(initial,confirmed,requested_scope,capture_epoch):
+                            self.connection_failures=0
+                            self.connection=replace(self.connection,phase='loading',stage='History indexing · native observations available',retry_at=0)
+                        elif old.updated and self.snapshot is old:
+                            raise InterruptedError('Indexing stored history; retaining the previous coherent snapshot')
+                        return
+                    if confirmed.get('indexing',{}).get('ready')is True:health=confirmed
+                    else:raise InterruptedError('History readiness is unavailable')
+                else:
+                    if not old.updated:
+                        from .native_bootstrap import indexing_in_progress
+                        note=('History indexing failed; native observations are unavailable.'if health['indexing'].get('error')else
+                            'History indexing; native discovery is incomplete.'if indexing_in_progress(health['indexing'])else
+                            'History readiness is unavailable; native observations are withheld.')
+                        raise InterruptedError(note)
+                    raise InterruptedError('Indexing stored history · '+health['indexing'].get('stage','pending'))
+            requests.prefetch([path for path in initial_paths if path!='/api/health'])
             local_status = health.get("local_agents", {})
             new_revision = str((local_status.get("hierarchy") or {}).get("revision") or "")
             if new_revision and self.hierarchy_revision and new_revision != self.hierarchy_revision:
@@ -875,11 +941,15 @@ class Feed:
                 message = "Receiver requires authentication. Set OBSERVATORY_TOKEN and restart."
             elif isinstance(exc,TimeoutError) and self.connection.stage!='Checking receiver':
                 message = 'Loading delayed: '+clean(str(exc))+'. Retrying.'
+            elif isinstance(exc,InterruptedError)and not old.updated:
+                message=clean(str(exc))
             else:
                 message = "Receiver unavailable. Retrying: " + clean(str(exc))
             with self._capture_lock:
                 if capture_epoch!=self._capture_epoch:
                     self.wake.set();return
+                if not old.updated and self.snapshot.updated:return
+                if getattr(self.snapshot,'native_bootstrap',False)and self.snapshot is not old:return
                 old=self.snapshot
                 if old.receiver_id==self._capture_receiver and(self._capture_global_denied or self._capture_denials):
                     old=_capture_purge(old,self._capture_local(old.local_status,metadata=True))
@@ -1177,6 +1247,11 @@ def run_cockpit(*, db_path=None, port=14318, endpoint=None,
                     time.sleep(.1);continue
                 feed.refresh()
                 if feed.snapshot.error:raise CockpitError(feed.snapshot.error)
+                if getattr(feed.snapshot,'native_bootstrap',False):
+                    if time.monotonic()>=deadline:
+                        print('Agenturm snapshot incomplete: native metadata is available but history indexing is not ready. No complete snapshot emitted.',file=sys.stderr)
+                        return 3
+                    time.sleep(.1);continue
                 local=feed.snapshot.local_status
                 discovery_ready=not local.get('enabled') or local.get('initial_poll_complete') is True
                 derived_ready=receiver is None or not receiver.store._derived_pending

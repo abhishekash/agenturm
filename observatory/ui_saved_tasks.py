@@ -74,6 +74,7 @@ def current_capture_context(owner, context):
 
 def capture_selected_run(owner, *, item_override=None, review_snapshot=None):
     """Freeze only the chosen identity and exact-run evidence already loaded."""
+    if getattr(owner.feed.snapshot,'native_bootstrap',False):return None
     item = deepcopy(item_override) if item_override is not None else next((item for item in owner.workflow_items()
                  if item['id'] == owner.selected_source), None)
     if not item:
@@ -177,7 +178,8 @@ def task_source_policy(owner,*,bindings=None):
     from .workflow_evidence import ExecutionScope
     from types import SimpleNamespace
     live=owner.feed.snapshot
-    snapshot=SimpleNamespace(receiver_id=getattr(live,'receiver_id',''),local_status=deepcopy(getattr(live,'local_status',{})or {}))
+    snapshot=SimpleNamespace(receiver_id=getattr(live,'receiver_id',''),local_status=deepcopy(getattr(live,'local_status',{})or {}),
+        native_bootstrap=getattr(live,'native_bootstrap',False))
     def bound(bindings):
         def state(scope):
             if not scope.get('receiver')or snapshot.receiver_id!=scope['receiver']:
