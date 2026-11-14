@@ -150,7 +150,7 @@ Review, Activity failure grouping and recent reminders now share bounded typed c
 
 C1 is merged and validated. C2 is implemented and peer-reviewed in the next increment below; C3, resource targets and stages D–G remain open.
 
-### Stage C occurrence-owned Findings — implemented, peer-reviewed, PR preparation
+### Stage C occurrence-owned Findings — [PR #76](https://github.com/abhishekash/agenturm/pull/76) in CI
 
 Findings filtering, keyset paging, scalar counts and exact source resolution now share one SQLite snapshot and receiver namespace. Each occurrence retains its actual producer/actor/session/turn; unknown ownership stays global, and root task/status is not borrowed. Shared operation facts drive error detail, expected-nonzero and conflict handling. Changes from older writers atomically invalidate evidence and queue bounded, restart-safe rebuilds. `s` opens exact sources, `t` explicitly opens the container trace. Capture revocation fences late reads, copy and export, including already-open previews. See the [implementation record](../validation/owned-findings.md).
 

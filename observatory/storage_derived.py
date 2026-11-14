@@ -460,8 +460,9 @@ def derive_trace(db, trace_id, workflow_patterns=False):
         if finding.get('workflow_pattern'):
             from .operation_facts import digest
             finding.update(service=finding.get('producer'),ownership_version=1,receiver_id=receiver,
-                group_key=digest((finding['kind'],finding.get('producer'),finding.get('agent_id'),
-                    finding.get('session_id'),trace_id,finding['id'])))
+                group_basis='workflow-pattern meaning; not operation equivalence',
+                group_key=digest(('workflow-pattern',finding['kind'],finding.get('title'),
+                    finding.get('detail'),finding.get('severity'))))
         finding["evidence_complete"] = summary["evidence_window"]["complete"]
         if not finding["evidence_complete"]:
             finding["detail"] += " (Bounded evidence window; not a whole-trace finding count.)"

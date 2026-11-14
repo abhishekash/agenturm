@@ -1,6 +1,6 @@
 # Findings that keep the right owner and source
 
-14 November 2026. Stage C2 implementation and independent peer review complete; PR preparation. C3 Overview, Stage B resource targets and stages D–G remain open. This report makes no release, adoption or complete-monitor performance claim.
+14 November 2026. Stage C2 implementation and independent peer review complete in [PR #76](https://github.com/abhishekash/agenturm/pull/76); final CI remains pending. C3 Overview, Stage B resource targets and stages D–G remain open. This report makes no release, adoption or complete-monitor performance claim.
 
 ## What changed
 
@@ -31,3 +31,5 @@ The main 157-test storage/API/ownership/native/receipt/UI gate passed in 94.587 
 Regression cases cover shared parent/child/unknown owners, malformed session aliases, typed/falsy MCP values, expected versus compound nonzero exits, fallback errors, credential fields, same-turn repeats, keyset paging, one-WAL-snapshot counts, external writers, progress invalidating outcome ownership, deleted traces, upgrades, restart, source limits, late responses, receiver replacement, denial/restoration and export refusal. The additional authenticated source-route gate passed 17 tests in 5.241 seconds. All three updated HTML companions were checked in Chrome at 1280 px/light and 390 px/dark, with no page overflow or external assets. The 60×18 exact-source frame was visually inspected.
 
 Findings analysis still uses the disclosed bounded per-trace evidence window. Absence of a finding does not establish absence of a fault; incomplete sources can describe the same execution. The source resolver is read-only and never retries an agent operation or certifies a worktree.
+
+The first CI matrix found four integration regressions: the compatibility drain count had included derived work, the empty-probe race fixture did not instrument the expanded two-queue probe, and workflow-pattern aggregates lost their existing scoped meaning-based counts. The Activity drain-count contract is restored, the race fixture still asserts the same interleaving, and pattern warnings aggregate by meaning while owner filters remain identical for rows/counts. This is not operation equivalence. The 31-test watcher/workflow/Findings regression gate passed in 10.887 seconds.
