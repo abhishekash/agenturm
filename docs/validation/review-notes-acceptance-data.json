@@ -137,7 +137,7 @@
       "tests": "[test_agents_readability.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_agents_readability.py), [test_overview_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_overview_facts.py), [test_overview_ui.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_overview_ui.py), [test_native_bootstrap.py](https://github.com/abhishekash/agenturm/blob/abf1627950aa53032e97dea2136fa25e3748a7d4/tests/test_native_bootstrap.py)",
       "delivery": "Merged [#72](https://github.com/abhishekash/agenturm/pull/72) / [#74](https://github.com/abhishekash/agenturm/pull/74) / [#78](https://github.com/abhishekash/agenturm/pull/78). Metadata-only initial native observations merged #102 at abf1627; task/path/prompt content is withheld and the coherent snapshot clock stays zero.",
       "limits": "Compact/expanded inspectors show recorded paths/checks/issues before assistant claims; hierarchy/shading/keyboard behavior retained. Loaded bounded evidence is not a full-history summary. A useful first-native-frame target on retained history remains unproved. Frozen 473 Feed correctly refused fatal health. Partial metadata is not full history readiness.",
-      "evidence": "Initial retained-history indexing still delays the coherent roster; metadata-only native bootstrap is in progress, not delivered or coherent-ready acceptance.",
+      "evidence": "Metadata-only native bootstrap is merged in PR #102. The partial frame preserves unknown history/usage and withholds source content and lifecycle authority. A useful first-native frame and resource acceptance on the retained corpus remain open; the original frozen-473 fatal-health refusal is not relabelled as a successful first frame.",
       "implementation_state": "merged tested contract; qualified by stated limits",
       "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
       "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
@@ -3450,8 +3450,8 @@
     },
     {
       "work": "CI102 missing-method test double",
-      "head": "uncommitted",
-      "state": "Root reproduced four subtest errors for missing native_page_pending. Fixture-only correction under validation; no runtime fallback or green CI claim."
+      "head": "2354ecf2f7f0d1dc2bbc0d2c312e4b3f7dcecced",
+      "state": "Fixture-only correction committed; 28 local integration tests passed in 34.654 seconds and seven Python 3.13 monitoring models passed in 2.022 seconds. Combined integration and remote CI remain pending; no runtime fallback or green CI claim."
     }
   ],
   "remaining_acceptance": [
@@ -6371,7 +6371,15 @@
       "head": "766f1e982e803636699b6d50f78522510e92caf6",
       "run": 43619243868,
       "python_failed": 4,
-      "integration_error": "Four MCP null/empty inspector subtests use a SimpleNamespace without native_page_pending. Root reproduced on main103; fixture correction pending."
+      "integration_error": "Four MCP null/empty inspector subtests use a SimpleNamespace without native_page_pending. Root reproduced on main103; fixture correction pending.",
+      "fixture_correction": {
+        "head": "2354ecf2f7f0d1dc2bbc0d2c312e4b3f7dcecced",
+        "integration_tests": 28,
+        "integration_seconds": 34.654,
+        "python313_models": 7,
+        "python313_seconds": 2.022,
+        "acceptance": "Pending combined integration and remote CI"
+      }
     },
     "strict_cadence": {
       "candidate": "5ab5cfd",
