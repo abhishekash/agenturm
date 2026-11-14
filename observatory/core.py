@@ -650,7 +650,12 @@ class Store:
         self._derived_condition = threading.Condition()
         # Refresh reads and cache writes must not straddle a retention delete.
         self._derived_lock = threading.RLock()
+        # Coordinate local writer admission per transaction, never across the
+        # history-wide derivation lock or its inter-chunk fairness sleeps.
+        self._writer_gate = threading.RLock()
         self._derived_pending = {}
+        self._derived_inflight = set()
+        self._compat_cursor = ''
         self._derived_demand_until = 0.0
         self._derived_generation = 0
         self._derived_stopping = False
@@ -956,14 +961,35 @@ class Store:
         if not dirty:return 0
         from .storage_activity import drain
         try:
-            with self._connect() as db:
+            with self._writer_gate,self._connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 count=drain(db,limit=200)
-                traces=[row[0] for row in db.execute('SELECT trace_id FROM finding_dirty_v1 ORDER BY trace_id LIMIT 16')]
-            if traces:self._refresh_summaries(traces, require_dirty=True)
+                traces=self._compat_traces(db)
+            if traces:self._refresh_summaries(traces, require_dirty=True,defer_local=True)
             return count  # Preserve the Activity drain-count contract; derived repair is additional.
         finally:
             self._notify_derived_progress()
+
+    def _locally_owned(self, trace_id):
+        with self._derived_condition:
+            thread=self._derived_thread
+            return bool(self._async_derived_refresh and not self._derived_stopping and thread is not None
+                and thread.is_alive() and (trace_id in self._derived_pending or trace_id in self._derived_inflight))
+
+    def _compat_traces(self, db):
+        # A bounded scheduling cursor avoids starving an external dirty trace
+        # behind a hot prefix of locally owned jobs. It proves no source state.
+        rows=db.execute('SELECT trace_id FROM finding_dirty_v1 WHERE trace_id>? ORDER BY trace_id LIMIT 64',
+            (self._compat_cursor,)).fetchall()
+        if not rows and self._compat_cursor:
+            self._compat_cursor=''
+            rows=db.execute('SELECT trace_id FROM finding_dirty_v1 ORDER BY trace_id LIMIT 64').fetchall()
+        traces=[]
+        for row in rows:
+            trace_id=row[0];self._compat_cursor=trace_id
+            if not self._locally_owned(trace_id):traces.append(trace_id)
+            if len(traces)==16:break
+        return traces
 
     def index_status(self):
         state=dict(self.migration_status)
@@ -1438,33 +1464,33 @@ class Store:
         source_id = _id(source_id, TRACE_ID, "source_id")
         from .native_policy import internal_review_attrs, internal_review_events
         affected = set()
-        with self._connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            db.execute('INSERT OR REPLACE INTO native_source_policy_v1 VALUES(?,1)',(source_id,))
-            rows = db.execute('''SELECT digest,trace_id,attributes FROM logs
-                WHERE json_extract(resource_attributes,'$."observatory.source_id"')=?''', (source_id,)).fetchall()
-            for row in rows:
-                attrs = internal_review_attrs(json.loads(row["attributes"]))
-                db.execute("UPDATE logs SET body=?,attributes=?,service='codex-review' WHERE digest=?",
-                           (json.dumps(""), json.dumps(attrs), row["digest"]))
-                if row["trace_id"]:
+        with self._source_write() as refresh:
+            with self._connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                db.execute('INSERT OR REPLACE INTO native_source_policy_v1 VALUES(?,1)',(source_id,))
+                rows = db.execute('''SELECT digest,trace_id,attributes FROM logs
+                    WHERE json_extract(resource_attributes,'$."observatory.source_id"')=?''', (source_id,)).fetchall()
+                for row in rows:
+                    attrs = internal_review_attrs(json.loads(row["attributes"]))
+                    db.execute("UPDATE logs SET body=?,attributes=?,service='codex-review' WHERE digest=?",
+                               (json.dumps(""), json.dumps(attrs), row["digest"]))
+                    if row["trace_id"]:
+                        affected.add(row["trace_id"])
+                rows = db.execute('''SELECT trace_id,span_id,attributes,name,events FROM spans
+                    WHERE json_extract(resource_attributes,'$."observatory.source_id"')=?''', (source_id,)).fetchall()
+                for row in rows:
+                    attrs = internal_review_attrs(json.loads(row["attributes"]))
+                    if row["name"] == "agent.run":
+                        attrs["agent.task"] = "Approval review"
+                    db.execute("UPDATE spans SET attributes=?,events=?,links='[]',name=?,service='codex-review' WHERE trace_id=? AND span_id=?",
+                               (json.dumps(attrs),json.dumps(internal_review_events(json.loads(row['events']))),
+                                'agent.run' if row['name']=='agent.run' else 'Approval review',row["trace_id"],row["span_id"]))
                     affected.add(row["trace_id"])
-            rows = db.execute('''SELECT trace_id,span_id,attributes,name,events FROM spans
-                WHERE json_extract(resource_attributes,'$."observatory.source_id"')=?''', (source_id,)).fetchall()
-            for row in rows:
-                attrs = internal_review_attrs(json.loads(row["attributes"]))
-                if row["name"] == "agent.run":
-                    attrs["agent.task"] = "Approval review"
-                db.execute("UPDATE spans SET attributes=?,events=?,links='[]',name=?,service='codex-review' WHERE trace_id=? AND span_id=?",
-                           (json.dumps(attrs),json.dumps(internal_review_events(json.loads(row['events']))),
-                            'agent.run' if row['name']=='agent.run' else 'Approval review',row["trace_id"],row["span_id"]))
-                affected.add(row["trace_id"])
-            # Raw source policy and derived content invalidate together; a
-            # delayed/failed async rebuild cannot expose the previous prompt.
-            db.executemany('DELETE FROM trace_summaries WHERE trace_id=?',((trace,) for trace in affected))
-            db.executemany('DELETE FROM finding_cache WHERE trace_id=?',((trace,) for trace in affected))
-        if affected:
-            self._refresh_after_write(affected)
+                # Raw source policy and derived content invalidate together; a
+                # delayed/failed async rebuild cannot expose the previous prompt.
+                db.executemany('DELETE FROM trace_summaries WHERE trace_id=?',((trace,) for trace in affected))
+                db.executemany('DELETE FROM finding_cache WHERE trace_id=?',((trace,) for trace in affected))
+            refresh.update(affected)
 
     def connections(self):
         now = time.time_ns()
@@ -1572,11 +1598,11 @@ class Store:
         with self._connect() as db:
             db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('endpoint_inventory_v1','1')")
 
-    def _refresh_summaries(self, trace_ids, *, require_dirty=False):
+    def _refresh_summaries(self, trace_ids, *, require_dirty=False, defer_local=False):
         with self._derived_lock:
-            self._refresh_summaries_locked(trace_ids, require_dirty=require_dirty)
+            self._refresh_summaries_locked(trace_ids, require_dirty=require_dirty,defer_local=defer_local)
 
-    def _refresh_summaries_locked(self, trace_ids, *, require_dirty=False):
+    def _refresh_summaries_locked(self, trace_ids, *, require_dirty=False, defer_local=False):
         from .storage_derived import derive_trace
 
         active_pattern_runs = set()
@@ -1589,10 +1615,13 @@ class Store:
         # over an entire history rebuild. Each bounded chunk remains atomic
         # against ingestion, pruning and other receiver processes.
         for offset in range(0,len(trace_ids),16):
-            with self._connect() as db:
+            with self._writer_gate,self._connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
                 for trace_id in trace_ids[offset:offset+16]:
+                    # Recheck ownership after actual writer admission; raw
+                    # commits publish their local queue before releasing it.
+                    if defer_local and self._locally_owned(trace_id):continue
                     # Another local/background receiver may already have
                     # repaired this job while we waited for its writer. A
                     # missing cache is still repair work even without a dirty
@@ -1631,58 +1660,81 @@ class Store:
                 # window instead of immediately reacquiring through history.
                 time.sleep(.025)
 
-    def _refresh_after_write(self, trace_ids):
-        trace_ids = set(trace_ids)
-        if not trace_ids:
-            return
-        if not self._async_derived_refresh or self._derived_thread is None:
-            self._refresh_summaries(trace_ids)
-            return
-        now = time.monotonic()
+    @contextmanager
+    def _source_write(self):
+        """Fence accepted source commit through async job publication.
+
+        Queue admission never derives. Synchronous fallback must run after
+        releasing this gate, preserving derived-lock -> writer-gate ordering.
+        """
+        traces=set()
+        with self._writer_gate:
+            yield traces
+            queued=self._queue_derived(traces)
+        if traces and not queued:self._refresh_after_write(traces)
+
+    def _queue_derived(self, trace_ids):
+        trace_ids=set(trace_ids)
+        if not trace_ids:return False
         with self._derived_condition:
+            thread=self._derived_thread
+            if (not self._async_derived_refresh or self._derived_stopping or thread is None or not thread.is_alive()):
+                return False
+            now=time.monotonic()
             for trace_id in trace_ids:
-                pending = self._derived_pending.get(trace_id)
-                self._derived_pending[trace_id] = (pending[0] if pending else now, now,
-                                                   pending[2] if pending else 0)
+                pending=self._derived_pending.get(trace_id)
+                self._derived_pending[trace_id]=(pending[0] if pending else now,now,pending[2] if pending else 0)
             self._derived_condition.notify()
+        return True
+
+    def _refresh_after_write(self, trace_ids):
+        trace_ids=set(trace_ids)
+        if trace_ids and not self._queue_derived(trace_ids):self._refresh_summaries(trace_ids)
 
     def _derived_refresh_worker(self):
         quiet_period = 0.25
         max_delay = 1.0
         while True:
-            with self._derived_condition:
-                while not self._derived_pending and not self._derived_stopping:
-                    self._derived_condition.wait()
-                if self._derived_stopping and not self._derived_pending:
-                    return
-                now = time.monotonic()
-                if not self._derived_stopping and now<self._derived_demand_until:
-                    ready=heapq.nsmallest(16,self._derived_pending,
-                        key=lambda trace:self._derived_pending[trace][0])
-                    self._derived_demand_until=0.0
-                else:
-                    ready = [trace_id for trace_id, (first, last, _) in self._derived_pending.items()
-                             if self._derived_stopping or now - last >= quiet_period or now - first >= max_delay]
-                if not ready:
-                    wait_for = min(min(quiet_period - (now - last), max_delay - (now - first))
-                                   for first, last, _ in self._derived_pending.values())
-                    self._derived_condition.wait(timeout=max(0.01, wait_for))
-                    continue
-                pending = {trace_id: self._derived_pending.pop(trace_id) for trace_id in ready}
+            ready=[];pending={};backlog=False
             try:
-                self._refresh_summaries(ready, require_dirty=True)
-                self.last_derived_error = None
+                with self._derived_condition:
+                    while not self._derived_pending and not self._derived_stopping:
+                        self._derived_condition.wait()
+                    if self._derived_stopping and not self._derived_pending:return
+                    now=time.monotonic()
+                    if not self._derived_stopping and now<self._derived_demand_until:
+                        eligible=iter(self._derived_pending)
+                        self._derived_demand_until=0.0
+                    else:
+                        eligible=(trace_id for trace_id,(first,last,_) in self._derived_pending.items()
+                            if self._derived_stopping or now-last>=quiet_period or now-first>=max_delay)
+                    ready=heapq.nsmallest(16,eligible,key=lambda trace:(self._derived_pending[trace][0],trace))
+                    if not ready:
+                        wait_for=min(min(quiet_period-(now-last),max_delay-(now-first))
+                            for first,last,_ in self._derived_pending.values())
+                        self._derived_condition.wait(timeout=max(0.01,wait_for))
+                        continue
+                    pending={trace_id:self._derived_pending.pop(trace_id) for trace_id in ready}
+                    self._derived_inflight.update(ready)
+                self._refresh_summaries(ready,require_dirty=True)
+                self.last_derived_error=None
             except Exception as exc:
-                self.last_derived_error = str(exc)
+                self.last_derived_error=str(exc)
+                if not ready:raise
                 if not self._derived_stopping:
-                    now = time.monotonic()
+                    now=time.monotonic()
                     with self._derived_condition:
-                        for trace_id, (first, _, attempts) in pending.items():
-                            if attempts < 4 and trace_id not in self._derived_pending:
-                                self._derived_pending[trace_id] = (first, now, attempts + 1)
+                        for trace_id,(first,_,attempts) in pending.items():
+                            if attempts<4 and trace_id not in self._derived_pending:
+                                self._derived_pending[trace_id]=(first,now,attempts+1)
                         self._derived_condition.notify()
             finally:
-                self._notify_derived_progress()
+                if ready:
+                    with self._derived_condition:
+                        self._derived_inflight.difference_update(ready)
+                        backlog=bool(self._derived_pending) and not self._derived_stopping
+                    self._notify_derived_progress()
+            if backlog:time.sleep(.025)
 
     def close(self):
         try:self._close_workers()
@@ -1950,36 +2002,37 @@ class Store:
     def ingest(self, spans, *, native_retry=False, native_source_path=None):
         spans = list(spans)
         from .native_policy import native_update_guard
-        with self._connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            spans=self._policy_records(spans,'span',db)
-            stale_generation=self._stale_native_generation(spans,native_retry,native_source_path)
-            sql=f"""INSERT INTO spans
-                (trace_id,span_id,parent_span_id,name,start_ns,end_ns,status,service,
-                 attributes,events,links,resource_attributes,scope_name,agent_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(trace_id,span_id) DO UPDATE SET
-                parent_span_id=excluded.parent_span_id, name=excluded.name,
-                start_ns=excluded.start_ns, end_ns=excluded.end_ns,
-                status=excluded.status, service=excluded.service,
-                attributes=excluded.attributes, events=excluded.events,
-                links=excluded.links, resource_attributes=excluded.resource_attributes,
-                scope_name=excluded.scope_name,agent_id=excluded.agent_id WHERE {native_update_guard('spans',stale_generation)}"""
-            rows=[(s["trace_id"], s["span_id"], s["parent_span_id"], s["name"],
-                  s["start_unix_nano"], s["end_unix_nano"], s["status"], s["service"],
-                  json.dumps(s["attributes"]), json.dumps(s["events"]),
-                  json.dumps(s.get("links", [])), json.dumps(s.get("resource_attributes", {})),
-                  s.get("scope_name", ""), _agent_id_from_attributes(s.get("attributes"),
-                      s.get("resource_attributes"), s.get("service"))) for s in spans]
-            spans=self._write_ingest_rows(db,sql,spans,rows)
-            db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
-                ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
-                [(s["trace_id"], s["end_unix_nano"]) for s in spans])
-            self._update_endpoints(db, spans)
-            from .storage_activity import drain
-            drain(db,limit=10000)
-            self._ingest_agent_nodes_from_spans(spans,_db=db)
-        self._refresh_after_write(s["trace_id"] for s in spans)
+        with self._source_write() as refresh:
+            with self._connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                spans=self._policy_records(spans,'span',db)
+                stale_generation=self._stale_native_generation(spans,native_retry,native_source_path)
+                sql=f"""INSERT INTO spans
+                    (trace_id,span_id,parent_span_id,name,start_ns,end_ns,status,service,
+                     attributes,events,links,resource_attributes,scope_name,agent_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(trace_id,span_id) DO UPDATE SET
+                    parent_span_id=excluded.parent_span_id, name=excluded.name,
+                    start_ns=excluded.start_ns, end_ns=excluded.end_ns,
+                    status=excluded.status, service=excluded.service,
+                    attributes=excluded.attributes, events=excluded.events,
+                    links=excluded.links, resource_attributes=excluded.resource_attributes,
+                    scope_name=excluded.scope_name,agent_id=excluded.agent_id WHERE {native_update_guard('spans',stale_generation)}"""
+                rows=[(s["trace_id"], s["span_id"], s["parent_span_id"], s["name"],
+                      s["start_unix_nano"], s["end_unix_nano"], s["status"], s["service"],
+                      json.dumps(s["attributes"]), json.dumps(s["events"]),
+                      json.dumps(s.get("links", [])), json.dumps(s.get("resource_attributes", {})),
+                      s.get("scope_name", ""), _agent_id_from_attributes(s.get("attributes"),
+                          s.get("resource_attributes"), s.get("service"))) for s in spans]
+                spans=self._write_ingest_rows(db,sql,spans,rows)
+                db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
+                    ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
+                    [(s["trace_id"], s["end_unix_nano"]) for s in spans])
+                self._update_endpoints(db, spans)
+                from .storage_activity import drain
+                drain(db,limit=10000)
+                self._ingest_agent_nodes_from_spans(spans,_db=db)
+            refresh.update(s["trace_id"] for s in spans)
         return len(spans)
 
     def _ingest_agent_nodes_from_spans(self, spans, *, _db=None):
@@ -2010,12 +2063,13 @@ class Store:
             if not math.isfinite(percent) or not 0 <= percent <= 100:
                 raise ValueError("percent must be between 0 and 100")
         session_id = _session_value(session_id)
-        with self._connect() as db:
-            timestamp = time.time_ns()
-            db.execute("INSERT INTO progress(trace_id,time_ns,stage,message,percent,session_id,service) VALUES(?,?,?,?,?,?,?)",
-                       (trace_id, timestamp, str(stage), str(message), percent, session_id, service.strip() if service else None))
-            self._touch_activity(db, trace_id, timestamp)
-        self._refresh_after_write([trace_id])
+        with self._source_write() as refresh:
+            with self._connect() as db:
+                timestamp = time.time_ns()
+                db.execute("INSERT INTO progress(trace_id,time_ns,stage,message,percent,session_id,service) VALUES(?,?,?,?,?,?,?)",
+                           (trace_id, timestamp, str(stage), str(message), percent, session_id, service.strip() if service else None))
+                self._touch_activity(db, trace_id, timestamp)
+            refresh.update([trace_id])
 
     @staticmethod
     def _touch_activity(db, trace_id, timestamp):
@@ -2076,65 +2130,66 @@ class Store:
     def ingest_logs(self, records, *, native_retry=False, native_source_path=None, expected_receiver=None):
         records = list(records)
         from .native_policy import native_update_guard
-        with self._connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            if expected_receiver is not None:
-                if not isinstance(expected_receiver,str) or not 0<len(expected_receiver)<=128:
-                    raise ValueError('Invalid expected receiver identity')
-                actual=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
-                if actual!=expected_receiver:raise ValueError('Receiver namespace changed; no log records were written')
-            records=self._policy_records(records,'log',db)
-            stale_generation=self._stale_native_generation(records,native_retry,native_source_path)
-            rows = []
-            native_ids = []
-            for log in records:
-                canonical = json.dumps(log, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-                digest = hashlib.sha256(canonical.encode()).hexdigest()
-                record_id = log['attributes'].get('observatory.record_id')
-                if log['scope_name']=='observatory.local_agents' and isinstance(record_id,str) and TRACE_ID.fullmatch(record_id):
-                    digest = hashlib.sha256(('local-session:'+record_id).encode()).hexdigest()
-                    native_ids.append((record_id,digest))
-                cursor_event_id = log['attributes'].get('cursor.event.id')
-                if isinstance(cursor_event_id, str) and cursor_event_id:
-                    digest = hashlib.sha256(('cursor-event:'+cursor_event_id).encode()).hexdigest()
-                rows.append((digest, log["trace_id"], log["span_id"], log["time_unix_nano"],
-                             log["service"], log["severity_number"], log["severity_text"],
-                             log["event_name"], json.dumps(log["body"]),
-                             json.dumps(log["attributes"]), json.dumps(log["resource_attributes"]),
-                             log["scope_name"], _agent_id_from_attributes(
-                                 log.get("attributes"), log.get("resource_attributes"), log.get("service"))))
-            sql=f"""INSERT INTO logs
-                (digest,trace_id,span_id,time_ns,service,severity_number,severity_text,
-                 event_name,body,attributes,resource_attributes,scope_name,agent_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(digest) DO UPDATE SET
-                trace_id=excluded.trace_id,span_id=excluded.span_id,time_ns=excluded.time_ns,
-                service=excluded.service,severity_number=excluded.severity_number,
-                severity_text=excluded.severity_text,event_name=excluded.event_name,
-                body=excluded.body,attributes=excluded.attributes,
-                resource_attributes=excluded.resource_attributes,scope_name=excluded.scope_name,
-                agent_id=excluded.agent_id WHERE {native_update_guard('logs',stale_generation)}"""
-            records=self._write_ingest_rows(db,sql,records,rows)
-            accepted_ids={log['attributes'].get('observatory.record_id') for log in records
-                          if log['scope_name']=='observatory.local_agents'
-                          and isinstance(log['attributes'].get('observatory.record_id'),str)}
-            db.executemany("""DELETE FROM logs WHERE scope_name='observatory.local_agents'
-                AND json_extract(attributes,'$."observatory.record_id"')=? AND digest<>?""",
-                [(record_id,digest) for record_id,digest in native_ids if record_id in accepted_ids])
-            db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
-                ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
-                [(log["trace_id"], log["time_unix_nano"]) for log in records if log["trace_id"]])
-            self._update_endpoints(db, records)
-            from .storage_activity import drain
-            drain(db,limit=10000)
-        nodes = [_agent_node_from_attributes(log.get("attributes"), log.get("resource_attributes"),
-                                             log.get("service"), log.get("time_unix_nano"),
-                                             log.get("digest"))
-                 for log in records
-                 if log.get("scope_name") not in {"observatory.local_agents", "observatory.opencode"}]
-        nodes = [node for node in nodes if node]
-        if nodes:
-            self.upsert_agent_nodes(nodes[:5000])
-        self._refresh_after_write(log["trace_id"] for log in records if log["trace_id"])
+        with self._source_write() as refresh:
+            with self._connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                if expected_receiver is not None:
+                    if not isinstance(expected_receiver,str) or not 0<len(expected_receiver)<=128:
+                        raise ValueError('Invalid expected receiver identity')
+                    actual=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+                    if actual!=expected_receiver:raise ValueError('Receiver namespace changed; no log records were written')
+                records=self._policy_records(records,'log',db)
+                stale_generation=self._stale_native_generation(records,native_retry,native_source_path)
+                rows = []
+                native_ids = []
+                for log in records:
+                    canonical = json.dumps(log, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                    digest = hashlib.sha256(canonical.encode()).hexdigest()
+                    record_id = log['attributes'].get('observatory.record_id')
+                    if log['scope_name']=='observatory.local_agents' and isinstance(record_id,str) and TRACE_ID.fullmatch(record_id):
+                        digest = hashlib.sha256(('local-session:'+record_id).encode()).hexdigest()
+                        native_ids.append((record_id,digest))
+                    cursor_event_id = log['attributes'].get('cursor.event.id')
+                    if isinstance(cursor_event_id, str) and cursor_event_id:
+                        digest = hashlib.sha256(('cursor-event:'+cursor_event_id).encode()).hexdigest()
+                    rows.append((digest, log["trace_id"], log["span_id"], log["time_unix_nano"],
+                                 log["service"], log["severity_number"], log["severity_text"],
+                                 log["event_name"], json.dumps(log["body"]),
+                                 json.dumps(log["attributes"]), json.dumps(log["resource_attributes"]),
+                                 log["scope_name"], _agent_id_from_attributes(
+                                     log.get("attributes"), log.get("resource_attributes"), log.get("service"))))
+                sql=f"""INSERT INTO logs
+                    (digest,trace_id,span_id,time_ns,service,severity_number,severity_text,
+                     event_name,body,attributes,resource_attributes,scope_name,agent_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(digest) DO UPDATE SET
+                    trace_id=excluded.trace_id,span_id=excluded.span_id,time_ns=excluded.time_ns,
+                    service=excluded.service,severity_number=excluded.severity_number,
+                    severity_text=excluded.severity_text,event_name=excluded.event_name,
+                    body=excluded.body,attributes=excluded.attributes,
+                    resource_attributes=excluded.resource_attributes,scope_name=excluded.scope_name,
+                    agent_id=excluded.agent_id WHERE {native_update_guard('logs',stale_generation)}"""
+                records=self._write_ingest_rows(db,sql,records,rows)
+                accepted_ids={log['attributes'].get('observatory.record_id') for log in records
+                              if log['scope_name']=='observatory.local_agents'
+                              and isinstance(log['attributes'].get('observatory.record_id'),str)}
+                db.executemany("""DELETE FROM logs WHERE scope_name='observatory.local_agents'
+                    AND json_extract(attributes,'$."observatory.record_id"')=? AND digest<>?""",
+                    [(record_id,digest) for record_id,digest in native_ids if record_id in accepted_ids])
+                db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
+                    ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
+                    [(log["trace_id"], log["time_unix_nano"]) for log in records if log["trace_id"]])
+                self._update_endpoints(db, records)
+                from .storage_activity import drain
+                drain(db,limit=10000)
+            nodes = [_agent_node_from_attributes(log.get("attributes"), log.get("resource_attributes"),
+                                                 log.get("service"), log.get("time_unix_nano"),
+                                                 log.get("digest"))
+                     for log in records
+                     if log.get("scope_name") not in {"observatory.local_agents", "observatory.opencode"}]
+            nodes = [node for node in nodes if node]
+            if nodes:
+                self.upsert_agent_nodes(nodes[:5000])
+            refresh.update(log["trace_id"] for log in records if log["trace_id"])
         return len(records)
 
     def logs(self, trace_id=None, limit=100, *, _db=None):
@@ -2717,16 +2772,17 @@ class Store:
                          json.dumps(scores), str(record.get("error") or ""),
                          str(record.get("provider_model") or ""), str(source),
                          json.dumps(record), now))
-        with self._connect() as db:
-            db.executemany("""INSERT INTO outcomes VALUES (?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(trace_id) DO UPDATE SET task_id=excluded.task_id,
-                passed=excluded.passed,scores=excluded.scores,error=excluded.error,
-                provider_model=excluded.provider_model,source=excluded.source,
-                details=excluded.details,ingested_ns=excluded.ingested_ns""", rows)
-            db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
-                ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
-                [(row[0], now) for row in rows])
-        self._refresh_after_write(row[0] for row in rows)
+        with self._source_write() as refresh:
+            with self._connect() as db:
+                db.executemany("""INSERT INTO outcomes VALUES (?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(trace_id) DO UPDATE SET task_id=excluded.task_id,
+                    passed=excluded.passed,scores=excluded.scores,error=excluded.error,
+                    provider_model=excluded.provider_model,source=excluded.source,
+                    details=excluded.details,ingested_ns=excluded.ingested_ns""", rows)
+                db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
+                    ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
+                    [(row[0], now) for row in rows])
+            refresh.update(row[0] for row in rows)
         return len(rows)
 
     def outcomes(self):

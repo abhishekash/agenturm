@@ -1,0 +1,69 @@
+{
+  "kind": "Diagnostic attribution and retained invalid protocol history; no after measurement or performance acceptance",
+  "publishable_performance": false,
+  "light_diagnostic": {
+    "path": "/tmp/agenturm-compat-light-before.json",
+    "sha256": "9f9908656e5f603da76416166296198ed4bba017fe387e2ef6e363b5aa59e9a5",
+    "source_commit": "029719b",
+    "source_core_sha256": "2fb2c15d3eb28c89154cdc0d2a447a54f23bcaa03ff214a2673890d2dbcce212",
+    "summary": {
+      "writes": 120,
+      "reads": 24,
+      "read503": 12,
+      "derive_calls": 42,
+      "same_source_version_duplicates": 0,
+      "premature_local_compat_calls": 30,
+      "max_begin_wait_ms": 129.131813,
+      "max_writer_hold_ms": 173.769892,
+      "derive_by_thread": {
+        "agenturm-history-migration": 30,
+        "observatory-derived-refresh": 12
+      }
+    },
+    "missed_slots": [],
+    "auth_status": 401,
+    "queues": {
+      "activity_dirty_v1": 0,
+      "finding_dirty_v1": 0,
+      "native_lifecycle_dirty_v1": 0,
+      "investigation_dirty_v1": 0
+    },
+    "clean_shutdown": true,
+    "dropped_events": 0
+  },
+  "prior_invalid_fixed_cadence": {
+    "path": "/tmp/agenturm-e795-http-bc/results.json",
+    "sha256": "29eff78d42425e9a014250e1b766feb90204ccb08fba2f350e12249fd457411b",
+    "publishable": false,
+    "errors": [
+      "B invalid: Writer missed its slot period; refusing burst catchup; Fixed writer count/acceptance failed; Loaded HTTP response failed; Accepted writer progress did not span endpoint sample window; Accepted writer progress did not span endpoint sample window",
+      "C invalid: Writer missed its slot period; refusing burst catchup; Fixed writer count/acceptance failed; Loaded HTTP response failed; Accepted writer progress did not span endpoint sample window; Accepted writer progress did not span endpoint sample window",
+      "B/C writer inputs differ"
+    ],
+    "writer_inputs_equal": false,
+    "counts": {
+      "B": {
+        "writes": 44,
+        "reads": 80,
+        "errors": [
+          "Writer missed its slot period; refusing burst catchup",
+          "Fixed writer count/acceptance failed",
+          "Loaded HTTP response failed",
+          "Accepted writer progress did not span endpoint sample window",
+          "Accepted writer progress did not span endpoint sample window"
+        ]
+      },
+      "C": {
+        "writes": 35,
+        "reads": 80,
+        "errors": [
+          "Writer missed its slot period; refusing burst catchup",
+          "Fixed writer count/acceptance failed",
+          "Loaded HTTP response failed",
+          "Accepted writer progress did not span endpoint sample window",
+          "Accepted writer progress did not span endpoint sample window"
+        ]
+      }
+    }
+  }
+}
