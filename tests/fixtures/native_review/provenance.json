@@ -1,0 +1,276 @@
+{
+  "format": "agenturm-native-fixture-provenance-v1",
+  "verified_on": "2026-11-14",
+  "reader": {
+    "legacy_verified_baseline": "1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8",
+    "adapter_commit": "cc63b7d0209df1c71126f3447122a271f32c607b",
+    "files": {
+      "observatory/opencode.py": "047c02424028f14621ee01e7efdd31d7c81aa91a0c409fa292967709ece3e925",
+      "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec"
+    },
+    "core_membership_commits": [
+      "d955cbbc5f87a04a1055ee0bf07ed52ef85e8fc9",
+      "c4e423167eb487cf087330d4549d073528f9097e"
+    ]
+  },
+  "fixtures": [
+    {
+      "path": "tests/fixtures/native_review/codex.jsonl",
+      "sha256": "cfb73258d9824e36b7d9240d3bc2d49b2c7f001dbc12f338e79db182aee682ab",
+      "kind": "synthetic-reader-contract-legacy",
+      "observed_producer_version": null,
+      "captured_from_live_agent": false,
+      "schema_target": null,
+      "source_ids": [],
+      "upstream_full_decoder_executed": false,
+      "scope": "Selected serialized field contracts and Agenturm compatibility; not an upstream-produced transcript or complete application database."
+    },
+    {
+      "path": "tests/fixtures/native_review/codex-0.167.1.synthetic.jsonl",
+      "sha256": "18028aea19f6be49987b5de97b2779e3c27bd59f8ee53646b8712e89a993c505",
+      "kind": "synthetic-schema-derived",
+      "observed_producer_version": null,
+      "captured_from_live_agent": false,
+      "schema_target": {
+        "producer": "codex",
+        "version": "0.167.1",
+        "commit": "0a94398fa60c4fac0e7659e4213a0a36e613dd46"
+      },
+      "source_ids": [
+        "codex-protocol.rs",
+        "codex-items.rs",
+        "codex-rollout-recorder.rs",
+        "codex-rollout-payload.rs"
+      ],
+      "upstream_full_decoder_executed": false,
+      "scope": "Selected serialized field contracts and Agenturm compatibility; not an upstream-produced transcript or complete application database."
+    },
+    {
+      "path": "tests/fixtures/native_review/opencode-2.2.5.synthetic.json",
+      "sha256": "294f8ae891313301365e29c2bbf5e5df2539aa99e3b84f301c27c7be48151c05",
+      "kind": "synthetic-schema-derived",
+      "observed_producer_version": null,
+      "captured_from_live_agent": false,
+      "schema_target": {
+        "producer": "opencode",
+        "version": "2.2.5",
+        "commit": "9bbb8ce18c80f099e0e448775f59d965ead40a21"
+      },
+      "source_ids": [
+        "opencode-sql.ts",
+        "opencode-session-message.ts",
+        "opencode-projector.ts",
+        "opencode-history.ts",
+        "opencode-token-usage.ts",
+        "opencode-tool.ts",
+        "opencode-plugin-shell.ts",
+        "opencode-plugin-edit.ts",
+        "opencode-plugin-write.ts",
+        "opencode-prompt.ts"
+      ],
+      "upstream_full_decoder_executed": false,
+      "scope": "Selected serialized field contracts and Agenturm compatibility; not an upstream-produced transcript or complete application database."
+    }
+  ],
+  "legacy_builders": [
+    {
+      "path": "tests/test_opencode.py",
+      "locator": "OpenCodeReaderTests.setUp",
+      "sha256": "bc065e066131d8e89c04da2ad1690389c0b256f0d5d2cdf9f8e927ebfdc8a186",
+      "kind": "synthetic-reader-contract-legacy",
+      "observed_producer_version": null,
+      "captured_from_live_agent": false,
+      "schema_target": null
+    },
+    {
+      "path": "tests/test_opencode_turn_review.py",
+      "locator": "OpenCodeTurnTests",
+      "sha256": "892bc2a828c96f12b6d4f25ada2b603eec50ccb3d79479724d01fae1039cc62b",
+      "kind": "synthetic-reader-contract-legacy",
+      "observed_producer_version": null,
+      "captured_from_live_agent": false,
+      "schema_target": null
+    }
+  ],
+  "primary_sources": [
+    {
+      "id": "codex-protocol.rs",
+      "repository": "openai/codex",
+      "commit": "0a94398fa60c4fac0e7659e4213a0a36e613dd46",
+      "path": "codex-rs/protocol/src/protocol.rs",
+      "sha256": "c7d307454bf2d8131ea35b6e02b2d834d12d6373a143d207af9e45cce0cb1d5e",
+      "locator": "https://raw.githubusercontent.com/openai/codex/0a94398fa60c4fac0e7659e4213a0a36e613dd46/codex-rs/protocol/src/protocol.rs"
+    },
+    {
+      "id": "codex-items.rs",
+      "repository": "openai/codex",
+      "commit": "0a94398fa60c4fac0e7659e4213a0a36e613dd46",
+      "path": "codex-rs/protocol/src/items.rs",
+      "sha256": "866fe86a01fe893aea653d07e10b8a20e04de6880ef57b6056f3e1259173a6d0",
+      "locator": "https://raw.githubusercontent.com/openai/codex/0a94398fa60c4fac0e7659e4213a0a36e613dd46/codex-rs/protocol/src/items.rs"
+    },
+    {
+      "id": "codex-rollout-recorder.rs",
+      "repository": "openai/codex",
+      "commit": "0a94398fa60c4fac0e7659e4213a0a36e613dd46",
+      "path": "codex-rs/rollout/src/recorder.rs",
+      "sha256": "7d784c76b3a1aa9b6e57410c46f01d967fc1aeb2adabccefd2296c9ab0d5791b",
+      "locator": "https://raw.githubusercontent.com/openai/codex/0a94398fa60c4fac0e7659e4213a0a36e613dd46/codex-rs/rollout/src/recorder.rs"
+    },
+    {
+      "id": "codex-rollout-payload.rs",
+      "repository": "openai/codex",
+      "commit": "0a94398fa60c4fac0e7659e4213a0a36e613dd46",
+      "path": "codex-rs/history/src/rollout_payload.rs",
+      "sha256": "9187defc80b4bbcf42456116594737c2fe41c9925f6f6c0fca7017d5d00c1b00",
+      "locator": "https://raw.githubusercontent.com/openai/codex/0a94398fa60c4fac0e7659e4213a0a36e613dd46/codex-rs/history/src/rollout_payload.rs"
+    },
+    {
+      "id": "opencode-sql.ts",
+      "repository": "anomalyco/opencode",
+      "commit": "9bbb8ce18c80f099e0e448775f59d965ead40a21",
+      "path": "packages/core/src/session/sql.ts",
+      "sha256": "6e2ec9532e4b3a30e4334d5fa30a942bcffbd55a7b09af11919bb15e8dbf965c",
+      "locator": "https://raw.githubusercontent.com/anomalyco/opencode/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/core/src/session/sql.ts"
+    },
+    {
+      "id": "opencode-session-message.ts",
+      "repository": "anomalyco/opencode",
+      "commit": "9bbb8ce18c80f099e0e448775f59d965ead40a21",
+      "path": "packages/schema/src/session-message.ts",
+      "sha256": "15ed05f87a9ae88ee54157cf3eb50dba70557ad086f0df1f0d66f0fa1f2ba128",
+      "locator": "https://raw.githubusercontent.com/anomalyco/opencode/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/schema/src/session-message.ts"
+    },
+    {
+      "id": "opencode-projector.ts",
+      "repository": "anomalyco/opencode",
+      "commit": "9bbb8ce18c80f099e0e448775f59d965ead40a21",
+      "path": "packages/core/src/session/projector.ts",
+      "sha256": "95e9f3ca31c3e808995d94ee1ef009ae3a385a4475d98ecc163643d1b3b847b1",
+      "locator": "https://raw.githubusercontent.com/anomalyco/opencode/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/core/src/session/projector.ts"
+    },
+    {
+      "id": "opencode-history.ts",
+      "repository": "anomalyco/opencode",
+      "commit": "9bbb8ce18c80f099e0e448775f59d965ead40a21",
+      "path": "packages/core/src/session/history.ts",
+      "sha256": "b0b6b2e98429dc952353db4c1ea9b1be61acb4a51a1c39fad20522751f790bcb",
+      "locator": "https://raw.githubusercontent.com/anomalyco/opencode/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/core/src/session/history.ts"
+    },
+    {
+      "id": "opencode-token-usage.ts",
+      "repository": "anomalyco/opencode",
+      "commit": "9bbb8ce18c80f099e0e448775f59d965ead40a21",
+      "path": "packages/schema/src/token-usage.ts",
+      "sha256": "37f23386677d5f6e067fbe47ce7a459ab29b8e7486981cea8057e4a964760a5f",
+      "locator": "https://raw.githubusercontent.com/anomalyco/opencode/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/schema/src/token-usage.ts"
+    },
+    {
+      "id": "opencode-tool.ts",
+      "repository": "anomalyco/opencode",
+      "commit": "9bbb8ce18c80f099e0e448775f59d965ead40a21",
+      "path": "packages/schema/src/tool.ts",
+      "sha256": "b5e35a5a5208f48bf564705563f4f77e5d46d7d57fd8c0091847b38772990e06",
+      "locator": "https://raw.githubusercontent.com/anomalyco/opencode/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/schema/src/tool.ts"
+    },
+    {
+      "id": "opencode-plugin-shell.ts",
+      "repository": "anomalyco/opencode",
+      "commit": "9bbb8ce18c80f099e0e448775f59d965ead40a21",
+      "path": "packages/core/src/tool/plugin/shell.ts",
+      "sha256": "cab416efd2758e2e8377330961eb3fef4aad293a860703207483738a7473c3cc",
+      "locator": "https://raw.githubusercontent.com/anomalyco/opencode/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/core/src/tool/plugin/shell.ts"
+    },
+    {
+      "id": "opencode-plugin-edit.ts",
+      "repository": "anomalyco/opencode",
+      "commit": "9bbb8ce18c80f099e0e448775f59d965ead40a21",
+      "path": "packages/core/src/tool/plugin/edit.ts",
+      "sha256": "348e9fbcfad6931cbd00a58d0bbb0e64deef55e15452b446d0b62c5696bbc833",
+      "locator": "https://raw.githubusercontent.com/anomalyco/opencode/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/core/src/tool/plugin/edit.ts"
+    },
+    {
+      "id": "opencode-plugin-write.ts",
+      "repository": "anomalyco/opencode",
+      "commit": "9bbb8ce18c80f099e0e448775f59d965ead40a21",
+      "path": "packages/core/src/tool/plugin/write.ts",
+      "sha256": "c554c1863a90a97cc63954f5c45320ab54b4a0db588df22946a361b26b7ff0d9",
+      "locator": "https://raw.githubusercontent.com/anomalyco/opencode/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/core/src/tool/plugin/write.ts"
+    },
+    {
+      "id": "opencode-prompt.ts",
+      "repository": "anomalyco/opencode",
+      "commit": "9bbb8ce18c80f099e0e448775f59d965ead40a21",
+      "path": "packages/schema/src/prompt.ts",
+      "sha256": "c4340539cfe9d1bf154109e0ebc3cde4ca80d9a683b53888fefba9f01432d370",
+      "locator": "https://raw.githubusercontent.com/anomalyco/opencode/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/schema/src/prompt.ts"
+    }
+  ],
+  "installed_cli_observations": [
+    {
+      "producer": "codex",
+      "reported_version": "codex-cli 0.167.1",
+      "sha256": "dd5bfdf19d794dcc6fb482d2d5a2d9fb31d11f6caa44b303bb72890d461e8a02",
+      "evidence": "Provider-free --version and binary SHA256; not the observed producer of any fixture."
+    },
+    {
+      "producer": "opencode",
+      "reported_version": "opencode v2.2.5",
+      "sha256": "8d060e1d2fbb9bb44cf09ae6ed1f3f6a7cff070b5227e2f90970132b23a92050",
+      "evidence": "Provider-free --version and binary SHA256; not the observed producer of any fixture."
+    }
+  ],
+  "codex_rpc_schema": {
+    "generator": "codex app-server generate-json-schema",
+    "reported_version": "0.167.1",
+    "provider_invoked": false,
+    "format": "app-server JSON-RPC, not rollout JSONL",
+    "rollout_proof": false
+  },
+  "local_verification": {
+    "python": "3.12.3",
+    "platform": "Linux",
+    "provider_calls": 0,
+    "live_agent_launches": 0,
+    "personal_transcript_reads": 0,
+    "ci_run": null,
+    "results": [
+      {
+        "command": "python -m unittest tests.test_current_native_schema tests.test_opencode tests.test_opencode_turn_review tests.test_opencode_turn_proof tests.test_native_reader_budgets -v",
+        "tests": 72,
+        "seconds": 25.181,
+        "condition": "Before safe token range and metadata-ID bound delta; not final-commit CI."
+      },
+      {
+        "command": "python -m unittest tests.test_current_native_schema -v",
+        "tests": 20,
+        "seconds": 7.991,
+        "condition": "Final adapter source at ba815b8; local authenticated HTTP/synthetic fixtures only. No CLI provider calls."
+      },
+      {
+        "command": "python -m unittest tests.test_opencode.OpenCodeReaderTests.test_discovers_orphan_session_messages_and_inline_tools_from_current_schema tests.test_current_native_schema -v",
+        "tests": 21,
+        "seconds": 8.107,
+        "condition": "Conservative split-part schema detection followup; before added explicit legacy identity regression, which also passed. Final combined run recorded in report."
+      },
+      {
+        "command": "python -m unittest tests.test_current_native_schema tests.test_opencode tests.test_opencode_turn_review tests.test_opencode_turn_proof tests.test_native_reader_budgets tests.test_native_fixture_provenance -v",
+        "tests": 77,
+        "seconds": 31.639,
+        "condition": "At fd7acb2, before current-inline timing/identity/native-metadata followups; final-delta gate recorded in report."
+      },
+      {
+        "command": "python -m unittest tests.test_current_native_schema tests.test_opencode tests.test_opencode_turn_review tests.test_opencode_turn_proof tests.test_native_reader_budgets tests.test_native_fixture_provenance -v",
+        "tests": 78,
+        "seconds": 60.817,
+        "condition": "All final owned source/test changes at cc63b7d; local compatibility test duration, not a controlled performance measurement."
+      }
+    ]
+  },
+  "limitations": [
+    "Original fixture producer versions remain unknown; installed versions cannot backfill them.",
+    "Selected schema field proofs do not execute the full upstream decoder or migration.",
+    "No captured live OpenCode/Codex journey; no live Claude/Pi evidence or external participant/adoption claim.",
+    "Resource/whole-monitor measurements and final combined-tree CI belong to the separate integration gate."
+  ]
+}
