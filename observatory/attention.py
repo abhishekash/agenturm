@@ -106,7 +106,9 @@ def classify(item, scope, usage, limits, *, now, stall_anchor='', events=()):
             PRIORITY[kind], REASONS[kind], persistent, persistent and kind != 'completion',
             dict(producer=scope.producer,agent_id=scope.agent_id,session_id=scope.session_id,
                  run_id=scope.run_id,run_start_ns=scope.run_start_ns,run_end_ns=scope.run_end_ns,turn_id=scope.turn_id,kind=scope.kind,
-                 endpoint_fallback=scope.endpoint_fallback,source_id=str(item.get('id') or ''))))
+                 endpoint_fallback=scope.endpoint_fallback,source_id=str(item.get('id') or ''),
+                 resolution_policy='matching-request' if item.get('_native_request_key') else '',
+                 native_request_key=item.get('_native_request_key') or '')))
     return incidents
 
 
@@ -201,7 +203,8 @@ class AttentionLedger:
                     new_run = old_scope and old_scope.namespace == scope.namespace and old_scope.producer == scope.producer and \
                         (old_scope.agent_id, old_scope.session_id) == (scope.agent_id, scope.session_id) and \
                         old_scope.run_anchor != scope.run_anchor and bool(scope.run_anchor)
-                    if old.kind in REQUESTS | {'stall'} and (same_run or new_run) and old.id not in current_ids:
+                    if (old.kind in REQUESTS | {'stall'} and (same_run or new_run) and old.id not in current_ids
+                            and old.execution.get('resolution_policy')!='matching-request'):
                         # An unknown state or collector delay never proves resolution.
                         if item.get('state') not in {'Unknown', 'Offline', 'Spawn recorded', 'Unconfirmed'}:
                             self.resolved.add((old.namespace, old.id))
@@ -262,6 +265,9 @@ class AttentionLedger:
             if ack and incident.kind not in REQUESTS:
                 continue
             stale = observed_scopes is not None and incident.scope_key not in observed_scopes
+            if incident.execution.get('resolution_policy')=='matching-request':
+                stale=stale or item.get('_native_request_key')!=incident.execution.get('native_request_key')
+                if incident.kind in REQUESTS:item=dict(item,state='Waiting',waiting_for='Approval' if incident.kind=='approval' else 'User input')
             if snapshot is not None:
                 stale = stale or not fresh_observation(item, snapshot, time.time() if now is None else now)
             prepared = dict(item, _attention_id=incident.id, _attention_kind=incident.kind,
