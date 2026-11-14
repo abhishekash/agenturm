@@ -1355,6 +1355,7 @@ class ObservatoryApp(App):
         self.workflow_ledger=AttentionLedger()
         self.workflow_notify=False
         self.workflow_limits={}
+        self.cost_estimate_rates={}
         self.workflow_snooze=0
         self.workflow_delivery="Disabled"
         self.last_update=0
@@ -1752,6 +1753,7 @@ class ObservatoryApp(App):
         preferences=self.preferences.load()
         self.workflow_notify=preferences.get('workflow_notify',False)
         self.workflow_limits=preferences.get('workflow_limits',{})
+        self.cost_estimate_rates=preferences.get('cost_estimate_rates',{})
         self.theme=preferences.get('theme','Observation')
         self.preference_view=preferences.get('view','agents')
         self.feed.detail_enabled=self.preference_view=='traces'
@@ -1813,7 +1815,7 @@ class ObservatoryApp(App):
         for timer in self.search_timers.values():timer.stop()
 
     def save_preferences(self):
-        self.preferences.save({'workflow_notify':self.workflow_notify,'workflow_limits':self.workflow_limits,'theme':self.theme,'view':self.preference_view,
+        self.preferences.save({'workflow_notify':self.workflow_notify,'workflow_limits':self.workflow_limits,'cost_estimate_rates':self.cost_estimate_rates,'theme':self.theme,'view':self.preference_view,
             'reviews':self.feed.include_reviews,'prompts':self.prompts_only,
             'errors':sorted(self.errors_only),
             'dismissed_attention':sorted(self.dismissed_attention),
@@ -2206,11 +2208,9 @@ class ObservatoryApp(App):
         usage=task_run_usage(self.data.sessions,item,self.data.traces)
         return usage,usage.get('task') or task_preview(item),'trace',usage.get('trace_id') or ''
 
-    def refresh_task_usage(self):
-        if not self.query('#usage-summary'):return
+    def prepared_task_usage(self):
         usage,title,scope,identity=self.selected_task_usage()
         from .review_facts import review_capture_policy
-        from .usage_render_key import usage_render_key
         page=self.query_one('#pages',TabbedContent).active
         selection=self.selected_source if page=='agents' or self.scope_value=='all' else self.scope_value
         item=getattr(self,'source_map',{}).get(selection) or {}
@@ -2233,6 +2233,26 @@ class ObservatoryApp(App):
         # and a stale run title cannot reappear in the usage tooltip.
         if policy.get('capture_content') is False:
             title='Selected trace (metadata-only)' if page=='traces' else 'Selected execution (metadata-only)'
+        return usage,title,scope,identity,item,policy,recorded_receiver
+
+    def task_usage_options(self,usage,*,allowed=True):
+        owner=usage.get('scope_owner') if usage.get('turn_id') else usage.get('review_owner')
+        owner=owner if isinstance(owner,dict) else {}
+        proven=(type(usage.get('agent_count')) is int and usage['agent_count']==1 and
+            usage.get('agent_count_complete') is True and all(isinstance(owner.get(key),str) and owner[key]
+            for key in ('producer','agent_id','session_id')))
+        models=usage.get('models')
+        model=models[0] if usage.get('models_complete') is True and isinstance(models,list) and len(models)==1 else ''
+        return dict(rates=(self.cost_estimate_rates or None) if allowed else None,model=model if allowed else '',
+            allocation_proven=proven,explanations=True)
+
+    def refresh_task_usage(self):
+        if not self.query('#usage-summary'):return
+        usage,title,scope,identity,item,policy,recorded_receiver=self.prepared_task_usage()
+        from .usage_render_key import usage_render_key
+        page=self.query_one('#pages',TabbedContent).active
+        selection=self.selected_source if page=='agents' or self.scope_value=='all' else self.scope_value
+        options=self.task_usage_options(usage,allowed=policy.get('capture_content') is not False)
         owner={key:item.get(key) for key in ('id','source_id','service','agent_id','session_id',
             'trace_id','turn_id','run_start_ns','run_end_ns','capture_content','capture_revision')}
         inputs=None
@@ -2241,10 +2261,10 @@ class ObservatoryApp(App):
                 page=page,selection=selection,scope_value=self.scope_value,owner=owner,policy=policy,
                 capture_content=self.data.local_status.get('capture_content'),
                 capture_revision=self.data.local_status.get('capture_revision'),
-                theme=self.theme,width=self.size.width,rates=getattr(self,'cost_estimate_rates',None)))
+                theme=self.theme,width=self.size.width,formatter_options=options))
         if inputs is not None and getattr(self,'_task_usage_inputs',None)==inputs:return
         self._task_usage_inputs=None
-        summary,details=task_usage_summary(usage,title,scope=scope,identity=identity,compact=self.size.width<100)
+        summary,details=task_usage_summary(usage,title,scope=scope,identity=identity,compact=self.size.width<100,**options)
         self._task_usage_inputs=inputs
         signature=(summary,details,self.theme)
         if getattr(self,'_task_usage_signature',None)==signature:return
@@ -3516,11 +3536,27 @@ class ObservatoryApp(App):
                 if value is None:return 'null (recorded)'
                 if value=='':return 'Empty text (recorded)'
             return value
+        from .evidence_explanations import mcp_window
+        loaded=self.data.mcp_results if self.data.mcp_results is not None else self.data.mcp
+        window=mcp_window(loaded,configured=self.data.local_status.get('mcp_configurations',[]),
+            window=dict(receiver_id=self.data.receiver_id,label='Currently loaded MCP page'),complete=False)
+        tool_window=next((row for row in window['tools'] if row['receiver_id']==self.data.receiver_id and
+            row['producer']==item.get('service') and row['server']==item.get('server') and row['tool']==item.get('tool')),None)
+        explanation=[]
+        if tool_window:
+            row=tool_window;known=row['outcome_known']
+            outcomes=f"{row['failed']} failed / {known} known outcomes · {row['outcome_unknown']} unknown · {row['calls']} calls"
+            latency=(f"p50 {timing(row['p50_ms'])} · p95 {timing(row['p95_ms'])} · {row['duration_known']} known durations · {row['duration_unknown']} unknown"
+                if row['duration_known'] else 'Latency unavailable · no known durations')
+            explanation=[('This tool · loaded page',outcomes+'\n'+latency+
+                ('\nSmall sample: fewer than 20 captured calls.' if row['small_sample'] else '')+
+                '\n'+row['next_step']+'\n'+row['outcome_meaning']+
+                '\nLoaded records only; capture, filters and paging may omit calls. No all-history reliability or configuration recommendation is inferred.')]
         self.inspect('mcp-detail',item['server']+' / '+operation,[
             ('Result',str(status(item.get('status')))+' · '+timing(item.get('duration_ms'))),
             ('Agent',(item.get('service') or 'Not reported')+' · '+str(item.get('session_id') or 'Unknown session')[-12:]),
             ('Method',item.get('method') or 'Not reported'),('Observed',when(item.get('time_unix_nano') or 0))],
-            [('Arguments',captured('arguments')),('Response',captured('output')),
+            explanation+[('Arguments',captured('arguments')),('Response',captured('output')),
              ('Runtime metadata',item.get('metadata')),
              ('Evidence',item.get('source')),('Session ID',item.get('session_id')),
              ('Trace ID',item.get('trace_id') or 'Not linked'),('Span ID',item.get('span_id') or 'Not linked')])
@@ -4029,8 +4065,13 @@ class ObservatoryApp(App):
         self.push_screen(InvestigationsScreen(self),self.resume_cockpit)
 
     def action_usage(self):
-        usage,title,scope,identity=self.selected_task_usage()
-        self.push_screen(UsageScreen(details=task_usage_summary(usage,title,scope=scope,identity=identity)[1]),self.resume_cockpit)
+        usage,title,scope,identity,item,policy,receiver=self.prepared_task_usage()
+        frozen_scope=scope_for(item,self.data,self.feed.api.endpoint)
+        from .review_facts import review_capture_policy
+        valid=lambda: receiver==self.feed.snapshot.receiver_id and review_capture_policy(item,self.feed.snapshot,frozen_scope).get('capture_content') is not False
+        details=task_usage_summary(usage,title,scope=scope,identity=identity,
+            **self.task_usage_options(usage,allowed=policy.get('capture_content') is not False))[1]
+        self.push_screen(UsageScreen(details=details,valid=valid),self.resume_cockpit)
 
     def action_help(self):
         self.action_keyboard_help()

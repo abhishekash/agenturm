@@ -262,11 +262,13 @@ class UsageScreen(ModalScreen):
     #usage-log { height: 1fr; }
     #usage-close { width: 100%; }
     '''
-    BINDINGS = [('escape', 'dismiss', 'Close')]
+    BINDINGS = [('escape', 'dismiss', 'Close'),('ctrl+c','dismiss','Close'),
+                ('c','withhold_action',''),('x','withhold_action','')]
 
-    def __init__(self, totals=None, *, details=None):
+    def __init__(self, totals=None, *, details=None, valid=None):
         super().__init__()
         self.details = details if details is not None else usage_summary(totals or {})[1]
+        self.valid=valid;self.invalidated=False
 
     def compose(self):
         with Vertical(id='usage-dialog'):
@@ -277,6 +279,20 @@ class UsageScreen(ModalScreen):
         log=self.query_one(RichLog)
         log.write(Text(self.details))
         log.focus()
+        if self.valid is not None:
+            self.check_policy();self.set_interval(.25,self.check_policy)
+
+    def check_policy(self):
+        try:allowed=not self.invalidated and (self.valid is None or self.valid())
+        except Exception:allowed=False
+        if allowed:return
+        self.invalidated=True;self.details='Source policy or receiver changed. Close and reopen usage from current evidence.'
+        log=self.query_one(RichLog);log.clear();log.write(Text(self.details))
+
+    def action_withhold_action(self):
+        # Usage has no copy/export workflow; never invoke a background view's
+        # selected-record actions from this modal.
+        self.check_policy()
 
     @on(Button.Pressed, '#usage-close')
     def close_dialog(self):
