@@ -1,0 +1,102 @@
+{
+  "source_commit": "e795f064c861cd59b54d1180697e4b19c9959b34",
+  "ci": {
+    "pr_run": 43602237953,
+    "main_run": 43602301807,
+    "earlier_cli_warning_allocation": "unknown; original CI log has no allocation traceback"
+  },
+  "owned_soak_before": {
+    "source_root": "/tmp/agenturm-final-candidate-95",
+    "python": "3.13.5 (main, Jun 12 2025, 12:40:22) [Clang 20.1.4 ]",
+    "tests": 3,
+    "passed": true,
+    "resource_warnings": [
+      {
+        "message": "unclosed database in <sqlite3.Connection object at 0x7b2c1db013f0>",
+        "allocation": [
+          "  File \"/home/abhishekash/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/unittest/case.py\", line 651",
+          "    self._callTestMethod(testMethod)",
+          "  File \"/home/abhishekash/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/unittest/case.py\", line 606",
+          "    if method() is not None:",
+          "  File \"/tmp/agenturm-final-candidate-95/tests/test_soak_monitor.py\", line 41",
+          "    seed_history(path,traces=3,span_count=12,log_count=20)",
+          "  File \"/tmp/agenturm-final-candidate-95/scripts/soak_monitor.py\", line 87",
+          "    with sqlite3.connect(path) as db:"
+        ]
+      },
+      {
+        "message": "unclosed database in <sqlite3.Connection object at 0x7b2c1db00e50>",
+        "allocation": [
+          "  File \"/home/abhishekash/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/unittest/case.py\", line 707",
+          "    return self.run(*args, **kwds)",
+          "  File \"/home/abhishekash/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/unittest/case.py\", line 651",
+          "    self._callTestMethod(testMethod)",
+          "  File \"/home/abhishekash/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/unittest/case.py\", line 606",
+          "    if method() is not None:",
+          "  File \"/tmp/agenturm-final-candidate-95/tests/test_soak_monitor.py\", line 43",
+          "    with sqlite3.connect(path) as db:"
+        ]
+      },
+      {
+        "message": "unclosed database in <sqlite3.Connection object at 0x7b2c1db00a90>",
+        "allocation": [
+          "  File \"/home/abhishekash/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/unittest/case.py\", line 707",
+          "    return self.run(*args, **kwds)",
+          "  File \"/home/abhishekash/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/unittest/case.py\", line 651",
+          "    self._callTestMethod(testMethod)",
+          "  File \"/home/abhishekash/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/unittest/case.py\", line 606",
+          "    if method() is not None:",
+          "  File \"/tmp/agenturm-final-candidate-95/tests/test_soak_monitor.py\", line 16",
+          "    with sqlite3.connect(path) as db:"
+        ]
+      },
+      {
+        "message": "unclosed database in <sqlite3.Connection object at 0x7b2c1db02110>",
+        "allocation": [
+          "  File \"/home/abhishekash/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/unittest/case.py\", line 707",
+          "    return self.run(*args, **kwds)",
+          "  File \"/home/abhishekash/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/unittest/case.py\", line 651",
+          "    self._callTestMethod(testMethod)",
+          "  File \"/home/abhishekash/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/unittest/case.py\", line 606",
+          "    if method() is not None:",
+          "  File \"/tmp/agenturm-final-candidate-95/tests/test_soak_monitor.py\", line 22",
+          "    with sqlite3.connect(path) as db:db.execute(\"DELETE FROM schema_meta WHERE key='trace_derived_v15'\")"
+        ]
+      }
+    ],
+    "qualification": "Owned Soak fixture/harness allocation proof; not the unidentified earlier CI allocation."
+  },
+  "owned_soak_after": {
+    "source_root": "/tmp/agenturm-ci95-boundary-fix",
+    "python": "3.13.5 (main, Jun 12 2025, 12:40:22) [Clang 20.1.4 ]",
+    "tests": 3,
+    "passed": true,
+    "resource_warnings": [],
+    "qualification": "Owned Soak fixture/harness allocation proof; not the unidentified earlier CI allocation."
+  },
+  "controlled_cli_boundary": {
+    "python": "3.13.5 (main, Jun 12 2025, 12:40:22) [Clang 20.1.4 ]",
+    "prior_real_sqlite_warning_visible_outside_command": [
+      "unclosed database in <sqlite3.Connection object at 0x785665cf8f40>"
+    ],
+    "real_cli_privacy_and_stderr_assertions_pass": true,
+    "current_invocation_real_sqlite_leak_is_rejected": true,
+    "global_warning_suppression": false,
+    "qualification": "Controlled warning-boundary proof; not the unidentified allocation in CI run 43602237953."
+  },
+  "focused_gates": [
+    {
+      "python": "3.12.3",
+      "tests": 7,
+      "seconds": 5.009,
+      "passed": true
+    },
+    {
+      "python": "3.13.5",
+      "tests": 7,
+      "seconds": 5.019,
+      "passed": true
+    }
+  ],
+  "qualification": "Functional development checks only; no resource-budget, full-suite or corrected CI pass."
+}

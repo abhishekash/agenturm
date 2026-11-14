@@ -168,7 +168,10 @@ class TurnTaskUIJourney(unittest.IsolatedAsyncioTestCase):
                 original(*args.args,**args.kwargs)
                 await app.workers.wait_for_complete();await pilot.pause()
                 self.assertEqual(TaskStore(path).get(task['id'])['decisions'],[])
-                self.assertIn('revoked',editor.query_one('#task-status',Static).render().plain)
+                # The source-policy timer may replace the save failure with
+                # its current withholding notice before this UI turn runs.
+                status=editor.query_one('#task-status',Static).render().plain.casefold()
+                self.assertTrue('revoked' in status or 'withheld' in status,status)
                 self.assertFalse(editor.query_one(TextArea).disabled)
                 editor.query_one(TextArea).load_text('My independent replacement decision')
                 await pilot.press('ctrl+s')

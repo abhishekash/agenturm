@@ -1,11 +1,13 @@
 """Headless egress cannot discard a frozen cockpit capture generation."""
 import argparse
+import gc
 from contextlib import redirect_stdout,redirect_stderr
 from copy import deepcopy
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+import warnings
 from unittest.mock import patch
 
 from observatory.review_continuity import policy_checker,editable_draft,content_allowed
@@ -57,8 +59,18 @@ class HeadlessCaptureBindingTests(unittest.TestCase):
                     destination=root/('bound'if bound else 'headless')
                     if export:arguments+=['--output',str(destination)+'.json']
                     args=parser.parse_args(arguments);out=StringIO();err=StringIO()
-                    with patch('observatory.task_cli._source_api',return_value=AllowedAPI()),redirect_stdout(out),redirect_stderr(err):
-                        code=run_task_command(args,task_parser)
+                    # Collect earlier fixtures' unreachable objects before
+                    # treating stderr as this command's output. Their warnings
+                    # remain visible to the test runner. Warnings from this
+                    # invocation, including deferred connection cleanup, fail.
+                    gc.collect()
+                    with warnings.catch_warnings(record=True) as command_warnings:
+                        warnings.simplefilter('always',ResourceWarning)
+                        with patch('observatory.task_cli._source_api',return_value=AllowedAPI()),redirect_stdout(out),redirect_stderr(err):
+                            code=run_task_command(args,task_parser)
+                        gc.collect()
+                    self.assertEqual([warnings.formatwarning(w.message,w.category,w.filename,w.lineno)
+                        for w in command_warnings],[])
                     self.assertEqual((code,err.getvalue()),(0,''))
                     text=''.join(destination.with_suffix(suffix).read_text()for suffix in ('.md','.html','.json'))if export else out.getvalue()
                     self.assertIn('HUMAN_AUTHORED_NOTES',text)
