@@ -20,6 +20,8 @@ def main():
     add_review_parser(sub)
     from .investigation_cli import add_investigation_parser
     add_investigation_parser(sub)
+    from .attention_cli import add_attention_parser
+    add_attention_parser(sub)
     cockpit = sub.add_parser("cockpit", help="monitor agent sessions and telemetry in the terminal")
     cockpit.add_argument("--port", type=int, default=14318, help="local receiver port (default: 14318)")
     cockpit.add_argument("--endpoint", default=os.environ.get("OBSERVATORY_ENDPOINT"),
@@ -68,7 +70,7 @@ def main():
     prune.add_argument("--older-than-days", type=float, required=True)
     args = parser.parse_args()
     managed_db = args.db is None
-    if args.command not in {"task", "review", "investigate", "run", "migrate-db"}:
+    if args.command not in {"task", "review", "investigate", "attention", "run", "migrate-db"}:
         from .receiver_state import telemetry_path,prepare_state_directory
         if managed_db and Path('observatory.db').is_file() and Path('observatory.db').resolve()!=telemetry_path().resolve():
             import sys
@@ -94,6 +96,10 @@ def main():
     elif args.command == "investigate":
         from .investigation_cli import run_investigation_command
         status=run_investigation_command(args)
+        if status:parser.exit(status)
+    elif args.command == "attention":
+        from .attention_cli import run_attention_command
+        status=run_attention_command(args)
         if status:parser.exit(status)
     elif args.command == "task":
         from .task_cli import run_task_command
