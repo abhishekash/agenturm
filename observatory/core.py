@@ -67,6 +67,14 @@ def _session_value(value):
     return value if value and len(value) <= 512 else None
 
 
+def _activity_session(attrs,resource=None):
+    # An explicit alias family overrides the resource family, including malformed
+    # claims. Contradictory aliases cannot prove a source's session ownership.
+    family=attrs if any(key in attrs for key in SESSION_KEYS) else resource or {}
+    values=[_session_value(family[key]) for key in SESSION_KEYS if key in family]
+    return values[0] if values and values[0] is not None and all(value==values[0] for value in values) else None
+
+
 def _agent_id_from_attributes(attrs, resource=None, service=None):
     if not isinstance(attrs, dict):
         return None
@@ -219,9 +227,7 @@ def _activity_row(attrs, time_ns, source, source_id, span_id=None, service="unkn
             "actor": value("agent.activity.actor", "agent.actor"),
             "agent_id": (_agent_id_from_attributes(attrs, resource_attributes, service)
                          if 'agent.id' not in attrs or isinstance(attrs['agent.id'],str) else None),
-            "session_id": next((_session_value(attrs.get(key)) or _session_value(resource_attributes.get(key))
-                                for key in SESSION_KEYS if _session_value(attrs.get(key)) is not None
-                                or _session_value(resource_attributes.get(key)) is not None), None),
+            "session_id": _activity_session(attrs,resource_attributes),
             "service": str(service), "source": source, "source_id": str(source_id),
             "span_id": span_id, "turn_id": _session_value(attrs.get('agent.turn.id')) or '', "detail": value("agent.activity.detail") or (body if isinstance(body, str) else ""),
             "mcp_server": value("mcp.server.name"), "mcp_tool": value("mcp.tool.name"),
@@ -425,8 +431,7 @@ def _event_activity_identity(span,event_attrs):
         for key in ('agent.id','agent.runtime','agent.namespace') if key in event_attrs))
     session_claim=any(key in event_attrs for key in SESSION_KEYS)
     parent_attrs=span.get('attributes') or {}
-    parent_session=next((_session_value(parent_attrs.get(key)) or _session_value(resource.get(key))
-        for key in SESSION_KEYS if _session_value(parent_attrs.get(key)) or _session_value(resource.get(key))),None)
+    parent_session=_activity_session(parent_attrs,resource)
     claims=[_session_value(event_attrs[key]) for key in SESSION_KEYS if key in event_attrs]
     event_session=claims[0] if claims and all(value is not None and value==claims[0] for value in claims) else None
     if changed or session_claim:
@@ -467,8 +472,7 @@ def _review_owner(spans, logs, activity, *, complete):
     for record in (*spans,*logs):
         attrs=record.get('attributes') or {};resource=record.get('resource_attributes') or {}
         owner=_agent_id_from_attributes(attrs,resource,record.get('service'))
-        session=next((_session_value(attrs.get(key) or resource.get(key)) for key in SESSION_KEYS
-            if _session_value(attrs.get(key) or resource.get(key))),None)
+        session=_activity_session(attrs,resource)
         owners.add((record.get('service'),owner,session))
     owners.update((event.get('service'),event.get('agent_id'),event.get('session_id')) for event in activity)
     if len(owners)==1:
@@ -766,6 +770,24 @@ class Store:
                     updated_ns INTEGER NOT NULL,
                     PRIMARY KEY(runtime,source_namespace,native_session_id,native_worker_id));
             """)
+            finding_columns={row[1] for row in db.execute('PRAGMA table_info(finding_cache)')}
+            for name in ('agent_id','session_id','producer','group_key'):
+                if name not in finding_columns:db.execute(f'ALTER TABLE finding_cache ADD COLUMN {name} TEXT')
+            db.execute('UPDATE finding_cache SET group_key=finding_id WHERE group_key IS NULL')
+            db.execute('CREATE INDEX IF NOT EXISTS finding_owner_time_v1 ON finding_cache(agent_id,time_ns DESC,finding_id DESC)')
+            db.execute('CREATE INDEX IF NOT EXISTS finding_group_owner_v1 ON finding_cache(group_key,agent_id,producer,session_id,trace_id)')
+            db.execute('CREATE TABLE IF NOT EXISTS finding_dirty_v1(trace_id TEXT PRIMARY KEY)')
+            for operation in ('INSERT','UPDATE'):
+                db.execute(f"""CREATE TRIGGER IF NOT EXISTS finding_legacy_key_{operation.lower()}_v1 AFTER {operation} ON finding_cache
+                    WHEN NEW.group_key IS NULL BEGIN
+                    UPDATE finding_cache SET group_key=NEW.finding_id WHERE finding_id=NEW.finding_id; END""")
+            for table in ('spans','logs','outcomes','progress'):
+                for operation in ('INSERT','UPDATE','DELETE'):
+                    alias='OLD' if operation=='DELETE' else 'NEW'
+                    statements=f"INSERT INTO finding_dirty_v1 SELECT {alias}.trace_id WHERE {alias}.trace_id IS NOT NULL ON CONFLICT DO NOTHING; DELETE FROM finding_cache WHERE trace_id={alias}.trace_id;"
+                    if operation=='UPDATE':statements+="INSERT INTO finding_dirty_v1 SELECT OLD.trace_id WHERE OLD.trace_id IS NOT NULL ON CONFLICT DO NOTHING; DELETE FROM finding_cache WHERE trace_id=OLD.trace_id;"
+                    db.execute(f"""CREATE TRIGGER IF NOT EXISTS finding_{table}_{operation.lower()}_v1 AFTER {operation} ON {table}
+                        BEGIN {statements} END""")
             from .storage_derived import initialize
             initialize(db)
             session_expr = _session_sql_expression()
@@ -872,6 +894,16 @@ class Store:
             if self._migration_stop.is_set():return
             self._backfill_task_outcomes()
             self._backfill_endpoints()
+            # A prior process may have stopped after invalidating findings even
+            # when the versioned historical backfill was already complete.
+            while not self._migration_stop.is_set():
+                with self._read() as db:
+                    pending=[row[0] for row in db.execute('SELECT trace_id FROM finding_dirty_v1 ORDER BY trace_id LIMIT 16')]
+                if not pending:break
+                self.migration_status={**self.migration_status,'stage':'Refreshing incoming finding evidence'}
+                self._refresh_summaries(pending)
+                if self._migration_stop.wait(.025):return
+            if self._migration_stop.is_set():return
             self.migration_status={**self.migration_status,'ready':True,'stage':'Ready'}
             # Compatibility queue for another local receiver version writing
             # this database. Work remains bounded and source transactions queue
@@ -890,17 +922,20 @@ class Store:
         # state. Release the read lease before trying to acquire a writer;
         # another receiver may already have consumed the observed work.
         with self._read() as db:
-            dirty=db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone()
+            dirty=db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 LIMIT 1').fetchone()
         if not dirty:return 0
         from .storage_activity import drain
         with self._connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            return drain(db,limit=200)
+            count=drain(db,limit=200)
+            traces=[row[0] for row in db.execute('SELECT trace_id FROM finding_dirty_v1 ORDER BY trace_id LIMIT 16')]
+        if traces:self._refresh_summaries(traces)
+        return count+len(traces)
 
     def index_status(self):
         state=dict(self.migration_status)
         with self._read() as db:
-            dirty=bool(db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone())
+            dirty=bool(db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 LIMIT 1').fetchone())
         if dirty:
             state.update(ready=False,stage='Indexing incoming source changes')
         return state
@@ -1282,14 +1317,14 @@ class Store:
 
     def _backfill_summaries(self):
         with self._connect() as db:
-            complete = db.execute("""SELECT 1 FROM schema_meta WHERE key='trace_derived_v14'
+            complete = db.execute("""SELECT 1 FROM schema_meta WHERE key='trace_derived_v15'
                 AND EXISTS (SELECT 1 FROM schema_meta WHERE key='trace_derived_v11')""").fetchone()
         if not complete:
             with self._connect() as db:
-                saved=db.execute("SELECT value FROM schema_meta WHERE key='trace_derived_v14_cursor'").fetchone()
+                saved=db.execute("SELECT value FROM schema_meta WHERE key='trace_derived_v15_cursor'").fetchone()
             before=json.loads(saved[0]) if saved else None
             with self._connect() as db:
-                progress=db.execute("SELECT value FROM schema_meta WHERE key='trace_derived_v14_done'").fetchone()
+                progress=db.execute("SELECT value FROM schema_meta WHERE key='trace_derived_v15_done'").fetchone()
                 total=db.execute('SELECT COUNT(*) FROM trace_activity').fetchone()[0]
             done=int(progress[0]) if progress else 0
             while True:
@@ -1310,16 +1345,17 @@ class Store:
                 self.migration_status={**self.migration_status,'runs_refreshed':done,'total_runs':total,
                     'stage':f'Refreshing run evidence · {done:,}/{total:,} runs'}
                 with self._connect() as db:
-                    db.execute("INSERT OR REPLACE INTO schema_meta VALUES('trace_derived_v14_cursor',?)",(json.dumps(before),))
-                    db.execute("INSERT OR REPLACE INTO schema_meta VALUES('trace_derived_v14_done',?)",(str(done),))
+                    db.execute("INSERT OR REPLACE INTO schema_meta VALUES('trace_derived_v15_cursor',?)",(json.dumps(before),))
+                    db.execute("INSERT OR REPLACE INTO schema_meta VALUES('trace_derived_v15_done',?)",(str(done),))
                 if len(rows) < 100:
                     break
         if not complete:
             with self._connect() as db:
+                db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v15','1')")
                 db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v14','1')")
                 db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v13','1')")
                 db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v11','1')")
-                db.execute("DELETE FROM schema_meta WHERE key IN ('trace_derived_v14_cursor','trace_derived_v14_done')")
+                db.execute("DELETE FROM schema_meta WHERE key IN ('trace_derived_v15_cursor','trace_derived_v15_done')")
 
     def _backfill_task_outcomes(self):
         # Upgrade only lifecycle metadata. Replaying all historical model/tool
@@ -1391,6 +1427,7 @@ class Store:
                 db.execute("BEGIN IMMEDIATE")
                 receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
                 for trace_id in trace_ids[offset:offset+16]:
+                    db.execute('DELETE FROM finding_dirty_v1 WHERE trace_id=?',(trace_id,))
                     derived = (derive_trace(db, trace_id, workflow_patterns=True) if trace_id in active_pattern_runs
                                else derive_trace(db, trace_id))
                     if derived is None:
@@ -1408,9 +1445,10 @@ class Store:
                                 json.dumps(activity, separators=(",", ":")), summary.get("agent_id"),
                                 json.dumps(errors, separators=(",", ":"))))
                     db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
-                    db.executemany("INSERT INTO finding_cache(finding_id,trace_id,time_ns,finding_json) VALUES(?,?,?,?)",
-                                   ((item["id"], trace_id, timestamp,
-                                     json.dumps({**item, "time_unix_nano": timestamp}, separators=(",", ":")))
+                    db.executemany("INSERT INTO finding_cache(finding_id,trace_id,time_ns,finding_json,agent_id,session_id,producer,group_key) VALUES(?,?,?,?,?,?,?,?)",
+                                   ((item["id"], trace_id, item.get("time_unix_nano") or timestamp,
+                                     json.dumps(item, separators=(",", ":")),item.get("agent_id"),item.get("session_id"),
+                                     item.get("producer"),item.get("group_key") or item["id"])
                                     for item in findings))
             if offset+16<len(trace_ids):
                 # SQLite's busy handler is not a fair writer queue. Give a
@@ -1831,6 +1869,7 @@ class Store:
                 "DELETE FROM trace_summaries WHERE trace_id IN (SELECT trace_id FROM stale_traces)").rowcount
             deleted["findings"] = db.execute(
                 "DELETE FROM finding_cache WHERE trace_id IN (SELECT trace_id FROM stale_traces)").rowcount
+            db.execute('DELETE FROM finding_dirty_v1 WHERE trace_id IN (SELECT trace_id FROM stale_traces)')
             cursor = db.execute("DELETE FROM logs WHERE trace_id IS NULL AND time_ns < ?", (cutoff_ns,))
             deleted["unlinked_logs"] = cursor.rowcount
             cursor = db.execute("DELETE FROM metric_points WHERE time_ns < ?", (cutoff_ns,))
@@ -2688,134 +2727,80 @@ class Store:
 
     def finding_page(self, limit=100, cursor=None, agent_id=None, subtree=False,
                      scope_revision=None):
-        if not 1 <= int(limit) <= 500:
-            raise ValueError("limit must be between 1 and 500")
-        agent_scope = None
-        if agent_id:
-            agent_scope = self.resolve_agent_scope(agent_id, include_subagents=bool(subtree))
-            if scope_revision and scope_revision != agent_scope["revision"]:
-                raise ValueError("hierarchy scope changed")
-            if not agent_scope["agent_ids"]:
-                return {"findings": [], "next_cursor": None, "has_more": False,
-                        "agent_scope": agent_scope}
-        before = None
+        if not 1 <= int(limit) <= 500:raise ValueError('limit must be between 1 and 500')
+        before=None
         if cursor:
             try:
-                decoded = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
-                before_ns, before_id = decoded.split(",", 1)
-                before = (int(before_ns), before_id)
-                if before[0] < 0 or not re.fullmatch(r"[0-9a-f]{16}", before_id):
-                    raise ValueError
-            except (ValueError, UnicodeDecodeError) as exc:
-                raise ValueError("invalid cursor") from exc
-        sql = "SELECT finding_id,time_ns,finding_json FROM finding_cache"
-        params = []
-        filters = []
-        if not self.workflow_patterns:
-            filters.append("COALESCE(json_extract(finding_json,'$.workflow_pattern'),0)!=1")
-        if before:
-            filters.append("(time_ns < ? OR (time_ns = ? AND finding_id < ?))")
-            params.extend((before[0], before[0], before[1]))
-        if agent_scope is not None:
-            marks = ','.join('?' for _ in agent_scope["agent_ids"])
-            filters.append(f"((json_extract(finding_json,'$.workflow_pattern')=1 "
-                           f"AND json_extract(finding_json,'$.agent_id') IN ({marks})) OR "
-                           f"(COALESCE(json_extract(finding_json,'$.workflow_pattern'),0)!=1 "
-                           f"AND trace_id IN (SELECT trace_id FROM trace_summaries WHERE agent_id IN ({marks}))))")
-            params.extend([*agent_scope["agent_ids"], *agent_scope["agent_ids"]])
-        if filters:
-            sql += " WHERE " + " AND ".join(filters)
-        sql += " ORDER BY time_ns DESC,finding_id DESC LIMIT ?"
-        params.append(int(limit) + 1)
+                decoded=base64.urlsafe_b64decode(cursor+'='*(-len(cursor)%4)).decode()
+                stamp,identity=decoded.split(',',1);before=(int(stamp),identity)
+                if before[0]<0 or not re.fullmatch(r'[0-9a-f]{16}',identity):raise ValueError
+            except (ValueError,UnicodeDecodeError) as exc:raise ValueError('invalid cursor') from exc
         with self._connect() as db:
-            rows = db.execute(sql, params).fetchall()
-        has_more = len(rows) > int(limit)
-        visible = rows[:int(limit)]
-        findings = [json.loads(row["finding_json"]) for row in visible]
-        for row, finding in zip(visible, findings):
-            finding["time_unix_nano"] = row["time_ns"]
-        trace_ids = sorted({finding["trace_id"] for finding in findings})
-        context = {}
-        group_stats = {}
-        if trace_ids:
-            placeholders = ','.join('?' for _ in trace_ids)
-            signatures = list(dict.fromkeys(
-                (finding.get("kind", ""), finding.get("title", ""),
-                 finding.get("detail", ""), finding.get("severity", ""))
-                for finding in findings
-            ))
-            values_sql = ','.join('(?,?,?,?)' for _ in signatures)
-            signature_params = [value for signature in signatures for value in signature]
-            with self._connect() as db:
-                context = {
-                    row["trace_id"]: (row["session_id"], json.loads(row["summary_json"]))
-                    for row in db.execute(
-                        f"SELECT trace_id,session_id,summary_json FROM trace_summaries "
-                        f"WHERE trace_id IN ({placeholders})",
-                        trace_ids,
-                    ).fetchall()
-                }
-                group_scope = ""
-                group_params = []
-                if agent_scope is not None:
-                    marks = ','.join('?' for _ in agent_scope["agent_ids"])
-                    group_scope = (f" AND ((json_extract(fc.finding_json,'$.workflow_pattern')=1 "
-                        f"AND json_extract(fc.finding_json,'$.agent_id') IN ({marks})) OR "
-                        f"(COALESCE(json_extract(fc.finding_json,'$.workflow_pattern'),0)!=1 "
-                        f"AND fc.trace_id IN (SELECT trace_id FROM trace_summaries WHERE agent_id IN ({marks}))))")
-                    group_params = [*agent_scope["agent_ids"], *agent_scope["agent_ids"]]
-                grouped = db.execute(
-                    f"""WITH wanted(kind,title,detail,severity) AS (VALUES {values_sql})
-                        SELECT wanted.kind,wanted.title,wanted.detail,wanted.severity,
-                               COUNT(*) AS occurrence_count,
-                               COUNT(DISTINCT fc.trace_id) AS trace_count,
-                               COUNT(DISTINCT CASE WHEN json_extract(fc.finding_json,'$.workflow_pattern')=1
-                                    THEN json_extract(fc.finding_json,'$.session_id') ELSE ts.session_id END) AS session_count
-                        FROM wanted JOIN finding_cache fc
-                          ON json_extract(fc.finding_json,'$.kind')=wanted.kind
-                         AND json_extract(fc.finding_json,'$.title')=wanted.title
-                         AND json_extract(fc.finding_json,'$.detail')=wanted.detail
-                         AND json_extract(fc.finding_json,'$.severity')=wanted.severity
-                         {group_scope}
-                        LEFT JOIN trace_summaries ts ON ts.trace_id=fc.trace_id
-                        GROUP BY wanted.kind,wanted.title,wanted.detail,wanted.severity""",
-                    [*signature_params, *group_params],
-                ).fetchall()
-                group_stats = {
-                    (row["kind"], row["title"], row["detail"], row["severity"]): {
-                        "occurrence_count": row["occurrence_count"],
-                        "trace_count": row["trace_count"],
-                        "session_count": row["session_count"],
-                    }
-                    for row in grouped
-                }
-        for finding in findings:
-            session_id, summary = context.get(finding["trace_id"], (None, {}))
-            if finding.get('workflow_pattern'):
-                # A trace can contain multiple workers. Its root task/outcome is
-                # not evidence about the pattern's explicitly recorded owner.
-                session_id = finding.get('session_id')
-                finding.update(task='', services=[finding['producer']], run_status='UNKNOWN')
-            else:
-                finding["session_id"] = session_id
-                finding["task"] = _safe_text(summary.get("task") or "")[:300]
-                finding["services"] = summary.get("services") or []
-                finding["run_status"] = summary.get("status") or "UNKNOWN"
-            finding.update(group_stats.get(
-                (finding.get("kind", ""), finding.get("title", ""),
-                 finding.get("detail", ""), finding.get("severity", "")),
-                {"occurrence_count": 1, "trace_count": 1, "session_count": int(bool(session_id))},
-            ))
-        next_cursor = None
-        if has_more and visible:
-            row = visible[-1]
-            next_cursor = base64.urlsafe_b64encode(
-                f"{row['time_ns']},{row['finding_id']}".encode()).decode().rstrip("=")
-        result = {"findings": findings,
-                  "next_cursor": next_cursor, "has_more": has_more}
-        if agent_scope is not None:
-            result["agent_scope"] = agent_scope
-        return result
+            db.execute('BEGIN')
+            receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+            if not db.execute("SELECT 1 FROM schema_meta WHERE key='trace_derived_v15'").fetchone() or db.execute('SELECT 1 FROM finding_dirty_v1 LIMIT 1').fetchone():
+                raise ValueError('Findings index is catching up; retry after receiver migration completes')
+            agent_scope=None;filters=[];params=[]
+            if not self.workflow_patterns:filters.append("COALESCE(json_extract(finding_json,'$.workflow_pattern'),0)!=1")
+            if agent_id:
+                agent_scope=self.resolve_agent_scope(agent_id,include_subagents=bool(subtree),_db=db)
+                if scope_revision and scope_revision!=agent_scope['revision']:raise ValueError('hierarchy scope changed')
+                ids=agent_scope['agent_ids']
+                filters.append('agent_id IN ('+','.join('?' for _ in ids)+')' if ids else '0')
+                params.extend(ids)
+            # Use identical owner filters for page rows and aggregate counts.
+            where=' AND '.join(filters) or '1'
+            page_where=where;page_params=list(params)
+            if before:
+                page_where+=' AND (time_ns<? OR (time_ns=? AND finding_id<?))'
+                page_params.extend((before[0],before[0],before[1]))
+            rows=db.execute('SELECT * FROM finding_cache WHERE '+page_where+
+                ' ORDER BY time_ns DESC,finding_id DESC LIMIT ?',[*page_params,int(limit)+1]).fetchall()
+            visible=rows[:int(limit)];findings=[]
+            keys=list(dict.fromkeys(row['group_key'] or row['finding_id'] for row in visible))
+            stats={}
+            if keys:
+                marks=','.join('?' for _ in keys)
+                for row in db.execute('''SELECT group_key AS signature,COUNT(*) AS occurrences,
+                    COUNT(DISTINCT trace_id) AS traces,
+                    COUNT(DISTINCT CASE WHEN producer IS NOT NULL AND session_id IS NOT NULL
+                        THEN json_array(producer,session_id) END) AS sessions
+                    FROM finding_cache WHERE '''+where+' AND group_key IN ('+marks+') GROUP BY signature',
+                    [*params,*keys]):
+                    stats[row['signature']]=dict(occurrence_count=row['occurrences'],trace_count=row['traces'],session_count=row['sessions'])
+            for row in visible:
+                item=json.loads(row['finding_json'])
+                # Legacy rows remain readable globally, without inferred root context.
+                item.update(agent_id=row['agent_id'],session_id=row['session_id'],producer=row['producer'],
+                    service=row['producer'],receiver_id=receiver,services=[row['producer']] if row['producer'] else [],
+                    task='',run_status='UNKNOWN',time_unix_nano=row['time_ns'])
+                item.update(stats.get(row['group_key'] or row['finding_id'],
+                    dict(occurrence_count=1,trace_count=1,session_count=int(bool(row['producer'] and row['session_id'])))))
+                findings.append(item)
+            next_cursor=None
+            if len(rows)>int(limit) and visible:
+                last=visible[-1]
+                next_cursor=base64.urlsafe_b64encode(f"{last['time_ns']},{last['finding_id']}".encode()).decode().rstrip('=')
+            result=dict(findings=findings,next_cursor=next_cursor,has_more=len(rows)>int(limit),
+                receiver_id=receiver,count_basis='retained finding occurrences; not unique executions',
+                ownership_ready=bool(db.execute("SELECT 1 FROM schema_meta WHERE key='trace_derived_v15'").fetchone()))
+            if agent_scope is not None:result['agent_scope']=agent_scope
+            return result
+
+    def finding_source(self, finding_id):
+        if not isinstance(finding_id,str) or not re.fullmatch(r'[0-9a-f]{16}',finding_id):raise ValueError('invalid finding_id')
+        from .finding_sources import read_sources
+        with self._connect() as db:
+            db.execute('BEGIN')
+            receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+            if db.execute('SELECT 1 FROM finding_dirty_v1 LIMIT 1').fetchone():
+                raise ValueError('Findings index is catching up; retry after receiver migration completes')
+            row=db.execute('SELECT finding_json,agent_id,session_id,producer FROM finding_cache WHERE finding_id=?',(finding_id,)).fetchone()
+            if not row:return dict(receiver_id=receiver,finding_id=finding_id,sources=[],unavailable=True)
+            finding=json.loads(row['finding_json'])
+            finding.update(agent_id=row['agent_id'],session_id=row['session_id'],service=row['producer'])
+            identity={key:finding.get(key) for key in ('service','agent_id','session_id','trace_id','turn_id')}
+            return dict(receiver_id=receiver,finding_id=finding_id,finding_scope=identity,**read_sources(db,finding))
 
     def _trace_findings(self, trace_id):
         with self._connect() as db:

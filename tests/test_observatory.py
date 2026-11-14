@@ -487,8 +487,8 @@ class ObservatoryTest(unittest.TestCase):
         self.assertNotIn("sk-123456789012345678901234", finding["detail"])
         queue_item = next(item for item in self.store.finding_page()["findings"]
                           if item["kind"] == "mcp_tool_error")
-        self.assertEqual(queue_item["session_id"], "session-mcp-1")
-        self.assertEqual(queue_item["task"], "Check release status")
+        self.assertIsNone(queue_item["session_id"])
+        self.assertEqual(queue_item["task"], "")
         call = self.store.mcp_page()["calls"][0]
         self.assertEqual(call["status"], "ERROR")
         self.assertEqual(self.store.mcp_page()["summary"]["errors"], 1)
@@ -635,21 +635,23 @@ class ObservatoryTest(unittest.TestCase):
         self.assertEqual({row["server"] for row in page["summary"]["servers"]},
                          {"github", "filesystem", "prompts"})
 
-    def test_finding_page_counts_matching_occurrences_across_all_sessions(self):
+    def test_finding_page_counts_matching_occurrences_across_turn_steps(self):
         spans = []
         for index, (trace_id, span_id) in enumerate(((TID, ROOT), ("b" * 32, CHILD))):
             spans.append(normalize_native({"trace_id": trace_id, "span_id": span_id,
                 "name": "tool.call", "start_unix_nano": 100 + index,
                 "end_unix_nano": 200 + index, "status": "ERROR",
                 "attributes": {"tool.name": "lookup", "tool.error_message": "network timeout",
-                               "session.id": f"session-{index}"}, "events": []}))
+                               "session.id": "session-one", "agent.id":"owner", "agent.turn.id":"turn-one",
+                               "gen_ai.tool.type":"shell","process.command_line":"pytest tests",
+                               "process.working_directory":"/work"}, "events": []}))
         self.store.ingest(spans)
         finding = next(item for item in self.store.finding_page(limit=1)["findings"]
                        if item["kind"] == "span_error")
         self.assertIn("time_unix_nano", finding)
         self.assertEqual(finding["occurrence_count"], 2)
         self.assertEqual(finding["trace_count"], 2)
-        self.assertEqual(finding["session_count"], 2)
+        self.assertEqual(finding["session_count"], 1)
 
     def test_repeated_tool_failures_have_source_span_evidence(self):
         spans = []
@@ -658,7 +660,8 @@ class ObservatoryTest(unittest.TestCase):
                 "name": "tool.call", "start_unix_nano": 100 + index,
                 "end_unix_nano": 200 + index, "status": "UNSET",
                 "attributes": {"tool.name": "search", "tool.error_message": "timeout",
-                               "tool.result_status": "error"}, "events": []}))
+                               "tool.result_status": "error", "agent.id":"owner", "session.id":"session",
+                               "input.value":{"query":"release"},"mcp.server.name":"fixture"}, "events": []}))
         self.store.ingest(spans)
         repeated = [f for f in self.store.findings() if f["kind"] == "repeated_tool_error"]
         self.assertEqual(len(repeated), 1)

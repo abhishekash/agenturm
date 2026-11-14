@@ -235,6 +235,9 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     self._json(200, {"metrics": store.metric_catalog(limit=limit)})
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
+            elif path.startswith('/api/findings/') and path.endswith('/source'):
+                try:self._json(200,store.finding_source(path[len('/api/findings/'):-len('/source')]))
+                except ValueError as exc:self._json(400,{'error':str(exc)})
             elif path == "/api/findings":
                 query = parse_qs(route.query)
                 try:

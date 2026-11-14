@@ -1592,7 +1592,7 @@ class ObservatoryApp(App):
               Binding('b','saved_tasks','Saved tasks'),
               Binding('R','retry_connection','Retry connection',show=False),
               Binding('q','quit','Quit'),Binding('escape','back','Back',show=False),
-              Binding('s','focus_agent','Focus agent',show=False),Binding('r','review_attention','Mark reviewed',show=False),
+              Binding('s','focus_agent','Source evidence',show=False),Binding('r','review_attention','Mark reviewed',show=False),
               Binding('f','toggle_tree','Tree or flat agents',show=False),
               Binding('o','sort_menu','Sort sessions',show=False),
               Binding('m','session_mode','Inspector mode',show=False),
@@ -1850,6 +1850,7 @@ class ObservatoryApp(App):
                         yield Static('EVIDENCE INSPECTOR',classes='inspector-heading')
                         yield SelectableRichLog(id='finding-detail',classes='detail-log',min_width=1,wrap=True,markup=False,auto_scroll=False)
                         with Horizontal(classes='inspector-actions'):
+                            yield Button(Text('Source · s'),id='finding-source',tooltip='Read the exact recorded event, log or outcome')
                             yield Button(Text('Trace · t'),id='finding-trace',tooltip='Open the finding’s source trace')
                             yield Button(Text('Copy · c'),id='finding-copy')
                             yield Button(Text('Expand · e'),id='expand-findings',classes='expand-button')
@@ -1901,6 +1902,7 @@ class ObservatoryApp(App):
             ('Open diagnostics','Inspect local collection health',self.action_diagnostics),
             ('Retry connection now','Retry the receiver without waiting for the next poll',self.action_retry_connection),
             ('Copy selected evidence','Copy selected evidence or the current record',self.action_copy),
+            ('Open selected source evidence','Agents or Findings · s · preserve filters and selection',self.action_focus_agent),
             ('Open linked trace','Follow an exact recorded trace link',self.action_open_trace),
         )
         for name,help_text,callback in commands:
@@ -3754,6 +3756,7 @@ class ObservatoryApp(App):
     def show_finding(self):
         item=self.table_data.get('finding-table',{}).get(self.selected_finding)
         self.query_one('#finding-trace',Button).disabled=not bool(item and item.get('trace_id'))
+        self.query_one('#finding-source',Button).disabled=not bool(item and item.get('evidence'))
         if not item:
             paging=self.data.pagination.get('findings',{})
             note=('No findings in this page. Use Older to inspect earlier findings.'
@@ -3761,17 +3764,22 @@ class ObservatoryApp(App):
                   'Recorded security, policy, tool, and run findings appear here with links to their evidence. Analysis uses bounded evidence windows; no matching findings does not establish that no issues occurred.')
             self.inspect('finding-detail','No findings match this view',[],[('Coverage',note)])
             return
+        from .ui_findings import finding_capture_allowed
+        if not finding_capture_allowed(item,self.feed.snapshot):
+            self.query_one('#finding-source',Button).disabled=True
+            self.inspect('finding-detail','Finding content withheld',[],[('Capture','Source capture policy or receiver identity changed. Refresh Findings for current evidence.')])
+            return
         evidence='\n'.join(f"{entry.get('type','evidence')} · {entry.get('id','not reported')}"
                            for entry in item.get('evidence',[])) or 'No linked evidence was recorded.'
         self.inspect('finding-detail',item.get('title') or 'Review finding',[
             ('Severity',str(item.get('severity') or 'Not reported').upper()),
             ('Type',item.get('kind') or 'Not reported'),
             ('Last observed',when(item.get('time_unix_nano') or 0)),
-            ('Occurrences',f"{number(item.get('occurrence_count',1))} across {number(item.get('trace_count',1))} traces · {number(item.get('session_count',0))} sessions"),
+            ('Recorded findings',f"{number(item.get('occurrence_count',1))} across {number(item.get('trace_count',1))} traces · {number(item.get('session_count',0))} sessions"),
             ('Agent / session',(item.get('services') or ['Not reported'])[0]+' · '+str(item.get('session_id') or 'Not reported')),
             ('Task',item.get('task') or 'Not reported')],
             [('What was observed',item.get('detail') or 'No additional detail reported.'),
-             ('Evidence',evidence),('Trace ID',item.get('trace_id') or 'Not linked')])
+             ('Evidence',evidence),('Coverage','Counts cover retained finding occurrences; incomplete sources may describe the same execution. Source · s reads exact evidence; Trace · t opens its container.'),('Trace ID',item.get('trace_id') or 'Not linked')])
 
     def show_spans(self):
         self.refresh_task_usage()
@@ -4090,7 +4098,7 @@ class ObservatoryApp(App):
         elif event.button.id.startswith('clear-'):
             field=self.query_one('#search-'+event.button.id.removeprefix('clear-'),Input)
             field.value='';field.focus()
-        elif event.button.id=='agent-open':self.action_focus_agent()
+        elif event.button.id in {'agent-open','finding-source'}:self.action_focus_agent()
         elif event.button.id=='agent-trace':self.action_open_trace()
         elif event.button.id=='agent-reviewed':self.action_review_attention()
         elif event.button.id=='agent-dismissed':self.action_dismiss_attention()
@@ -4307,7 +4315,13 @@ class ObservatoryApp(App):
         if page in {'activity','mcp','traces','findings'} and self.feed.scope_agent_id:
             scope={'mode':'subtree' if self.feed.scope_subtree else 'exact',
                    'root_agent_id':self.feed.scope_agent_id}
-        self.push_screen(ExportScreen(page,record,scope),self.resume_cockpit)
+        can_export=None
+        if page=='findings':
+            from .ui_findings import finding_capture_allowed
+            can_export=lambda:finding_capture_allowed(record,self.feed.snapshot)
+            if not can_export():
+                self.notify('Finding content withheld: source capture or receiver changed.');return
+        self.push_screen(ExportScreen(page,record,scope,can_export=can_export),self.resume_cockpit)
 
     def action_search(self):
         page=self.query_one('#pages',TabbedContent).active
@@ -4448,6 +4462,9 @@ class ObservatoryApp(App):
         elif page=='findings':
             item=self.table_data.get('finding-table',{}).get(self.selected_finding)
             if item:
+                from .ui_findings import finding_capture_allowed
+                if not finding_capture_allowed(item,self.feed.snapshot):
+                    self.notify('Finding content withheld: source capture or receiver changed.');return
                 self.copy_to_clipboard(json.dumps(item,ensure_ascii=False,indent=2));return
         elif page=='metrics':
             item=self.table_data.get('metrics-table',{}).get(self.selected_metric)
@@ -4510,6 +4527,13 @@ class ObservatoryApp(App):
         self.notify('←/→ choose section · Enter read · Tab controls · Esc back' if page=='agents' else
                     'Expanded detail · Esc to return',timeout=4 if page=='agents' else 2)
     def action_focus_agent(self):
+        if self.query_one('#pages',TabbedContent).active=='findings':
+            if not isinstance(self.screen,ObservatoryScreen):return
+            item=self.table_data.get('finding-table',{}).get(self.selected_finding)
+            if item and item.get('evidence'):
+                from .ui_findings import FindingSourceScreen
+                self.push_screen(FindingSourceScreen(self,item))
+            return
         if self.selected_source and self.query_one('#pages',TabbedContent).active=='agents':
             self.remember_location()
             target=getattr(self,'agent_primary_event_id',None)
@@ -4792,7 +4816,7 @@ class ObservatoryApp(App):
                   self.table_data.get('finding-table',{}).get(self.selected_finding))
             if page=='activity' and item is None:item=self.activity_trace_fallback()
             if page=='findings' and item:
-                span_id=next((entry.get('id') for entry in item.get('evidence',[])
+                span_id=next((entry.get('id','').split(':event:',1)[0] for entry in item.get('evidence',[])
                               if entry.get('type')=='span'),None)
                 item={**item,'span_id':span_id}
         else:return

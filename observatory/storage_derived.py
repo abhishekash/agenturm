@@ -45,7 +45,7 @@ def _bounded_columns(table):
     metadata = ("trace_id,span_id,parent_span_id,substr(name,1,256) AS name,start_ns,end_ns,status,"
                 "substr(service,1,128) AS service,substr(scope_name,1,256) AS scope_name"
                 if table == "spans" else
-                "digest,trace_id,time_ns,severity_number,substr(severity_text,1,128) AS severity_text,"
+                "digest,trace_id,span_id,time_ns,severity_number,substr(severity_text,1,128) AS severity_text,"
                 "substr(event_name,1,256) AS event_name,substr(service,1,128) AS service")
     columns = [metadata, f"({size}) AS payload_bytes", f"({size})<={RECORD_BYTES} AS payload_complete"]
     for key in payloads:
@@ -351,7 +351,7 @@ def derive_trace(db, trace_id, workflow_patterns=False):
             payload_complete = False
             break
         payload_complete = payload_complete and bool(row["payload_complete"])
-        logs.append({"id": row["digest"], "trace_id": trace_id, "time_unix_nano": row["time_ns"],
+        logs.append({"id": row["digest"], "trace_id": trace_id, "span_id":row["span_id"], "time_unix_nano": row["time_ns"],
                      "severity_number": row["severity_number"], "severity_text": row["severity_text"],
                      "event_name": row["event_name"], "service": row["service"],
                      **{key: json.loads(row[key]) for key in
@@ -450,12 +450,18 @@ def derive_trace(db, trace_id, workflow_patterns=False):
     summary["search_terms_complete"] = summary["evidence_window"]["complete"]
     timestamp = db.execute("SELECT last_ns FROM trace_activity WHERE trace_id=?", (trace_id,)).fetchone()
     timestamp = timestamp[0] if timestamp else summary["end_unix_nano"]
-    findings = analyze(spans, logs, outcome)
+    receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+    findings = analyze(spans, logs, outcome,activity=activity,receiver=receiver,outcome_owner=summary.get('review_owner'))
     if workflow_patterns:
         from .workflow_patterns import analyze_patterns
         findings = [item for item in findings if item['kind'] != 'repeated_tool_error']
         findings.extend(analyze_patterns(spans, logs, outcome))
     for finding in findings:
+        if finding.get('workflow_pattern'):
+            from .operation_facts import digest
+            finding.update(service=finding.get('producer'),ownership_version=1,receiver_id=receiver,
+                group_key=digest((finding['kind'],finding.get('producer'),finding.get('agent_id'),
+                    finding.get('session_id'),trace_id,finding['id'])))
         finding["evidence_complete"] = summary["evidence_window"]["complete"]
         if not finding["evidence_complete"]:
             finding["detail"] += " (Bounded evidence window; not a whole-trace finding count.)"

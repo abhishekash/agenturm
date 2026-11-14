@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Attribute Findings rows, counts and source reads to each recorded occurrence in one snapshot. Rebuild invalidated evidence after old-writer changes and restart. Read exact sources with `s`; preserve capture-policy fences through previews, copy and export.
+
 - Share typed, bounded operation facts across Review, error reminders and Activity failure grouping. Preserve command/output provenance and exact ownership; require complete redacted-safe inputs before grouping or observing later matching success. Rebuild older activity/result projections through the resumable history queue.
 
 - Share bounded static session preparation across the Agents roster and Workflow while recomputing health and attention. Honor fresh capture revocation in paused inspectors, retained prompt/evidence buffers and in-flight AI summaries; retain exact receiver/producer/worker/session boundaries.
