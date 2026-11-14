@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Agenturm: practical developer value review</title>
+<style>
+:root{color-scheme:light dark;--bg:#f5f3ee;--paper:#fff;--fg:#25232b;--muted:#635d6c;--line:#dcd6e3;--accent:#644190;--tint:#f2ecfa}
+@media(prefers-color-scheme:dark){:root{--bg:#15131a;--paper:#201c27;--fg:#eee9f4;--muted:#bdb3c9;--line:#44394f;--accent:#d1afff;--tint:#30243e}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.7 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:880px;margin:40px auto;padding:40px;background:var(--paper);border:1px solid var(--line);border-radius:16px}h1{font-size:clamp(1.9rem,5vw,2.8rem);line-height:1.18;letter-spacing:-.035em}h2{font-size:1.4rem;line-height:1.3;margin-top:2.2em}a{color:var(--accent);text-underline-offset:3px;overflow-wrap:anywhere}p,li{overflow-wrap:anywhere}li{margin:.65em 0}code{font-size:.86em;background:var(--tint);padding:.15em .3em;border-radius:4px;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--tint);padding:18px;border-radius:8px;font-size:.86em;line-height:1.5}pre code{padding:0}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:.95em}th,td{text-align:left;padding:12px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}th:first-child,td:first-child{width:76px}.verdict{border-left:4px solid var(--accent);padding:16px 20px;background:var(--tint)}.meta{color:var(--muted);font-size:.9em}.sources{font-size:.9em}footer{border-top:1px solid var(--line);padding-top:18px;color:var(--muted);font-size:.85em}@media(max-width:600px){main{margin:0;padding:24px 18px;border:0;border-radius:0}body{font-size:16px}ol,ul{padding-left:24px}th,td{padding:9px 6px}}
+</style>
+</head>
+<body><main>
+<p class="meta">Independent source-based assessment · 14 November 2026</p>
+<h1>Is Agenturm useful to developers running 20–50 agents?</h1>
+<p class="verdict"><strong>Yes, for reducing the effort of reviewing concurrent agent work—not for orchestrating it.</strong> Its strongest practical job is answering: <strong>“This agent says it is done. What recorded evidence supports that, for this particular execution?”</strong></p>
+<p class="meta">Reviewed commit <code>a601ad2236f22ef75600129e920ff763883bee7c</code>, matching GitHub main when checked. Based on source inspection, documentation, and 38 locally executed focused tests. Not a firsthand 50-agent production trial or an adoption study.</p>
+<h2>One practical use: review a completed fix before integrating its branch</h2>
+<p>Imagine 30 local agents working in separate worktrees. One is fixing refresh-token retries. Several finish while you are reviewing another change. You no longer remember which terminal contains which test result.</p>
+<p>An illustrative captured sequence for the retry worker:</p>
+<table><thead><tr><th>Time</th><th>Recorded event</th></tr></thead><tbody>
+<tr><td>10:04</td><td><code>pytest tests/test_retry.py -q</code> finishes with exit code 0.</td></tr>
+<tr><td>10:06</td><td>The worker edits <code>retry.py</code> again.</td></tr>
+<tr><td>10:07</td><td>The worker reports “Done; tests pass.”</td></tr>
+</tbody></table>
+<p>The problem is not that the test result is false. It is that it predates a later change. A completion message compresses away that distinction.</p>
+<ol>
+<li>Run <code>uvx agenturm</code> in an extra terminal. Supported recent native records are discovered without restarting those coding agents.</li>
+<li>In <strong>Agents → Today</strong>, select the retry task under <strong>Ready for review</strong>. Open its inspector and choose <strong>Review</strong> from Overview.</li>
+<li>Inspect captured checks and modifying operations. Agenturm can show the passing command followed by <strong>later recorded edits</strong>, scoped to the selected worker/execution, and suggest inspecting those edits and rerunning affected checks.</li>
+<li>Return to that worker’s original terminal/worktree. Review the diff and rerun necessary checks there. Integrate only after normal review. Mark the run reviewed in Agenturm to clear it from Today, not to certify correctness.</li>
+</ol>
+<p><strong>Why this earns a place beside your terminals:</strong> a common review surface replaces manual reconstruction across transcripts. Exact ownership matters: a sibling worker’s passing command must not become this worker’s validation. Native terminals can show the same evidence; the potential advantage is less reconstruction across concurrent runs and runtimes, not exclusive access to it.</p>
+<p class="meta">Hypothetical scenario backed by implemented behavior and synthetic tests, not a customer outcome. Review exists in 0.2.3. The noninteractive <code>agenturm review</code> receipt command is main/Unreleased, not part of the published 0.2.3 install.</p>
+<h2>What I verified</h2>
+<ul>
+<li><code>workflow_evidence.py</code> separates recorded checks, assistant claims, modifying operations, errors, and coverage. It compares edit timestamps with check completion timestamps.</li>
+<li><code>ExecutionScope.matches</code> constrains evidence by producer, worker, session, and run/turn. It does not combine everything from the same repository.</li>
+<li><code>session_status.py</code> distinguishes quiet work, explicit waits, collector backlog, and possible stalls. Silence alone is not proof of failure.</li>
+<li><strong>38 tests passed in 3.115 seconds:</strong> session status, work receipts, and pure workflow-evidence cases. A real authenticated loopback receiver test excluded parent/sibling evidence, preserved a later-edit observation, and exported a frozen receipt. It was synthetic, not 30 live agents.</li>
+</ul>
+<pre><code>uv run --frozen python -m unittest tests.test_session_status tests.test_work_receipts tests.test_workflow_evidence.EvidenceTests -v</code></pre>
+<h2>Why this is not yet a proven 50-agent cockpit</h2>
+<ol>
+<li><strong>Coverage is bounded.</strong> JSONL discovery selects up to 50 recent sources across Codex, Claude Code, and Pi; OpenCode separately selects up to 50 recent sessions. Historical and delegated sessions can consume those windows. This does not guarantee every one of 50 active agents is represented. Check collection diagnostics before trusting the roster.</li>
+<li><strong>Performance remains open.</strong> The retained-history report measured <strong>112.96 seconds</strong> cold readiness and <strong>15.90% of one CPU core</strong> for an idle complete monitor on its synthetic 35-day fixture. A separate 20-minute soak reported rising RSS; memory stability was not established. These are repository-reported results on older named revisions, not measurements repeated on the reviewed head or predictions for your laptop.</li>
+<li><strong>It observes; it does not enforce.</strong> It does not launch agents, answer approvals, isolate worktrees, prevent overlapping edits, independently attest commands, or prove today’s files match a captured test run. No later recorded edit does not establish freshness. CI and actual review remain necessary.</li>
+<li><strong>Value is plausible, not measured.</strong> Reduced reconstruction time and mistaken verification conclusions remain explicit pilot hypotheses. Implementation evidence is not repeat adoption or quantified time savings. Local capture also creates a sensitive extra copy of agent content; redaction is best effort.</li>
+</ol>
+<h2>Recommendation</h2>
+<p class="verdict"><strong>A review inbox for parallel coding work: “See what supports each agent’s ‘done’ before you integrate it.”</strong></p>
+<p>That is a concrete engineering decision, not another activity dashboard. For one agent, the extra surface may be unnecessary. For many concurrent sessions, trial this workflow before adopting it as an always-on monitor.</p>
+<p>Use comparable batches of completed runs, with and without Agenturm. Measure time to find the correct execution, identify whether a recorded check preceded a later edit, and choose the next action. Track wrong-worker conclusions and missing capture as well as speed. If the inbox does not improve those decisions, the dashboard alone has not earned its overhead.</p>
+<h2>Source references</h2>
+<p class="meta">Links pin the reviewed revision.</p>
+<ul class="sources">
+<li><a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/README.md">Product scope and released/unreleased distinction</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/observatory/workflow_evidence.py">Review projection, exact scope, and guidance</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/tests/test_work_receipts.py">Receipt tests and authenticated worker isolation</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/observatory/local_agents.py">JSONL discovery</a> · <a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/observatory/opencode.py">OpenCode limits</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/docs/validation/history-read-economics.md">Retained-history performance</a> · <a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/docs/rigorous-validation.md">Soak qualifications</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/docs/work-receipts.md">Evidence contracts and value hypotheses</a> · <a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/docs/privacy.md">Privacy boundaries</a></li>
+</ul>
+<footer>Documentation-only assessment in the isolated worktree. No product code changed. No production agent workload, provider calls, or new performance benchmark was used.</footer>
+</main></body></html>

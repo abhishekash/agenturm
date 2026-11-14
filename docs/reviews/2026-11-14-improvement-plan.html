@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Agenturm improvement plan — close the action loop</title>
+<style>
+:root{color-scheme:light dark;--bg:#f3f3ef;--paper:#fff;--fg:#26302a;--muted:#5b685f;--line:#d7dfd8;--accent:#265b40;--tint:#edf4ee}@media(prefers-color-scheme:dark){:root{--bg:#141a16;--paper:#1d2620;--fg:#eaf0e9;--muted:#b5c1b8;--line:#3a4b40;--accent:#bdddac;--tint:#2a382e}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.7 system-ui,sans-serif}main{max-width:860px;margin:36px auto;padding:40px;border:1px solid var(--line);border-radius:14px;background:var(--paper)}h1{font-size:clamp(2rem,5vw,3rem);line-height:1.15;letter-spacing:-.035em}h2{margin-top:2em;font-size:1.45rem;line-height:1.35}p,li,td{overflow-wrap:anywhere}li{margin:.55em 0}a{color:var(--accent);overflow-wrap:anywhere;text-underline-offset:3px}code{font-size:.88em;padding:.15em .3em;background:var(--tint);border-radius:4px}.meta{color:var(--muted);font-size:.88em}.callout{padding:16px 20px;border-left:4px solid var(--accent);background:var(--tint)}table{width:100%;border-collapse:collapse;font-size:.95em}th,td{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid var(--line)}th{background:var(--tint)}footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--line)}@media(max-width:600px){body{font-size:16px}main{margin:0;padding:24px 18px;border:0;border-radius:0}ol,ul{padding-left:24px}th,td{padding:8px 6px}}
+</style></head><body><main>
+<p class="meta">Proposed improvement plan · Based on reviewed source a601ad2 · Not implementation authorization</p>
+<h1>Close the action loop.</h1>
+<p class="callout"><strong>Make Agenturm the quickest reliable way to find which agent needs you, understand why, and return to the right place.</strong> Beat terminal scanning, native notifications, and duplicated notes—not an abstract competitor feature list.</p>
+<p class="meta">All acceptance criteria below are proposed targets, not measured outcomes or current guarantees.</p>
+<h2>1. First delivery: make attention actionable</h2>
+<p>The smallest coherent product improvement should come before more integrations.</p>
+<ul>
+<li>Promote the existing <code>w</code> inbox through a visible <strong>Needs you</strong> control at 80×24 and 60×18. Do not create a duplicate queue or force a new top-level navigation model.</li>
+<li>Distinguish <strong>requests, failures, and completion reviews</strong>. A completion can wait; an explicit input request is blocking work. Ordinary tool waits should not all generate alerts.</li>
+<li>Show the task, project, reason, recorded age, freshness and captured request excerpt. Label missing timestamps/content honestly.</li>
+<li>Move verified terminal return out of Settings and beside the selected request. Keep Settings for notifications and thresholds.</li>
+<li>Route only to an exact verified target. Otherwise explain the limitation and provide an appropriate supported fallback. Stopped Codex/Claude sessions may offer a copied resume command; never duplicate a live session.</li>
+<li>Preserve selection and order during updates. A new incident must not move a different terminal under the cursor.</li>
+</ul>
+<p><strong>Proposed acceptance:</strong> find Needs you within five seconds at 80×24; inspect a selected request and invoke an available verified terminal route within three activations. Unsupported routing is explicit. Seen stays different from approved/resolved.</p>
+<h2>2. Second delivery: decision-ready completion review</h2>
+<p>Keep the scoped evidence engine. Improve presentation instead of adding another dashboard. Lead with four answers:</p>
+<ol><li>What did this execution attempt?</li><li>Which recognized checks and results were captured?</li><li>Were modifying operations recorded after those checks?</li><li>What should I inspect or rerun next, and what evidence is missing?</li></ol>
+<p>Keep source references and raw details behind the summary. Distinguish agent claims, recorded exit codes and unknown results. Make the return to the same inbox selection and the review acknowledgement path explicit. An acknowledgement never certifies correctness.</p>
+<p><strong>Proposed acceptance:</strong> users distinguish sibling results, checks followed by edits and partial capture without reconstructing transcripts. Never show a green “verified” badge merely because no later edit was captured. Metadata-only capture cannot supply content-based review.</p>
+<h2>3. Release gate: earn the always-on promise</h2>
+<p>Run this in parallel with UX work, before a reliable 50-agent marketing claim.</p>
+<ul>
+<li>Benchmark receiver, collectors and terminal together under sustained 20- and 50-agent workloads with retained history, request transitions, delegated workers and errors.</li>
+<li>Separate interactive readiness from completed indexing, keypress latency from event age, and whole-monitor CPU from Store-only CPU.</li>
+<li>Test beyond recent-source windows. Expose omissions, backlog and stale capture; do not blindly increase every limit.</li>
+<li>Profile retained allocations and run multi-hour fixed-load memory validation. A short functional pass is not stability evidence.</li>
+<li>Preserve authentication, private storage, capture-policy enforcement and explicit export consent.</li>
+</ul>
+<p><strong>Candidate gates:</strong> existing repository targets of cold readiness below 30 seconds and idle CPU below 5% of one core on a named fixture; no unexplained sustained RSS growth under fixed retained load; declared coverage and freshness under the nominated active workload. Publish failed runs and raw results too. These are targets to validate, not current promises.</p>
+<h2>4. Then: lightweight continuation</h2>
+<p>Keep saving optional, offered at interruption, restart or runtime switch. A small reviewed handoff needs:</p>
+<ul><li>A constraint to preserve.</li><li>A decision and rationale worth keeping.</li><li>The next action.</li><li>The exact linked run and relevant evidence.</li></ul>
+<p>Reuse existing briefs, decisions and exports. Prefill editable source-backed drafts where appropriate; do not infer accepted decisions or silently send context to another agent. Replace duplicated notes, not the engineer’s entire task-management system.</p>
+<h2>Product hierarchy</h2>
+<table><thead><tr><th>Layer</th><th>User-facing job</th></tr></thead><tbody><tr><td>Entry</td><td>Needs you: choose the next action</td></tr><tr><td>Selected item</td><td>Understand the reason and return to the native agent</td></tr><tr><td>Completion</td><td>Inspect evidence before integration</td></tr><tr><td>Investigation depth</td><td>Activity, MCP, traces, findings</td></tr><tr><td>Optional continuity</td><td>Save a brief and prepare a handoff</td></tr></tbody></table>
+<p>Keep keyboard conventions. Improve discoverability before expanding the keymap. Explain collection/privacy boundaries during first use without requiring an integration-guide lesson to reach first value.</p>
+<h2>What not to build next</h2>
+<p>No renderer rewrite without a demonstrated blocker. No new top-level telemetry tabs. No automatic approval, guessed terminal targets, quota claims derived from token totals, or general-purpose swarm orchestration. AI summaries must not be necessary to understand the default view.</p>
+<h2>How we know it is better</h2>
+<p>Compare with the same users’ current terminal/notification/notes workflow. Measure request-to-native-response delay, manual status checks, time to find the correct execution and next action, wrong-worker conclusions, false alerts, missed waits and voluntary repeat use. Separate collector delay from human delay. Missing timestamps remain unavailable. Test interruption recovery separately.</p>
+<p><strong>Delivery order:</strong> actionable inbox and terminal return; concise completion review; performance/coverage gates throughout; lightweight continuation after observed demand. Update README, walkthrough, help and release notes to describe the same shipped workflow. Keep unreleased features clearly labeled.</p>
+<p class="callout"><strong>Does Agenturm remove attention and reconstruction work—or become another thing the engineer must monitor?</strong></p>
+<footer><a href="2026-11-14-product-owner-review.html">Evidence: product-owner review</a> · <a href="2026-11-14-developer-value.html">Developer-value review</a> · <a href="2026-11-14-improvement-plan.md">Markdown source</a></footer>
+</main></body></html>

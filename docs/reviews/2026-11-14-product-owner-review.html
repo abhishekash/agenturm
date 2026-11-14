@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">
+<title>Agenturm product-owner review — useful work, not more monitoring</title>
+<style>
+:root{color-scheme:light dark;--bg:#f4f4ef;--paper:#fff;--fg:#242a28;--muted:#59665e;--line:#d8e0d9;--accent:#245a41;--tint:#edf4ee;--warn:#7a4c13}
+@media(prefers-color-scheme:dark){:root{--bg:#131914;--paper:#1b231e;--fg:#eaf0e9;--muted:#b3c0b5;--line:#384a3e;--accent:#bbdfab;--tint:#27352b;--warn:#ffd290}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.7 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:980px;margin:36px auto;padding:40px;background:var(--paper);border:1px solid var(--line);border-radius:16px}h1{font-size:clamp(2rem,5vw,3.2rem);line-height:1.14;letter-spacing:-.04em}h2{margin-top:2.3em;font-size:1.6rem;line-height:1.3}h3{margin-top:1.8em;font-size:1.16rem;line-height:1.4}p,li,td{overflow-wrap:anywhere}a{color:var(--accent);text-underline-offset:3px;overflow-wrap:anywhere}code{font-size:.86em;background:var(--tint);padding:.1em .3em;border-radius:4px;overflow-wrap:anywhere}pre{padding:18px;background:var(--tint);white-space:pre-wrap;overflow-wrap:anywhere;font-size:.86em;border-radius:8px}pre code{padding:0}li{margin:.65em 0}.meta{font-size:.88em;color:var(--muted)}.callout{border-left:4px solid var(--accent);padding:16px 20px;background:var(--tint)}.flow{font-weight:650;font-size:1.12em;line-height:1.6;color:var(--accent)}.table-wrap{max-width:100%;overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.92em}th,td{text-align:left;padding:12px 10px;vertical-align:top;border-bottom:1px solid var(--line)}th{background:var(--tint)}.pill{display:inline-block;padding:2px 9px;border:1px solid var(--line);border-radius:20px;font-size:.76em;color:var(--warn);vertical-align:middle}.sources{font-size:.9em}footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);color:var(--muted)}@media(max-width:650px){body{font-size:16px}main{margin:0;padding:24px 18px;border:0;border-radius:0}th,td{padding:9px 6px}ol,ul{padding-left:24px}.callout{padding:12px 16px}}@media print{main{margin:0;padding:0;border:0}a{color:inherit}.table-wrap{overflow:visible}}
+</style></head><body><main>
+<p class="meta">Technical product-owner assessment · 14 November 2026 · Recommendations, not implemented changes</p>
+<h1>Useful work,<br>not more monitoring.</h1>
+<p class="meta">Agenturm source reviewed: <code>a601ad2236f22ef75600129e920ff763883bee7c</code>. This review revisits the earlier developer-value document using code inspection, focused tests, and a synthetic terminal workflow probe.</p>
+<h2>Product decision</h2>
+<p class="callout"><strong>Agenturm’s credible primary job is helping an individual engineer direct their attention across concurrent local coding agents.</strong> Completion review strengthens that job; saved tasks help when work outlives a session.</p>
+<p class="flow">Which agent needs me → why → return to the correct session → review its result → carry the task forward if necessary.</p>
+<p>My previous review correctly identified completion evidence as useful, but made it the whole positioning. That is too narrow. “A passing test followed by an edit” demonstrates trust; it does not establish the most frequent reason to open the app. The repository’s existing qualitative research already makes the stronger distinction: <strong>attention is the entry point, review supports the decision, continuity preserves the work.</strong> This remains a product hypothesis, not measured adoption.</p>
+<p><strong>Recommended promise:</strong> “Know which agent needs you, why, and where to return.” Supporting promise: “Review what happened and carry the task forward.”</p>
+<h2>Who the primary user actually is</h2>
+<p><strong>The engineer personally responsible for several concurrent agent tasks and the resulting code.</strong> They already have terminals, review diffs, and decide what to integrate. Their problem is fragmented attention and context reconstruction—not a lack of charts.</p>
+<div class="table-wrap"><table><thead><tr><th>User</th><th>Fit</th><th>Why</th></tr></thead><tbody>
+<tr><td>Engineer using multiple local sessions, especially across runtimes</td><td>Primary</td><td>Find requests, inspect evidence, recover task context</td></tr>
+<tr><td>Same engineer resuming interrupted work or changing agents</td><td>Strong secondary moment</td><td>Human-authored decisions and linked runs survive a session</td></tr>
+<tr><td>Developer debugging an MCP/OTLP agent application</td><td>Secondary segment</td><td>Tool inputs/results and traces support investigation; needs and setup differ</td></tr>
+<tr><td>One short-lived agent with a sufficient native interface</td><td>Weak initial fit</td><td>Another app may add more overhead than it removes</td></tr>
+<tr><td>Team manager needing shared assignment, permissions and approvals</td><td>Not the present product</td><td>Local acknowledgements and notes are not a team control plane</td></tr>
+</tbody></table></div>
+<p>Recruit ordinary multi-session engineers first, with a separate power-user cohort. <strong>20–50 agents is a stress case to validate, not the customer definition or a proven capacity claim.</strong> Concurrent decisions matter more than a large process count.</p>
+<h2>How it becomes useful in a working day</h2>
+<p>One illustrative task: a retry fix delegated while other agents do unrelated work.</p>
+<ol>
+<li><strong>A recorded input request arrives.</strong> The inbox separates requests from ordinary tool waits and completions. Prioritize responding instead of repeatedly scanning terminals.</li>
+<li><strong>Recover enough context to answer.</strong> Inspect the request and evidence. The existing Linux/tmux return action can select a pane where an exact process mapping exists. Otherwise use the disclosed fallback and native terminal. Do not pretend every runtime or terminal can be routed.</li>
+<li><strong>Observe advancement.</strong> Fresh positive evidence resolves the request. Marking it Seen does not approve it or establish resolution.</li>
+<li><strong>Review reported completion.</strong> Inspect recorded checks, edits, failures and gaps before choosing what to inspect or rerun. A sibling’s success is not this execution’s validation. Diff review and CI remain necessary.</li>
+<li><strong>Preserve only work that needs continuation.</strong> Save “do not change the public API,” a rejected approach and rationale, the next action, and linked evidence. Preview before handing it to another agent. This is explicit context maintenance, not automatic memory restoration.</li>
+</ol>
+<p>The potential benefit is <strong>less time choosing a terminal and reconstructing a task before acting</strong>. Not more running agents, guaranteed faster shipping, authoritative provider quota, or independent verification.</p>
+<h2>The code contains the right foundations</h2>
+<ul>
+<li><strong>Trustworthy state distinctions:</strong> <code>session_status.py</code> separates explicit requests, quiet work, process progress, collector delay and uncertainty. False “stuck” claims would destroy trust.</li>
+<li><strong>Incident identity, not just badges:</strong> <code>attention.py</code> and <code>ui_workflow_controller.py</code> retain unresolved incidents, suppress initial-inventory alert storms, and distinguish acknowledgement from native resolution.</li>
+<li><strong>Scoped evidence:</strong> <code>workflow_evidence.py</code> isolates receiver/producer/agent/session/run or turn, separates claims from checks, and discloses partial capture. This adds substance beyond a notification bell.</li>
+<li><strong>Reading continuity:</strong> stable IDs, deferred reordering, background reads and frozen exports let engineers read while agents continue. These are product features.</li>
+<li><strong>Durable human intent:</strong> saved tasks retain briefs, versioned decisions, linked runs and bounded Git captures separately from telemetry retention. Revision conflicts refuse to overwrite newer work.</li>
+<li><strong>Low adoption dependency:</strong> supported native discovery and recorded summaries need no Agenturm account or model call. Capture still creates sensitive copies; best-effort redaction is not a confidentiality guarantee.</li>
+</ul>
+<h2>Concrete product findings</h2>
+<h3><span class="pill">High</span> 1. The attention path is less prominent than the inventory</h3>
+<p><strong>Observed:</strong> 50 synthetic sessions—44 running, two waiting, one failed, three completed—remained in the roster at all tested sizes. Today deliberately orders running work first. The first wait appeared at row 45, below the initial viewport. The existing <code>w</code> inbox immediately narrowed the work to six relevant incidents, with an input request first.</p>
+<div class="table-wrap"><table><thead><tr><th>Terminal size</th><th>Roster rows</th><th>First wait</th><th>Inbox items</th><th>Footer shows w</th></tr></thead><tbody>
+<tr><td>120×36</td><td>50</td><td>Row 45</td><td>6</td><td>Yes</td></tr>
+<tr><td>80×24</td><td>50</td><td>Row 45</td><td>6</td><td>No</td></tr>
+<tr><td>60×18</td><td>50</td><td>Row 45</td><td>6</td><td>No</td></tr>
+</tbody></table></div>
+<p>This is not dropped data. It is discoverability: <strong>the overview is easier to find than the decision queue.</strong> Headers, help and the palette mitigate the problem but do not make the queue the obvious next step.</p>
+<p><strong>Recommendation:</strong> a persistent, activatable “Needs you” entry, discoverable at compact sizes. Reuse the inbox. Do not add a tab or silently move rows while someone reads.</p>
+<h3><span class="pill">High</span> 2. Returning to the agent is treated like a setting</h3>
+<p><strong>Observed:</strong> Terminal and Resume are children of Workflow’s Settings panel. At all three tested sizes that parent stayed hidden until Settings was activated. Main inspector actions emphasize Review, Activity and Trace instead.</p>
+<p><strong>Recommendation:</strong> contextual “Go to agent terminal” beside an input request when the target is verifiable; a supported resume-command fallback for stopped Codex/Claude sessions; honest unavailability otherwise. Preserve exact-process and PID-reuse protections. Do not guess by directory, send keystrokes, approve requests or launch duplicate sessions.</p>
+<p class="meta">This promotes an existing capability. It does not claim terminal return is missing or universally supported.</p>
+<h3><span class="pill">High</span> 3. Always-on monitoring must earn its resource and coverage claims</h3>
+<p>Discovery uses bounded recent-source windows: 50 JSONL sources across Codex/Claude/Pi and separately 50 OpenCode sessions. Historical/delegated records can consume them. Coverage warnings and diagnostics exist; they are not a guarantee that all 50 active agents will be observed.</p>
+<p>The repository’s retained-history report records <strong>112.96 seconds cold readiness</strong> and <strong>15.90% of one core at idle</strong> on a synthetic 35-day fixture. A separate older 20-minute soak did not establish RSS stability. These are previous named-revision measurements, not new measurements of this checkout.</p>
+<p><strong>Recommendation:</strong> gate the 20–50-agent promise on readiness, idle CPU, sustained memory, event-to-display age and source omissions. Separate input responsiveness from collection freshness. A 50-row UI probe or 1,010-node hierarchy microbenchmark is not a live-workload benchmark.</p>
+<h3><span class="pill">Medium</span> 4. The useful loop has avoidable seams</h3>
+<p>Today, Workflow, Review, Findings and Saved tasks serve legitimate purposes, but users must learn several nouns and acknowledgement meanings. Review opens evidence; Reviewed/Seen acknowledges; approval happens in the native terminal. Review offers save/export actions, while acknowledgement happens outside it.</p>
+<p><strong>Recommendation:</strong> preserve shortcuts but make the reading path explicit: <strong>request → native terminal; failure → recorded failure; completion → inspect evidence.</strong> Distinguish “Inspect evidence,” “Mark reviewed,” and “Seen; still pending.” Keep MCP/traces/findings as investigation depth. An acknowledgement is never a merge-readiness gate.</p>
+<h3><span class="pill">Medium</span> 5. Documentation explains contracts better than first value</h3>
+<p>The README leads with attribution/completion; research leads with attention. The older UX spec describes All/Attention/Working/Finished while code and usage describe Today/Running/History/Errors. The earlier review added another narrative instead of reconciling them.</p>
+<p><strong>Recommendation:</strong> one current product contract and a short first-run path: existing agents → real request or completion → inspect → return to native terminal → observe the outcome. Keep careful evidence/privacy contracts behind that path. Clearly separate main/Unreleased receipts from published 0.2.3. This assessment does not change those files.</p>
+<h3><span class="pill">Medium</span> 6. Saved tasks must not become compulsory bookkeeping</h3>
+<p>Structured decisions, offline editing and reviewed handoffs exist. Their value depends on explicit human maintenance. A full task record for every small run could erase the benefit.</p>
+<p><strong>Recommendation:</strong> save at interruption/restart/handoff, not before monitoring. A minimal constraint, decision and next action with source links may suffice. Keep drafts editable and consent explicit; do not infer accepted decisions or silently inject context. Test whether it replaces a notes workflow rather than creating another task manager.</p>
+<h2>What to prioritize next</h2>
+<div class="table-wrap"><table><thead><tr><th>Priority</th><th>Product outcome</th><th>Scope</th></tr></thead><tbody>
+<tr><td>P0</td><td>Find and act on the correct request</td><td>Promote inbox and verified terminal return; compact discoverability</td></tr>
+<tr><td>P0</td><td>Trust the monitor enough to leave it open</td><td>Readiness, idle resources, capture coverage and source freshness</td></tr>
+<tr><td>P1</td><td>Finish an investigation without losing context</td><td>Tighten contextual actions and return paths; retain exact evidence boundaries</td></tr>
+<tr><td>P1</td><td>Resume interrupted work with less repetition</td><td>Trial lightweight saved briefs and reviewed handoffs</td></tr>
+<tr><td>Defer</td><td>Capabilities without demonstrated user benefit</td><td>Renderer rewrite, more dashboards, auto-approval, coordination, invented quota/cost estimates, team-SaaS expansion</td></tr>
+</tbody></table></div>
+<p class="meta">Proposed priorities, not authorization or an implementation plan. More features are not the missing proof of usefulness.</p>
+<h2>Test whether primary users actually benefit</h2>
+<p>Run a small consent-based pilot with multi-session engineers, varied runtimes, and a separately reported 20–50-agent cohort. Compare the same jobs with their notifications/tmux/notes setup and Agenturm; counterbalance order where practical.</p>
+<ul>
+<li>Measure recorded request → native response/advancement, separating detection delay from human delay. Missing timestamps/signals mean unavailable duration.</li>
+<li>Measure time to identify the correct execution and an appropriate next action. Count wrong-worker and false-verification conclusions.</li>
+<li>Track manual terminal checks, irrelevant alerts, missed waits and omitted sources. A quiet inbox is not proof of zero misses.</li>
+<li>Measure resumption time and preservation of constraints/rejected approaches.</li>
+<li>Observe voluntary repeat use and which script or notes workflow can be retired. Screenshots and token totals do not establish productivity.</li>
+</ul>
+<p><strong>Proposed usability gates—not measurements:</strong> find the actionable queue within five seconds at 80×24; reach a recorded request and its verified terminal route within three activations excluding list navigation; do not mistake Seen for approval or completion for validation. Include unsupported routing and source omissions. Keep pilot records local or explicitly reviewed before sharing.</p>
+<h2>Validation and limits</h2>
+<ul>
+<li><strong>47 tests passed in 58.866 seconds</strong> across attention, Workflow, Today outcomes and task continuity. Included headless keyboard/resize paths and mocked exact tmux routing. SQLite ResourceWarnings and asyncio slow-task diagnostics appeared; no assertion failed. They do not establish a product memory leak.</li>
+<li>A separate <strong>50-session synthetic probe</strong> checked roster retention, inbox ordering, compact hints and Settings visibility at 120×36, 80×24 and 60×18. All 50 rows remained available; six relevant incidents appeared in the inbox. Not a live ingestion or performance test.</li>
+<li>The prior review’s <strong>38 passing tests</strong> covered status and receipts, including an authenticated loopback receiver. Separate focused batches, not a full-suite result.</li>
+<li>No participant research, provider calls, actual notification delivery, live terminal switching, production benchmark, clipboard validation, or every-emulator visual inspection. No product code, shared worktree, running agent or remote branch changed.</li>
+</ul>
+<pre><code>uv run --frozen python -m unittest tests.test_attention tests.test_workflow tests.test_today_outcomes tests.test_task_continuity -v</code></pre>
+<h2>Source map</h2>
+<p class="meta">References describe the reviewed revision. Older research/specifications are not proof of current behavior. External research sources were not independently revalidated.</p>
+<ul class="sources">
+<li><a href="2026-11-14-developer-value.html">Earlier developer-value review</a> · <a href="../research/2026-11-11-terminal-agent-research.html">Existing qualitative product research</a></li>
+<li><a href="../../README.md">README</a> · <a href="../usage.html">Usage</a> · <a href="../terminal-ux-spec.md">Older UX spec</a> · <a href="../saved-tasks.html">Saved tasks</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/observatory/terminal_ui.py#L1005-L1056">Today ordering and compact hints</a> · <a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/observatory/terminal_ui.py#L1765-L1803">Inspector actions</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/observatory/ui_workflow.py#L62-L94">Exact terminal return and supported resume commands</a> · <a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/observatory/ui_workflow.py#L167-L192">Settings placement</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/observatory/attention.py">Incident identity</a> · <a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/observatory/ui_workflow_controller.py">Acknowledgements and delivery</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/observatory/workflow_evidence.py">Scoped evidence</a> · <a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/observatory/ui_review.py">Review</a> · <a href="https://github.com/abhishekash/agenturm/blob/a601ad2236f22ef75600129e920ff763883bee7c/observatory/ui_saved_tasks.py">Explicit continuity</a></li>
+<li><a href="../validation/history-read-economics.md">Retained-history measurements</a> · <a href="../rigorous-validation.html">Soak qualifications</a> · <a href="../privacy.html">Privacy</a></li>
+</ul>
+<footer><strong>Bottom line:</strong> useful foundations, an actionable primary-user problem, and a plausible daily workflow. Make that workflow obvious and cheap—not another kind of telemetry.<br><a href="2026-11-14-product-owner-review.md">Markdown source</a></footer>
+</main></body></html>
