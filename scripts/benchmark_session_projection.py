@@ -30,6 +30,14 @@ from tests.fixtures.session_projection_before import session_projection as basel
 current = current_module.session_projection
 
 
+def file_digest(path):
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        while block := stream.read(1024 * 1024):
+            value.update(block)
+    return value.hexdigest()
+
+
 def inventory(db):
     counts = {table: db.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0]
               for table in ('spans', 'logs', 'trace_activity', 'live_run_stats_v1', 'live_summaries_v1')}
@@ -67,6 +75,7 @@ def prepare(source, destination):
             note='Source explicitly verified synthetic by operator; SQLite read-only backup, no source Store or native discovery. Preparation excluded from paired read timings.')
     finally:
         store.close()
+    manifest['database_sha256'] = file_digest(destination)
     with destination.with_suffix('.fixture.json').open('x') as stream:
         json.dump(manifest, stream, indent=2)
     return manifest
@@ -107,6 +116,8 @@ def measure(path, samples):
     manifest = json.loads(path.with_suffix('.fixture.json').read_text())
     if manifest.get('synthetic') is not True or manifest.get('destination') != str(path):
         raise ValueError('Use a newly prepared, explicitly synthetic fixture.')
+    if file_digest(path) != manifest.get('database_sha256'):
+        raise ValueError('Fixture bytes changed after preparation; make a fresh copy for measurement.')
     store = Store(path, async_derived_refresh=True)
     try:
         deadline = time.monotonic() + 15
