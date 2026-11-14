@@ -64,6 +64,21 @@ class InvestigationHelpers(unittest.TestCase):
 
 
 class InvestigationJourneys(unittest.IsolatedAsyncioTestCase):
+    async def test_actual_monitor_shortcut_and_palette_action_open_one_screen(self):
+        from observatory.terminal_ui import ObservatoryApp
+        from tests.test_terminal_search import ManualFeed
+        feed=ManualFeed();app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(60,18)) as pilot:
+            await pilot.pause();app.refresh_timer.stop()
+            app.query_one('#agent-table').focus()
+            await pilot.press('ctrl+f');await pilot.pause()
+            self.assertIsInstance(app.screen,InvestigationsScreen)
+            self.assertTrue(app.screen.query_one('#investigation-query',Input).has_focus)
+            depth=len(app.screen_stack);app.action_investigate()
+            self.assertEqual(len(app.screen_stack),depth)
+            await pilot.press('escape');await pilot.pause()
+            self.assertNotIsInstance(app.screen,InvestigationsScreen)
+
     def fixture(self,rows=12):
         api=Api();page=[match(str(i)) for i in range(rows)];api.pages=[dict(matches=page,next_cursor=None)]
         api.source=source_for(page[0])

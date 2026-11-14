@@ -14,6 +14,8 @@
 
 - Batch bounded session identity, label and uncovered-log reads in one source snapshot. Preserve older uncovered errors, typed recovery references and nullable ownership; record the paired latency gain and still-open resource targets.
 
+- Investigate exact recorded paths and literal command/instruction phrases across retained indexed history with `agenturm investigate`, Ctrl+F and Activity History. Keep source navigation pinned to receiver and full execution identity, with bounded paging, keyboard reading and sticky capture revocation.
+
 - Reuse read-only leases for the background compatibility watcher’s empty probe, releasing them before transactional repair. Preserve the polling interval, bounded drain and live external-writer invalidation.
 
 - Keep MCP scope, call identity, hydration and execution enrichment in one source snapshot. Separate producer/worker/session/server collisions, retain ambiguous calls, and expose typed recorded payloads without borrowing trace-root ownership.

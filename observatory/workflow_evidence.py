@@ -180,7 +180,9 @@ class ReviewHistory:
 
     def projection(self, item):
         rows = sorted(self.events.values(), key=lambda e: (e.get('time_unix_nano') or 0, event_key(e))) if item.get('capture_content') is not False else []
-        edits = [e for e in rows if modifying_action(e)]
+        from .recorded_paths import path_facts
+        recorded_paths={event_key(e):path_facts(e) for e in rows if e.get('domain')=='file'}
+        edits = [e for e in rows if recorded_paths.get(event_key(e),{}).get('action')]
         facts={event_key(event):operation_facts(event) for event in rows
                if event.get('domain') not in {'message','model','context','agent'}
                or str(event.get('result') or '').lower() in ('error','failed','failure','blocked','denied')}
@@ -260,7 +262,10 @@ class ReviewHistory:
             note='Recorded run usage only; session lifetime, descendant totals and provider billing are separate.')
         return dict(format='agenturm-review-v1', title='Selected execution (metadata-only)' if item.get('capture_content') is False else safe_text(item.get('task') or 'Selected execution'),
             scope=asdict(self.scope), captured_at=self.captured_at, reported_outcome=item.get('state') or 'Unknown',
-            edits=[dict(source=reference(e), path=safe_text(e.get('subject')), action=modifying_action(e),source_action=e.get('action'),
+            edits=[dict(source=reference(e), path=safe_text(e.get('subject')), action=recorded_paths[event_key(e)]['action'],source_action=e.get('action'),
+                paths=recorded_paths[event_key(e)]['paths'],paths_complete=recorded_paths[event_key(e)]['complete'],
+                from_path=next((p['path'] for p in recorded_paths[event_key(e)]['paths'] if p['role']=='from'),None) if recorded_paths[event_key(e)]['complete'] else None,
+                to_path=next((p['path'] for p in recorded_paths[event_key(e)]['paths'] if p['role']=='to'),None) if recorded_paths[event_key(e)]['complete'] else None,
                 result=safe_text(e.get('result') or 'not reported'),effect='recorded success' if e.get('result') in {'success','ok','completed'} else 'attempt; effect unknown') for e in edits],
             checks=checks, unclassified_commands=[dict(source=reference(e),command=facts[event_key(e)].get('command') or facts[event_key(e)].get('display_subject'),result=safe_text(e.get('result'))) for e in rows if e.get('domain')=='shell' and not command_checks[event_key(e)]], usage=usage, errors=[error_fact(e) for e in errors],
             context_events=[dict(source=reference(e), subject=safe_text(e.get('subject'))) for e in context], window=window,

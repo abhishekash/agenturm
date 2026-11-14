@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 
 from .command_evidence import modifying_action
-from .operation_facts import safe_value
+from .operation_facts import safe_value,operation_facts
 
 
 def path_facts(event):
@@ -36,6 +36,11 @@ def path_facts(event):
             except (ValueError, RecursionError):
                 detail = None
         values = [event]
+        facts=operation_facts(event)
+        # Only the shared typed input role may contribute tool arguments.
+        # JSON printed in output is never a rename instruction.
+        if facts['input_complete'] and isinstance(facts['arguments'],dict):
+            values.append(facts['arguments'])
         if isinstance(detail, dict):
             values.append(detail)
             for key in ('rename', 'move', 'Rename', 'Move'):

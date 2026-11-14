@@ -129,6 +129,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     return
                 local = getattr(store, "local_agent_monitor", None)
                 self._json(200, {"ok": True,"observed_time_unix_nano":time.time_ns(), "receiver_id": store.receiver_namespace() if hasattr(store,"receiver_namespace") else None, "review_trace_filter": True, "review_turn_filter": True, "review_run_summary": True,
+                    "investigation_index_v1":getattr(store,'investigation_index_v1',False),
                     "security":{"authentication_required":bool(token),"host_validation":True},
                     "storage":{"retention_days":getattr(store,"retention_days",None)},
                     "indexing":store.index_status() if hasattr(store,"index_status") else {"ready":True},
@@ -236,6 +237,18 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     self._json(200, {"metrics": store.metric_catalog(limit=limit)})
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
+            elif path == '/api/investigations/source':
+                query=parse_qs(route.query)
+                try:self._json(200,store.investigation_source(query.get('event_id',[''])[0],query.get('receiver_id',[''])[0],query.get('reference',[''])[0]))
+                except ValueError as exc:self._json(400,{'error':str(exc)})
+            elif path == '/api/investigations':
+                query=parse_qs(route.query)
+                try:self._json(200,store.investigation_page(query.get('kind',[''])[0],query.get('q',[''])[0],
+                    limit=int(query.get('limit',['50'])[0]),cursor=query.get('cursor',[None])[0],
+                    service=query.get('service',[None])[0],failed=query.get('failed',['0'])[0]=='1',
+                    agent_id=query.get('agent_id',[None])[0],subtree=query.get('subtree',['0'])[0]=='1',
+                    scope_revision=query.get('scope_revision',[None])[0]))
+                except ValueError as exc:self._json(400,{'error':str(exc)})
             elif path.startswith('/api/findings/') and path.endswith('/source'):
                 try:self._json(200,store.finding_source(path[len('/api/findings/'):-len('/source')]))
                 except ValueError as exc:self._json(400,{'error':str(exc)})

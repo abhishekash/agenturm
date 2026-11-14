@@ -19,9 +19,14 @@ MARKER = 'investigation_terms_v1'
 def initialize(db):
     """Install durable index hooks; return whether Activity needs re-projection."""
     try:
+        previous=db.execute("SELECT value FROM schema_meta WHERE key='investigation_available_v1'").fetchone()
+        was_disabled=bool(previous and previous[0]=='0')
         db.execute('''CREATE VIRTUAL TABLE IF NOT EXISTS investigation_fts_v1 USING fts5(
             text, content='investigation_terms_v1', content_rowid='term_id',
             tokenize='unicode61 remove_diacritics 0')''')
+        # IF NOT EXISTS alone does not prove this SQLite build can open an
+        # existing virtual table created by another receiver version.
+        db.execute('SELECT rowid FROM investigation_fts_v1 LIMIT 0')
     except sqlite3.OperationalError as exc:
         raise ValueError('Typed investigations require SQLite FTS5; no history-scan fallback is available.') from exc
     db.execute('''CREATE TABLE IF NOT EXISTS investigation_terms_v1(
@@ -30,6 +35,7 @@ def initialize(db):
         UNIQUE(event_key,kind,text,role))''')
     db.execute('CREATE INDEX IF NOT EXISTS investigation_exact_v1 ON investigation_terms_v1(kind,text,event_key)')
     db.execute('CREATE INDEX IF NOT EXISTS investigation_event_v1 ON investigation_terms_v1(event_key)')
+    db.execute('CREATE TABLE IF NOT EXISTS investigation_dirty_v1(kind TEXT,owner_key TEXT,PRIMARY KEY(kind,owner_key))')
     db.execute('''CREATE TRIGGER IF NOT EXISTS investigation_insert_v1
         AFTER INSERT ON investigation_terms_v1 BEGIN
         INSERT INTO investigation_fts_v1(rowid,text) VALUES(NEW.term_id,NEW.text); END''')
@@ -40,9 +46,22 @@ def initialize(db):
     db.execute('''CREATE TRIGGER IF NOT EXISTS investigation_activity_delete_v1
         AFTER DELETE ON activity_index_v1 BEGIN
         DELETE FROM investigation_terms_v1 WHERE event_key=OLD.event_key; END''')
+    # Older receivers can update Activity without updating this index.
+    for operation in ('INSERT', 'UPDATE', 'DELETE'):
+        alias = 'OLD' if operation == 'DELETE' else 'NEW'
+        old = ('INSERT OR IGNORE INTO investigation_dirty_v1 VALUES(OLD.kind,OLD.owner_key);'
+               if operation == 'UPDATE' else '')
+        db.execute(f'''CREATE TRIGGER IF NOT EXISTS investigation_dirty_{operation.lower()}_v1
+            AFTER {operation} ON activity_index_v1 BEGIN
+            INSERT OR IGNORE INTO investigation_dirty_v1 VALUES({alias}.kind,{alias}.owner_key);{old} END''')
     # The integrating receiver queues metadata IDs using its existing durable
     # bounded drain. It must set MARKER only in that initialization transaction.
-    return not bool(db.execute('SELECT 1 FROM schema_meta WHERE key=?', (MARKER,)).fetchone())
+    if was_disabled:
+        # Supported builds restore virtual-index consistency after a receiver
+        # explicitly ran with search disabled. Readiness still waits for the
+        # source-ID backfill, so older terms cannot be served as current.
+        db.execute("INSERT INTO investigation_fts_v1(investigation_fts_v1) VALUES('rebuild')")
+    return was_disabled or not bool(db.execute('SELECT 1 FROM schema_meta WHERE key=?', (MARKER,)).fetchone())
 
 
 def replace_owner(db, kind, owner_key, event_rows):

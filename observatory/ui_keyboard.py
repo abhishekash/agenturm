@@ -47,6 +47,7 @@ New arrivals and resize preserve the selected request and reading position.
 OTHER MONITOR VIEWS
 1–7              Agents, Activity, MCP, Traces, Host, Metrics, Findings
 /                Focus search (Esc returns to the list)
+Ctrl+F           Investigate retained paths, commands or instructions
 ↑ / ↓, Enter     Choose a result, then inspect it
 e / Esc          Expand an inspector / return to the list
 [ / ] / l        Newer page / older page / latest page
