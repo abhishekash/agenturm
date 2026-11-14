@@ -47,6 +47,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     if identity is not None:changed=changed or store._mcp_file_identity()!=identity
                     identity=getattr(self,'_activity_file_identity',None)
                     if identity is not None:changed=changed or store._source_file_identity('Activity')!=identity
+                    identity=getattr(self,'_metrics_file_identity',None)
+                    if identity is not None:changed=changed or store._source_file_identity('Metrics')!=identity
                 except (OSError, ValueError, sqlite3.Error):
                     changed = True
                 if changed:
@@ -102,6 +104,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
             self._get_receiver_id = None
             self._mcp_file_identity = None
             self._activity_file_identity = None
+            self._metrics_file_identity = None
             route = self._route()
             if route is None:
                 return
@@ -114,7 +117,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
             certified_activity=(path=='/api/activity'and callable(getattr(store,'certify_initial_activity',None)))
             indexed_activity=(certified_activity and not
                 {'agent_id','subtree','scope_revision','trace_id','turn_id','review'}.intersection(parse_qs(route.query,keep_blank_values=True)))
-            independent_read=raw_mcp or indexed_activity
+            certified_metrics=(path=='/api/metrics'and callable(getattr(store,'certify_initial_metrics',None)))
+            independent_read=raw_mcp or indexed_activity or certified_metrics
             independent_cache_ready=True
             if path not in {'/','/api/health'} and path.startswith('/api/') and hasattr(store,'index_status'):
                 indexing=store.index_status()
@@ -136,6 +140,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                         return
             if certified_mcp:self._mcp_file_identity=store.certify_initial_mcp(self._get_receiver_id,strict=not raw_mcp)
             if certified_activity:self._activity_file_identity=store.certify_initial_activity(self._get_receiver_id,strict=not indexed_activity)
+            if certified_metrics:self._metrics_file_identity=store.certify_initial_metrics(self._get_receiver_id)
             if cache.eligible(path)and(not independent_read or independent_cache_ready):
                 self._cache_version, cached = cache.get(self.path)
                 if cached is not None:
@@ -215,7 +220,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
             elif path == "/api/metrics":
-                self._json(200, store.metrics())
+                certificate=({'_initial_receiver':self._get_receiver_id,'_initial_file':self._metrics_file_identity}if certified_metrics else {})
+                self._json(200, store.metrics(**certificate))
             elif path == "/api/mcp":
                 query = parse_qs(route.query)
                 try:
