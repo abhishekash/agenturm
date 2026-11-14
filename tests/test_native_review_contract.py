@@ -100,6 +100,7 @@ class NativeReviewContractTests(unittest.TestCase):
             subject="/bin/sh -lc 'cd missing && pytest -q'",
             result="error",
             detail={"exit_code": 1},
+            attributes={'process.command_line':"/bin/sh -lc 'cd missing && pytest -q'",'process.exit.code':1},
         )
         check = check_observation(event)
         self.assertEqual(check["result"], "unknown")
@@ -107,7 +108,8 @@ class NativeReviewContractTests(unittest.TestCase):
         self.assertIn("individual failure unavailable", check["result_basis"])
         self.assertEqual(
             check_observation(
-                {**event, "detail": {"exit_code": 0}, "result": "success"}
+                {**event, "detail": {"exit_code": 0}, "result": "success",
+                 'attributes':{**event['attributes'],'process.exit.code':0}}
             )["result"],
             "passed",
         )

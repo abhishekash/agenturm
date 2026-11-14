@@ -194,26 +194,36 @@ def failure_evidence(event):
     """Build a short, human-readable reason from a recorded failed event."""
     if not event:
         return ''
-    details=decode_nested(event.get('detail') or {})
+    from .operation_facts import operation_facts,safe_value
+    observed=operation_facts(event)
+    captured=observed['output']
+    details=decode(captured) if captured else {}
     keys=('exception.message','error.message','tool.error_message','tool.error',
-          'exception.type','error.type','message','error','reason','stderr')
+          'exception.type','error.type','message','error','reason','stderr','text','description')
     candidates=[]
-    def collect(value):
+    remaining=32
+    def collect(value,depth=0):
+        nonlocal remaining
+        remaining-=1
+        if remaining<0 or depth>6:return
         if isinstance(value,dict):
             for key in keys:
                 child=value.get(key)
                 if isinstance(child,(str,int,float)) and str(child).strip():
                     candidates.append(str(child).strip())
             for child in value.values():
-                collect(child)
+                collect(child,depth+1)
         elif isinstance(value,list):
             for child in value:
-                collect(child)
+                collect(child,depth+1)
     collect(details)
     result=str(event.get('result') or event.get('status') or 'failed').replace('_',' ')
-    action=' '.join(str(event.get(key) or '').strip() for key in ('domain','action','subject')).strip()
+    subject=observed.get('command') or safe_value(event.get('subject') or '')[0]
+    action=' '.join(str(value or '').strip() for value in (event.get('domain'),event.get('action'),subject)).strip()
     prefix=f'{action} · {result}' if action else result
     reason=next((text for text in candidates if text.casefold() not in {result.casefold(), 'error', 'failed'}), '')
+    if not reason and isinstance(details,str) and details.strip().casefold() not in {'','true','false','null','{}','[]','0','1'}:
+        reason=details.strip()
     return f'{prefix}: {reason}' if reason else f'{prefix}. Open the failed event for its recorded details.'
 
 

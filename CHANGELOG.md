@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Share typed, bounded operation facts across Review, error reminders and Activity failure grouping. Preserve command/output provenance and exact ownership; require complete redacted-safe inputs before grouping or observing later matching success. Rebuild older activity/result projections through the resumable history queue.
+
 - Share bounded static session preparation across the Agents roster and Workflow while recomputing health and attention. Honor fresh capture revocation in paused inspectors, retained prompt/evidence buffers and in-flight AI summaries; retain exact receiver/producer/worker/session boundaries.
 
 - Reuse read-only leases for the background compatibility watcher’s empty probe, releasing them before transactional repair. Preserve the polling interval, bounded drain and live external-writer invalidation.

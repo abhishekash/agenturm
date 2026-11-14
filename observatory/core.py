@@ -210,7 +210,7 @@ def _activity_row(attrs, time_ns, source, source_id, span_id=None, service="unkn
     cursor_metadata = {key: item for key, item in {**resource_attributes, **attrs}.items()
                        if key.startswith("cursor.") and not key.startswith("cursor.user.")
                        and key != "cursor.team.id" and item is not None}
-    return {"activity_scope_version": 1, "time_unix_nano": max(0, time_ns),
+    row={"activity_scope_version": 1, "time_unix_nano": max(0, time_ns),
             "domain": value("agent.activity.domain", "activity.domain") or "other",
             "action": value("agent.activity.action", "activity.action") or "activity",
             "subject": value("agent.activity.subject", "agent.activity.target",
@@ -223,9 +223,18 @@ def _activity_row(attrs, time_ns, source, source_id, span_id=None, service="unkn
                                 for key in SESSION_KEYS if _session_value(attrs.get(key)) is not None
                                 or _session_value(resource_attributes.get(key)) is not None), None),
             "service": str(service), "source": source, "source_id": str(source_id),
-            "span_id": span_id, "turn_id": value("agent.turn.id"), "detail": value("agent.activity.detail") or (body if isinstance(body, str) else ""),
+            "span_id": span_id, "turn_id": _session_value(attrs.get('agent.turn.id')) or '', "detail": value("agent.activity.detail") or (body if isinstance(body, str) else ""),
             "mcp_server": value("mcp.server.name"), "mcp_tool": value("mcp.tool.name"),
             "duration_ms": attrs.get("duration_ms"), "metadata": cursor_metadata}
+    if type(attrs.get('observatory.operation.schema')) is int and attrs['observatory.operation.schema']==1:
+        row['detail_role']='operation_v1'
+    elif row['domain'] in {'shell','tool','mcp'}:
+        from .operation_facts import activity_evidence,evidence_detail
+        evidence=activity_evidence(attrs,row['detail'],row['domain'],row['subject'],body=body)
+        if evidence['qualified_detail']:
+            row.update(detail=evidence_detail(evidence),detail_role='operation_v1')
+    from .operation_facts import normalize_operation_result
+    return normalize_operation_result(row)
 
 
 def _task_outcome_from_log(attrs, event_name):
@@ -289,6 +298,8 @@ def _progress_from_log(log):
 
 def _tool_activity(span):
     attrs = span.get("attributes") if isinstance(span.get("attributes"), dict) else {}
+    from .operation_facts import attribute_evidence,decode,evidence_detail
+    evidence=attribute_evidence(attrs)
     operation = str(attrs.get("gen_ai.operation.name") or "").lower()
     openinference_tool = attrs.get("openinference.span.kind") == "TOOL"
     tool_name = (attrs.get("gen_ai.tool.name") or attrs.get("mcp.tool.name") or
@@ -303,7 +314,7 @@ def _tool_activity(span):
               operation or "call")
     status = str(attrs.get("tool.result_status") or "").lower()
     if (span.get("status") == "ERROR" or attrs.get("error.type") or attrs.get("tool.error")
-            or mcp_result_error(attrs)):
+            or evidence['is_error']):
         result = "error"
     elif status in {"error", "failed", "failure"}:
         result = "error"
@@ -318,16 +329,26 @@ def _tool_activity(span):
         "agent.activity.result": result,
         "agent.activity.actor": str(attrs.get("gen_ai.agent.name") or attrs.get("agent.name") or ""),
     }
-    evidence=[]
-    for label,key in (("Input","input.value"),("Output","output.value")):
-        value=attrs.get(key)
-        if value not in (None, ""):
-            text=value if isinstance(value,str) else json.dumps(value,ensure_ascii=False,indent=2)
-            evidence.append(f"{label}:\n{text[:4000]}")
+    native_opencode=(span.get('scope_name')=='observatory.opencode' and
+                     span.get('service')=='opencode' and attrs.get('agent.runtime')=='OpenCode')
+    current_native=(type(attrs.get('observatory.operation.capture_version')) is int and
+                    attrs['observatory.operation.capture_version']==1)
+    if native_opencode and not current_native:
+        legacy=decode(attrs.get('agent.activity.detail'))
+        if isinstance(legacy,dict) and str(domain).casefold()=='shell':
+            if isinstance(legacy.get('command'),str):evidence['commands'].append(('opencode.command',legacy['command']))
+            if 'exit_code' in legacy:evidence['exits'].append(('opencode.metadata.exit',legacy['exit_code']))
+        evidence.update(input_clipped=True,output_clipped=True)
+    if 'agent.activity.detail' in attrs and not (native_opencode and current_native):
+        evidence['outputs'].append(('activity.detail','output',attrs['agent.activity.detail']))
     normalized.update({key:attrs[key] for key in attrs if key.startswith("agent.activity.")})
-    return _activity_row({**_span_activity_identity(span), **normalized}, span.get("end_unix_nano") or span.get("start_unix_nano"),
+    row=_activity_row({**_span_activity_identity(span), **normalized}, span.get("end_unix_nano") or span.get("start_unix_nano"),
                          "span", span["span_id"], span["span_id"], span.get("service", "unknown"),
-                         "\n".join(evidence), span.get("resource_attributes"))
+                         resource_attributes=span.get("resource_attributes"))
+    if any(evidence[key] for key in ('inputs','commands','exits','outputs')):
+        row.update(detail=evidence_detail(evidence),detail_role='operation_v1')
+    from .operation_facts import normalize_operation_result
+    return normalize_operation_result(row)
 
 
 def _native_event_activity(span, event, index):
@@ -368,19 +389,58 @@ def _native_event_activity(span, event, index):
         detail = ", ".join(removed)
     normalized = {"agent.activity.domain": domain, "agent.activity.action": action,
                   "agent.activity.subject": str(subject), "agent.activity.result": result}
-    actor = span.get("attributes", {}).get("gen_ai.agent.name")
+    actor=attrs.get('gen_ai.agent.name') or attrs.get('agent.name')
     if actor:
         normalized["agent.activity.actor"] = str(actor)
-    return _activity_row({**_span_activity_identity(span), **normalized}, event.get("time_unix_nano") or span.get("start_unix_nano"),
+    identity,resource=_event_activity_identity(span,attrs)
+    if name=='exception' and isinstance(attrs.get('exception.message'),str) and attrs['exception.message']:
+        from .operation_facts import attribute_evidence,evidence_detail
+        evidence=attribute_evidence({})
+        evidence['outputs']=[('event.exception','error',{'type':attrs.get('exception.type'),
+                                                       'message':attrs['exception.message']})]
+        detail=evidence_detail(evidence)
+        normalized['observatory.operation.schema']=1
+    return _activity_row({**identity, **normalized}, event.get("time_unix_nano") or span.get("start_unix_nano"),
                          "span", f"{span['span_id']}:event:{index}", span["span_id"],
                          span.get("service", "unknown"), detail,
-                         span.get("resource_attributes"))
+                         resource)
 
 
 def _span_activity_identity(span):
     attrs = span.get('attributes') or {}
     return {key: attrs[key] for key in (*SESSION_KEYS, 'agent.id', 'agent.runtime',
             'agent.namespace', 'agent.worker_id','agent.turn.id') if key in attrs}
+
+
+def _event_activity_identity(span,event_attrs):
+    """Explicit event identity claims override inherited alias families."""
+    inherited=_span_activity_identity(span)
+    resource=dict(span.get('resource_attributes') or {})
+    parent=_agent_id_from_attributes(span.get('attributes') or {},resource,span.get('service'))
+    claimed=any(key in event_attrs for key in ('agent.id','agent.runtime','agent.namespace'))
+    candidate={**inherited,**event_attrs}
+    if 'agent.id' in event_attrs:resource.pop('agent.id',None)
+    owner=_agent_id_from_attributes(candidate,resource,span.get('service'))
+    changed=claimed and (owner!=parent or any(not isinstance(event_attrs[key],str) or not event_attrs[key]
+        for key in ('agent.id','agent.runtime','agent.namespace') if key in event_attrs))
+    session_claim=any(key in event_attrs for key in SESSION_KEYS)
+    parent_attrs=span.get('attributes') or {}
+    parent_session=next((_session_value(parent_attrs.get(key)) or _session_value(resource.get(key))
+        for key in SESSION_KEYS if _session_value(parent_attrs.get(key)) or _session_value(resource.get(key))),None)
+    claims=[_session_value(event_attrs[key]) for key in SESSION_KEYS if key in event_attrs]
+    event_session=claims[0] if claims and all(value is not None and value==claims[0] for value in claims) else None
+    if changed or session_claim:
+        for key in SESSION_KEYS:
+            inherited.pop(key,None);resource.pop(key,None)
+    if changed or session_claim and event_session!=parent_session:
+        for key in ('agent.turn.id','agent.worker_id'):
+            inherited.pop(key,None);resource.pop(key,None)
+    # Only identity metadata is inherited. Command/result/input fields always
+    # come from this exact event, never the containing span.
+    identity={**inherited,**event_attrs}
+    if session_claim and event_session is None:
+        for key in SESSION_KEYS:identity.pop(key,None)
+    return identity,resource
 
 
 def _recorded_activity_agents(spans, logs=()):
@@ -393,9 +453,9 @@ def _recorded_activity_agents(spans, logs=()):
     for span in spans:
         for event in span.get('events') or ():
             attrs=event.get('attributes') if isinstance(event,dict) else None
-            if not isinstance(attrs,dict) or not isinstance(attrs.get('agent.id'),str):continue
-            agent=_agent_id_from_attributes({**_span_activity_identity(span),**attrs},
-                span.get('resource_attributes'),span.get('service'))
+            if not isinstance(attrs,dict) or not any(key in attrs for key in ('agent.id','agent.runtime','agent.namespace')):continue
+            identity,resource=_event_activity_identity(span,attrs)
+            agent=_agent_id_from_attributes(identity,resource,span.get('service'))
             if agent:agents.add(agent)
     return agents
 
@@ -419,7 +479,8 @@ def _review_owner(spans, logs, activity, *, complete):
 
 def _activity_for(spans, logs):
     activity = []
-    explicit_span_ids = set()
+    replacements={}
+    from .operation_facts import supersedes_operation
     for span in spans:
         for index, event in enumerate(span["events"]):
             if not isinstance(event, dict) or event.get("name") != "agent.activity":
@@ -427,25 +488,33 @@ def _activity_for(spans, logs):
                 if native is not None:
                     activity.append(native)
                 continue
-            explicit_span_ids.add(span["span_id"])
             event_attrs=event.get("attributes") if isinstance(event.get("attributes"),dict) else {}
-            activity.append(_activity_row({**_span_activity_identity(span), **event_attrs},
+            identity,resource=_event_activity_identity(span,event_attrs)
+            row=_activity_row(identity,
                                           event.get("time_unix_nano") or span["start_unix_nano"],
                                           "span", f"{span['span_id']}:event:{index}", span["span_id"], span["service"],
-                                          resource_attributes=span.get("resource_attributes")))
-    linked_logs = {log.get("span_id") for log in logs if log["event_name"] == "agent.activity"}
-    for span in spans:
-        if span["span_id"] not in explicit_span_ids and span["span_id"] not in linked_logs:
-            inferred = _tool_activity(span)
-            if inferred is not None:
-                activity.append(inferred)
+                                          resource_attributes=resource)
+            activity.append(row)
+            replacements.setdefault((span.get('trace_id'),span['span_id']),[]).append(row)
     for log in logs:
-        if log["event_name"] != "agent.activity":
+        if log['event_name']!='agent.activity':continue
+        row=_activity_row(log['attributes'],log['time_unix_nano'],'log',log['id'],
+            log.get('span_id'),log['service'],log['body'],
+            log.get('resource_attributes'))
+        activity.append(row)
+        replacements.setdefault((log.get('trace_id'),log.get('span_id')),[]).append(row)
+    for span in spans:
+        inferred=_tool_activity(span)
+        if (inferred is not None and not inferred.get('detail_role') and not inferred.get('detail')
+                and inferred.get('result')=='unknown'
+                and (span.get('trace_id'),span['span_id']) in replacements):
+            # A generic label with no operation/result facts adds no evidence
+            # beside the explicit records. Typed fields always take the guarded
+            # ownership/coverage path below.
             continue
-        activity.append(_activity_row(log["attributes"], log["time_unix_nano"], "log",
-                                      log["id"], log.get("span_id"), log["service"],
-                                      log["body"] if isinstance(log["body"], str) else "",
-                                      log.get("resource_attributes")))
+        if inferred is not None and not any(supersedes_operation(inferred,row)
+                for row in replacements.get((span.get('trace_id'),span['span_id']),())):
+            activity.append(inferred)
     return sorted(activity, key=lambda item: (item["time_unix_nano"], item["source_id"]))
 
 
@@ -1213,14 +1282,14 @@ class Store:
 
     def _backfill_summaries(self):
         with self._connect() as db:
-            complete = db.execute("""SELECT 1 FROM schema_meta WHERE key='trace_derived_v13'
+            complete = db.execute("""SELECT 1 FROM schema_meta WHERE key='trace_derived_v14'
                 AND EXISTS (SELECT 1 FROM schema_meta WHERE key='trace_derived_v11')""").fetchone()
         if not complete:
             with self._connect() as db:
-                saved=db.execute("SELECT value FROM schema_meta WHERE key='trace_derived_v13_cursor'").fetchone()
+                saved=db.execute("SELECT value FROM schema_meta WHERE key='trace_derived_v14_cursor'").fetchone()
             before=json.loads(saved[0]) if saved else None
             with self._connect() as db:
-                progress=db.execute("SELECT value FROM schema_meta WHERE key='trace_derived_v13_done'").fetchone()
+                progress=db.execute("SELECT value FROM schema_meta WHERE key='trace_derived_v14_done'").fetchone()
                 total=db.execute('SELECT COUNT(*) FROM trace_activity').fetchone()[0]
             done=int(progress[0]) if progress else 0
             while True:
@@ -1241,15 +1310,16 @@ class Store:
                 self.migration_status={**self.migration_status,'runs_refreshed':done,'total_runs':total,
                     'stage':f'Refreshing run evidence · {done:,}/{total:,} runs'}
                 with self._connect() as db:
-                    db.execute("INSERT OR REPLACE INTO schema_meta VALUES('trace_derived_v13_cursor',?)",(json.dumps(before),))
-                    db.execute("INSERT OR REPLACE INTO schema_meta VALUES('trace_derived_v13_done',?)",(str(done),))
+                    db.execute("INSERT OR REPLACE INTO schema_meta VALUES('trace_derived_v14_cursor',?)",(json.dumps(before),))
+                    db.execute("INSERT OR REPLACE INTO schema_meta VALUES('trace_derived_v14_done',?)",(str(done),))
                 if len(rows) < 100:
                     break
         if not complete:
             with self._connect() as db:
+                db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v14','1')")
                 db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v13','1')")
                 db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v11','1')")
-                db.execute("DELETE FROM schema_meta WHERE key IN ('trace_derived_v13_cursor','trace_derived_v13_done')")
+                db.execute("DELETE FROM schema_meta WHERE key IN ('trace_derived_v14_cursor','trace_derived_v14_done')")
 
     def _backfill_task_outcomes(self):
         # Upgrade only lifecycle metadata. Replaying all historical model/tool
@@ -1319,6 +1389,7 @@ class Store:
         for offset in range(0,len(trace_ids),16):
             with self._connect() as db:
                 db.execute("BEGIN IMMEDIATE")
+                receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
                 for trace_id in trace_ids[offset:offset+16]:
                     derived = (derive_trace(db, trace_id, workflow_patterns=True) if trace_id in active_pattern_runs
                                else derive_trace(db, trace_id))
@@ -1328,7 +1399,7 @@ class Store:
                         continue
                     summary, activity, findings, timestamp = derived
                     from .error_reminders import trace_error_references
-                    errors = trace_error_references(activity, trace_id)
+                    errors = trace_error_references(activity,trace_id,receiver=receiver)
                     db.execute("INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id,error_refs_json) VALUES(?,?,?,?,?,?) "
                                "ON CONFLICT(trace_id) DO UPDATE SET session_id=excluded.session_id,"
                                "summary_json=excluded.summary_json,activity_json=excluded.activity_json,"
@@ -1879,13 +1950,6 @@ class Store:
         from .storage_activity import drain
         limit=max(1,min(500,int(limit)));before=self._event_cursor(cursor)
         scope=None;clauses=[];params=[]
-        if agent_id:
-            scope=self.resolve_agent_scope(agent_id,include_subagents=bool(subtree))
-            if scope_revision and scope_revision!=scope['revision']:raise ValueError('hierarchy scope changed')
-            agents=scope['agent_ids'] if subtree else [agent_id]
-            if not agents:clauses.append('0')
-            else:
-                clauses.append('agent_id IN ('+','.join('?' for _ in agents)+')');params.extend(agents)
         if trace_id and turn_id:raise ValueError('Choose an exact trace or a recorded turn, not both')
         if trace_id is not None:trace_id=_id(trace_id,TRACE_ID,'trace_id')
         if turn_id is not None:turn_id=_id(turn_id,TRACE_ID,'turn_id')
@@ -1899,7 +1963,6 @@ class Store:
             clauses.append("(instr(lower(payload),lower(?))>0 OR EXISTS(SELECT 1 FROM logs raw WHERE kind='log' AND raw.digest=owner_key AND instr(lower(raw.body),lower(?))>0) OR EXISTS(SELECT 1 FROM spans raw WHERE kind='span' AND raw.trace_id=activity_index_v1.trace_id AND raw.trace_id||':'||raw.span_id=owner_key AND instr(lower(raw.attributes||raw.events),lower(?))>0))")
             params.extend((query,query,query))
         if before:clauses.append('(stamp,event_key)<(?,?)');params.extend(before)
-        where=' WHERE '+' AND '.join(clauses) if clauses else ''
         with self._connect() as db:
             # Bind indexed ownership, content pointers and context to one WAL snapshot.
             db.execute('BEGIN')
@@ -1912,11 +1975,21 @@ class Store:
             if db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone():
                 db.commit()
                 raise ValueError('Activity index is catching up; retry after receiver migration completes')
+            if agent_id:
+                scope=self.resolve_agent_scope(agent_id,include_subagents=bool(subtree),_db=db)
+                if scope_revision and scope_revision!=scope['revision']:raise ValueError('hierarchy scope changed')
+                agents=scope['agent_ids'] if subtree else [agent_id]
+                if not agents:clauses.append('0')
+                else:
+                    clauses.append('agent_id IN ('+','.join('?' for _ in agents)+')');params.extend(agents)
+            where=' WHERE '+' AND '.join(clauses) if clauses else ''
             rows=db.execute('SELECT payload,stamp,event_key FROM activity_index_v1'+where+' ORDER BY stamp DESC,event_key DESC LIMIT ?',[*params,limit+1]).fetchall()
             from .storage_activity import hydrate
             items=hydrate(db,[json.loads(row['payload']) for row in rows[:limit]])
+            receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
             bounded=[];size=0
             for item in items:
+                item['receiver_id']=receiver
                 amount=len(json.dumps(item,ensure_ascii=False).encode())
                 if size+amount>(1536*1024 if review else 12*1024*1024):break
                 bounded.append(item);size+=amount
@@ -1927,7 +2000,7 @@ class Store:
                     found=db.execute('SELECT payload FROM activity_index_v1'+context_where+' ORDER BY stamp DESC,event_key DESC LIMIT 1',[*params,message_action]).fetchone()
                     if found:context.append(json.loads(found[0]))
                 context=hydrate(db,context)
-            receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+                for item in context:item['receiver_id']=receiver
         result=dict(activity=bounded,review_context=context,
             next_cursor=self._next_event_cursor(rows[len(bounded)-1]['stamp'],rows[len(bounded)-1]['event_key']) if bounded and len(rows)>len(bounded) else None,
             scope='stored activity',receiver_id=receiver)
@@ -2756,6 +2829,7 @@ class Store:
             raise ValueError("limit must be between 1 and 500")
         with self._connect() as db:
             db.execute('BEGIN')
+            receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
             from .storage_sessions import session_projection
             rows,session_totals,initial_tasks=session_projection(db,int(limit))
             legacy_latest=[];seen_sessions=set()
@@ -2916,9 +2990,10 @@ class Store:
                 body = ""
             if row['event_name'] == 'agent.activity':
                 event = _activity_row(attrs, row['time_ns'], 'log', row['digest'],
-                                      row['span_id'], row['service'], resource_attributes=resource)
+                                      row['span_id'],row['service'],body,
+                                      resource_attributes=resource)
                 reminder_events.append({**event, 'trace_id': row['trace_id'],
-                    'id': (row['trace_id'] or 'log') + ':' + row['digest']})
+                    'id': (row['trace_id'] or 'log') + ':' + row['digest'],'receiver_id':receiver})
             log_agent_id = _agent_id_from_attributes(attrs, resource, row["service"])
             key = (session_id, log_agent_id)
             item = grouped.get(key)
@@ -3064,7 +3139,8 @@ class Store:
         for item in grouped.values():
             # Metadata references only; full captured errors stay in Activity.
             item['recent_errors'] = [error_reference(event)
-                for event in pending_failures(errors_by_owner.get((item['session_id'], item.get('agent_id')), []))]
+                for event in pending_failures(errors_by_owner.get((item['session_id'],item.get('agent_id')),[]),
+                                              receiver=receiver)]
             item["known_cost_usd"] = round(item["known_cost_usd"], 8)
             from .storage_derived import finalize_usage
             finalize_usage(item)

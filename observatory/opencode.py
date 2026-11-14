@@ -866,26 +866,36 @@ class OpenCodeReader:
                             tool_state = part_data.get("state") if isinstance(part_data.get("state"), dict) else {}
                             tool_status = str(tool_state.get("status") or "unknown").casefold()
                             tool_error = tool_status in {"error", "failed"}
+                            tool_metadata=tool_state.get('metadata') if isinstance(tool_state.get('metadata'),dict) else {}
+                            shell_tool=tool_name.casefold() in {'bash','shell'}
+                            terminal_exit=tool_metadata.get('exit')
+                            if shell_tool and type(terminal_exit) is int and terminal_exit!=0:tool_error=True
                             tool_start = _first_timestamp((tool_state.get("time") or {}).get("start"), start_ns) or start_ns
                             tool_end = _first_timestamp((tool_state.get("time") or {}).get("end"), end_ns) or end_ns
                             mcp = mcp_attributes(tool_name) or _opencode_mcp_attributes(tool_name, self.mcp_servers)
                             tool_attrs = {"session.id": session_id, "agent.id": agent_id,
                                           "agent.runtime": "OpenCode",
+                                          "observatory.operation.capture_version": 1,
                                           "gen_ai.operation.name": "execute_tool",
                                           "tool.name": tool_name, "tool.result_status": tool_status,
                                           "agent.activity.domain": "mcp" if mcp else "tool",
                                           "agent.activity.action": "call", "agent.activity.subject": tool_name,
                                           "agent.activity.result": "error" if tool_error else "success" if tool_status == "completed" else "unknown"}
                             if turn_id:tool_attrs['agent.turn.id']=turn_id
-                            if tool_name.casefold() in {'bash','shell'} and self.capture_details:
+                            if shell_tool and 'exit' in tool_metadata:tool_attrs['process.exit.code']=terminal_exit
+                            if shell_tool and self.capture_details:
                                 tool_input=tool_state.get('input') or {}
                                 command=tool_input.get('command') if isinstance(tool_input,dict) else None
                                 if isinstance(command,str):
                                     tool_attrs.update({'gen_ai.tool.type':'shell','tool.action':'execute',
+                                        'process.command_line':safe(command,8000),
                                         'agent.activity.domain':'shell','agent.activity.action':'execute',
                                         'agent.activity.subject':safe(command,8000),
                                         'agent.activity.detail':json.dumps({'command':safe(command,8000),'output':safe(tool_state.get('output',''),4000),
                                             'exit_code':(tool_state.get('metadata') or {}).get('exit') if isinstance(tool_state.get('metadata'),dict) else None})})
+                                    cwd=next((tool_input[key] for key in ('workdir','cwd','working_directory')
+                                        if isinstance(tool_input.get(key),str) and tool_input[key]),None)
+                                    if cwd:tool_attrs['process.working_directory']=safe(cwd,2000)
                             tool_attrs.update(mcp)
                             metadata = part_data.get("metadata")
                             if isinstance(metadata, dict):

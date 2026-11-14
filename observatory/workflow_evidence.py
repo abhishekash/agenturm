@@ -11,6 +11,7 @@ import unicodedata
 from urllib.parse import urlencode, urlsplit
 from .session_text import local_command_only, message_text, request_text
 from .command_evidence import check_kind as check_kind, analyze_command, modifying_action
+from .operation_facts import operation_facts
 
 PAGE_SIZE = 200
 MAX_EVENTS = 1000
@@ -57,6 +58,7 @@ class ExecutionScope:
         return bool(self.receiver and self.producer and self.run_anchor and self.kind != 'unavailable')
 
     def matches(self, event):
+        if event.get('receiver_id') and event['receiver_id']!=self.receiver:return False
         if self.kind == 'unavailable' or event.get('service') != self.producer: return False
         if self.agent_id:
             if event.get('agent_id') != self.agent_id: return False
@@ -99,7 +101,8 @@ def scope_for(item, snapshot=None, endpoint=''):
 
 
 def reference(event):
-    return {key: event[key] for key in ('id', 'source_id', 'trace_id', 'span_id', 'service', 'agent_id', 'session_id', 'time_unix_nano') if event.get(key) is not None}
+    return {key: event[key] for key in ('id','source_id','trace_id','span_id','service','agent_id','session_id',
+            'receiver_id','turn_id','time_unix_nano') if event.get(key) is not None}
 
 
 def event_key(event):
@@ -107,27 +110,21 @@ def event_key(event):
 
 
 
-def check_observation(event):
+def check_observation(event, facts=None):
     if event.get('domain') != 'shell': return None
-    command = safe_text(event.get('subject'))
-    detail = event.get('detail')
-    if isinstance(detail, str):
-        try: detail = json.loads(detail)
-        except (ValueError, TypeError): detail = {}
-    detail = detail if isinstance(detail, dict) else {}
-    command=safe_text(detail.get('command') or command)
+    facts=operation_facts(event) if facts is None else facts
+    command=safe_text(facts.get('command') or facts.get('display_subject'))
     analysis=analyze_command(command)
     if not analysis:return None
     kind=analysis['kind']
-    exit_code = detail.get('exit_code', event.get('exit_code'))
-    # Older native content redaction serialized primitive detail values as text.
-    if isinstance(exit_code,str) and re.fullmatch(r'-?\d{1,9}',exit_code):exit_code=int(exit_code)
-    if isinstance(exit_code, bool) or not isinstance(exit_code, int): exit_code = None
-    result = str(event.get('result') or '').lower()
-    status = 'passed' if exit_code == 0 else 'failed' if exit_code is not None else 'passed' if result in ('success', 'ok') else 'failed' if result in ('failed', 'error', 'failure') else 'unknown'
+    exit_code=facts['exit_code']
+    status=facts['result'] if facts['result'] in {'passed','failed'} else 'unknown'
+    label_only=facts.get('command_origin') in {None,'subject'}
+    if label_only:status='unknown'
     if analysis['compound'] and status!='passed':status='unknown'
     return dict(source=reference(event), command=command, normalized_command=analysis['command'], compound=analysis['compound'], kind=kind, result=status, exit_code=exit_code,
-                result_basis='compound shell result; individual failure unavailable' if analysis['compound'] and status=='unknown' else 'recorded exit code' if exit_code is not None else 'producer result label' if status!='unknown' else 'no terminal result',
+                result_basis='compound shell result; individual failure unavailable' if analysis['compound'] and status=='unknown' else
+                    'command is a display label; full input unavailable' if label_only else facts['result_basis'],
                 completed_ns=event.get('end_unix_nano') or event.get('time_unix_nano') if status != 'unknown' else None)
 
 
@@ -184,7 +181,12 @@ class ReviewHistory:
     def projection(self, item):
         rows = sorted(self.events.values(), key=lambda e: (e.get('time_unix_nano') or 0, event_key(e))) if item.get('capture_content') is not False else []
         edits = [e for e in rows if modifying_action(e)]
-        checks = [check for event in rows if (check := check_observation(event))]
+        facts={event_key(event):operation_facts(event) for event in rows
+               if event.get('domain') not in {'message','model','context','agent'}
+               or str(event.get('result') or '').lower() in ('error','failed','failure','blocked','denied')}
+        command_checks={event_key(event):check_observation(event,facts[event_key(event)])
+                        for event in rows if event.get('domain')=='shell'}
+        checks=[check for check in command_checks.values() if check]
         reference_budget=LATER_REFERENCE_BYTES
         edit_refs=[(e.get('time_unix_nano') or 0,reference(e)) for e in edits]
         ref_sizes={id(ref):len(json.dumps(ref,ensure_ascii=False).encode()) for _,ref in edit_refs}
@@ -200,21 +202,19 @@ class ReviewHistory:
             check['later_edit_count']=len(later)
             check['later_edits_clipped']=len(linked)<len(later)
             check['freshness'] = 'later recorded edits' if later else 'freshness unknown'
-        errors = [e for e in rows if str(e.get('result') or '').lower() in ('error', 'failed', 'failure', 'blocked', 'denied')]
-        detailed_spans={(e.get('trace_id'),e.get('span_id')) for e in errors if e.get('span_id') and e.get('domain')=='shell' and e.get('subject') not in {'Shell command','CommandExecution'}}
-        errors=[e for e in errors if not (e.get('subject') in {'Shell command','CommandExecution'} and (e.get('trace_id'),e.get('span_id')) in detailed_spans)]
+        errors=[e for e in rows if event_key(e) in facts and not facts[event_key(e)]['expected_nonzero']
+                and (facts[event_key(e)]['result']=='failed' or str(e.get('result') or '').lower() in
+                    ('error','failed','failure','blocked','denied') or facts[event_key(e)]['result_conflict'])]
         def error_fact(event):
-            detail=event.get('detail') or ''
-            if isinstance(detail,str):
-                try:detail=json.loads(detail)
-                except (ValueError,TypeError):pass
-            code=event.get('exit_code')
-            if isinstance(detail,dict):
-                code=detail.get('exit_code',code)
-                output=detail.get('stderr') or detail.get('output') or detail.get('error') or detail.get('message') or ''
-            else:output=detail
-            return dict(source=reference(event),subject=safe_text(event.get('subject')),exit_code=code,
-                detail=safe_text(output)[:1500],detail_clipped=len(str(output))>1500)
+            observed=facts[event_key(event)]
+            from .operation_facts import safe_value
+            subject=safe_value(event.get('subject') or '')[0]
+            return dict(source=reference(event),subject=observed.get('command') or subject,
+                exit_code=observed['exit_code'],detail=observed['output'],detail_clipped=observed['output_clipped'],
+                output_kind=observed['output_kind'],output_origin=observed['output_origin'],
+                result=observed['result'],result_basis=observed['result_basis'],
+                operation_version=observed['version'],operation_fingerprint=observed['operation_fingerprint'],
+                error_fingerprint=observed['error_fingerprint'])
         context = [e for e in rows if e.get('action') in ('compaction', 'compact', 'truncation', 'context_truncated')]
         def latest_message(action):
             if item.get('capture_content') is False:return None
@@ -262,7 +262,7 @@ class ReviewHistory:
             scope=asdict(self.scope), captured_at=self.captured_at, reported_outcome=item.get('state') or 'Unknown',
             edits=[dict(source=reference(e), path=safe_text(e.get('subject')), action=modifying_action(e),source_action=e.get('action'),
                 result=safe_text(e.get('result') or 'not reported'),effect='recorded success' if e.get('result') in {'success','ok','completed'} else 'attempt; effect unknown') for e in edits],
-            checks=checks, unclassified_commands=[dict(source=reference(e),command=safe_text(e.get('subject')),result=safe_text(e.get('result'))) for e in rows if e.get('domain')=='shell' and not check_observation(e)], usage=usage, errors=[error_fact(e) for e in errors],
+            checks=checks, unclassified_commands=[dict(source=reference(e),command=facts[event_key(e)].get('command') or facts[event_key(e)].get('display_subject'),result=safe_text(e.get('result'))) for e in rows if e.get('domain')=='shell' and not command_checks[event_key(e)]], usage=usage, errors=[error_fact(e) for e in errors],
             context_events=[dict(source=reference(e), subject=safe_text(e.get('subject'))) for e in context], window=window,
             request=latest_message('user'),agent_update=latest_message('assistant'))
 
