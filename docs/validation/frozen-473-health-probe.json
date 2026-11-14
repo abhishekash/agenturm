@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "minimal_feed_probe",
+  "original_sha256": "418b73a95b23b806d7bfc81c2c83a0559cefe2e981d8355e9dd6284df28c4445",
+  "scope": "One generated-data metadata admission probe during retained-history preparation, before the timed one-hour workload; not cold readiness or resource acceptance.",
+  "source_head": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+  "elapsed_seconds": 0.024451927049085498,
+  "native_bootstrap": false,
+  "coherent_updated": 0,
+  "indexing_ready": false,
+  "native_rows": 0,
+  "content_retained": false,
+  "historical_sessions_returned": 0,
+  "error": "History indexing failed; native observations are unavailable.",
+  "prepared_stage": "Indexing incoming source changes",
+  "qualification": "This is the recorded Feed projection, not a raw health response. Zero returned rows are withheld/unavailable observations, not proof of zero agents/history.",
+  "coordinator_observed_health_excerpt": {
+    "archived_response_body": false,
+    "evidence_type": "Coordinator-observed live stdout excerpt, not retained raw response",
+    "indexing_ready": false,
+    "stage": "Indexing incoming source changes",
+    "processed": 9600,
+    "error": "database is locked",
+    "native_initial_poll_complete": true,
+    "native_rows": 4
+  }
+}

@@ -1,0 +1,88 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Frozen 473 Startup Failure</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.3</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/frozen-473-startup-failure.md">Markdown source ↗</a></nav><h1>Frozen 473: retained-history startup failed</h1>
+<p>The attempt on frozen <code>473d3388e6cd6966d5c2fb8e90001990573d224b</code> failed <strong>before the timed one-hour workload started</strong>. The receiver did not satisfy the unchanged 600-second readiness deadline. Recorded elapsed time was <strong>600.907 seconds</strong>. This is a failed startup result, not a completed one-hour stability run.</p>
+<p>No timed UI, heartbeat, resource or turn samples were collected. CPU, memory, API workload latency, reconstruction, approvals, reconnects and one-hour stability therefore remain unmeasured by this attempt. Runtime and performance gates remain <strong>open</strong>.</p>
+<h2>Registered scope and observed result</h2>
+<p>The detached application and harness remained clean at the same full commit before and after the attempt. The common generated raw seed contained <strong>31,000 spans, 41,000 logs and 5,751 trace-activity rows</strong>, occupying 188,383,232 bytes. Its file SHA-256 was <code>5418206cd39d72e397dbf0104fafe16a1c6ad298e4c3b9dd4b8cdfe9c8d8b682</code>. Private-clone schema preparation preserved the canonical raw-content hash <code>a7834f8369c95c9160d16fe1d4d1c23b401e76a58c68507ce8b4bafa43948588</code>. Preparation took 16.460 seconds and is reported separately from the failed readiness phase.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Observation</th>
+<th>Recorded value</th>
+<th>Interpretation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Configured timed workload</td>
+<td>3,600 seconds</td>
+<td>Never entered</td>
+</tr>
+<tr>
+<td>Receiver readiness deadline</td>
+<td>600 seconds</td>
+<td>Exceeded</td>
+</tr>
+<tr>
+<td>Attempt elapsed time</td>
+<td>600.907 seconds</td>
+<td>Startup failure duration, not a soak duration</td>
+</tr>
+<tr>
+<td>Initial readiness time</td>
+<td>Unavailable</td>
+<td>Readiness never established</td>
+</tr>
+<tr>
+<td>UI/resource sample count</td>
+<td>0</td>
+<td>No resource budget conclusion</td>
+</tr>
+<tr>
+<td>Heartbeat samples</td>
+<td>0</td>
+<td>No UI responsiveness conclusion</td>
+</tr>
+<tr>
+<td>Completed/verified turns</td>
+<td>0 / 0</td>
+<td>No timed reconstruction opportunity</td>
+</tr>
+<tr>
+<td>Expected/accepted/persisted review receipts</td>
+<td>0 / 0 / 0</td>
+<td>No timed review opportunity, not successful durability coverage</td>
+</tr>
+<tr>
+<td>Receiver exit status</td>
+<td>0</td>
+<td>Recorded shutdown succeeded; startup did not</td>
+</tr>
+</tbody>
+</table></div>
+<p>The result file contains <strong>13 reported errors in total</strong>: the primary readiness timeout and <strong>12 consequential unmet checks</strong>. These include absent keyboard acknowledgements, worker cycles, restarts, heartbeat/process coverage and two-cycle shutdown/drain proof. They are retained individually in the sanitized artifact. They do not establish 12 additional independently diagnosed defects. A single receiver exit and pending-before/after values of zero do not satisfy the required two-receiver/two-cockpit lifecycle gate; remaining source-index work was still recorded after shutdown.</p>
+<h2>What failed, and what is not yet proved</h2>
+<p>The retained receiver log contains <code>sqlite3.OperationalError: database is locked</code> on authenticated health requests. Its minimal application stack is:</p>
+<pre><code class="language-text">observatory/server.py:148        _read_GET
+observatory/local_agents.py:1444 status
+observatory/core.py:1247         upsert_agent_nodes
+                                INSERT INTO agent_nodes
+sqlite3.OperationalError: database is locked
+</code></pre>
+<p>This proves that health-side hierarchy persistence encountered a failing SQLite write. Initial migration failure was also observed during the attempt. The exact blocking transaction, its owner, lock duration and SQLite extended error code were <strong>not established for this frozen run</strong>. Separate later reproductions of a ten-second busy wait and a SQLite 517 snapshot conflict inform subsequent fixes; they do not uniquely attribute this failure to either mechanism. No timing or successful-run claim for those fixes is made here.</p>
+<p>The coordinator also observed a live health excerpt with <code>ready=false</code>, stage “Indexing incoming source changes,” <code>processed=9600</code>, error “database is locked,” completed initial native polling and four native rows. <strong>That response body was not retained.</strong> This is a coordinator-observed excerpt, not a hashable raw-health archive or independent proof of a healthy four-agent frame. The archived timeout, server stack and Feed refusal are the primary retained evidence.</p>
+<p>The separate <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/frozen-473-health-probe.json">minimal Feed probe</a> retained <code>coherent_updated=0</code>, <code>indexing_ready=false</code>, <code>native_bootstrap=false</code> and no captured content. It reported “History indexing failed; native observations are unavailable.” Rejecting fatal health metadata was the intended fail-closed behavior. Zero rows in that Feed projection mean evidence was withheld/unavailable; they do not establish an empty agent fleet or empty history. The probe was a separate generated-data observation during preparation, not a timed UI sample or full cold-readiness result.</p>
+<h2>Process and evidence handling</h2>
+<p>The receiver's recorded exit status was zero. The generated actor was terminated and waited for normally by the coordinator. A later read-only check of the two original child PIDs found neither <code>/proc</code> entry present; neither matched an owned command line. This check does not claim ownership of or act on any reused PID. No personal process was stopped.</p>
+<p>The failed database, WAL/config/state, original logs and frozen checkout were retained locally. This report publishes only an allowlisted projection of generated results and a minimal Feed probe. It includes no database, configuration, environment, credential, native source body, complete log or directory archive. Source-file/line references above are sufficient to locate the failing write without publishing unrelated log contents.</p>
+<ul>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/frozen-473-startup-results.json.gz">Sanitized startup results, source/harness hashes and individual checks</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/frozen-473-health-probe.json">Minimal Feed admission probe and original probe hash</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/native-bootstrap.html">Native bootstrap contract and independent keyboard validation</a></li>
+</ul>
+<h2>Remaining acceptance</h2>
+<p>Retained-history readiness, a useful current-Agent frame on the full corpus, strict active HTTP availability/writer cadence, resource budgets and the complete one-hour lifecycle workload all remain open. The independent keyboard/lifecycle checks in the native-bootstrap report remain valid within their own scope; they are not substitutes for this failed retained-history startup gate. Subsequent runtime changes require their own frozen-source validation, with every missed deadline and HTTP failure retained.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
