@@ -156,9 +156,9 @@ Findings filtering, keyset paging, scalar counts and exact source resolution now
 
 The 157-test storage/API/ownership/native/receipt/UI gate passed in 94.587 seconds. The latest privacy/alias and source-navigation delta passed 40 tests in 25.197 seconds; final peer review found no remaining blockers. C2 merged as `da90e73a4b3051e5d8e7e4566a4a1a2aa77fbc9b`, with all twelve final CI jobs passing on head `7bd840f`. C3 and all remaining stage gates below stay open.
 
-### Stage D Git and approved drafts — implemented and integrated, PR preparation
+### Stage D Git and approved drafts — merged [PR #77](https://github.com/abhishekash/agenturm/pull/77)
 
-Explicit workspace mapping, frozen bounded Git receipts, editable source-backed drafts, additive approval versions and qualified parallel-path/check observations are implemented. Authored task title/workspace/notes/brief/decisions remain intact. Every contributing source and receiver is rechecked at formatting, preview, copy and final export worker; peer-only revocation and restoration cannot revive a denied preview. Integrated baseline 64 tests and final privacy/UI/CLI 13 tests passed; independent review found no remaining Stage D blocker. See the [implementation report](../validation/frozen-git-continuity.md). CI and merge remain pending; implementation is not observed adoption.
+Explicit workspace mapping, frozen bounded Git receipts, editable source-backed drafts, additive approval versions and qualified parallel-path/check observations are implemented. Authored task title/workspace/notes/brief/decisions remain intact. Every contributing source and receiver is rechecked at formatting, preview, copy and final export worker; peer-only revocation and restoration cannot revive a denied preview. Integrated baseline 64 tests and final privacy/UI/CLI 13 tests passed; independent review found no remaining Stage D blocker. See the [implementation report](../validation/frozen-git-continuity.md). All twelve final CI jobs passed; merged as `449f64f4296cc7258bc370c0156745e6e6f0570b`. Implementation is not observed adoption.
 
 ### Stage C source-backed Overview — implementation ready for review
 
