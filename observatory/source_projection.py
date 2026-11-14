@@ -41,10 +41,19 @@ def prepare_sources(snapshot, include_reviews=False, *, denied_sources=frozenset
     """Prepare attributed identity and text, without clock-dependent health."""
     health_inputs={}
     connections={item['source_id']:item for item in snapshot.agents}
-    by_agent={};by_session={}
-    for event in snapshot.activity:
+    by_agent={};by_session={};native_rows=[]
+    for index,event in enumerate(snapshot.activity):
         if event.get('agent_id'):by_agent.setdefault(event['agent_id'],[]).append(event)
         if event.get('session_id'):by_session.setdefault(event['session_id'],[]).append(event)
+        if index<1000 and isinstance(event.get('native_lifecycle'),dict):
+            # Reuse this source pass, retaining only the protocol's metadata.
+            # Its row identity is independent of the claimed native envelope.
+            native_rows.append({**{key:event.get(key) for key in
+                ('receiver_id','service','agent_id','session_id','trace_id','turn_id','source_id','id')},
+                'native_lifecycle':{key:event['native_lifecycle'][key] for key in
+                    ('schema','receiver_id','sender_id','event_id','sequence','kind','request_id',
+                     'request_kind','source_clock','source_order','time_unix_nano','source_id')
+                    if key in event['native_lifecycle']}})
     result=[]
     for entry in snapshot.local_status.get('sessions',[]):
         connection=connections.pop(entry['source_id'],{})
@@ -182,7 +191,7 @@ def prepare_sources(snapshot, include_reviews=False, *, denied_sources=frozenset
                 item['task_source']='recorded user request'
         if item['id'].startswith('otlp-session:'):
             item['last_activity']=max(evidence,key=lambda event:event.get('time_unix_nano') or 0,default={})
-    return result,health_inputs
+    return result,health_inputs,tuple(native_rows)
 
 class SourcePreparation:
     """Two bounded snapshot preparations shared by this app's consumers.
@@ -248,7 +257,7 @@ class SourcePreparation:
                                     policy_snapshot=policy_snapshot),False)
         frozen=(*frozen,denied_sources)
         from types import SimpleNamespace
-        detached=SimpleNamespace(agents=frozen[2],local_status={'sessions':frozen[3]},
+        detached=SimpleNamespace(receiver_id=frozen[0],agents=frozen[2],local_status={'sessions':frozen[3]},
                                  sessions=frozen[4],activity=frozen[5])
         prepared=prepare_sources(detached,include_reviews)
         try:owner=weakref.ref(snapshot)
@@ -261,7 +270,7 @@ class SourcePreparation:
 def native_snapshot(snapshot,observations=(),warning=''):
     """Detach metadata overlays before freezing a view; never read workflow state."""
     from .native_lifecycle import merge_observations
-    activity=() if getattr(snapshot,'native_lifecycle_prepared',False) else snapshot.activity
+    activity=() if getattr(snapshot,'native_lifecycle_prepared',False) else getattr(snapshot,'activity',())
     states,note=merge_observations(getattr(snapshot,'receiver_id',''),
         getattr(snapshot,'native_lifecycle',()),observations,activity=activity)
     note=warning or getattr(snapshot,'native_lifecycle_warning','') or note
@@ -315,7 +324,7 @@ def sources(snapshot, include_reviews=False, *, preparation=None, policy_snapsho
     native=getattr(snapshot,'native_lifecycle',())
     if not getattr(snapshot,'native_lifecycle_prepared',False):
         from .native_lifecycle import merge_observations
-        native,_=merge_observations(getattr(snapshot,'receiver_id',''),native,activity=snapshot.activity)
+        native,_=merge_observations(getattr(snapshot,'receiver_id',''),native,activity=prepared[2])
     if native:
         from .attention_runner import prepared_item
         from .native_lifecycle import overlay_observations
