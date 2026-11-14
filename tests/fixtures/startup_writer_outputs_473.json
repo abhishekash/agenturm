@@ -1,0 +1,36 @@
+{
+  "source_commit": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+  "core_sha256": "41d9096b372989e25269db5351ec18779e3809524ef65cfb7ff153abef691be3",
+  "generated_only": true,
+  "method": "Full ordered rows/all columns, compact JSON SHA256; fixed node wall clock.",
+  "endpoints": {
+    "endpoints": {
+      "rows": 501,
+      "sha256": "8de4599988009dc4f2510e6bb5ba1aeb602090662152ec56c08dd3d3b0f46a78"
+    },
+    "endpoint_services": {
+      "rows": 501,
+      "sha256": "ca13932bd476c0e76cae1290b73290a664dc67d692d078d19188d6a931ddea12"
+    },
+    "endpoint_traces": {
+      "rows": 501,
+      "sha256": "980cf63f59536c46739a55844f1b3d397229b3f1683417454403fd2cf4cc979c"
+    }
+  },
+  "outcomes": {
+    "trace_summaries": {
+      "rows": 201,
+      "sha256": "c426d49664b34124a56a9c479cad0bb924ab34ca96250a8e09ff997a769c8793"
+    }
+  },
+  "nodes": {
+    "agent_nodes": {
+      "rows": 3,
+      "sha256": "b6bfe57850c1420b7b61e693a9febc0dd6ff93ccf4b2c30c43d47322aae17a12"
+    },
+    "agent_identity": {
+      "rows": 3,
+      "sha256": "645a58e70a0d612d1de8eb4ae42dedf821b595022022244b9abe54d369d4d30e"
+    }
+  }
+}
