@@ -1,7 +1,7 @@
 {
-  "base": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
+  "base": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
   "heads": {
-    "main": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
+    "main": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
     "G": "0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7",
     "E": "928cae06ea9f8703966c105aa02d42b2dd179f12",
     "F": "1c0b795c842a7f41a12f2b562a558bc44e3b5610",
@@ -27,7 +27,8 @@
     "pr100_merge": "bd04f205a97291fd9b8b23fc952854c2a72c6e36",
     "pr101_merge": "250030bd82aa143e72860f4a392504133bac4c88",
     "pr102_merge": "abf1627950aa53032e97dea2136fa25e3748a7d4",
-    "pr103_merge": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb"
+    "pr103_merge": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
+    "startup_repair_merge": "1ca4fafe71aed559d381b7e613efb748b9ae9878"
   },
   "notes_sha256": "8352ce8a78edaea075083e59850ddd96bb70868164e3c146b11cd97b0a617ce3",
   "rows": [
@@ -37,13 +38,13 @@
       "status": "Open resource acceptance",
       "code": "[storage_activity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_activity.py), [storage_sessions.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_sessions.py), [storage_mcp.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_mcp.py), [read_connections.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/read_connections.py), [operation_preparation.py](https://github.com/abhishekash/agenturm/blob/d5538e6af2bcc7961ddc7af48fb4c79b978c32fd/observatory/operation_preparation.py)",
       "tests": "[test_history_read_economics.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_history_read_economics.py), [test_idle_history_watch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_idle_history_watch.py), [test_session_projection_batch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_projection_batch.py), [test_derived_readiness_snapshot.py](https://github.com/abhishekash/agenturm/blob/ebcd03390bbbe57d18470165a4dbdb919de39357/tests/test_derived_readiness_snapshot.py), [test_incoming_catchup.py](https://github.com/abhishekash/agenturm/blob/e594a2a83c7d9d6da63e63aa497d88a8ff27b73b/tests/test_incoming_catchup.py), [test_operation_preparation.py](https://github.com/abhishekash/agenturm/blob/d5538e6af2bcc7961ddc7af48fb4c79b978c32fd/tests/test_operation_preparation.py)",
-      "delivery": "Read/source increments and same-snapshot/catch-up through #90, normalized harness #93/#95, privacy #94 and bounded performance components #97 are merged. Historical CI failures remain retained; current main103 combined CI is pending/failed. Writer ownership #100, canonical success projection #101 and metadata-only bootstrap #102 are merged. Startup core 3fb, harness 883 and independent tests adb remain pending combined integration.",
+      "delivery": "Read/source increments and same-snapshot/catch-up through #90, normalized harness #93/#95, privacy #94 and bounded performance components #97 are merged. Historical CI failures remain retained; current main104 combined CI is pending. Writer ownership #100, canonical success projection #101 and metadata-only bootstrap #102 are merged. Startup writer repair, readiness diagnostics and receiver/fixture corrections merged #104; remote CI and sustained acceptance remain open.",
       "limits": "Cold readiness <30 s, complete-monitor idle CPU <5%, Sessions/MCP actual HTTP under-write p95 <100 ms and final combined memory/WAL acceptance remain open. Direct Store/query-work results do not prove those HTTP or whole-monitor targets.",
       "evidence": "Full common-corpus HTTP B 44 / C 35 and tiny e795/029719b 5/114 accepted batches are invalid. Most 200 reads occurred after writer abort; no loaded p95 may be published. Isolated sanitized-facts/scratch/terminal/context improvements preserve outputs but do not close whole-monitor budgets. Strict cadence 315/420 remains invalid. Frozen 473 failed its 600-second readiness deadline before timed work. The separate 3fb smoke reached readiness in a recorded 221.505 seconds, then failed active MCP HTTP 503 at 7.305 seconds, with zero turns; neither closes performance acceptance.",
       "implementation_state": "merged tested contract; qualified by stated limits",
       "acceptance_state": "OPEN: resource targets",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F2",
@@ -55,9 +56,9 @@
       "limits": "New managed stores use a 14-day age policy; existing stores require explicit opt-in. Age retention is not a byte cap, immediate file shrink or proof of a memory/WAL plateau.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F3",
@@ -69,9 +70,9 @@
       "limits": "Private XDG state and explicit non-destructive legacy migration are provided. Explicit --db remains an intentional user override; captured content is still sensitive.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F4",
@@ -83,9 +84,9 @@
       "limits": "Readiness/error/partial/interrupt are distinguished; missing data is not a zero-success snapshot. Discovery/readiness can exceed the deadline and return partial rather than pretend success.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F5",
@@ -98,8 +99,8 @@
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
       "acceptance_state": "Qualified implemented source contract; live/universal coverage remains unknown",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F6",
@@ -108,12 +109,12 @@
       "code": "[local_agents.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/local_agents.py), [operation_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/operation_facts.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/workflow_evidence.py)",
       "tests": "[test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_operation_hydration.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_operation_hydration.py)",
       "delivery": "Merged [#67](https://github.com/abhishekash/agenturm/pull/67) / [#75](https://github.com/abhishekash/agenturm/pull/75).",
-      "limits": "Native-shaped ingestion\u2192Store\u2192authenticated API\u2192Review/export assertions cover edits/checks/text/usage. This is not universal producer-version compatibility; F26 provenance remains qualified.",
+      "limits": "Native-shaped ingestion→Store→authenticated API→Review/export assertions cover edits/checks/text/usage. This is not universal producer-version compatibility; F26 provenance remains qualified.",
       "evidence": "Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F7",
@@ -125,9 +126,9 @@
       "limits": "Explicit request/unknown separation and incident identity are present. Advisory stalled/failed states are not native approval authority; unsupported clocks/coverage defer reliable delivery.",
       "evidence": "Generated real-process preflight: two cockpits plus watcher, one fixture notification, acknowledgement/restart and exact remote resolution pass; no live desktop or alert-precision claim.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F8",
@@ -139,9 +140,9 @@
       "limits": "Compact/expanded inspectors show recorded paths/checks/issues before assistant claims; hierarchy/shading/keyboard behavior retained. Loaded bounded evidence is not a full-history summary. A useful first-native-frame target on retained history remains unproved. Frozen 473 Feed correctly refused fatal health. Partial metadata is not full history readiness.",
       "evidence": "Metadata-only native bootstrap is merged in PR #102. The partial frame preserves unknown history/usage and withholds source content and lifecycle authority. A useful first-native frame and resource acceptance on the retained corpus remain open; the original frozen-473 fatal-health refusal is not relabelled as a successful first frame.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F9",
@@ -153,9 +154,9 @@
       "limits": "Today/history, human-readable ages and frozen-ID bulk review exist. Marking reviewed is neither native approval nor proof of resolution; old archived records remain inspectable.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F10",
@@ -168,8 +169,8 @@
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
       "acceptance_state": "OPEN: external adoption",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F11",
@@ -181,9 +182,9 @@
       "limits": "Multiplexed/app-server activity is not per-session progress; unconfirmed status remains possible. Linux process evidence and the generated soak do not cover every runtime/platform.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F12",
@@ -195,9 +196,9 @@
       "limits": "Unknown/unlinked coverage is separated from explicit requests. New collision/loop/native heuristics must not silently turn it into an approval request.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F13",
@@ -209,9 +210,9 @@
       "limits": "Selected-tool loaded-page outcome/duration denominators, small samples, actual configured-server unobserved context and keyboard flagged-call navigation are visible and tested. No response-correctness, all-history reliability or tool-deletion conclusion follows. Earlier corrected E head and previous main `55c6244` each passed all 12 checks; final resources/live outcomes remain separate.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F14",
@@ -223,9 +224,9 @@
       "limits": "Commands/exits/output roles, occurrence ownership, safe fingerprints and exact sources are implemented. Unknown/redacted/clipped inputs cannot prove equivalence; a later success does not prove complete repair.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F15",
@@ -235,11 +236,11 @@
       "tests": "[test_cockpit_read_paths.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_cockpit_read_paths.py), [test_session_projection_batch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_projection_batch.py), [test_history_read_economics.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_history_read_economics.py), [test_derived_readiness_snapshot.py](https://github.com/abhishekash/agenturm/blob/ebcd03390bbbe57d18470165a4dbdb919de39357/tests/test_derived_readiness_snapshot.py), [test_incoming_catchup.py](https://github.com/abhishekash/agenturm/blob/e594a2a83c7d9d6da63e63aa497d88a8ff27b73b/tests/test_incoming_catchup.py)",
       "delivery": "Indexed/scalar/source/Sessions/MCP/replay increments are merged through #86; same-source snapshot certification #88 and bounded incoming availability #90 are merged.",
       "limits": "Indexed Activity/scalar rollups and bounded source reads replace repeated full-history Activity expansion. Remaining retained MCP grouping, cold migration and combined monitor cost are material and not closed.",
-      "evidence": "Normalized short soak/modal preflights are functional only. No final combined one-hour RSS/WAL plateau or storage-growth acceptance; full HTTP writer-deadline failures remain invalid. Startup writer admission 3fb and fail-fast harness 883 are pending integration. The newer retained smoke reached initial readiness, then failed active MCP HTTP 503. The original 473 timeout and every failed cadence attempt remain retained.",
+      "evidence": "Normalized short soak/modal preflights are functional only. No final combined one-hour RSS/WAL plateau or storage-growth acceptance; full HTTP writer-deadline failures remain invalid. Startup writer admission and readiness diagnostics merged #104 after focused validation; full CI and sustained acceptance remain open. The newer retained smoke reached initial readiness, then failed active MCP HTTP 503. The original 473 timeout and every failed cadence attempt remain retained.",
       "implementation_state": "merged tested contract; qualified by stated limits",
       "acceptance_state": "OPEN: combined resource acceptance",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F16",
@@ -252,8 +253,8 @@
       "evidence": "Synthetic actual Feed/UI/CLI coverage includes actor-wide missing-session denial, unrelated siblings, rapid deny/reallow with no UI tick, paused/late callbacks, replacement receiver, restart generation, mixed old/new approved drafts and fresh explicit recapture. Combined full CI is separate.",
       "implementation_state": "merged tested contract; qualified by stated limits",
       "acceptance_state": "Tested contract94 merged; ongoing privacy invariants and combined CI remain; qualified legacy unbound/offline limits",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F17",
@@ -265,9 +266,9 @@
       "limits": "Failed/unknown file attempts do not prove a persisted change. Both explicit rename paths survive typed argument projection in G; no arrow/path equivalence guessing.",
       "evidence": "Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F18",
@@ -279,9 +280,9 @@
       "limits": "Recognized wrappers/qualified compound success are supported; no-op, masked, unknown or ambiguous failure remains unverified. Recorded success does not certify later worktree changes.",
       "evidence": "Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F19",
@@ -294,8 +295,8 @@
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
       "acceptance_state": "Qualified tested accounting; unsupported/live allocation stays unknown",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F20",
@@ -307,9 +308,9 @@
       "limits": "Supported native text blocks reach Review and generic placeholders are suppressed. New upstream schemas and live Claude/Pi compatibility are not proven by these synthetic contracts.",
       "evidence": "Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F21",
@@ -321,9 +322,9 @@
       "limits": "Independent request/update context and paging expose intent within explicit source limits. Pruned, uncaptured or clipped intent remains unavailable, never reconstructed by guesswork.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F22",
@@ -335,9 +336,9 @@
       "limits": "End-to-end native-shaped checks/edits/text/usage and generated reconstructions are verified. Coverage limits and unsupported producer variants remain explicit; tests are not current live participant evidence.",
       "evidence": "Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F23",
@@ -349,23 +350,23 @@
       "limits": "Raw Review JSON composes without retyping IDs; turn members/check source traces/accounting survive. Contradictory links reject; legacy ambiguous data stays readable without trusted totals until explicit repair.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F24",
       "title": "Passing suite hid fixture mismatch",
-      "status": "Current CI pending/failed; historical failures retained",
+      "status": "Current combined CI pending; historical failures retained",
       "code": "[operation_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/operation_facts.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/workflow_evidence.py)",
       "tests": "[test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_opencode_turn_review.py), [test_owned_findings.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_owned_findings.py), [test_derived_readiness_snapshot.py](https://github.com/abhishekash/agenturm/blob/ebcd03390bbbe57d18470165a4dbdb919de39357/tests/test_derived_readiness_snapshot.py), [test_incoming_catchup.py](https://github.com/abhishekash/agenturm/blob/e594a2a83c7d9d6da63e63aa497d88a8ff27b73b/tests/test_incoming_catchup.py)",
-      "delivery": "Main97 completed all 12 CI jobs; PR98\u2013101 head matrices also completed 12 successes each. PR102 head 766f failed all four Python jobs. Main102/main103 and PR103 head states are separately timestamped, not green. Fixture correction is pending.",
-      "limits": "ResourceWarning boundaries and owned soak connections corrected in #96 without suppression. New #96 wording/readiness failures have a local correction subsequently merged #98, with remote CI pending; exact original CLI HTTP cause is unknown. Source contracts, remote CI, invalid performance runs and live/pilot outcomes are separate.",
-      "evidence": "PR95/main95 and PR96/main96 run IDs and actual failure details are retained above and in JSON. Controlled pending-migration HTTP 503\u2192ready200 proves a fixture readiness race, not a unique diagnosis of the earlier CI failure. Local passing tests are not remote all-green. Root reproduced four MCP null/empty inspector subtest errors on main103: the test double lacks native_page_pending. A fixture-only correction is under validation. Earlier failures and unknown wire causes remain retained.",
+      "delivery": "Startup writer admission, actual MCP readiness fixture and deterministic native fixture connection closure merged #104. Its focused gates passed; main104 full CI is pending. PR102/main103 failures and earlier exact-head successes remain retained.",
+      "limits": "ResourceWarning boundaries and owned soak connections corrected in #96 without suppression. New #96 wording/readiness failures have a local correction subsequently merged #98, whose exact head matrix later passed all 12 checks; exact original CLI HTTP cause is unknown. Source contracts, remote CI, invalid performance runs and live/pilot outcomes are separate.",
+      "evidence": "PR95/main95 and PR96/main96 run IDs and actual failure details are retained above and in JSON. Controlled pending-migration HTTP 503→ready200 proves a fixture readiness race, not a unique diagnosis of the earlier CI failure. Local passing tests are not remote all-green. Root reproduced four MCP null/empty inspector subtest errors on main103: the test double lacks native_page_pending. The fixture-only correction merged #104 after 28 UI/model cases and an overlapping seven-model Python 3.13 gate passed; a separate 60-case combined gate passed without warnings. Earlier failures and unknown wire causes remain retained.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "OPEN: current combined CI correction/validation; final runtime, resource and external gates",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "OPEN: current full CI; final runtime, resource and external gates",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F25",
@@ -378,8 +379,8 @@
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
       "acceptance_state": "Qualified implemented captured membership; uncaptured/live intent unknown",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F26",
@@ -392,8 +393,8 @@
       "evidence": "See [current native source compatibility report](native-fixture-provenance.html) and [authoritative fixture manifest](../../tests/fixtures/native_review/provenance.json). Runtime/provenance peers reviewed the scope; local 78-test gate in 60.817 seconds and root 33-test gate in 23.697 seconds are functional, not resource measurements.",
       "implementation_state": "merged tested contract; qualified by stated limits",
       "acceptance_state": "Qualified implemented source-derived provenance; live/universal coverage open",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "F27",
@@ -402,12 +403,12 @@
       "code": "[attention_runner.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/observatory/attention_runner.py), [attention_cli.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/observatory/attention_cli.py), [native_lifecycle.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/observatory/native_lifecycle.py), [storage_native_lifecycle.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/observatory/storage_native_lifecycle.py), [review_cli.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/observatory/review_cli.py), [source_projection.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/observatory/source_projection.py)",
       "tests": "[test_native_inventory.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/tests/test_native_inventory.py), [test_native_activity_integration.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/tests/test_native_activity_integration.py), [test_attention_runner.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/tests/test_attention_runner.py), [test_native_review_projection_fix.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/tests/test_native_review_projection_fix.py)",
       "delivery": "Git/drafts merged #77; persistent/native delivery merged #82 at e434fcf.",
-      "limits": "Headless watcher, shared claims, receiver-owned native inventory and shared Review parity are merged. Generated two-cockpit+watcher preflight passed with one fixture notification and 210 unrelated records per transition, ack/restart and exact resolution. Historical main `55c6244` CI passed; current main103 CI is pending/failed; live request-contract/clock/capacity/desktop precision remain qualified; native approval stays manual.",
+      "limits": "Headless watcher, shared claims, receiver-owned native inventory and shared Review parity are merged. Generated two-cockpit+watcher preflight passed with one fixture notification and 210 unrelated records per transition, ack/restart and exact resolution. Historical main `55c6244` CI passed; current main104 CI is pending; live request-contract/clock/capacity/desktop precision remain qualified; native approval stays manual.",
       "evidence": " Bootstrap #102 is display-only; it does not observe/finalize attention or acknowledge native work.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "R1",
@@ -419,9 +420,9 @@
       "limits": "Quiet inventory, durable dedup, remote pending/resolution catch-up and acknowledgement/restart passed a generated real two-cockpit+watcher preflight. This is one functional scenario with a fixture notification sink, not measured alert precision, OS desktop delivery or live cross-runtime approval support.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "R2",
@@ -433,9 +434,9 @@
       "limits": "Review g/m explicitly maps/captures read-only Git; earlier checks do not certify the current checkout. Recorded edits and all worktree changes/pre-existing/concurrent work stay distinct.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "R3",
@@ -447,9 +448,9 @@
       "limits": "Current/previous unseen reminders remain separate from archival Findings. Exact source s/container trace t, expected nonzero and later-success evidence retain source scope; no repaired-task conclusion.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "R4",
@@ -461,9 +462,9 @@
       "limits": "Review d prepares source-backed editable text, then explicit approval appends an immutable version. Human title/notes/brief/decisions are not overwritten; no human decision or intent is invented.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "R5",
@@ -475,9 +476,9 @@
       "limits": "Explicit mapped checkouts/recorded paths and strict check-before-other-edit chronology are shown. Historical branch identity often remains unverified; unknown overlap is not collision proof. Different worktrees, failed attempts and ambiguous paths do not become confirmed collisions.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "R6",
@@ -489,9 +490,9 @@
       "limits": "Opt in via AGENTURM_WORKFLOW_PATTERNS=1. Later matching success includes failed and successful sources. Repetition observations may attach strictly timed leaf-model reported contributions only with complete exact owner/execution/source proof. Actual Store publication and resumable workflow_patterns_v2 repair are tested; unknown/partial input remains unavailable. No new always-on usage finding, waste/retry-cost attribution, cumulative delta or context-occupancy inference.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "R7",
@@ -503,9 +504,9 @@
       "limits": "Current loaded-page outcome/duration denominators, small samples, configured-unobserved context and keyboard flagged-call navigation are wired in the existing MCP inspector. Exact receiver/capture checks remain. An observed protocol/tool success does not evaluate response correctness; absence never recommends deleting configuration.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "R8",
@@ -517,9 +518,9 @@
       "limits": "Whole-turn ID/member-step labels are distinct from one trace. Exact-owner captured session lifetime is separate; exact-agent calendar-day data is explicitly unavailable. Retry cost and current occupancy remain unavailable without authoritative evidence. Exact-model explicit-rate estimates stay separate from recorded cost and require complete unambiguous allocation.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "R9",
@@ -531,9 +532,9 @@
       "limits": "Activity History / Ctrl+F / palette and `agenturm investigate` are wired. Typed retained path/command/instruction queries, bounded paging, FTS availability and pinned exact source reader are tested. No match proves no activity; old lookup/index-cost data excludes final combined-source overhead.",
       "evidence": "",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "R10",
@@ -543,11 +544,11 @@
       "tests": "[test_recovery_defaults.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_recovery_defaults.py), [test_storage_receiver_hardening.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_storage_receiver_hardening.py), [test_http_transport.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_http_transport.py)",
       "delivery": "Merged defaults #67/#70 and merged E/F/G paths inherit invariants; combined-source acceptance remains separate. Shared Feed/source/UI/CLI generation fixes merged #94 with a 102-test local integration gate; latest remote CI remains pending/failed as recorded.",
       "limits": "Private state/token, Host/Origin, best-effort redaction, capture fences and age retention exist. No all-secrets guarantee, hard disk cap or automatic purge of independently authored task content. Main55 full CI passed; final sustained resource/terminal and external evidence remain separate. Legacy unbound/offline policy history is not manufactured; no durable offline revocation ledger.",
-      "evidence": " Bootstrap #102 withholds content and lifecycle authority during initial history; the pending startup fix requires combined validation.",
+      "evidence": " Bootstrap #102 withholds content and lifecycle authority during initial history; startup repair merged #104 after focused validation, with full CI and sustained acceptance still open.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     },
     {
       "id": "R11",
@@ -559,12 +560,12 @@
       "limits": "Generic-v1 is explicit exact metadata; Codex notify adapter is completion-only with independently checked turns. Claude/Pi/OpenCode approval contracts without authoritative request/order mapping remain unsupported/uncertain. Installed version inspection is not live compatibility testing.",
       "evidence": "Optional lifecycle approval authority is distinct from transcript format parsing. #87 qualifies selected source-derived OpenCode 2.2.5/Codex 0.167.1 records, not a live native approval-hook mapping. Generic native-race preflight and installed/runtime research retain their separate limits.",
       "implementation_state": "merged tested contract; qualified by stated limits",
-      "acceptance_state": "qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain",
-      "audit_snapshot_head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
-      "audit_snapshot_ci": "Current combined CI is pending/failed; exact per-head/run fetches are retained. Historical main97 success does not certify this candidate."
+      "acceptance_state": "qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain",
+      "audit_snapshot_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "audit_snapshot_ci": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical."
     }
   ],
-  "snapshot_utc": "2026-11-14T17:25:14.150484+00:00",
+  "snapshot_utc": "2026-11-14T17:43:27.111051+00:00",
   "prs": [
     {
       "headRefOid": "920f44e517bc5f8583521dbae5664fe3fff37d1e",
@@ -3159,82 +3160,83 @@
     ]
   },
   "combined_ci": {
-    "headSha": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
+    "headSha": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
     "status": "in_progress",
     "conclusion": "",
-    "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350",
+    "run": 43622391716,
+    "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716",
     "jobs": [
-      {
-        "name": "Google ADK OTLP interoperability",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225340"
-      },
-      {
-        "name": "Automatic SDK capture through CLI",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225528"
-      },
-      {
-        "name": "Python 3.11",
-        "status": "in_progress",
-        "conclusion": "",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225547"
-      },
       {
         "name": "OpenTelemetry OTLP end-to-end",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225564"
-      },
-      {
-        "name": "Python 3.12",
-        "status": "in_progress",
-        "conclusion": "",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225596"
-      },
-      {
-        "name": "Node.js 22",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225617"
-      },
-      {
-        "name": "OpenAI Agents SDK local tracing",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225628"
-      },
-      {
-        "name": "Node.js 24",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225644"
-      },
-      {
-        "name": "LangChain callback interoperability",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225652"
-      },
-      {
-        "name": "Pydantic AI native instrumentation",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225658"
-      },
-      {
-        "name": "Python 3.14",
-        "status": "in_progress",
-        "conclusion": "",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225775"
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730321"
       },
       {
         "name": "Python 3.13",
         "status": "in_progress",
         "conclusion": "",
-        "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225787"
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730416"
+      },
+      {
+        "name": "Node.js 22",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730438"
+      },
+      {
+        "name": "Automatic SDK capture through CLI",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730447"
+      },
+      {
+        "name": "OpenAI Agents SDK local tracing",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730448"
+      },
+      {
+        "name": "Google ADK OTLP interoperability",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730464"
+      },
+      {
+        "name": "Python 3.14",
+        "status": "in_progress",
+        "conclusion": "",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730490"
+      },
+      {
+        "name": "Node.js 24",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730525"
+      },
+      {
+        "name": "Pydantic AI native instrumentation",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730554"
+      },
+      {
+        "name": "Python 3.11",
+        "status": "in_progress",
+        "conclusion": "",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730568"
+      },
+      {
+        "name": "LangChain callback interoperability",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730590"
+      },
+      {
+        "name": "Python 3.12",
+        "status": "in_progress",
+        "conclusion": "",
+        "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730595"
       }
     ]
   },
@@ -3434,28 +3436,12 @@
   ],
   "pending_delivery": [
     {
-      "work": "Startup writer admission",
-      "head": "3fb82549d08730c753bd76553b19b41e48545bf8",
-      "state": "Core fix and 13 local tests; pending combined validation/integration. No cold or HTTP target acceptance."
-    },
-    {
-      "work": "Readiness diagnostics/fail-fast harness",
-      "head": "883958949c024784c5b01c4afa35bc65dc2359a8",
-      "state": "Harness correction pending integration/combined validation; not runtime acceptance."
-    },
-    {
-      "work": "Independent receiver startup integration",
-      "head": "adb13508d6ed1a84a8b485852c2807a0aea84d6a",
-      "state": "Two real generated native/authenticated HTTP tests passed in 2.616 seconds. Independent two-case pass: 2.536 seconds before final shutdown-exception assertion strengthening. Pending combined integration; functional evidence only."
-    },
-    {
-      "work": "CI102 missing-method test double",
-      "head": "2354ecf2f7f0d1dc2bbc0d2c312e4b3f7dcecced",
-      "state": "Fixture-only correction committed; 28 local integration tests passed in 34.654 seconds and seven Python 3.13 monitoring models passed in 2.022 seconds. Combined integration and remote CI remain pending; no runtime fallback or green CI claim."
+      "work": "Active MCP readiness/source/cache correction",
+      "state": "Under independent review and adversarial testing; not merged; no full-corpus availability claim"
     }
   ],
   "remaining_acceptance": [
-    "Integrate startup core, harness, independent HTTP tests and CI fixture correction; refreeze exact runtime/harness/common corpus and preserve all failed attempts",
+    "Verify merged #104 full CI, prove/fix active MCP readiness, then complete retained-corpus lifecycle before actual one-hour stability and frozen resource acceptance; preserve all failed attempts",
     "Retained-history cold readiness <30 seconds, useful first native frame, untouched complete-monitor idle CPU <5% of one core",
     "Matched actual HTTP Sessions/MCP under-write p95 <100 ms with a valid 420-write schedule; earlier direct Store results are not HTTP",
     "Complete one-hour stability/restart/review workload, sustained RSS/modal memory and index/storage/WAL growth/drains",
@@ -3471,11 +3457,55 @@
     "previous_main97_snapshot_preserved": true,
     "historical_snapshots_and_links_preserved": true,
     "all_38_ids_once_in_both_documents": true,
-    "frozen_source_test_paths_checked": 149,
+    "frozen_source_test_paths_checked": 151,
     "missing_paths": [],
     "local_links_resolve": true,
     "browser_render": {
-      "status": "Not performed by this agent: CUA browser host unavailable. Root Playwright QA pending; prior screenshots are historical only."
+      "status": "PASS",
+      "browser": "Google Chrome via Playwright",
+      "cases": [
+        {
+          "document": "docs/rfcs/review-notes-completion-plan.html",
+          "sha256": "b21d2a39e0faba1f054dea20b66b3a20ee7669ddc0e3973968626a30d1da156f",
+          "width": 1280,
+          "theme": "light",
+          "pass": true,
+          "documentWidth": 1280,
+          "bodyWidth": 1280,
+          "brokenImages": 0
+        },
+        {
+          "document": "docs/rfcs/review-notes-completion-plan.html",
+          "sha256": "b21d2a39e0faba1f054dea20b66b3a20ee7669ddc0e3973968626a30d1da156f",
+          "width": 390,
+          "theme": "dark",
+          "pass": true,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "brokenImages": 0
+        },
+        {
+          "document": "docs/validation/review-notes-acceptance.html",
+          "sha256": "177016fe2d0f37efce3e9f3f6f50f3420bae4ef096061c266d0e785430b93488",
+          "width": 1280,
+          "theme": "light",
+          "pass": true,
+          "documentWidth": 1280,
+          "bodyWidth": 1280,
+          "brokenImages": 0
+        },
+        {
+          "document": "docs/validation/review-notes-acceptance.html",
+          "sha256": "177016fe2d0f37efce3e9f3f6f50f3420bae4ef096061c266d0e785430b93488",
+          "width": 390,
+          "theme": "dark",
+          "pass": true,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "brokenImages": 0
+        }
+      ],
+      "qualification": "Both plan and audit checked at1280light/390dark; no external requests or page errors. Functional document QA only."
     },
     "historical_snapshot_method": "Existing historical fields retained unchanged; full previous main97 ledger preserved by immutable commit/path/SHA instead of repeated nesting.",
     "historical_fields_unchanged": true,
@@ -3487,7 +3517,8 @@
       "Light/dark color schemes",
       "Scrollable comparison tables",
       "Unique IDs and resolving fragments"
-    ]
+    ],
+    "frozen_reference_scope": "Unique source/test/report Git commit:path pairs across both Markdown documents and JSON ledger; every path checked."
   },
   "head_roles": {
     "E": "Earlier corrected tested head, not current rebased PR81 head",
@@ -3495,7 +3526,7 @@
     "G": "Original tested PR80 head",
     "MCP": "Tested PR83 head",
     "replay": "Tested PR84 head",
-    "main": "Verified merged main103 checkpoint; pending/failed CI, not accepted final performance candidate."
+    "main": "Verified merged main104 checkpoint; full CI pending, not accepted final performance candidate."
   },
   "previous_acceptance_snapshot": {
     "base": "e434fcf54b83a19ecdbb94a1e1712f4a43772ec6",
@@ -5881,7 +5912,7 @@
       "url": "https://github.com/abhishekash/agenturm/actions/runs/43597775376"
     }
   ],
-  "ci_snapshot_qualification": "Main103 run is pending at this exact fetched timestamp; PR102 has4failed Python jobs, PR103 head has1failure/3pending; main102 has3failure/1pending. Main97 completed12success is historical. No green current combined candidate or runtime/performance acceptance.",
+  "ci_snapshot_qualification": "Main104 run43622391716:8success/4Python in progress at this fetch; not green or final resource acceptance. Earlier failures remain historical.",
   "capture_privacy94": {
     "merge": "07e9e1a6cccdcea29d4954405e1c2bb4caa84954",
     "report": "docs/validation/feed-capture-safety.html",
@@ -6469,5 +6500,216 @@
     "ledger_url": "https://github.com/abhishekash/agenturm/blob/a241b149b7afa8661f99fb65871e4e45bcd1a7c0/docs/validation/review-notes-acceptance-data.json",
     "sha256": "6060dea21bf78e33d1332e059405f770b2ea5eca5be126b93b21ae0833275531",
     "qualification": "Full immutable prior ledger, including every older snapshot, row, CI fetch and failed attempt. Existing older records remain locally; do not duplicate this entire recursive object."
+  },
+  "previous_main103_snapshot": {
+    "head": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
+    "ledger_commit": "c8b1ad6a370345d7fc98c380c4f902ae13ca8dbf",
+    "ledger_url": "https://github.com/abhishekash/agenturm/blob/c8b1ad6a370345d7fc98c380c4f902ae13ca8dbf/docs/validation/review-notes-acceptance-data.json",
+    "sha256": "24a2a9ccd86a7e806943f28bebdb4399d7572dc72c288e6d86e0dc8859c48c77",
+    "snapshot_utc": "2026-11-14T17:25:14.150484+00:00"
+  },
+  "checkpoint104": {
+    "main": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+    "pr": 104,
+    "verified_pr_head": "b08c7ae4c872d2e1a64152f6d00e08f4f888cafc",
+    "merged_at": "2026-11-14T17:40:33Z",
+    "snapshot_utc": "2026-11-14T17:43:27.111051+00:00",
+    "ci": {
+      "headSha": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+      "status": "in_progress",
+      "conclusion": "",
+      "run": 43622391716,
+      "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716",
+      "jobs": [
+        {
+          "name": "OpenTelemetry OTLP end-to-end",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730321"
+        },
+        {
+          "name": "Python 3.13",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730416"
+        },
+        {
+          "name": "Node.js 22",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730438"
+        },
+        {
+          "name": "Automatic SDK capture through CLI",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730447"
+        },
+        {
+          "name": "OpenAI Agents SDK local tracing",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730448"
+        },
+        {
+          "name": "Google ADK OTLP interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730464"
+        },
+        {
+          "name": "Python 3.14",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730490"
+        },
+        {
+          "name": "Node.js 24",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730525"
+        },
+        {
+          "name": "Pydantic AI native instrumentation",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730554"
+        },
+        {
+          "name": "Python 3.11",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730568"
+        },
+        {
+          "name": "LangChain callback interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730590"
+        },
+        {
+          "name": "Python 3.12",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43622391716/job/132530730595"
+        }
+      ]
+    },
+    "combined_gate": {
+      "tests": 60,
+      "seconds": 38.757,
+      "resource_warning_free": true
+    },
+    "harness_gate": {
+      "tests": 22,
+      "seconds": 0.874,
+      "resource_warning_free": true
+    },
+    "gates_overlap": true,
+    "report": "https://github.com/abhishekash/agenturm/blob/1ca4fafe71aed559d381b7e613efb748b9ae9878/docs/validation/startup-integration.html",
+    "active_mcp_fix": "Under independent source/snapshot/selector/cache review; not merged or accepted.",
+    "prior_qualification": "Main103 run is pending at this exact fetched timestamp; PR102 has4failed Python jobs, PR103 head has1failure/3pending; main102 has3failure/1pending. Main97 completed12success is historical. No green current combined candidate or runtime/performance acceptance.",
+    "authored_components_before_merge": [
+      {
+        "work": "Startup writer admission",
+        "head": "3fb82549d08730c753bd76553b19b41e48545bf8",
+        "state": "Core fix and 13 local tests; pending combined validation/integration. No cold or HTTP target acceptance."
+      },
+      {
+        "work": "Readiness diagnostics/fail-fast harness",
+        "head": "883958949c024784c5b01c4afa35bc65dc2359a8",
+        "state": "Harness correction pending integration/combined validation; not runtime acceptance."
+      },
+      {
+        "work": "Independent receiver startup integration",
+        "head": "adb13508d6ed1a84a8b485852c2807a0aea84d6a",
+        "state": "Two real generated native/authenticated HTTP tests passed in 2.616 seconds. Independent two-case pass: 2.536 seconds before final shutdown-exception assertion strengthening. Pending combined integration; functional evidence only."
+      },
+      {
+        "work": "CI102 missing-method test double",
+        "head": "2354ecf2f7f0d1dc2bbc0d2c312e4b3f7dcecced",
+        "state": "Fixture-only correction committed; 28 local integration tests passed in 34.654 seconds and seven Python 3.13 monitoring models passed in 2.022 seconds. Combined integration and remote CI remain pending; no runtime fallback or green CI claim."
+      }
+    ],
+    "prior_combined_ci": {
+      "headSha": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
+      "status": "in_progress",
+      "conclusion": "",
+      "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350",
+      "jobs": [
+        {
+          "name": "Google ADK OTLP interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225340"
+        },
+        {
+          "name": "Automatic SDK capture through CLI",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225528"
+        },
+        {
+          "name": "Python 3.11",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225547"
+        },
+        {
+          "name": "OpenTelemetry OTLP end-to-end",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225564"
+        },
+        {
+          "name": "Python 3.12",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225596"
+        },
+        {
+          "name": "Node.js 22",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225617"
+        },
+        {
+          "name": "OpenAI Agents SDK local tracing",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225628"
+        },
+        {
+          "name": "Node.js 24",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225644"
+        },
+        {
+          "name": "LangChain callback interoperability",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225652"
+        },
+        {
+          "name": "Pydantic AI native instrumentation",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225658"
+        },
+        {
+          "name": "Python 3.14",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225775"
+        },
+        {
+          "name": "Python 3.13",
+          "status": "in_progress",
+          "conclusion": "",
+          "url": "https://github.com/abhishekash/agenturm/actions/runs/43619971350/job/132523225787"
+        }
+      ]
+    }
   }
 }
