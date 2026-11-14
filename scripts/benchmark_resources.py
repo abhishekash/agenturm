@@ -18,12 +18,13 @@ from observatory.opencode import OpenCodeReader
 class CountingStore:
     def __init__(self):
         self.spans = 0
+        self.logs = 0
 
     def ingest(self, spans):
         self.spans += len(spans)
 
     def ingest_logs(self, logs):
-        pass
+        self.logs += len(logs)
 
 
 def logical_reads():
@@ -73,6 +74,7 @@ def benchmark(reader_class=OpenCodeReader):
             for scenario in ('idle', 'unrelated_writes', 'one_changed_tool'):
                 cpu = wall = reads = 0
                 before_spans = store.spans
+                before_logs = store.logs
                 for iteration in range(8):
                     if scenario == 'unrelated_writes':
                         db.execute('UPDATE unrelated SET value=value+1')
@@ -89,7 +91,9 @@ def benchmark(reader_class=OpenCodeReader):
                 results[scenario] = {'cpu_ms_per_poll': round(cpu * 1000 / 8, 3),
                                      'wall_ms_per_poll': round(wall * 1000 / 8, 3),
                                      'logical_kib_per_poll': round(reads / 1024 / 8, 1),
-                                     'spans_written': store.spans - before_spans}
+                                     'spans_written': store.spans - before_spans,
+                                     'logs_emitted':store.logs-before_logs,
+                                     'scope':'Reader emission counts; no receiver/database/WAL write volume is measured.'}
     return results
 
 
