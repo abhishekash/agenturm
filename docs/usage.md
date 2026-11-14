@@ -701,3 +701,16 @@ failures remain visible, with basic monitoring available.
 Unknown or unconfirmed lifecycle evidence stays visible as **Status unknown** and does not count as actionable attention. A shared Codex daemon is not proof that a particular session is advancing. Explicit approvals/replies, recorded failures and genuine possible stalls retain their evidence-based behavior.
 
 Workflow defaults to completion reviews from the last 24 hours. Press `h` to include older completions; pending requests remain visible. `Shift+R` reviews the exact completion IDs in the current filtered inbox together; it excludes approvals, replies, budget incidents and later arrivals. Ages use hours/days. Accepted acknowledgements and viewed-error receipts drain on graceful shutdown with a bounded failure notice; SIGKILL cannot provide that guarantee.
+
+
+## Attention without an open cockpit
+
+```sh
+agenturm attention watch --endpoint http://127.0.0.1:14318 --once
+agenturm attention watch --endpoint http://127.0.0.1:14318 --desktop
+agenturm attention status
+```
+
+The watcher connects to an existing receiver and shares private Workflow state with the cockpit. It never launches an agent or approves a native request. Desktop delivery requires `--desktop`; a first complete inventory establishes a quiet baseline. Known new requests observed later or during watcher downtime can become eligible once, while uncertain clocks, incomplete reads or conflicting native metadata defer delivery. Pending observations remain available when reads fail; absence does not resolve them. Handle approvals and replies in the original agent terminal.
+
+Optional native input uses explicit owner-only versioned bindings and supported runtime contracts, with replay/order fences. See the [native recipes and limits](validation/persistent-attention.md). Automatic local discovery continues without these hooks. Codex notify supplies completion metadata only; unsupported request IDs are not guessed. Restart all processes sharing Workflow state after upgrading its schema.

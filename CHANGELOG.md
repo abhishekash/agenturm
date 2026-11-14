@@ -14,6 +14,8 @@
 
 - Batch bounded session identity, label and uncovered-log reads in one source snapshot. Preserve older uncovered errors, typed recovery references and nullable ownership; record the paired latency gain and still-open resource targets.
 
+- Share durable attention with a headless watcher and bounded opt-in native lifecycle bridge. Preserve exact pending/resolved requests beyond recent Activity, use one overlay in Agents/Review/Workflow, freeze Pause while honoring revocation, and defer notifications when clock, identity or coverage is incomplete.
+
 - Reuse read-only leases for the background compatibility watcher’s empty probe, releasing them before transactional repair. Preserve the polling interval, bounded drain and live external-writer invalidation.
 
 - Keep MCP scope, call identity, hydration and execution enrichment in one source snapshot. Separate producer/worker/session/server collisions, retain ambiguous calls, and expose typed recorded payloads without borrowing trace-root ownership.
