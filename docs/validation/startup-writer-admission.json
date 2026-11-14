@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "source_base": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+  "generated_only": true,
+  "performance_targets_closed": false,
+  "old_failure_reproductions": {
+    "lock": {
+      "generated_only": true,
+      "diagnostic_only": true,
+      "publishable": false,
+      "source_commit": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+      "cases": {
+        "local-writer-gate-bypass": {
+          "unchanged_sqlite_timeout_seconds": 10,
+          "threads": {
+            "migration": {
+              "elapsed_seconds": 10.01295695407316,
+              "ok": false,
+              "error": "database is locked"
+            },
+            "metadata": {
+              "elapsed_seconds": 10.017603471991606,
+              "ok": false,
+              "error": "database is locked"
+            },
+            "source": {
+              "elapsed_seconds": 10.067726752022281,
+              "ok": true
+            }
+          },
+          "sqlite_errors": [
+            {
+              "thread": "initial-migration",
+              "code": 5,
+              "name": "SQLITE_BUSY",
+              "message": "database is locked"
+            },
+            {
+              "thread": "health-metadata",
+              "code": 5,
+              "name": "SQLITE_BUSY",
+              "message": "database is locked"
+            }
+          ],
+          "migration_status": {
+            "ready": false,
+            "stage": "History migration failed; restart to resume",
+            "processed": 0,
+            "error": "database is locked"
+          },
+          "source_done": true,
+          "migration_done": true,
+          "metadata_done": true
+        }
+      }
+    },
+    "snapshot": {
+      "generated_only": true,
+      "diagnostic_only": true,
+      "publishable": false,
+      "source_commit": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+      "ok": false,
+      "code": 517,
+      "name": "SQLITE_BUSY_SNAPSHOT",
+      "error": "database is locked",
+      "elapsed_seconds": 0.02344904199708253,
+      "groups": 501,
+      "calls": [
+        {
+          "records": 500,
+          "python_in_transaction": false
+        }
+      ]
+    }
+  },
+  "frozen_full_output": {
+    "source_commit": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+    "core_sha256": "41d9096b372989e25269db5351ec18779e3809524ef65cfb7ff153abef691be3",
+    "generated_only": true,
+    "method": "Full ordered rows/all columns, compact JSON SHA256; fixed node wall clock.",
+    "endpoints": {
+      "endpoints": {
+        "rows": 501,
+        "sha256": "8de4599988009dc4f2510e6bb5ba1aeb602090662152ec56c08dd3d3b0f46a78"
+      },
+      "endpoint_services": {
+        "rows": 501,
+        "sha256": "ca13932bd476c0e76cae1290b73290a664dc67d692d078d19188d6a931ddea12"
+      },
+      "endpoint_traces": {
+        "rows": 501,
+        "sha256": "980cf63f59536c46739a55844f1b3d397229b3f1683417454403fd2cf4cc979c"
+      }
+    },
+    "outcomes": {
+      "trace_summaries": {
+        "rows": 201,
+        "sha256": "c426d49664b34124a56a9c479cad0bb924ab34ca96250a8e09ff997a769c8793"
+      }
+    },
+    "nodes": {
+      "agent_nodes": {
+        "rows": 3,
+        "sha256": "b6bfe57850c1420b7b61e693a9febc0dd6ff93ccf4b2c30c43d47322aae17a12"
+      },
+      "agent_identity": {
+        "rows": 3,
+        "sha256": "645a58e70a0d612d1de8eb4ae42dedf821b595022022244b9abe54d369d4d30e"
+      }
+    }
+  },
+  "new_core_sha256": "a91eb782970314004302e40177469f23875867f4f2388dceee8061e80b399d20",
+  "tests": [
+    {
+      "scope": "new regression module",
+      "count": 13,
+      "seconds": 4.859,
+      "passed": true,
+      "resource_warnings": "error"
+    },
+    {
+      "scope": "new + catchup/ingest/idle-history/hardening",
+      "count": 45,
+      "seconds": 23.926,
+      "passed": true,
+      "resource_warnings": "error"
+    },
+    {
+      "scope": "existing hierarchy/hydration/derived storage",
+      "count": 51,
+      "seconds": 16.482,
+      "passed": true
+    }
+  ],
+  "guarantees": [
+    "Self-owned writer gate precedes opening SQLite and BEGIN IMMEDIATE.",
+    "Borrowed _db does not acquire gate or BEGIN/commit/rollback.",
+    "Activity200, outcomes100 and endpoint500 pages commit before25ms stop-aware yield.",
+    "Endpoint pages hold no cursor/read snapshot across writer admission.",
+    "Retention remains one transaction under Derived\u2192writer gate\u2192SQLite.",
+    "Fresh Activity repair read keeps dirty check and source hydration coherent.",
+    "SQLite timeout10 unchanged; genuine exceptions and fatal migration stage remain visible."
+  ],
+  "reproduction": {
+    "lock": {
+      "original_path": "/tmp/agenturm-startup-lock-proof.py",
+      "sha256": "8be975ec39e91eb7ff234fc4ec3a30af4691b4abf8f99ebaf587e25339965ce8",
+      "python_source": "import contextlib,json,pathlib,sqlite3,sys,tempfile,threading,time\nsys.path.insert(0,'/tmp/agenturm-candidate-473')\nfrom observatory.core import Store,normalize_native\nfrom tests.test_agent_hierarchy import node\nreport=dict(generated_only=True,diagnostic_only=True,publishable=False,source_commit='473d3388e6cd6966d5c2fb8e90001990573d224b',cases={})\nwith tempfile.TemporaryDirectory(prefix='agenturm-startup-lock-proof-')as directory:\n store=Store(pathlib.Path(directory)/'fixture.db');entered=threading.Event();release=threading.Event();errors=[];times={};original_connect=store._connect;original_policy=store._policy_records\n @contextlib.contextmanager\n def observed_connect():\n  with original_connect()as db:\n   try:yield db\n   except sqlite3.Error as exc:\n    errors.append(dict(thread=threading.current_thread().name,code=getattr(exc,'sqlite_errorcode',None),name=getattr(exc,'sqlite_errorname',None),message=str(exc)));raise\n def blocked_policy(*args,**kwargs):\n  entered.set()\n  if not release.wait(12):raise RuntimeError('Fixture release missing')\n  return original_policy(*args,**kwargs)\n store._connect=observed_connect;store._policy_records=blocked_policy\n def call(name,action):\n  began=time.monotonic()\n  try:action();times[name]=dict(elapsed_seconds=time.monotonic()-began,ok=True)\n  except Exception as exc:times[name]=dict(elapsed_seconds=time.monotonic()-began,ok=False,error=str(exc))\n source=threading.Thread(name='source-writer',target=lambda:call('source',lambda:store.ingest([normalize_native(dict(trace_id='a'*32,span_id='1'*16,name='agent.run',start_unix_nano=1,end_unix_nano=2,status='OK',attributes={},events=[]),'fixture')])));source.start();assert entered.wait(2)\n store.migration_status={'ready':False,'stage':'Preparing indexed history','processed':0}\n migration=threading.Thread(name='initial-migration',target=lambda:call('migration',store._finish_migration));metadata=threading.Thread(name='health-metadata',target=lambda:call('metadata',lambda:store.upsert_agent_nodes([node('fixture-native')])));\n migration.start();metadata.start();migration.join(10.8);metadata.join(.5);release.set();source.join(3);migration.join(1);metadata.join(1)\n report['cases']['local-writer-gate-bypass']=dict(unchanged_sqlite_timeout_seconds=10,threads=times,sqlite_errors=errors,migration_status=store.migration_status,source_done=not source.is_alive(),migration_done=not migration.is_alive(),metadata_done=not metadata.is_alive())\n store.close()\nprint(json.dumps(report,indent=2))\n"
+    },
+    "snapshot": {
+      "original_path": "/tmp/agenturm-startup-snapshot-proof.py",
+      "sha256": "f094416dedec469d825eb0d837e966d7408073151b3b3729ef13d65a135a38f3",
+      "python_source": "import json,pathlib,sqlite3,sys,tempfile,time\nsys.path.insert(0,'/tmp/agenturm-candidate-473')\nfrom observatory.core import Store\nreport=dict(generated_only=True,diagnostic_only=True,publishable=False,source_commit='473d3388e6cd6966d5c2fb8e90001990573d224b')\nwith tempfile.TemporaryDirectory(prefix='agenturm-startup-snapshot-proof-')as directory:\n store=Store(pathlib.Path(directory)/'fixture.db')\n try:\n  with store._connect()as db:\n   db.executemany('INSERT INTO spans(trace_id,span_id,name,start_ns,end_ns,status,service,attributes,events,resource_attributes)VALUES(?,?,?,?,?,?,?,?,?,?)',[(f'{n+1:032x}','1'*16,'fixture',1,2,'OK','fixture','{}','[]',json.dumps({'device.id':'generated-'+str(n)}))for n in range(501)])\n   db.execute(\"DELETE FROM schema_meta WHERE key='endpoint_inventory_v1'\")\n  original=store._update_endpoints;calls=[]\n  def interleaved(db,records):\n   calls.append(dict(records=len(records),python_in_transaction=db.in_transaction))\n   if len(calls)==1:\n    with sqlite3.connect(store.path,timeout=10)as external:\n     external.execute(\"INSERT OR REPLACE INTO schema_meta VALUES('generated_interleaved_writer','1')\")\n   return original(db,records)\n  store._update_endpoints=interleaved;began=time.monotonic()\n  try:store._backfill_endpoints();report['ok']=True\n  except sqlite3.Error as exc:report.update(ok=False,code=exc.sqlite_errorcode,name=exc.sqlite_errorname,error=str(exc))\n  report.update(elapsed_seconds=time.monotonic()-began,groups=501,calls=calls)\n finally:store.close()\nprint(json.dumps(report,indent=2))\n"
+    }
+  }
+}
