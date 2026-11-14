@@ -27,7 +27,7 @@ from scripts.validation_support import (application_revision,bind_application,cl
     create_owned_directory,disk_gate,file_hash,harness_manifest,isolated_env,nearest_rank,
     raw_manifest,readonly,storage_snapshot,fresh_schema_manifest,prepare_raw_clone,verify_named_indexes)
 
-BASELINE='5e0c397'
+BASELINE='5e0c39786066fb88c0e270418573e361aeb6cf9a'
 ENDPOINTS=('/api/sessions?limit=500','/api/mcp?limit=100')
 PROTOCOL='agenturm-authenticated-http-tails-v1'
 TRACE=hashlib.sha256(PROTOCOL.encode()).hexdigest()[:32]
@@ -410,7 +410,7 @@ def registered_versions(args):
     candidate=args.candidate_commit
     if not args.smoke and (not isinstance(candidate,str) or re.fullmatch('[0-9a-f]{40}',candidate)is None):
         raise ValueError('Register an exact full --candidate-commit before a controlled run')
-    baseline=subprocess.check_output(['git','rev-parse',BASELINE],cwd=ROOT,text=True).strip()
+    baseline=BASELINE if not args.smoke else None
     versions={'B':('B',args.baseline_root,baseline),'C':('C',args.candidate_root,candidate)}
     return [versions[role]for role in args.order]
 

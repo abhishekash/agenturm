@@ -98,10 +98,16 @@ class HttpTailContractTests(unittest.TestCase):
         rows=harness.registered_versions(args)
         self.assertEqual([row[0]for row in rows],['C','B'])
         self.assertEqual(rows[0],('C',Path('/C'),'c'*40))
+        self.assertEqual(rows[1][2],harness.BASELINE)
         self.assertEqual(len(rows[1][2]),40)
         for invalid in (None,'main','55c6244','C'*40):
             args.candidate_commit=invalid
             with self.assertRaisesRegex(ValueError,'exact full'):harness.registered_versions(args)
+
+    def test_smoke_does_not_require_historical_git_objects_in_shallow_checkout(self):
+        args=SimpleNamespace(smoke=True,candidate_commit=None,baseline_root=Path('/B'),candidate_root=Path('/C'),order='BC')
+        with patch.object(harness.subprocess,'check_output',side_effect=AssertionError('Smoke must not resolve historical commits')):
+            self.assertEqual(harness.registered_versions(args),[('B',Path('/B'),None),('C',Path('/C'),None)])
 
 
 def tiny_raw_seed(path):
@@ -139,6 +145,7 @@ class HttpTailSmokeTests(unittest.TestCase):
             expected_errors=[];writer_hashes=[];settings=report['settings']
             for role in ('B','C'):
                 row=report['versions'][role]['result']
+                self.assertIn('loaded',row,dict(role=role,errors=row.get('errors'),report_errors=report.get('errors')))
                 self.assertFalse(row['native_monitor_enabled']);self.assertEqual(row['unauthenticated_status'],401)
                 self.assertNotEqual(row['pid'],row['client_pid'])
                 self.assertTrue(row['production_indexes']['equal'])
