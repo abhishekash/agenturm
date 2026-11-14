@@ -915,12 +915,12 @@ class Store:
         from .storage_activity import drain
         try:
             while not self._migration_stop.is_set():
-                with self._connect() as db:
-                    db.execute('BEGIN IMMEDIATE')
+                with self._write_db() as db:
                     count=drain(db)
                 processed=self.migration_status['processed']+count
                 self.migration_status={**self.migration_status,'processed':processed,'stage':f'Indexing source records · {processed:,} indexed'}
                 if not count:break
+                if self._migration_stop.wait(.025):return
             if self._migration_stop.is_set():return
             self.migration_status={**self.migration_status,'stage':'Refreshing ownership and run summaries'}
             self._backfill_summaries()
@@ -947,7 +947,7 @@ class Store:
 
         except Exception as exc:
             self.last_derived_error=str(exc)
-            self.migration_status={**self.migration_status,'stage':'History migration failed; restart to resume','error':str(exc)}
+            self.migration_status={**self.migration_status,'ready':False,'stage':'History migration failed; restart to resume','error':str(exc)}
             self._notify_derived_progress()
             if not self._async_derived_refresh:raise
 
@@ -997,7 +997,8 @@ class Store:
             dirty=bool(db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 UNION ALL SELECT 1 FROM native_lifecycle_dirty_v1'+
                 (' UNION ALL SELECT 1 FROM investigation_dirty_v1' if self.investigation_index_v1 else '')+' LIMIT 1').fetchone())
         if dirty:
-            state.update(ready=False,stage='Indexing incoming source changes')
+            state['ready']=False
+            if not state.get('error'):state['stage']='Indexing incoming source changes'
         return state
 
     def _incoming_status(self, deadline):
@@ -1142,6 +1143,21 @@ class Store:
         else:
             with self._connect() as connection:yield connection
 
+    @contextmanager
+    def _write_db(self, db=None):
+        """Own writer admission before SQLite, or inherit a caller's transaction.
+
+        Borrowed connections may already own SQLite's writer. Acquiring the
+        local gate here would invert gate -> SQLite ordering; their caller
+        owns admission, commit and rollback instead.
+        """
+        if db is not None:
+            yield db
+        else:
+            with self._writer_gate,self._connect() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                yield connection
+
     def _derived_snapshot(self, read, *, _db=None):
         if _db is not None:
             self._require_index_ready(_db)
@@ -1188,7 +1204,7 @@ class Store:
         if process_id is not None and (isinstance(process_id, bool) or not isinstance(process_id, int) or not 0 < process_id < 2**31):
             raise ValueError("invalid process_id")
         now = time.time_ns()
-        with self._connect() as db:
+        with self._write_db() as db:
             db.execute("""INSERT INTO agent_connections VALUES(?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(source_id) DO UPDATE SET last_seen_ns=excluded.last_seen_ns,
                 state=excluded.state,service=excluded.service,runtime=excluded.runtime,integrations=excluded.integrations,
@@ -1218,7 +1234,7 @@ class Store:
             raise ValueError("too many agent nodes")
         now = time.time_ns()
         changed = 0
-        with self._read_db(_db) as db:
+        with self._write_db(_db) as db:
             for raw in nodes:
                 try:
                     node = normalize_node(raw)
@@ -1536,13 +1552,13 @@ class Store:
                 done+=len(rows)
                 self.migration_status={**self.migration_status,'runs_refreshed':done,'total_runs':total,
                     'stage':f'Refreshing run evidence · {done:,}/{total:,} runs'}
-                with self._connect() as db:
+                with self._write_db() as db:
                     db.execute("INSERT OR REPLACE INTO schema_meta VALUES('trace_derived_v15_cursor',?)",(json.dumps(before),))
                     db.execute("INSERT OR REPLACE INTO schema_meta VALUES('trace_derived_v15_done',?)",(str(done),))
                 if len(rows) < 100:
                     break
         if not complete:
-            with self._connect() as db:
+            with self._write_db() as db:
                 db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v15','1')")
                 db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v14','1')")
                 db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('trace_derived_v13','1')")
@@ -1556,46 +1572,60 @@ class Store:
         with self._connect() as db:
             if db.execute("SELECT 1 FROM schema_meta WHERE key='task_outcome_v1'").fetchone():
                 return
-            before = ''
-            while True:
+        before = ''
+        while not self._migration_stop.is_set():
+            with self._write_db() as db:
                 rows = db.execute("SELECT trace_id FROM trace_summaries WHERE trace_id>? "
                                   "ORDER BY trace_id LIMIT 100", (before,)).fetchall()
                 if not rows:
-                    break
+                    db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('task_outcome_v1','1')")
+                    return
                 for row in rows:
                     state, stamp = task_outcome_for_trace(db, row['trace_id'])
                     db.execute("UPDATE trace_summaries SET summary_json=json_set(summary_json, "
                                "'$.task_outcome',?,'$.task_outcome_ns',?) WHERE trace_id=?",
                                (state, stamp, row['trace_id']))
                 before = rows[-1]['trace_id']
-            db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('task_outcome_v1','1')")
+            if self._migration_stop.wait(.025):return
 
     def _backfill_endpoints(self):
         with self._connect() as db:
             complete = db.execute("SELECT 1 FROM schema_meta WHERE key='endpoint_inventory_v1'").fetchone()
         if complete:
             return
-        queries = (
-            "SELECT trace_id,service,resource_attributes,MAX(end_ns) AS time_unix_nano "
-            "FROM spans GROUP BY trace_id,service,resource_attributes",
-            "SELECT trace_id,service,resource_attributes,MAX(time_ns) AS time_unix_nano "
-            "FROM logs GROUP BY trace_id,service,resource_attributes",
-            "SELECT NULL AS trace_id,service,resource_attributes,MAX(time_ns) AS time_unix_nano "
-            "FROM metric_points GROUP BY service,resource_attributes",
-        )
-        for query in queries:
-            with self._connect() as db:
-                cursor = db.execute(query)
-                while True:
-                    rows = cursor.fetchmany(500)
-                    if not rows:
-                        break
+        for table,stamp,has_trace in (('spans','end_ns',True),('logs','time_ns',True),
+                                    ('metric_points','time_ns',False)):
+            before=None
+            group='trace_id,service,resource_attributes' if has_trace else 'service,resource_attributes'
+            trace='trace_id' if has_trace else 'NULL AS trace_id'
+            while not self._migration_stop.is_set():
+                where='';params=[]
+                if before is not None:
+                    if has_trace and before[0] is None:
+                        # SQLite sorts NULL trace IDs first; tuple comparison
+                        # alone cannot advance out of this real log bucket.
+                        where=' WHERE trace_id IS NOT NULL OR (trace_id IS NULL AND (service,resource_attributes)>(?,?))'
+                        params=list(before[1:])
+                    else:
+                        where=' WHERE ('+group+')>('+','.join('?'for _ in before)+')'
+                        params=list(before)
+                with self._write_db() as db:
+                    rows=db.execute(f'SELECT {trace},service,resource_attributes,MAX({stamp}) AS time_unix_nano '
+                        f'FROM {table}'+where+f' GROUP BY {group} ORDER BY {group} LIMIT 500',params).fetchall()
+                    if not rows:break
                     records = [{"trace_id": row["trace_id"], "service": row["service"],
                                 "resource_attributes": json.loads(row["resource_attributes"]),
                                 "time_unix_nano": row["time_unix_nano"]}
                                for row in rows]
                     self._update_endpoints(db, records)
-        with self._connect() as db:
+                    last=rows[-1]
+                    before=((last['trace_id'],last['service'],last['resource_attributes']) if has_trace else
+                            (last['service'],last['resource_attributes']))
+                # No live source cursor/read snapshot or writer lease crosses
+                # admission of the next page or a native/health writer.
+                if self._migration_stop.wait(.025):return
+            if self._migration_stop.is_set():return
+        with self._write_db() as db:
             db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('endpoint_inventory_v1','1')")
 
     def _refresh_summaries(self, trace_ids, *, require_dirty=False, defer_local=False):
@@ -2088,8 +2118,7 @@ class Store:
         now_ns = time.time_ns() if now_ns is None else int(now_ns)
         cutoff_ns = now_ns - int(float(retention_days) * 86_400_000_000_000)
         deleted = {}
-        with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self._write_db() as db:
             stale = """WITH activity(trace_id,activity_ns) AS (
                     SELECT trace_id,end_ns FROM spans
                     UNION ALL SELECT trace_id,time_ns FROM progress
@@ -2253,8 +2282,18 @@ class Store:
             # read budget. Large upgrades are resumed at receiver startup.
             if db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone():
                 db.rollback()
-                db.execute('BEGIN IMMEDIATE')
-                drain(db,limit=1000)
+                # Admission starts only after releasing the old read snapshot.
+                # Finish the writer before releasing the gate, then bind the
+                # repaired-index check and hydration to a fresh read snapshot.
+                with self._writer_gate:
+                    db.execute('BEGIN IMMEDIATE')
+                    try:
+                        drain(db,limit=1000)
+                        db.commit()
+                    except BaseException:
+                        db.rollback()
+                        raise
+                db.execute('BEGIN')
             if db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone():
                 db.commit()
                 raise ValueError('Activity index is catching up; retry after receiver migration completes')
@@ -2679,7 +2718,7 @@ class Store:
                          point["unit"], point["kind"], point["temporality"],
                          json.dumps(point["attributes"]), json.dumps(point["resource_attributes"]),
                          point["scope_name"], json.dumps(point["data"])))
-        with self._connect() as db:
+        with self._write_db() as db:
             db.executemany("""INSERT OR IGNORE INTO metric_points
                 (digest,time_ns,start_ns,service,name,description,unit,kind,
                  temporality,attributes,resource_attributes,scope_name,data)
