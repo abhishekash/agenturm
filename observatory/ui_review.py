@@ -292,7 +292,7 @@ class ReviewScreen(ModalScreen):
 
     def action_copy(self):
         self.apply_capture_policy()
-        self.prepare_receipt(self.projection,False,self.current_policy())
+        self.start_receipt(False)
 
     def action_copy_json(self):
         self.apply_capture_policy()
@@ -300,23 +300,40 @@ class ReviewScreen(ModalScreen):
 
     def action_export(self):
         self.apply_capture_policy()
-        self.prepare_receipt(self.projection,True,self.current_policy())
+        self.start_receipt(True)
 
     def current_policy(self):
         return review_capture_policy(self.item,self.owner.feed.snapshot,self.scope)
 
+    def start_receipt(self,export):
+        from .ui_saved_tasks import projection_policy_state
+        projection=deepcopy(self.projection)
+        state=projection_policy_state(self.owner,projection)
+        if not state[0]:
+            self.notify('Source capture changed. Refresh the current evidence before sharing.',severity='warning');return
+        self.prepare_receipt(projection,export,state)
+
     @work(thread=True,exclusive=True,group='review-format',exit_on_error=False)
     def prepare_receipt(self,projection,export,policy):
         from .work_receipts import freeze_receipt
+        from .ui_saved_tasks import projection_policy_state
+        if projection_policy_state(self.owner,projection)!=policy:return
         formats=freeze_receipt(projection)
-        try:self.app.call_from_thread(self.receipt_ready,formats,export,policy)
+        try:self.app.call_from_thread(self.receipt_ready,formats,export,policy,projection)
         except RuntimeError:pass
 
-    def receipt_ready(self,formats,export,policy):
+    def receipt_ready(self,formats,export,policy,projection=None):
+        from .ui_saved_tasks import projection_policy_state
         if not self.is_mounted:return
-        if self.current_policy()!=policy or self.owner.feed.snapshot.receiver_id!=self.scope.receiver:
+        projection=deepcopy(self.projection if projection is None else projection)
+        invalidated=False
+        def valid():
+            nonlocal invalidated
+            if not self.is_mounted or projection_policy_state(self.owner,projection)!=policy or not policy[0]:invalidated=True
+            return not invalidated
+        if not valid():
             self.apply_capture_policy();self.notify('Capture policy changed. Try again with the current evidence.',severity='warning');return
-        if export:self.app.push_screen(ReceiptExportScreen(formats,valid=lambda:self.is_mounted and self.current_policy()==policy))
+        if export:self.app.push_screen(ReceiptExportScreen(formats,valid=valid))
         else:
             self.app.copy_to_clipboard(formats['markdown']);self.notify('Frozen evidence brief copied as Markdown.')
 

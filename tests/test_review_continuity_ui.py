@@ -14,7 +14,7 @@ from textual.app import App
 from textual.widgets import Button,Input,RichLog,TextArea
 from observatory.saved_tasks import TaskStore
 from observatory.ui_review import ReviewScreen,WorkspaceMappingScreen
-from observatory.ui_saved_tasks import TaskEditor,HandoffScreen
+from observatory.ui_saved_tasks import TaskEditor,HandoffScreen,task_policy_signature,projection_policy_state
 from observatory.workflow_evidence import ReviewCache,ExecutionScope
 from observatory.terminal_ui import ObservatoryApp
 from tests.test_turn_task_continuity import turn_capture
@@ -116,6 +116,108 @@ class ReviewContinuityJourney(unittest.IsolatedAsyncioTestCase):
                     self.assertIsNone(screen.workspace_observation)
                     self.assertNotIn('workspace_observation',screen.projection)
                     self.assertFalse(screen.git_busy)
+
+    def peer_projection(self,p):
+        p=deepcopy(p)
+        p['parallel_path_observations']=dict(observations=[dict(paths=['PEER_PRIVATE_PATH'],agents=['worker','peer'],
+            branch_basis='unknown',observation='Recorded overlap',sources=[dict(service='opencode',agent_id='peer',
+            session_id='peer-session',trace_id='b'*32)])])
+        return p
+
+    def revoke_peer(self,owner,revision=2):
+        owner.feed.snapshot=replace(owner.feed.snapshot,local_status={'sessions':[dict(service='opencode',
+            agent_id='peer',session_id='peer-session',capture_content=False,capture_revision=revision)]})
+
+    def test_all_source_policy_signature_tracks_peer_revision_and_receiver(self):
+        from observatory.review_continuity import editable_draft
+        with TemporaryDirectory() as directory:
+            owner,item,p=turn_capture();p=self.peer_projection(p)
+            task=TaskStore(Path(directory)/'tasks.db').create('Authored task',notes='Authored notes',
+                continuity_draft=editable_draft(p),source_allowed=True)
+            initial=task_policy_signature(owner,task)
+            self.assertTrue(projection_policy_state(owner,p)[0])
+            self.revoke_peer(owner)
+            self.assertNotEqual(initial,task_policy_signature(owner,task))
+            self.assertFalse(projection_policy_state(owner,p)[0])
+            denied=task_policy_signature(owner,task)
+            self.revoke_peer(owner,3);self.assertNotEqual(denied,task_policy_signature(owner,task))
+            owner.feed.snapshot=replace(owner.feed.snapshot,receiver_id='replacement')
+            self.assertFalse(projection_policy_state(owner,p)[0])
+            # Parallel-only linked reviews use the same full contributor fence.
+            linked={'links':[{'review_snapshot':p}]}
+            replaced=task_policy_signature(owner,linked)
+            owner.feed.snapshot=replace(owner.feed.snapshot,receiver_id='receiver',local_status={})
+            self.assertNotEqual(replaced,task_policy_signature(owner,linked))
+
+    async def test_handoff_peer_only_revoke_clears_copy_immediately_and_keeps_authored_notes(self):
+        from observatory.review_continuity import editable_draft
+        with TemporaryDirectory() as directory:
+            root=Path(directory);owner,item=self.setup_owner(root/'tasks.db');app=Harness(owner,item)
+            p=self.peer_projection(turn_capture()[2])
+            task=TaskStore(root/'tasks.db').create('Authored title',notes='Authored notes',
+                continuity_draft=editable_draft(p),source_allowed=True)
+            copies=[];app.copy_to_clipboard=copies.append
+            async with app.run_test(size=(100,32)) as pilot:
+                await pilot.pause();screen=HandoffScreen(app,task);app.push_screen(screen)
+                await self.ready(pilot,lambda:'PEER_PRIVATE_PATH' in screen.markdown and not screen.busy)
+                self.revoke_peer(app)
+                # Call the actual button handler before its periodic policy check.
+                screen.buttons(Button.Pressed(screen.query_one('#handoff-copy',Button)))
+                self.assertEqual(copies,[])
+                self.assertNotIn('PEER_PRIVATE_PATH',screen.markdown)
+                await self.ready(pilot,lambda:'Authored notes' in screen.markdown and not screen.busy)
+                self.assertNotIn('PEER_PRIVATE_PATH',screen.markdown)
+                screen.buttons(Button.Pressed(screen.query_one('#handoff-copy',Button)))
+                self.assertIn('Authored notes',copies[-1]);self.assertNotIn('PEER_PRIVATE_PATH',copies[-1])
+
+    async def test_metadata_only_receipt_preserves_safe_copy(self):
+        with TemporaryDirectory() as directory:
+            root=Path(directory);owner,item=self.setup_owner(root/'tasks.db');app=Harness(owner,item)
+            copies=[];app.copy_to_clipboard=copies.append
+            async with app.run_test(size=(100,32)) as pilot:
+                await pilot.pause();screen=app.screen
+                app.feed.snapshot=replace(app.feed.snapshot,local_status={'capture_content':False})
+                screen.action_copy()
+                await self.ready(pilot,lambda:bool(copies))
+                self.assertNotIn('PEER_PRIVATE_PATH',copies[-1])
+                self.assertIn('metadata-only',copies[-1].lower())
+
+    async def test_peer_revoke_during_receipt_format_discards_late_result(self):
+        gate=threading.Event();started=threading.Event()
+        from observatory.work_receipts import freeze_receipt
+        def blocked(p):started.set();gate.wait(5);return freeze_receipt(p)
+        with TemporaryDirectory() as directory:
+            root=Path(directory);owner,item=self.setup_owner(root/'tasks.db');app=Harness(owner,item)
+            copies=[];app.copy_to_clipboard=copies.append
+            with patch('observatory.work_receipts.freeze_receipt',blocked):
+                async with app.run_test(size=(100,32)) as pilot:
+                    await pilot.pause();screen=app.screen
+                    screen.projection=self.peer_projection(screen.projection)
+                    screen.start_receipt(False);await self.ready(pilot,started.is_set)
+                    self.revoke_peer(app);gate.set();await pilot.pause(.3)
+                    self.assertEqual(copies,[])
+
+    async def test_export_valid_is_receiver_aware_and_sticky_after_peer_revoke(self):
+        from observatory.work_receipts import freeze_receipt
+        from observatory.ui_export import ReceiptExportScreen
+        with TemporaryDirectory() as directory:
+            root=Path(directory);owner,item=self.setup_owner(root/'tasks.db');app=Harness(owner,item)
+            async with app.run_test(size=(100,32)) as pilot:
+                await pilot.pause();screen=app.screen;p=self.peer_projection(screen.projection)
+                state=projection_policy_state(app,p)
+                screen.receipt_ready(freeze_receipt(p),True,state,p)
+                await pilot.pause();export=app.screen;self.assertIsInstance(export,ReceiptExportScreen)
+                self.assertTrue(export.valid())
+                self.revoke_peer(app);self.assertFalse(export.valid())
+                app.feed.snapshot=replace(app.feed.snapshot,local_status={})
+                self.assertFalse(export.valid(),'revoked generation must stay invalid after restoration')
+                app.pop_screen();await pilot.pause()
+                screen.receipt_ready(freeze_receipt(p),True,projection_policy_state(app,p),p)
+                await pilot.pause();export=app.screen;self.assertTrue(export.valid())
+                app.feed.snapshot=replace(app.feed.snapshot,receiver_id='replacement')
+                self.assertFalse(export.valid())
+                app.feed.snapshot=replace(app.feed.snapshot,receiver_id='receiver')
+                self.assertFalse(export.valid())
 
 
 if __name__=='__main__':unittest.main()

@@ -165,13 +165,42 @@ def task_source_policy(owner):
     return allowed
 
 
-def task_policy_signature(owner,task):
-    allowed=task_source_policy(owner)
-    scopes=[row.get('scope') or {} for row in task.get('continuity_drafts',[])]
-    scopes.extend((row.get('review_snapshot') or {}).get('scope') or {} for row in task.get('links',[])
-        if (row.get('review_snapshot') or {}).get('workspace_observation'))
+def projection_policy_state(owner,projection,*,strict=False):
+    """Immutable policy generation for every contributor, including receiver identity."""
+    from .review_continuity import content_scopes
     import json
-    return tuple((str(scope),json.dumps(allowed.state(scope),sort_keys=True)) for scope in scopes)
+    policy=task_source_policy(owner)
+    if not isinstance(projection,dict):
+        return False,('unreadable-source-policy',str(getattr(owner.feed.snapshot,'receiver_id','')))
+    try:
+        # Legacy session-only receipts contain no Git/comparison material. Preserve
+        # their existing scope support; new derived material requires exact scope.
+        derived=projection.get('workspace_observation') or projection.get('parallel_path_observations')
+        scopes=content_scopes(projection) if strict or derived else [projection.get('scope') or {}]
+        rows=tuple(sorted(set((json.dumps(scope,sort_keys=True),
+            json.dumps(policy.state(scope),sort_keys=True)) for scope in scopes)))
+        metadata_only=(projection.get('window') or {}).get('capture_revision') is False or 'Metadata-only capture' in (projection.get('window') or {}).get('reasons',[])
+        allowed=all(policy(scope) is True for scope in scopes)
+        if metadata_only and not strict and not derived:
+            allowed=all(not policy.state(scope).get('receiver_changed') for scope in scopes)
+        return allowed,rows
+    except (ValueError,TypeError,KeyError):
+        return False,('unreadable-source-policy',str(getattr(owner.feed.snapshot,'receiver_id','')))
+
+
+def task_policy_signature(owner,task):
+    import json
+    policy=task_source_policy(owner)
+    rows=[]
+    for draft in task.get('continuity_drafts',[]):
+        review=draft.get('review_snapshot')
+        rows.append(projection_policy_state(owner,review,strict=True) if review else
+            (False, json.dumps(policy.state(draft.get('scope') or {}),sort_keys=True)))
+    for link in task.get('links',[]):
+        review=link.get('review_snapshot') or {}
+        if review.get('workspace_observation') or review.get('parallel_path_observations'):
+            rows.append(projection_policy_state(owner,review,strict=True))
+    return (str(getattr(owner.feed.snapshot,'receiver_id','')),tuple(rows))
 
 
 def stamp(value):
@@ -1083,7 +1112,10 @@ class HandoffScreen(TaskScreen):
         self.handoff_generation+=1;self.preview_width=None
         self.source_signature=task_policy_signature(self.owner,self.record)
         policy=task_source_policy(self.owner)
-        self.job(lambda _: render_handoff(self.record,source_policy=policy),self.loaded,'Preparing the saved handoff…',needs_store=False)
+        generation=self.handoff_generation;signature=self.source_signature
+        def loaded(markdown):
+            if generation==self.handoff_generation and signature==task_policy_signature(self.owner,self.record):self.loaded(markdown)
+        self.job(lambda _: render_handoff(self.record,source_policy=policy),loaded,'Preparing the saved handoff…',needs_store=False)
 
     def check_source_policy(self):
         if self.source_signature!=task_policy_signature(self.owner,self.record):
