@@ -1,0 +1,166 @@
+{
+  "format": "agenturm-session-projection-cost-v1",
+  "synthetic": true,
+  "fixture": {
+    "synthetic": true,
+    "source": "/tmp/agenturm-stage-b-economics/profile.db",
+    "destination": "/tmp/agenturm-b-session-fixture.db",
+    "preparation_seconds": 363.35575589805376,
+    "counts": {
+      "spans": 32079,
+      "logs": 42765,
+      "trace_activity": 6046,
+      "live_run_stats_v1": 6046,
+      "live_summaries_v1": 6046
+    },
+    "first_ns": 1791386335154073522,
+    "last_ns": 1794586933671224064,
+    "duration_days": 37.043964318872014,
+    "session_indexes": [
+      "live_initial_task_v1",
+      "live_run_session_v2",
+      "sqlite_autoindex_live_run_stats_v1_1"
+    ],
+    "note": "Source explicitly verified synthetic by operator; SQLite read-only backup, no source Store or native discovery. Preparation excluded from paired read timings.",
+    "database_sha256": "8bc7e76aaac0fc22dff0c96277edc289020a7a72f67d2b55812b7dffbe0233e9"
+  },
+  "python": "3.12.3",
+  "sqlite_version": "3.45.1",
+  "same_snapshot_equivalent": true,
+  "protocol": "Alternating old/new production Store.sessions(limit=500) calls; 3 warmups each; same prepared file and process; paced synthetic ingestion every100ms under writes. No receiver/UI/native-discovery work measured.",
+  "measurement": {
+    "started_utc": "2026-11-14T09:31:07.878522+00:00",
+    "started_monotonic": 698336.083908374,
+    "finished_utc": "2026-11-14T09:31:30.453246+00:00",
+    "finished_monotonic": 698358.658673847,
+    "elapsed_seconds": 22.574766007019207
+  },
+  "idle": {
+    "baseline": {
+      "samples_ms": [
+        252.465858,
+        272.548239,
+        280.869605,
+        263.31724,
+        259.209639,
+        305.854981,
+        338.4774,
+        261.890979,
+        266.676566,
+        261.173182,
+        256.314415,
+        286.624298,
+        283.861296,
+        255.395514,
+        250.244397,
+        272.165813,
+        266.055907,
+        264.046954,
+        256.248651,
+        282.485239
+      ],
+      "median_ms": 265.05143050000004,
+      "p95_ms": 305.854981,
+      "maximum_ms": 338.4774
+    },
+    "current": {
+      "samples_ms": [
+        263.632974,
+        261.550861,
+        283.694873,
+        296.732123,
+        268.784912,
+        353.724068,
+        293.860239,
+        247.006491,
+        264.072444,
+        253.495398,
+        270.098993,
+        249.892304,
+        273.04855,
+        265.041266,
+        237.930863,
+        246.074172,
+        272.737938,
+        248.450842,
+        242.327469,
+        262.757456
+      ],
+      "median_ms": 263.852709,
+      "p95_ms": 296.732123,
+      "maximum_ms": 353.724068
+    }
+  },
+  "under_writes": {
+    "baseline": {
+      "samples_ms": [
+        293.647738,
+        300.509078,
+        251.80277,
+        299.141134,
+        265.97072,
+        344.02863,
+        335.248411,
+        303.178953,
+        316.732308,
+        292.97053,
+        299.88872,
+        295.663833,
+        279.976351,
+        354.899742,
+        312.246008,
+        269.112595,
+        283.961406,
+        259.224855,
+        287.978418,
+        306.835392
+      ],
+      "median_ms": 297.4024835,
+      "p95_ms": 344.02863,
+      "maximum_ms": 354.899742
+    },
+    "current": {
+      "samples_ms": [
+        275.922352,
+        255.444429,
+        252.510433,
+        275.816865,
+        250.523934,
+        277.784232,
+        268.369479,
+        310.350156,
+        276.298622,
+        317.375052,
+        273.412308,
+        314.853282,
+        282.969954,
+        323.97806,
+        357.118714,
+        259.104842,
+        320.7024,
+        263.02697,
+        370.395734,
+        274.396087
+      ],
+      "median_ms": 276.11048700000003,
+      "p95_ms": 357.118714,
+      "maximum_ms": 370.395734
+    }
+  },
+  "write_batches": 91,
+  "writes_during_read_phase": 90,
+  "write_errors": [],
+  "source_hashes": {
+    "observatory/storage_sessions.py": "32e6de86c86993a6174929669def0fe4beb1e1382fcb1d983517320cc12a9cc8",
+    "observatory/core.py": "38fbdc27c5355065fac6e5a4d82fc5b1196296470ef9cc6b259d5c03012eb79a",
+    "observatory/storage_activity.py": "1c77b1dc64fa0000dc15931bf1f31cda5b22c3cc2db2467aa147d4e1a5b50db1",
+    "tests/fixtures/session_projection_before.py": "6eaf47677c33ba2ec1cf4cf02cb253ed7749a5447de0e291e0408eab0eecb677",
+    "scripts/benchmark_session_projection.py": "58f6b209d53c415711379a1e53f2d7d186e0179ca4e9b855c648ce67f3ce6ac3"
+  },
+  "resource_target": {
+    "session_under_writes_p95_under100ms": false,
+    "cold_readiness": "not measured",
+    "complete_monitor_cpu": "not measured",
+    "complete_monitor_memory": "not measured"
+  }
+}
