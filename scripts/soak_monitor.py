@@ -30,6 +30,7 @@ import subprocess
 import sys
 import time
 import traceback
+from urllib.error import HTTPError
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +46,47 @@ class ReadinessIndexError(RuntimeError):
     def __init__(self, observation):
         self.observation=dict(observation)
         super().__init__('Receiver reported an indexing error ('+observation['indexing_error_kind']+')')
+
+
+def observed_request(api, path, *, latencies, failures, phase_index):
+    """Retain bounded failure metadata, then raise the original HTTP error.
+
+    A failed run must remain failed. Error bodies may contain source text, so
+    only the existing readiness allowlist crosses into the result artifact.
+    """
+    started=time.monotonic()
+    try:
+        return api.get(path)
+    except HTTPError as exc:
+        routes={'/api/health','/api/sessions','/api/activity?limit=50',
+            '/api/metrics','/api/mcp?limit=20'}
+        observation=dict(path=path if path in routes else None,
+            status=exc.code if type(exc.code)is int and 100<=exc.code<=599 else None,
+            phase_index=phase_index if type(phase_index)is int and 0<=phase_index<=2**31-1 else None,
+            response_metadata='unavailable')
+        try:
+            raw=exc.read(65537)
+            if len(raw)>65536:
+                observation['response_metadata']='oversized'
+            else:
+                payload=json.loads(raw)
+                if isinstance(payload,dict):
+                    safe=_readiness_observation(payload,phase='active',status='http_error',
+                        polls=1,connection_errors=0,elapsed=0)
+                    observation.update(response_metadata='parsed',indexing={
+                        key:safe[key] for key in ('indexing_ready','indexing_error',
+                            'indexing_error_kind','indexing_stage','indexed_records')})
+        except Exception:
+            # Diagnostic decoding must never replace the original HTTP failure.
+            pass
+        finally:
+            try:exc.close()
+            except Exception:pass  # Preserve the original failure on close errors too.
+        failures.append(observation)
+        del failures[:-8]
+        raise
+    finally:
+        latencies.setdefault(path,[]).append((time.monotonic()-started)*1000)
 
 
 def _readiness_observation(health, *, phase, status, polls, connection_errors, elapsed):
@@ -399,7 +441,7 @@ def run(args):
     endpoint=f'http://127.0.0.1:{port}'
     command=[sys.executable,str(Path(__file__).resolve())]
     receiver=None;actor=None;streams=[];errors=[];samples=[];latencies={};verified=[];reconnects=[]
-    readiness_observations=[]
+    readiness_observations=[];request_failures=[]
     expected_reviews=set();rendered_approvals=set();ui_pids=[];exit_statuses=[];approval_latencies=[]
     checked_receivers=set()
     def spawn(mode):
@@ -476,9 +518,7 @@ def run(args):
         exit_statuses.append(dict(role='receiver',status=receiver.returncode))
         if receiver.returncode!=0:errors.append(f'Receiver exited unsuccessfully: {receiver.returncode}')
     def request(api, path):
-        before=time.monotonic()
-        try:return api.get(path)
-        finally:latencies.setdefault(path,[]).append((time.monotonic()-before)*1000)
+        return observed_request(api,path,latencies=latencies,failures=request_failures,phase_index=last_phase)
     started=time.monotonic();last_phase=-1;mid_restart=False;receiver_restart=False
     try:
         receiver=spawn('receiver');actor=spawn('actor')
@@ -701,6 +741,7 @@ def run(args):
         seeded_history=dict(traces=5751,spans=31000,logs=41000,days=35,newest_age_days=2) if args.history else None,
         fixture_preparation_seconds=preparation_seconds,initial_readiness_seconds=locals().get('initial_readiness_seconds'),
         readiness_observations=readiness_observations,
+        request_failures=request_failures,
         completed_turns=len(workload.completed),verified_turns=len(verified),approval_requests=len(workload.requests),observed_approval_requests=len({row['cycle'] for row in observed_requests}),
         accepted_review_ids=len(accepted),persisted_review_ids=len(persisted),missing_review_ids=len(missing),
         expected_review_ids=len(expected_reviews),rendered_approval_inboxes=len(rendered_approvals),
