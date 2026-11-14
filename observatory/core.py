@@ -1633,8 +1633,6 @@ class Store:
             self._refresh_summaries_locked(trace_ids, require_dirty=require_dirty,defer_local=defer_local)
 
     def _refresh_summaries_locked(self, trace_ids, *, require_dirty=False, defer_local=False):
-        from .storage_derived import derive_trace
-
         active_pattern_runs = set()
         if self.workflow_patterns:
             with self._connect() as db:
@@ -1659,36 +1657,83 @@ class Store:
                     if require_dirty and not db.execute('SELECT 1 FROM finding_dirty_v1 WHERE trace_id=? UNION ALL '
                             'SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM trace_summaries WHERE trace_id=?) LIMIT 1',
                             (trace_id,trace_id)).fetchone():continue
-                    db.execute('DELETE FROM finding_dirty_v1 WHERE trace_id=?',(trace_id,))
-                    from .operation_preparation import OperationPreparation
-                    with OperationPreparation() as preparation:
-                        derived = (derive_trace(db, trace_id, workflow_patterns=True,operation_preparation=preparation)
-                                   if trace_id in active_pattern_runs else derive_trace(db,trace_id,operation_preparation=preparation))
-                        if derived is None:
-                            db.execute("DELETE FROM trace_summaries WHERE trace_id=?", (trace_id,))
-                            db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
-                            continue
-                        summary, activity, findings, timestamp = derived
-                        from .error_reminders import trace_error_references
-                        errors = trace_error_references(activity,trace_id,receiver=receiver,operation_preparation=preparation)
-                    db.execute("INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id,error_refs_json) VALUES(?,?,?,?,?,?) "
-                               "ON CONFLICT(trace_id) DO UPDATE SET session_id=excluded.session_id,"
-                               "summary_json=excluded.summary_json,activity_json=excluded.activity_json,"
-                               "agent_id=excluded.agent_id,error_refs_json=excluded.error_refs_json",
-                               (trace_id, summary.get("session_id"), json.dumps(summary, separators=(",", ":")),
-                                json.dumps(activity, separators=(",", ":")), summary.get("agent_id"),
-                                json.dumps(errors, separators=(",", ":"))))
-                    db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
-                    db.executemany("INSERT INTO finding_cache(finding_id,trace_id,time_ns,finding_json,agent_id,session_id,producer,group_key) VALUES(?,?,?,?,?,?,?,?)",
-                                   ((item["id"], trace_id, item.get("time_unix_nano") or timestamp,
-                                     json.dumps(item, separators=(",", ":")),item.get("agent_id"),item.get("session_id"),
-                                     item.get("producer"),item.get("group_key") or item["id"])
-                                    for item in findings))
+                    self._publish_trace_summary(db,trace_id,receiver,workflow_patterns=trace_id in active_pattern_runs)
             if offset+16<len(trace_ids):
                 # SQLite's busy handler is not a fair writer queue. Give a
                 # waiting native collector/other receiver a real acquisition
                 # window instead of immediately reacquiring through history.
                 time.sleep(.025)
+
+    def _publish_trace_summary(self,db,trace_id,receiver,*,workflow_patterns=False):
+        from .storage_derived import derive_trace
+        db.execute('DELETE FROM finding_dirty_v1 WHERE trace_id=?',(trace_id,))
+        from .operation_preparation import OperationPreparation
+        with OperationPreparation() as preparation:
+            derived = (derive_trace(db, trace_id, workflow_patterns=True,operation_preparation=preparation)
+                       if workflow_patterns else derive_trace(db,trace_id,operation_preparation=preparation))
+            if derived is None:
+                db.execute("DELETE FROM trace_summaries WHERE trace_id=?", (trace_id,))
+                db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
+                return
+            summary, activity, findings, timestamp = derived
+            from .error_reminders import trace_error_references
+            errors = trace_error_references(activity,trace_id,receiver=receiver,operation_preparation=preparation)
+        db.execute("INSERT INTO trace_summaries(trace_id,session_id,summary_json,activity_json,agent_id,error_refs_json) VALUES(?,?,?,?,?,?) "
+                   "ON CONFLICT(trace_id) DO UPDATE SET session_id=excluded.session_id,"
+                   "summary_json=excluded.summary_json,activity_json=excluded.activity_json,"
+                   "agent_id=excluded.agent_id,error_refs_json=excluded.error_refs_json",
+                   (trace_id, summary.get("session_id"), json.dumps(summary, separators=(",", ":")),
+                    json.dumps(activity, separators=(",", ":")), summary.get("agent_id"),
+                    json.dumps(errors, separators=(",", ":"))))
+        db.execute("DELETE FROM finding_cache WHERE trace_id=?", (trace_id,))
+        db.executemany("INSERT INTO finding_cache(finding_id,trace_id,time_ns,finding_json,agent_id,session_id,producer,group_key) VALUES(?,?,?,?,?,?,?,?)",
+                       ((item["id"], trace_id, item.get("time_unix_nano") or timestamp,
+                         json.dumps(item, separators=(",", ":")),item.get("agent_id"),item.get("session_id"),
+                         item.get("producer"),item.get("group_key") or item["id"])
+                        for item in findings))
+
+    def _publish_native_summaries(self,db,records):
+        """Publish small prepared native updates in their source transaction.
+
+        Never acquire the derived lock here: the caller already owns SQLite's
+        writer. Larger/cold/pattern-enabled work keeps normal async admission.
+        """
+        state=self.migration_status
+        if (not self._async_derived_refresh or not records or len(records)>64 or
+                not state.get('ready')or state.get('error')or self.last_derived_error or
+                self._derived_stopping or self._migration_stop.is_set()or self.workflow_patterns or
+                any(r.get('scope_name')not in {'observatory.local_agents','observatory.opencode'}for r in records)):
+            return False
+        traces=sorted({r.get('trace_id')for r in records if r.get('trace_id')})
+        if not traces or len(traces)>4 or any(not r.get('trace_id')for r in records):return False
+        markers=('trace_derived_v15','activity_sources_v2','activity_operation_facts_v2','live_stats_v3')
+        actual=dict(db.execute("SELECT key,value FROM schema_meta WHERE key IN (?,?,?,?)",markers))
+        if any(actual.get(key)!='1'for key in markers):return False
+        payloads={'spans':('name','service','scope_name','attributes','events','links','resource_attributes'),
+            'logs':('service','scope_name','event_name','severity_text','attributes','body','resource_attributes'),
+            'progress':('stage','message','session_id','service'),
+            'outcomes':('task_id','scores','error','provider_model','source','details')}
+        selects=['SELECT bytes FROM (SELECT '+
+            '+'.join('COALESCE(length(CAST('+column+' AS BLOB)),0)'for column in columns)+
+            ' AS bytes FROM '+table+' WHERE trace_id=? LIMIT 257)'for table,columns in payloads.items()]
+        total=0
+        for trace in traces:
+            sizes=[r[0]for r in db.execute(' UNION ALL '.join(selects)+' LIMIT 257',(trace,)*4)]
+            size=sum(sizes);total+=size
+            if len(sizes)>256 or size>512*1024 or total>1024*1024:return False
+        db.execute('SAVEPOINT native_summary_publication')
+        try:
+            receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+            for trace in traces:self._publish_trace_summary(db,trace,receiver)
+        except Exception as exc:
+            # Preserve accepted source and its invalidation, then let the
+            # existing worker retry. Never expose partially published totals.
+            db.execute('ROLLBACK TO native_summary_publication')
+            db.execute('RELEASE native_summary_publication')
+            self.last_derived_error=str(exc)
+            return False
+        db.execute('RELEASE native_summary_publication')
+        return True
 
     @contextmanager
     def _source_write(self):
@@ -2031,6 +2076,7 @@ class Store:
 
     def ingest(self, spans, *, native_retry=False, native_source_path=None):
         spans = list(spans)
+        published=False
         from .native_policy import native_update_guard
         with self._source_write() as refresh:
             with self._connect() as db:
@@ -2062,7 +2108,9 @@ class Store:
                 from .storage_activity import drain
                 drain(db,limit=10000)
                 self._ingest_agent_nodes_from_spans(spans,_db=db)
-            refresh.update(s["trace_id"] for s in spans)
+                published=self._publish_native_summaries(db,spans)
+            if not published:refresh.update(s["trace_id"] for s in spans)
+        if published:self._notify_derived_progress()
         return len(spans)
 
     def _ingest_agent_nodes_from_spans(self, spans, *, _db=None):
@@ -2158,6 +2206,7 @@ class Store:
 
     def ingest_logs(self, records, *, native_retry=False, native_source_path=None, expected_receiver=None):
         records = list(records)
+        published=False
         from .native_policy import native_update_guard
         with self._source_write() as refresh:
             with self._connect() as db:
@@ -2210,6 +2259,7 @@ class Store:
                 self._update_endpoints(db, records)
                 from .storage_activity import drain
                 drain(db,limit=10000)
+                published=self._publish_native_summaries(db,records)
             nodes = [_agent_node_from_attributes(log.get("attributes"), log.get("resource_attributes"),
                                                  log.get("service"), log.get("time_unix_nano"),
                                                  log.get("digest"))
@@ -2218,7 +2268,8 @@ class Store:
             nodes = [node for node in nodes if node]
             if nodes:
                 self.upsert_agent_nodes(nodes[:5000])
-            refresh.update(log["trace_id"] for log in records if log["trace_id"])
+            if not published:refresh.update(log["trace_id"] for log in records if log["trace_id"])
+        if published:self._notify_derived_progress()
         return len(records)
 
     def logs(self, trace_id=None, limit=100, *, _db=None):
