@@ -129,6 +129,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     return
                 local = getattr(store, "local_agent_monitor", None)
                 self._json(200, {"ok": True,"observed_time_unix_nano":time.time_ns(), "receiver_id": store.receiver_namespace() if hasattr(store,"receiver_namespace") else None, "review_trace_filter": True, "review_turn_filter": True, "review_run_summary": True,
+                    "native_lifecycle_v1":True,
                     "security":{"authentication_required":bool(token),"host_validation":True},
                     "storage":{"retention_days":getattr(store,"retention_days",None)},
                     "indexing":store.index_status() if hasattr(store,"index_status") else {"ready":True},
@@ -236,6 +237,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     self._json(200, {"metrics": store.metric_catalog(limit=limit)})
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
+            elif path == '/api/native-lifecycle':
+                self._json(200,store.native_lifecycle_inventory())
             elif path.startswith('/api/findings/') and path.endswith('/source'):
                 try:self._json(200,store.finding_source(path[len('/api/findings/'):-len('/source')]))
                 except ValueError as exc:self._json(400,{'error':str(exc)})

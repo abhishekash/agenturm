@@ -860,6 +860,8 @@ class Store:
             from .native_policy import initialize as initialize_native_policy
             initialize_native_policy(db)
             initialize_activity(db)
+            from .storage_native_lifecycle import initialize as initialize_native_lifecycle
+            initialize_native_lifecycle(db)
         with self._connect() as db:
             migrated=db.execute("SELECT 1 FROM schema_meta WHERE key='native_internal_policy_v1'").fetchone()
             legacy_sources=[] if migrated else [row[0] for row in db.execute('''SELECT DISTINCT source_id FROM (
@@ -926,7 +928,7 @@ class Store:
         # state. Release the read lease before trying to acquire a writer;
         # another receiver may already have consumed the observed work.
         with self._read() as db:
-            dirty=db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 LIMIT 1').fetchone()
+            dirty=db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 UNION ALL SELECT 1 FROM native_lifecycle_dirty_v1 LIMIT 1').fetchone()
         if not dirty:return 0
         from .storage_activity import drain
         with self._connect() as db:
@@ -939,7 +941,7 @@ class Store:
     def index_status(self):
         state=dict(self.migration_status)
         with self._read() as db:
-            dirty=bool(db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 LIMIT 1').fetchone())
+            dirty=bool(db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 UNION ALL SELECT 1 FROM native_lifecycle_dirty_v1 LIMIT 1').fetchone())
         if dirty:
             state.update(ready=False,stage='Indexing incoming source changes')
         return state
@@ -2730,6 +2732,15 @@ class Store:
                 "outcome": outcome, "findings": self._trace_findings(trace_id),
                 "session_id": summary.get("session_id") if summary else None,
                 "summary": summary}
+
+    def native_lifecycle_inventory(self):
+        from .storage_native_lifecycle import read_inventory
+        with self._connect() as db:
+            db.execute('BEGIN')
+            receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+            if db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM native_lifecycle_dirty_v1 LIMIT 1').fetchone():
+                return dict(receiver_id=receiver,observations=[],complete=False,warning='Native source index is catching up.')
+            return read_inventory(db,receiver)
 
     def findings(self, limit=100):
         return self.finding_page(limit=limit)["findings"]
