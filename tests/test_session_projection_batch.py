@@ -3,12 +3,14 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import MethodType
 import unittest
 from unittest.mock import patch
 
-from observatory.core import Store, normalize_native
+from observatory.core import Store, normalize_native, _agent_id_from_attributes
 from observatory.storage_sessions import session_projection
 from tests.fixtures.session_projection_before import session_projection as before
+from tests.fixtures.store_sessions_before import sessions as sessions_before
 
 
 def canonical(result):
@@ -127,6 +129,87 @@ class SessionProjectionBatchTests(unittest.TestCase):
             plan = [row[3] for row in db.execute('EXPLAIN QUERY PLAN ' + label_sql)]
         self.assertTrue(any('SEARCH live_run_stats_v1 USING INDEX live_run_session_v2' in row for row in plan), plan)
         self.assertFalse(any('FROM spans' in sql or 'FROM logs' in sql for sql in statements))
+
+    def original_sessions(self, limit=500):
+        with patch('observatory.storage_sessions.session_projection', before):
+            return MethodType(sessions_before, self.store)(limit)
+
+    def log(self, stamp, *, session='log-session', trace=None, owner='worker', result='observed',
+            typed=False, activity=True, body='Output only'):
+        attrs = {'session.id': session, 'agent.activity.domain': 'shell',
+                 'agent.activity.action': 'execute', 'agent.activity.result': result,
+                 'agent.activity.subject': 'pytest', 'agent.turn.id': 'same-turn'}
+        if owner is not None:
+            attrs['agent.id'] = owner
+        if typed:
+            attrs.update({'process.command_line': 'pytest', 'process.working_directory': '/work',
+                          'tool.name': 'Bash', 'process.exit.code': 1 if result == 'error' else 0})
+        return dict(trace_id=trace, span_id=None, time_unix_nano=stamp, service='fixture',
+            event_name='agent.activity' if activity else 'custom.signal', severity_number=9,
+            severity_text='INFO', body=body, attributes=attrs, resource_attributes={}, scope_name='fixture')
+
+    def test_whole_method_equals_baseline_with_covered_uncovered_ties_and_unknown_owners(self):
+        trace = 'f' * 32
+        self.store.ingest([normalize_native(dict(trace_id=trace, span_id='f' * 16,
+            name='agent.run', start_unix_nano=1, end_unix_nano=1000,
+            attributes={'session.id': 'log-session', 'agent.id': 'worker'}, events=[]), 'fixture')])
+        logs = [self.log(stamp, trace=trace) for stamp in range(100, 350)]
+        logs += [self.log(2, owner=None, result='error'), self.log(3, owner='foreign', result='error')]
+        logs += [self.log(400 + stamp // 3, session='second', owner='other', activity=stamp % 2 == 0,
+                          body=f'Occurrence {stamp}') for stamp in range(75)]
+        self.store.ingest_logs(logs)
+        current = self.store.sessions(limit=500)
+        self.assertEqual(current, self.original_sessions())
+        errors = [event for row in current for event in row['recent_errors']]
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(any(event['agent_id'] is None for event in errors))
+
+    def test_reminder_fastpath_preserves_typed_retries_and_unqualified_failures(self):
+        self.store.ingest_logs([self.log(1, result='error', typed=True),
+            self.log(2, result='success', typed=True),
+            self.log(3, owner='other', result='error'),
+            self.log(4, owner='other', result='success',
+                     body='{"command":"pytest","exit_code":0}'),
+            self.log(5, session='opaque', result='observed', body='x' * 20000)])
+        self.assertEqual(self.store.sessions(), self.original_sessions(100))
+        rows = self.store.sessions()
+        worker = _agent_id_from_attributes({'agent.id': 'worker'}, {}, 'fixture')
+        other = _agent_id_from_attributes({'agent.id': 'other'}, {}, 'fixture')
+        recovered = next(row for row in rows if row['session_id'] == 'log-session' and row['agent_id'] == worker)
+        self.assertEqual(recovered['recent_errors'], [])
+        failed = next(row for row in rows if row['agent_id'] == other)
+        self.assertEqual(len(failed['recent_errors']), 1)
+        from observatory.operation_facts import correlation_facts
+        with patch('observatory.error_reminders.correlation_facts', wraps=correlation_facts) as facts:
+            self.store.sessions()
+        projected = [call.args[0] for call in facts.call_args_list]
+        self.assertFalse(any(row.get('session_id') == 'opaque' for row in projected))
+        self.assertTrue(any(row.get('detail_role') == 'operation_v1' for row in projected))
+
+    def test_whole_method_keeps_raw_session_identity_and_snapshot_under_writer(self):
+        self.store.ingest_logs([self.log(1, result='error')])
+        expected = self.original_sessions()
+        original = self.store._connect
+        fired = []
+        @contextmanager
+        def interleaved():
+            with original() as db:
+                def callback(sql):
+                    if 'WITH requested(session_id,session_position)' not in sql or fired:
+                        return
+                    fired.append(True)
+                    with original() as writer:
+                        writer.execute("UPDATE logs SET attributes=json_set(attributes,'$.\"session.id\"','replacement')")
+                        writer.execute("UPDATE activity_index_v1 SET session_id='replacement' WHERE kind='log'")
+                db.set_trace_callback(callback)
+                yield db
+        with patch.object(self.store, '_connect', interleaved):
+            self.assertEqual(self.store.sessions(limit=500), expected)
+        self.assertTrue(fired)
+        # Deliberately stale scalar candidates never replace the raw log identity.
+        with original() as db:
+            db.execute("UPDATE activity_index_v1 SET session_id='log-session' WHERE kind='log'")
+        self.assertEqual(self.store.sessions(), self.original_sessions(100))
 
 
 if __name__ == '__main__':

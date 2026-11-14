@@ -19,6 +19,7 @@ import statistics
 import sys
 import threading
 import time
+from tempfile import TemporaryDirectory
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,7 @@ sys.path.insert(0, str(ROOT))
 from observatory.core import Store, normalize_native
 import observatory.storage_sessions as current_module
 from tests.fixtures.session_projection_before import session_projection as baseline
+from tests.fixtures.store_sessions_before import sessions as baseline_sessions
 
 current = current_module.session_projection
 
@@ -45,6 +47,39 @@ def inventory(db):
     return dict(counts=counts, first_ns=bounds[0], last_ns=bounds[1],
         duration_days=(bounds[1] - bounds[0]) / 86400e9 if bounds[0] is not None else 0,
         session_indexes=[row[1] for row in db.execute('PRAGMA index_list(live_run_stats_v1)')])
+
+
+def normalize_indexes(path):
+    """Normalize ONLY the private synthetic copy to this production schema.
+
+    Earlier diagnostics added two experimental indexes to their generated corpus.
+    A fresh Store supplies the exact named index manifest, including expression
+    indexes; automatic SQLite constraint indexes are never changed.
+    """
+    with TemporaryDirectory(prefix='agenturm-production-indexes-') as directory:
+        fresh = Store(Path(directory) / 'schema.db')
+        try:
+            with fresh._connect() as db:
+                expected = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"))
+        finally:
+            fresh.close()
+    changes = []
+    with closing(sqlite3.connect(path)) as db:
+        actual = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"))
+        with db:
+            for name, sql in actual.items():
+                if expected.get(name) != sql:
+                    db.execute('DROP INDEX "' + name.replace('"', '""') + '"')
+                    changes.append(dict(action='drop', name=name, sql=sql))
+            for name, sql in expected.items():
+                if actual.get(name) != sql:
+                    db.execute(sql)
+                    changes.append(dict(action='create', name=name, sql=sql))
+        final = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"))
+    if final != expected:
+        raise ValueError('Synthetic fixture indexes do not match the frozen production Store manifest.')
+    return dict(changes=changes, named_index_count=len(expected),
+                manifest=expected, exact_production_manifest=True)
 
 
 def prepare(source, destination):
@@ -75,6 +110,7 @@ def prepare(source, destination):
             note='Source explicitly verified synthetic by operator; SQLite read-only backup, no source Store or native discovery. Preparation excluded from paired read timings.')
     finally:
         store.close()
+    manifest['index_normalization'] = normalize_indexes(destination)
     manifest['database_sha256'] = file_digest(destination)
     with destination.with_suffix('.fixture.json').open('x') as stream:
         json.dump(manifest, stream, indent=2)
@@ -91,6 +127,12 @@ def helper(function):
         current_module.session_projection = original
 
 
+def read(store, function):
+    """Pair the full original Sessions method/helper with the full candidate."""
+    with helper(function):
+        return baseline_sessions(store, limit=500) if function is baseline else store.sessions(limit=500)
+
+
 def summary(values):
     return dict(samples_ms=values, median_ms=statistics.median(values),
                 p95_ms=sorted(values)[math.ceil(len(values) * .95) - 1], maximum_ms=max(values))
@@ -103,12 +145,11 @@ def paired(store, samples):
         if index % 2:
             order.reverse()
         for name, function in order:
-            with helper(function):
-                start = time.perf_counter_ns()
-                rows = store.sessions(limit=500)
-                result[name].append((time.perf_counter_ns() - start) / 1e6)
-                if not rows:
-                    raise ValueError('Synthetic session corpus unexpectedly became empty.')
+            start = time.perf_counter_ns()
+            rows = read(store, function)
+            result[name].append((time.perf_counter_ns() - start) / 1e6)
+            if not rows:
+                raise ValueError('Synthetic session corpus unexpectedly became empty.')
     return {key: summary(values) for key, values in result.items()}
 
 
@@ -118,6 +159,8 @@ def measure(path, samples):
         raise ValueError('Use a newly prepared, explicitly synthetic fixture.')
     if file_digest(path) != manifest.get('database_sha256'):
         raise ValueError('Fixture bytes changed after preparation; make a fresh copy for measurement.')
+    if not manifest.get('index_normalization', {}).get('exact_production_manifest'):
+        raise ValueError('Prepare a new copy with the frozen production index manifest.')
     store = Store(path, async_derived_refresh=True)
     try:
         deadline = time.monotonic() + 15
@@ -130,8 +173,10 @@ def measure(path, samples):
                 raise ValueError('Fixture has changed since preparation; make a fresh copy for measurement.')
         for _ in range(3):
             for function in (baseline, current):
-                with helper(function):
-                    store.sessions(limit=500)
+                read(store, function)
+        full_equivalent = read(store, baseline) == read(store, current)
+        if not full_equivalent:
+            raise ValueError('Full Sessions comparison failed on the fixed synthetic snapshot.')
         with store._connect() as db:
             db.execute('BEGIN')
             old = baseline(db, 500)
@@ -178,10 +223,12 @@ def measure(path, samples):
         interval.update(finished_utc=datetime.now(timezone.utc).isoformat(), finished_monotonic=time.monotonic(),
                         elapsed_seconds=time.monotonic() - started)
         files = ['observatory/storage_sessions.py', 'observatory/core.py', 'observatory/storage_activity.py',
-                 'tests/fixtures/session_projection_before.py', 'scripts/benchmark_session_projection.py']
+                 'tests/fixtures/session_projection_before.py', 'tests/fixtures/store_sessions_before.py',
+                 'scripts/benchmark_session_projection.py']
         return dict(format='agenturm-session-projection-cost-v1', synthetic=True, fixture=manifest,
             python=platform.python_version(), sqlite_version=sqlite3.sqlite_version, same_snapshot_equivalent=equivalent,
-            protocol='Alternating old/new production Store.sessions(limit=500) calls; 3 warmups each; same prepared file and process; paced synthetic ingestion every100ms under writes. No receiver/UI/native-discovery work measured.',
+            whole_method_equivalent=full_equivalent,
+            protocol='Alternating frozen original Store.sessions+helper/current Store.sessions+helper(limit=500) calls; 3 warmups each; identical production-index normalized synthetic file and process; paced synthetic ingestion every100ms under writes. No receiver/UI/native-discovery work measured.',
             measurement=interval, idle=idle, under_writes=under_writes, write_batches=len(writes),
             writes_during_read_phase=writes_during_reads, write_errors=errors,
             source_hashes={name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in files},
