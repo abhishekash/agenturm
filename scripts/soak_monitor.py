@@ -84,7 +84,7 @@ def seed_history(path, *, traces=5751, span_count=31000, log_count=41000):
     # The full corpus remains retained, but its newest outcome predates the
     # default completion inbox. Exact review receipts then cover new turns only.
     offset=2*86400*10**9
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db,db:
         db.execute('UPDATE spans SET start_ns=start_ns-?,end_ns=end_ns-?',(offset,offset))
         db.execute('UPDATE logs SET time_ns=time_ns-?',(offset,))
         db.execute('UPDATE trace_activity SET last_ns=last_ns-?',(offset,))

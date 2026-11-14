@@ -1,4 +1,5 @@
 """History-mode preparation preserves the corpus outside the recent inbox."""
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -13,13 +14,13 @@ class SoakFixtureTests(unittest.TestCase):
             path=Path(directory)/'proof.db'
             self.assertEqual(index_proof(path,'receiver','receiver'),{})
             self.assertFalse(path.exists())
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db,db:
                 db.execute('CREATE TABLE schema_meta(key TEXT PRIMARY KEY,value TEXT)')
                 db.executemany('INSERT INTO schema_meta VALUES(?,?)',[('receiver_id','receiver'),('trace_derived_v15','1')])
             self.assertTrue(all(index_proof(path,'receiver','receiver').values()))
             self.assertFalse(index_proof(path,'receiver','other')['health_matches'])
             self.assertFalse(index_proof(path,'other','other')['receiver_matches'])
-            with sqlite3.connect(path) as db:db.execute("DELETE FROM schema_meta WHERE key='trace_derived_v15'")
+            with closing(sqlite3.connect(path)) as db,db:db.execute("DELETE FROM schema_meta WHERE key='trace_derived_v15'")
             self.assertFalse(index_proof(path,'receiver','receiver')['derived_marker_complete'])
 
     def test_active_incoming_state_needs_complete_identity_marker_and_successful_reads(self):
@@ -40,7 +41,7 @@ class SoakFixtureTests(unittest.TestCase):
             path=Path(directory)/'synthetic.db'
             seed_history(path,traces=3,span_count=12,log_count=20)
             cutoff=time.time_ns()-86400*10**9
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM spans').fetchone()[0],12)
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM logs').fetchone()[0],20)
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM trace_activity').fetchone()[0],3)
