@@ -1,0 +1,327 @@
+{
+  "fixture_kind": "synthetic-schema-derived",
+  "schema_target": "anomalyco/opencode v2.2.5 @9bbb8ce18c80f099e0e448775f59d965ead40a21",
+  "database_scope": "Selected native source column contracts; not a complete application database/migration or captured session.",
+  "clock_ns": 1794650401000000000,
+  "schema": [
+    "CREATE TABLE session_v2(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,slug TEXT NOT NULL,directory TEXT NOT NULL,title TEXT,version TEXT NOT NULL,agent TEXT,model TEXT,time_created INTEGER NOT NULL,time_updated INTEGER NOT NULL,time_busy INTEGER,time_idle INTEGER,idle_outcome TEXT)",
+    "CREATE TABLE session_message(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,type TEXT NOT NULL,seq INTEGER NOT NULL,time_created INTEGER NOT NULL,time_updated INTEGER NOT NULL,data TEXT NOT NULL)",
+    "CREATE UNIQUE INDEX session_message_session_seq_idx ON session_message(session_id,seq)",
+    "CREATE INDEX session_message_session_type_seq_idx ON session_message(session_id,type,seq)",
+    "CREATE TABLE session_part(message_id TEXT NOT NULL,session_id TEXT NOT NULL,ordinal INTEGER NOT NULL,type TEXT NOT NULL,call_id TEXT,time_created INTEGER NOT NULL,time_updated INTEGER NOT NULL,data TEXT NOT NULL,PRIMARY KEY(message_id,ordinal))",
+    "CREATE INDEX session_part_session_message_idx ON session_part(session_id,message_id,ordinal)"
+  ],
+  "rows": {
+    "session_v2": [
+      {
+        "id": "ses_schema_fixture",
+        "project_id": "synthetic-project",
+        "slug": "schema-fixture",
+        "directory": "/synthetic/project",
+        "title": "Synthetic current schema fixture",
+        "version": "2.2.5",
+        "agent": "build",
+        "model": {
+          "id": "synthetic-model",
+          "providerID": "synthetic-provider"
+        },
+        "time_created": 1794650399900,
+        "time_updated": 1794650400080,
+        "time_busy": 1794650400060,
+        "time_idle": 1794650400080,
+        "idle_outcome": "succeeded"
+      }
+    ],
+    "session_message": [
+      {
+        "id": "msg_idle_prefix",
+        "session_id": "ses_schema_fixture",
+        "type": "idle",
+        "seq": 5,
+        "time_created": 1794650400005,
+        "time_updated": 1794650400005,
+        "data": {
+          "outcome": "succeeded",
+          "time": {
+            "created": 1794650400005
+          }
+        }
+      },
+      {
+        "id": "msg_user_one",
+        "session_id": "ses_schema_fixture",
+        "type": "user",
+        "seq": 10,
+        "time_created": 1794650400010,
+        "time_updated": 1794650400010,
+        "data": {
+          "text": "Implement current OpenCode turn fidelity",
+          "time": {
+            "created": 1794650400010
+          }
+        }
+      },
+      {
+        "id": "msg_step_one",
+        "session_id": "ses_schema_fixture",
+        "type": "assistant",
+        "seq": 20,
+        "time_created": 1794650400020,
+        "time_updated": 1794650400020,
+        "data": {
+          "agent": "build",
+          "model": {
+            "id": "synthetic-model",
+            "providerID": "synthetic-provider"
+          },
+          "content": [],
+          "finish": "stop",
+          "tokens": {
+            "input": 12,
+            "output": 7,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "time": {
+            "created": 1794650400020,
+            "streamed": 1794650400021,
+            "completed": 1794650400022
+          }
+        }
+      },
+      {
+        "id": "msg_steer_one",
+        "session_id": "ses_schema_fixture",
+        "type": "user",
+        "seq": 30,
+        "time_created": 1794650400030,
+        "time_updated": 1794650400030,
+        "data": {
+          "text": "Also preserve the pending request boundary",
+          "time": {
+            "created": 1794650400030
+          }
+        }
+      },
+      {
+        "id": "msg_step_two",
+        "session_id": "ses_schema_fixture",
+        "type": "assistant",
+        "seq": 40,
+        "time_created": 1794650400040,
+        "time_updated": 1794650400040,
+        "data": {
+          "agent": "build",
+          "model": {
+            "id": "synthetic-model",
+            "providerID": "synthetic-provider"
+          },
+          "content": [],
+          "finish": "stop",
+          "tokens": {
+            "input": 5,
+            "output": 3,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "time": {
+            "created": 1794650400040,
+            "streamed": 1794650400041,
+            "completed": 1794650400042
+          }
+        }
+      },
+      {
+        "id": "msg_idle_one",
+        "session_id": "ses_schema_fixture",
+        "type": "idle",
+        "seq": 50,
+        "time_created": 1794650400050,
+        "time_updated": 1794650400050,
+        "data": {
+          "outcome": "succeeded",
+          "time": {
+            "created": 1794650400050
+          }
+        }
+      },
+      {
+        "id": "msg_user_two",
+        "session_id": "ses_schema_fixture",
+        "type": "user",
+        "seq": 60,
+        "time_created": 1794650400060,
+        "time_updated": 1794650400060,
+        "data": {
+          "text": "An unrelated following request",
+          "time": {
+            "created": 1794650400060
+          }
+        }
+      },
+      {
+        "id": "msg_step_other",
+        "session_id": "ses_schema_fixture",
+        "type": "assistant",
+        "seq": 70,
+        "time_created": 1794650400070,
+        "time_updated": 1794650400070,
+        "data": {
+          "agent": "build",
+          "model": {
+            "id": "synthetic-model",
+            "providerID": "synthetic-provider"
+          },
+          "content": [],
+          "finish": "stop",
+          "tokens": {
+            "input": 100,
+            "output": 99,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "time": {
+            "created": 1794650400070,
+            "streamed": 1794650400071,
+            "completed": 1794650400072
+          }
+        }
+      },
+      {
+        "id": "msg_idle_two",
+        "session_id": "ses_schema_fixture",
+        "type": "idle",
+        "seq": 80,
+        "time_created": 1794650400080,
+        "time_updated": 1794650400080,
+        "data": {
+          "outcome": "succeeded",
+          "time": {
+            "created": 1794650400080
+          }
+        }
+      }
+    ],
+    "session_part": [
+      {
+        "message_id": "msg_step_one",
+        "session_id": "ses_schema_fixture",
+        "ordinal": 0,
+        "type": "text",
+        "call_id": null,
+        "time_created": 1794650400010,
+        "time_updated": 1794650400020,
+        "data": {
+          "type": "text",
+          "text": "First assistant step"
+        }
+      },
+      {
+        "message_id": "msg_step_one",
+        "session_id": "ses_schema_fixture",
+        "ordinal": 1,
+        "type": "tool",
+        "call_id": "call_check",
+        "time_created": 1794650400010,
+        "time_updated": 1794650400020,
+        "data": {
+          "type": "tool",
+          "id": "call_check",
+          "name": "shell",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "pytest tests -q",
+              "workdir": "/synthetic/project"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Synthetic recorded result"
+              }
+            ],
+            "metadata": {
+              "exit": 0,
+              "status": "completed",
+              "truncated": false
+            }
+          },
+          "time": {
+            "created": 1794650400020,
+            "ran": 1794650400021,
+            "completed": 1794650400022
+          }
+        }
+      },
+      {
+        "message_id": "msg_step_two",
+        "session_id": "ses_schema_fixture",
+        "ordinal": 0,
+        "type": "text",
+        "call_id": null,
+        "time_created": 1794650400010,
+        "time_updated": 1794650400020,
+        "data": {
+          "type": "text",
+          "text": "Current turn implementation complete"
+        }
+      },
+      {
+        "message_id": "msg_step_two",
+        "session_id": "ses_schema_fixture",
+        "ordinal": 1,
+        "type": "tool",
+        "call_id": "call_edit",
+        "time_created": 1794650400010,
+        "time_updated": 1794650400020,
+        "data": {
+          "type": "tool",
+          "id": "call_edit",
+          "name": "edit",
+          "state": {
+            "status": "completed",
+            "input": {
+              "oldString": "old",
+              "newString": "corrected",
+              "path": "/synthetic/project/src/evidence.py"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Synthetic recorded result"
+              }
+            ],
+            "metadata": {}
+          },
+          "time": {
+            "created": 1794650400040,
+            "ran": 1794650400041,
+            "completed": 1794650400042
+          }
+        }
+      },
+      {
+        "message_id": "msg_step_other",
+        "session_id": "ses_schema_fixture",
+        "ordinal": 0,
+        "type": "text",
+        "call_id": null,
+        "time_created": 1794650400010,
+        "time_updated": 1794650400020,
+        "data": {
+          "type": "text",
+          "text": "Following turn response"
+        }
+      }
+    ]
+  }
+}
