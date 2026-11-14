@@ -12,7 +12,7 @@
 
 - Share bounded static session preparation across the Agents roster and Workflow while recomputing health and attention. Honor fresh capture revocation in paused inspectors, retained prompt/evidence buffers and in-flight AI summaries; retain exact receiver/producer/worker/session boundaries.
 
-- Batch bounded session identity, label and uncovered-log reads in one source snapshot. Preserve older uncovered errors, typed recovery references and nullable ownership; record the paired latency gain and still-open resource targets.
+- Batch bounded session identity, label and uncovered-log reads in one source snapshot. Preserve older uncovered errors, typed recovery references and nullable ownership; record the paired latency gain and still-open resource targets. Share scoped MCP grouping between complete inventory and bounded page selection; preserve both measured latency-tail results and unchanged ownership/metric semantics.
 
 - Investigate exact recorded paths and literal command/instruction phrases across retained indexed history with `agenturm investigate`, Ctrl+F and Activity History. Keep source navigation pinned to receiver and full execution identity, with bounded paging, keyboard reading and sticky capture revocation.
 

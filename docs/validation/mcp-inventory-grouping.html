@@ -1,0 +1,92 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Mcp Inventory Grouping</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.3</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/mcp-inventory-grouping.md">Markdown source ↗</a></nav><h1>Shared MCP grouping: less query work, mixed latency tails</h1>
+<p>Status: the bounded implementation passes functional and snapshot gates and reduces repeated SQL work. Both controlled pairs show lower median reads, but their under-write p95 directions disagree. The 100 ms under-write target remains open. This increment does not close Stage B, whole-monitor CPU/RSS, cold readiness or MCP scalability targets.</p>
+<h2>What changes</h2>
+<p>Previously each MCP page grouped retained scoped source records twice: once for complete inventory and once for the page's call keys. The replacement groups calls once in a request-local SQL CTE, then emits tagged inventory and candidate rows. Inventory still includes every retained call in the requested scope; only candidates apply search, cursor and page limits. The existing final call-key/timestamp ordering and server ordering are explicit.</p>
+<p>The current ownership-aware call keys, qualified actor/session filters, ambiguity rules, source/error expressions, hydration scope checks and transport/execution association remain unchanged. <code>null</code>, false, zero and empty payload presence retain their existing semantics. Unknown-owned sources remain unallocated under an exact known-owner filter. Cursor metric counters remain separate from event calls and retain their existing scope, temporality and reset handling.</p>
+<p>The helper executes inside <code>mcp_page</code>'s existing <code>BEGIN</code> snapshot. No result/namespace cache, persisted table, index or migration is added. External raw updates are visible on the next request. When search is absent, the shared grouping carries no captured search body; when search is present it uses the same bound substring expression as before. Captured result bodies are hydrated through the existing selected-key path.</p>
+<p>Production changes are limited to <code>storage_mcp.inventory_page</code> and the inventory/candidate regions of <code>Store._mcp_page</code>. Runtime and harness are frozen at <code>1ef63709</code> on parent <code>449f64f</code>; the frozen baseline method comes from <code>da90e73</code>, with identical MCP code on <code>449f64f</code>.</p>
+<h2>Functional gates</h2>
+<p>The 91-test focused gate passed in 38.339 seconds: new whole-method/snapshot/materialization tests, all MCP source ownership/economics tests, Observatory/API tests and operation hydration. The five new tests independently passed in 6.559 seconds. These gates overlap. Combined-branch CI is still required.</p>
+<p>The frozen entire old method is compared with the replacement across every page of global, producer, session, known agent, confirmed subtree, review exclusion and search scopes. Fixtures contain tied timestamps, source-key collisions, foreign and unknown owners, direct log payloads and metric-only counters. Inventory remains unchanged when search finds nothing or the candidate cursor advances. Deterministic external-writer tests replace ownership, change server data or delete logs between grouped selection and hydration; the current page stays in its original WAL snapshot, while the next request sees the update.</p>
+<p>On the deployed SQLite version, EXPLAIN shows exactly one <code>MATERIALIZE calls</code>; source scans retain the MCP partial indexes and execution/candidate-execution searches retain <code>trace_id</code> index predicates. SQLite also materializes its <code>evidence</code> CTE. A diagnostic inline alternative removed that extra materialization but showed no CPU or block-I/O benefit, so the runtime was left unchanged. No SQLite-version-specific materialization hint was introduced.</p>
+<pre><code class="language-sh">python -m unittest tests.test_mcp_inventory_batch tests.test_mcp_source_ownership tests.test_history_read_economics tests.test_observatory tests.test_operation_hydration
+</code></pre>
+<h2>Fixture and controlled protocol</h2>
+<p>Both accepted comparisons use fresh independent private copies of the same verified synthetic corpus: <strong>32,170 spans, 42,765 logs, 6,047 traces, about 37.76 days</strong>. This is not the earlier 5,751-trace corpus. The original source is opened only through SQLite's read-only backup API and is not modified. Current derived-index preparation is excluded from timing; the initial C2 rebuild took 291.20 seconds under development load and is not a controlled cold-readiness result.</p>
+<p>Each private copy's named indexes exactly match a fresh production Store manifest. No normalization changes were needed. The script refuses changed fixture bytes/inventory, a dirty runtime/harness, nonready data or failed fixed-snapshot entire-method equivalence. It records source HEAD/hashes before and after, requiring equality. Each method receives three warmups. Reads alternate original/current with balanced first-read order. The writer waits 100 ms <strong>after each completed ingest</strong>; actual acceptance frequency also depends on write cost. It does not promise a constant 10 Hz workload. Write acceptance, in-read batches, errors, thread drain and post-timing derived catch-up are checked.</p>
+<p>Root and all implementation agents held local heavy tests, browser and Git activity during both intervals. Existing user/background Agenturm processes on separate databases were preserved. Host background noise was not eliminated. These are two short paired experiments on one host. Longer runs also accumulate more synthetic MCP source spans within the writer trace; their absolute timings are not interchangeable.</p>
+<h2>First controlled pair: tail regression retained</h2>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/mcp-inventory-first-paired.json">All first-pair samples and provenance</a>. UTC <strong>2026-11-14 10:20:24.106667–10:20:35.142782</strong>, 11.036 seconds; 20 observations per method/condition. Entire-method equivalence passed, 35 writes were accepted, 34 during reads, zero write errors, derived data caught up, source fences matched.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>First pair</th>
+<th style="text-align:right">Original median</th>
+<th style="text-align:right">Candidate median</th>
+<th style="text-align:right">Original p95</th>
+<th style="text-align:right">Candidate p95</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Idle</td>
+<td style="text-align:right">106.43 ms</td>
+<td style="text-align:right">96.66 ms</td>
+<td style="text-align:right">122.86 ms</td>
+<td style="text-align:right">109.06 ms</td>
+</tr>
+<tr>
+<td>Under paced writes</td>
+<td style="text-align:right">178.02 ms</td>
+<td style="text-align:right">141.42 ms</td>
+<td style="text-align:right">230.88 ms</td>
+<td style="text-align:right"><strong>239.96 ms</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>The first under-write p95 regressed about 3.9%; its maximum also rose, 235.36→283.62 ms. This result is retained unchanged and is not discarded because a later repeat looks better.</p>
+<h2>Preregistered unchanged-source repeat</h2>
+<p>After bounded diagnostics, one repeat was agreed in advance: unchanged frozen baseline/current/harness, a fresh normalized copy, 40 observations per method/condition, the same balanced alternation, warmups and writer. No additional SQL variant or further controlled rerun was made. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/mcp-inventory-repeat-paired.json">All repeat samples and provenance</a>. UTC <strong>2026-11-14 10:27:43.490808–10:28:08.259521</strong>, 24.769 seconds. Entire-method equivalence passed, 58 writes were accepted, 56 during reads, zero write errors, derived data caught up, source fences matched.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Repeat</th>
+<th style="text-align:right">Original median</th>
+<th style="text-align:right">Candidate median</th>
+<th style="text-align:right">Original p95</th>
+<th style="text-align:right">Candidate p95</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Idle</td>
+<td style="text-align:right">118.57 ms</td>
+<td style="text-align:right">105.84 ms</td>
+<td style="text-align:right">151.54 ms</td>
+<td style="text-align:right">134.30 ms</td>
+</tr>
+<tr>
+<td>Under paced writes</td>
+<td style="text-align:right">190.45 ms</td>
+<td style="text-align:right">166.59 ms</td>
+<td style="text-align:right">343.53 ms</td>
+<td style="text-align:right">307.98 ms</td>
+</tr>
+</tbody>
+</table></div>
+<p>The repeat under-write p95 is lower, but remains 307.98 ms. Its maximum fell, 415.11→362.91 ms. p95 uses nearest rank: observation 19 of 20 or 38 of 40. Both artifacts retain all observations and maxima. The runs are reported separately without pooling or selecting a preferred tail result. They establish lower medians within both pairs and mixed tail evidence; they do not establish a general under-write p95 improvement. Both miss the 100 ms target.</p>
+<h2>Work and tail diagnostics</h2>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/mcp-inventory-diagnostics.json">Diagnostic observations</a> are explicitly separate from controlled resource results. They include instrumentation and concurrent development load:</p>
+<ul>
+<li>The original inventory/candidate queries execute about 358,000 SQLite VM steps versus 266,000 for the shared query, with a 1,000-step progress-callback granularity: about 25.7% fewer query operations on this scope. VM steps do not have equal cost and are not a monitor CPU budget.</li>
+<li>Sixteen alternating full reads per method during paced writes recorded median main-thread CPU of 211.74→187.75 ms. This is a diagnostic work signal, about 11.3% lower, not a controlled CPU percentage or whole-monitor claim.</li>
+<li>Slow reads in both versions show wall time above main-thread CPU across grouping, hydration and execution phases. The measurements do not distinguish scheduling/GIL delays, SQLite waiting or other host contention. No specific cause is assigned to the first p95 regression.</li>
+<li>Seven alternating fresh-connection query-only samples showed no useful benefit from inlining evidence: median thread CPU 64.13→65.38 ms, approximately 266,000→265,000 VM steps; measured block I/O was unchanged. Those blocks cannot be assigned to temp spill versus WAL shared-memory lifecycle. The existing shared-CTE runtime was retained.</li>
+</ul>
+<p>The optimization removes duplicated query work while preserving the existing evidence contract. Full retained inventory remains proportional to the retained MCP source population, and the materialized grouping still has a cost. Receiver HTTP serialization, TUI rendering, native discovery, cold startup, sustained memory/WAL growth and complete-monitor CPU are excluded. The remaining resource gates require the combined application and receiver/UI workload; no broader target or stage is marked complete here.</p>
+<p>Root independently reviewed the query split, exact ordering and unchanged scope/error/hydration contract, and accepted this increment as reduced repeated query work with explicitly mixed tail evidence. This does not close a p95 or whole-monitor budget. Integration on the current source tree retains the same method/helper behavior; final combined CI remains pending.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

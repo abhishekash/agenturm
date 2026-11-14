@@ -2118,7 +2118,7 @@ class Store:
         # Keep all MCP protocol methods, not only tool execution. Discovery,
         # prompts, and resource reads are useful agent activity too.
         from .storage_activity import MCP_PREDICATE
-        from .storage_mcp import call_key_sql, session_sql, execution_match_sql, text_sql, text_value
+        from .storage_mcp import call_key_sql, session_sql, execution_match_sql, text_sql, text_value, inventory_page
         match = MCP_PREDICATE
         clauses, params = [match], []
         if service:
@@ -2160,9 +2160,6 @@ class Store:
         # A timestamp/tool match cannot establish that two source calls are
         # duplicates. Explicit scoped call keys already merge linked I/O.
         unique_log='1'
-        query_filter = ' HAVING MAX(instr(lower(evidence),lower(?)))>0' if query else ''
-        cursor_filter = ' WHERE (stamp,call_key) < (?,?)' if before else ''
-        values = [*params, *params, *([query] if query else []), *(before or ()), limit+1]
         span_server, span_tool = mcp_identity('spans')
         mcp_result_error_sql = " OR ".join(
             f"(json_type(execution.attributes,'$.\"{flag}\"')='true')"
@@ -2191,23 +2188,21 @@ class Store:
         body_errors=' OR '.join(f"json_type(({chosen_body_result}),'$.{key}')='true'" for key in ('isError','is_error'))
         log_body_error=f"""CASE WHEN ({no_output_attributes}) AND json_valid(({chosen_body_result}))
             THEN ({body_errors}) ELSE 0 END"""
-        summary_sql = f"""WITH evidence AS (
+        span_search='attributes || name || service' if query else 'NULL'
+        log_search='attributes || body || service' if query else 'NULL'
+        evidence_sql = f"""
             SELECT {span_key} AS call_key, {span_server} AS server, {span_tool} AS tool,
-                   (status IN ('ERROR','FAILED') OR COALESCE(({mcp_result_error_sql.replace('execution.','spans.')}),0) OR {mcp_tool_failed}) AS failed
+                   (status IN ('ERROR','FAILED') OR COALESCE(({mcp_result_error_sql.replace('execution.','spans.')}),0) OR {mcp_tool_failed}) AS failed,
+                   end_ns AS stamp,{span_search} AS search_evidence
             FROM spans WHERE {where}
             UNION ALL
             SELECT {log_key}, {server}, {tool},
                    COALESCE(json_extract(attributes,'$."agent.activity.result"') IN ('error','failed','denied','blocked')
-                     OR ({mcp_result_error_sql.replace('execution.','logs.')}) OR ({log_body_error}),0)
-            FROM logs WHERE {where} AND {unique_log}
-        ), calls AS (
-            SELECT call_key, COALESCE(MAX(NULLIF(server,'Not reported')),'Not reported') AS server,
-                   COALESCE(MAX(NULLIF(tool,'Not reported')),'Not reported') AS tool, MAX(failed) AS failed
-            FROM evidence GROUP BY call_key
-        ) SELECT server, COUNT(*) AS calls, SUM(failed) AS errors,
-                 COUNT(DISTINCT NULLIF(tool,'Not reported')) AS tools
-          FROM calls GROUP BY server ORDER BY server"""
-        inventory = [dict(row) for row in db.execute(summary_sql, [*params, *params])]
+                     OR ({mcp_result_error_sql.replace('execution.','logs.')}) OR ({log_body_error}),0),
+                   time_ns AS stamp,{log_search} AS search_evidence
+            FROM logs WHERE {where} AND {unique_log}"""
+        inventory,candidates=inventory_page(db,evidence_sql,[*params,*params],
+            query=query,before=before,limit=limit)
         metric_servers = []
         if not session_id and not agent_id:
             metric_filter = "" if not service else " AND service=?"
@@ -2270,13 +2265,6 @@ class Store:
                    'metric_calls': sum(row['calls'] for row in metric_servers),
                    'metric_servers': metric_servers,
                    'metric_scope': 'all sessions; Cursor metrics have no session IDs'}
-        candidates = db.execute(f"""WITH evidence AS (
-            SELECT {span_key} AS call_key,end_ns AS stamp,attributes || name || service AS evidence FROM spans WHERE {where}
-            UNION ALL
-            SELECT {log_key} AS call_key,time_ns AS stamp,attributes || body || service AS evidence FROM logs WHERE {where} AND {unique_log}
-        ), calls AS (
-            SELECT call_key,MAX(stamp) AS stamp FROM evidence GROUP BY call_key {query_filter}
-        ) SELECT * FROM calls {cursor_filter} ORDER BY stamp DESC,call_key DESC LIMIT ?""", values).fetchall()
         selected_keys = [row['call_key'] for row in candidates[:limit]]
         if not selected_keys:
             result = {'calls': [], 'next_cursor': None, 'summary': summary}

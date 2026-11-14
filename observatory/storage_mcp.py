@@ -1,6 +1,40 @@
 """MCP source identities and conservative transport/execution association."""
 
 
+def inventory_page(db, evidence_sql, params, *, query=None, before=None, limit=100):
+    """Group scoped source calls once for both inventory and keyset pagination.
+
+    The caller supplies the same qualified source/failure expressions used for
+    hydration, inside its existing read transaction. Search/cursor predicates
+    apply only to the candidate branch; inventory describes the entire scope.
+    No source bodies or result cache survive this request.
+    """
+    matched = 'MAX(instr(lower(search_evidence),lower(?)))' if query else '1'
+    filters = ['matched>0'] if query else []
+    if before:
+        filters.append('(stamp,call_key) < (?,?)')
+    where = ' WHERE ' + ' AND '.join(filters) if filters else ''
+    values = [*params, *([query] if query else []), *(before or ()), limit + 1]
+    rows = db.execute(f"""WITH evidence AS ({evidence_sql}), calls AS (
+        SELECT call_key,COALESCE(MAX(NULLIF(server,'Not reported')),'Not reported') AS server,
+            COALESCE(MAX(NULLIF(tool,'Not reported')),'Not reported') AS tool,
+            MAX(failed) AS failed,MAX(stamp) AS stamp,{matched} AS matched
+        FROM evidence GROUP BY call_key), inventory AS (
+        SELECT server,COUNT(*) AS calls,SUM(failed) AS errors,
+            COUNT(DISTINCT NULLIF(tool,'Not reported')) AS tools FROM calls GROUP BY server), visible AS (
+        SELECT call_key,stamp FROM calls {where}
+        ORDER BY stamp DESC,call_key DESC LIMIT ?)
+        SELECT 0 AS row_kind,server,calls,errors,tools,NULL AS call_key,NULL AS stamp FROM inventory
+        UNION ALL
+        SELECT 1,NULL,NULL,NULL,NULL,call_key,stamp FROM visible
+        ORDER BY row_kind,server,stamp DESC,call_key DESC""", values).fetchall()
+    inventory = [{key: row[key] for key in ('server', 'calls', 'errors', 'tools')}
+                 for row in rows if row['row_kind'] == 0]
+    candidates = [{key: row[key] for key in ('call_key', 'stamp')}
+                  for row in rows if row['row_kind'] == 1]
+    return inventory, candidates
+
+
 def session_sql(alias=''):
     from .core import SESSION_KEYS
     prefix=alias+'.' if alias else ''
