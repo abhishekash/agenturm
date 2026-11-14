@@ -2257,7 +2257,8 @@ class Store:
 
     def activity_page(self, limit=100, service=None, domain=None, query=None, session_id=None,
                       cursor=None, include_reviews=True, errors_only=False, action=None,
-                      agent_id=None, subtree=False, scope_revision=None, trace_id=None, turn_id=None, review=False):
+                      agent_id=None, subtree=False, scope_revision=None, trace_id=None, turn_id=None, review=False,
+                      *,_initial_receiver=None,_initial_file=None,_strict_read=False):
         """Read indexed source events; never expand historical trace-summary JSON."""
         from .storage_activity import drain
         limit=max(1,min(500,int(limit)));before=self._event_cursor(cursor)
@@ -2275,12 +2276,15 @@ class Store:
             clauses.append("(instr(lower(payload),lower(?))>0 OR EXISTS(SELECT 1 FROM logs raw WHERE kind='log' AND raw.digest=owner_key AND instr(lower(raw.body),lower(?))>0) OR EXISTS(SELECT 1 FROM spans raw WHERE kind='span' AND raw.trace_id=activity_index_v1.trace_id AND raw.trace_id||':'||raw.span_id=owner_key AND instr(lower(raw.attributes||raw.events),lower(?))>0))")
             params.extend((query,query,query))
         if before:clauses.append('(stamp,event_key)<(?,?)');params.extend(before)
-        with self._connect() as db:
-            # Bind indexed ownership, content pointers and context to one WAL snapshot.
+        with (self._source_read('Activity')if _initial_file is not None else self._connect())as db:
+            # Certified HTTP reads never repair: certify the same read-only
+            # snapshot used for pagination, ownership and source hydration.
             db.execute('BEGIN')
+            if _initial_file is not None:
+                self._require_initial_activity(db,_initial_receiver,_initial_file,strict=_strict_read)
             # Repair older-writer changes transactionally and within a bounded
             # read budget. Large upgrades are resumed at receiver startup.
-            if db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone():
+            if _initial_file is None and db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone():
                 db.rollback()
                 # Admission starts only after releasing the old read snapshot.
                 # Finish the writer before releasing the gate, then bind the
@@ -2391,15 +2395,18 @@ class Store:
     def mcp_calls(self, limit=100, service=None, session_id=None, query=None):
         return self.mcp_page(limit, service, session_id, query)['calls']
 
-    def _mcp_file_identity(self):
+    def _source_file_identity(self,label):
         try:stat=Path(self.path).stat()
         except OSError as exc:
             raise IndexNotReady({**self.migration_status,'ready':False,
-                'stage':'Receiver identity is unavailable during MCP read'})from exc
+                'stage':f'Receiver identity is unavailable during {label} read'})from exc
         return stat.st_dev,stat.st_ino
 
+    def _mcp_file_identity(self):
+        return self._source_file_identity('MCP')
+
     @contextmanager
-    def _mcp_read(self):
+    def _source_read(self,label):
         # Use the existing exclusive read-only leases: a vanished path must
         # never be recreated by sqlite3.connect's default read/write mode.
         body_error=None
@@ -2412,15 +2419,19 @@ class Store:
         except (OSError,sqlite3.Error)as exc:
             if exc is body_error:raise
             raise IndexNotReady({**self.migration_status,'ready':False,
-                'stage':'MCP preparation proof is unavailable'})from exc
+                'stage':f'{label} preparation proof is unavailable'})from exc
 
-    def _require_initial_mcp(self,db,receiver,file_identity,*,strict=False):
-        """Certify preparation/namespace, not unrelated derived queue state.
+    @contextmanager
+    def _mcp_read(self):
+        with self._source_read('MCP')as db:yield db
 
-        Inventory and hydration below read only raw spans/logs/metrics. Scoped
-        hierarchy reads retain their stricter derived dependency separately.
+    def _require_initial_source(self,db,receiver,file_identity,*,label):
+        """Certify initial preparation and identity in this read snapshot.
+
+        Each caller adds its actual queue/semantic-marker dependencies. No
+        source content, cached summary or scope is inferred by this proof.
         """
-        if not db.in_transaction:raise RuntimeError('MCP certificate requires a read transaction')
+        if not db.in_transaction:raise RuntimeError(f'{label} certificate requires a read transaction')
         state=dict(self.migration_status)
         if state.get('error')or self.last_derived_error:
             state.update(ready=False,error=state.get('error')or self.last_derived_error)
@@ -2430,13 +2441,17 @@ class Store:
         if state.get('ready')is not True:raise IndexNotReady({**state,'ready':False})
         try:metadata=dict(db.execute("SELECT key,value FROM schema_meta WHERE key IN ('trace_derived_v15','receiver_id')"))
         except sqlite3.Error as exc:
-            raise IndexNotReady({**state,'ready':False,'stage':'MCP preparation proof is unavailable'})from exc
+            raise IndexNotReady({**state,'ready':False,'stage':f'{label} preparation proof is unavailable'})from exc
         if metadata.get('trace_derived_v15')!='1':
             raise IndexNotReady({**state,'ready':False,'stage':'Preparing indexed history'})
         actual=metadata.get('receiver_id')
         if (not isinstance(actual,str)or not actual or actual!=receiver or
-                self._mcp_file_identity()!=file_identity):
-            raise IndexNotReady({**state,'ready':False,'stage':'Receiver identity changed during MCP read'})
+                self._source_file_identity(label)!=file_identity):
+            raise IndexNotReady({**state,'ready':False,'stage':f'Receiver identity changed during {label} read'})
+
+    def _require_initial_mcp(self,db,receiver,file_identity,*,strict=False):
+        self._require_initial_source(db,receiver,file_identity,label='MCP')
+        state=dict(self.migration_status)
         if strict:
             self._require_index_ready(db)
             extra='SELECT 1 FROM native_lifecycle_dirty_v1'
@@ -2453,6 +2468,32 @@ class Store:
                 self._require_initial_mcp(db,receiver,identity,strict=strict)
         except (OSError,sqlite3.Error)as exc:
             raise IndexNotReady({**self.migration_status,'ready':False,'stage':'MCP preparation proof is unavailable'})from exc
+        return identity
+
+    def _require_initial_activity(self,db,receiver,file_identity,*,strict=False):
+        self._require_initial_source(db,receiver,file_identity,label='Activity')
+        state=dict(self.migration_status)
+        markers=dict(db.execute("SELECT key,value FROM schema_meta WHERE key IN ('activity_sources_v2','activity_operation_facts_v2')"))
+        if any(markers.get(key)!='1'for key in ('activity_sources_v2','activity_operation_facts_v2')):
+            raise IndexNotReady({**state,'ready':False,'stage':'Preparing indexed Activity'})
+        if db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone():
+            raise IndexNotReady({**state,'ready':False,'stage':'Indexing incoming source changes'})
+        if strict:
+            self._require_index_ready(db)
+            extra='SELECT 1 FROM native_lifecycle_dirty_v1'
+            if self.investigation_index_v1:extra+=' UNION ALL SELECT 1 FROM investigation_dirty_v1'
+            if db.execute(extra+' LIMIT 1').fetchone():
+                raise IndexNotReady({**state,'ready':False,'stage':'Indexing incoming source changes'})
+
+    def certify_initial_activity(self,receiver,*,strict=False):
+        """Certify current Activity before cache lookup, without queue repair."""
+        identity=self._source_file_identity('Activity')
+        try:
+            with self._source_read('Activity')as db:
+                db.execute('BEGIN')
+                self._require_initial_activity(db,receiver,identity,strict=strict)
+        except (OSError,sqlite3.Error)as exc:
+            raise IndexNotReady({**self.migration_status,'ready':False,'stage':'Activity preparation proof is unavailable'})from exc
         return identity
 
     def mcp_page(self, limit=100, service=None, session_id=None, query=None, cursor=None,

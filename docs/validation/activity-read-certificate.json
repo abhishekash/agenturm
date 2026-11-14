@@ -1,0 +1,104 @@
+{
+  "base": "52fe6715496d3a3a8ce2828b939e0ff377296cf5",
+  "scope": "Narrow Activity HTTP dependency certificate; no retained workload or performance acceptance",
+  "before": {
+    "base": "52fe6715496d3a3a8ce2828b939e0ff377296cf5",
+    "core_sha256": "b1f5b304d2f20e63f593e4e0651fb16533ebee71a48b5e23dab069a11e920866",
+    "server_sha256": "05eb08754faa8dcc4301f6ce833dbf4875bb875de3b3e0be8d1983222d533e42",
+    "test_sha256": "25f6d0adff3679075a172679c5883241b03fa368c70d472f1e564cbc74517703",
+    "before_gate": {
+      "tests": 7,
+      "seconds": 6.467,
+      "result": "passed",
+      "resource_warnings": "error"
+    },
+    "qualification": "Generated realStore/authenticatedHTTP dependency observations; no retained workload/performance claims."
+  },
+  "candidate_sha256": {
+    "observatory/core.py": "1ddb50f05fc4726f5ac92e82265969ba9695bc0b4021d2b71d60d5f0ded51a8d",
+    "observatory/server.py": "c6251eb06cb776349d35fc0a524fedf2c7f19644cc32b870e34d7d6766757328",
+    "tests/test_activity_dependency_contract.py": "e981765f0612b8dfd76ea8dbcefb3d59519c47e93bc542d2b470b4fea3a0a079"
+  },
+  "negative_control": {
+    "source_root": "/tmp/agenturm-candidate-9bee",
+    "exact_core_server_hashes_equal_base": true,
+    "tests": 1,
+    "failed_queue_subcases": 3,
+    "expected_status": 200,
+    "actual_status": 503,
+    "log_sha256": "a26c4b29a39b904eb5e25ed0f0625809b8468f0d15a1765ceb71c533003fd587"
+  },
+  "validation": {
+    "focused": {
+      "tests": 62,
+      "seconds": 43.297,
+      "python": "3.13.5",
+      "resource_warnings": "error",
+      "result": "passed",
+      "modules": [
+        "test_activity_dependency_contract",
+        "test_mcp_initial_certificate",
+        "test_activity_worker_scope",
+        "test_activity_linked_index",
+        "test_history_read_economics",
+        "test_derived_readiness_snapshot",
+        "test_receiver_response_identity",
+        "test_response_cache"
+      ],
+      "capture_limitation": "Complete merged tool stream inspected; no original standalone stdout/stderr log or hash retained. No file-backed warning-free claim."
+    },
+    "independent_peer": {
+      "tests": 31,
+      "seconds": 14.701,
+      "python": "3.12.3",
+      "resource_warnings": "error",
+      "result": "passed",
+      "scope": "Activity/MCP/ResponseCache; overlaps focused gate",
+      "source_review": "no blocker"
+    },
+    "count_strengthening": {
+      "tests": 1,
+      "seconds": 1.77,
+      "result": "passed",
+      "qualification": "Same complete nine-row/distinct-ID case, overlaps focused gate"
+    },
+    "independent_capture": {
+      "commit": "bc318bdbe55a564fc1c09c9b266ac29fa67cd07d",
+      "candidate_tests": 1,
+      "candidate_seconds": 1.065,
+      "baseline_result": "desired200 failed with503",
+      "baseline_seconds": 0.891,
+      "qualification": "Separate test-only input commit bc318bd; candidate passed and baseline failed as recorded. No new run performed for this push."
+    }
+  },
+  "strict_selector_presence": [
+    "agent_id",
+    "subtree",
+    "scope_revision",
+    "trace_id",
+    "turn_id",
+    "review"
+  ],
+  "required_markers": [
+    "trace_derived_v15",
+    "activity_sources_v2",
+    "activity_operation_facts_v2"
+  ],
+  "unchanged": [
+    "All data fields/cursors/context/scopes",
+    "Direct public Activity bounded repair",
+    "MCP wrapper behavior/messages",
+    "Client capture-generation and namespace fences",
+    "Existing coherent older snapshot after BEGIN contract",
+    "Workload cadence/timeouts/budgets"
+  ],
+  "limitations": [
+    "The queue responsible for historical9bee503 was not recorded and is not inferred",
+    "Genuine Activitydirty remains503",
+    "No retained run, one-hour, resource, live-provider or universal-runtime acceptance",
+    "No stronger post-BEGIN live-policy freshness guarantee"
+  ],
+  "publishable_performance": false,
+  "delivery_status": "WIP: preserved for review, not merged or accepted",
+  "html_qa": "Not performed"
+}
