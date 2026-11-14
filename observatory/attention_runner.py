@@ -45,6 +45,7 @@ def inventory_deferral_reason(snapshot):
     if not getattr(snapshot,'updated',0):return 'the first inventory has not arrived'
     if getattr(snapshot,'error',''):return 'the receiver read is unavailable'
     if getattr(snapshot,'sessions_error','') or getattr(snapshot,'read_errors',{}):return 'relevant inventory reads are incomplete'
+    if getattr(snapshot,'native_lifecycle_warning',''):return 'native lifecycle evidence is incomplete'
     if local.get('enabled') and local.get('initial_poll_complete') is not True:return 'local agent discovery is incomplete'
     if local.get('backlog_bytes'):return 'local capture is catching up'
     if any((row.get('diagnostics') or {}).get('read_error') or
@@ -77,15 +78,18 @@ def desktop_notify(title,body):
 
 class AttentionRunner:
     def __init__(self,ledger=None):
-        self.ledger=ledger or AttentionLedger();self.latest=None;self.warning='';self.native_observations=[]
+        self.ledger=ledger or AttentionLedger();self.latest=None;self.warning='';self.native_observations=[];self.native_warning=''
 
     def update(self,items,snapshot,limits,*,endpoint='',now=None,store=None):
         selected=[prepared_item(item,snapshot) for item in items]
-        resolutions=[]
-        if store:
-            from .native_lifecycle import overlay_observations
-            self.native_observations=store.native_observations(snapshot.receiver_id)
-            selected,resolutions=overlay_observations(selected,self.native_observations,snapshot.receiver_id)
+        from .source_projection import native_snapshot
+        from .native_lifecycle import merge_observations,overlay_observations
+        current=store.native_observations(snapshot.receiver_id) if store else ()
+        merged,note=merge_observations(snapshot.receiver_id,self.native_observations,current)
+        snapshot=native_snapshot(snapshot,merged,note)
+        self.native_observations=list(getattr(snapshot,'native_lifecycle',()))
+        self.native_warning=getattr(snapshot,'native_lifecycle_warning','')
+        selected,resolutions=overlay_observations(selected,self.native_observations,snapshot.receiver_id)
         self.latest=(selected,snapshot,dict(limits),endpoint)
         result=self.ledger.update(selected,snapshot,limits,now,endpoint=endpoint)
         for scope,kind,request,key in resolutions:
@@ -116,6 +120,7 @@ class AttentionRunner:
             self.warning='Durable workflow state is unavailable: '+storage_error+'. Incidents remain visible; acknowledgements and alerts are disabled.'
         if not store:self.ledger.records={key:record for key,record in self.ledger.records.items() if key in self.ledger.incidents}
         self.ledger.render_rows(snapshot=self.latest[1] if self.latest else None)
+        if self.native_warning:self.warning=' '.join(filter(None,(self.warning,self.native_warning)))
         return self.warning
 
     def delivery_candidates(self,*,now=None):

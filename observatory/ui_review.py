@@ -145,7 +145,9 @@ class ReviewScreen(ModalScreen):
 
     def request_page(self, *, refresh=False):
         if self.history.busy:return
-        candidate=refreshed_review_item(self.item,self.owner.feed.snapshot,self.scope) if refresh else dict(self.item)
+        live=self.owner.feed.snapshot
+        project=getattr(self.owner,'source_snapshot',None)
+        candidate=refreshed_review_item(self.item,project(live) if callable(project) else live,self.scope) if refresh else dict(self.item)
         request_scope=scope_for(candidate,self.owner.feed.snapshot,getattr(self.owner.feed.api,'endpoint',''))
         if request_scope.scope_key!=self.scope.scope_key:
             self.history.error='Receiver or execution identity changed; reopen the review.';self.render_projection();return
@@ -180,7 +182,9 @@ class ReviewScreen(ModalScreen):
     def finish_page(self,generation,cursor,refresh,response,error,candidate,request_scope):
         if not self.is_mounted or generation!=self.generation:return
         self.history.busy=False
-        current=refreshed_review_item(self.item,self.owner.feed.snapshot,self.scope)
+        live=self.owner.feed.snapshot
+        project=getattr(self.owner,'source_snapshot',None)
+        current=refreshed_review_item(self.item,project(live) if callable(project) else live,self.scope)
         if current.get('capture_content') is False:
             self.item=current
             self.history=ReviewHistory(self.scope,self.history.revision,False,loaded=True)

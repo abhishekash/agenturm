@@ -17,7 +17,7 @@ from http.server import ThreadingHTTPServer
 from observatory.attention_cli import add_attention_parser,collect_snapshot,run_watch
 from observatory.attention_runner import inventory_ready
 from observatory.core import Store,normalize_native
-from observatory.native_lifecycle import (enqueue,flush,normalize_event,post_event,validate_binding,verify_binding)
+from observatory.native_lifecycle import (enqueue,flush,normalize_event,post_event,validate_binding,verify_binding,event_log)
 from observatory.server import handler_for
 from observatory.terminal import Api
 from observatory.workflow_store import WorkflowStore
@@ -80,6 +80,34 @@ class AttentionCLIReceiverTests(unittest.TestCase):
         with patch.object(self.api,'get',changed):
             capture=collect_snapshot(self.api);self.assertFalse(inventory_ready(capture))
             self.assertIn('sessions',capture.read_errors)
+
+    def test_remote_request_and_resolution_outside_latest_activity_survive_watcher_restart(self):
+        args=self.args(True);calls=[]
+        notify=lambda *values:calls.append(values) or 'Desktop notification delivered'
+        self.assertEqual(run_watch(args,api=self.api,notify=notify,stdout=io.StringIO()),0)
+        configured=self.native_binding()
+        def write(sequence,kind):
+            value=normalize_event(self.native_event(sequence=sequence,event_id='remote-'+str(sequence),kind=kind,request_id='remote-request',
+                time_unix_nano=time.time_ns()),configured)
+            value.update(request_kind='approval_requested',received_time_unix_nano=time.time_ns())
+            self.store.ingest_logs([event_log(value)])
+            stamp=time.time_ns()
+            self.store.ingest_logs([dict(trace_id='b'*32,span_id=None,time_unix_nano=stamp+index,
+                service='fixture',scope_name='fixture',severity_number=9,severity_text='INFO',body='',event_name='agent.activity',
+                attributes={'agent.activity.domain':'message','agent.activity.action':'assistant',
+                    'agent.activity.subject':'Unrelated newer fixture record','observatory.record_id':str(sequence)+'-'+str(index)},
+                resource_attributes={}) for index in range(210)])
+            self.assertFalse(any('native_lifecycle' in row for row in self.store.activity_page(limit=200)['activity']))
+        write(1,'approval_requested')
+        output=io.StringIO();self.assertEqual(run_watch(args,api=self.api,notify=notify,stdout=output),0)
+        self.assertEqual(len(calls),1)
+        self.assertEqual(len([row for row in json.loads(output.getvalue())['pending'] if row['kind']=='approval']),1)
+        self.assertEqual(WorkflowStore(self.state).native_observations(self.store.receiver_id),[])
+        self.assertEqual(run_watch(args,api=self.api,notify=notify,stdout=io.StringIO()),0)
+        self.assertEqual(len(calls),1)
+        write(2,'request_resolved')
+        output=io.StringIO();self.assertEqual(run_watch(args,api=self.api,notify=notify,stdout=output),0)
+        self.assertFalse(any(row['kind']=='approval' for row in json.loads(output.getvalue())['pending']))
 
     def test_subprocess_headless_reader_does_not_import_textual(self):
         script='''import argparse,sys

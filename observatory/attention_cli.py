@@ -32,6 +32,7 @@ def add_attention_parser(sub):
 
 def collect_snapshot(api):
     """Bounded reads; bind every response and final health to one receiver."""
+    from .terminal import CockpitError
     first=api.get('/api/health')
     receiver=first.get('receiver_id')
     if not isinstance(receiver,str) or not receiver:raise ValueError('Receiver identity is unavailable; update the receiver.')
@@ -49,12 +50,27 @@ def collect_snapshot(api):
             except Exception:errors[kind]='Read unavailable or receiver identity changed'
     last=api.get('/api/health')
     if last.get('receiver_id')!=receiver:raise ValueError('Receiver identity changed during attention read')
+    inventory=[];inventory_warning=''
+    if first.get('native_lifecycle_v1') is True and last.get('native_lifecycle_v1') is True:
+        from .native_lifecycle import inventory_observations
+        try:inventory,inventory_warning=inventory_observations(api.get('/api/native-lifecycle'),receiver)
+        except (OSError,ValueError,CockpitError):inventory_warning='Native lifecycle inventory read is unavailable.'
+        final=api.get('/api/health')
+        if final.get('receiver_id')!=receiver:raise ValueError('Receiver identity changed during native inventory read')
+        if final.get('native_lifecycle_v1') is not True:
+            inventory_warning='Native lifecycle inventory capability changed during the read.'
+        last=final
+    elif first.get('native_lifecycle_v1') is True or last.get('native_lifecycle_v1') is True:
+        inventory_warning='Native lifecycle inventory capability changed during the read.'
+    from .native_lifecycle import merge_observations
+    native,note=merge_observations(receiver,current=inventory,activity=values.get('activity',[]))
     now=time.time();stamp=last.get('observed_time_unix_nano')
     stamp=stamp if type(stamp) is int and 0<stamp<2**63 else 0
     return SimpleNamespace(receiver_id=receiver,receiver_time_ns=stamp,
         indexing_ready=(first.get('indexing') or {}).get('ready') is True and (last.get('indexing') or {}).get('ready') is True,
         local_status=last.get('local_agents') or {},agents=values.get('agents',[]),sessions=values.get('sessions',[]),
         activity=values.get('activity',[]),traces=[],updated=now,error='',read_errors=errors,
+        native_lifecycle=native,native_lifecycle_warning=inventory_warning or note,native_lifecycle_prepared=True,
         read_updated={kind:now for kind in values},sessions_error=errors.get('sessions',''),sessions_updated=now if 'sessions' in values else 0)
 
 
@@ -84,10 +100,9 @@ def run_watch(args,*,api=None,stop=None,notify=desktop_notify,items_for=None,std
         ready=False;error=''
         try:
             snapshot=collect_snapshot(api)
-            snapshot.native_lifecycle=store.native_observations(snapshot.receiver_id)
             runner.update(items_for(snapshot),snapshot,{},endpoint=api.endpoint,store=store)
             runner.persist(store)
-            ready=inventory_ready(snapshot)
+            ready=inventory_ready(runner.latest[1])
             if args.desktop and ready:
                 runner.deliver(store,runner.delivery_candidates(),notify=notify,stopped=stop.is_set)
             if not ready:error='Relevant inventory is incomplete; no baseline or notification delivery was accepted.'

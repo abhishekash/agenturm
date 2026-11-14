@@ -255,7 +255,7 @@ def overlay_observations(items,observations,receiver):
     snapshot=SimpleNamespace(receiver_id=receiver,local_status={})
     groups={};resolved=[]
     for event in observations:
-        if event.get('receiver_id')!=receiver:continue
+        if event.get('receiver_id')!=receiver or event.get('uncertain'):continue
         key=tuple(event.get(field) or '' for field in ('service','agent_id','session_id','trace_id','turn_id'))
         if event.get('resolved'):resolved.append(event)
         else:groups.setdefault(key,[]).append(event)
@@ -392,13 +392,18 @@ def activity_observations(events,receiver):
         if metadata is None:continue
         if not all(isinstance(row.get(key),str) and row[key] for key in ('service','agent_id','session_id','trace_id')):continue
         if not re.fullmatch(r'ag1_[0-9a-f]{32}',row['agent_id']) or not re.fullmatch(r'[0-9a-f]{32}',row['trace_id']):continue
+        if any(len(row[key])>512 for key in ('service','session_id')):continue
+        turn=row.get('turn_id')
+        if turn is not None and turn!='' and (not isinstance(turn,str) or not re.fullmatch(r'[0-9a-f]{32}',turn)):continue
         sender=metadata.get('sender_id');sequence=metadata.get('sequence')
         if not isinstance(sender,str) or type(sequence) is not int or sequence<=0:continue
         scope=tuple(row.get(key) or '' for key in ('service','agent_id','session_id','trace_id','turn_id'))
         if sender in senders and senders[sender]!=scope:conflicted.add(sender)
         senders[sender]=scope
+        reference=row.get('source_id') or row.get('id') or ''
+        if not isinstance(reference,str) or len(reference)>512:reference=''
         event={**metadata,**dict(zip(('service','agent_id','session_id','trace_id','turn_id'),scope)),
-            'event_source_id':row.get('source_id') or row.get('id') or '',
+            'event_source_id':reference,
             'resolved':metadata.get('kind')=='request_resolved'}
         identity=(sender,sequence);value=fingerprint({key:value for key,value in event.items() if key!='event_source_id'})
         if identity in sequences and sequences[identity]!=value:conflicted.add(sender)
@@ -408,3 +413,87 @@ def activity_observations(events,receiver):
         key=(sender,request)
         if key not in states or sequence>states[key]['sequence']:states[key]=event
     return [event for (sender,_),event in states.items() if sender not in conflicted]
+
+
+def merge_observations(receiver,retained=(),current=(),*,activity=()):
+    """Retain at most 1,000 metadata states, including exact resolution tombstones.
+
+    Pending requests are never evicted to admit newer records. Conflicted sender
+    markers remain quarantined for this receiver generation. No prompt/body or
+    receiver-receipt timestamp enters a returned observation.
+    """
+    from itertools import islice
+    states={};senders={};sequences={};conflicted=set();warning=''
+    def bounded(values):
+        nonlocal warning
+        rows=list(islice(values,MAX_EVENTS+1))
+        if len(rows)>MAX_EVENTS:warning='Native lifecycle evidence reached its 1,000-state limit; coverage is incomplete.'
+        return rows[:MAX_EVENTS]
+    def canonical(value):
+        if not isinstance(value,dict) or value.get('receiver_id')!=receiver:return None
+        if value.get('uncertain') is True:
+            try:identifier(value.get('sender_id'),'sender')
+            except UncertainLifecycle:return None
+            return dict(receiver_id=receiver,sender_id=value['sender_id'],uncertain=True)
+        schema=value.get('schema')
+        if not (type(schema) is int and schema==1 or schema=='agenturm-native-event-v1'):return None
+        if 'resolved' in value and (type(value['resolved']) is not bool or value['resolved']!=(value.get('kind')=='request_resolved')):return None
+        metadata={key:value.get(key) for key in ('receiver_id','sender_id','event_id','sequence','kind','request_id',
+            'request_kind','source_clock','source_order','time_unix_nano','source_id')}
+        metadata['schema']=1
+        row={key:value.get(key) for key in ('receiver_id','service','agent_id','session_id','trace_id','turn_id')}
+        row.update(source_id=value.get('event_source_id') or '',native_lifecycle=metadata)
+        result=activity_observations([row],receiver)
+        return result[0] if result else None
+    incoming=[]
+    for row in bounded(activity):
+        if isinstance(row,dict) and row.get('native_lifecycle') is not None:
+            incoming.extend(activity_observations([row],receiver))
+    for values in (bounded(retained),bounded(current),incoming):
+        for raw in values:
+            value=canonical(raw)
+            if value is None:continue
+            sender=value['sender_id']
+            if value.get('uncertain'):
+                conflicted.add(sender)
+                if (sender,'') in states or len(states)<MAX_EVENTS:states.setdefault((sender,''),value)
+                else:warning='Native lifecycle evidence reached its 1,000-state limit; coverage is incomplete.'
+                continue
+            scope=tuple(value.get(key) or '' for key in ('service','agent_id','session_id','trace_id','turn_id','source_id'))
+            sequence=(sender,value['sequence'])
+            signature=fingerprint({key:child for key,child in value.items() if key!='event_source_id'})
+            if (sender in senders and senders[sender]!=scope) or (sequence in sequences and sequences[sequence]!=signature):
+                conflicted.add(sender)
+            senders[sender]=scope;sequences[sequence]=signature
+            key=(sender,value['request_id']);previous=states.get(key)
+            if previous and previous.get('resolved') and not value.get('resolved') and value['sequence']>previous['sequence']:
+                conflicted.add(sender)
+            if previous is None and len(states)>=MAX_EVENTS:
+                warning='Native lifecycle evidence reached its 1,000-state limit; coverage is incomplete.'
+                continue
+            if previous is None or value['sequence']>previous.get('sequence',0):states[key]=value
+    for sender in conflicted:
+        keys=[key for key in states if key[0]==sender]
+        for key in keys:states.pop(key)
+        if len(states)<MAX_EVENTS:
+            states[(sender,'')]=dict(receiver_id=receiver,sender_id=sender,uncertain=True)
+        warning='Native lifecycle sender evidence conflicts; affected requests remain uncertain.'
+    return list(states.values()),warning
+
+
+def inventory_observations(payload,receiver):
+    """Validate the optional receiver inventory without accepting a body identity."""
+    if (not isinstance(payload,dict) or payload.get('receiver_id')!=receiver or
+            type(payload.get('complete')) is not bool or not isinstance(payload.get('observations'),list) or
+            len(payload['observations'])>MAX_EVENTS):
+        return [],'Native lifecycle inventory is unavailable or unscoped.'
+    values,note=merge_observations(receiver,current=payload['observations'])
+    if len(values)!=len(payload['observations']):note=note or 'Native lifecycle inventory contains unconfirmed request scopes.'
+    if not payload['complete']:note=note or 'Native lifecycle inventory is incomplete.'
+    # Warning text is diagnostic metadata; never use it as an attention reason.
+    message=payload.get('warning')
+    if isinstance(message,str) and message and len(message)<=256:
+        from .operation_facts import safe_value
+        safe,complete=safe_value(message)
+        if complete:note=note or safe
+    return values,note
