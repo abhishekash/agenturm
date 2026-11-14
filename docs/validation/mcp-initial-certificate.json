@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "source_base": "3fb82549d08730c753bd76553b19b41e48545bf8",
+  "runtime_sha256": {
+    "core.py": "b1f5b304d2f20e63f593e4e0651fb16533ebee71a48b5e23dab069a11e920866",
+    "server.py": "05eb08754faa8dcc4301f6ce833dbf4875bb875de3b3e0be8d1983222d533e42"
+  },
+  "generated_only": true,
+  "performance_acceptance_closed": false,
+  "baseline_proof": {
+    "test_methods": 6,
+    "assertion_failures": 5,
+    "seconds": 1.782,
+    "source_runtime_unchanged": true,
+    "log_sha256": "f3dbafea91946f938609a0a27c03c317aff8fb3591b15524fea64cb682a4e451",
+    "failures": [
+      "Unscoped MCP503 on unrelated dirty queues",
+      "Service MCP503 on unrelated dirty queues",
+      "Session MCP503 on unrelated dirty queues",
+      "Current raw source identity/output commit503",
+      "Missing initial durable marker incorrectly200"
+    ]
+  },
+  "tests": [
+    {
+      "scope": "narrow certificate/cache",
+      "tests": 20,
+      "seconds": 5.199,
+      "passed": true,
+      "resource_warnings": "error"
+    },
+    {
+      "scope": "independent peer certificate/cache",
+      "tests": 20,
+      "seconds": 4.446,
+      "passed": true,
+      "resource_warnings": "error"
+    },
+    {
+      "scope": "initial broader gate",
+      "tests": 63,
+      "seconds": 38.484,
+      "passed": false,
+      "errors": 1,
+      "reason": "Existing ownership race DB proxy lacked in_transaction; read-only forwarding added, original hook and private-output assertions preserved."
+    },
+    {
+      "scope": "affected reassignment race",
+      "tests": 1,
+      "seconds": 0.438,
+      "passed": true
+    },
+    {
+      "scope": "final source/inventory/cache/readiness gate",
+      "tests": 63,
+      "seconds": 37.014,
+      "passed": true,
+      "resource_warnings": "error"
+    }
+  ],
+  "healthy_cache_diagnostic": {
+    "before": {
+      "source_commit": "3fb82549d08730c753bd76553b19b41e48545bf8",
+      "runtime_edits": false,
+      "generated_only": true,
+      "diagnostic_only": true,
+      "publishable": false,
+      "scope": "256generatedMCPspans; in-processHTTPHandler including authorization/routing/JSON; ABBA10requests/batch; warmstableDB; not network or wholemonitor acceptance",
+      "batches": [
+        {
+          "cache_enabled": true,
+          "requests": 10,
+          "wall_seconds": 0.006577859981916845,
+          "cpu_seconds": 0.0065764120000000315,
+          "raw_query_calls": 0
+        },
+        {
+          "cache_enabled": false,
+          "requests": 10,
+          "wall_seconds": 0.2639501920202747,
+          "cpu_seconds": 0.263851152,
+          "raw_query_calls": 10
+        },
+        {
+          "cache_enabled": false,
+          "requests": 10,
+          "wall_seconds": 0.22481037001125515,
+          "cpu_seconds": 0.22438079199999983,
+          "raw_query_calls": 10
+        },
+        {
+          "cache_enabled": true,
+          "requests": 10,
+          "wall_seconds": 0.006495576002635062,
+          "cpu_seconds": 0.006496076999999989,
+          "raw_query_calls": 0
+        }
+      ]
+    },
+    "after": {
+      "source_base": "3fb82549d08730c753bd76553b19b41e48545bf8",
+      "runtime_sha256": {
+        "core.py": "b1f5b304d2f20e63f593e4e0651fb16533ebee71a48b5e23dab069a11e920866",
+        "server.py": "05eb08754faa8dcc4301f6ce833dbf4875bb875de3b3e0be8d1983222d533e42"
+      },
+      "generated_only": true,
+      "diagnostic_only": true,
+      "publishable": false,
+      "scope": "256generatedMCPspans; in-processHTTPHandler including authorization/routing/JSON; ABBA10requests/batch; warmstableDB; not network or wholemonitor acceptance",
+      "batches": [
+        {
+          "cache_enabled": true,
+          "requests": 10,
+          "wall_seconds": 0.008850450976751745,
+          "cpu_seconds": 0.008850131999999955,
+          "raw_query_calls": 0,
+          "initial_certificates": 10
+        },
+        {
+          "cache_enabled": false,
+          "requests": 10,
+          "wall_seconds": 0.08326590899378061,
+          "cpu_seconds": 0.08325491200000001,
+          "raw_query_calls": 10,
+          "initial_certificates": 10
+        },
+        {
+          "cache_enabled": false,
+          "requests": 10,
+          "wall_seconds": 0.08819465502165258,
+          "cpu_seconds": 0.0881889119999999,
+          "raw_query_calls": 10,
+          "initial_certificates": 10
+        },
+        {
+          "cache_enabled": true,
+          "requests": 10,
+          "wall_seconds": 0.008345338050276041,
+          "cpu_seconds": 0.008345975999999977,
+          "raw_query_calls": 0,
+          "initial_certificates": 10
+        }
+      ]
+    },
+    "qualification": "Small generated in-process HTTP-handler fixture under development load; each arm ABBA10requests/batch. Counts deterministic, timings descriptive only. No network or complete-monitor/API/CPU acceptance comparison."
+  },
+  "protocol": {
+    "http_scope": "Only /api/mcp with no agent_id/subtree/scope_revision parameter presence is eligible for raw-source admission. Every supported MCP HTTP route receives initial certificate before cache.",
+    "initial_proof": [
+      "Python initial ready",
+      "no fatal migration or derived error",
+      "not stopping",
+      "actual trace_derived_v15 in read snapshot",
+      "expected receiver namespace and file(dev,ino)"
+    ],
+    "raw_snapshot": "Certified misses recheck before inventory/hydration in same BEGIN over raw spans/logs/metrics.",
+    "strict_scope": "Selector presence including blanks/false-looking/duplicate keys retains global gate and same-BEGIN all-queue certificate, even if parsed agent_id is empty. Direct actual agent_id also checks same-BEGIN derived readiness.",
+    "cache": "Healthy preflight may use certified memory entries; committed DB changes/fileidentity invalidate existing cache. Preflight-observed dirty raw admission bypasses get/put. A commit after healthy preflight may still reach cache logic safely through data_version invalidation and raw recertification.",
+    "reads": "Existing read-only connection leases prevent missing-path creation; lease availability errors typed503, raw query exceptions preserve original class.",
+    "publication": "Final receiver namespace +fileidentity fence rejects replacement including sameUUID.",
+    "direct_api_scope": "Direct unscoped Store.mcp_page without private HTTP certificate arguments retains prior raw API semantics."
+  },
+  "original_full_smoke": {
+    "report": "full-corpus-startup-3fb.html",
+    "result_sha256": "093927512e524be8f791f01b7849042ba2880deba48a13d220c16f02b71d390b",
+    "status": "failed active MCP503 after successful cold readiness",
+    "response_body_retained": false,
+    "causal_qualification": "Independent tests prove a global dirty dependency failure path; the original503 body is unknown, so a fresh frozen full-corpus functional run is still required."
+  },
+  "limits": [
+    "No query association/provenance SQL, result fields, capture/retention policy, queue timing or global readiness changes.",
+    "No persistent content cache or widened history window.",
+    "Missing preparation/fatal/stopping/identity proof still503; scoped source races still503.",
+    "Cold/loaded API/CPU/RSS/WAL/storage/one-hour acceptance remains open."
+  ],
+  "diagnostic_reproduction": {
+    "python_source": "import copy,hashlib,json,pathlib,time\nfrom unittest.mock import patch\nfrom tests.test_mcp_initial_certificate import McpInitialCertificateTests\ncase=McpInitialCertificateTests();case.setUp()\ntry:\n records=[]\n for n in range(1,256):\n  row=copy.deepcopy(case.record);row.update(span_id=f'{n+1:016x}',start_unix_nano=n+1,end_unix_nano=n+2);row['attributes']['input.value']={'query':'generated','sequence':n};records.append(row)\n case.store.ingest(records);expected=case.get();assert expected[0]==200;batches=[]\n for cached in (True,False,False,True):\n  with patch.object(case.store,'_mcp_page',wraps=case.store._mcp_page)as raw,patch.object(case.store,'certify_initial_mcp',wraps=case.store.certify_initial_mcp)as certificate:\n   with patch.object(case.handler.response_cache,'eligible',return_value=cached):\n    began=time.perf_counter();cpu=time.process_time()\n    for _ in range(10):assert case.get()==expected\n    batches.append(dict(cache_enabled=cached,requests=10,wall_seconds=time.perf_counter()-began,cpu_seconds=time.process_time()-cpu,raw_query_calls=raw.call_count,initial_certificates=certificate.call_count))\n result=dict(source_base='3fb82549d08730c753bd76553b19b41e48545bf8',runtime_sha256={name:hashlib.sha256(pathlib.Path('observatory',name).read_bytes()).hexdigest()for name in ('core.py','server.py')},generated_only=True,diagnostic_only=True,publishable=False,scope='256generatedMCPspans; in-processHTTPHandler including authorization/routing/JSON; ABBA10requests/batch; warmstableDB; not network or wholemonitor acceptance',batches=batches)\n pathlib.Path('/tmp/agenturm-mcp-healthy-cache-after.json').write_text(json.dumps(result,indent=2)+'\\n');print(json.dumps(result,indent=2))\nfinally:case.doCleanups()\n",
+    "sha256": "18e589904844ff4faff3bf800249770450f51b27dd936e7676117cc1e88a63e7",
+    "invocation": "PYTHONPATH=<candidate> python /tmp/agenturm-mcp-cache-diagnostic.py from candidate cwd"
+  }
+}

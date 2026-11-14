@@ -2391,11 +2391,78 @@ class Store:
     def mcp_calls(self, limit=100, service=None, session_id=None, query=None):
         return self.mcp_page(limit, service, session_id, query)['calls']
 
+    def _mcp_file_identity(self):
+        try:stat=Path(self.path).stat()
+        except OSError as exc:
+            raise IndexNotReady({**self.migration_status,'ready':False,
+                'stage':'Receiver identity is unavailable during MCP read'})from exc
+        return stat.st_dev,stat.st_ino
+
+    @contextmanager
+    def _mcp_read(self):
+        # Use the existing exclusive read-only leases: a vanished path must
+        # never be recreated by sqlite3.connect's default read/write mode.
+        body_error=None
+        try:
+            with self._read()as db:
+                try:yield db
+                except BaseException as exc:
+                    body_error=exc
+                    raise
+        except (OSError,sqlite3.Error)as exc:
+            if exc is body_error:raise
+            raise IndexNotReady({**self.migration_status,'ready':False,
+                'stage':'MCP preparation proof is unavailable'})from exc
+
+    def _require_initial_mcp(self,db,receiver,file_identity,*,strict=False):
+        """Certify preparation/namespace, not unrelated derived queue state.
+
+        Inventory and hydration below read only raw spans/logs/metrics. Scoped
+        hierarchy reads retain their stricter derived dependency separately.
+        """
+        if not db.in_transaction:raise RuntimeError('MCP certificate requires a read transaction')
+        state=dict(self.migration_status)
+        if state.get('error')or self.last_derived_error:
+            state.update(ready=False,error=state.get('error')or self.last_derived_error)
+            raise IndexNotReady(state)
+        if self._derived_stopping or self._migration_stop.is_set():
+            raise IndexNotReady({**state,'ready':False,'stage':'Receiver is stopping'})
+        if state.get('ready')is not True:raise IndexNotReady({**state,'ready':False})
+        try:metadata=dict(db.execute("SELECT key,value FROM schema_meta WHERE key IN ('trace_derived_v15','receiver_id')"))
+        except sqlite3.Error as exc:
+            raise IndexNotReady({**state,'ready':False,'stage':'MCP preparation proof is unavailable'})from exc
+        if metadata.get('trace_derived_v15')!='1':
+            raise IndexNotReady({**state,'ready':False,'stage':'Preparing indexed history'})
+        actual=metadata.get('receiver_id')
+        if (not isinstance(actual,str)or not actual or actual!=receiver or
+                self._mcp_file_identity()!=file_identity):
+            raise IndexNotReady({**state,'ready':False,'stage':'Receiver identity changed during MCP read'})
+        if strict:
+            self._require_index_ready(db)
+            extra='SELECT 1 FROM native_lifecycle_dirty_v1'
+            if self.investigation_index_v1:extra+=' UNION ALL SELECT 1 FROM investigation_dirty_v1'
+            if db.execute(extra+' LIMIT 1').fetchone():
+                raise IndexNotReady({**state,'ready':False,'stage':'Indexing incoming source changes'})
+
+    def certify_initial_mcp(self,receiver,*,strict=False):
+        """Run before eligible cache lookup; raw misses certify again in BEGIN."""
+        identity=self._mcp_file_identity()
+        try:
+            with self._mcp_read()as db:
+                db.execute('BEGIN')
+                self._require_initial_mcp(db,receiver,identity,strict=strict)
+        except (OSError,sqlite3.Error)as exc:
+            raise IndexNotReady({**self.migration_status,'ready':False,'stage':'MCP preparation proof is unavailable'})from exc
+        return identity
+
     def mcp_page(self, limit=100, service=None, session_id=None, query=None, cursor=None,
-                 include_reviews=True, agent_id=None, subtree=False, scope_revision=None):
+                 include_reviews=True, agent_id=None, subtree=False, scope_revision=None,
+                 *,_initial_receiver=None,_initial_file=None,_strict_read=False):
         """Page complete MCP calls, keeping all evidence for each call together."""
-        with self._connect() as db:
+        with (self._mcp_read()if _initial_file is not None else self._connect())as db:
             db.execute('BEGIN')
+            if _initial_file is not None:self._require_initial_mcp(db,_initial_receiver,_initial_file,strict=_strict_read)
+            if agent_id:self._require_index_ready(db)
             return self._mcp_page(db,limit,service,session_id,query,cursor,
                 include_reviews,agent_id,subtree,scope_revision)
 
