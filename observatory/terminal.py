@@ -169,6 +169,8 @@ class Snapshot:
     read_errors: dict = field(default_factory=dict)
     read_updated: dict = field(default_factory=dict)
     receiver_id: str = ""
+    receiver_time_ns: int = 0
+    indexing_ready: bool = False
     review_trace_filter: bool = False
 
 
@@ -557,8 +559,12 @@ class Feed:
                 self.wake.set()
                 return
             self.selected_trace = selected
+            clock=health.get('observed_time_unix_nano')
+            receiver_time=clock if type(clock) is int and 0<clock<2**63 else 0
+            indexing=health.get('indexing')
             self.snapshot = Snapshot(totals, agents, traces, detail, findings, updated=time.time(), local_status=local_status, activity=activity,
                                      sessions=sessions,receiver_id=health.get("receiver_id") or "",
+                                     receiver_time_ns=receiver_time,indexing_ready=isinstance(indexing,dict) and indexing.get("ready") is True,
                                      review_trace_filter=health.get("review_trace_filter") is True,
                                      sessions_error=self.sessions_error,
                                      sessions_updated=self.sessions_updated,

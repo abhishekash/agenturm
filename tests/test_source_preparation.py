@@ -23,7 +23,7 @@ class SourcePreparationTests(unittest.TestCase):
         return sources(snapshot or self.snapshot,preparation=self.cache,**kwargs)
 
     def test_shared_preparation_keeps_results_equivalent_and_consumers_detached(self):
-        with patch('observatory.terminal_ui.prepare_sources',wraps=prepare_sources) as prepare:
+        with patch('observatory.source_projection.prepare_sources',wraps=prepare_sources) as prepare:
             first=self.read()
             first[0]['task']='consumer decoration'
             first[0]['last_activity']['subject']='consumer nested change'
@@ -62,7 +62,7 @@ class SourcePreparationTests(unittest.TestCase):
         for change in changes:
             with self.subTest(change=change):
                 snapshot=hierarchy_snapshot();cache=SourcePreparation()
-                with patch('observatory.terminal_ui.prepare_sources',wraps=prepare_sources) as prepare:
+                with patch('observatory.source_projection.prepare_sources',wraps=prepare_sources) as prepare:
                     sources(snapshot,preparation=cache)
                     change(snapshot)
                     self.assertEqual(sources(snapshot,preparation=cache),sources(snapshot))
@@ -93,7 +93,7 @@ class SourcePreparationTests(unittest.TestCase):
 
     def test_live_and_paused_are_separate_and_cache_is_bounded(self):
         frozen=deepcopy(self.snapshot)
-        with patch('observatory.terminal_ui.prepare_sources',wraps=prepare_sources) as prepare:
+        with patch('observatory.source_projection.prepare_sources',wraps=prepare_sources) as prepare:
             self.read(frozen);self.read()
             self.read(frozen);self.read()
             self.assertEqual(prepare.call_count,2)
@@ -106,8 +106,8 @@ class SourcePreparationTests(unittest.TestCase):
 
     def test_oversized_custom_feeds_bypass_retention(self):
         self.snapshot.activity*=101
-        with patch('observatory.terminal_ui.prepare_sources',wraps=prepare_sources) as prepare, \
-                patch('observatory.terminal_ui.deepcopy',side_effect=AssertionError('Fresh result copied')):
+        with patch('observatory.source_projection.prepare_sources',wraps=prepare_sources) as prepare, \
+                patch('observatory.source_projection.deepcopy',side_effect=AssertionError('Fresh result copied')):
             self.assertEqual(self.read(),self.read())
             self.assertEqual(prepare.call_count,2)
         self.assertEqual(self.cache.entries,[])
@@ -154,7 +154,7 @@ class CapturePolicyUITests(unittest.IsolatedAsyncioTestCase):
         app=ObservatoryApp(HierarchyFeed(),persist_preferences=False)
         async with app.run_test(size=(120,36)) as pilot:
             await pilot.pause();app.refresh_timer.stop();app.source_preparation.clear()
-            with patch('observatory.terminal_ui.prepare_sources',wraps=prepare_sources) as prepare:
+            with patch('observatory.source_projection.prepare_sources',wraps=prepare_sources) as prepare:
                 app.workflow_items();app.workflow_items()
                 self.assertEqual(prepare.call_count,1)
                 app.push_screen(Screen());await pilot.pause()
