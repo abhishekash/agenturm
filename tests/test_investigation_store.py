@@ -42,6 +42,17 @@ class InvestigationStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.store.investigation_source(row['event_id'],'foreign',encode_reference({**ref,'receiver_id':'foreign'}))
 
+    def test_exact_log_without_trace_keeps_its_known_absent_execution_fields(self):
+        self.store.ingest_logs([dict(trace_id=None,span_id=None,time_unix_nano=10,service='fixture',scope_name='fixture',
+            event_name='agent.activity',body='',severity_number=9,severity_text='INFO',resource_attributes={},
+            attributes={'agent.activity.domain':'shell','agent.activity.action':'execute','process.command_line':'pytest tests -q',
+                'process.exit.code':0,'session.id':'session'})])
+        row=self.store.investigation_page('command','pytest')['matches'][0];reference=row['source_reference']
+        self.assertIsNone(reference['trace_id']);self.assertIsNone(reference['span_id'])
+        result=self.store.investigation_source(row['event_id'],reference['receiver_id'],encode_reference(reference))
+        self.assertIsNotNone(result['sources'][0]['record'])
+        self.assertIsNone(result['sources'][0]['scope']['trace_id'])
+
     def test_typed_rename_indexes_both_paths_and_review_retains_pair(self):
         from types import SimpleNamespace
         from observatory.workflow_evidence import ReviewHistory,scope_for,event_key

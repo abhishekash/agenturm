@@ -42,7 +42,7 @@ def read_sources(db, finding):
                 scope=_activity_row(attrs,0,'span',identity,parts[0],row['service'],resource_attributes=resource)
                 scope['trace_id']=row['trace_id']
         elif kind=='log':
-            row=db.execute('SELECT '+_bounded_columns('logs')+' FROM logs WHERE digest=? AND trace_id=?',
+            row=db.execute('SELECT '+_bounded_columns('logs')+' FROM logs WHERE digest=? AND trace_id IS ?',
                 (identity,finding['trace_id'])).fetchone()
             if row:
                 complete=bool(row['payload_complete'])
