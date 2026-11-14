@@ -871,6 +871,8 @@ class Store:
                 db.execute('''INSERT OR IGNORE INTO finding_dirty_v1 SELECT trace_id FROM trace_activity
                     ORDER BY last_ns DESC,trace_id DESC LIMIT 20''')
                 db.execute("INSERT INTO schema_meta VALUES('workflow_patterns_v2','1')")
+            from .storage_native_lifecycle import initialize as initialize_native_lifecycle
+            initialize_native_lifecycle(db)
         with self._connect() as db:
             migrated=db.execute("SELECT 1 FROM schema_meta WHERE key='native_internal_policy_v1'").fetchone()
             legacy_sources=[] if migrated else [row[0] for row in db.execute('''SELECT DISTINCT source_id FROM (
@@ -937,7 +939,7 @@ class Store:
         # state. Release the read lease before trying to acquire a writer;
         # another receiver may already have consumed the observed work.
         with self._read() as db:
-            dirty=db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1'+
+            dirty=db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 UNION ALL SELECT 1 FROM native_lifecycle_dirty_v1'+
                 (' UNION ALL SELECT 1 FROM investigation_dirty_v1' if self.investigation_index_v1 else '')+' LIMIT 1').fetchone()
         if not dirty:return 0
         from .storage_activity import drain
@@ -951,7 +953,7 @@ class Store:
     def index_status(self):
         state=dict(self.migration_status)
         with self._read() as db:
-            dirty=bool(db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1'+
+            dirty=bool(db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 UNION ALL SELECT 1 FROM native_lifecycle_dirty_v1'+
                 (' UNION ALL SELECT 1 FROM investigation_dirty_v1' if self.investigation_index_v1 else '')+' LIMIT 1').fetchone())
         if dirty:
             state.update(ready=False,stage='Indexing incoming source changes')
@@ -2777,6 +2779,14 @@ class Store:
                    for source in result['sources']):
                 raise ValueError('Actual source execution differs from the pinned reference')
             return dict(receiver_id=receiver,event_id=event_id,source_reference=current,**result)
+    def native_lifecycle_inventory(self):
+        from .storage_native_lifecycle import read_inventory
+        with self._connect() as db:
+            db.execute('BEGIN')
+            receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+            if db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM native_lifecycle_dirty_v1 LIMIT 1').fetchone():
+                return dict(receiver_id=receiver,observations=[],complete=False,warning='Native source index is catching up.')
+            return read_inventory(db,receiver)
 
     def findings(self, limit=100):
         return self.finding_page(limit=limit)["findings"]
