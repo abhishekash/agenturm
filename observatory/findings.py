@@ -121,11 +121,12 @@ def _activity_detail(attrs):
     return f"{domain}: {action}" + (f" · {subject}" if subject else "")
 
 
-def analyze(spans, logs, outcome=None, *, activity=None, receiver='', outcome_owner=None):
+def analyze(spans, logs, outcome=None, *, activity=None, receiver='', outcome_owner=None, operation_preparation=None):
     """Occurrence-owned findings; trace membership never establishes ownership."""
     if not spans and not logs and not outcome:return []
     from .core import _activity_for,_activity_row,_event_activity_identity,_tool_activity
     from .operation_facts import operation_facts,operation_key,operation_metadata,digest
+    facts_for=operation_preparation.full if operation_preparation is not None else operation_facts
     trace_id = spans[0]['trace_id'] if spans else logs[0]['trace_id'] if logs else outcome['trace_id']
     if activity is None:activity=_activity_for(spans,logs)
     findings=[]
@@ -161,7 +162,7 @@ def analyze(spans, logs, outcome=None, *, activity=None, receiver='', outcome_ow
             [{'type':source,'id':source_id}],
             f"Detected {labels} in {', '.join(fields[:8]) or 'captured content'}. Values are omitted; inspect the linked source.",owner)
     for event in activity:
-        facts=operation_facts(event)
+        facts=facts_for(event)
         raw=str(event.get('result') or '').casefold()
         failed=raw in {'error','failed','blocked','denied','policy_denied','incomplete'} or facts['result']=='failed' or facts['result_conflict']
         if not failed and not facts['expected_nonzero']:continue
@@ -209,7 +210,7 @@ def analyze(spans, logs, outcome=None, *, activity=None, receiver='', outcome_ow
         if log.get('severity_number',0)>=17 and ('log',source_id) not in represented:
             # A qualified informational operation must not return as a raw error.
             projected=next((event for event in activity if event.get('source')=='log' and event.get('source_id')==source_id),None)
-            if projected and operation_facts(projected)['expected_nonzero']:continue
+            if projected and facts_for(projected)['expected_nonzero']:continue
             emit('error_log','Error log recorded','medium',[{'type':'log','id':source_id}],str(log.get('body') or '')[:1500],owner)
     if outcome:
         owner={**(outcome_owner or {}),'service':(outcome_owner or {}).get('producer'),

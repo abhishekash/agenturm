@@ -342,7 +342,7 @@ def task_outcome_for_trace(db, trace_id):
     return state, stamp
 
 
-def derive_trace(db, trace_id, workflow_patterns=False):
+def derive_trace(db, trace_id, workflow_patterns=False, *, operation_preparation=None):
     # Lazy import keeps the existing public normalization/summary API unchanged.
     from .core import (summarize, summarize_progress, apply_outcome, _activity_for,
                        _progress_from_log, _recorded_activity_agents, _review_owner)
@@ -440,6 +440,7 @@ def derive_trace(db, trace_id, workflow_patterns=False):
     summary["session_id"] = session_for_trace(db, trace_id)
     summary["session_complete"] = True
     activity = _activity_for(spans, logs)
+    if operation_preparation is not None:operation_preparation.bind(activity)
     summary["activity_terms"] = sorted({str(value)[:200] for item in activity
         for value in (item["domain"], item["action"], item["subject"], item["actor"]) if value})
     search_keys = ("tool.name", "tool.type", "gen_ai.tool.name", "gen_ai.tool.type", "exception.type",
@@ -477,7 +478,8 @@ def derive_trace(db, trace_id, workflow_patterns=False):
     timestamp = db.execute("SELECT last_ns FROM trace_activity WHERE trace_id=?", (trace_id,)).fetchone()
     timestamp = timestamp[0] if timestamp else summary["end_unix_nano"]
     receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
-    findings = analyze(spans, logs, outcome,activity=activity,receiver=receiver,outcome_owner=summary.get('review_owner'))
+    findings = analyze(spans, logs, outcome,activity=activity,receiver=receiver,outcome_owner=summary.get('review_owner'),
+        operation_preparation=operation_preparation)
     if workflow_patterns:
         from .workflow_patterns import analyze_patterns
         findings = [item for item in findings if item['kind'] != 'repeated_tool_error']
