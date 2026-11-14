@@ -205,10 +205,15 @@ class CurrentOpenCodeBoundaryTests(unittest.TestCase):
         self.assertIn('Current turn implementation COMPLETE', {row['subject'] for row in rows})
 
     def test_current_inline_and_split_parts_preserve_tool_identity_timing_and_output(self):
+        with sqlite3.connect(self.path) as db:
+            part=json.loads(db.execute("SELECT data FROM session_part WHERE message_id='msg_step_one' AND ordinal=1").fetchone()[0])
+            part['native']={'mcp.server.name':'synthetic-native-server'}
+            db.execute("UPDATE session_part SET data=? WHERE message_id='msg_step_one' AND ordinal=1",(json.dumps(part),))
         self.poll(); trace=self.trace()
         with self.store._connect() as db:
             before=tuple(db.execute("SELECT span_id,start_ns,end_ns,attributes FROM spans WHERE trace_id=? AND name='shell'",(trace,)).fetchone())
         with sqlite3.connect(self.path) as db:
+            saved_parts=db.execute("SELECT * FROM session_part WHERE message_id='msg_step_one'").fetchall()
             data=json.loads(db.execute("SELECT data FROM session_message WHERE id='msg_step_one'").fetchone()[0])
             data['content']=[json.loads(row[0])for row in db.execute("SELECT data FROM session_part WHERE message_id='msg_step_one' ORDER BY ordinal")]
             db.execute("UPDATE session_message SET data=? WHERE id='msg_step_one'",(json.dumps(data),))
@@ -219,7 +224,21 @@ class CurrentOpenCodeBoundaryTests(unittest.TestCase):
         self.assertEqual(len(rows),1)
         self.assertEqual(tuple(rows[0])[:3],before[:3])
         self.assertEqual(json.loads(rows[0]['attributes'])['output.value'],json.loads(before[3])['output.value'])
+        self.assertEqual(json.loads(rows[0]['attributes'])['mcp.server.name'],'synthetic-native-server')
         self.assertIn('First assistant step',{row['subject']for row in self.store.activity_page(trace_id=trace)['activity']})
+        with sqlite3.connect(self.path) as db:
+            data['content']=[]
+            db.execute("UPDATE session_message SET data=? WHERE id='msg_step_one'",(json.dumps(data),))
+            db.executemany('INSERT INTO session_part VALUES(?,?,?,?,?,?,?,?)',saved_parts)
+        self.poll()
+        with self.store._connect() as db:
+            rows=db.execute("SELECT span_id,start_ns,end_ns,attributes FROM spans WHERE trace_id=? AND name='shell'",(trace,)).fetchall()
+        self.assertEqual(len(rows),1);self.assertEqual(tuple(rows[0])[:3],before[:3])
+        item=dict(service='opencode',agent_id=self.store.review_turn(trace)['scope_owner']['agent_id'],
+                  session_id='ses_schema_fixture',trace_id=trace)
+        history=ReviewHistory(scope_for(item,SimpleNamespace(receiver_id=self.store.receiver_id)))
+        history.accept(self.store.activity_page(trace_id=trace,review=True))
+        self.assertEqual(len(history.projection(item)['checks']),1)
 
     def test_deleting_final_split_text_clears_the_current_assistant_update(self):
         self.poll()
