@@ -206,6 +206,12 @@ class SessionProjectionBatchTests(unittest.TestCase):
         with patch.object(self.store, '_connect', interleaved):
             self.assertEqual(self.store.sessions(limit=500), expected)
         self.assertTrue(fired)
+        # The committed source change is retryable until the existing repair
+        # drains outside the read snapshot. Keep the adversarial scalar/raw
+        # identity disagreement after that repair rather than removing it.
+        from observatory.core import IndexNotReady
+        with self.assertRaises(IndexNotReady):self.store.sessions()
+        self.store._drain_external_activity()
         # Deliberately stale scalar candidates never replace the raw log identity.
         with original() as db:
             db.execute("UPDATE activity_index_v1 SET session_id='log-session' WHERE kind='log'")

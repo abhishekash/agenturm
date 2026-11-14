@@ -1,0 +1,77 @@
+{
+  "diagnostic_only": true,
+  "fixture_spans": 2,
+  "no_provider_or_discovery": true,
+  "errors": [],
+  "settled_before": {
+    "input_tokens": 5,
+    "input_tokens_reported": true,
+    "output_tokens": 2,
+    "usage_complete": true,
+    "status_complete": true
+  },
+  "incoming_status": {
+    "ready": false,
+    "stage": "Indexing incoming source changes",
+    "processed": 0,
+    "runs_refreshed": 1,
+    "total_runs": 1
+  },
+  "incoming_response": {
+    "status": 503,
+    "body": {
+      "error": "History index is not ready",
+      "indexing": {
+        "ready": false,
+        "stage": "Indexing incoming source changes",
+        "processed": 0,
+        "runs_refreshed": 1,
+        "total_runs": 1
+      }
+    }
+  },
+  "settled_after_incoming": {
+    "input_tokens": 999,
+    "input_tokens_reported": true,
+    "output_tokens": 2,
+    "usage_complete": true,
+    "status_complete": true
+  },
+  "probe_then_commit_race": {
+    "captured_probe": {
+      "ready": true,
+      "stage": "Ready",
+      "processed": 0,
+      "runs_refreshed": 1,
+      "total_runs": 1
+    },
+    "read_phase_status": {
+      "ready": false,
+      "stage": "Indexing incoming source changes",
+      "processed": 0,
+      "runs_refreshed": 1,
+      "total_runs": 1
+    },
+    "http_status": 200,
+    "usage": {
+      "input_tokens": 5,
+      "input_tokens_reported": true,
+      "output_tokens": 2,
+      "usage_complete": true,
+      "status_complete": true
+    }
+  },
+  "settled_after_race": {
+    "input_tokens": 999,
+    "input_tokens_reported": true,
+    "output_tokens": 2,
+    "usage_complete": true,
+    "status_complete": true
+  },
+  "reproduced": true,
+  "source_head": "55c6244bf0c1caad2a22cd5c826020f50a677e54",
+  "relevant_sources_equal_committed_head": {
+    "observatory/core.py": "3547369445cac0ca19e88c7950158180c5db0c535530bcce6d50df49c836f9ec",
+    "observatory/server.py": "c274d2088e13688018eaf10f8dd22523b96b5f578e29e90675714ac2bdac0f1c"
+  }
+}

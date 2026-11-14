@@ -630,6 +630,14 @@ def normalize_otlp(body):
     return spans
 
 
+class IndexNotReady(RuntimeError):
+    """A retryable read cannot certify its derived source snapshot yet."""
+    def __init__(self, indexing, *, repair_traces=()):
+        self.indexing = dict(indexing)
+        self.repair_traces = tuple(repair_traces)
+        super().__init__('History index is not ready')
+
+
 class Store:
     def __init__(self, path, async_derived_refresh=False, workflow_patterns=None):
         self.path = str(path)
@@ -959,6 +967,23 @@ class Store:
             state.update(ready=False,stage='Indexing incoming source changes')
         return state
 
+    def _require_index_ready(self, db):
+        # Certify this exact read snapshot, not an earlier HTTP preflight.
+        # Cached readers use Activity and run/Findings projections; unrelated
+        # FTS/native-inventory work retains its own independent readiness gate.
+        if not db.in_transaction:
+            raise RuntimeError('Derived readiness requires a read transaction')
+        state=dict(self.migration_status)
+        complete=db.execute("SELECT 1 FROM schema_meta WHERE key='trace_derived_v15' AND value='1'").fetchone()
+        dirty=db.execute('SELECT 1 FROM activity_dirty_v1 UNION ALL SELECT 1 FROM finding_dirty_v1 LIMIT 1').fetchone()
+        if state.get('error'):
+            state['ready']=False
+        elif not complete:
+            state.update(ready=False,stage='Refreshing ownership and run summaries')
+        elif dirty:
+            state.update(ready=False,stage='Indexing incoming source changes')
+        if not state.get('ready'):raise IndexNotReady(state)
+
     def receiver_namespace(self):
         """Keep health cheap; refresh identity after atomic database replacement."""
         info = os.stat(self.path)
@@ -994,6 +1019,39 @@ class Store:
 
     def _read(self):
         return self._read_connections.read()
+
+    @contextmanager
+    def _read_db(self, db=None):
+        if db is not None:
+            yield db
+        else:
+            with self._connect() as connection:yield connection
+
+    def _derived_snapshot(self, read, *, _db=None):
+        if _db is not None:
+            self._require_index_ready(_db)
+            return read(_db)
+        for attempt in range(2):
+            try:
+                with self._connect() as db:
+                    db.execute('BEGIN')
+                    self._require_index_ready(db)
+                    return read(db)
+            except IndexNotReady as exc:
+                if not exc.repair_traces:raise
+                # Never acquire a writer while retaining the old read snapshot.
+                if self._async_derived_refresh:
+                    self._refresh_after_write(exc.repair_traces)
+                    raise
+                if attempt:raise
+                self._refresh_summaries(exc.repair_traces)
+
+    @staticmethod
+    def _trace_source_exists(db, trace_id):
+        return bool(db.execute('SELECT 1 FROM spans WHERE trace_id=? UNION ALL '
+            'SELECT 1 FROM logs WHERE trace_id=? UNION ALL '
+            'SELECT 1 FROM progress WHERE trace_id=? UNION ALL '
+            'SELECT 1 FROM outcomes WHERE trace_id=? LIMIT 1', (trace_id,)*4).fetchone())
 
     def register_connection(self, record):
         source_id = _id(record.get("source_id"), TRACE_ID, "source_id")
@@ -1655,6 +1713,8 @@ class Store:
                             "known_cost_usd": 0.0, "unknown_cost_runs": 0, "usage_complete": True}
                    for bucket in range(first_bucket, last_bucket + 1, step_ns)}
         with self._connect() as db:
+            db.execute('BEGIN')
+            self._require_index_ready(db)
             summary_filters = ["a.last_ns>=?"]
             summary_params = [cutoff_ns]
             if session_id:
@@ -1972,8 +2032,8 @@ class Store:
         self._refresh_after_write(log["trace_id"] for log in records if log["trace_id"])
         return len(records)
 
-    def logs(self, trace_id=None, limit=100):
-        with self._connect() as db:
+    def logs(self, trace_id=None, limit=100, *, _db=None):
+        with self._read_db(_db) as db:
             if trace_id:
                 rows = db.execute("SELECT * FROM logs WHERE trace_id=? ORDER BY time_ns DESC LIMIT ?",
                                   (_id(trace_id, TRACE_ID, "trace_id"), limit)).fetchall()
@@ -2074,10 +2134,12 @@ class Store:
         """Bounded exact-run facts without span bodies or historical search text."""
         trace_id=_id(trace_id,TRACE_ID,'trace_id')
         with self._connect() as db:
+            db.execute('BEGIN')
+            self._require_index_ready(db)
             row=db.execute('SELECT summary_json FROM live_summaries_v1 WHERE trace_id=?',(trace_id,)).fetchone()
         return json.loads(row[0]) if row else None
 
-    def review_turn(self, trace_id):
+    def review_turn(self, trace_id, *, _db=None):
         """Authoritative OpenCode user-parent membership, preserving step traces.
 
         Only adapter-tagged assistant messages contribute usage. Each message
@@ -2086,8 +2148,8 @@ class Store:
         """
         trace_id=_id(trace_id,TRACE_ID,'trace_id')
         from .opencode_turn_proof import proof_sql,usage_sql,_scalar,turn_coverage
-        with self._read() as db:
-            db.execute('BEGIN')
+        with (self._read() if _db is None else self._read_db(_db)) as db:
+            if _db is None:db.execute('BEGIN')
             root=db.execute(f"SELECT {proof_sql('attributes')} AS attributes,{_scalar('attributes','agent.turn.id')} AS turn_id,{_scalar('attributes','session.id')} AS session_id,service,agent_id FROM spans WHERE trace_id=? AND name='agent.run' AND scope_name='observatory.opencode' LIMIT 1",(trace_id,)).fetchone()
             if not root or root['service']!='opencode':return None
             attrs=json.loads(root['attributes']);turn=root['turn_id']
@@ -2566,13 +2628,13 @@ class Store:
                 "source": row["source"], "details": json.loads(row["details"]),
                 "ingested_ns": row["ingested_ns"]}
 
-    def _outcome(self, trace_id):
-        with self._connect() as db:
+    def _outcome(self, trace_id, *, _db=None):
+        with self._read_db(_db) as db:
             row = db.execute("SELECT * FROM outcomes WHERE trace_id=?", (trace_id,)).fetchone()
         return self._outcome_row(row) if row else None
 
-    def _spans(self, trace_id=None):
-        with self._connect() as db:
+    def _spans(self, trace_id=None, *, _db=None):
+        with self._read_db(_db) as db:
             if trace_id:
                 rows = db.execute("SELECT * FROM spans WHERE trace_id=? ORDER BY start_ns,span_id", (trace_id,)).fetchall()
             else:
@@ -2586,7 +2648,7 @@ class Store:
                  "resource_attributes": json.loads(r["resource_attributes"]),
                  "scope_name": r["scope_name"]} for r in rows]
 
-    def span_page(self, trace_id, limit=200, cursor=None, query="", span_filter="all"):
+    def span_page(self, trace_id, limit=200, cursor=None, query="", span_filter="all", *, _db=None):
         """Return a bounded, searchable page of spans for one trace."""
         trace_id = _id(trace_id, TRACE_ID, "trace_id")
         limit = int(limit)
@@ -2634,7 +2696,7 @@ class Store:
         if before:
             cursor_clause = " AND (start_ns>? OR (start_ns=? AND span_id>?))"
             cursor_params.extend((before[0], before[0], before[1]))
-        with self._connect() as db:
+        with self._read_db(_db) as db:
             total = db.execute(f"SELECT COUNT(*) FROM spans WHERE {where}", params).fetchone()[0]
             rows = db.execute(f"SELECT * FROM spans WHERE {where}{cursor_clause} ORDER BY start_ns,span_id LIMIT ?",
                               [*params, *cursor_params, limit + 1]).fetchall()
@@ -2658,19 +2720,23 @@ class Store:
                 "trace_total": trace_total,
                 "start_unix_nano": bounds[0] or 0, "end_unix_nano": bounds[1] or 0}
 
-    def trace(self, trace_id):
+    def trace(self, trace_id, *, _db=None):
         trace_id = _id(trace_id, TRACE_ID, "trace_id")
-        spans = self._spans(trace_id)
-        with self._connect() as db:
+        return self._derived_snapshot(lambda db:self._trace(trace_id,_db=db),_db=_db)
+
+    def _trace(self, trace_id, *, _db):
+        trace_id = _id(trace_id, TRACE_ID, "trace_id")
+        spans = self._spans(trace_id,_db=_db)
+        with self._read_db(_db) as db:
             log_count=db.execute('SELECT COUNT(*) FROM logs WHERE trace_id=?',(trace_id,)).fetchone()[0]
             rows = db.execute("SELECT time_ns,stage,message,percent,session_id,service FROM progress WHERE trace_id=? ORDER BY time_ns,id", (trace_id,)).fetchall()
             indexed_agents={row[0] for row in db.execute(
                 "SELECT agent_id FROM spans WHERE trace_id=? AND agent_id IS NOT NULL UNION "
                 "SELECT agent_id FROM logs WHERE trace_id=? AND agent_id IS NOT NULL",(trace_id,trace_id))}
         progress = [dict(r) for r in rows]
-        logs = self.logs(trace_id, limit=1000)
+        logs = self.logs(trace_id, limit=1000,_db=_db)
         activity = _activity_for(spans, logs)
-        outcome = self._outcome(trace_id)
+        outcome = self._outcome(trace_id,_db=_db)
         for log in logs:
             progress_event = _progress_from_log(log)
             if progress_event is not None:
@@ -2716,38 +2782,39 @@ class Store:
                 for value in (log.get("event_name"), log.get("severity_text")) if value})
         return {"trace_id": trace_id, "spans": spans, "progress": progress, "logs": logs,
                 "activity": activity,
-                "outcome": outcome, "findings": self._trace_findings(trace_id),
+                "outcome": outcome, "findings": self._trace_findings(trace_id,_db=_db),
                 "session_id": session_id, "summary": summary}
 
-    def trace_overview(self, trace_id):
+    def trace_overview(self, trace_id, *, _db=None):
+        trace_id = _id(trace_id, TRACE_ID, "trace_id")
+        return self._derived_snapshot(lambda db:self._trace_overview(trace_id,_db=db),_db=_db)
+
+    def _trace_overview(self, trace_id, *, _db):
         """Load trace panels from derived indexes without decoding every span."""
         trace_id = _id(trace_id, TRACE_ID, "trace_id")
-        with self._connect() as db:
+        with self._read_db(_db) as db:
             row = db.execute("SELECT summary_json,activity_json FROM trace_summaries WHERE trace_id=?",
                              (trace_id,)).fetchone()
-        if row is None:
-            self._refresh_summaries([trace_id])
-            with self._connect() as db:
-                row = db.execute("SELECT summary_json,activity_json FROM trace_summaries WHERE trace_id=?",
-                                 (trace_id,)).fetchone()
-        with self._connect() as db:
+        if row is None and self._trace_source_exists(_db,trace_id):
+            raise IndexNotReady(dict(ready=False,stage='Run summary is catching up'),repair_traces=(trace_id,))
+        with self._read_db(_db) as db:
             rows = db.execute("SELECT time_ns,stage,message,percent,session_id,service FROM progress "
                               "WHERE trace_id=? ORDER BY time_ns,id", (trace_id,)).fetchall()
         progress = [dict(item) for item in rows]
-        logs = self.logs(trace_id, limit=1000)
+        logs = self.logs(trace_id, limit=1000,_db=_db)
         for log in logs:
             event = _progress_from_log(log)
             if event is not None:
                 progress.append(event)
         progress.sort(key=lambda item: item["time_ns"])
         summary = json.loads(row["summary_json"]) if row else None
-        outcome = self._outcome(trace_id)
+        outcome = self._outcome(trace_id,_db=_db)
         if outcome:
             summary = apply_outcome(summary or summarize_progress(trace_id,
                 [{"time_ns": outcome["ingested_ns"]}]), outcome)
         return {"trace_id": trace_id, "spans": [], "progress": progress, "logs": logs,
                 "activity": json.loads(row["activity_json"]) if row else [],
-                "outcome": outcome, "findings": self._trace_findings(trace_id),
+                "outcome": outcome, "findings": self._trace_findings(trace_id,_db=_db),
                 "session_id": summary.get("session_id") if summary else None,
                 "summary": summary}
 
@@ -2885,8 +2952,8 @@ class Store:
             identity={key:finding.get(key) for key in ('service','agent_id','session_id','trace_id','turn_id')}
             return dict(receiver_id=receiver,finding_id=finding_id,finding_scope=identity,**read_sources(db,finding))
 
-    def _trace_findings(self, trace_id):
-        with self._connect() as db:
+    def _trace_findings(self, trace_id, *, _db=None):
+        with self._read_db(_db) as db:
             rows = db.execute("SELECT finding_json FROM finding_cache WHERE trace_id=? "
                               + ("" if self.workflow_patterns else "AND COALESCE(json_extract(finding_json,'$.workflow_pattern'),0)!=1 ") +
                               "ORDER BY time_ns DESC,finding_id", (trace_id,)).fetchall()
@@ -2895,8 +2962,10 @@ class Store:
     def sessions(self, limit=100):
         if not 1 <= int(limit) <= 500:
             raise ValueError("limit must be between 1 and 500")
-        with self._connect() as db:
-            db.execute('BEGIN')
+        return self._derived_snapshot(lambda db:self._sessions(limit,_db=db))
+
+    def _sessions(self, limit=100, *, _db):
+        with self._read_db(_db) as db:
             receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
             from .storage_sessions import session_projection
             rows,session_totals,initial_tasks=session_projection(db,int(limit))
@@ -3235,7 +3304,7 @@ class Store:
         for item in result[:int(limit)]:
             latest=item.get('latest_run') or {}
             if latest.get('turn_id'):
-                latest['turn_usage']=self.review_turn(latest['trace_id'])
+                latest['turn_usage']=self.review_turn(latest['trace_id'],_db=db)
         return result[:int(limit)]
 
     def related_traces(self, trace_id):
@@ -3259,6 +3328,12 @@ class Store:
     def trace_page(self, limit=100, service=None, status=None, cursor=None, session_id=None,
                    search=None, endpoint_id=None, include_reviews=True, agent_id=None,
                    subtree=False, scope_revision=None):
+        return self._derived_snapshot(lambda db:self._trace_page(limit,service,status,cursor,
+            session_id,search,endpoint_id,include_reviews,agent_id,subtree,scope_revision,_db=db))
+
+    def _trace_page(self, limit=100, service=None, status=None, cursor=None, session_id=None,
+                   search=None, endpoint_id=None, include_reviews=True, agent_id=None,
+                   subtree=False, scope_revision=None, *, _db):
         if not 1 <= int(limit) <= 500:
             raise ValueError("limit must be between 1 and 500")
         if session_id is not None:
@@ -3267,7 +3342,7 @@ class Store:
                 raise ValueError("invalid session_id")
         agent_scope = None
         if agent_id:
-            agent_scope = self.resolve_agent_scope(agent_id, include_subagents=bool(subtree))
+            agent_scope = self.resolve_agent_scope(agent_id, include_subagents=bool(subtree),_db=_db)
             if scope_revision and scope_revision != agent_scope["revision"]:
                 raise ValueError("hierarchy scope changed")
             if not agent_scope["agent_ids"]:
@@ -3314,7 +3389,7 @@ class Store:
                 sql += " WHERE " + " AND ".join(conditions)
             sql += " ORDER BY a.last_ns DESC,a.trace_id DESC LIMIT ?"
             params.append(batch_size)
-            with self._connect() as db:
+            with self._read_db(_db) as db:
                 rows = db.execute(sql, params).fetchall()
             if not rows:
                 exhausted = True
@@ -3323,15 +3398,10 @@ class Store:
                 activity = (row["last_ns"], row["trace_id"])
                 page_cursor = activity
                 if row["summary_json"] is None:
-                    if self._async_derived_refresh:
-                        self._refresh_after_write([row["trace_id"]])
-                        summary = None
-                    else:
-                        self._refresh_summaries([row["trace_id"]])
-                        with self._connect() as db:
-                            cached = db.execute("SELECT summary_json FROM trace_summaries WHERE trace_id=?",
-                                                (row["trace_id"],)).fetchone()
-                        summary = json.loads(cached[0]) if cached else None
+                    if self._trace_source_exists(_db,row['trace_id']):
+                        missing=tuple(item['trace_id'] for item in rows if item['summary_json'] is None)
+                        raise IndexNotReady(dict(ready=False,stage='Run summaries are catching up'),repair_traces=missing)
+                    summary=None
                 else:
                     summary = json.loads(row["summary_json"])
                 if not summary:
@@ -3378,6 +3448,9 @@ class Store:
                                endpoint_id)["traces"]
 
     def metrics(self):
+        return self._derived_snapshot(self._metrics)
+
+    def _metrics(self, db):
         totals = {"runs": 0, "errors": 0, "incomplete": 0, "running": 0,
                   "spans": 0, "input_tokens": 0, "output_tokens": 0,
                   "cache_read_input_tokens": 0, "cache_write_input_tokens": 0,
@@ -3392,13 +3465,13 @@ class Store:
         fields=('input_tokens','output_tokens','cache_read_input_tokens','cache_write_input_tokens','reasoning_output_tokens')
         selected=["COUNT(*) AS runs","COALESCE(SUM(status='ERROR'),0) AS errors","COALESCE(SUM(status='INCOMPLETE'),0) AS incomplete","COALESCE(SUM(status='RUNNING'),0) AS running","COALESCE(SUM(span_count),0) AS spans","COALESCE(MIN(usage_complete),1) AS usage_complete","COALESCE(MIN(status_complete),1) AS status_complete","SUM(known_cost_usd) AS known_cost_usd","COALESCE(SUM(NOT cost_complete),0) AS unknown_cost_runs","COALESCE(SUM(NOT active AND status NOT IN ('RUNNING','UNKNOWN')),0) AS completed_tasks","COALESCE(SUM(NOT active AND status NOT IN ('RUNNING','UNKNOWN') AND cost_complete AND known_cost_usd IS NOT NULL),0) AS costed_tasks","COALESCE(SUM(CASE WHEN NOT active AND status NOT IN ('RUNNING','UNKNOWN') AND cost_complete THEN known_cost_usd ELSE 0 END),0) AS completed_task_cost_usd"]
         for field in fields:selected.extend([f'COALESCE(SUM({field}),0) AS {field}',f'COALESCE(MAX({field}_reported),0) AS {field}_reported'])
-        with self._connect() as db:totals.update(dict(db.execute('SELECT '+','.join(selected)+' FROM live_run_stats_v1').fetchone()))
+        with self._read_db(db) as db:totals.update(dict(db.execute('SELECT '+','.join(selected)+' FROM live_run_stats_v1').fetchone()))
         for field in (*[name+'_reported' for name in fields],'usage_complete','status_complete'):totals[field]=bool(totals[field])
         if totals['known_cost_usd'] is not None:totals['known_cost_usd']=round(totals['known_cost_usd'],8)
         totals["completed_task_cost_usd"] = round(totals["completed_task_cost_usd"], 8)
         totals["average_task_cost_usd"] = (round(totals["completed_task_cost_usd"] / totals["costed_tasks"], 8)
                                            if totals["costed_tasks"] else None)
-        with self._connect() as db:
+        with self._read_db(db) as db:
             totals["failed_outcomes"] = db.execute(
                 "SELECT COUNT(*) FROM outcomes WHERE passed=0").fetchone()[0]
             selected=[]
@@ -3414,24 +3487,24 @@ class Store:
                 totals[field] += int(log_usage[field] or 0)
                 totals[f"{field}_reported"] |= bool(log_usage[f"{field}_reported"])
         totals.update({
-                "logs": self._log_count(),
-                "metric_points": self._metric_count(),
-                "services": self._services()}
+                "logs": self._log_count(_db=db),
+                "metric_points": self._metric_count(_db=db),
+                "services": self._services(_db=db)}
         )
         from .storage_derived import finalize_usage
         finalize_usage(totals)
         return totals
 
-    def _log_count(self):
-        with self._connect() as db:
+    def _log_count(self, *, _db=None):
+        with self._read_db(_db) as db:
             return db.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
 
-    def _metric_count(self):
-        with self._connect() as db:
+    def _metric_count(self, *, _db=None):
+        with self._read_db(_db) as db:
             return db.execute("SELECT COUNT(*) FROM metric_points").fetchone()[0]
 
-    def _services(self):
-        with self._connect() as db:
+    def _services(self, *, _db=None):
+        with self._read_db(_db) as db:
             rows = db.execute("""SELECT service FROM spans UNION
                 SELECT service FROM logs UNION SELECT service FROM metric_points UNION
                 SELECT service FROM progress WHERE service IS NOT NULL""").fetchall()
