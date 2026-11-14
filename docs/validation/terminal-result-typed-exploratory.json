@@ -1,0 +1,119 @@
+{
+  "diagnostic_only": true,
+  "publishable": false,
+  "design": "Unprofiled development ABBA phases in separate processes; not coordinated resource/HTTP acceptance.",
+  "seed_sha256_before": "2fa960c0f80219fe4d3dcd53ff755a3f7ca3bff2e27e4fb5b65cfae7e29c8a43",
+  "seed_sha256_after": "2fa960c0f80219fe4d3dcd53ff755a3f7ca3bff2e27e4fb5b65cfae7e29c8a43",
+  "old_module_sha256": "7ec1e1efa6f938325069a75d503db762f3612d74c171cb27ca309a51f27dcea9",
+  "new_module_sha256": "3fa3c650d8c3ffcbd749c55184518b43117ef5e2b2816dbc1d32fb3e0c019cfa",
+  "rows": [
+    {
+      "mode": "before",
+      "typed_enriched": true,
+      "roles": [
+        [
+          null,
+          44
+        ],
+        [
+          "operation_v1",
+          1112
+        ]
+      ],
+      "counts": {
+        "spans": 576,
+        "logs": 672,
+        "trace_activity": 96
+      },
+      "processed": 1248,
+      "activity_count": 1156,
+      "activity_sha256": "07527e3a750dd7ca465a0a63b12cc87e00c4074bf8077f46473536e78c7b3a81",
+      "derived_sha256": "546f2996b5a481952dd27c30e04c88a86dd9dd4ac9a716d50068741c57893c60",
+      "drain_wall_s": 4.253386400989257,
+      "drain_process_cpu_s": 4.238596694000001,
+      "derive_wall_s": 5.046626672963612,
+      "derive_process_cpu_s": 5.014541389
+    },
+    {
+      "mode": "after",
+      "typed_enriched": true,
+      "roles": [
+        [
+          null,
+          44
+        ],
+        [
+          "operation_v1",
+          1112
+        ]
+      ],
+      "counts": {
+        "spans": 576,
+        "logs": 672,
+        "trace_activity": 96
+      },
+      "processed": 1248,
+      "activity_count": 1156,
+      "activity_sha256": "07527e3a750dd7ca465a0a63b12cc87e00c4074bf8077f46473536e78c7b3a81",
+      "derived_sha256": "546f2996b5a481952dd27c30e04c88a86dd9dd4ac9a716d50068741c57893c60",
+      "drain_wall_s": 3.0495612720260397,
+      "drain_process_cpu_s": 3.043038353,
+      "derive_wall_s": 3.6140178840141743,
+      "derive_process_cpu_s": 3.5734143200000013
+    },
+    {
+      "mode": "after",
+      "typed_enriched": true,
+      "roles": [
+        [
+          null,
+          44
+        ],
+        [
+          "operation_v1",
+          1112
+        ]
+      ],
+      "counts": {
+        "spans": 576,
+        "logs": 672,
+        "trace_activity": 96
+      },
+      "processed": 1248,
+      "activity_count": 1156,
+      "activity_sha256": "07527e3a750dd7ca465a0a63b12cc87e00c4074bf8077f46473536e78c7b3a81",
+      "derived_sha256": "546f2996b5a481952dd27c30e04c88a86dd9dd4ac9a716d50068741c57893c60",
+      "drain_wall_s": 2.931549987057224,
+      "drain_process_cpu_s": 2.9146101030000002,
+      "derive_wall_s": 3.6846494450001046,
+      "derive_process_cpu_s": 3.663050275
+    },
+    {
+      "mode": "before",
+      "typed_enriched": true,
+      "roles": [
+        [
+          null,
+          44
+        ],
+        [
+          "operation_v1",
+          1112
+        ]
+      ],
+      "counts": {
+        "spans": 576,
+        "logs": 672,
+        "trace_activity": 96
+      },
+      "processed": 1248,
+      "activity_count": 1156,
+      "activity_sha256": "07527e3a750dd7ca465a0a63b12cc87e00c4074bf8077f46473536e78c7b3a81",
+      "derived_sha256": "546f2996b5a481952dd27c30e04c88a86dd9dd4ac9a716d50068741c57893c60",
+      "drain_wall_s": 3.8127411850728095,
+      "drain_process_cpu_s": 3.80242111,
+      "derive_wall_s": 5.0200985569972545,
+      "derive_process_cpu_s": 4.977681721
+    }
+  ]
+}
