@@ -32,7 +32,7 @@ Main102 run [43619493189](https://github.com/abhishekash/agenturm/actions/runs/4
 - **Startup writer admission** (`3fb82549d08730c753bd76553b19b41e48545bf8`): Core fix and 13 local tests; pending combined validation/integration. No cold or HTTP target acceptance.
 - **Readiness diagnostics/fail-fast harness** (`883958949c024784c5b01c4afa35bc65dc2359a8`): Harness correction pending integration/combined validation; not runtime acceptance.
 - **Independent receiver startup integration** (`adb13508d6ed1a84a8b485852c2807a0aea84d6a`): Two real generated native/authenticated HTTP tests passed in 2.616 seconds. Independent two-case pass: 2.536 seconds before final shutdown-exception assertion strengthening. Pending combined integration; functional evidence only.
-- **CI102 missing-method test double** (`uncommitted`): Root reproduced four subtest errors for missing native_page_pending. Fixture-only correction under validation; no runtime fallback or green CI claim.
+- **CI102 missing-method test double** (`2354ecf2f7f0d1dc2bbc0d2c312e4b3f7dcecced`): Fixture-only correction committed; 28 local integration tests passed in 34.654 seconds and seven Python 3.13 monitoring models passed in 2.022 seconds. Combined integration and remote CI remain pending; no runtime fallback or green CI claim.
 
 The frozen 473 failure report was delivered at `129b12d7d1712d4736b441f60a86d578fd5d8b7e`. Its sanitized artifacts preserve 13 total errors (the primary readiness deadline plus 12 consequential unmet checks), receiver exit 0 and no timed samples. Health-side hierarchy INSERT lock failure was observed; its blocking transaction and extended code remain unresolved. Later BUSY/517 reproductions are not assigned as its unique cause.
 
@@ -248,7 +248,7 @@ Contract tests: [test_agents_readability.py](https://github.com/abhishekash/agen
 
 Compact/expanded inspectors show recorded paths/checks/issues before assistant claims; hierarchy/shading/keyboard behavior retained. Loaded bounded evidence is not a full-history summary. A useful first-native-frame target on retained history remains unproved. Frozen 473 Feed correctly refused fatal health. Partial metadata is not full history readiness.
 
-Initial retained-history indexing still delays the coherent roster; metadata-only native bootstrap is in progress, not delivered or coherent-ready acceptance.
+Metadata-only native bootstrap is merged in PR #102. The partial frame preserves unknown history/usage and withholds source content and lifecycle authority. A useful first-native frame and resource acceptance on the retained corpus remain open; the original frozen-473 fatal-health refusal is not relabelled as a successful first frame.
 
 Acceptance: qualified implementation; current main103 combined CI pending/failed; historical failures retained; listed final/live/resource limits remain.
 
