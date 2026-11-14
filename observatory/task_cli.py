@@ -178,6 +178,7 @@ def run_task_command(args, parser):
         store = TaskStore(args.tasks_db)
         action = args.task_action
         revision = getattr(args, 'expected_revision', None)
+        approved_policy=None
         if action=='approve-draft':
             from .review_continuity import validate_draft,policy_checker
             from .terminal import Api
@@ -189,6 +190,9 @@ def run_task_command(args, parser):
                 result=store.approve_continuity(draft['task_id'],draft,expected_revision=expected,source_allowed=check())
             else:
                 result=store.create(args.title or draft['title'],args.workspace,'',continuity_draft=draft,source_allowed=check())
+            from .review_continuity import content_scopes
+            allowed_scopes=content_scopes(draft['review'])
+            approved_policy=lambda scope:scope in allowed_scopes and check()
             text=result['id']
         elif action == 'list':
             entries = store.list(args.all, offset=args.offset)
@@ -303,6 +307,9 @@ def run_task_command(args, parser):
                 print(render_handoff(task, 'json' if structured else args.format,
                     include_decision_history=args.include_decision_history,source_policy=source_policy), end='', flush=True)
                 return 0
+        if structured and isinstance(result,dict) and 'links' in result and 'workspace_snapshot' in result:
+            from .saved_tasks import continuity_view
+            result=continuity_view(result,approved_policy)
         print(json.dumps(result, ensure_ascii=False, indent=2) if structured else text, flush=True)
         return 0
     except BrokenPipeError:

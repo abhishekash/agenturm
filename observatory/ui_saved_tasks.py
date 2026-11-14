@@ -54,6 +54,10 @@ def current_capture_context(owner, context):
     scope = ExecutionScope(str(result.get('receiver') or ''), str(result.get('producer') or ''),
         str(result.get('agent_id') or ''), str(result.get('session_id') or ''))
     policy = review_capture_policy(result, owner.feed.snapshot, scope)
+    projection=result.get('review_snapshot')
+    if projection and projection.get('parallel_path_observations'):
+        from .review_continuity import content_allowed
+        if not content_allowed(projection,task_source_policy(owner)):policy['capture_content']=False
     receiver_changed=bool(getattr(owner.feed.snapshot,'receiver_id','') and scope.receiver!=owner.feed.snapshot.receiver_id)
     if policy.get('capture_content') is False or receiver_changed:
         result.update(task='Metadata-only execution', checks=[], capture_content=False, local_workspace='')

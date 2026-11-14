@@ -280,19 +280,39 @@ def render_workspace(observation):
         *snapshot.get('warnings',[])])
 
 
+
+def content_scopes(projection):
+    """Every identity whose source-derived content appears in this frozen view."""
+    own=source_scope(projection);scopes=[own]
+    parallel=projection.get('parallel_path_observations') or {}
+    for row in parallel.get('observations') or []:
+        for reference in row.get('sources') or []:
+            if not isinstance(reference,dict) or not all(isinstance(reference.get(key),str) and reference[key]
+                for key in ('service','agent_id','session_id')):
+                raise TaskError('Parallel source identity is incomplete; refresh its explicit comparison before publishing.')
+            scopes.append(dict(receiver=own['receiver'],producer=reference['service'],agent_id=reference['agent_id'],
+                session_id=reference['session_id'],run_id=reference.get('trace_id') or '',kind='run' if reference.get('trace_id') else 'agent'))
+    return scopes
+
+
+def content_allowed(projection,policy):
+    try:return bool(policy is not None and all(policy(scope) is True for scope in content_scopes(projection)))
+    except (TaskError,TypeError,KeyError):return False
+
 def policy_checker(api,projection):
     """Revalidate a frozen source against its receiver without endpoint guessing."""
     from types import SimpleNamespace
     from .review_facts import review_capture_policy
     from .workflow_evidence import ExecutionScope
     source_scope(projection)
+    scopes=content_scopes(projection)
     scope=ExecutionScope(**projection['scope'])
     def check():
         health=api.get('/api/health')
         if not isinstance(health,dict):raise TaskError('Receiver health did not contain a readable policy object.')
         if health.get('receiver_id')!=scope.receiver:raise TaskError('Receiver namespace changed; reopen the recorded execution.')
         snapshot=SimpleNamespace(receiver_id=scope.receiver,local_status=health.get('local_agents') or {})
-        if review_capture_policy({},snapshot,scope).get('capture_content') is False:
+        if any(review_capture_policy({},snapshot,ExecutionScope(**owned)).get('capture_content') is False for owned in scopes):
             raise TaskError('Source capture is metadata-only or revoked; no derived draft or Git content was published.')
         return True
     return check

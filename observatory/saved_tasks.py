@@ -650,16 +650,17 @@ def _md(text):
 def continuity_view(task,source_policy=None):
     from copy import deepcopy
     result=deepcopy(task)
+    from .review_continuity import content_allowed
     def allowed(scope):
         return bool(source_policy is not None and source_policy(scope) is True)
     for draft in result.get('continuity_drafts',[]):
-        if not allowed(draft.get('scope') or {}):
+        if not content_allowed(draft.get('review_snapshot') or {},source_policy):
             draft['text']='Source-backed continuity draft withheld: current capture policy is unavailable or revoked. Authored notes and decisions remain available.'
             draft.pop('review_snapshot',None)
     for link in result.get('links',[]):
         review=link.get('review_snapshot') or {}
-        if 'workspace_observation' in review and not allowed(review.get('scope') or {}):
-            review.pop('workspace_observation',None)
+        if ('workspace_observation' in review or 'parallel_path_observations' in review) and not content_allowed(review,source_policy):
+            review.pop('workspace_observation',None);review.pop('parallel_path_observations',None)
             review['workspace_note']='Source-backed Git observation withheld: current capture policy is unavailable or revoked.'
     return result
 
