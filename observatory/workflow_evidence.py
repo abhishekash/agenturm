@@ -231,7 +231,10 @@ class ReviewHistory:
                             context_omitted=list(parsed.context) if parsed else [])
             return None
         stamps = [e['time_unix_nano'] for e in rows if isinstance(e.get('time_unix_nano'), int)]
-        reasons = list(dict.fromkeys(self.limited))
+        candidate=item.get('_review_usage') or {}
+        turn_reasons=candidate.get('turn_coverage_reasons') if self.scope.turn_id else None
+        turn_reasons=[safe_text(value)[:200] for value in turn_reasons[:16] if isinstance(value,str)] if isinstance(turn_reasons,list) else []
+        reasons = list(dict.fromkeys([*self.limited,*turn_reasons]))
         if not self.loaded: reasons.append('Evidence not loaded')
         if not self.receiver_confirmed:reasons.append('Receiver response identity unavailable; namespace confirmation is limited')
         if self.cursor: reasons.append('Earlier evidence available; load explicitly')
@@ -254,6 +257,7 @@ class ReviewHistory:
             owner.get('producer')==self.scope.producer and owner.get('agent_id')==self.scope.agent_id and
             (not self.scope.session_id or owner.get('session_id')==self.scope.session_id))
         usage=dict(scope=('recorded user turn' if self.scope.turn_id else 'exact run') if exact_usage else 'unavailable',trace_id=self.scope.run_id or None,
+            turn_coverage_reasons=turn_reasons,turn_closed=candidate.get('turn_closed') if self.scope.turn_id else None,
             step_trace_ids=list(candidate.get('step_trace_ids') or ()),agent_count=candidate.get('agent_count'),allocation=candidate.get('usage_allocation') or ('single recorded agent' if exact_usage else 'agent allocation unverified'),
             values={key:candidate[key] for key in ('input_tokens','output_tokens','cache_read_input_tokens',
                 'cache_write_input_tokens','cost_usd','known_cost_usd','input_tokens_reported','output_tokens_reported',
