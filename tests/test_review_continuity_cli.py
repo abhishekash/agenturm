@@ -41,6 +41,8 @@ class ContinuityCLI(unittest.TestCase):
         self.assertEqual(code,0,error);task=json.loads(out)
         self.assertEqual(task['notes'],'');self.assertEqual(task['continuity_drafts'][0]['text'],'Reviewed CLI continuation')
         self.assertEqual(len(task['links'][0]['checks']),2)
+        code,offline,error=self.run_cli('show',task['id'],'--json')
+        self.assertEqual(code,0,error);self.assertNotIn('Reviewed CLI continuation',offline)
         self.assertEqual(self.run_cli('draft','--review-file',str(self.review),'--endpoint',self.endpoint,'--token','fixture-token','--output',str(output))[0],2)
 
     def test_auth_receiver_and_capture_denials_produce_no_artifact_or_task(self):

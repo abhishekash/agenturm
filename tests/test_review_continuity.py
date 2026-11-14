@@ -136,5 +136,15 @@ class ReviewContinuityTests(unittest.TestCase):
         api.health=dict(receiver_id='other',local_agents={})
         with self.assertRaises(TaskError):check()
 
+    def test_peer_policy_withholds_comparison_derived_draft_and_json(self):
+        p=self.frozen();p['parallel_path_observations']=dict(partial=False,observations=[dict(paths=['PEER_PRIVATE_PATH'],
+            agents=['worker','peer'],branch_basis='historical branch/workspace unverified',observation='Recorded path overlap',
+            sources=[dict(service='opencode',agent_id='worker',session_id='session',trace_id='a'*32),
+                dict(service='opencode',agent_id='peer',session_id='peer-session',trace_id='b'*32)])])
+        store=TaskStore(self.root/'tasks.db');task=store.create('Owner title',notes='Owner authored notes',
+            continuity_draft=editable_draft(p),source_allowed=True)
+        text=render_handoff(task,'json',source_policy=lambda scope:scope.get('agent_id')!='peer')
+        self.assertNotIn('PEER_PRIVATE_PATH',text);self.assertIn('Owner authored notes',text)
+
 
 if __name__=='__main__':unittest.main()
