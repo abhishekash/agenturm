@@ -35,7 +35,7 @@ def task_run_usage(sessions, item, traces=()):
         if not row.get('trace_id'):return {}
         count=row.get('agent_count')
         if type(count) is int and count==1 and row.get('agent_count_complete') is True:return row
-        return {key:row[key] for key in ('trace_id','agent_id','agent_count','agent_count_complete','turn_id','scope_owner','step_trace_ids','turn_usage_complete') if key in row} | {
+        return {key:row[key] for key in ('trace_id','agent_id','agent_count','agent_count_complete','turn_id','scope_owner','step_trace_ids','turn_usage_complete','turn_coverage_reasons','turn_closed','turn_membership') if key in row} | {
             'usage_allocation':'shared trace; per-agent usage unavailable' if type(count) is int and count>1 else
                 'agent allocation unverified; per-agent usage unavailable'}
     if latest and (not selected or latest.get('trace_id')==selected):return allocated(latest)
