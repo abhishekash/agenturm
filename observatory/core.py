@@ -858,6 +858,15 @@ class Store:
             initialize_activity(db)
             available=db.execute("SELECT value FROM schema_meta WHERE key='investigation_available_v1'").fetchone()
             self.investigation_index_v1 = bool(available and available[0]=='1')
+            if self.workflow_patterns and not db.execute("SELECT 1 FROM schema_meta WHERE key='workflow_patterns_v2'").fetchone():
+                # Replace legacy heuristic observations before exposing them
+                # under the stricter operation/usage contract. The durable
+                # bounded repair also handles interrupted upgrades.
+                db.execute('''INSERT OR IGNORE INTO finding_dirty_v1 SELECT trace_id FROM finding_cache
+                    WHERE COALESCE(json_extract(finding_json,'$.workflow_pattern'),0)=1''')
+                db.execute('''INSERT OR IGNORE INTO finding_dirty_v1 SELECT trace_id FROM trace_activity
+                    ORDER BY last_ns DESC,trace_id DESC LIMIT 20''')
+                db.execute("INSERT INTO schema_meta VALUES('workflow_patterns_v2','1')")
         with self._connect() as db:
             migrated=db.execute("SELECT 1 FROM schema_meta WHERE key='native_internal_policy_v1'").fetchone()
             legacy_sources=[] if migrated else [row[0] for row in db.execute('''SELECT DISTINCT source_id FROM (

@@ -65,13 +65,14 @@ class ExplanationIntegration(unittest.IsolatedAsyncioTestCase):
                 {**base,'id':'one','status':'OK','duration_ms':10},
                 {**base,'id':'two','status':'ERROR','duration_ms':30},
                 {**base,'id':'three','status':'unknown','duration_ms':None,'output':None}])
-            app.data.local_status['mcp_configurations']=[dict(server='github'),dict(server='unobserved-server')]
+            app.data.local_status['mcp_configurations']=[dict(server=name,client='Codex',scope='project')
+                for name in ('github','unobserved-server')]
             feed.snapshot=app.data;app.render_mcp();await pilot.pause()
             text=app.query_one('#mcp-detail').plain_text
             self.assertIn('1 failed / 2 known outcomes',text)
             self.assertIn('1 unknown',text);self.assertIn('2 known durations',text)
             self.assertIn('Small sample',text);self.assertIn('Loaded records only',text)
-            self.assertIn('unobserved-server',text);self.assertIn('absence does not justify',text)
+            self.assertIn('unobserved-server',text);self.assertIn('absence does not justify',' '.join(text.split()))
             app.query_one('#mcp-flagged').focus();await pilot.press('enter');await pilot.pause()
             self.assertEqual(app.selected_mcp,'two')
             self.assertTrue(app.query_one('#mcp-detail').has_focus)
