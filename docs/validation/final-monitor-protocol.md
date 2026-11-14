@@ -1,10 +1,10 @@
 # Final combined-build validation protocol
 
-Prepared 14 November 2026. **Harness preparation only: no soak, profiling, timed benchmark or new tmux session has been run for this protocol.** The coordinator approved the script-only boundary. Nine contract tests and tiny fixture-only smokes have passed; the final candidate must be frozen after PRs 80–84 before controlled execution.
+Prepared 14 November 2026. **Harness preparation only: no soak, profiling, timed benchmark or new tmux session has been run for this protocol.** The coordinator approved the script-only boundary. Nine contract tests and tiny fixture-only smokes have passed; the final candidate must be frozen after the pending runtime PRs, including current native-schema qualification before controlled execution.
 
 ## Scope and frozen inputs
 
-The primary comparison should use baseline **B = `5e0c397`**, the main commit before PRs 80–84, and **C = the verified combined commit after those PRs**. The coordinator must confirm both exact hashes before registration. This measures the net combined change, rather than attributing every difference to one optimization. Previously reported 14.90% CPU and 112.96-second readiness values used different trees/conditions; they are context, not the paired baseline for this protocol.
+The primary comparison should use baseline **B = `5e0c397`**, the main commit before PRs 80–84, and **C = the verified combined commit after all those runtime changes**. The coordinator must confirm both exact hashes before registration. This measures the net combined change, rather than attributing every difference to one optimization. Previously reported 14.90% CPU and 112.96-second readiness values used different trees/conditions; they are context, not the paired baseline for this protocol.
 
 Use one clean, committed harness revision with an explicit application-root argument so its child imports B or C without importing the other tree. Record application SHA and tracked-tree state, harness SHA, Python and dependency versions, lockfile hash, OS/kernel/CPU, terminal and tmux versions, dimensions, fixture manifest and timestamps. Each child must assert that `observatory.__file__` resolves under the intended application root; frozen harness helpers must also log their actual file paths/hashes. Do not let `from scripts...` accidentally select a different helper through application-root import precedence. Check the same manifest again after each run. An uncommitted or changing code tree makes a resource run non-publishable. A personal untracked review-note document is not a generated input and must remain untouched.
 
@@ -125,3 +125,12 @@ Separate generated functional commands are:
 ```
 
 Run both external signal choices at reader and startup where the registered matrix requires them. The one-hour active workload remains descriptive because phases follow completion time; no paired active economics claim is permitted. The final report must separately state all unexecuted commands, failed gates and remaining open targets. The CPU/readiness/latency targets have **not been reevaluated by this preparation**.
+
+
+## Independent review corrections and baseline terminal smoke
+
+Independent harness review required the registered 300-second idle/60-second warmup before a result can be publishable, separate fixture-construction/copy duration, and the full shared source/schema/backlog/storage readiness gate for functional and modal runs. Those corrections are integrated; the ten focused acceptance contracts pass.
+
+A real-tmux baseline smoke at `5e0c397` passed the existing prompt navigation, 120×36/80×24/60×18 layouts, explicit 50×14 too-small state, help return and normal-exit terminal restoration. It uses public History selection because these synthetic sessions have unknown lifecycle and are correctly absent from Today; expected titles use their first captured prompt. The smoke exposed and corrected outdated harness assumptions, not a product failure. Its harness tree was under development, so it is functional evidence only. Candidate real-keyboard, native-race, modal retention, signal paths, controlled pairs and the hour remain pending.
+
+Before final runs, 27 stopped per-run generated database/sidecar copies were removed after inode/mtime/size and open-handle checks, reclaiming 4,891,070,760 bytes. Source corpus, all 11 sibling reports, raw samples/logs/profiles and common seeds were preserved; `/tmp/agenturm-generated-clone-cleanup.json` retains hashes and the cleanup record. This is artifact housekeeping, not a measured storage improvement.

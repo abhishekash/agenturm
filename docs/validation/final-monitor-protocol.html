@@ -1,29 +1,51 @@
-<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm final monitor validation protocol</title><style>
-    :root {color-scheme:light dark;--bg:#faf9f6;--fg:#22252a;--line:#d4d9df;--panel:#eef0f3;--link:#175bbb}
-    @media(prefers-color-scheme:dark){:root{--bg:#10151c;--fg:#e2e7ef;--line:#394552;--panel:#1b2430;--link:#9ac5ff}}
-    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.65 system-ui,sans-serif}
-    main{max-width:960px;margin:auto;padding:40px 24px 80px}h1,h2,h3{line-height:1.25;overflow-wrap:anywhere}
-    h2{margin-top:2.5rem;border-top:1px solid var(--line);padding-top:1rem}a{color:var(--link)}
-    pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere}
-    code{font:14px/1.65 ui-monospace,monospace}table{border-collapse:collapse;width:100%;display:block;overflow:auto}
-    th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line)}
-    @media(max-width:600px){main{padding:20px 14px 48px}body{font-size:16px}pre{padding:10px}}
-    </style></head><body><main><h1>Final combined-build validation protocol</h1>
-<p>Prepared 14 November 2026. <strong>Harness preparation only: no soak, profiling, timed benchmark or new tmux session has been run for this protocol.</strong> The coordinator approved the script-only boundary. Nine contract tests and tiny fixture-only smokes have passed; the final candidate must be frozen after PRs 80–84 before controlled execution.</p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Final Monitor Protocol</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.3</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/final-monitor-protocol.md">Markdown source ↗</a></nav><h1>Final combined-build validation protocol</h1>
+<p>Prepared 14 November 2026. <strong>Harness preparation only: no soak, profiling, timed benchmark or new tmux session has been run for this protocol.</strong> The coordinator approved the script-only boundary. Nine contract tests and tiny fixture-only smokes have passed; the final candidate must be frozen after the pending runtime PRs, including current native-schema qualification before controlled execution.</p>
 <h2>Scope and frozen inputs</h2>
-<p>The primary comparison should use baseline <strong>B = <code>5e0c397</code></strong>, the main commit before PRs 80–84, and <strong>C = the verified combined commit after those PRs</strong>. The coordinator must confirm both exact hashes before registration. This measures the net combined change, rather than attributing every difference to one optimization. Previously reported 14.90% CPU and 112.96-second readiness values used different trees/conditions; they are context, not the paired baseline for this protocol.</p>
+<p>The primary comparison should use baseline <strong>B = <code>5e0c397</code></strong>, the main commit before PRs 80–84, and <strong>C = the verified combined commit after all those runtime changes</strong>. The coordinator must confirm both exact hashes before registration. This measures the net combined change, rather than attributing every difference to one optimization. Previously reported 14.90% CPU and 112.96-second readiness values used different trees/conditions; they are context, not the paired baseline for this protocol.</p>
 <p>Use one clean, committed harness revision with an explicit application-root argument so its child imports B or C without importing the other tree. Record application SHA and tracked-tree state, harness SHA, Python and dependency versions, lockfile hash, OS/kernel/CPU, terminal and tmux versions, dimensions, fixture manifest and timestamps. Each child must assert that <code>observatory.__file__</code> resolves under the intended application root; frozen harness helpers must also log their actual file paths/hashes. Do not let <code>from scripts...</code> accidentally select a different helper through application-root import precedence. Check the same manifest again after each run. An uncommitted or changing code tree makes a resource run non-publishable. A personal untracked review-note document is not a generated input and must remain untouched.</p>
 <p>Build one common <strong>raw</strong> generated history seed, checkpoint/close it, record its file and logical-record hashes, and clone that seed into a new private directory for every run. Use the existing 5,751 traces / 31,000 spans / 41,000 logs / 36 historical sessions and 35-day window ending two days before the fixed anchor. Do not build each seed through the different running application versions: that would introduce version-specific derived indexes and different wall-clock anchors before timing. Preserve the existing parent/child/stale Codex-shaped files and OpenCode-shaped SQLite fixture, with the same event manifest and synthetic project paths on both sides.</p>
 <p>“Cold” means a fresh process opening a fresh raw seed requiring its normal derived preparation. It does not mean the Linux page cache was flushed. Do not change host kernel/cache settings. Warm restart is a separate metric using that version's fully drained, closed database.</p>
 <h2>Reuse and required harness adaptations</h2>
-<p>| Harness | Reuse | Required change before the final run |
-| --- | --- | --- |
-| <code>benchmark_monitor_idle.py</code> | Primary real receiver + real tmux cockpit CPU/RSS budget; pre/post health checks; graceful shutdown. | Common seed/application-root inputs; record useful first UI frame separately from receiver readiness; expand health gates and storage sampling. |
-| <code>soak_monitor.py</code> | Generated native ingestion, parent/child/stale evidence, OpenCode text streaming, real keyboard acknowledgements, receiver/cockpit restarts, process sampling. | Remove additional source-projection work from heartbeat; add native inventory/pending-storage diagnostics and deterministic workload manifest; make cadence fixed before claiming paired active-load economics. |
-| <code>verify_keyboard_tmux.py</code> | Real prompt navigation, compact resize, help and termios restoration. | Minimal environment and fixture home; direct multi-argument child execution; use the production terminal wrapper; extend to Review, Investigate, Usage and signal exits. |
-| <code>soak_workflows.py</code> | Receiver replacement, outages, public Pilot actions, cache and integrity assertions. | Replace direct notification claims with <code>AttentionRunner</code> eligibility/delivery fixtures; add exact native resolution; exercise actual modal lifecycle rather than only inspector/help plus a separate pure Review cache. |
-| <code>benchmark_resources.py</code> | Optional OpenCode-reader diagnostic only. | Count emitted logs as well as spans. It cannot demonstrate complete-monitor CPU/RSS, UI behavior, receiver read latency or actual database/WAL writes. |</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>Reuse</th>
+<th>Required change before the final run</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>benchmark_monitor_idle.py</code></td>
+<td>Primary real receiver + real tmux cockpit CPU/RSS budget; pre/post health checks; graceful shutdown.</td>
+<td>Common seed/application-root inputs; record useful first UI frame separately from receiver readiness; expand health gates and storage sampling.</td>
+</tr>
+<tr>
+<td><code>soak_monitor.py</code></td>
+<td>Generated native ingestion, parent/child/stale evidence, OpenCode text streaming, real keyboard acknowledgements, receiver/cockpit restarts, process sampling.</td>
+<td>Remove additional source-projection work from heartbeat; add native inventory/pending-storage diagnostics and deterministic workload manifest; make cadence fixed before claiming paired active-load economics.</td>
+</tr>
+<tr>
+<td><code>verify_keyboard_tmux.py</code></td>
+<td>Real prompt navigation, compact resize, help and termios restoration.</td>
+<td>Minimal environment and fixture home; direct multi-argument child execution; use the production terminal wrapper; extend to Review, Investigate, Usage and signal exits.</td>
+</tr>
+<tr>
+<td><code>soak_workflows.py</code></td>
+<td>Receiver replacement, outages, public Pilot actions, cache and integrity assertions.</td>
+<td>Replace direct notification claims with <code>AttentionRunner</code> eligibility/delivery fixtures; add exact native resolution; exercise actual modal lifecycle rather than only inspector/help plus a separate pure Review cache.</td>
+</tr>
+<tr>
+<td><code>benchmark_resources.py</code></td>
+<td>Optional OpenCode-reader diagnostic only.</td>
+<td>Count emitted logs as well as spans. It cannot demonstrate complete-monitor CPU/RSS, UI behavior, receiver read latency or actual database/WAL writes.</td>
+</tr>
+</tbody>
+</table></div>
 <p>The previous idle heartbeat called <code>app.workflow_items()</code> once per second. That added a consumer of the source preparation under measurement, and can disproportionately help the new cache. The committed harness now observes already published <code>source_map</code>, current display metadata and the published Workflow ledger instead. Keep heartbeat work identical across B/C; do not patch Textual's screen stack, timers, message pump or private rendering methods. Existing application-level observation hooks may be retained if documented and tested against both versions.</p>
 <p>The active native soak currently schedules each next phase from the previous phase's completion. UI/API delays therefore change cycle counts and source volume. Keep that mode as functional/descriptive evidence. For a paired active-load claim, drive the same fixed number of manifest events on an absolute schedule independent of UI work, record lateness, and reject missed deadlines rather than silently skipping phases or bursting to catch up.</p>
 <p>The keyboard script currently inherits the full environment and supplies one shell-command string to tmux. Adopt the native soak's minimal environment, child-only <code>Path.home()</code> fixture isolation and direct multi-argument execution. Do not repurpose <code>HOME</code> or <code>CODEX_HOME</code>. Set XDG config/state/data and OpenCode/Gemini fixture locations explicitly; no provider keys, personal preferences, native transcript roots or user's tmux configuration may enter the child. Use a private tmux socket/channel and only terminate owned children. Keep outputs private; publish a sanitized report rather than the artifact directory containing generated receiver tokens and raw health captures.</p>
@@ -83,4 +105,8 @@
 &quot;$VALIDATION_PYTHON&quot; &quot;$HARNESS_ROOT/scripts/soak_monitor.py&quot; --app-root &quot;$C_ROOT&quot; --seed /tmp/agenturm-final-common-seed/raw-seed.db --output /tmp/agenturm-final-active-soak --duration 3600
 </code></pre>
 <p>Run both external signal choices at reader and startup where the registered matrix requires them. The one-hour active workload remains descriptive because phases follow completion time; no paired active economics claim is permitted. The final report must separately state all unexecuted commands, failed gates and remaining open targets. The CPU/readiness/latency targets have <strong>not been reevaluated by this preparation</strong>.</p>
-</main></body></html>
+<h2>Independent review corrections and baseline terminal smoke</h2>
+<p>Independent harness review required the registered 300-second idle/60-second warmup before a result can be publishable, separate fixture-construction/copy duration, and the full shared source/schema/backlog/storage readiness gate for functional and modal runs. Those corrections are integrated; the ten focused acceptance contracts pass.</p>
+<p>A real-tmux baseline smoke at <code>5e0c397</code> passed the existing prompt navigation, 120×36/80×24/60×18 layouts, explicit 50×14 too-small state, help return and normal-exit terminal restoration. It uses public History selection because these synthetic sessions have unknown lifecycle and are correctly absent from Today; expected titles use their first captured prompt. The smoke exposed and corrected outdated harness assumptions, not a product failure. Its harness tree was under development, so it is functional evidence only. Candidate real-keyboard, native-race, modal retention, signal paths, controlled pairs and the hour remain pending.</p>
+<p>Before final runs, 27 stopped per-run generated database/sidecar copies were removed after inode/mtime/size and open-handle checks, reclaiming 4,891,070,760 bytes. Source corpus, all 11 sibling reports, raw samples/logs/profiles and common seeds were preserved; <code>/tmp/agenturm-generated-clone-cleanup.json</code> retains hashes and the cleanup record. This is artifact housekeeping, not a measured storage improvement.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
