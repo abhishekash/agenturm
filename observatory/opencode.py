@@ -603,7 +603,13 @@ class OpenCodeReader:
                         table_candidates.append((activity_tables['session_part'][session_id], 'session_message'))
                     read_table = max(table_candidates, default=(0, message_table))[1]
                     read_columns = self._columns(db, read_table) if read_table else set()
-                    current_layout = read_table=='session_message' and {'seq','type','time_updated'} <= read_columns
+                    # Older inline session_message layouts predate the current
+                    # split-part contract. Keep their identities and parent
+                    # semantics; schema2 proof requires the actual current shape.
+                    current_layout = (read_table=='session_message' and {'seq','type','time_updated'} <= read_columns
+                        and 'session_part' in tables and
+                        {'message_id','session_id','ordinal','type','call_id','time_created','time_updated','data'}
+                        <= self._columns(db,'session_part'))
                     native_namespace = self.source_id
                     resolver = None
                     source_epoch = None
