@@ -55,6 +55,22 @@ class NativeInventoryTests(unittest.TestCase):
         state=self.store.native_lifecycle_inventory()
         self.assertTrue(state['complete']);self.assertEqual(state['observations'],[])
 
+    def test_nonrequest_sender_sequence_events_still_fence_conflicting_requests(self):
+        self.store.ingest_logs([self.native()])
+        completed=self.native(2,'turn_completed','');completed['trace_id']='c'*32
+        self.store.ingest_logs([completed])
+        state=self.store.native_lifecycle_inventory()
+        self.assertFalse(state['complete']);self.assertEqual(state['observations'],[])
+
+    def test_transport_only_completion_cannot_supply_request_order_or_conflict(self):
+        self.store.ingest_logs([self.native()])
+        completed=self.native(2,'turn_completed','');completed['trace_id']='c'*32
+        completed['attributes']['observatory.native.source_order']='transport-only'
+        self.store.ingest_logs([completed])
+        state=self.store.native_lifecycle_inventory()
+        self.assertTrue(state['complete']);self.assertEqual(len(state['observations']),1)
+        self.assertFalse(state['observations'][0]['resolved'])
+
     def test_old_activity_writer_invalidates_until_transactional_repair(self):
         self.store.ingest_logs([self.native()])
         with self.store._connect() as db:
