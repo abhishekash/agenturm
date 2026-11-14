@@ -296,23 +296,33 @@ def content_scopes(projection):
 
 
 def content_allowed(projection,policy):
-    try:return bool(policy is not None and all(policy(scope) is True for scope in content_scopes(projection)))
+    try:
+        if callable(getattr(policy,'for_projection',None)):policy=policy.for_projection(projection)
+        return bool(policy is not None and all(policy(scope) is True for scope in content_scopes(projection)))
     except (TaskError,TypeError,KeyError):return False
 
 def policy_checker(api,projection):
     """Revalidate a frozen source against its receiver without endpoint guessing."""
     from types import SimpleNamespace
-    from .review_facts import review_capture_policy
+    from .review_facts import review_capture_policy,capture_revision_binding
     from .workflow_evidence import ExecutionScope
     source_scope(projection)
     scopes=content_scopes(projection)
     scope=ExecutionScope(**projection['scope'])
+    frozen_revision=(projection.get('window')or {}).get('capture_revision')
+    frozen_binding=capture_revision_binding(frozen_revision)
+    frozen_policy=({'capture_revision':frozen_revision,'capture_safety_revision':frozen_binding}
+        if frozen_binding is not None else {})
+    identity=lambda value:tuple(value.get(key)or ''for key in ('receiver','producer','agent_id','session_id'))
+    own_identity=identity(projection['scope'])
     def check():
         health=api.get('/api/health')
         if not isinstance(health,dict):raise TaskError('Receiver health did not contain a readable policy object.')
         if health.get('receiver_id')!=scope.receiver:raise TaskError('Receiver namespace changed; reopen the recorded execution.')
         snapshot=SimpleNamespace(receiver_id=scope.receiver,local_status=health.get('local_agents') or {})
-        if any(review_capture_policy({},snapshot,ExecutionScope(**owned)).get('capture_content') is False for owned in scopes):
+        if isinstance(frozen_revision,str)and frozen_revision.startswith('feed-safety-v1:')and frozen_binding is None:
+            raise TaskError('Frozen capture policy is unreadable; recapture the recorded evidence before publishing derived content.')
+        if any(review_capture_policy(frozen_policy if identity(owned)==own_identity else {},snapshot,ExecutionScope(**owned)).get('capture_content') is False for owned in scopes):
             raise TaskError('Source capture is metadata-only or revoked; no derived draft or Git content was published.')
         return True
     return check

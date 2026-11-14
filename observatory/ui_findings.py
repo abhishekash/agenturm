@@ -1,6 +1,8 @@
 """Exact finding sources, loaded off the UI loop and fenced by current policy."""
 import asyncio
+from copy import deepcopy
 import json
+from types import SimpleNamespace
 
 from rich.text import Text
 from textual import on,work
@@ -8,7 +10,7 @@ from textual.containers import Vertical,Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import Button,RichLog,Static
 
-from .review_facts import review_capture_policy
+from .review_facts import bind_capture_policy, review_capture_policy
 from .workflow_evidence import scope_for
 
 
@@ -19,6 +21,20 @@ def source_fields(record,path=''):
     elif isinstance(record,list) and record:
         for index,value in enumerate(record):yield from source_fields(value,path+' ['+str(index)+']')
     else:yield path or 'Recorded content',record if isinstance(record,str) else json.dumps(record,ensure_ascii=False)
+
+
+def capture_reference_context(snapshot):
+    """Freeze bounded policy metadata at request start, never retained content."""
+    local=getattr(snapshot,'local_status',{}) or {}
+    context={key:deepcopy(local[key]) for key in ('capture_content','capture_policy_schema','capture_global_revision') if key in local}
+    fields=('service','runtime','agent_id','session_id','capture_safety_revision')
+    # The Feed safety epoch is sufficient to bind a later exact result owner;
+    # collector sessions/tasks and arbitrary provider revisions are unnecessary.
+    for key in ('capture_policy_revisions',):
+        rows=local.get(key,())
+        context[key]=[{name:deepcopy(row[name]) for name in fields if name in row}
+            for row in rows[:500] if isinstance(row,dict)] if isinstance(rows,(list,tuple)) else []
+    return SimpleNamespace(receiver_id=getattr(snapshot,'receiver_id',''),local_status=context)
 
 
 class FindingSourceScreen(ModalScreen):
@@ -33,7 +49,9 @@ class FindingSourceScreen(ModalScreen):
     BINDINGS=[('escape','dismiss','Back'),('r','refresh','Refresh')]
 
     def __init__(self,owner,item):
-        super().__init__();self.owner=owner;self.item=dict(item)
+        super().__init__();self.owner=owner
+        published=getattr(owner,'data',owner.feed.snapshot)
+        self.item=bind_capture_policy(item,published,scope_for(item,published))
         self.receiver=item.get('receiver_id') or owner.feed.snapshot.receiver_id
         self.sources=[];self.generation=0
 
@@ -64,10 +82,11 @@ class FindingSourceScreen(ModalScreen):
 
     def action_refresh(self):
         if not self.allowed():self.check_policy();return
-        self.generation+=1;self.load_sources(self.generation)
+        context=capture_reference_context(self.owner.feed.snapshot)
+        self.generation+=1;self.load_sources(self.generation,context)
 
     @work(group='finding-source',exclusive=True)
-    async def load_sources(self,generation):
+    async def load_sources(self,generation,context):
         self.query_one('#finding-source-status',Static).update('Loading exact recorded evidence…')
         try:
             response=await asyncio.to_thread(self.owner.feed.api.get,'/api/findings/'+self.item['id']+'/source')
@@ -82,7 +101,8 @@ class FindingSourceScreen(ModalScreen):
             if response.get('receiver_id')!=self.receiver or response.get('finding_id')!=self.item['id'] or not same_scope:
                 self.sources=[];self.query_one(RichLog).clear()
                 self.query_one('#finding-source-status',Static).update('Source content withheld: receiver, finding or owner identity changed.');return
-            self.sources=response.get('sources') or []
+            self.sources=[{**source,'scope':bind_capture_policy(source.get('scope') or {},context,scope_for(source.get('scope') or {},context))}
+                for source in response.get('sources') or []]
             if not self.allowed():self.check_policy();return
             log=self.query_one(RichLog);log.clear()
             for source in self.sources:
@@ -111,6 +131,7 @@ class FindingSourceScreen(ModalScreen):
     def close_pressed(self):self.dismiss()
 
 
-def finding_capture_allowed(item,snapshot):
+def finding_capture_allowed(item,snapshot,*,published_snapshot=None):
     if item.get('receiver_id') and item['receiver_id']!=snapshot.receiver_id:return False
+    if published_snapshot is not None:item=bind_capture_policy(item,published_snapshot,scope_for(item,published_snapshot))
     return review_capture_policy(item,snapshot,scope_for(item,snapshot)).get('capture_content') is not False

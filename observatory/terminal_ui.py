@@ -2055,10 +2055,18 @@ class ObservatoryApp(App):
         live=self.source_snapshot(self.feed.snapshot)
         policy_signature=(live.receiver_id,live.local_status.get('capture_content'),tuple(sorted(tuple(str(entry.get(key) or '')
             for key in ('source_id','service','agent_id','session_id','runtime'))
-            for entry in live.local_status.get('sessions',[]) if entry.get('capture_content') is False)))
+            for entry in live.local_status.get('sessions',[]) if entry.get('capture_content') is False)),
+            live.local_status.get('capture_global_revision'),tuple(tuple(row.get(key)for key in
+                ('service','agent_id','session_id','runtime','capture_safety_revision'))
+                for row in live.local_status.get('capture_policy_revisions',())))
         if policy_signature!=self.capture_policy_signature:
             self.capture_policy_signature=policy_signature
             self.source_preparation.clear()
+            self.session_prompts=PromptHistory()
+            self.session_evidence=SessionEvidence()
+            self.prompt_original.clear();self.prompt_options=None
+            self.ai_summaries.clear();self.inspector_payloads.clear()
+            self.review_cache.entries.clear();getattr(self,'review_git_comparisons',{}).clear();self.last_review=None
             self.last_update=-1
             self.screen.clear_selection()
         data=self.display_snapshot(live)
@@ -3567,7 +3575,9 @@ class ObservatoryApp(App):
         explanation=[]
         if tool_window:
             row=tool_window;known=row['outcome_known']
-            self.mcp_flagged_references=row['failure_references'] or row['unknown_references']
+            from .review_facts import bind_capture_policy
+            self.mcp_flagged_references=[bind_capture_policy(ref,self.data,scope_for(ref,self.data))
+                for ref in (row['failure_references'] or row['unknown_references'])]
             self.query_one('#mcp-flagged',Button).disabled=not any(ref.get('id') in self.table_data.get('mcp-table',{}) for ref in self.mcp_flagged_references)
             outcomes=f"{row['failed']} failed / {known} known outcomes · {row['outcome_unknown']} unknown · {row['calls']} calls"
             latency=(f"p50 {timing(row['p50_ms'])} · p95 {timing(row['p95_ms'])} · {row['duration_known']} known durations · {row['duration_unknown']} unknown"
@@ -3597,7 +3607,7 @@ class ObservatoryApp(App):
             self.inspect('finding-detail','No findings match this view',[],[('Coverage',note)])
             return
         from .ui_findings import finding_capture_allowed
-        if not finding_capture_allowed(item,self.feed.snapshot):
+        if not finding_capture_allowed(item,self.feed.snapshot,published_snapshot=self.data):
             self.query_one('#finding-source',Button).disabled=True
             self.inspect('finding-detail','Finding content withheld',[],[('Capture','Source capture policy or receiver identity changed. Refresh Findings for current evidence.')])
             return
@@ -4183,7 +4193,8 @@ class ObservatoryApp(App):
         can_export=None
         if page=='findings':
             from .ui_findings import finding_capture_allowed
-            can_export=lambda:finding_capture_allowed(record,self.feed.snapshot)
+            published_snapshot=self.data
+            can_export=lambda:finding_capture_allowed(record,self.feed.snapshot,published_snapshot=published_snapshot)
             if not can_export():
                 self.notify('Finding content withheld: source capture or receiver changed.');return
         self.push_screen(ExportScreen(page,record,scope,can_export=can_export),self.resume_cockpit)
@@ -4328,7 +4339,7 @@ class ObservatoryApp(App):
             item=self.table_data.get('finding-table',{}).get(self.selected_finding)
             if item:
                 from .ui_findings import finding_capture_allowed
-                if not finding_capture_allowed(item,self.feed.snapshot):
+                if not finding_capture_allowed(item,self.feed.snapshot,published_snapshot=self.data):
                     self.notify('Finding content withheld: source capture or receiver changed.');return
                 self.copy_to_clipboard(json.dumps(item,ensure_ascii=False,indent=2));return
         elif page=='metrics':

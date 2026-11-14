@@ -298,6 +298,10 @@ def run_task_command(args, parser):
                     health=api.get('/api/health')
                     if health.get('receiver_id')!=scope.get('receiver'):return False
                     return review_capture_policy({},SimpleNamespace(receiver_id=health['receiver_id'],local_status=health.get('local_agents') or {}),ExecutionScope(**scope)).get('capture_content') is not False
+                def for_projection(projection):
+                    allowed=policy_checker(api,projection)()
+                    return lambda scope:allowed
+                source_policy.for_projection=for_projection
             if args.output:
                 result = {'format': 'agenturm-task-export-v1', 'files': export_handoff(task, args.output,
                     include_decision_history=args.include_decision_history,source_policy=source_policy)}
