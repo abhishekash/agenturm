@@ -37,13 +37,24 @@ feed.api.activity.extend([
     for i in range(1, 9)
 ])
 feed.refresh()
-app = ObservatoryApp(feed, persist_preferences=False)
-if int(sys.argv[3]):
-    original_mount=app.on_mount
-    def startup_signal():
-        original_mount()
-        os.kill(os.getpid(),int(sys.argv[3]))
-    app.on_mount=startup_signal
+startup_signum=int(sys.argv[3])
+state_path=Path(sys.argv[2]).with_name('ui-state.json')
+class KeyboardApp(ObservatoryApp):
+    def on_mount(self):
+        # Textual dispatches declared class handlers through its MRO. An
+        # instance-assigned on_mount is not a dispatched lifecycle handler.
+        self.set_interval(.05,self.fixture_state)
+        if startup_signum:
+            Path(sys.argv[2]).with_name('startup-signal.json').write_text(json.dumps({'pid':os.getpid(),'signal':startup_signum}))
+            os.kill(os.getpid(),startup_signum)
+    def fixture_state(self):
+        import time
+        state={'at':time.monotonic(),'size':[self.size.width,self.size.height],
+            'focus':self.focused.id if self.focused else None,
+            'rows':len(self.table_data.get('agent-table',{})),
+            'expanded':self.screen.has_class('inspecting')}
+        temporary=state_path.with_suffix('.tmp');temporary.write_text(json.dumps(state));temporary.replace(state_path)
+app = KeyboardApp(feed, persist_preferences=False)
 before = termios.tcgetattr(0)
 code = None
 try:
@@ -102,6 +113,17 @@ def main():
                 time.sleep(.1)
             raise AssertionError(label + '\n' + capture())
 
+        def until_state(predicate,label):
+            deadline=time.monotonic()+20
+            while time.monotonic()<deadline:
+                path=root/'ui-state.json'
+                if path.exists():
+                    value=json.loads(path.read_text())
+                    if predicate(value):
+                        checks.append(label);return value
+                time.sleep(.05)
+            raise AssertionError(label+'\n'+capture())
+
         def keys(*names):
             for name in names:
                 tmux('send-keys', '-t', 'keys:0.0', name)
@@ -129,7 +151,10 @@ def main():
                 until(lambda s:'Terminal too small' in s,'explicit too-small frame')
                 tmux('resize-window','-t','keys:0','-x','120','-y','36')
                 until(lambda s:'Recorded request body 1' in s,'wide layout restored')
-                keys('Escape','Enter')
+                until_state(lambda s:s['size']==[120,36] and s['rows']>0,'wide layout model settled')
+                keys('Escape')
+                until_state(lambda s:s['focus']=='agent-table' and s['rows']>0,'agent table focus restored')
+                keys('Enter')
                 until(lambda s: '←→ Sections' in s, 'inspector tabs focus')
                 keys('Right')
                 frame = until(lambda s: '↑↓ Prompts' in s and request_number(s), 'prompt section')
@@ -181,6 +206,9 @@ def main():
                 time.sleep(.1)
             assert result.exists(), 'Application did not exit\n' + capture()
             outcome = json.loads(result.read_text())
+            if startup_signum:
+                sent=json.loads((root/'startup-signal.json').read_text())
+                assert sent['signal']==startup_signum,sent
             expected={'q':0,'sigint':130,'sigterm':143}[args.shutdown]
             assert outcome['return_code']==expected and outcome['termios_restored'] is True,outcome
             until(lambda frame:'AGENTURM_TERMINAL_RESTORED' in frame,'terminal output after restoration')
