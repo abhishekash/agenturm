@@ -144,9 +144,9 @@ The roster and Workflow share bounded static preparation within the same snapsho
 
 All 12 final CI jobs passed for PR #74. The isolated projection benchmark includes admission costs and reports one, two and three consumers plus metadata-only/oversized bypass cases. Three reads improved median elapsed preparation work by about 21% for canonical titles and 34% for prompt fallback; two canonical reads were nearly flat/slightly slower and one read regressed. This is not a complete-monitor CPU result. See the [full report and raw samples](../validation/source-preparation.md). Resource targets and the shared source-backed Overview remain open; C–G remain open.
 
-### Stage C shared operation facts — first increment under validation
+### Stage C shared operation facts — [PR #75](https://github.com/abhishekash/agenturm/pull/75) under validation
 
-Review, Activity failure grouping and recent reminders now share bounded typed command/result/output facts, conservative sanitized fingerprints and exact receiver/producer/actor/session/turn boundaries. Existing indexed results and derived summaries have a resumable versioned upgrade. Later matching success is an observation, not a repaired-task assertion; receipt IDs remain stable. The first focused gate passed 67 tests, with final source regressions and broad/peer gates in progress. See the [implementation and limits](../validation/operation-evidence.md).
+Review, Activity failure grouping and recent reminders now share bounded typed command/result/output facts, conservative sanitized fingerprints and exact receiver/producer/actor/session/turn boundaries. Existing indexed results and derived summaries have a resumable versioned upgrade. Later matching success is an observation, not a repaired-task assertion; receipt IDs remain stable. The first focused gate passed 67 tests, with a further 56-test source/native/Review gate passing and independent peer signoff; the broad suite and CI remain in progress. See the [implementation and limits](../validation/operation-evidence.md).
 
 C1 remains under validation. Per-occurrence Findings filtering/counting/hydration (C2), source-backed Overview (C3), resource targets and stages D–G remain open.
 
