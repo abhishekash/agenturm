@@ -106,6 +106,9 @@ def refreshed_review_item(original, snapshot, scope):
     if candidate is not None:
         from .source_projection import native_snapshot
         from .native_lifecycle import overlay_observations
+        execution=scope_for(candidate,snapshot)
+        if execution.scope_key==scope.scope_key and execution.run_id and not candidate.get('trace_id'):
+            candidate={**candidate,'trace_id':execution.run_id}
         native=native_snapshot(snapshot)
         observed,_=overlay_observations([candidate],getattr(native,'native_lifecycle',()),scope.receiver)
         candidate=observed[0]
