@@ -130,7 +130,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 local = getattr(store, "local_agent_monitor", None)
                 self._json(200, {"ok": True,"observed_time_unix_nano":time.time_ns(), "receiver_id": store.receiver_namespace() if hasattr(store,"receiver_namespace") else None, "review_trace_filter": True, "review_turn_filter": True, "review_run_summary": True,
                     "investigation_index_v1":getattr(store,'investigation_index_v1',False),
-                    "native_lifecycle_v1":True,
+                    "native_lifecycle_v1":callable(getattr(store,'native_lifecycle_inventory',None)),
                     "security":{"authentication_required":bool(token),"host_validation":True},
                     "storage":{"retention_days":getattr(store,"retention_days",None)},
                     "indexing":store.index_status() if hasattr(store,"index_status") else {"ready":True},
