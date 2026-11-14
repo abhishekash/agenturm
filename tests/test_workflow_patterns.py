@@ -3,9 +3,9 @@ from observatory.workflow_patterns import analyze_patterns
 
 
 def span(n,*,tool='build',status='ERROR',agent='worker',args='{"file":"a"}',seconds=None):
-    return dict(trace_id='a'*32,span_id=str(n),name=tool,service='codex',status=status,
+    return dict(trace_id='a'*32,receiver_id='fixture-receiver',span_id=str(n),name=tool,service='codex',status=status,
         start_unix_nano=((n if seconds is None else seconds)+1)*1_000_000_000,
-        attributes={'agent.id':agent,'tool.name':tool,'tool.arguments':args,'tool.error':'password=verysecret' if status=='ERROR' else ''})
+        attributes={'agent.id':agent,'session.id':'session','tool.name':tool,'tool.arguments':args,'tool.error':'Connection timed out' if status=='ERROR' else ''})
 
 class WorkflowPatternTests(unittest.TestCase):
     def test_malformed_scope_and_tool_metadata_never_group_or_crash(self):
@@ -31,7 +31,7 @@ class WorkflowPatternTests(unittest.TestCase):
                                 ('run', {'cmd':'watch -n 1 ps -ef'})):
             rows = [span(n, status='OK', tool=tool, args=arguments) for n in range(5)]
             self.assertEqual(analyze_patterns(rows, []), [], (tool, arguments))
-        ordinary = [span(n, status='OK', tool='exec_command', args={'cmd':'pytest tests/test_retry.py'}) for n in range(5)]
+        ordinary = [span(n, status='OK', tool='exec_command', args={'cmd':'python generate_artifacts.py'}) for n in range(5)]
         self.assertEqual([finding['kind'] for finding in analyze_patterns(ordinary, [])], ['repeated_equivalent_call'])
 
     def test_matching_errors_are_windowed_exact_and_safe(self):
@@ -59,7 +59,7 @@ class WorkflowPatternTests(unittest.TestCase):
         for row in rows:row['name']='context.compaction';row['attributes'].pop('tool.name')
         f=analyze_patterns(rows,[])
         self.assertEqual(f[0]['kind'],'repeated_compaction')
-        fail=span(4);done=span(6,status='OK');done['name']='agent.run';done['attributes']={'agent.id':'worker','agent.stopped_reason':'completed'}
+        fail=span(4);done=span(6,status='OK');done['name']='agent.run';done['attributes']={'agent.id':'worker','session.id':'session','agent.stopped_reason':'completed'}
         self.assertIn('completion_unresolved_error',[x['kind'] for x in analyze_patterns([fail,done],[])])
         self.assertNotIn('completion_unresolved_error',[x['kind'] for x in analyze_patterns([fail,span(5,status='OK'),done],[])])
         self.assertIn('completion_unresolved_error',[x['kind'] for x in analyze_patterns([fail,span(5,status='OK',args='different'),done],[])])
@@ -73,7 +73,7 @@ class WorkflowPatternTests(unittest.TestCase):
         self.assertEqual(analyze_patterns(rows,[]),[])
 
     def test_completion_patterns_require_errors_before_exact_outcome(self):
-        done=span(3,status='OK');done['name']='agent.run';done['attributes']={'agent.id':'worker','agent.run.state':'completed'}
+        done=span(3,status='OK');done['name']='agent.run';done['attributes']={'agent.id':'worker','session.id':'session','agent.run.state':'completed'}
         kind=lambda rows:[f['kind'] for f in analyze_patterns(rows,[])]
         self.assertNotIn('completion_unresolved_error',kind([done,span(4)]))
         self.assertIn('completion_unresolved_error',kind([span(1),done]))
