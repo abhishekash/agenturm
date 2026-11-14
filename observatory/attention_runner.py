@@ -32,15 +32,25 @@ def prepared_item(item,snapshot):
 
 def inventory_ready(snapshot):
     """Bounded relevant inventory, not an exhaustive retained-history scan."""
+    return not inventory_deferral_reason(snapshot)
+
+
+def inventory_deferral_reason(snapshot):
+    """Explain a delivery gate without exposing raw read errors or inventing counts."""
     local=getattr(snapshot,'local_status',{}) or {}
     stamp=getattr(snapshot,'receiver_time_ns',0)
-    return bool(getattr(snapshot,'receiver_id','') and type(stamp) is int and 0<stamp<2**63
-        and getattr(snapshot,'indexing_ready',False) is True and getattr(snapshot,'updated',0)
-        and not getattr(snapshot,'error','') and not getattr(snapshot,'sessions_error','')
-        and not getattr(snapshot,'read_errors',{})
-        and (not local.get('enabled') or local.get('initial_poll_complete') is True)
-        and not local.get('backlog_bytes') and not any((row.get('diagnostics') or {}).get('read_error') or
-            (row.get('diagnostics') or {}).get('pending_storage_records') for row in local.get('sessions',())))
+    if not getattr(snapshot,'receiver_id',''):return 'receiver identity is unavailable'
+    if type(stamp) is not int or not 0<stamp<2**63:return 'receiver clock metadata is unavailable'
+    if getattr(snapshot,'indexing_ready',False) is not True:return 'receiver indexing is not ready'
+    if not getattr(snapshot,'updated',0):return 'the first inventory has not arrived'
+    if getattr(snapshot,'error',''):return 'the receiver read is unavailable'
+    if getattr(snapshot,'sessions_error','') or getattr(snapshot,'read_errors',{}):return 'relevant inventory reads are incomplete'
+    if local.get('enabled') and local.get('initial_poll_complete') is not True:return 'local agent discovery is incomplete'
+    if local.get('backlog_bytes'):return 'local capture is catching up'
+    if any((row.get('diagnostics') or {}).get('read_error') or
+            (row.get('diagnostics') or {}).get('pending_storage_records') for row in local.get('sessions',())):
+        return 'local source capture is incomplete'
+    return ''
 
 
 def comparable_source_clock(item):
