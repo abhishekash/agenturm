@@ -138,11 +138,17 @@ The frozen source adds indexed MCP/source lookups, bounded original-title reads,
 
 The empty compatibility-queue probe reuses a read-only lease and releases it before writer acquisition. A fresh matched pair measured whole-monitor idle CPU 17.80% → 14.90% of one core, with unchanged cold readiness/read latency and all health/drain gates passing. Seven new concurrency/lifecycle cases, a 32-test focused gate and independent 18-test review passed. All 12 final CI jobs passed. See the [separate measurements](../validation/idle-history-watch.md). Resource targets and source-backed Overview remain open; C–G remain open.
 
-### Stage B source preparation — implementation and peer verification complete, PR preparation
+### Stage B source preparation — merged [PR #74](https://github.com/abhishekash/agenturm/pull/74)
 
 The roster and Workflow share bounded static preparation within the same snapshot, retaining clock-based health and independent mutable results. In-place changes invalidate it. Policy revocation overrides stale Activity and paused content using the existing exact Review policy; late evidence and AI-summary dispatch/publication are guarded. Weak references and explicit character/node/depth/row limits bound retained inputs. Unrelated modals use the uncached single-consumer path.
 
-The isolated projection benchmark includes admission costs and reports one, two and three consumers plus metadata-only/oversized bypass cases. Three reads improved median elapsed preparation work by about 21% for canonical titles and 34% for prompt fallback; two canonical reads were nearly flat/slightly slower and one read regressed. This is not a complete-monitor CPU result. See the [full report and raw samples](../validation/source-preparation.md). Resource targets and the shared source-backed Overview remain open; C–G remain open.
+All 12 final CI jobs passed for PR #74. The isolated projection benchmark includes admission costs and reports one, two and three consumers plus metadata-only/oversized bypass cases. Three reads improved median elapsed preparation work by about 21% for canonical titles and 34% for prompt fallback; two canonical reads were nearly flat/slightly slower and one read regressed. This is not a complete-monitor CPU result. See the [full report and raw samples](../validation/source-preparation.md). Resource targets and the shared source-backed Overview remain open; C–G remain open.
+
+### Stage C shared operation facts — [PR #75](https://github.com/abhishekash/agenturm/pull/75) under validation
+
+Review, Activity failure grouping and recent reminders now share bounded typed command/result/output facts, conservative sanitized fingerprints and exact receiver/producer/actor/session/turn boundaries. Existing indexed results and derived summaries have a resumable versioned upgrade. Later matching success is an observation, not a repaired-task assertion; receipt IDs remain stable. The first focused gate passed 67 tests, with a further 56-test source/native/Review gate passing and independent peer signoff; the broad suite and CI remain in progress. See the [implementation and limits](../validation/operation-evidence.md).
+
+C1 remains under validation. Per-occurrence Findings filtering/counting/hydration (C2), source-backed Overview (C3), resource targets and stages D–G remain open.
 
 Participant recruitment/consent, live Claude/Pi data not available in this environment, measured human reconstruction/resumption time and voluntary repeat use cannot be manufactured by automated tests. Prepare the materials and report these dependencies with denominators; do not mark F10/adoption evidence complete without participants. Native integration capabilities unsupported by a runtime must be labelled rather than guessed.
 

@@ -5,6 +5,7 @@ import hashlib
 import json
 
 from .workflow_evidence import scope_for
+from .operation_facts import correlation_facts,operation_key,operation_metadata,operation_stamp
 
 FAILURES = {'error', 'failed', 'denied', 'blocked', 'policy_denied', 'incomplete'}
 
@@ -14,11 +15,10 @@ def failure(event):
 
 
 def operation(event):
-    return tuple(event.get(key) for key in
-                 ('service', 'agent_id', 'session_id', 'trace_id', 'domain', 'action', 'subject'))
+    return operation_key(event,facts=correlation_facts(event))
 
 
-def pending_failures(events, limit=5):
+def pending_failures(events, limit=5, *, receiver=''):
     """A later identical successful operation need not interrupt the user.
 
     This only suppresses a reminder, never changes the recorded task outcome.
@@ -27,17 +27,21 @@ def pending_failures(events, limit=5):
     successful = {}
     result = []
     seen = set()
-    for event in sorted(events, key=lambda e: (e.get('time_unix_nano') or 0,
+    for event in sorted(events, key=lambda e: (operation_stamp(e) or 0,
                                               str(e.get('id') or e.get('source_id') or '')), reverse=True):
-        key = operation(event)
+        facts=correlation_facts(event)
+        key=operation_key(event,receiver=receiver,facts=facts)
+        stamp=operation_stamp(event)
         identity = event.get('id') or event.get('source_id')
-        if not identity or identity in seen:
+        occurrence=tuple(event.get(key) if isinstance(event.get(key),str) else ''
+            for key in ('receiver_id','service','agent_id','session_id','trace_id','turn_id'))+(identity,)
+        if not isinstance(identity,str) or not identity or occurrence in seen:
             continue
-        seen.add(identity)
-        matchable = bool(event.get('subject') and (event.get('agent_id') or event.get('session_id')))
-        if str(event.get('result') or '').casefold() in {'ok', 'success'} and matchable:
-            successful[key] = max(successful.get(key, 0), event.get('time_unix_nano') or 0)
-        elif failure(event) and (not matchable or successful.get(key, 0) <= (event.get('time_unix_nano') or 0)):
+        seen.add(occurrence)
+        if facts['result']=='passed' and not facts['result_conflict'] and key and stamp:
+            successful[key]=max(successful.get(key,0),stamp)
+        elif (failure(event) or facts['result']=='failed') and not facts['expected_nonzero'] and (
+                not key or not stamp or successful.get(key,0)<=stamp):
             result.append(event)
     return result[:limit]
 
@@ -45,16 +49,30 @@ def pending_failures(events, limit=5):
 def error_reference(event):
     reference = {key: event.get(key) for key in
         ('id', 'source_id', 'trace_id', 'span_id', 'service', 'session_id', 'agent_id',
-         'time_unix_nano', 'domain', 'action', 'result', 'source', 'subject')}
-    reference['subject'] = str(reference.get('subject') or '')[:500]
+         'time_unix_nano','domain','action','result','source','turn_id','receiver_id')}
+    domain=event.get('domain')
+    reference['subject']=('Shell operation' if domain=='shell' else 'MCP operation' if domain=='mcp' else 'Recorded operation')
+    reference.update(operation_metadata(event))
     return reference
 
 
-def trace_error_references(activity, trace_id):
+def trace_error_references(activity, trace_id, *, receiver=''):
     events = [{**event, 'trace_id': trace_id,
-               'id': trace_id + ':' + str(event.get('source_id') or '')} for event in activity
+               'id': trace_id + ':' + str(event.get('source_id') or ''),'receiver_id':receiver} for event in activity
               if event.get('source_id')]
-    return [error_reference(event) for event in pending_failures(events, limit=20)]
+    references = [error_reference(event) for event in pending_failures(events,limit=20,receiver=receiver)]
+    # Carry bounded, payload-free retry context across traces in one turn.
+    # Otherwise a successful step is discarded before owner-level correlation.
+    successful = set()
+    for event in sorted(events,key=lambda event: operation_stamp(event) or 0,reverse=True):
+        facts=correlation_facts(event)
+        key=operation_key(event,receiver=receiver,facts=facts)
+        if facts['result']!='passed' or facts['result_conflict'] or not key or not operation_stamp(event):continue
+        if key in successful:continue
+        successful.add(key)
+        references.append(error_reference(event))
+        if len(successful)>=20:break
+    return references
 
 
 def recent_sources(items):
@@ -97,6 +115,7 @@ def recent_sources(items):
 def event_receipt(event, snapshot, endpoint=''):
     source = event.get('id') or event.get('source_id')
     scope = scope_for(event, snapshot, endpoint)
+    if event.get('receiver_id') and event['receiver_id']!=scope.receiver:return None
     if not source or not scope.receiver or not scope.producer or not (scope.agent_id or scope.session_id):
         return None
     identity = (scope.receiver, scope.producer, scope.agent_id, scope.session_id,

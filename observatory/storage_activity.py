@@ -168,6 +168,13 @@ def initialize(db):
     db.execute("CREATE INDEX IF NOT EXISTS logs_service_v1 ON logs(service)")
     db.execute("CREATE INDEX IF NOT EXISTS metric_service_v1 ON metric_points(service)")
     db.execute("CREATE INDEX IF NOT EXISTS progress_service_v1 ON progress(service)")
+    if not db.execute("SELECT 1 FROM schema_meta WHERE key='activity_operation_facts_v2'").fetchone():
+        # Re-project identities once: legacy result columns can disagree with
+        # newly qualified terminal evidence. Do not filter raw JSON here.
+        # The durable queue uses the existing bounded, resumable repair path.
+        db.execute("INSERT OR IGNORE INTO activity_dirty_v1 SELECT 'span',trace_id||':'||span_id FROM spans")
+        db.execute("INSERT OR IGNORE INTO activity_dirty_v1 SELECT 'log',digest FROM logs")
+        db.execute("INSERT OR IGNORE INTO schema_meta VALUES('activity_operation_facts_v2','1')")
     if not db.execute("SELECT 1 FROM schema_meta WHERE key='live_stats_v3'").fetchone():
         db.execute(
             "INSERT OR REPLACE INTO live_run_stats_v1("
@@ -267,24 +274,25 @@ def drain(db, limit=200):
                     start_unix_nano=r["start_ns"],
                     end_unix_nano=r["end_ns"],
                 )
-                linked = [
-                    dict(
-                        event_name="agent.activity",
-                        span_id=span,
-                        attributes={},
-                        time_unix_nano=0,
-                        id="",
-                        service=r["service"],
-                        body="",
-                    )
-                ]
-                has_link = db.execute(
-                    "SELECT 1 FROM logs WHERE trace_id=? AND span_id=? AND event_name='agent.activity' LIMIT 1",
-                    (trace, span),
-                ).fetchone()
+                linked=[]
+                # Inspect bounded real owner-compatible logs, not a span-only
+                # placeholder that could hide another worker's typed facts.
+                if r['agent_id']:
+                    for log in db.execute('''SELECT digest,trace_id,span_id,service,time_ns,
+                        attributes,resource_attributes,body FROM logs
+                        WHERE trace_id=? AND span_id=? AND service=? AND agent_id=?
+                        AND event_name='agent.activity'
+                        AND length(CAST(attributes AS BLOB))+length(CAST(resource_attributes AS BLOB))+
+                            length(CAST(body AS BLOB))<=65536
+                        ORDER BY time_ns DESC,digest DESC LIMIT 16''',
+                        (trace,span,r['service'],r['agent_id'])):
+                        linked.append(dict(id=log['digest'],trace_id=log['trace_id'],span_id=log['span_id'],
+                            service=log['service'],time_unix_nano=log['time_ns'],event_name='agent.activity',
+                            attributes=json.loads(log['attributes']),resource_attributes=json.loads(log['resource_attributes']),
+                            body=json.loads(log['body'])))
                 rows = [
                     row
-                    for row in _activity_for([source], linked if has_link else [])
+                    for row in _activity_for([source], linked)
                     if row["source"] == "span"
                 ]
         else:
@@ -372,6 +380,7 @@ def drain(db, limit=200):
                                 **row,
                                 "detail": "",
                                 "detail_present": bool(row.get("detail")),
+                                "operation_present": row.get('detail_role')=='operation_v1',
                                 "subject": str(row.get("subject") or "")[:8000],
                             },
                             separators=(",", ":"),
@@ -390,16 +399,19 @@ def hydrate(db, records):
 
     logs = {}
     spans = {}
+    def needs_payload(row):
+        return (row.get('detail_present') or row.get('operation_present')
+                or 'operation_present' not in row)
     log_ids = list(
         {
             row["source_id"]
             for row in records
-            if row.get("source") == "log" and row.get("detail_present")
+            if row.get("source") == "log" and needs_payload(row)
         }
     )
     if log_ids:
         for row in db.execute(
-            "SELECT digest,body,attributes FROM logs WHERE digest IN ("
+            "SELECT digest,body,attributes,resource_attributes FROM logs WHERE digest IN ("
             + ",".join("?" for _ in log_ids)
             + ")",
             log_ids,
@@ -409,7 +421,7 @@ def hydrate(db, records):
         {
             (row.get("trace_id"), row.get("span_id"))
             for row in records
-            if row.get("source") == "span" and row.get("detail_present")
+            if row.get("source") == "span" and needs_payload(row)
         }
     )
     for offset in range(0, len(owners), 100):
@@ -428,25 +440,36 @@ def hydrate(db, records):
                 end_unix_nano=row["end_ns"],
             )
             spans[(row["trace_id"], row["span_id"])] = {
-                event["source_id"]: event.get("detail", "")
+                event["source_id"]: event
                 for event in _activity_for([source], [])
             }
     for row in records:
-        if not row.pop("detail_present", False):
+        needed=needs_payload(row)
+        row.pop('detail_present',None);row.pop('operation_present',None)
+        if not needed:
             continue
         detail = ""
+        role=None
+        normalized={}
+        row.pop('detail_role',None);row.pop('reported_result',None)
         if row["source"] == "log" and row["source_id"] in logs:
             source = logs[row["source_id"]]
             body = json.loads(source["body"])
             attrs = json.loads(source["attributes"])
-            detail = attrs.get("agent.activity.detail") or (
-                body if isinstance(body, str) else ""
-            )
+            from .core import _activity_row
+            normalized=_activity_row(attrs,row.get('time_unix_nano'),'log',row['source_id'],
+                row.get('span_id'),row.get('service','unknown'),body,
+                json.loads(source['resource_attributes']))
+            detail=normalized.get('detail','');role=normalized.get('detail_role')
         elif row["source"] == "span":
-            detail = spans.get((row.get("trace_id"), row.get("span_id")), {}).get(
-                row["source_id"], ""
-            )
+            # Exact event index only. A differently owned child event never
+            # inherits command/input/exit metadata from its containing span.
+            normalized=spans.get((row.get('trace_id'),row.get('span_id')),{}).get(row['source_id'],{})
+            detail=normalized.get('detail','');role=normalized.get('detail_role')
         row["detail"] = str(detail)[:8000]
+        if role:row['detail_role']=role
+        for key in ('result','reported_result'):
+            if key in normalized:row[key]=normalized[key]
         if len(str(detail)) > 8000:
             row["detail_clipped"] = True
     return records

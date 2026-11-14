@@ -18,12 +18,18 @@ def safe(value, limit=CONTENT_LIMIT):
     def clean(item, depth=0):
         if depth>=12:return '[nested payload omitted]'
         if isinstance(item,dict):
-            return {str(key): '[REDACTED]' if _SENSITIVE_FIELD.search(str(key)) or _TOKEN_FIELD.search(str(key))
+            result={str(key): '[REDACTED]' if _SENSITIVE_FIELD.search(str(key)) or _TOKEN_FIELD.search(str(key))
                 else '[opaque payload omitted]' if str(key) in {'encrypted_content','signature','raw_content'} or str(key)=='data' and isinstance(child,str) and len(child)>1000
                 else clean(child,depth+1) for key,child in islice(item.items(),60)}
-        if isinstance(item,list):return [clean(child,depth+1) for child in item[:60]]
+            if len(item)>60:result['[truncated]']=f'{len(item)-60} fields omitted'
+            return result
+        if isinstance(item,list):
+            result=[clean(child,depth+1) for child in item[:60]]
+            if len(item)>60:result.append(f'[truncated: {len(item)-60} items omitted]')
+            return result
         if item is None or isinstance(item,(int,float,bool)):return item
-        return _safe_text(str(item))[:2000]
+        text=_safe_text(str(item))
+        return text[:2000]+('[truncated]' if len(text)>2000 else '')
     if isinstance(value,(dict,list)):
         value=json.dumps(clean(value),ensure_ascii=False,indent=2)
     text = _safe_text(value)
@@ -56,7 +62,7 @@ def mcp_failed(value):
             value = loads(value)
         except (ValueError, OverflowError, RecursionError):
             return False
-    return isinstance(value, dict) and bool(value.get("isError") or value.get("is_error"))
+    return isinstance(value,dict) and (value.get('isError') is True or value.get('is_error') is True)
 
 
 def emit(session, row, stamp, domain, action, subject, detail="", result="observed", extra=None,
@@ -64,16 +70,21 @@ def emit(session, row, stamp, domain, action, subject, detail="", result="observ
     if not stamp:
         return None
     from .local_agents import identity
+    identity_subject=subject  # Preserve existing native occurrence/seen IDs.
+    if domain=='shell':
+        from .operation_facts import safe_value
+        subject=safe_value(subject)[0]
     attrs = {"session.id": session.session_id, "observatory.project": session.project,
              "agent.id": session.agent_id, "agent.runtime": session.runtime,
              "agent.discovery_state": session.discovery_state,
              "agent.relationship.kind": session.relationship_kind,
              "agent.relationship.state": session.relationship_state,
              "observatory.data_source": "local-session-log", "agent.activity.domain": domain,
+             "observatory.operation.capture_version": 1,
              "agent.activity.action": action, "agent.activity.subject": safe(subject, 500),
              "agent.activity.result": result, "agent.activity.actor": session.runtime,
              "observatory.record_id": identity(session.source_id, row.get("ordinal") or row.get("uuid") or stamp,
-                                                domain, action, str(subject)[:500], *([call_id] if call_id else [])), **(extra or {})}
+                                                domain, action, str(identity_subject)[:500], *([call_id] if call_id else [])), **(extra or {})}
     if session.capture_details and not session.internal and session.task_description:
         attrs['agent.session.task'] = session.task_description
     if session.parent_agent_id:
@@ -180,12 +191,22 @@ def codex_activity(session, row, stamp):
             command = item.get("command") or []
             command = shlex.join(map(str, command)) if isinstance(command, list) else str(command)
             code = item.get("exit_code")
-            if isinstance(code, int):
+            if 'exit_code' in item:extra['process.exit.code']=code
+            if type(code) is int:
                 extra["process.exit.code"] = code
                 if code:
                     result = "error"
-            out.append(emit(session, row, stamp, "shell", "execute", command if session.capture_details else "Shell command",
-                {"command": command, "cwd": item.get("cwd"), "exit_code": code, "output": item.get("aggregated_output", "")}, result, extra))
+            from .operation_facts import evidence_detail
+            output=item.get('aggregated_output','')
+            captured_output=safe(output,2000) if isinstance(output,str) else output
+            evidence=dict(version=1,inputs=[('native.input',{'command':command,'cwd':item.get('cwd')})],
+                commands=[('native.command',command)],cwd=item.get('cwd'),tool='CommandExecution',server=None,
+                exits=[('native.exit_code',code)] if 'exit_code' in item else [],
+                outputs=[('native.aggregated_output','output',captured_output)],
+                output_clipped=isinstance(output,str) and len(output)>2000)
+            extra['observatory.operation.schema']=1
+            out.append(emit(session,row,stamp,'shell','execute',command if session.capture_details else 'Shell command',
+                evidence_detail(evidence),result,extra))
         elif item_type == "FileChange":
             if not failed and str(item.get("status", "")).lower() not in {"completed","success","ok"}:result="unknown"
             changes = item.get("changes") or {}
@@ -209,7 +230,7 @@ def codex_activity(session, row, stamp):
             extra["mcp.tool.name"] = name
             extra["mcp.method.name"] = "tools/call"
             details = {"arguments": item.get("arguments"), "result": item.get("result")}
-            if isinstance(item.get("result"), dict) and item["result"].get("isError"):
+            if isinstance(item.get("result"),dict) and item['result'].get('isError') is True:
                 result = "error"
             out.append(emit(session, row, stamp, "mcp", name, str(item.get("server") or "MCP"), details, result, extra))
         elif item_type in {"UserMessage", "AgentMessage"}:

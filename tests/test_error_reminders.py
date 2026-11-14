@@ -63,10 +63,14 @@ class ErrorReminderTests(unittest.TestCase):
             self.assertEqual(reminders(items,snapshot([event(**{field:'different'})])),{})
 
     def test_matching_success_only_suppresses_prior_identical_operation_in_exact_run(self):
-        failed=event();success=event('success',result='success',time_unix_nano=11)
+        attrs={'tool.name':'Bash','process.command_line':'pytest','process.working_directory':'/work'}
+        failed=event(receiver_id='receiver',attributes=attrs)
+        success=event('success',receiver_id='receiver',attributes=attrs,result='success',time_unix_nano=11)
         self.assertEqual(pending_failures([failed,success]),[])
-        for field in ('service','agent_id','session_id','trace_id','subject'):
+        for field in ('service','agent_id','session_id','trace_id','receiver_id'):
             self.assertEqual(pending_failures([failed,{**success,field:'other'}]),[failed])
+        self.assertEqual(pending_failures([failed,{**success,'attributes':{**attrs,'process.command_line':'other'}}]),[failed])
+        self.assertEqual(pending_failures([failed,{**success,'subject':'A shorter display label'}]),[])
         self.assertEqual(pending_failures([failed,{**success,'time_unix_nano':10}]),[failed])
         self.assertEqual(pending_failures([failed,success,event('again',time_unix_nano=12)])[0]['id'],'again')
 
@@ -163,6 +167,8 @@ class ErrorReminderTests(unittest.TestCase):
                 return dict(trace_id=None,span_id=None,time_unix_nano=stamp,service='codex',
                     severity_number=9,severity_text='INFO',event_name='agent.activity',body='private stderr',
                     scope_name='',resource_attributes={},attributes={'session.id':'one','agent.id':'worker',
+                        'agent.turn.id':'a'*32,'tool.name':'Bash','process.command_line':'pytest',
+                        'process.working_directory':'/work',
                         'agent.activity.domain':'shell','agent.activity.action':'run',
                         'agent.activity.subject':'pytest','agent.activity.result':result})
             store.ingest_logs([log(1,'error')])

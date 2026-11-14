@@ -35,7 +35,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertTrue(scope_for({**item,'trace_id':'trace'},SimpleNamespace(receiver_id='stable')).persistent)
 
     def test_checks_are_recorded_results_and_later_edits_weaken_freshness(self):
-        rows=[event(),{**event('unknown'),'time_unix_nano':11,'result':'started'},
+        rows=[event(attributes={'process.command_line':'pytest tests -q'}),{**event('unknown'),'time_unix_nano':11,'result':'started'},
               {**event('claim'),'domain':'message','action':'assistant','subject':'Tests passed'},
               {**event('edit'),'time_unix_nano':12,'domain':'file','action':'edit','subject':'retry.py'}]
         history=ReviewHistory(self.scope);history.accept({'activity':rows,'next_cursor':'older'})

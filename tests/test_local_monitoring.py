@@ -12,6 +12,7 @@ from observatory.terminal import Api, Feed, LocalReceiver, Snapshot
 from observatory.logs import normalize_otlp_logs
 from observatory.terminal_ui import ObservatoryApp
 from observatory.ui_monitoring import UsageScreen, failure_groups, usage_summary
+from observatory.operation_facts import operation_facts
 from tests.test_terminal_search import ManualFeed, ExampleApi
 
 
@@ -68,22 +69,25 @@ class MonitoringModelsTests(unittest.TestCase):
                 feed.activity_errors=True;feed.refresh()
                 self.assertFalse(feed.snapshot.error)
                 self.assertEqual(len(feed.snapshot.activity_results),1)
-                self.assertEqual(feed.snapshot.activity_results[0]['detail'],'old failure evidence')
+                self.assertEqual(operation_facts(feed.snapshot.activity_results[0])['output'],'old failure evidence')
                 self.assertTrue(feed.snapshot.activity_errors)
             finally:
                 feed.close();receiver.close()
 
     def test_matching_failures_do_not_claim_recovery_from_other_work(self):
-        base={'session_id':'one','service':'codex','domain':'shell','action':'run',
-              'subject':'pytest','result':'error','time_unix_nano':1,'id':'first'}
+        base={'receiver_id':'receiver','agent_id':'worker','trace_id':'trace','session_id':'one',
+              'service':'codex','domain':'shell','action':'run','detail':'Assertion failed',
+              'subject':'pytest','result':'error','time_unix_nano':1,'id':'first',
+              'attributes':{'tool.name':'Bash','process.command_line':'pytest','process.working_directory':'/work'}}
         events=[base,{**base,'id':'second','time_unix_nano':2},
                 {**base,'id':'other-session','session_id':'two'}]
-        unrelated={**base,'id':'ok','result':'success','subject':'git status','time_unix_nano':3}
+        unrelated={**base,'id':'ok','result':'success','subject':'git status','time_unix_nano':3,
+                   'attributes':{**base['attributes'],'process.command_line':'git status'}}
         groups=failure_groups(events,[unrelated])
         self.assertEqual(len(groups),2)
         self.assertEqual(len(groups[0]['_failures']),2)
         self.assertIsNone(groups[0]['_later_success'])
-        success={**unrelated,'subject':'pytest'}
+        success={**unrelated,'subject':'pytest','attributes':base['attributes']}
         self.assertEqual(failure_groups(events,[success])[0]['_later_success'],success)
         self.assertIsNone(failure_groups(events,[success])[1]['_later_success'])
 
@@ -197,7 +201,7 @@ class LocalMonitoringJourneys(unittest.IsolatedAsyncioTestCase):
                     app.set_agent_filter('errors');app.select_agent(source)
                     await pilot.press('p','s')
                     await until(lambda:app.selected_activity and
-                                app.table_data.get('activity-table',{}).get(app.selected_activity,{}).get('detail')=='local assertion failed')
+                                operation_facts(app.table_data.get('activity-table',{}).get(app.selected_activity,{}))['output']=='local assertion failed')
                     selected=app.selected_activity
                     self.assertTrue(feed.paused)
                     await pilot.press('t')

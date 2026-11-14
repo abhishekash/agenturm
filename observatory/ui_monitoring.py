@@ -10,6 +10,7 @@ from textual.widgets.option_list import Option
 from .review_facts import session_usage, task_run_usage
 from .terminal import clean
 from .themes import PALETTES, CURRENT
+from .operation_facts import correlation_facts,operation_key as recorded_operation_key,operation_stamp
 
 FAILURES = {'error', 'failed', 'denied', 'blocked', 'policy_denied', 'incomplete'}
 
@@ -73,9 +74,7 @@ def event_id(event):
 
 
 def operation_key(event):
-    # Matching a tool name alone would conflate different commands or sessions.
-    return tuple(event.get(key) for key in
-                 ('service','agent_id','session_id','trace_id','domain','action','subject'))
+    return recorded_operation_key(event,facts=correlation_facts(event))
 
 
 def failure_groups(events, context=()):
@@ -87,24 +86,32 @@ def failure_groups(events, context=()):
     groups = {}
     successes = {}
     for event in context:
-        if str(event.get('result') or event.get('status') or '').casefold() in {'ok', 'success'}:
-            key=operation_key(event)
-            if event.get('time_unix_nano',0)>successes.get(key,{}).get('time_unix_nano',0):
+        facts=correlation_facts(event)
+        key=recorded_operation_key(event,facts=facts);stamp=operation_stamp(event)
+        if key and stamp and facts['result']=='passed' and not facts['result_conflict']:
+            if stamp>(operation_stamp(successes.get(key,{})) or 0):
                 successes[key]=event
-    for event in sorted(events, key=lambda e: e.get('time_unix_nano', 0), reverse=True):
-        if failed(event):
+    seen=set()
+    for ordinal,event in enumerate(sorted(events,key=lambda e:operation_stamp(e) or 0,reverse=True)):
+        facts=correlation_facts(event)
+        if (failed(event) or facts['result']=='failed') and not facts['expected_nonzero']:
             event={key:value for key,value in event.items() if not key.startswith('_')}
-            key = operation_key(event)
-            # Missing identity/subject cannot establish the same operation.
-            if not (event.get('agent_id') or event.get('session_id')) or not event.get('subject'):
-                key = (key, event_id(event))
+            operation=recorded_operation_key(event,facts=facts)
+            identity=event_id(event)
+            occurrence=tuple(event.get(key) if isinstance(event.get(key),str) else ''
+                for key in ('receiver_id','service','agent_id','session_id','trace_id','turn_id'))+(identity,)
+            if isinstance(identity,str):
+                if occurrence in seen:continue
+                seen.add(occurrence)
+            # Missing/redacted/clipped inputs or error signatures remain
+            # separate occurrences, even when their display labels match.
+            key=(operation,facts['error_fingerprint']) if operation and facts['error_fingerprint'] else ('occurrence',ordinal)
             groups.setdefault(key, []).append(event)
     result = []
     for occurrences in groups.values():
         latest = occurrences[0]
         success=successes.get(operation_key(latest))
-        if not (latest.get('subject') and (latest.get('agent_id') or latest.get('session_id'))
-                and success and success.get('time_unix_nano',0)>latest.get('time_unix_nano',0)):
+        if not (success and operation_stamp(latest) and operation_stamp(success)>operation_stamp(latest)):
             success=None
         result.append({**latest, '_failures': occurrences, '_later_success': success})
     return result
