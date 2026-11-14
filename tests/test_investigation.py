@@ -2,8 +2,9 @@
 import json
 import sqlite3
 import unittest
+from urllib.parse import parse_qs, urlsplit
 
-from observatory.investigation import prepare_terms, validate_query
+from observatory.investigation import decode_reference, prepare_terms, validate_query
 from observatory.recorded_paths import path_facts
 from observatory.storage_investigation import initialize, read_page, replace_owner
 
@@ -63,6 +64,9 @@ class InvestigationTests(unittest.TestCase):
         rows = self.page('command', 'pytest tests', failed=True)['matches']
         self.assertEqual([item['event_id'] for item in rows], ['command'])
         self.assertEqual(rows[0]['source_reference']['agent_id'], 'worker')
+        navigation = parse_qs(urlsplit(rows[0]['source_path']).query)
+        self.assertEqual(navigation['receiver_id'], ['receiver'])
+        self.assertEqual(decode_reference(navigation['reference'][0]), rows[0]['source_reference'])
         self.put({**row, 'id': 'success', 'source_id': 'success', 'result': 'success'})
         self.assertEqual(len(self.page('command', 'pytest')['matches']), 2)
         self.assertEqual(len(self.page('command', 'pytest', failed=True)['matches']), 1)
@@ -130,6 +134,21 @@ class InvestigationTests(unittest.TestCase):
         self.assertEqual(global_row['source_reference']['service'], 'sdk')
         self.assertEqual(global_row['result'], 'unknown')
         self.assertEqual(self.page('path', 'src/retry.py', agent_ids=['worker'])['matches'], [])
+
+    def test_explicit_move_and_conflicting_rename_fields_remain_observations(self):
+        row = event('move', action='move', subject='new.py', detail='{"from":"old.py","to":"new.py"}')
+        self.put(row)
+        self.assertEqual(len(self.page('path', 'old.py')['matches']), 1)
+        facts = path_facts({**row, 'from_path': 'different.py'})
+        self.assertFalse(facts['complete'])
+        self.assertIn('Recorded rename fields conflict', facts['reasons'])
+
+    def test_missing_fts_has_no_history_scan_fallback(self):
+        class Unavailable:
+            def execute(self, sql):
+                raise sqlite3.OperationalError('no such module: fts5')
+        with self.assertRaisesRegex(ValueError, 'no history-scan fallback'):
+            initialize(Unavailable())
 
 
 if __name__ == '__main__':
