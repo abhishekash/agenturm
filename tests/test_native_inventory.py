@@ -2,6 +2,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+import json
 
 from observatory.core import Store
 from observatory.native_lifecycle import event_log,normalize_event,validate_binding
@@ -70,6 +71,29 @@ class NativeInventoryTests(unittest.TestCase):
         state=self.store.native_lifecycle_inventory()
         self.assertTrue(state['complete']);self.assertEqual(len(state['observations']),1)
         self.assertFalse(state['observations'][0]['resolved'])
+
+    def test_nonrequest_same_sequence_conflict_is_not_lost(self):
+        self.store.ingest_logs([self.native()])
+        completed=self.native(1,'turn_completed','')
+        completed['attributes'].update({'observatory.native.event_id':'conflicting-event','observatory.record_id':'conflicting-event'})
+        self.store.ingest_logs([completed])
+        self.assertFalse(self.store.native_lifecycle_inventory()['complete'])
+
+    def test_state_capacity_is_explicit_instead_of_silently_claiming_complete(self):
+        self.store.ingest_logs([self.native()])
+        with self.store._connect() as db:
+            original=dict(db.execute('SELECT * FROM native_lifecycle_index_v1').fetchone())
+            columns=list(original)
+            for index in range(1,1001):
+                state=json.loads(original['payload']);state.update(request_id='request-'+str(index),sequence=index+1,event_id='event-'+str(index+1))
+                row={**original,'event_key':'fixture-'+str(index),'owner_key':'fixture-'+str(index),
+                    'request_id':state['request_id'],'sequence':state['sequence'],'state_hash':'fixture-'+str(index),
+                    'payload':json.dumps(state)}
+                db.execute('INSERT INTO native_lifecycle_index_v1('+','.join(columns)+') VALUES('+','.join('?' for _ in columns)+')',
+                    [row[key] for key in columns])
+        result=self.store.native_lifecycle_inventory()
+        self.assertFalse(result['complete']);self.assertEqual(len(result['observations']),1000)
+        self.assertIn('1,000',result['warning'])
 
     def test_old_activity_writer_invalidates_until_transactional_repair(self):
         self.store.ingest_logs([self.native()])
