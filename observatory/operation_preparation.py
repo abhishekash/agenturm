@@ -6,6 +6,33 @@ MAX_EVENTS=512
 MAX_BYTES=2*1024*1024
 
 
+def canonical_terminal_candidate(event):
+    """Only immutable canonical bodies can be inspected ahead of full facts.
+
+    Mutable/compact envelopes retain their original evaluation order, including
+    normalized_evidence's legacy mutation of a shared detail dictionary.
+    """
+    return (type(event)is dict and event.get('operation_reference')is not True
+        and not isinstance(event.get('operation_evidence'),dict)
+        and type(event.get('detail_role'))is str and event['detail_role']=='operation_v1'
+        and type(event.get('detail'))is str
+        and all(type(event.get(key))in(str,type(None))for key in ('result','status','reported_result')))
+
+
+def canonical_terminal(event):
+    if not canonical_terminal_candidate(event):return None
+    from .operation_facts import VERSION,decode,_terminal_projection
+    try:
+        detail=decode(event['detail'])
+        if not isinstance(detail,dict)or type(detail.get('version'))is not int or detail['version']!=VERSION:return None
+        # detail_clipped changes input/output completeness only. Neither flag
+        # participates in the terminal projection; this decoded dict is new.
+        return _terminal_projection(event,detail)
+    except Exception:
+        # The full path remains responsible for its original output/exception.
+        return None
+
+
 class OperationPreparation:
     """Own no source objects; the caller keeps its bound activity list alive.
 
