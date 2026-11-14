@@ -56,16 +56,16 @@ class IdleHistoryWatchTests(unittest.TestCase):
     def test_write_after_empty_probe_is_observed_on_next_tick(self):
         original=self.store._read;written=[]
         class Cursor:
-            def __init__(cursor,db):cursor.db=db
+            def __init__(cursor,db,sql,args):cursor.db=db;cursor.sql=sql;cursor.args=args
             def fetchone(cursor):
-                row=cursor.db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone()
+                row=cursor.db.execute(cursor.sql,cursor.args).fetchone()
                 if row is None and not written:
                     self.external_edit();written.append(True)
                 return row
         class Probe:
             def __init__(proxy,db):proxy.db=db
             def execute(proxy,sql,args=()):
-                if sql=='SELECT 1 FROM activity_dirty_v1 LIMIT 1':return Cursor(proxy.db)
+                if sql.startswith('SELECT 1 FROM activity_dirty_v1'):return Cursor(proxy.db,sql,args)
                 return proxy.db.execute(sql,args)
         @contextmanager
         def interleaved():

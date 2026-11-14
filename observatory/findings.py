@@ -72,6 +72,8 @@ def _credential_hits(value, field_path=""):
 
 
 def _finding(trace_id, kind, title, severity, evidence, detail):
+    from .operation_facts import safe_value
+    title=safe_value(title)[0];detail=safe_value(detail)[0]
     source = ",".join(sorted(f"{e['type']}:{e['id']}" for e in evidence))
     digest = hashlib.sha256(f"{trace_id}:{kind}:{source}".encode()).hexdigest()[:16]
     return {"id": digest, "trace_id": trace_id, "kind": kind,
@@ -119,103 +121,102 @@ def _activity_detail(attrs):
     return f"{domain}: {action}" + (f" · {subject}" if subject else "")
 
 
-def analyze(spans, logs, outcome=None):
-    if not spans and not logs and not outcome:
-        return []
-    trace_id = spans[0]["trace_id"] if spans else logs[0]["trace_id"] if logs else outcome["trace_id"]
-    findings = []
-    failures = {}
-    credential_hits = set()
-    credential_sources = {}
+def analyze(spans, logs, outcome=None, *, activity=None, receiver='', outcome_owner=None):
+    """Occurrence-owned findings; trace membership never establishes ownership."""
+    if not spans and not logs and not outcome:return []
+    from .core import _activity_for,_activity_row,_event_activity_identity,_tool_activity
+    from .operation_facts import operation_facts,operation_key,operation_metadata,digest
+    trace_id = spans[0]['trace_id'] if spans else logs[0]['trace_id'] if logs else outcome['trace_id']
+    if activity is None:activity=_activity_for(spans,logs)
+    findings=[]
+    represented=set();repeats={}
+    def emit(kind,title,severity,evidence,detail,owner,*,facts=None):
+        item=_finding(trace_id,kind,title,severity,evidence,detail)
+        item.update({key:owner.get(key) for key in ('service','agent_id','session_id','turn_id')})
+        item.update(producer=owner.get('service'),receiver_id=receiver,
+            ownership_version=1,task='',run_status='UNKNOWN',
+            time_unix_nano=owner.get('time_unix_nano') or 0)
+        key=operation_key({**owner,'trace_id':trace_id,'receiver_id':receiver},facts=facts) if facts else None
+        # Incomplete inputs/signatures remain individual observations.
+        item['group_key']=digest((kind,key,facts['error_fingerprint'])) if key and facts['error_fingerprint'] else item['id']
+        if facts:
+            item.update(operation_metadata(owner,facts=facts))
+            item.update(command=facts['command'],exit_code=facts['exit_code'],
+                output_kind=facts['output_kind'],output_origin=facts['output_origin'],
+                result_basis=facts['result_basis'],detail_clipped=facts['output_clipped'])
+        findings.append(item)
+        return item
+    def source_owner(row,source,source_id,attrs=None,resource=None,stamp=None):
+        return _activity_row(attrs if attrs is not None else row.get('attributes') or {},
+            stamp if stamp is not None else row.get('end_unix_nano') or row.get('time_unix_nano') or 0,
+            source,source_id,row.get('span_id'),row.get('service','unknown'),
+            resource_attributes=resource if resource is not None else row.get('resource_attributes') or {})
+    def credentials(value,owner,source,source_id):
+        hits=_credential_hits(value)
+        if not hits:return
+        labels=', '.join(sorted({label for label,_ in hits}))
+        fields=sorted({field for _,field in hits})
+        severity='high' if any(label=='private key material' or label.endswith('token pattern') for label,_ in hits) else 'medium'
+        emit('credential_exposure','Possible credential material captured',severity,
+            [{'type':source,'id':source_id}],
+            f"Detected {labels} in {', '.join(fields[:8]) or 'captured content'}. Values are omitted; inspect the linked source.",owner)
+    for event in activity:
+        facts=operation_facts(event)
+        raw=str(event.get('result') or '').casefold()
+        failed=raw in {'error','failed','blocked','denied','policy_denied','incomplete'} or facts['result']=='failed' or facts['result_conflict']
+        if not failed and not facts['expected_nonzero']:continue
+        source=event.get('source') or 'activity';source_id=event.get('source_id')
+        if not source_id:continue
+        represented.add((source,source_id))
+        blocked=raw in {'blocked','denied','policy_denied'}
+        kind='blocked_activity' if blocked else 'mcp_tool_error' if str(event.get('domain')).casefold() in {'mcp','mcptool'} else 'error_log' if source=='log' else 'span_error'
+        title=('Non-zero search/comparison result' if facts['expected_nonzero'] else
+            'Blocked agent activity' if blocked else 'Recorded operation has conflicting results' if facts['result_conflict'] else
+            'MCP tool returned an error' if kind=='mcp_tool_error' else 'Recorded operation failed')
+        detail='\n'.join(value for value in (facts['command'] or facts['display_subject'],
+            'Exit code: '+str(facts['exit_code']) if facts['exit_code'] is not None else '',
+            facts['output'],facts['result_basis']) if value)[:2000]
+        item=emit(kind,title,'info' if facts['expected_nonzero'] else 'medium' if blocked or facts['result_conflict'] else 'high',
+            [{'type':source,'id':source_id,'span_id':event.get('span_id')}],detail,event,facts=facts)
+        if facts['result']=='failed' and item['group_key']!=item['id']:
+            repeats.setdefault(item['group_key'],[]).append((item,event,facts))
+    for repeated in repeats.values():
+        if len(repeated)<2:continue
+        first,event,facts=repeated[0]
+        emit('repeated_tool_error','Repeated matching operation failures','medium',
+            [entry for item,_,_ in repeated for entry in item['evidence']],
+            str(len(repeated))+' recorded matching failures. '+first['detail'],event,facts=facts)
     for span in spans:
-        attrs = span["attributes"]
-        hits = _credential_hits(attrs)
-        for event in span.get("events", []):
-            if isinstance(event, dict):
-                hits.update(_credential_hits(event.get("attributes", {}), "event." + str(event.get("name") or "event")))
-        if hits:
-            credential_hits.update(label for label, _ in hits)
-            credential_sources.setdefault(("span", span["span_id"]), set()).update(field for _, field in hits)
-        reason = attrs.get("tool.error_message") or attrs.get("tool.error")
-        failed = span["status"] == "ERROR" or attrs.get("tool.result_status") == "error" or bool(attrs.get("tool.error"))
-        if failed:
-            command = attrs.get('process.command_line') or attrs.get('command') or attrs.get('tool.command')
-            code = attrs.get('process.exit.code', attrs.get('exit_code'))
-            output = attrs.get('tool.output') or attrs.get('tool.result') or attrs.get('stderr')
-            expected = bool(command and str(command).split()[0].rsplit('/',1)[-1] in {'grep','rg','diff'} and code in {1,'1'})
-            title = f"Non-zero search/comparison result" if expected else f"Error in {attrs.get('tool.name') or span['name']}"
-            reason = '\n'.join(str(x) for x in (command, f'Exit code: {code}' if code is not None else '', reason, output) if x)[:1500] or 'Span status is ERROR; command, exit code and output were not supplied.'
-            findings.append(_finding(trace_id, "span_error", title, "info" if expected else "high",
-                                     [{"type": "span", "id": span["span_id"]}],
-                                     str(reason)[:1500]))
-            if attrs.get("tool.name"):
-                key = (str(attrs["tool.name"]), str(reason or attrs.get("tool.error") or "error"))
-                failures.setdefault(key, []).append(span["span_id"])
-        mcp_error = mcp_result_error(attrs)
-        if mcp_error and not failed:
-            tool_name = attrs.get("gen_ai.tool.name") or attrs.get("mcp.tool.name") or span["name"]
-            findings.append(_finding(trace_id, "mcp_tool_error",
-                                     f"MCP tool returned an error: {tool_name}", "medium",
-                                     [{"type": "span", "id": span["span_id"]}], mcp_error))
-        if span["name"] == "agent.run":
-            stopped = attrs.get("agent.stopped_reason")
-            if stopped and stopped != "completed":
-                findings.append(_finding(trace_id, "incomplete_run", "Run stopped before completion", "medium",
-                                         [{"type": "span", "id": span["span_id"]}],
-                                         f"Recorded stop reason: {stopped}"))
-        blocked = [_activity_detail(event.get("attributes", {}))
-                   for event in span["events"]
-                   if isinstance(event, dict) and event.get("name") == "agent.activity" and
-                   isinstance(event.get("attributes"), dict) and
-                   _blocked_activity(event["attributes"])]
-        if blocked:
-            findings.append(_finding(trace_id, "blocked_activity",
-                                     f"Blocked agent activity ({len(blocked)})", "medium",
-                                     [{"type": "span", "id": span["span_id"]}],
-                                     "; ".join(blocked[:5])[:500]))
-    for (tool, reason), ids in failures.items():
-        if len(ids) >= 2:
-            findings.append(_finding(trace_id, "repeated_tool_error", f"Repeated errors from {tool}", "medium",
-                                     [{"type": "span", "id": value} for value in ids],
-                                     f"{len(ids)} failed calls recorded with the same error: {reason[:250]}"))
+        attrs=span.get('attributes') or {};owner=source_owner(span,'span',span['span_id'])
+        credentials(attrs,owner,'span',span['span_id'])
+        for index,event in enumerate(span.get('events') or []):
+            if not isinstance(event,dict) or not isinstance(event.get('attributes'),dict):continue
+            event_attrs,resource=_event_activity_identity(span,event['attributes'])
+            source_id=span['span_id']+':event:'+str(index)
+            event_owner=source_owner(span,'span',source_id,event_attrs,resource,event.get('time_unix_nano',0))
+            credentials(event['attributes'],event_owner,'span',source_id)
+        # Non-tool SDK failures must survive even without an Activity mapping.
+        if span.get('status')=='ERROR' and _tool_activity(span) is None and not any(event.get('source')=='span' and event.get('source_id')==span['span_id'] for event in activity):
+            detail=attrs.get('exception.message') or attrs.get('error.type') or 'Span status is ERROR; operation details were not supplied.'
+            emit('span_error','Error span recorded','high',[{'type':'span','id':span['span_id']}],str(detail)[:1500],owner)
+        stopped=attrs.get('agent.stopped_reason') if span.get('name')=='agent.run' else None
+        if stopped and stopped!='completed':
+            emit('incomplete_run','Run stopped before completion','medium',[{'type':'span','id':span['span_id']}],
+                'Recorded stop reason: '+str(stopped)[:500],owner)
     for log in logs:
-        hits = _credential_hits(log.get("attributes", {}))
-        hits.update(_credential_hits(log.get("body")))
-        if hits:
-            credential_hits.update(label for label, _ in hits)
-            credential_sources.setdefault(("log", log["id"]), set()).update(field for _, field in hits)
-        if log["severity_number"] >= 17:
-            findings.append(_finding(trace_id, "error_log", "Error log recorded", "medium",
-                                     [{"type": "log", "id": log["id"]}],
-                                     str(log["body"])[:500]))
-        if log.get("event_name") == "agent.activity" and isinstance(log.get("attributes"), dict) and \
-                _blocked_activity(log["attributes"]):
-            findings.append(_finding(trace_id, "blocked_activity", "Blocked agent activity", "medium",
-                                     [{"type": "log", "id": log["id"]}],
-                                     _activity_detail(log["attributes"])[:500]))
-    if outcome and not outcome["passed"]:
-        failed = [str(score.get("scorer") or "assertion") for score in outcome["scores"]
-                  if score.get("passed") is False]
-        detail = ("Failed checks: " + ", ".join(failed)) if failed else str(outcome.get("error") or "Evaluation did not pass")
-        findings.append(_finding(trace_id, "failed_outcome", "Task outcome failed", "high",
-                                 [{"type": "outcome", "id": trace_id}], detail[:500]))
+        source_id=log.get('id') or log.get('digest');owner=source_owner(log,'log',source_id)
+        credentials([log.get('attributes') or {},log.get('body')],owner,'log',source_id)
+        if log.get('severity_number',0)>=17 and ('log',source_id) not in represented:
+            # A qualified informational operation must not return as a raw error.
+            projected=next((event for event in activity if event.get('source')=='log' and event.get('source_id')==source_id),None)
+            if projected and operation_facts(projected)['expected_nonzero']:continue
+            emit('error_log','Error log recorded','medium',[{'type':'log','id':source_id}],str(log.get('body') or '')[:1500],owner)
     if outcome:
-        hits = _credential_hits(outcome)
-        if hits:
-            credential_hits.update(label for label, _ in hits)
-            credential_sources.setdefault(("outcome", outcome["trace_id"]), set()).update(
-                field for _, field in hits)
-    if credential_sources:
-        evidence = [{"type": source_type, "id": source_id}
-                    for source_type, source_id in sorted(credential_sources)]
-        fields = sorted({field for values in credential_sources.values() for field in values})
-        labels = ", ".join(sorted(credential_hits))
-        field_summary = ", ".join(fields[:8]) or "captured content"
-        if len(fields) > 8:
-            field_summary += f" and {len(fields) - 8} more fields"
-        severity = "high" if any(label == "private key material" or
-                                  label.endswith("token pattern") for label in credential_hits) else "medium"
-        findings.append(_finding(
-            trace_id, "credential_exposure", "Possible credential material captured", severity,
-            evidence, f"Detected {labels} in {field_summary}. Values are omitted; inspect the linked source."))
+        owner={**(outcome_owner or {}),'service':(outcome_owner or {}).get('producer'),
+            'time_unix_nano':outcome.get('time_unix_nano') or 0}
+        if not outcome.get('passed'):
+            failed=[str(score.get('scorer') or 'assertion') for score in outcome.get('scores',[]) if score.get('passed') is False]
+            detail='Failed checks: '+', '.join(failed) if failed else str(outcome.get('error') or 'Evaluation did not pass')
+            emit('failed_outcome','Task outcome failed','high',[{'type':'outcome','id':trace_id}],detail[:500],owner)
+        credentials(outcome,owner,'outcome',trace_id)
     return findings

@@ -144,11 +144,25 @@ The roster and Workflow share bounded static preparation within the same snapsho
 
 All 12 final CI jobs passed for PR #74. The isolated projection benchmark includes admission costs and reports one, two and three consumers plus metadata-only/oversized bypass cases. Three reads improved median elapsed preparation work by about 21% for canonical titles and 34% for prompt fallback; two canonical reads were nearly flat/slightly slower and one read regressed. This is not a complete-monitor CPU result. See the [full report and raw samples](../validation/source-preparation.md). Resource targets and the shared source-backed Overview remain open; C–G remain open.
 
-### Stage C shared operation facts — [PR #75](https://github.com/abhishekash/agenturm/pull/75) under validation
+### Stage C shared operation facts — merged [PR #75](https://github.com/abhishekash/agenturm/pull/75)
 
-Review, Activity failure grouping and recent reminders now share bounded typed command/result/output facts, conservative sanitized fingerprints and exact receiver/producer/actor/session/turn boundaries. Existing indexed results and derived summaries have a resumable versioned upgrade. Later matching success is an observation, not a repaired-task assertion; receipt IDs remain stable. The first focused gate passed 67 tests, with a further 56-test source/native/Review gate passing and independent peer signoff; the broad suite and CI remain in progress. See the [implementation and limits](../validation/operation-evidence.md).
+Review, Activity failure grouping and recent reminders now share bounded typed command/result/output facts, conservative sanitized fingerprints and exact receiver/producer/actor/session/turn boundaries. Existing indexed results and derived summaries have a resumable versioned upgrade. Later matching success is an observation, not a repaired-task assertion; receipt IDs remain stable. The first focused gate passed 67 tests, with a further 56-test source/native/Review gate passing and independent peer signoff; all twelve final CI jobs passed. Merge commit: `a601ad2236f22ef75600129e920ff763883bee7c`. See the [implementation and limits](../validation/operation-evidence.md).
 
-C1 remains under validation. Per-occurrence Findings filtering/counting/hydration (C2), source-backed Overview (C3), resource targets and stages D–G remain open.
+C1 is merged and validated. C2 is implemented and peer-reviewed in the next increment below; C3, resource targets and stages D–G remain open.
+
+### Stage C occurrence-owned Findings — [PR #76](https://github.com/abhishekash/agenturm/pull/76) in CI
+
+Findings filtering, keyset paging, scalar counts and exact source resolution now share one SQLite snapshot and receiver namespace. Each occurrence retains its actual producer/actor/session/turn; unknown ownership stays global, and root task/status is not borrowed. Shared operation facts drive error detail, expected-nonzero and conflict handling. Changes from older writers atomically invalidate evidence and queue bounded, restart-safe rebuilds. `s` opens exact sources, `t` explicitly opens the container trace. Capture revocation fences late reads, copy and export, including already-open previews. See the [implementation record](../validation/owned-findings.md).
+
+The 157-test storage/API/ownership/native/receipt/UI gate passed in 94.587 seconds. The latest privacy/alias and source-navigation delta passed 40 tests in 25.197 seconds; final peer review found no remaining blockers. C2 is not merged yet. C3 and all remaining stage gates below stay open.
+
+### Parallel implementation ownership and remaining acceptance gates
+
+Root owns shared evidence/storage/UI integration, C3 Overview, Stage E explanations and Stage B performance. The Git/handoff agent owns D in `feat/frozen-git-drafts`; the attention agent owns F in `feat/persistent-attention`; the investigations agent owns G in its isolated branch. Shared-file changes and CLI/API hooks are integrated by root, with separate tests/review/merge gates for each contribution.
+
+Stage B remains actively owned by root: cold readiness 112.96 s against <30 s, idle CPU 14.90% of one core against <5%, and sessions/MCP under-write p95 284.90/142.60 ms against <100 ms remain open. Profile and rerun matched conditions after shared projections land; also measure memory plateau and index/WAL growth. No heavy tests run during controlled measurement intervals.
+
+Before full completion, every F1–F27 and R1–R11 entry must identify code, regression evidence, merged commit and limits, separating implementation, validation, merge and external outcomes. Validate the combined tree's integration/security/ownership/capture paths, packaging and real terminal behavior. C3 needs rendered source-backed frames; D needs approved drafts and qualified collision boundaries; E needs denominators/unknowns; F needs offline catch-up/shared durable delivery; G needs indexed search and CLI/UI source parity. F26 also requires producer/schema-version-labelled golden provenance. A pilot kit is not participant evidence.
 
 Participant recruitment/consent, live Claude/Pi data not available in this environment, measured human reconstruction/resumption time and voluntary repeat use cannot be manufactured by automated tests. Prepare the materials and report these dependencies with denominators; do not mark F10/adoption evidence complete without participants. Native integration capabilities unsupported by a runtime must be labelled rather than guessed.
 

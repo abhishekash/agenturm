@@ -21,7 +21,11 @@ FIELDS = {
     'traces': ('trace_id', 'summary', 'spans', 'logs', 'span_page', 'pagination',
                'evidence_window', 'findings', 'progress', 'outcome'),
     'metrics': ('service', 'name', 'kind', 'temporality', 'scope_name', 'unit', 'description', 'point_count'),
-    'findings': ('id', 'severity', 'kind', 'title', 'detail', 'task', 'session_id', 'trace_id', 'services', 'evidence', 'occurrence_count', 'time_unix_nano'),
+    'findings': ('receiver_id','producer','service','agent_id','turn_id','ownership_version',
+                 'command','exit_code','output_kind','output_origin','result_basis','detail_clipped',
+                 'evidence_complete','trace_count','session_count','operation_reference','operation_version',
+                 'operation_result','operation_result_conflict','operation_expected_nonzero',
+                 'operation_fingerprint','error_fingerprint','id', 'severity', 'kind', 'title', 'detail', 'task', 'session_id', 'trace_id', 'services', 'evidence', 'occurrence_count', 'time_unix_nano'),
 }
 
 
@@ -72,9 +76,11 @@ class ExportScreen(ModalScreen):
     '''
     BINDINGS = [('escape', 'dismiss', 'Cancel')]
 
-    def __init__(self, view, record, scope=None, *, content=None):
+    def __init__(self, view, record, scope=None, *, content=None, can_export=None):
         super().__init__()
         self.content = content if content is not None else investigation_json(view, record, scope)
+        self.can_export=can_export
+        self._export_invalidated=False
 
     def compose(self) -> ComposeResult:
         with Vertical(id='export-dialog'):
@@ -91,6 +97,7 @@ class ExportScreen(ModalScreen):
         preview.write(Text(self.content))
         preview.scroll_home(animate=False)
         self.query_one('#export-cancel', Button).focus()
+        if self.can_export is not None:self.set_interval(.25,self.check_export_policy)
 
     @on(Button.Pressed, '#export-cancel')
     def cancel(self):
@@ -106,14 +113,27 @@ class ExportScreen(ModalScreen):
         self.query_one('#export-confirm',Button).disabled=True
         self.write_export(path)
 
-    def can_write(self):
+    def check_export_policy(self):
+        if self._export_invalidated or self.can_export is not None and not self.can_export():
+            self._export_invalidated=True
+            self.content=''
+            self.query_one('#export-preview',RichLog).clear()
+            self.query_one('#export-confirm',Button).disabled=True
+            self.query_one('#export-warning',Static).update('Source content withheld: capture policy or receiver changed. Reopen current evidence before exporting.')
+            return False
         return True
+
+    def can_write(self):
+        return self.check_export_policy()
 
     @work(thread=True,exclusive=True,exit_on_error=False)
     def write_export(self,path):
         error=''
         try:
-            write_investigation(path,self.content)
+            if self._export_invalidated or self.can_export is not None and not self.can_export():
+                self._export_invalidated=True
+                error='Source capture or receiver changed; nothing was written.'
+            else:write_investigation(path,self.content)
         except FileExistsError:
             error='Destination already exists. Choose a new file; nothing was overwritten.'
         except (OSError, ValueError):
