@@ -164,7 +164,11 @@ def prepare_sources(snapshot, include_reviews=False, *, denied_sources=frozenset
         item.setdefault('native_session_id',item.get('session_id'))
         if item['id'] in denied_sources:item['capture_content']=False
         if policy_snapshot is not None:
-            from .review_facts import review_capture_policy
+            from .review_facts import review_capture_policy,capture_safety_revision
+            # Bind a newly projected source to the snapshot it actually came
+            # from. A paused older snapshot must retain its older generation.
+            revision=capture_safety_revision(snapshot,scope_for(item,snapshot))
+            if revision is not None:item['capture_safety_revision']=revision
             item.update(review_capture_policy(item,policy_snapshot,scope_for(item,snapshot)))
         if item.get('capture_content') is False:
             # Fresh health may revoke capture while a failed Activity refresh
@@ -235,14 +239,21 @@ class SourcePreparation:
         return cls.bounded_copy((value,)) is not None
 
     def get(self,snapshot,include_reviews,denied_sources,policy_snapshot):
+        def policy_state(value):
+            local=getattr(value,'local_status',{})or {}
+            return {key:local[key]for key in ('capture_policy_schema','capture_global_revision','capture_policy_revisions')
+                    if key in local}if local.get('capture_policy_schema')==1 else None
+        snapshot_policy=policy_state(snapshot)
+        live_policy=(getattr(policy_snapshot,'receiver_id',''),policy_state(policy_snapshot))if policy_snapshot is not None else None
         inputs=(getattr(snapshot,'receiver_id',''),getattr(snapshot,'view_scope',()),
                 snapshot.agents,snapshot.local_status.get('sessions',[]),
-                getattr(snapshot,'sessions',[]),snapshot.activity,denied_sources)
+                getattr(snapshot,'sessions',[]),snapshot.activity,snapshot_policy,live_policy,denied_sources)
         # Feed responses are already byte bounded. Also bound retained rows and
         # bypass unusually large custom feeds rather than growing a text cache.
         bounded=(not denied_sources and sum(len(rows) for rows in inputs[2:5])<=500
-                 and len(inputs[5])<=200)
-        if denied_sources:self.clear()
+                 and len(inputs[5])<=200 and (live_policy is None or
+                    (live_policy[0]==inputs[0]and live_policy[1]==snapshot_policy)))
+        if denied_sources or not bounded:self.clear()
         for index,(owner,reviews,frozen,prepared) in enumerate(self.entries):
             if owner() is snapshot and reviews==include_reviews:
                 if bounded and frozen==inputs:
@@ -257,9 +268,9 @@ class SourcePreparation:
                                     policy_snapshot=policy_snapshot),False)
         frozen=(*frozen,denied_sources)
         from types import SimpleNamespace
-        detached=SimpleNamespace(receiver_id=frozen[0],agents=frozen[2],local_status={'sessions':frozen[3]},
+        detached=SimpleNamespace(receiver_id=frozen[0],agents=frozen[2],local_status={'sessions':frozen[3],**(frozen[6]or {})},
                                  sessions=frozen[4],activity=frozen[5])
-        prepared=prepare_sources(detached,include_reviews)
+        prepared=prepare_sources(detached,include_reviews,policy_snapshot=policy_snapshot)
         try:owner=weakref.ref(snapshot)
         except TypeError:return prepared,False
         self.entries.append((owner,include_reviews,frozen,prepared))
@@ -305,11 +316,13 @@ def sources(snapshot, include_reviews=False, *, preparation=None, policy_snapsho
     denied=frozenset(entry['source_id'] for entry in policy.local_status.get('sessions',[])
                      if entry.get('capture_content') is False) if same_receiver else frozenset()
     if same_receiver and policy.local_status.get('capture_content') is False:denied=denied|{None}
+    safety=(snapshot.local_status.get('capture_policy_schema')==1 or policy.local_status.get('capture_policy_schema')==1)
+    policy_context=policy if denied or safety else None
     if preparation is not None:
-        prepared,retained=preparation.get(snapshot,include_reviews,denied,policy if denied else None)
+        prepared,retained=preparation.get(snapshot,include_reviews,denied,policy_context)
     else:
         prepared=prepare_sources(snapshot,include_reviews,denied_sources=denied,
-                                 policy_snapshot=policy if denied else None)
+                                 policy_snapshot=policy_context)
         retained=False
     result=deepcopy(prepared[0]) if retained else prepared[0]
     now=time.time_ns()

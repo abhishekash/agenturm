@@ -2,6 +2,9 @@
 from __future__ import annotations
 from copy import deepcopy
 import time
+import hashlib
+import json
+import re
 from .session_status import session_health
 from .workflow_evidence import scope_for
 from .attention import fresh_observation
@@ -50,11 +53,66 @@ def task_run_usage(sessions, item, traces=()):
     return allocated(candidate) if candidate else {}
 
 
+def capture_safety_revision(snapshot,scope):
+    """Client-only revocation generation, scoped independently of execution IDs."""
+    if getattr(snapshot,'receiver_id','')!=scope.receiver:return None
+    local=getattr(snapshot,'local_status',{})or {}
+    if type(local.get('capture_policy_schema'))is not int or local['capture_policy_schema']!=1:return None
+    global_revision=local.get('capture_global_revision')
+    global_revision=global_revision if type(global_revision)is int and global_revision>0 else 0
+    revision=0
+    rows=local.get('capture_policy_revisions',())
+    if not isinstance(rows,(list,tuple)):return None
+    for row in rows[:500]:
+        if not isinstance(row,dict):continue
+        service=row.get('service')
+        if service!=scope.producer and not(scope.producer=='codex'and service=='codex-review'and row.get('runtime')=='Codex'):continue
+        if scope.agent_id:
+            if row.get('agent_id')!=scope.agent_id:continue
+        elif row.get('agent_id')or row.get('session_id')!=scope.session_id:continue
+        if scope.session_id and row.get('session_id')and row['session_id']!=scope.session_id:continue
+        value=row.get('capture_safety_revision')
+        if type(value)is int and value>revision:revision=value
+    return f'{global_revision}:{revision}'if global_revision or revision else None
+
+
+def capture_revision_binding(value):
+    if not isinstance(value,str):return None
+    match=re.fullmatch(r'feed-safety-v1:([0-9]{1,20}:[0-9]{1,20}):[0-9a-f]{64}',value)
+    return match.group(1)if match else None
+
+
+def bind_capture_policy(original,snapshot,scope):
+    """Bind newly selected evidence to its own published/request-start snapshot.
+
+    Callers retain this metadata through asynchronous work; they must not bind
+    an old response to whichever policy happens to be live at completion.
+    """
+    result=dict(original)
+    if 'capture_safety_revision'not in result:
+        result['capture_safety_revision']=capture_revision_binding(result.get('capture_revision'))or capture_safety_revision(snapshot,scope)
+    return result
+
+
 def review_capture_policy(original, snapshot, scope):
     """Capture policy belongs to the identity, independently of which run is open."""
-    policy={key:original[key] for key in ('capture_content','capture_revision') if key in original}
+    policy={key:original[key] for key in ('capture_content','capture_revision','capture_safety_revision','capture_source_revision') if key in original}
     if getattr(snapshot,'receiver_id','')!=scope.receiver:return policy
     local=getattr(snapshot,'local_status',{}) or {}
+    safety_revision=capture_safety_revision(snapshot,scope)
+    original_revision=original.get('capture_safety_revision')or capture_revision_binding(original.get('capture_revision'))
+    if original_revision is not None and safety_revision!=original_revision:
+        policy['capture_content']=False;policy['capture_revision']=False
+        if safety_revision is not None:policy['capture_safety_revision']=safety_revision
+        return policy
+    if safety_revision is not None:
+        policy['capture_safety_revision']=safety_revision
+        if original.get('capture_safety_revision')!=safety_revision:
+            policy['capture_content']=False
+            policy['capture_revision']=False
+            return policy
+    source_revision=original.get('capture_source_revision',original.get('capture_revision'))
+    denied=False
     for row in local.get('sessions',()):
         if row.get('service')!=scope.producer:
             if not (scope.producer=='codex' and row.get('service')=='codex-review'
@@ -62,10 +120,23 @@ def review_capture_policy(original, snapshot, scope):
         if scope.agent_id:
             if row.get('agent_id')!=scope.agent_id:continue
         elif row.get('agent_id') or row.get('session_id')!=scope.session_id:continue
-        if scope.session_id and row.get('session_id')!=scope.session_id:continue
+        if scope.session_id and row.get('session_id')!=scope.session_id:
+            # Missing session may conservatively deny this exact actor. It
+            # never grants capture or transfers another actor's permission.
+            if not(scope.agent_id and row.get('agent_id')==scope.agent_id and
+                   not row.get('session_id')and row.get('capture_content')is False):continue
+        if row.get('capture_content')is False:denied=True
+        if 'capture_revision'in row:source_revision=row['capture_revision']
         policy.update({key:row[key] for key in ('capture_content','capture_revision') if key in row})
-        break
+    if denied:policy['capture_content']=False
     if local.get('capture_content') is False:policy['capture_content']=False
+    if safety_revision is not None:
+        policy['capture_source_revision']=source_revision
+        prior=capture_revision_binding(source_revision)
+        digest=(source_revision.rsplit(':',1)[1]if prior is not None else
+            hashlib.sha256(json.dumps(source_revision,sort_keys=True,default=str).encode()).hexdigest())
+        policy['capture_revision']=(False if policy.get('capture_content')is False else
+            'feed-safety-v1:'+safety_revision+':'+digest)
     return policy
 
 

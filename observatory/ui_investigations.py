@@ -15,8 +15,8 @@ from textual.widgets import Button, Checkbox, DataTable, Input, RichLog, Select,
 
 from .investigation import decode_reference, encode_reference, reference_matches, validate_query
 from .investigation_cli import collect_investigation, collect_source
-from .review_facts import review_capture_policy
-from .ui_findings import source_fields
+from .review_facts import bind_capture_policy, review_capture_policy
+from .ui_findings import capture_reference_context, source_fields
 from .workflow_evidence import scope_for
 
 MAX_ROWS=250
@@ -128,6 +128,7 @@ class InvestigationsScreen(ModalScreen):
         self.generation=0;self.busy=False;self.closed=False;self.invalidated=False
         self.request=None;self.cursor=None;self.cursors=set();self.pages=0;self.payload_bytes=0
         self.source_mode=False;self.filters_visible=False;self.frozen_policy=None
+        self.request_policy=None
 
     def compose(self):
         yield Static('Investigations need 60 columns × 18 rows.\nResize to continue · Esc Back',id='investigation-floor',markup=False)
@@ -183,6 +184,7 @@ class InvestigationsScreen(ModalScreen):
     def clear_derived(self):
         self.rows=[];self.sources=[];self.references=[];self.selected_reference=None
         self.cursor=None;self.cursors=set();self.pages=0;self.payload_bytes=0;self.frozen_policy=None
+        self.request_policy=None
         self.query_one('#investigation-results',DataTable).clear()
         self.query_one('#investigation-source',RichLog).clear()
         self.query_one('#investigation-more',Button).disabled=True
@@ -212,6 +214,7 @@ class InvestigationsScreen(ModalScreen):
         except ValueError as exc:self.status(str(exc));return
         if not policy_state(self.owner,self.receiver,[])[0]:self.invalidate();return
         self.cancel_request();self.clear_derived();self.set_mode(False);self.invalidated=False;self.request=values
+        self.request_policy=capture_reference_context(self.owner.feed.snapshot)
         self.busy=True;self.status('Reading retained observations… Ctrl+C cancels.');self.load_page(self.generation,None)
 
     @on(Input.Submitted)
@@ -237,6 +240,7 @@ class InvestigationsScreen(ModalScreen):
     @work(group='typed-investigation',exclusive=True,exit_on_error=False)
     async def load_page(self,generation,cursor):
         request=self.request
+        context=self.request_policy
         try:
             kind,query,service,failed=request
             response=await asyncio.to_thread(collect_investigation,self.owner.feed.api,kind=kind,query=query,
@@ -250,7 +254,7 @@ class InvestigationsScreen(ModalScreen):
                 reference=decode_reference(encode_reference(row['source_reference']))
                 if reference['receiver_id']!=self.receiver or reference['event_id']!=row['event_id']:
                     raise ValueError('Result source reference changed; evidence is withheld.')
-                references.append(reference)
+                references.append(bind_capture_policy(reference,context,scope_for(reference,context)))
             combined_refs=[*self.references,*references]
             state=policy_state(self.owner,self.receiver,combined_refs)
             if not state[0]:self.invalidate();return
@@ -298,13 +302,14 @@ class InvestigationsScreen(ModalScreen):
 
     @work(group='typed-investigation',exclusive=True,exit_on_error=False)
     async def load_source(self,generation,reference):
+        context=self.request_policy
         try:
             response=await asyncio.to_thread(collect_source,self.owner.feed.api,reference['event_id'],encode_reference(reference))
             lines=await asyncio.to_thread(source_lines,response)
             if not self.live(generation) or not self.source_mode:return
             self.check_policy()
             if not self.live(generation):return
-            references=[*self.references,*source_references(response,reference)]
+            references=[*self.references,*[bind_capture_policy(row,context,scope_for(row,context)) for row in source_references(response,reference)]]
             state=policy_state(self.owner,self.receiver,references)
             if not state[0]:self.invalidate();return
             self.sources=deepcopy(response['sources']);self.references=references;self.frozen_policy=state

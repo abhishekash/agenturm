@@ -101,6 +101,10 @@ class ReviewScreen(ModalScreen):
 
     def apply_capture_policy(self):
         policy=review_capture_policy(self.item,self.owner.feed.snapshot,self.scope)
+        if self.owner.feed.snapshot.receiver_id!=self.scope.receiver:
+            # A frozen body's original namespace is no longer the live source
+            # authorizing egress. Never retag or share that old captured body.
+            policy={**policy,'capture_content':False}
         if policy.get('capture_content') is False and (self.item.get('capture_content') is not False or self.history.events):
             self.item.update(policy);self.generation+=1;self.git_generation+=1;self.workspace_observation=None;self.git_busy=False
             self.item['task']='Selected execution (metadata-only)'
@@ -214,13 +218,14 @@ class ReviewScreen(ModalScreen):
         self.render_projection()
 
     def attach_parallel_observations(self):
-        from .review_continuity import remember_comparison,overlap_observations
+        from .review_continuity import remember_comparison,overlap_observations,content_allowed
+        from .ui_saved_tasks import task_source_policy
         from .workflow_evidence import ExecutionScope
         cache=self.owner.review_git_comparisons
         current_receiver=getattr(self.owner.feed.snapshot,'receiver_id','')
         for key,row in list(cache.items()):
             scope=ExecutionScope(**row['scope'])
-            if scope.receiver!=current_receiver or review_capture_policy({},self.owner.feed.snapshot,scope).get('capture_content') is False:
+            if scope.receiver!=current_receiver or not content_allowed(row,task_source_policy(self.owner)):
                 cache.pop(key,None)
         try:key=remember_comparison(cache,self.projection)
         except ValueError:return
@@ -290,7 +295,19 @@ class ReviewScreen(ModalScreen):
         else:self.workspace_observation=result
         self.render_projection()
 
-    def action_refresh(self):self.request_page(refresh=True)
+    def action_refresh(self):
+        # This explicit action may request new evidence. Ordinary callbacks and
+        # sharing actions retain the generation their frozen content came from.
+        from .review_facts import capture_safety_revision,capture_revision_binding
+        old_binding=self.item.get('capture_safety_revision')or capture_revision_binding(self.item.get('capture_revision'))
+        self.apply_capture_policy()
+        if old_binding is not None:
+            for field in ('capture_content','capture_revision','capture_source_revision'):
+                self.item.pop(field,None)
+        revision=capture_safety_revision(self.owner.feed.snapshot,self.scope)
+        if revision is not None:self.item['capture_safety_revision']=revision
+        else:self.item.pop('capture_safety_revision',None)
+        self.request_page(refresh=True)
 
     def frozen_json(self):return json.dumps(self.projection,ensure_ascii=False,indent=2)+'\n'
 
@@ -398,6 +415,10 @@ class ReviewExcerptScreen(ModalScreen):
             coverage=self.projection['window']['coverage'],
             captured_ns=int(self.projection['captured_at']*1e9),content_available=True)
         if source.get('run_start_ns') is None:source.pop('run_start_ns')
+        from .review_facts import capture_revision_binding
+        revision=self.projection['window'].get('capture_revision')
+        binding=capture_revision_binding(revision)
+        if binding is not None:source['_capture_binding']=dict(capture_safety_revision=binding,capture_revision=revision)
         context=capture_selected_run(self.owner,item_override=self.item,review_snapshot=self.projection)
         self.app.push_screen(SavedTasksScreen(self.owner,decision_excerpt={'source':source,'text':text[:4000]},capture_context=context))
 
