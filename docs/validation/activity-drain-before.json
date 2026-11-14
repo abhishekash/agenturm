@@ -1,0 +1,156 @@
+{
+  "diagnostic_only": true,
+  "synthetic": true,
+  "baseline": "5e0c397",
+  "pending_hooks_absent": [
+    "StageG investigation index replacement/deletion/FTS maintenance",
+    "StageF workflow dirty/projection hooks"
+  ],
+  "source": "/tmp/agenturm-b-mcp-profile.db",
+  "copy": "/tmp/agenturm-b-activity-profile.db",
+  "inventory": {
+    "spans": 32170,
+    "logs": 42765,
+    "trace_activity": 6047
+  },
+  "jobs": 1000,
+  "drained": 1000,
+  "measured_utc": "2026-11-14T10:34:54.087242+00:00",
+  "wall_ms": 2942.599104,
+  "thread_cpu_ms": 2914.960181,
+  "sqlite_version": "3.45.1",
+  "queries": [
+    {
+      "sql": "SELECT digest,trace_id,span_id,service,time_ns, attributes,resource_attributes,body FROM logs WHERE trace_id=? AND span_id=? AND service=? AND agent_id=? AND event_name='agent.activity' AND length(CAST(attributes AS BLOB))+length(CAST(resource_attributes AS BLOB))+ length(CAST(body AS BLOB))<=65536 ORDER BY time_ns DESC,digest DESC LIMIT 16",
+      "calls": 500,
+      "execute_ns": 596150703,
+      "execute_cpu_ns": 596084899,
+      "fetch_ns": 7482244,
+      "fetch_cpu_ns": 7144030,
+      "rows_returned": 148,
+      "affected_rows": 0,
+      "max_execute_ns": 2875404,
+      "wall_ms": 603.632947,
+      "cpu_ms": 603.228929,
+      "plan": [
+        "SEARCH logs USING INDEX logs_agent_id (agent_id=?)",
+        "USE TEMP B-TREE FOR RIGHT PART OF ORDER BY"
+      ]
+    },
+    {
+      "sql": "DELETE FROM activity_index_v1 WHERE kind=? AND owner_key=?",
+      "calls": 1000,
+      "execute_ns": 113776572,
+      "execute_cpu_ns": 117391460,
+      "fetch_ns": 0,
+      "fetch_cpu_ns": 0,
+      "rows_returned": 0,
+      "affected_rows": 740,
+      "max_execute_ns": 513339,
+      "wall_ms": 113.776572,
+      "cpu_ms": 117.39146,
+      "plan": [
+        "SEARCH activity_index_v1 USING INDEX activity_owner_v1 (kind=? AND owner_key=?)"
+      ]
+    },
+    {
+      "sql": "INSERT OR REPLACE INTO activity_index_v1 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "calls": 740,
+      "execute_ns": 75172182,
+      "execute_cpu_ns": 69408470,
+      "fetch_ns": 0,
+      "fetch_cpu_ns": 0,
+      "rows_returned": 0,
+      "affected_rows": 740,
+      "max_execute_ns": 9811154,
+      "wall_ms": 75.172182,
+      "cpu_ms": 69.40847,
+      "plan": []
+    },
+    {
+      "sql": "SELECT * FROM logs WHERE digest=?",
+      "calls": 500,
+      "execute_ns": 18838231,
+      "execute_cpu_ns": 20739714,
+      "fetch_ns": 9831065,
+      "fetch_cpu_ns": 9515036,
+      "rows_returned": 500,
+      "affected_rows": 0,
+      "max_execute_ns": 105011,
+      "wall_ms": 28.669296,
+      "cpu_ms": 30.25475,
+      "plan": [
+        "SEARCH logs USING INDEX sqlite_autoindex_logs_1 (digest=?)"
+      ]
+    },
+    {
+      "sql": "SELECT * FROM spans WHERE trace_id=? AND span_id=?",
+      "calls": 500,
+      "execute_ns": 16440099,
+      "execute_cpu_ns": 18187017,
+      "fetch_ns": 9599604,
+      "fetch_cpu_ns": 9315422,
+      "rows_returned": 500,
+      "affected_rows": 0,
+      "max_execute_ns": 182234,
+      "wall_ms": 26.039703,
+      "cpu_ms": 27.502439,
+      "plan": [
+        "SEARCH spans USING INDEX sqlite_autoindex_spans_1 (trace_id=? AND span_id=?)"
+      ]
+    },
+    {
+      "sql": "DELETE FROM activity_dirty_v1 WHERE kind=? AND owner_key=?",
+      "calls": 1000,
+      "execute_ns": 19065103,
+      "execute_cpu_ns": 23221921,
+      "fetch_ns": 0,
+      "fetch_cpu_ns": 0,
+      "rows_returned": 0,
+      "affected_rows": 1000,
+      "max_execute_ns": 73121,
+      "wall_ms": 19.065103,
+      "cpu_ms": 23.221921,
+      "plan": [
+        "SEARCH activity_dirty_v1 USING INDEX sqlite_autoindex_activity_dirty_v1_1 (kind=? AND owner_key=?)"
+      ]
+    },
+    {
+      "sql": "DELETE FROM live_log_usage_v1 WHERE digest=?",
+      "calls": 500,
+      "execute_ns": 5082776,
+      "execute_cpu_ns": 6952536,
+      "fetch_ns": 0,
+      "fetch_cpu_ns": 0,
+      "rows_returned": 0,
+      "affected_rows": 0,
+      "max_execute_ns": 46605,
+      "wall_ms": 5.082776,
+      "cpu_ms": 6.952536,
+      "plan": [
+        "SEARCH live_log_usage_v1 USING INDEX sqlite_autoindex_live_log_usage_v1_1 (digest=?)"
+      ]
+    },
+    {
+      "sql": "SELECT kind,owner_key FROM activity_dirty_v1 ORDER BY kind,owner_key LIMIT ?",
+      "calls": 1,
+      "execute_ns": 82713,
+      "execute_cpu_ns": 93681,
+      "fetch_ns": 3004093,
+      "fetch_cpu_ns": 2946913,
+      "rows_returned": 1000,
+      "affected_rows": 0,
+      "max_execute_ns": 82713,
+      "wall_ms": 3.086806,
+      "cpu_ms": 3.040594,
+      "plan": [
+        "SCAN activity_dirty_v1 USING COVERING INDEX sqlite_autoindex_activity_dirty_v1_1"
+      ]
+    }
+  ],
+  "cpu_profile": "         1266204 function calls (1245139 primitive calls) in 2.942 seconds\n\n   Ordered by: cumulative time\n   List reduced from 297 to 35 due to restriction <35>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.068    0.068    2.942    2.942 storage_activity.py:240(drain)\n     1000    0.021    0.000    1.690    0.002 core.py:484(_activity_for)\n     2501    0.014    0.000    1.180    0.000 operation_facts.py:45(safe_value)\n17657/2501    0.175    0.000    1.160    0.000 operation_facts.py:49(visit)\n     4741    0.072    0.000    1.026    0.000 agenturm-activity-drain-diagnostic.py:35(execute)\n      537    0.056    0.000    0.973    0.002 operation_facts.py:343(operation_facts)\n     4741    0.833    0.000    0.833    0.000 {method 'execute' of 'sqlite3.Connection' objects}\n      962    0.052    0.000    0.725    0.001 core.py:203(_activity_row)\n18703/13023    0.032    0.000    0.585    0.000 {built-in method builtins.any}\n      350    0.001    0.000    0.493    0.001 core.py:519(<genexpr>)\n      148    0.003    0.000    0.492    0.003 operation_facts.py:271(supersedes_operation)\n     1238    0.005    0.000    0.491    0.000 operation_facts.py:257(normalize_operation_result)\n      500    0.019    0.000    0.455    0.001 core.py:305(_tool_activity)\n      241    0.014    0.000    0.413    0.002 operation_facts.py:146(evidence_detail)\n    25445    0.105    0.000    0.316    0.000 {method 'join' of 'str' objects}\n    11543    0.117    0.000    0.298    0.000 findings.py:35(_safe_text)\n    12041    0.082    0.000    0.262    0.000 operation_facts.py:30(credential_key)\n   143257    0.245    0.000    0.246    0.000 {method 'sub' of 're.Pattern' objects}\n   134573    0.095    0.000    0.137    0.000 operation_facts.py:67(<genexpr>)\n    16284    0.028    0.000    0.132    0.000 __init__.py:179(sub)\n     4185    0.012    0.000    0.088    0.000 __init__.py:299(loads)\n    80431    0.052    0.000    0.074    0.000 operation_facts.py:37(<genexpr>)\n    11654    0.041    0.000    0.074    0.000 operation_facts.py:63(<genexpr>)\n    29980    0.044    0.000    0.071    0.000 __init__.py:280(_compile)\n     4185    0.020    0.000    0.070    0.000 decoder.py:332(decode)\n     1648    0.013    0.000    0.066    0.000 __init__.py:183(dumps)\n   191420    0.063    0.000    0.063    0.000 {built-in method unicodedata.category}\n    11543    0.019    0.000    0.052    0.000 __init__.py:174(search)\n     1648    0.008    0.000    0.051    0.000 encoder.py:183(encode)\n    96391    0.051    0.000    0.051    0.000 {built-in method builtins.isinstance}\n     1054    0.025    0.000    0.049    0.000 operation_facts.py:110(attribute_evidence)\n    35625    0.048    0.000    0.048    0.000 {method 'search' of 're.Pattern' objects}\n     1648    0.040    0.000    0.040    0.000 encoder.py:205(iterencode)\n    73501    0.039    0.000    0.039    0.000 {method 'get' of 'dict' objects}\n      406    0.007    0.000    0.037    0.000 operation_facts.py:194(activity_evidence)\n\n\n",
+  "source_hashes": {
+    "observatory/core.py": "b87404fabb61c21f07e7db5cde496aacb9cf09ec18097b6ea3ff5669d45868ea",
+    "observatory/storage_activity.py": "1c77b1dc64fa0000dc15931bf1f31cda5b22c3cc2db2467aa147d4e1a5b50db1"
+  }
+}

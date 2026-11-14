@@ -61,6 +61,15 @@ def initialize(db):
         db.execute(f'DROP INDEX IF EXISTS {table}_mcp_lookup_v1')
     db.execute('''CREATE INDEX IF NOT EXISTS spans_source_text_v1 ON spans(
         service,CAST(json_extract(resource_attributes,'$."observatory.source_id"') AS TEXT))''')
+    # A source span can only be superseded by bounded, exactly owned log
+    # evidence. Seek that identity directly instead of scanning an actor's
+    # complete history for every queued span. Unlinkable rows need no entry.
+    db.execute('''CREATE INDEX IF NOT EXISTS logs_activity_linked_v1 ON logs(
+        trace_id,span_id,service,agent_id,time_ns DESC,digest DESC)
+        WHERE trace_id IS NOT NULL AND span_id IS NOT NULL AND agent_id IS NOT NULL
+          AND event_name='agent.activity'
+          AND length(CAST(attributes AS BLOB))+length(CAST(resource_attributes AS BLOB))+
+              length(CAST(body AS BLOB))<=65536''')
     from .core import INPUT_TOKEN_KEYS, OUTPUT_TOKEN_KEYS, TOKEN_BREAKDOWN_KEYS
 
     usage_fields = {

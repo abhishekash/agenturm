@@ -1,0 +1,162 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Activity Linked Index</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.3</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/activity-linked-index.md">Markdown source ↗</a></nav><h1>Exact linked-log seeks during Activity replay</h1>
+<p>Status: a narrow declarative index removes a repeated agent-history scan while preserving the existing source query. Functional gates pass. All timings below are <strong>diagnostics under development load</strong>, not controlled performance or resource-budget results. Stage B, full cold startup, complete-monitor CPU/RSS and final combined G/F replay costs remain open.</p>
+<h2>Bounded change</h2>
+<p>The only runtime change is one index in <code>storage_activity.initialize</code>:</p>
+<pre><code class="language-sql">CREATE INDEX IF NOT EXISTS logs_activity_linked_v1 ON logs(
+    trace_id,span_id,service,agent_id,time_ns DESC,digest DESC)
+WHERE trace_id IS NOT NULL AND span_id IS NOT NULL AND agent_id IS NOT NULL
+  AND event_name='agent.activity'
+  AND length(CAST(attributes AS BLOB))+length(CAST(resource_attributes AS BLOB))+
+      length(CAST(body AS BLOB))&lt;=65536;
+</code></pre>
+<p>The existing linked-log query already requires those exact trace/span/producer/actor equalities, the same stored-source byte cap, and newest timestamp/digest ordering with a 16-record limit. A <code>NULL</code> identity cannot satisfy its equality predicates. The extra null exclusions therefore avoid indexing unlinkable logs without removing a possible match. Only source identity metadata enters the index; captured prompts/output are not copied into it.</p>
+<p>Drain order and limits, invalidation triggers, <code>_activity_for</code>, typed provenance/supersession checks, capture behavior, hydration and per-owner Python memory are unchanged. The source iterator still handles at most 16 qualifying linked logs, each with at most 65,536 combined stored attribute/resource/body bytes. No batch raw-payload prefetch, skipped semantic check, extra queue or result cache is added. Existing/older writers maintain the index automatically through SQLite; source updates still queue the existing repair jobs.</p>
+<h2>Where SQL work was going</h2>
+<p>The baseline is <code>5e0c397</code>, including C3 and the Sessions improvement. The private database is a read-only SQLite backup of the verified generated retained corpus: 32,170 spans, 42,765 logs and 6,047 traces. Neither the original source nor personal telemetry was modified. The diagnostic requeues the latest 500 raw log identities and latest 500 span identities, then runs the real <code>drain(limit=1000)</code> in one write transaction.</p>
+<p><strong>Pending Stage G investigation index/FTS replacement hooks and Stage F workflow dirty/projection hooks are absent from this baseline.</strong> Their cost is not included in replay or raw-insert diagnostics. The selected recent records also include richer native/typed facts than the earlier simple generated review fixture. Its 2.612-second/4,931-call profile cannot be compared directly with this 2.943-second/4,741-call profile.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/activity-drain-before.json">Baseline statements, counts, rows and EXPLAIN</a>, <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/activity-drain-indexed.json">indexed replay</a>:</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Statement group</th>
+<th style="text-align:right">Calls</th>
+<th style="text-align:right">Returned rows</th>
+<th style="text-align:right">Baseline diagnostic SQL time</th>
+<th style="text-align:right">Indexed diagnostic SQL time</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Linked logs for one span</td>
+<td style="text-align:right">500</td>
+<td style="text-align:right">148</td>
+<td style="text-align:right">603.63 ms</td>
+<td style="text-align:right">12.54 ms</td>
+</tr>
+<tr>
+<td>Delete existing Activity owner rows</td>
+<td style="text-align:right">1,000</td>
+<td style="text-align:right">0</td>
+<td style="text-align:right">113.78 ms</td>
+<td style="text-align:right">109.11 ms</td>
+</tr>
+<tr>
+<td>Insert Activity rows</td>
+<td style="text-align:right">740</td>
+<td style="text-align:right">0</td>
+<td style="text-align:right">75.17 ms</td>
+<td style="text-align:right">43.54 ms</td>
+</tr>
+<tr>
+<td>Read raw logs by digest</td>
+<td style="text-align:right">500</td>
+<td style="text-align:right">500</td>
+<td style="text-align:right">28.67 ms</td>
+<td style="text-align:right">18.18 ms</td>
+</tr>
+<tr>
+<td>Read raw spans by primary key</td>
+<td style="text-align:right">500</td>
+<td style="text-align:right">500</td>
+<td style="text-align:right">26.04 ms</td>
+<td style="text-align:right">19.14 ms</td>
+</tr>
+<tr>
+<td>Delete completed dirty jobs</td>
+<td style="text-align:right">1,000</td>
+<td style="text-align:right">0</td>
+<td style="text-align:right">19.07 ms</td>
+<td style="text-align:right">13.75 ms</td>
+</tr>
+<tr>
+<td>Delete old log-usage entries</td>
+<td style="text-align:right">500</td>
+<td style="text-align:right">0</td>
+<td style="text-align:right">5.08 ms</td>
+<td style="text-align:right">3.84 ms</td>
+</tr>
+<tr>
+<td>Select queued source jobs</td>
+<td style="text-align:right">1</td>
+<td style="text-align:right">1,000</td>
+<td style="text-align:right">3.09 ms</td>
+<td style="text-align:right">1.68 ms</td>
+</tr>
+</tbody>
+</table></div>
+<p>The baseline linked lookup chose <code>logs_agent_id (agent_id=?)</code>, then filtered trace/span/service and sorted the remaining timestamp tie field. It repeatedly visited an actor's retained history. The new plan is <code>logs_activity_linked_v1 (trace_id=? AND span_id=? AND service=? AND agent_id=?)</code>, with no temporary order B-tree. Other predicates remain in the same query and semantic checks remain after retrieval.</p>
+<p>SQL call count remains 4,741; this change removes the repeated history scan rather than batching source payloads. The whole profiled replay was 2.943 seconds before and 1.796 seconds with the index, but host load, cache state and semantic CPU also varied. That is <strong>not</strong> a controlled end-to-end improvement claim. All sampled Activity rows and serialized payloads were exactly equal before/after indexed replay. No full 75,000-source replay was run.</p>
+<h2>Existing-index alternative and footprint</h2>
+<p>Private-copy comparisons execute the same 500 lookups, returning exactly the same 148 records. Three samples per variant include progress callbacks for approximate SQLite VM counts. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/activity-linked-index-narrow.json">Narrow-index diagnostics</a>:</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Lookup variant</th>
+<th style="text-align:right">Median wall</th>
+<th style="text-align:right">Approximate VM steps</th>
+<th>Plan</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Current planner</td>
+<td style="text-align:right">422.80 ms</td>
+<td style="text-align:right">1,312,000</td>
+<td>Agent index plus partial-order sort</td>
+</tr>
+<tr>
+<td>Force existing <code>logs_trace</code></td>
+<td style="text-align:right">9.94 ms</td>
+<td style="text-align:right">29,000</td>
+<td>Trace seek plus partial-order sort</td>
+</tr>
+<tr>
+<td>Narrow composite index</td>
+<td style="text-align:right">5.06 ms</td>
+<td style="text-align:right">11,000</td>
+<td>Exact four-key seek; no sort</td>
+</tr>
+</tbody>
+</table></div>
+<p>Forcing the existing trace index adds zero schema/storage cost and captures most of this fixture's benefit. The additional composite benefit is only about 4.9 ms across 500 lookups here. The declarative index is chosen for its exact bounded seek across all four keys and complete order, rather than coupling runtime SQL to a forced implementation index. A large shared trace can still make a trace-only seek broad; no large-shared-trace performance bound was measured here.</p>
+<p>The initial broad composite candidate indexed unlinked logs too: 7,303,168 bytes (6.96 MiB). It also increased the diagnostic 500-log insert median from 59.24 to 69.82 ms. That candidate was rejected; <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/activity-linked-index-broad.json">its measurements are retained</a>.</p>
+<p>The selected null-excluding index covers <strong>392</strong> eligible rows in this corpus and occupies <strong>73,728 bytes (72 KiB)</strong> according to <code>dbstat</code>. Diagnostic creation took 139.05 ms wall / 88.91 ms thread CPU. Eligibility population and index growth depend on actual linked-source retention; these numbers are not a universal size or cold-start limit.</p>
+<p>Five generated committed 500-log batches per case, with alternating baseline/indexed first order, include current raw-source triggers/indexes and commit. They exclude Activity drain, semantic derivation, pending G/F hooks and cleanup. Cache, host scheduling and physical file layout affect the times:</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Raw insert case</th>
+<th style="text-align:right">Baseline median wall</th>
+<th style="text-align:right">Indexed median wall</th>
+<th style="text-align:right">Baseline median thread CPU</th>
+<th style="text-align:right">Indexed median thread CPU</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unlinked trace/span</td>
+<td style="text-align:right">63.01 ms</td>
+<td style="text-align:right">60.62 ms</td>
+<td style="text-align:right">59.48 ms</td>
+<td style="text-align:right">54.93 ms</td>
+</tr>
+<tr>
+<td>Known trace/span/actor</td>
+<td style="text-align:right">67.53 ms</td>
+<td style="text-align:right">70.93 ms</td>
+<td style="text-align:right">60.78 ms</td>
+<td style="text-align:right">66.41 ms</td>
+</tr>
+</tbody>
+</table></div>
+<p>No speedup is claimed for the noisy unlinked case. The known-link case shows about <strong>5.0% wall / 9.3% thread-CPU overhead</strong> in this diagnostic. The write fixture supplies nonnull source identities without running a complete parent span/turn pipeline; it measures index maintenance, not real agent ingestion throughput. The read benefit is therefore weighed against explicit write and storage costs.</p>
+<h2>Correctness gates and remaining work</h2>
+<p>The 61-test focused Activity/recovery/hydration/native/MCP/economics/storage-budget gate passed in 42.737 seconds. After strengthening the legacy-writer owner-reassignment case, the four new tests passed again in 3.088 seconds. These gates overlap; combined-branch CI remains required.</p>
+<p>Tests verify exact Activity outputs with the index absent/present, typed operation presence, newest-16 and timestamp ties, exact 65,536/65,537 stored-byte boundaries, foreign actor/producer/trace/span and unknown ownership, null exclusions, old-writer body/owner updates and deletes, dirty-job invalidation, prune removal and idempotent initialization. EXPLAIN requires all four identity keys and no order sort. Root will combine this index with the separately reviewed queue-hook work and measure the resulting application; this increment does not change hydration or queue fairness.</p>
+<pre><code class="language-sh">python -m unittest tests.test_activity_linked_index tests.test_recovery_index tests.test_operation_hydration tests.test_native_storage_retry tests.test_mcp_source_ownership tests.test_history_read_economics tests.test_statistics_storage_budget
+</code></pre>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
