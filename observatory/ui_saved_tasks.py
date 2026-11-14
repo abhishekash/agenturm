@@ -23,7 +23,7 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widgets import Button, DataTable, Input, RichLog, Select, Static, TextArea
 
-from .saved_tasks import BRIEF_FIELDS, TaskStore, export_handoff, render_handoff, review_scope_issue
+from .saved_tasks import BRIEF_FIELDS, TaskStore, export_handoff, render_handoff, review_scope_issue,continuity_view
 from .ui_monitoring import task_run_usage
 from .ui_workflow import events_for, resume_command
 
@@ -54,9 +54,14 @@ def current_capture_context(owner, context):
     scope = ExecutionScope(str(result.get('receiver') or ''), str(result.get('producer') or ''),
         str(result.get('agent_id') or ''), str(result.get('session_id') or ''))
     policy = review_capture_policy(result, owner.feed.snapshot, scope)
-    if policy.get('capture_content') is False:
+    projection=result.get('review_snapshot')
+    if projection and projection.get('parallel_path_observations'):
+        from .review_continuity import content_allowed
+        if not content_allowed(projection,task_source_policy(owner)):policy['capture_content']=False
+    receiver_changed=bool(getattr(owner.feed.snapshot,'receiver_id','') and scope.receiver!=owner.feed.snapshot.receiver_id)
+    if policy.get('capture_content') is False or receiver_changed:
         result.update(task='Metadata-only execution', checks=[], capture_content=False, local_workspace='')
-        result.pop('review_snapshot', None)
+        result.pop('review_snapshot', None);result.pop('continuity_draft',None)
     return result
 
 
@@ -128,23 +133,82 @@ def capture_selected_run(owner, *, item_override=None, review_snapshot=None):
             'runtime': one_line(item.get('runtime'), 120), 'trace_id': '' if scope.turn_id else trace,
             'task': 'Metadata-only execution' if item.get('capture_content') is False else one_line(item.get('task')), 'state': one_line(item.get('state'), 120),
             'working_directory': workspace,
-            'local_workspace': workspace if endpoint in {'localhost', '127.0.0.1', '::1'} else '',
+            'local_workspace': ((frozen_review or {}).get('workspace_observation') or {}).get('binding',{}).get('workspace',''),
             'branch': one_line(item.get('branch'), 512),
             'captured_ns': time.time_ns(), 'usage': deepcopy(usage) if trace or scope.turn_id else {},
             'capture_content': item.get('capture_content'),
             'checks': checks[-8:], 'resume_command': resume_command({**item, 'working_directory': workspace})}
     if frozen_review is not None:
         result['review_snapshot'] = frozen_review
+
     if scope.turn_id:
         result.update(turn_id=scope.turn_id, step_trace_ids=members)
     return current_capture_context(owner,result)
+
+
+def task_source_policy(owner):
+    """Freeze policy for one render; callers recheck before publishing/writing."""
+    from .review_facts import review_capture_policy
+    from .workflow_evidence import ExecutionScope
+    from types import SimpleNamespace
+    live=owner.feed.snapshot
+    snapshot=SimpleNamespace(receiver_id=getattr(live,'receiver_id',''),local_status=deepcopy(getattr(live,'local_status',{}) or {}))
+    def state(scope):
+        if not scope.get('receiver') or snapshot.receiver_id!=scope['receiver']:return dict(receiver_changed=True,receiver_id=snapshot.receiver_id)
+        try:execution=ExecutionScope(**scope)
+        except TypeError:return dict(receiver_changed=True)
+        return dict(receiver_id=snapshot.receiver_id,**review_capture_policy({},snapshot,execution))
+    def allowed(scope):
+        policy=state(scope)
+        return not policy.get('receiver_changed') and policy.get('capture_content') is not False
+    allowed.state=state
+    return allowed
+
+
+def projection_policy_state(owner,projection,*,strict=False):
+    """Immutable policy generation for every contributor, including receiver identity."""
+    from .review_continuity import content_scopes
+    import json
+    policy=task_source_policy(owner)
+    if not isinstance(projection,dict):
+        return False,('unreadable-source-policy',str(getattr(owner.feed.snapshot,'receiver_id','')))
+    try:
+        # Legacy session-only receipts contain no Git/comparison material. Preserve
+        # their existing scope support; new derived material requires exact scope.
+        derived=projection.get('workspace_observation') or projection.get('parallel_path_observations')
+        scopes=content_scopes(projection) if strict or derived else [projection.get('scope') or {}]
+        rows=tuple(sorted(set((json.dumps(scope,sort_keys=True),
+            json.dumps(policy.state(scope),sort_keys=True)) for scope in scopes)))
+        metadata_only=(projection.get('window') or {}).get('capture_revision') is False or 'Metadata-only capture' in (projection.get('window') or {}).get('reasons',[])
+        allowed=all(policy(scope) is True for scope in scopes)
+        if metadata_only and not strict and not derived:
+            allowed=all(not policy.state(scope).get('receiver_changed') for scope in scopes)
+        return allowed,rows
+    except (ValueError,TypeError,KeyError):
+        return False,('unreadable-source-policy',str(getattr(owner.feed.snapshot,'receiver_id','')))
+
+
+def task_policy_signature(owner,task):
+    import json
+    policy=task_source_policy(owner)
+    rows=[]
+    for draft in task.get('continuity_drafts',[]):
+        review=draft.get('review_snapshot')
+        rows.append(projection_policy_state(owner,review,strict=True) if review else
+            (False, json.dumps(policy.state(draft.get('scope') or {}),sort_keys=True)))
+    for link in task.get('links',[]):
+        review=link.get('review_snapshot') or {}
+        if review.get('workspace_observation') or review.get('parallel_path_observations'):
+            rows.append(projection_policy_state(owner,review,strict=True))
+    return (str(getattr(owner.feed.snapshot,'receiver_id','')),tuple(rows))
 
 
 def stamp(value):
     return datetime.fromtimestamp(value / 1e9).strftime('%b %d %H:%M') if value else 'Not captured'
 
 
-def task_overview(task):
+def task_overview(task,source_policy=None):
+    task=continuity_view(task,source_policy)
     usage = task.get('usage_summary') or {}
     snapshot = task.get('workspace_snapshot') or {}
     tokens = [usage.get(field) for field in ('input_tokens', 'output_tokens')]
@@ -157,6 +221,9 @@ def task_overview(task):
     lines = ['NOTES', plain(task.get('notes')) or 'Add the intent, decisions, and next step with Edit.', '',
              'WORKSPACE', plain(task.get('workspace')) or 'No workspace selected',
              'Snapshot: ' + stamp(snapshot.get('captured_ns'))]
+    if task.get('continuity_drafts'):
+        latest=task['continuity_drafts'][-1]
+        lines+=['','LATEST APPROVED CONTINUITY DRAFT',plain(latest['text'])]
     brief_lines = []
     for field, value in task.get('brief', {}).items():
         if value:
@@ -433,7 +500,7 @@ class TaskDetailScreen(TaskScreen):
     BINDINGS = [Binding('e', 'edit', 'Edit'), Binding('l', 'link', 'Link selected run'),
                 Binding('ctrl+r', 'reload', 'Reload saved task'),
                 Binding('r', 'capture', 'Capture workspace'), Binding('h', 'handoff', 'Handoff'),
-                Binding('p', 'brief', 'Brief'), Binding('d', 'decisions', 'Decisions')]
+                Binding('p', 'brief', 'Brief'), Binding('d', 'decisions', 'Decisions'),Binding('g','draft','Continuity draft')]
     DEFAULT_CSS = '''
     #task-title-row { height: 1; }
     #task-title-row #task-heading { width: 1fr; }
@@ -449,6 +516,7 @@ class TaskDetailScreen(TaskScreen):
         with Vertical(id='saved-root'):
             with Horizontal(id='task-title-row'):
                 yield Static('', id='task-heading', markup=False)
+                yield Button('Draft · g',id='task-draft')
                 yield Button('Brief', id='task-brief')
                 yield Button('Decisions', id='task-decisions')
             yield RichLog(id='task-body', wrap=True, markup=False, min_width=1, auto_scroll=False)
@@ -465,6 +533,13 @@ class TaskDetailScreen(TaskScreen):
             button.set_styles('height: 1; padding: 0 1; border: none;')
         self.call_after_refresh(self.render_task)
         self.query_one('#task-body').focus()
+        self.source_signature=task_policy_signature(self.owner,self.record)
+        self.set_interval(.5,self.refresh_source_policy)
+
+    def refresh_source_policy(self):
+        signature=task_policy_signature(self.owner,self.record)
+        if signature!=self.source_signature:
+            self.source_signature=signature;self.render_task()
 
     def on_resize(self):
         self.update_floor()
@@ -476,7 +551,7 @@ class TaskDetailScreen(TaskScreen):
         body = self.query_one(RichLog)
         body.clear()
         title = plain(self.record['title'])
-        content = (title + '\n\n' if cell_len(title) > body.scrollable_content_region.width else '') + task_overview(self.record)
+        content = (title + '\n\n' if cell_len(title) > body.scrollable_content_region.width else '') + task_overview(self.record,task_source_policy(self.owner))
         text = Text(content)
         text.highlight_regex(r'(?m)^(STRUCTURED BRIEF|NOTES|WORKSPACE|USAGE DETAILS|CONTINUE)$', 'bold')
         body.write(text)
@@ -507,6 +582,22 @@ class TaskDetailScreen(TaskScreen):
         if not self.busy:
             self.app.push_screen(TaskDecisionsScreen(self.owner, self.record), self.changed)
 
+    def action_draft(self):
+        if self.busy:return
+        from .review_continuity import editable_draft
+        context=capture_selected_run(self.owner) or {}
+        projection=context.get('review_snapshot')
+        if not projection:
+            projection=next((row['review_snapshot'] for row in reversed(self.record['links']) if row.get('review_snapshot')),None)
+            if projection:
+                scope=projection['scope']
+                context=current_capture_context(self.owner,{**scope,'review_snapshot':projection})
+        if not projection or context.get('capture_content') is False:
+            self.status('Open a source-enabled Review for an exact recorded execution before drafting continuity.');return
+        try:draft=editable_draft(projection,self.record)
+        except ValueError as exc:self.status(str(exc));return
+        self.app.push_screen(TaskEditor(self.owner,self.record,context=context,continuity_draft=draft),self.changed)
+
     def action_link(self):
         context = capture_selected_run(self.owner)
         if not context:
@@ -528,7 +619,8 @@ class TaskDetailScreen(TaskScreen):
     @on(Button.Pressed)
     def buttons(self, event):
         key = event.button.id
-        if key == 'task-edit': self.action_edit()
+        if key == 'task-draft':self.action_draft()
+        elif key == 'task-edit': self.action_edit()
         elif key == 'task-brief': self.action_brief()
         elif key == 'task-decisions': self.action_decisions()
         elif key == 'task-link': self.action_link()
@@ -560,18 +652,20 @@ class TaskEditor(TaskJobs, ModalScreen):
     BINDINGS = [Binding('ctrl+s', 'save', 'Save', priority=True),
                 Binding('escape', 'cancel', 'Cancel')]
 
-    def __init__(self, owner, task=None, context=None):
+    def __init__(self, owner, task=None, context=None,continuity_draft=None):
         super().__init__()
         self.owner, self.record, self.context = owner, deepcopy(task), context
+        self.continuity_draft=deepcopy(continuity_draft or (context or {}).get('continuity_draft'))
         self.initial = (task['title'], task['workspace'], task['notes']) if task else (
             one_line((context or {}).get('task'), 200), (context or {}).get('local_workspace') or '', '')
+        if self.continuity_draft:self.initial=(*self.initial[:2],self.continuity_draft['text'])
         self.discard_armed = False
 
     def compose(self):
         yield Static('Task editing needs 60 columns × 20 rows. Enlarge the terminal; your edits are preserved.',
                      id='task-too-small', markup=False)
         with Vertical(id='task-editor'):
-            yield Static('Edit task' if self.record else 'Save a task', id='task-editor-heading')
+            yield Static('Review continuity draft · nothing saved yet' if self.continuity_draft else 'Edit task' if self.record else 'Save a task', id='task-editor-heading')
             yield Input(self.initial[0], placeholder='Task title (required)', max_length=200, id='task-name')
             yield Input(self.initial[1], placeholder='Workspace directory (optional)', max_length=4096, id='task-workspace')
             yield TextArea(self.initial[2], id='task-notes', soft_wrap=True,
@@ -579,7 +673,7 @@ class TaskEditor(TaskJobs, ModalScreen):
             yield Static('Ctrl+S saves · Tab next field · Esc back' if self.record else
                          'Ctrl+S saves notes, selected run, and workspace.', id='task-status', markup=False)
             with Horizontal(classes='task-actions'):
-                yield Button('Save · Ctrl+S', id='task-save')
+                yield Button('Approve · Ctrl+S' if self.continuity_draft else 'Save · Ctrl+S', id='task-save')
                 yield Button('Cancel', id='task-cancel')
 
     def on_mount(self):
@@ -587,8 +681,12 @@ class TaskEditor(TaskJobs, ModalScreen):
             return  # Structured editors supply their own focused field.
         self.query_one('#task-name', Input).border_title = 'Task title'
         self.query_one('#task-workspace', Input).border_title = 'Local workspace'
-        self.query_one(TextArea).border_title = 'Your brief · decisions and next steps'
-        self.query_one('#task-name', Input).focus()
+        self.query_one(TextArea).border_title = 'Editable continuity draft · approval preserves authored notes' if self.continuity_draft else 'Your brief · decisions and next steps'
+        if self.record and self.continuity_draft:
+            self.query_one('#task-name',Input).disabled=True;self.query_one('#task-workspace',Input).disabled=True
+            self.query_one(TextArea).focus()
+        else:self.query_one('#task-name', Input).focus()
+        if self.continuity_draft:self.status('Ctrl+S explicitly approves a versioned draft. Authored notes, brief and decisions are preserved.')
 
     def on_resize(self):
         self.set_class(self.size.width < 60 or self.size.height < 20, 'too-small')
@@ -616,6 +714,14 @@ class TaskEditor(TaskJobs, ModalScreen):
             field.disabled = True
         task, context = self.record, self.context
         def save(store):
+            if self.continuity_draft:
+                safe_context=current_capture_context(self.owner,context)
+                if not safe_context or safe_context.get('capture_content') is False:
+                    from .saved_tasks import TaskError
+                    raise TaskError('Source capture or receiver changed. Reopen current Review before approving this source-backed draft.')
+                draft=deepcopy(self.continuity_draft);draft['text']=notes
+                if task:return store.approve_continuity(task['id'],draft,expected_revision=task['revision'],source_allowed=True)
+                return store.create(title,workspace,'',link=safe_context,continuity_draft=draft,source_allowed=True)
             if task:
                 return store.update(task['id'], title=title, workspace=workspace, notes=notes,
                                     expected_revision=task['revision'])
@@ -983,6 +1089,7 @@ class HandoffScreen(TaskScreen):
         self.markdown = ''
         self.preview_width = None
         self.preview_pending = False
+        self.source_signature=task_policy_signature(owner,task);self.handoff_generation=0
 
     def compose(self):
         yield self.compose_floor()
@@ -998,10 +1105,29 @@ class HandoffScreen(TaskScreen):
 
     def on_mount(self):
         self.query_one(HandoffPreview).focus()
-        self.job(lambda _: render_handoff(self.record), self.loaded, 'Preparing the saved handoff…', needs_store=False)
+        self.refresh_handoff()
+        self.set_interval(.5,self.check_source_policy)
+
+    def refresh_handoff(self):
+        self.handoff_generation+=1;self.preview_width=None
+        self.source_signature=task_policy_signature(self.owner,self.record)
+        policy=task_source_policy(self.owner)
+        generation=self.handoff_generation;signature=self.source_signature
+        def loaded(markdown):
+            if generation==self.handoff_generation and signature==task_policy_signature(self.owner,self.record):self.loaded(markdown)
+        self.job(lambda _: render_handoff(self.record,source_policy=policy),loaded,'Preparing the saved handoff…',needs_store=False)
+
+    def check_source_policy(self):
+        if self.source_signature!=task_policy_signature(self.owner,self.record):
+            self.markdown='';self.preview_width=None;self.handoff_generation+=1
+            body=self.query_one(HandoffPreview);body.show_lines([],max(1,body.scrollable_content_region.width))
+            self.status('Source policy changed. Refreshing derived sections; authored notes remain available.')
+            if not self.busy:self.refresh_handoff()
 
     def loaded(self, markdown):
-        self.markdown = markdown
+        if self.source_signature!=task_policy_signature(self.owner,self.record):
+            self.markdown='';self.check_source_policy();return
+        self.markdown = markdown;self.preview_width=None
         self.call_after_refresh(self.render_preview)
         self.status('Review before sharing. This includes saved notes, paths, commands, and changes.')
 
@@ -1021,7 +1147,9 @@ class HandoffScreen(TaskScreen):
         self.preview_pending = False
         if self.preview_width == width:
             return
+        generation=self.handoff_generation
         def ready(lines):
+            if generation!=self.handoff_generation or self.source_signature!=task_policy_signature(self.owner,self.record):return
             self.preview_width = width
             body.show_lines(lines, width)
             self.status('Review before sharing. This includes saved notes, paths, commands, and changes.')
@@ -1030,13 +1158,15 @@ class HandoffScreen(TaskScreen):
 
     def finish_job(self, result, error, callback):
         super().finish_job(result, error, callback)
-        if self.is_mounted and not error and self.preview_pending:
+        if self.is_mounted and self.source_signature!=task_policy_signature(self.owner,self.record):
+            self.call_after_refresh(self.check_source_policy)
+        elif self.is_mounted and not error and self.preview_pending:
             self.call_after_refresh(self.render_preview)
 
     @on(Button.Pressed)
     def buttons(self, event):
-        if not self.markdown:
-            return
+        self.check_source_policy()
+        if not self.markdown:return
         if event.button.id == 'handoff-copy':
             self.owner.copy_to_clipboard(self.markdown)
             self.status('Copied the previewed brief. Paste it into the agent you want to continue with.')
@@ -1045,5 +1175,9 @@ class HandoffScreen(TaskScreen):
             if not path:
                 self.status('Choose a new .md or .html destination. Both files will be written.')
                 return
-            self.job(lambda _: export_handoff(self.record, path),
-                     lambda paths: self.status('Wrote ' + ' and '.join(paths)), 'Writing the previewed handoff…', needs_store=False)
+            signature=self.source_signature;policy=task_source_policy(self.owner)
+            def write(_):
+                from .saved_tasks import TaskError
+                if signature!=task_policy_signature(self.owner,self.record):raise TaskError('Source capture changed. Reopen the current handoff before exporting.')
+                return export_handoff(self.record,path,source_policy=policy)
+            self.job(write,lambda paths: self.status('Wrote ' + ' and '.join(paths)), 'Writing the previewed handoff…', needs_store=False)

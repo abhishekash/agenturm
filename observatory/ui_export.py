@@ -143,7 +143,7 @@ class ExportScreen(ModalScreen):
 
     def finish_export(self,error):
         if not self.is_mounted:return
-        self.query_one('#export-confirm',Button).disabled=False
+        self.query_one('#export-confirm',Button).disabled=self._export_invalidated
         if error:self.notify(error,severity='error');return
         self.dismiss()
         self.app.notify('Selected investigation exported. Review again before sharing.')
@@ -167,9 +167,25 @@ class ReceiptExportScreen(ExportScreen):
         self.query_one('#export-warning',Static).update('Frozen evidence · not redacted. Review before sharing.\nWrites new private Markdown + HTML files; existing files are preserved. Esc Cancel · Tab Controls')
         self.query_one('#export-path',Input).placeholder='New receipt.md (or .html / .json)'
         self.query_one('#export-confirm',Button).label='Write MD + HTML'
+        self.set_interval(.25,self.check_receipt_policy)
+
+    def receipt_allowed(self):
+        if self._export_invalidated:return False
+        try:allowed=self.valid is None or self.valid()
+        except Exception:allowed=False
+        if not allowed:self._export_invalidated=True
+        return allowed
+
+    def check_receipt_policy(self):
+        if self.receipt_allowed():return True
+        self.content='';self.formats={}
+        self.query_one('#export-preview',RichLog).clear()
+        self.query_one('#export-confirm',Button).disabled=True
+        self.query_one('#export-warning',Static).update('Source policy or receiver changed. Reopen Review before exporting; this preview is invalid.')
+        return False
 
     def can_write(self):
-        if self.valid is not None and not self.valid():
+        if not self.check_receipt_policy():
             self.notify('Capture policy changed. Reopen Review before exporting.',severity='warning')
             self.dismiss();return False
         return True
@@ -178,7 +194,9 @@ class ReceiptExportScreen(ExportScreen):
     def write_export(self,path):
         from .work_receipts import export_receipt
         error=''
-        try:export_receipt(path,self.formats)
+        try:
+            if not self.receipt_allowed():error='Source policy or receiver changed; no receipt was written.'
+            else:export_receipt(path,self.formats)
         except FileExistsError:error='A destination already exists. Choose a new name; nothing was overwritten.'
         except ValueError as exc:error=str(exc)
         except OSError:error='Could not write receipt. Check the destination and permissions.'
@@ -187,6 +205,6 @@ class ReceiptExportScreen(ExportScreen):
 
     def finish_export(self,error):
         if not self.is_mounted:return
-        self.query_one('#export-confirm',Button).disabled=False
+        self.query_one('#export-confirm',Button).disabled=self._export_invalidated
         if error:self.notify(error,severity='error');return
         self.dismiss();self.app.notify('Frozen Markdown and HTML receipt exported. Review before sharing.')

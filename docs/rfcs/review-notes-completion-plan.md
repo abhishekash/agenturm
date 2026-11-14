@@ -150,11 +150,15 @@ Review, Activity failure grouping and recent reminders now share bounded typed c
 
 C1 is merged and validated. C2 is implemented and peer-reviewed in the next increment below; C3, resource targets and stages D–G remain open.
 
-### Stage C occurrence-owned Findings — [PR #76](https://github.com/abhishekash/agenturm/pull/76) in CI
+### Stage C occurrence-owned Findings — merged [PR #76](https://github.com/abhishekash/agenturm/pull/76)
 
 Findings filtering, keyset paging, scalar counts and exact source resolution now share one SQLite snapshot and receiver namespace. Each occurrence retains its actual producer/actor/session/turn; unknown ownership stays global, and root task/status is not borrowed. Shared operation facts drive error detail, expected-nonzero and conflict handling. Changes from older writers atomically invalidate evidence and queue bounded, restart-safe rebuilds. `s` opens exact sources, `t` explicitly opens the container trace. Capture revocation fences late reads, copy and export, including already-open previews. See the [implementation record](../validation/owned-findings.md).
 
-The 157-test storage/API/ownership/native/receipt/UI gate passed in 94.587 seconds. The latest privacy/alias and source-navigation delta passed 40 tests in 25.197 seconds; final peer review found no remaining blockers. C2 is not merged yet. C3 and all remaining stage gates below stay open.
+The 157-test storage/API/ownership/native/receipt/UI gate passed in 94.587 seconds. The latest privacy/alias and source-navigation delta passed 40 tests in 25.197 seconds; final peer review found no remaining blockers. C2 merged as `da90e73a4b3051e5d8e7e4566a4a1a2aa77fbc9b`, with all twelve final CI jobs passing on head `7bd840f`. C3 and all remaining stage gates below stay open.
+
+### Stage D Git and approved drafts — implemented and integrated, PR preparation
+
+Explicit workspace mapping, frozen bounded Git receipts, editable source-backed drafts, additive approval versions and qualified parallel-path/check observations are implemented. Authored task title/workspace/notes/brief/decisions remain intact. Every contributing source and receiver is rechecked at formatting, preview, copy and final export worker; peer-only revocation and restoration cannot revive a denied preview. Integrated baseline 64 tests and final privacy/UI/CLI 13 tests passed; independent review found no remaining Stage D blocker. See the [implementation report](../validation/frozen-git-continuity.md). CI and merge remain pending; implementation is not observed adoption.
 
 ### Parallel implementation ownership and remaining acceptance gates
 

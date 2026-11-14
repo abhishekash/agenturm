@@ -20,6 +20,7 @@ MAX_NOTES = 32000
 MAX_LINKS = 64
 MAX_TASK_BYTES = 4 * 1024 * 1024
 MAX_DECISIONS = 128
+MAX_CONTINUITY_DRAFTS = 16
 BRIEF_FIELDS = ('intent', 'acceptance_criteria', 'constraints', 'open_questions', 'next_action')
 DECISION_KINDS = ('accepted', 'rejected')
 TOKEN_FIELDS = ('input_tokens', 'output_tokens', 'cache_read_input_tokens',
@@ -172,7 +173,9 @@ def _link(evidence):
             'trace_id':'' if scope.get('turn_id') else scope.get('run_id'),'turn_id':scope.get('turn_id'),
             'step_trace_ids':(evidence.get('usage') or {}).get('step_trace_ids',[]),
             'usage':(evidence.get('usage') or {}).get('values',{}),'task':evidence.get('title'),'state':evidence.get('reported_outcome'),
-            'review_snapshot':evidence}
+            'review_snapshot':evidence,'checks':[dict(command=row.get('command') or '',result=row.get('result') or 'unknown',
+                time_ns=row.get('completed_ns') or (row.get('source') or {}).get('time_unix_nano') or 0,
+                trace_id=(row.get('source') or {}).get('trace_id') or '') for row in evidence.get('checks',[])][:32]}
     result = {}
     for key, limit in (('session_id', 512), ('agent_id', 512), ('parent_agent_id', 512), ('runtime', 120),
                        ('receiver', 2000), ('producer', 512),
@@ -363,6 +366,8 @@ class TaskStore:
             db.execute('''CREATE TABLE IF NOT EXISTS task_decisions_v1 (
                 id TEXT PRIMARY KEY, task_id TEXT NOT NULL, decision_json TEXT NOT NULL)''')
             db.execute('CREATE INDEX IF NOT EXISTS task_decisions_task ON task_decisions_v1(task_id)')
+            db.execute('CREATE TABLE IF NOT EXISTS task_continuity_v1(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,draft_json TEXT NOT NULL)')
+            db.execute('CREATE INDEX IF NOT EXISTS task_continuity_task ON task_continuity_v1(task_id)')
 
     @contextmanager
     def _connect(self):
@@ -411,6 +416,7 @@ class TaskStore:
         try:
             brief = db.execute('SELECT brief_json FROM task_briefs_v1 WHERE task_id=?', (task_id,)).fetchone()
             result['brief'] = json.loads(brief[0]) if brief else dict.fromkeys(BRIEF_FIELDS, '')
+            result['continuity_drafts']=[json.loads(row[0]) for row in db.execute('SELECT draft_json FROM task_continuity_v1 WHERE task_id=? ORDER BY rowid',(task_id,))]
             result['decisions'] = [json.loads(row[0]) for row in db.execute(
                 'SELECT decision_json FROM task_decisions_v1 WHERE task_id=? ORDER BY rowid', (task_id,))]
         except (ValueError, RecursionError) as exc:
@@ -424,23 +430,35 @@ class TaskStore:
     @staticmethod
     def _check_size(task):
         task = {key: value for key, value in task.items() if key not in {'usage_summary', 'link_scope_warnings'}}
-        without_receipts={**task,'links':[{key:value for key,value in link.items() if key!='review_snapshot'} for link in task.get('links',[])]}
+        without_receipts={**task,'links':[{key:value for key,value in link.items() if key!='review_snapshot'} for link in task.get('links',[])],
+            'continuity_drafts':[{key:value for key,value in draft.items() if key!='review_snapshot'} for draft in task.get('continuity_drafts',[])]}
         if len(json.dumps(without_receipts,ensure_ascii=False).encode())>512*1024:
             raise TaskError('Saved task fields exceed the 512 KiB limit. Shorten this draft, unlink older evidence, or export it and start a new task; no saved decisions were removed.')
         if len(json.dumps(task, ensure_ascii=False).encode()) > MAX_TASK_BYTES:
             raise TaskError('Saved task including review snapshots exceeds the 4 MiB limit. Export and unlink older receipts before adding more evidence.')
 
-    def create(self, title, workspace='', notes='', link=None):
+    def create(self, title, workspace='', notes='', link=None,*,continuity_draft=None,source_allowed=False):
         now = time.time_ns()
         task = {'id': str(uuid.uuid4()), 'title': _text(title, 'Title', 200, required=True),
                 'workspace': _workspace(workspace), 'notes': _text(notes, 'Notes', MAX_NOTES, multiline=True),
                 'archived': False, 'created_ns': now, 'updated_ns': now, 'revision': 1,
                 'links': [_link(link)] if link is not None else [], 'workspace_snapshot': {}}
+        task['continuity_drafts']=[]
+        if continuity_draft is not None:
+            from .review_continuity import validate_draft
+            if source_allowed is not True:raise TaskError('Revalidate source capture before approving this draft.')
+            draft=validate_draft(continuity_draft)
+            if draft.get('task_id'):raise TaskError('This draft belongs to an existing task.')
+            if link is None:task['links']=[_link(draft['review'])]
+            task['continuity_drafts']=[dict(id=str(uuid.uuid4()),created_ns=now,author_kind='user-approved continuity draft',
+                scope=draft['scope'],text=_text(draft['text'],'Reviewed continuity draft',MAX_NOTES,multiline=True),review_snapshot=draft['review'])]
         self._check_size(task)
         with self._connect() as db:
             db.execute('INSERT INTO saved_tasks_v1 VALUES(?,?,?,?,?,?,?,?,?,?)',
                        (task['id'], task['title'], task['workspace'], task['notes'], 0,
                         now, now, 1, json.dumps(task['links']), '{}'))
+            for draft in task['continuity_drafts']:
+                db.execute('INSERT INTO task_continuity_v1 VALUES(?,?,?)',(draft['id'],task['id'],json.dumps(draft,ensure_ascii=False)))
         return self.get(task['id'])
 
     def _edit(self, task_id, modify, expected_revision=None):
@@ -460,11 +478,39 @@ class TaskStore:
                  json.dumps(task['workspace_snapshot']), task_id))
             db.execute('INSERT OR REPLACE INTO task_briefs_v1 VALUES(?,?)',
                        (task_id, json.dumps(task.get('brief', {}), ensure_ascii=False)))
+            for draft in task.get('continuity_drafts',[]):
+                db.execute('INSERT OR IGNORE INTO task_continuity_v1 VALUES(?,?,?)',(draft['id'],task_id,json.dumps(draft,ensure_ascii=False)))
             for decision in task.get('decisions', []):
                 # Decisions are immutable; an edit appends a superseding version.
                 db.execute('INSERT OR IGNORE INTO task_decisions_v1 VALUES(?,?,?)',
                            (decision['id'], task_id, json.dumps(decision, ensure_ascii=False)))
         return self.get(task_id)
+
+    def approve_continuity(self,task_id,draft,*,text=None,expected_revision=None,source_allowed=False):
+        """Append a reviewed draft; authored notes/brief/decisions stay untouched.
+
+        The UI/CLI must recheck the exact receiver's capture policy immediately
+        before this explicit approval. No task mutation is performed by drafting.
+        """
+        from .review_continuity import validate_draft
+        if source_allowed is not True:raise TaskError('Revalidate source capture before approving this draft.')
+        draft=validate_draft(draft)
+        if draft.get('task_id') and draft['task_id']!=task_id:raise TaskError('Draft belongs to a different saved task.')
+        if draft.get('task_revision') is not None and draft['task_revision']!=expected_revision:
+            raise TaskConflict('Draft was prepared against a different task revision. Rebuild it before approval.')
+        approved=dict(id=str(uuid.uuid4()),created_ns=time.time_ns(),author_kind='user-approved continuity draft',
+            scope=draft['scope'],text=_text(draft['text'] if text is None else text,'Reviewed continuity draft',MAX_NOTES,multiline=True),
+            review_snapshot=draft['review'])
+        link=_link(draft['review'])
+        def modify(task):
+            if len(task['continuity_drafts'])>=MAX_CONTINUITY_DRAFTS:raise TaskError('This task has 16 continuity drafts. Export it and begin a new task; no versions were removed.')
+            task['continuity_drafts'].append(approved)
+            # Preserve each approved snapshot in its immutable draft version;
+            # the normal task link tracks the current preview for that scope.
+            previous=next((item for item in task['links'] if item['key']==link['key']),{})
+            task['links']=[item for item in task['links'] if item['key']!=link['key']]+[{**previous,**link}]
+            if len(task['links'])>MAX_LINKS:raise TaskError('This task has too many linked executions.')
+        return self._edit(task_id,modify,expected_revision)
 
     def update_brief(self, task_id, brief, *, expected_revision=None):
         if not isinstance(brief, dict) or set(brief) - set(BRIEF_FIELDS):
@@ -601,8 +647,27 @@ def _md(text):
     return re.sub(r'([\\`*_{}\[\]<>()#+.!|~-])', r'\\\1', display_text(text))
 
 
-def render_handoff(task, format='markdown', *, include_decision_history=False):
-    """Render an already captured record without refreshing or mutating anything."""
+def continuity_view(task,source_policy=None):
+    from copy import deepcopy
+    result=deepcopy(task)
+    from .review_continuity import content_allowed
+    def allowed(scope):
+        return bool(source_policy is not None and source_policy(scope) is True)
+    for draft in result.get('continuity_drafts',[]):
+        if not content_allowed(draft.get('review_snapshot') or {},source_policy):
+            draft['text']='Source-backed continuity draft withheld: current capture policy is unavailable or revoked. Authored notes and decisions remain available.'
+            draft.pop('review_snapshot',None)
+    for link in result.get('links',[]):
+        review=link.get('review_snapshot') or {}
+        if ('workspace_observation' in review or 'parallel_path_observations' in review) and not content_allowed(review,source_policy):
+            review.pop('workspace_observation',None);review.pop('parallel_path_observations',None)
+            review['workspace_note']='Source-backed Git observation withheld: current capture policy is unavailable or revoked.'
+    return result
+
+
+def render_handoff(task, format='markdown', *, include_decision_history=False,source_policy=None):
+    """Render a frozen record; current policy gates new source-backed drafts/Git."""
+    task=continuity_view(task,source_policy)
     if format == 'json':
         return json.dumps({'format': 'agenturm-task-v1', 'task': task}, ensure_ascii=True, indent=2) + '\n'
     if format not in {'markdown', 'html'}:
@@ -614,6 +679,10 @@ def render_handoff(task, format='markdown', *, include_decision_history=False):
              _fence(task['notes']) if task.get('notes') else 'Add your intent, decisions, and next steps before handing this task over.',
              '', '## Workspace', '', _fence(task.get('workspace') or 'No workspace selected')]
     structured = []
+    if task.get('continuity_drafts'):
+        draft=task['continuity_drafts'][-1]
+        structured+=['','## Latest approved continuity draft','','User-approved text is versioned separately from authored notes/brief/decisions.','',_fence(draft['text'])]
+
     for key in BRIEF_FIELDS:
         value = task.get('brief', {}).get(key)
         if value:
@@ -730,7 +799,7 @@ code{font-family:ui-monospace,monospace;font-size:.9em}p,li{overflow-wrap:anywhe
     return '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + escape(task['title']) + '</title><style>' + style + '</style></head><body><main>' + body + '</main></body></html>\n'
 
 
-def export_handoff(task, path, *, include_decision_history=False):
+def export_handoff(task, path, *, include_decision_history=False,source_policy=None):
     """Write the exact previewed task as a new Markdown/HTML pair (and optional JSON)."""
     target = Path(path).expanduser()
     if target.suffix.lower() not in {'.md', '.html', '.json'}:
@@ -740,7 +809,7 @@ def export_handoff(task, path, *, include_decision_history=False):
     if target.suffix.lower() == '.json':
         formats.append(('json', target))
     contents = [(destination, render_handoff(task, format,
-        include_decision_history=include_decision_history).encode()) for format, destination in formats]
+        include_decision_history=include_decision_history,source_policy=source_policy).encode()) for format, destination in formats]
     from tempfile import NamedTemporaryFile
     staged = []
     written = []
