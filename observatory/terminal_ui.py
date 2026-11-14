@@ -588,6 +588,8 @@ def wait_label(item):
 
 
 def task_preview(item):
+    if item.get('_native_bootstrap'):
+        return (item.get('runtime')or 'Native')+' '+str(item.get('agent_id')or item['id'])[-8:]+' · session '+clean(str(item.get('session_id')or item['id']))[:16]
     return clean(task_description(item.get('initial_task') or '') or task_description(item.get('task') or ''))
 
 
@@ -1990,6 +1992,10 @@ class ObservatoryApp(App):
                 table.scroll_to(x=scroll.x,y=max(0,scroll.y+index-old_index),animate=False)
 
     def search_status(self,page,count,noun,plural=None):
+        if getattr(self.data,'native_bootstrap',False):
+            if page=='agents':self.query_one('#search-status-agents',Static).update('History indexing · observed native rows only')
+            else:self.native_page_pending(page)
+            return
         if not self.data.updated:
             self.query_one('#search-status-'+page,Static).update('Waiting for receiver data · R Retry now')
             return
@@ -2058,7 +2064,7 @@ class ObservatoryApp(App):
             for entry in live.local_status.get('sessions',[]) if entry.get('capture_content') is False)),
             live.local_status.get('capture_global_revision'),tuple(tuple(row.get(key)for key in
                 ('service','agent_id','session_id','runtime','capture_safety_revision'))
-                for row in live.local_status.get('capture_policy_revisions',())))
+                for row in live.local_status.get('capture_policy_revisions',())),getattr(live,'native_bootstrap',False))
         if policy_signature!=self.capture_policy_signature:
             self.capture_policy_signature=policy_signature
             self.source_preparation.clear()
@@ -2072,11 +2078,11 @@ class ObservatoryApp(App):
         data=self.display_snapshot(live)
         state,feedback,connecting=connection_feedback(self.feed)
         self.screen.set_class(connecting,'connecting')
-        state_color='#ffbd69' if state=='Loading delayed' else '#ff8799' if live.error else '#ffbd69' if connecting else '#86e3b5'
+        state_color='#ff8799'if live.error else '#ffbd69' if state=='Loading delayed' or getattr(live,'native_bootstrap',False)else '#ffbd69' if connecting else '#86e3b5'
         notice=self.query_one('#connection-notice')
         # Background polls must never insert/remove rows above the workspace.
         # After the first snapshot, the fixed header/footer own connection feedback.
-        notice.display=connecting and not live.updated
+        notice.display=connecting and not live.updated and not getattr(live,'native_bootstrap',False)
         progress=self.query_one('#connection-progress',Static)
         update_status_text(progress,Text(feedback))
         progress.tooltip=feedback+'\n'+self.feed.api.endpoint
@@ -2090,10 +2096,11 @@ class ObservatoryApp(App):
         connection=Text()
         if not connecting:connection.append('● ', style='bold '+state_color)
         local=urlsplit(self.feed.api.endpoint).hostname in {'localhost','127.0.0.1','::1'}
-        connection.append(state if connecting else 'Paused' if self.feed.paused else 'Live', style=state_color)
+        connection.append(state if connecting or getattr(live,'native_bootstrap',False)else 'Paused' if self.feed.paused else 'Live', style=state_color)
         update_status_text(connection_widget,themed_text(connection_widget,connection))
         health_text=((feedback.split('\n')[0]+' · R Retry now' if self.feed.retry_requested else live.error+' · R Retry now') if live.error else feedback.split('\n')[0]+' · R Retry now' if connecting else
             f"{'Paused · '+str(self.pause_change_count)+' changed records · p Follow live' if self.feed.paused else 'Updated '+age(int(data.updated*1e9))}"+(('  ·  '+self.scope_label()) if self.scope_value!='all' else '')+('  ·  Reviews included' if self.feed.include_reviews else ''))
+        if getattr(data,'native_bootstrap',False):health_text=(feedback.split('\n')[0]+' · '+live.error)if live.error else 'History indexing · native observations only · '+age(int(data.bootstrap_updated*1e9))
         source_diagnostics=[entry.get('diagnostics') or {} for entry in data.local_status.get('sessions',[])]
         backlog_sources=sum(bool(item.get('backlog_bytes',0)) for item in source_diagnostics)
         def collector_stale(item):
@@ -2117,8 +2124,10 @@ class ObservatoryApp(App):
         update_status_text(health_widget,themed_text(health_widget,health))
         if self.screen.selections:
             return
-        if data.updated==self.last_update:return
-        self.last_update=data.updated;self.data=data
+        bootstrap=getattr(data,'native_bootstrap',False)
+        frame=(data.updated,data.bootstrap_updated,bool(data.error),bool(time.time()-data.bootstrap_updated>15)and not self.feed.paused)if bootstrap else data.updated
+        if frame==self.last_update:return
+        self.last_update=frame;self.data=data
         agents=sources(data,self.feed.include_reviews,preparation=self.source_preparation,
                        policy_snapshot=self.feed.snapshot)
         work=[item for item in unique_agents(agents) if not item['review']]
@@ -2148,7 +2157,7 @@ class ObservatoryApp(App):
         stat_width=(self.size.width-(4 if self.size.width>=140 else 2))//(2 if self.size.width<100 else 4)
         if cell_len(session_detail)>stat_width-(5 if self.size.width>=140 else 3):
             session_detail=quantity(len(observed_work),'session')
-        self.stat('sessions',len(active) if data.updated else '—','Working agents',session_detail if data.updated else 'Waiting for receiver data')
+        self.stat('sessions',len(active) if data.updated or bootstrap else '—','Working agents',session_detail if data.updated or bootstrap else 'Waiting for receiver data')
         actionable=[item for item in observed_work if today_bucket(self.review_state(item))=='attention']
         stalled=sum(item.get('state')=='Possibly stalled' for item in actionable)
         failures=sum(item.get('state') in {'Error','Failed','Interrupted','Incomplete'} for item in actionable)
@@ -2158,7 +2167,7 @@ class ObservatoryApp(App):
         attention_detail=' · '.join(f'{count} {label}' for count,label in
             ((requests,'need input'),(stalled,'may be stalled'),(failures,'failed'),
              (status_checks,'need a status check')) if count)
-        self.stat('attention',needs_attention if data.updated else '—','Needs attention',
+        self.stat('attention',needs_attention if data.updated or bootstrap else '—','Needs attention',
                   'Waiting for receiver data' if not data.updated else
                   attention_detail if needs_attention else
                   'None in available agents' if data.sessions_error or data.read_errors else 'No action needed')
@@ -2194,6 +2203,11 @@ class ObservatoryApp(App):
         if data.sessions_error or data.read_errors:
             for stat in ('sessions','attention'):
                 self.query_one('#stat-'+stat).tooltip+='\n'+session_history_feedback(data)
+        if bootstrap:
+            self.stat('mcp-count','—','MCP calls','History indexing · MCP history is unavailable.')
+            self.stat('sessions','—','Working agents',f'{len(observed_work)} observed native rows · complete agent counts unavailable')
+            self.stat('attention','—','Needs attention','Observed native states only · complete attention counts unavailable')
+            self.query_one('#stat-attention').tooltip='Observed native states only. Workflow acknowledgements and historical incidents are unavailable while history indexes.'
         self.source_map={item['id']:item for item in agents}
         if self.scope_value!='all' and self.scope_value not in self.source_map:
             self.scope_value='all'
@@ -2271,6 +2285,11 @@ class ObservatoryApp(App):
 
     def refresh_task_usage(self):
         if not self.query('#usage-summary'):return
+        if getattr(self.data,'native_bootstrap',False):
+            self.query_one('#usage-summary',Static).update('History indexing · usage unavailable')
+            self.query_one('#usage-summary').tooltip='Historical usage has not loaded; no zero is inferred.'
+            self.stat('usage','—','Task tokens in / out','History indexing · usage unavailable')
+            return
         usage,title,scope,identity,item,policy,recorded_receiver=self.prepared_task_usage()
         from .usage_render_key import usage_render_key
         page=self.query_one('#pages',TabbedContent).active
@@ -2351,17 +2370,19 @@ class ObservatoryApp(App):
         today_ids={identity for identity,bucket in buckets.items() if bucket}
         counts={'today':len(today_ids),'active':sum(bool(item.get('active')) for item in scoped_agents),
                 'all':len(scoped_agents)}
-        self.agent_error_reminders=reminders(agents,self.data,self.workflow_controller.error_seen,self.feed.api.endpoint)
+        self.agent_error_reminders={}if getattr(self.data,'native_bootstrap',False)else reminders(agents,self.data,self.workflow_controller.error_seen,self.feed.api.endpoint)
         error_ids={item['id'] for item in scoped_agents if item['id'] in self.agent_error_reminders}
         counts['errors']=len(error_ids)
         error_button=self.query_one('#agent-errors',Button)
-        error_button.label=f"Errors {'● ' if self.agent_filter=='errors' else ''}{counts['errors']}"
+        error_button.label='Errors —'if getattr(self.data,'native_bootstrap',False)else f"Errors {'● ' if self.agent_filter=='errors' else ''}{counts['errors']}"
+        error_button.disabled=getattr(self.data,'native_bootstrap',False)
         error_button.set_class(self.agent_filter=='errors','-on')
         error_button.set_class(not error_ids,'-empty')
         filter_options=[(f'Today {counts["today"]}','today'),
                         (f'Running {counts["active"]}','active'),
                         (f'History {counts["all"]}','all'),
                         (f'Errors {counts["errors"]}','errors')]
+        if getattr(self.data,'native_bootstrap',False):filter_options=[(label if key in {'today','active'}else 'History —'if key=='all'else 'Errors —',key)for label,key in filter_options]
         picker=self.query_one('#agent-filter',Select)
         with picker.prevent(Select.Changed):
             if filter_options!=self.agent_filter_options:
@@ -2533,7 +2554,10 @@ class ObservatoryApp(App):
             title+=' · partial'
             if not rows:
                 self.query_one('#search-status-agents',Static).update('Agent data delayed · R Retry now')
-        self.query_one('#results-agents').border_title=title if self.data.updated else 'Sessions · loading'
+        if getattr(self.data,'native_bootstrap',False):
+            title=f'Native observations · {len(visible_agents)} shown · partial'
+            self.query_one('#search-status-agents',Static).update('History indexing · only observed native sessions are shown')
+        self.query_one('#results-agents').border_title=title if self.data.updated or getattr(self.data,'native_bootstrap',False)else 'Sessions · loading'
         self.show_agent()
 
     def select_agent(self,source_id):
@@ -2556,7 +2580,34 @@ class ObservatoryApp(App):
             if 0 in table.visible_columns:table.update_cell(key,'0',values[0])
         self.show_agent()
 
+    def native_page_pending(self,page):
+        results=self.query('#results-'+page)
+        if not getattr(self.data,'native_bootstrap',False):
+            if results and hasattr(results.first(),'_native_saved_title'):
+                results.first().border_title=results.first()._native_saved_title
+                del results.first()._native_saved_title
+            return False
+        tables={'activity':('activity-table',),'mcp':('mcp-table','mcp-servers'),
+            'traces':('trace-table',),'host':('host-table',),'metrics':('metrics-table',),'findings':('finding-table',)}
+        for name in tables.get(page,()):self.fill(name,[])
+        detail={'activity':'activity-detail','mcp':'mcp-detail','traces':'span-info',
+            'host':'host-detail','metrics':'metrics-detail','findings':'finding-detail'}.get(page)
+        if detail:self.inspect(detail,'History indexing',[],[
+            ('Unavailable','Recorded evidence and history are unavailable. Press 1 for current native observations.')])
+        hint=self.query('#'+('mcp-hint'if page=='mcp'else 'search-status-'+page))
+        if hint:hint.first().update('History indexing · evidence unavailable')
+        if results:
+            if not hasattr(results.first(),'_native_saved_title'):results.first()._native_saved_title=results.first().border_title
+            results.first().border_title='History indexing · evidence unavailable'
+        if page=='metrics':self.query_one('#usage-series',Static).update('History indexing · usage unavailable')
+        if page=='traces':
+            tree=self.query_one('#span-tree',Tree);tree.clear();tree.root.set_label(Text('History indexing'))
+            self.span_signature=None
+        if page in {'activity','mcp','traces','findings'}:self.render_paging(page)
+        return True
+
     def render_activity(self):
+        if self.native_page_pending('activity'):return
         data=self.data
         activity_items=self.visible_results('activity',data.activity_results if data.activity_results is not None else data.activity)
         activity_items=self.hold_selected('activity',activity_items,self.selected_activity,'source_id')
@@ -2578,6 +2629,7 @@ class ObservatoryApp(App):
         self.show_activity()
 
     def render_mcp(self):
+        if self.native_page_pending('mcp'):return
         data=self.data
         observed={row['server']:row for row in data.mcp_summary.get('servers',[])}
         metric_observed={row['server']:row for row in data.mcp_summary.get('metric_servers',[])}
@@ -2638,6 +2690,7 @@ class ObservatoryApp(App):
         self.query_one('#mcp-hint',Static).update(mcp_hint)
 
     def render_traces(self):
+        if self.native_page_pending('traces'):return
         data=self.data
         traces=self.visible_results('traces',data.traces[:])
         detail=data.detail
@@ -2647,6 +2700,7 @@ class ObservatoryApp(App):
         self.show_spans()
 
     def render_findings(self):
+        if self.native_page_pending('findings'):return
         data=self.data
         finding_query=self.search_queries['findings'].casefold()
         finding_items=[item for item in data.finding_results if not finding_query or finding_query in ' '.join(
@@ -2662,6 +2716,12 @@ class ObservatoryApp(App):
         self.show_finding()
 
     def render_paging(self,page):
+        if getattr(self.data,'native_bootstrap',False):
+            self.query_one('#history-label-'+page,Static).update('History indexing')
+            for name in ('older','newer','latest'):
+                self.query_one('#'+name+'-'+page,Button).disabled=True
+                self.query_one('#'+name+'-'+page).tooltip='Evidence is unavailable until the initial history index is ready.'
+            return
         paging=self.data.pagination.get(page,{})
         page_number=paging.get('page',1)
         self.query_one('#history-label-'+page,Static).update('Latest' if page_number==1 else f'History · page {page_number}')
@@ -2669,8 +2729,11 @@ class ObservatoryApp(App):
         self.query_one('#newer-'+page,Button).disabled=page_number==1
         self.query_one('#latest-'+page,Button).disabled=page_number==1
         self.query_one('#older-'+page).tooltip='Load older saved records · ]' if paging.get('supported') else 'Restart the updated receiver to enable history paging'
+        self.query_one('#newer-'+page).tooltip='Load newer saved records · ['
+        self.query_one('#latest-'+page).tooltip='Return to the latest retained page · l'
 
     def render_host(self):
+        if self.native_page_pending('host'):return
         data=self.data
         processes=(data.local_status.get('runtime') or {}).get('processes',[])
         host_query=self.search_queries['host'].casefold()
@@ -2686,6 +2749,7 @@ class ObservatoryApp(App):
              ('Coverage','Source logs can be partial. Costs and model-call latency are unavailable unless reported. CPU is cumulative process time.')],[])
 
     def render_metrics(self):
+        if self.native_page_pending('metrics'):return
         data=self.data
         metric_query=self.search_queries['metrics'].casefold()
         selected_source=getattr(self,'source_map',{}).get(self.scope_value)
@@ -3243,7 +3307,11 @@ class ObservatoryApp(App):
             self.query_one('#agent-reviewed',Button).display=False
             self.query_one('#agent-dismissed',Button).display=False
             self.fill('agent-actions',[])
-            if not self.data.updated:
+            if getattr(self.data,'native_bootstrap',False):
+                self.inspect('agent-detail','History indexing',[],[
+                    ('Native observations','No matching native sessions in the available collector snapshot.'),
+                    ('History','Stored sessions and counts are not ready. R retries; ↑↓ moves available rows.')])
+            elif not self.data.updated:
                 self.inspect('agent-detail','Waiting for receiver data',[],[
                     ('Loading sessions','No snapshot has arrived yet. Session counts and usage are not known.'),
                     ('Connection','See the loading stage above · R Retry now.')])
@@ -3275,6 +3343,21 @@ class ObservatoryApp(App):
                 ])
             else:
                 self.inspect('agent-detail','No agent sessions found',[],[('Next step',FIRST_RUN),('Diagnostics / retention','Press d for source paths, read health, and retention instructions.')])
+            return
+        if getattr(self.data,'native_bootstrap',False):
+            for name in ('agent-open','agent-trace','agent-summary','agent-review-work'):
+                self.query_one('#'+name,Button).disabled=True
+            for name in ('agent-reviewed','agent-dismissed','agent-prompt-bar','agent-prompt-picker','agent-prompts','agent-evidence-status'):
+                self.query_one('#'+name).display=False
+            self.session_prompts=PromptHistory();self.session_evidence=SessionEvidence()
+            self.ai_summaries.clear();self.fill('agent-actions',[])
+            self.query_one('#agent-heading',Static).update(task_preview(item))
+            self.query_one('#agent-heading').tooltip=task_preview(item)
+            self.query_one('#agent-context',Static).update(str(item.get('runtime')or 'Native')+' · observed metadata only')
+            self.inspect('agent-detail','Native observation',[
+                ('Status',agent_status(item)),('Session',item.get('session_id')or 'Not reported')],[
+                ('History indexing','Task descriptions, recorded work, prompts, usage and review history are unavailable until the initial index is ready.'),
+                ('Status evidence',item.get('status_evidence')or 'Only current native collector metadata is available.')])
             return
         self.query_one('#agent-open',Button).disabled=False
         summary=session_usage(self.data.sessions,item)
@@ -3461,6 +3544,7 @@ class ObservatoryApp(App):
         self.inspect('agent-detail',title,fields,sections,identity=(item['id'],'overview'),context_in_header=True)
 
     def show_activity(self):
+        if self.native_page_pending('activity'):return
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
         fallback=self.activity_trace_fallback()
         self.query_one('#activity-trace',Button).disabled=not bool((item or fallback or {}).get('trace_id'))
@@ -3532,6 +3616,7 @@ class ObservatoryApp(App):
             self.workflow_controller.error_displayed(events,snapshot=self.data)
 
     def show_mcp(self):
+        if self.native_page_pending('mcp'):return
         item=self.table_data.get('mcp-table',{}).get(self.selected_mcp)
         from .evidence_explanations import mcp_window,configured_servers
         loaded=self.data.mcp_results if self.data.mcp_results is not None else self.data.mcp
@@ -3596,6 +3681,7 @@ class ObservatoryApp(App):
              ('Trace ID',item.get('trace_id') or 'Not linked'),('Span ID',item.get('span_id') or 'Not linked')])
 
     def show_finding(self):
+        if self.native_page_pending('findings'):return
         item=self.table_data.get('finding-table',{}).get(self.selected_finding)
         self.query_one('#finding-trace',Button).disabled=not bool(item and item.get('trace_id'))
         self.query_one('#finding-source',Button).disabled=not bool(item and item.get('evidence'))
@@ -3624,6 +3710,7 @@ class ObservatoryApp(App):
              ('Evidence',evidence),('Coverage','Counts cover retained finding occurrences; incomplete sources may describe the same execution. Source · s reads exact evidence; Trace · t opens its container.'),('Trace ID',item.get('trace_id') or 'Not linked')])
 
     def show_spans(self):
+        if self.native_page_pending('traces'):return
         self.refresh_task_usage()
         detail=self.data.detail
         if not detail.get('trace_id'):
@@ -3741,6 +3828,7 @@ class ObservatoryApp(App):
         self.show_span(event.node.data)
 
     def show_span(self,span):
+        if self.native_page_pending('traces'):return
         if not span:return
         attrs=span['attributes']
         self.inspect('span-info',span['name'],[('Span',span['span_id']),('Parent',span.get('parent_span_id') or 'Root'),
@@ -3951,6 +4039,7 @@ class ObservatoryApp(App):
         elif event.button.id in {'activity-copy','mcp-copy','metrics-copy','finding-copy'}:self.action_copy()
 
     def request_ai_summary(self):
+        if self.history_pending():return
         from .ai_summary import SummaryConfig, SummaryError
         item=getattr(self,'source_map',{}).get(self.selected_source)
         if not item or self.summary_busy:return
@@ -3976,6 +4065,7 @@ class ObservatoryApp(App):
         from types import SimpleNamespace
         from .review_facts import review_capture_policy
         live=self.feed.snapshot
+        if getattr(live,'native_bootstrap',False):return False
         if scope_for(item,live,self.feed.api.endpoint).receiver!=scope.receiver:return False
         policy=SimpleNamespace(receiver_id=scope.receiver,local_status=live.local_status)
         return review_capture_policy(item,policy,scope).get('capture_content') is not False
@@ -4024,11 +4114,17 @@ class ObservatoryApp(App):
         self.refresh_data()
 
     def source_snapshot(self,snapshot):
+        if getattr(snapshot,'native_bootstrap',False):return snapshot
         from .source_projection import NativeSnapshotProjection
         if not hasattr(self,'native_snapshot_projection'):self.native_snapshot_projection=NativeSnapshotProjection()
         controller=self.workflow_controller
         warning=controller.native_warning if controller.native_receiver==snapshot.receiver_id else ''
         return self.native_snapshot_projection.get(snapshot,controller.native_observations,warning)
+
+    def history_pending(self):
+        if not(getattr(self.feed.snapshot,'native_bootstrap',False)or getattr(self.data,'native_bootstrap',False)):return False
+        self.notify('History indexing: recorded evidence, usage and review actions are unavailable. Native metadata remains visible.')
+        return True
 
     def workflow_items(self):
         # The roster and Workflow have multiple consumers per generation.
@@ -4040,6 +4136,7 @@ class ObservatoryApp(App):
                        preparation=self.source_preparation if shared else None)
 
     def review_state(self,item):
+        if getattr(self.feed.snapshot,'native_bootstrap',False):return {**item,'_workflow_reviewed':False}
         acknowledged=self.workflow_controller.reviewed(item)
         legacy=review_key(item) in self.reviewed_attention or attention_key(item) in self.dismissed_attention
         return {**item,'_workflow_reviewed':bool((acknowledged or legacy) and item.get('state') not in {'Waiting','Possibly stalled'})}
@@ -4055,6 +4152,7 @@ class ObservatoryApp(App):
         self.action_review_work()
 
     def action_review_work(self,item=None):
+        if self.history_pending():return
         from .ui_review import ReviewScreen
         if any(isinstance(screen,ReviewScreen) for screen in self.screen_stack):
             self.notify('Close the current review before opening another.');return
@@ -4101,11 +4199,13 @@ class ObservatoryApp(App):
         self.call_from_thread(self.notify,result)
 
     def action_investigate(self):
+        if self.history_pending():return
         from .ui_investigations import InvestigationsScreen
         if isinstance(self.screen,InvestigationsScreen):return
         if not isinstance(self.screen,ObservatoryScreen):return
         self.push_screen(InvestigationsScreen(self),self.resume_cockpit)
     def action_mcp_flagged(self):
+        if self.history_pending():return
         from .review_facts import review_capture_policy
         references=getattr(self,'mcp_flagged_references',[])
         identities=[reference.get('id') for reference in references]
@@ -4120,6 +4220,7 @@ class ObservatoryApp(App):
             self.show_mcp();self.query_one('#mcp-detail',RichLog).focus();return
 
     def action_usage(self):
+        if self.history_pending():return
         usage,title,scope,identity,item,policy,receiver=self.prepared_task_usage()
         frozen_scope=scope_for(item,self.data,self.feed.api.endpoint)
         from .review_facts import review_capture_policy
@@ -4154,7 +4255,8 @@ class ObservatoryApp(App):
             self.action_review_work()
 
     def action_diagnostics(self):
-        self.push_screen(DiagnosticsScreen(self.feed.snapshot.local_status),self.resume_cockpit)
+        self.push_screen(DiagnosticsScreen(self.feed.snapshot.local_status,
+            native_bootstrap=getattr(self.feed.snapshot,'native_bootstrap',False)),self.resume_cockpit)
 
     def resume_cockpit(self,result=None):
         # The terminal may have resized and collection may have advanced while
@@ -4163,6 +4265,7 @@ class ObservatoryApp(App):
         self.call_after_refresh(self.reflow_inspectors)
 
     def action_export(self):
+        if self.history_pending():return
         page=self.query_one('#pages',TabbedContent).active
         if page=='agents':
             record=getattr(self,'source_map',{}).get(self.selected_source)
@@ -4288,6 +4391,7 @@ class ObservatoryApp(App):
         self.query_one('#history-back',Button).disabled=not self.navigation_history
 
     def action_history(self,direction,page=None):
+        if self.history_pending():return
         if not isinstance(self.screen,ObservatoryScreen):return
         page=page or self.query_one('#pages',TabbedContent).active
         if page=='agents' and self.session_mode=='prompts':
@@ -4319,6 +4423,7 @@ class ObservatoryApp(App):
             self.notify('Copy sent to terminal; clipboard support depends on your terminal.')
 
     def action_copy(self):
+        if self.history_pending():return
         selected=self.screen.get_selected_text()
         if selected:
             self.copy_to_clipboard(selected);return
@@ -4403,6 +4508,7 @@ class ObservatoryApp(App):
         self.notify('←/→ choose section · Enter read · Tab controls · Esc back' if page=='agents' else
                     'Expanded detail · Esc to return',timeout=4 if page=='agents' else 2)
     def action_focus_agent(self):
+        if self.history_pending():return
         if self.query_one('#pages',TabbedContent).active=='findings':
             if not isinstance(self.screen,ObservatoryScreen):return
             item=self.table_data.get('finding-table',{}).get(self.selected_finding)
@@ -4680,6 +4786,7 @@ class ObservatoryApp(App):
                      if exemplar.get('trace_id')),None)
 
     def action_open_trace(self):
+        if self.history_pending():return
         page=self.query_one('#pages',TabbedContent).active
         if page=='metrics':
             exemplar=self.metric_exemplar()
@@ -4709,6 +4816,7 @@ class ObservatoryApp(App):
         return None
 
     def action_review_attention(self):
+        if self.history_pending():return
         item=getattr(self,'source_map',{}).get(self.selected_source)
         if not item or not (attention_required(item) or item['state']=='Completed'):return
         self.workflow_controller.acknowledge(item,action='reviewed' if item.get('state')=='Completed' else 'seen')
@@ -4716,6 +4824,7 @@ class ObservatoryApp(App):
         self.refresh_data()
 
     def action_dismiss_attention(self):
+        if self.history_pending():return
         if self.query_one('#pages',TabbedContent).active!='agents':
             self.notify('Open Agents to mark an attention item seen.');return
         item=getattr(self,'source_map',{}).get(self.selected_source)

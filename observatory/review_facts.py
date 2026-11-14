@@ -97,6 +97,7 @@ def bind_capture_policy(original,snapshot,scope):
 def review_capture_policy(original, snapshot, scope):
     """Capture policy belongs to the identity, independently of which run is open."""
     policy={key:original[key] for key in ('capture_content','capture_revision','capture_safety_revision','capture_source_revision') if key in original}
+    if getattr(snapshot,'native_bootstrap',False):return {**policy,'capture_content':False}
     if getattr(snapshot,'receiver_id','')!=scope.receiver:return policy
     local=getattr(snapshot,'local_status',{}) or {}
     safety_revision=capture_safety_revision(snapshot,scope)

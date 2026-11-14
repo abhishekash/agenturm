@@ -280,6 +280,7 @@ class SourcePreparation:
 
 def native_snapshot(snapshot,observations=(),warning=''):
     """Detach metadata overlays before freezing a view; never read workflow state."""
+    if getattr(snapshot,'native_bootstrap',False):return snapshot
     from .native_lifecycle import merge_observations
     activity=() if getattr(snapshot,'native_lifecycle_prepared',False) else getattr(snapshot,'activity',())
     states,note=merge_observations(getattr(snapshot,'receiver_id',''),
@@ -316,7 +317,8 @@ def sources(snapshot, include_reviews=False, *, preparation=None, policy_snapsho
     denied=frozenset(entry['source_id'] for entry in policy.local_status.get('sessions',[])
                      if entry.get('capture_content') is False) if same_receiver else frozenset()
     if same_receiver and policy.local_status.get('capture_content') is False:denied=denied|{None}
-    safety=(snapshot.local_status.get('capture_policy_schema')==1 or policy.local_status.get('capture_policy_schema')==1)
+    safety=(snapshot.local_status.get('capture_policy_schema')==1 or policy.local_status.get('capture_policy_schema')==1
+        or getattr(snapshot,'native_bootstrap',False)or getattr(policy,'native_bootstrap',False))
     policy_context=policy if denied or safety else None
     if preparation is not None:
         prepared,retained=preparation.get(snapshot,include_reviews,denied,policy_context)
@@ -326,14 +328,25 @@ def sources(snapshot, include_reviews=False, *, preparation=None, policy_snapsho
         retained=False
     result=deepcopy(prepared[0]) if retained else prepared[0]
     now=time.time_ns()
+    bootstrap=getattr(snapshot,'native_bootstrap',False)
+    if bootstrap:
+        clock=getattr(snapshot,'receiver_time_ns',0)
+        now=clock+max(0,int((time.time()-getattr(snapshot,'bootstrap_updated',0))*1e9))
     for item in result:
+        if bootstrap:item['_native_bootstrap']=True
         entry=prepared[1].get(item['id'])
         if entry is not None:
             if entry.get('discovery_state')=='announced':
                 item.update(state='Spawn recorded',active=False,recent=False,
                             stamp=entry.get('last_record_ns') or 0,
                             status_evidence='Spawn recorded · status unavailable')
-            else:item.update(session_health(entry,now))
+            else:
+                item.update(session_health(entry,now))
+                if bootstrap and entry.get('run_state')=='unknown':
+                    item['status_evidence']='Native lifecycle is unconfirmed: a current complete collector read is unavailable.'
+                if bootstrap and getattr(snapshot,'error',''):
+                    item.update(state='Monitor delayed',active=False,recent=False,
+                        status_evidence='Native observations could not be refreshed; the current lifecycle is unconfirmed.')
     native=getattr(snapshot,'native_lifecycle',())
     if not getattr(snapshot,'native_lifecycle_prepared',False):
         from .native_lifecycle import merge_observations
