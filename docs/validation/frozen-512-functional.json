@@ -84,8 +84,9 @@
       "ownership.json": "aee5d30487e0667dd511cbf5b1e971af8fb0455bf86539cec372bf61d6eaa37b"
     },
     "raw_health_not_published": true,
-    "post_both_restart_coverage": "pending independent analyzer",
-    "performance_acceptance": false
+    "post_both_restart_coverage": "INCOMPLETE: independent analyzer found no final cycle2 phase5 sample bound to both replacement lifetimes.",
+    "performance_acceptance": false,
+    "initial_coverage_annotation": "pending independent analyzer (at integrity-capture time; superseded by the final independent proof in this report)"
   },
   "cleanup": {
     "observed_ns": 1794679567437374266,
@@ -379,5 +380,17 @@
   },
   "original_private_run": "/tmp/agenturm-full-functional-512-60s",
   "performance_targets_closed": false,
-  "registered_gate_passed": false
+  "registered_gate_passed": false,
+  "post_snapshot_cleanup": {
+    "original_bytes": 472137328,
+    "archive_bytes": 33332291,
+    "archive_private": true,
+    "members_byte_verified": true,
+    "registered_children_absent": true,
+    "removed_only_registered_working_clone": true,
+    "sqlite_checkpoint_or_vacuum": false,
+    "original_results_unchanged": true,
+    "seed_logs_workflow_native_config_source_preserved": true,
+    "qualification": "Later action, after report/proof snapshot; does not alter original harness success or strict coverage incompleteness."
+  }
 }

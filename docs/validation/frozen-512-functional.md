@@ -21,3 +21,8 @@ Independent analyzer SHA256: `15fcc6940a9f0f9a9f27363afea8bbdaaa93fa2e1ebd20ab74
 The original private `results.json` is unchanged. Its raw final health includes captured session fields and real host metadata, so wholesale compression/publication would be inappropriate. `frozen-512-functional-results-screened.json.gz` is explicitly a screened projection: raw `index_availability.final_health` is omitted and replaced with readiness/identity/count metadata. The original hash and separate screened/compressed hashes distinguish it from a byte-for-byte original. No token/configuration/event body or raw health is published.
 
 The JSON report preserves both outcomes: original harness success and strict coverage incompleteness. Full workflow/restart/drain acceptance, first useful cold-frame and full readiness targets, loaded API/CPU/RSS/WAL/storage bounds, one-hour stability, live-runtime and human-use evidence remain open. No performance target closes from this generated functional run.
+
+
+## Later reversible artifact handling
+
+After the frozen report and independent proof were recorded, all registered children were rechecked absent. The stopped telemetry database/WAL/SHM were archived privately and verified byte-for-byte (472,137,328 original bytes; 33,332,291 archive bytes), then only that registered working clone was removed through guarded cleanup. The original result, logs, workflow database, native inputs, configuration, common seed and frozen source remained intact. Timestamped archive/cleanup manifests preserve this later action separately; the original run outcome and earlier report-time observation are unchanged. The archive is not publication material.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Record each completed functional-soak cycle with a fresh observation, including the final cycle. Preserve missing evidence and screen retained run reports without publishing raw health content.
+
 - Keep raw MCP HTTP inventory available while unrelated derived queues catch up. Certify initial history, receiver identity and raw snapshots, preserve healthy caching and keep agent-scoped reads strict.
 
 - Coordinate health-side metadata writes with bounded startup indexing and backfill transactions. Preserve caller-owned transactions, exact source snapshots and visible fatal errors; active HTTP availability remains under validation.
