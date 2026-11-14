@@ -57,8 +57,13 @@ def error_reference(event):
 
 
 def trace_error_references(activity, trace_id, *, receiver=''):
-    events = [{**event, 'trace_id': trace_id,
-               'id': trace_id + ':' + str(event.get('source_id') or ''),'receiver_id':receiver} for event in activity
+    # Qualify each source once, then reuse the existing payload-free reference
+    # protocol for both scans. No source text or full fact cache is retained.
+    events = [{**error_reference({**event, 'trace_id': trace_id,
+               'id': trace_id + ':' + str(event.get('source_id') or ''),'receiver_id':receiver}),
+               # Legacy/unknown compact references may report only status.
+               # Keep that classification without retaining another payload.
+               'status': 'error' if failure(event) else ''} for event in activity
               if event.get('source_id')]
     references = [error_reference(event) for event in pending_failures(events,limit=20,receiver=receiver)]
     # Carry bounded, payload-free retry context across traces in one turn.
