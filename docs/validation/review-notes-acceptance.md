@@ -1,43 +1,50 @@
 # Review-notes acceptance audit
 
-Current snapshot: **2026-11-14T15:55:25.521819+00:00**, merged main **`d5538e6af2bcc7961ddc7af48fb4c79b978c32fd`** after PR #97. This is an audit checkpoint, **not accepted final resource performance**. Privacy #94 and economics components #97 are merged; previous CI failures remain. The supplied main97 CI fetch has **eight successes / four Python jobs in progress**. No current all-green or loaded HTTP p95 is claimed.
+Current checkpoint: **2026-11-14T17:43:27.111051+00:00**, verified merged main **`1ca4fafe71aed559d381b7e613efb748b9ae9878`**, after [PR #104](https://github.com/abhishekash/agenturm/pull/104). Startup writer admission, readiness diagnostics and the receiver/CI fixture corrections are merged. **Full CI and final runtime/resource acceptance remain open.** The active MCP correction is under independent review and is not delivered.
 
 ## Current decision
 
-- **Delivered:** existing A/C/D/E/F/G increments; exact cached-read consistency #88, bounded incoming catch-up #90, normalized external HTTP/terminal registration #93, shared capture-generation safety #94, shallow harness compatibility #95, warning-boundary/owned-connection fixtures #96 and bounded economics components #97.
-- **Post-snapshot update:** PR98 correction merged as `7983661bd27478f9f35af70ef46cc45332ed90ee` after this main97 fetch. Its remote CI is pending; the frozen97 snapshot below is not relabelled as PR98 validation.
-- **CI remains open:** PRs #90–94 each failed four Python jobs; PR95 failed one and PR96 failed three. Main97 run [43611892160](https://github.com/abhishekash/agenturm/actions/runs/43611892160) has eight successes/four Python jobs in progress in the supplied fetch. The CI96 follow-up merged post-snapshot as #98; its remote CI is pending.
-- **Invalid resource attempts:** full authenticated HTTP B 44 / C 35 and tiny e795/029719b 5/114 accepted batches missed the fixed writer schedule. Most successful reads followed writer abort. These runs supply **no publishable loaded p95** or improvement comparison.
-- **Pending implementation:** compatibility worker pending/inflight ownership and metadata-only native bootstrap during initial history indexing. Neither is marked merged or accepted.
-- **Acceptance still open:** cold/idle/API targets, final one-hour soak, sustained RSS/modal retention, index/WAL growth/drains, final terminal lifecycle, live Claude/Pi and consented reconstruction/resumption/repeat use. Pilot denominator: **0 participants / 0 sessions / 0 repeat-use observations**.
+- **Merged:** A–G increments, writer ownership #100, canonical success projection #101, metadata-only native bootstrap #102 README pip/uv instructions #103 and startup repair/diagnostics #104. Bootstrap keeps `updated=0`, history/usage unknown and content/workflow authority unavailable until ordinary coherent history is ready.
+- **Current CI is pending:** [main104 run 43622391716](https://github.com/abhishekash/agenturm/actions/runs/43622391716) has eight successes and four Python jobs in progress at this fetch. PR102/main103 failures are retained separately; earlier green matrices do not certify this head.
+- **Distinct startup outcomes:** frozen 473 exceeded 600 seconds before timed work, with zero UI/heartbeat/turn samples. Candidate 3fb plus harness 883 reached retained-history readiness (`initial_readiness_seconds=221.505`, 52,002 Activity jobs / 5,752 summaries), then the configured 12-second functional smoke **failed** on `/api/mcp?limit=20` HTTP 503 after 7.305 active seconds, with zero completed turns and no restart. Neither is a one-hour pass or resource acceptance. The readiness observation retained 20 connection errors; eventual readiness is not uninterrupted HTTP availability.
+- **Strict cadence remains invalid:** 315/420 scheduled writes, with genuine 503, missed-slot and progress failures. Earlier 44/35, 5/114, 145/420 and 25/30 attempts remain preserved. There is no publishable historical loaded HTTP p95 or comparison.
+- **Open:** current full CI, active MCP availability, full one-hour stability, cold/useful-frame/idle/API/RSS/storage/WAL/drain targets and human pilot. Denominators remain **0 participants / 0 sessions / 0 repeat-use observations**. Live Claude/Pi remains unqualified.
 
-## Audit basis
+## Audit basis and historical preservation
 
-The user-owned `agenturm-review-notes.md` is read-only and unchanged: SHA-256 `8352ce8a78edaea075083e59850ddd96bb70868164e3c146b11cd97b0a617ce3`. Original review: main `d36446c`, 13 November 2026, version 0.2.3. All **27 findings and 11 recommendations** are accounted for below, with implementation, regression evidence, delivery and limits separated. [The global plan](../rfcs/review-notes-completion-plan.html) and [machine-readable ledger](review-notes-acceptance-data.json) use the same snapshot. Historical code/test links remain pinned to the exact inspected/tested heads; they are evidence, not a claim that every test ran on final main.
+User-owned `agenturm-review-notes.md` remains read-only and unchanged at SHA-256 `8352ce8a78edaea075083e59850ddd96bb70868164e3c146b11cd97b0a617ce3`. All **27 findings and 11 recommendations** are accounted for below. [The implementation plan](../rfcs/review-notes-completion-plan.html) and [machine ledger](review-notes-acceptance-data.json) share this checkpoint. The complete previous main97 ledger is retained through the immutable commit/path/SHA reference under `previous_main97_snapshot`; older main91/main55 records, CI states, frozen links and failed attempts remain preserved without recursively copying the entire ledger. The [immutable previous audit](https://github.com/abhishekash/agenturm/blob/a241b149b7afa8661f99fb65871e4e45bcd1a7c0/docs/validation/review-notes-acceptance.html) and [previous plan](https://github.com/abhishekash/agenturm/blob/a241b149b7afa8661f99fb65871e4e45bcd1a7c0/docs/rfcs/review-notes-completion-plan.html) preserve their original wording. Historical pending states below are not current CI claims.
 
-## Integration and CI ledger
+## Historical PR98–103 merge and CI fetch
 
-| PR | Delivery | Exact PR head | CI qualification | Merge commit |
-| --- | --- | --- | --- | --- |
-| [#79](https://github.com/abhishekash/agenturm/pull/79) | MERGED | `920f44e517bc5f8583521dbae5664fe3fff37d1e` | 12 success | `5e0c39786066fb88c0e270418573e361aeb6cf9a` |
-| [#80](https://github.com/abhishekash/agenturm/pull/80) | MERGED | `0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7` | 12 success | `1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8` |
-| [#81](https://github.com/abhishekash/agenturm/pull/81) | MERGED | `c84e9bcb506fa498bfbcb4badc03c6cfb12b21e6` | 4 cancelled, 8 success | `093bf87866f92c0af1c23522082b1f7c8d48cae7` |
-| [#82](https://github.com/abhishekash/agenturm/pull/82) | MERGED | `e9280e622e7874327d4ea357369f8d0912121a74` | 12 cancelled | `e434fcf54b83a19ecdbb94a1e1712f4a43772ec6` |
-| [#83](https://github.com/abhishekash/agenturm/pull/83) | MERGED | `ca9b51918a7932b492a1f67ccb2d066dde34ca95` | 12 success | `728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c` |
-| [#84](https://github.com/abhishekash/agenturm/pull/84) | MERGED | `3368e09cdf6cb7a4cb582e588e0959fc76ef5f40` | 12 success | `11a3b7b72e0e18f8d92650d6e14f57f3a8a72d3d` |
-| [#85](https://github.com/abhishekash/agenturm/pull/85) | MERGED | `b56a353654696941489a1d0853d1c68f1fc94c4c` | 4 cancelled, 8 success | `1aa1948f9723ac4da88a0b5e0ea93322bb8f0f39` |
-| [#86](https://github.com/abhishekash/agenturm/pull/86) | MERGED | `bdda67dceef40221f6ba704d205fe3cc6c4f59e7` | 12 success | `8e9d46fd0f75218705ac581447d69fc862b69d44` |
-| [#87](https://github.com/abhishekash/agenturm/pull/87) | MERGED | `e2c6a4d0a0a2a70a7e01e55acb228f0e0dbc22e9` | 1 failure, 11 success | `55c6244bf0c1caad2a22cd5c826020f50a677e54` |
-| [#88](https://github.com/abhishekash/agenturm/pull/88) | MERGED | `cae0f363b0041825fd628235acc3a6f56e137a41` | 4 failure, 8 success | `ebcd03390bbbe57d18470165a4dbdb919de39357` |
-| [#89](https://github.com/abhishekash/agenturm/pull/89) | MERGED | `0acc227de04319058333de895f6b0558bb00f29c` | 4 failure, 8 success | `f124e2e971919000fb2d7e40f293dacf6ffc72f0` |
-| [#90](https://github.com/abhishekash/agenturm/pull/90) | MERGED | `23f8c035e7ee97df2892b0895551e025a2d1c957` | 4 failure, 8 success | `e594a2a83c7d9d6da63e63aa497d88a8ff27b73b` |
-| [#91](https://github.com/abhishekash/agenturm/pull/91) | MERGED | `7b2f45cb9872e5f396adb9009017e5a837766db3` | 4 failure, 8 success | `e389889ff7ff7ad92716fa5fb889a0a8ea8760a8` |
-| [#92](https://github.com/abhishekash/agenturm/pull/92) | MERGED | `543e9bab9134fdb77b9a7e8f89f70b83c6a57315` | 4 failure, 8 success | `af5d1a809269f3541046b03b20b6a6d21b4e55ce` |
-| [#93](https://github.com/abhishekash/agenturm/pull/93) | MERGED | `11d90857b4b92a90ed0849ceb7a5e956883c3bf3` | 4 failure, 8 success | `43abad5f1689f74998172582490519e160860917` |
-| [#94](https://github.com/abhishekash/agenturm/pull/94) | MERGED | `a7a78577ac6dbeedf5c9b466be15f6d13425a43d` | 4 failure, 8 success | `07e9e1a6cccdcea29d4954405e1c2bb4caa84954` |
-| [#95](https://github.com/abhishekash/agenturm/pull/95) | MERGED | `843150f9271d605789ace9ca0b25014299dabbca` | 1 failure, 11 success | `e795f064c861cd59b54d1180697e4b19c9959b34` |
-| [#96](https://github.com/abhishekash/agenturm/pull/96) | MERGED | `c6fe98ae1725b66f9d3d5127cbb9647a78f1a72b` | 3 failure, 9 success | `1cb1a99b2f920f90efbd58b3a96fc7cc6d1b2009` |
-| [#97](https://github.com/abhishekash/agenturm/pull/97) | MERGED | `741bbb8736e6d5e6d03695088c3cfde3ad34fbae` | 4 in_progress, 8 success | `d5538e6af2bcc7961ddc7af48fb4c79b978c32fd` |
+| PR | Scope | Merge | Exact fetched head checks |
+| --- | --- | --- | --- |
+| [#98](https://github.com/abhishekash/agenturm/pull/98) | CI readiness/policy fixtures | `7983661bd27478f9f35af70ef46cc45332ed90ee` | head `ce312db6829d740b7ff5f9b7d5e0bf7806e9a174`: 12 success, 0 failure, 0 pending |
+| [#99](https://github.com/abhishekash/agenturm/pull/99) | main97 audit checkpoint | `a241b149b7afa8661f99fb65871e4e45bcd1a7c0` | head `efe23ad599a7af57553991428fc91b79d30cc857`: 12 success, 0 failure, 0 pending |
+| [#100](https://github.com/abhishekash/agenturm/pull/100) | writer ownership/admission | `bd04f205a97291fd9b8b23fc952854c2a72c6e36` | head `52392147f6ded3d02e5094741ab7f65295c6c222`: 12 success, 0 failure, 0 pending |
+| [#101](https://github.com/abhishekash/agenturm/pull/101) | canonical success projection | `250030bd82aa143e72860f4a392504133bac4c88` | head `9f3d1d76282328905f4427e57be81276a366d955`: 12 success, 0 failure, 0 pending |
+| [#102](https://github.com/abhishekash/agenturm/pull/102) | native bootstrap | `abf1627950aa53032e97dea2136fa25e3748a7d4` | head `766f1e982e803636699b6d50f78522510e92caf6`: 8 success, 4 failure, 0 pending |
+| [#103](https://github.com/abhishekash/agenturm/pull/103) | README pip alongside uv | `7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb` | head `6049dd870d681c19b0a25e85481d339b6073aa77`: 8 success, 1 failure, 3 pending |
+
+Main102 run [43619493189](https://github.com/abhishekash/agenturm/actions/runs/43619493189) recorded 8 successes / 3 failures / 1 pending; main103 run [43619971350](https://github.com/abhishekash/agenturm/actions/runs/43619971350) recorded 8 successes / 4 pending. These are the exact timestamped fetches, not predictions of completion. Individual checks and URLs remain in JSON.
+
+## Merged startup repair and distinct failed validation
+
+[PR #104](https://github.com/abhishekash/agenturm/pull/104) merged at `1ca4fafe71aed559d381b7e613efb748b9ae9878` after a warning-free 60-case combined gate and a separate overlapping 22-case harness gate. The [integration report](startup-integration.html) records exact reviewed source boundaries, the proved connection closure, failure-safe diagnostics and later reversible artifact cleanup. Full CI is still pending.
+
+The following authored components are now delivered by #104:
+
+- **Startup writer admission** (`3fb82549d08730c753bd76553b19b41e48545bf8`): Core fix and 13 local tests; merged #104. No cold or HTTP target acceptance.
+- **Readiness diagnostics/fail-fast harness** (`883958949c024784c5b01c4afa35bc65dc2359a8`): Harness correction merged #104 after focused validation; not sustained runtime acceptance.
+- **Independent receiver startup integration** (`adb13508d6ed1a84a8b485852c2807a0aea84d6a`): Two real generated native/authenticated HTTP tests passed in 2.616 seconds. Independent two-case pass: 2.536 seconds before final shutdown-exception assertion strengthening. Merged #104 after the combined gate; functional evidence only.
+- **CI102 missing-method test double** (`2354ecf2f7f0d1dc2bbc0d2c312e4b3f7dcecced`): Fixture-only correction committed; 28 local integration tests passed in 34.654 seconds and seven Python 3.13 monitoring models passed in 2.022 seconds. Merged #104 after the warning-free combined gate; remote CI remains pending. No runtime fallback or green CI claim.
+
+The frozen 473 failure report was delivered at `129b12d7d1712d4736b441f60a86d578fd5d8b7e`. Its sanitized artifacts preserve 13 total errors (the primary readiness deadline plus 12 consequential unmet checks), receiver exit 0 and no timed samples. Health-side hierarchy INSERT lock failure was observed; its blocking transaction and extended code remain unresolved. Later BUSY/517 reproductions are not assigned as its unique cause.
+
+The separate [3fb smoke and failure report](https://github.com/abhishekash/agenturm/blob/eace36b6f824904e07fc80896749690e27142d07/docs/validation/full-corpus-startup-3fb.html) ended with receiver exit 0 and pending work 2→0, but no graceful cockpit exit record and no completed restart/review cycle. Its raw results SHA-256 is `093927512e524be8f791f01b7849042ba2880deba48a13d220c16f02b71d390b`; registered children were verified absent. Full result directories contain generated credentials and must not be published.
+
+## Preserved main97 evidence narrative
+
+The following at-time CI/readiness/preflight/resource narrative is retained verbatim; current decisions above supersede its pending/merged labels. Its original integration table and complete38row snapshot are retained in JSON and the immutable audit link.
 
 Earlier corrected E/F heads had complete green matrices before rebasing. Merged PR81/82/85 duplicate runs were cancelled intentionally; completed full main e434 and main `55c6244` matrices remain historical combined evidence. PR84, PR86 and the earlier PR79/80/83 head matrices remain historical successes. PR87 head `e2c6a4d` retains one [Python 3.14 failure](https://github.com/abhishekash/agenturm/actions/runs/43592510668/job/132440055787); the later full main `55c6244` matrix passed independently. The earlier failure is neither removed nor assigned an unverified cause. The all-green claim applies exactly to those completed main matrices, not cancelled PR-head runs or unexecuted resource tests.
 
@@ -125,7 +132,7 @@ The earlier one-hour generated active/probed run reported DB 427.82 MiB and max 
 
 **Open resource acceptance**
 
-Read/source increments and same-snapshot/catch-up through #90, normalized harness #93/#95, privacy #94 and bounded performance components #97 are merged. CI96 failed; main97 is pending at the frozen fetch.
+Read/source increments and same-snapshot/catch-up through #90, normalized harness #93/#95, privacy #94 and bounded performance components #97 are merged. Historical CI failures remain retained; current main104 combined CI is pending. Writer ownership #100, canonical success projection #101 and metadata-only bootstrap #102 are merged. Startup repair, diagnostics and receiver/fixture tests merged #104; full CI remains pending.
 
 Code: [storage_activity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_activity.py), [storage_sessions.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_sessions.py), [storage_mcp.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_mcp.py), [read_connections.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/read_connections.py), [operation_preparation.py](https://github.com/abhishekash/agenturm/blob/d5538e6af2bcc7961ddc7af48fb4c79b978c32fd/observatory/operation_preparation.py).
 
@@ -133,7 +140,7 @@ Contract tests: [test_history_read_economics.py](https://github.com/abhishekash/
 
 Cold readiness <30 s, complete-monitor idle CPU <5%, Sessions/MCP actual HTTP under-write p95 <100 ms and final combined memory/WAL acceptance remain open. Direct Store/query-work results do not prove those HTTP or whole-monitor targets.
 
-Full common-corpus HTTP B 44 / C 35 and tiny e795/029719b 5/114 accepted batches are invalid. Most 200 reads occurred after writer abort; no loaded p95 may be published. Isolated sanitized-facts/scratch/terminal/context improvements preserve outputs but do not close whole-monitor budgets.
+Full common-corpus HTTP B 44 / C 35 and tiny e795/029719b 5/114 accepted batches are invalid. Most 200 reads occurred after writer abort; no loaded p95 may be published. Isolated sanitized-facts/scratch/terminal/context improvements preserve outputs but do not close whole-monitor budgets. Strict cadence 315/420 remains invalid. Frozen 473 failed its 600-second readiness deadline before timed work. The separate 3fb smoke reached readiness in a recorded 221.505 seconds, then failed active MCP HTTP 503 at 7.305 seconds, with zero turns; neither closes performance acceptance.
 
 Acceptance: OPEN: resource targets.
 
@@ -149,7 +156,9 @@ Contract tests: [test_recovery_defaults.py](https://github.com/abhishekash/agent
 
 New managed stores use a 14-day age policy; existing stores require explicit opt-in. Age retention is not a byte cap, immediate file shrink or proof of a memory/WAL plateau.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F3 · Telemetry in the launch directory
 
@@ -163,7 +172,9 @@ Contract tests: [test_recovery_defaults.py](https://github.com/abhishekash/agent
 
 Private XDG state and explicit non-destructive legacy migration are provided. Explicit --db remains an intentional user override; captured content is still sensitive.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F4 · Unreliable one-shot scripting
 
@@ -177,7 +188,9 @@ Contract tests: [test_recovery_once.py](https://github.com/abhishekash/agenturm/
 
 Readiness/error/partial/interrupt are distinguished; missing data is not a zero-success snapshot. Discovery/readiness can exceed the deadline and return partial rather than pretend success.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F5 · OpenCode step mistaken for turn
 
@@ -190,6 +203,8 @@ Code: [opencode.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caa
 Contract tests: [test_current_native_schema.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_current_native_schema.py), [test_opencode_turn_proof.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_opencode_turn_proof.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_opencode_turn_review.py), [test_native_fixture_provenance.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_native_fixture_provenance.py).
 
 Source-derived OpenCode 2.2.5 intervals use recorded preceding/closing idle boundaries; steered prompts remain in the same interval. Unknown prefix stays exact-step, partial/clipped/epoch-conflicting membership and stale summaries withhold totals. Legacy IDs/parent behavior remain. Missing captured prompt or idle evidence is not invented. This is selected-format synthetic qualification, not a live-agent certification.
+
+
 
 Acceptance: Qualified implemented source contract; live/universal coverage remains unknown.
 
@@ -207,7 +222,7 @@ Native-shaped ingestion→Store→authenticated API→Review/export assertions c
 
 Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F7 · Noisy attention signal
 
@@ -223,23 +238,23 @@ Explicit request/unknown separation and incident identity are present. Advisory 
 
 Generated real-process preflight: two cockpits plus watcher, one fixture notification, acknowledgement/restart and exact remote resolution pass; no live desktop or alert-precision claim.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F8 · Low roster/Overview information density
 
 **Implemented, qualified**
 
-Merged [#72](https://github.com/abhishekash/agenturm/pull/72) / [#74](https://github.com/abhishekash/agenturm/pull/74) / [#78](https://github.com/abhishekash/agenturm/pull/78).
+Merged [#72](https://github.com/abhishekash/agenturm/pull/72) / [#74](https://github.com/abhishekash/agenturm/pull/74) / [#78](https://github.com/abhishekash/agenturm/pull/78). Metadata-only initial native observations merged #102 at abf1627; task/path/prompt content is withheld and the coherent snapshot clock stays zero.
 
-Code: [terminal_ui.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/terminal_ui.py), [overview.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/overview.py), [source_projection.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/source_projection.py).
+Code: [terminal_ui.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/terminal_ui.py), [overview.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/overview.py), [source_projection.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/source_projection.py), [native_bootstrap.py](https://github.com/abhishekash/agenturm/blob/abf1627950aa53032e97dea2136fa25e3748a7d4/observatory/native_bootstrap.py).
 
-Contract tests: [test_agents_readability.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_agents_readability.py), [test_overview_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_overview_facts.py), [test_overview_ui.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_overview_ui.py).
+Contract tests: [test_agents_readability.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_agents_readability.py), [test_overview_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_overview_facts.py), [test_overview_ui.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_overview_ui.py), [test_native_bootstrap.py](https://github.com/abhishekash/agenturm/blob/abf1627950aa53032e97dea2136fa25e3748a7d4/tests/test_native_bootstrap.py).
 
-Compact/expanded inspectors show recorded paths/checks/issues before assistant claims; hierarchy/shading/keyboard behavior retained. Loaded bounded evidence is not a full-history summary.
+Compact/expanded inspectors show recorded paths/checks/issues before assistant claims; hierarchy/shading/keyboard behavior retained. Loaded bounded evidence is not a full-history summary. A useful first-native-frame target on retained history remains unproved. Frozen 473 Feed correctly refused fatal health. Partial metadata is not full history readiness.
 
-Initial retained-history indexing still delays the coherent roster; metadata-only native bootstrap is in progress, not delivered or coherent-ready acceptance.
+Metadata-only native bootstrap is merged in PR #102. The partial frame preserves unknown history/usage and withholds source content and lifecycle authority. A useful first-native frame and resource acceptance on the retained corpus remain open; the original frozen-473 fatal-health refusal is not relabelled as a successful first frame.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F9 · Old completion backlog
 
@@ -253,7 +268,9 @@ Contract tests: [test_today_outcomes.py](https://github.com/abhishekash/agenturm
 
 Today/history, human-readable ages and frozen-ID bulk review exist. Marking reviewed is neither native approval nor proof of resolution; old archived records remain inspectable.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F10 · No observed continuity adoption
 
@@ -266,6 +283,8 @@ Code: [review_continuity.py](https://github.com/abhishekash/agenturm/blob/728e0b
 Contract tests: [test_review_continuity_ui.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_review_continuity_ui.py), [test_turn_task_continuity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_turn_task_continuity.py).
 
 No new participant, author-use or voluntary repeat-use observation is established. Pilot denominator is 0 participants / 0 sessions / 0 repeat-use observations; do not infer adoption from tests.
+
+
 
 Acceptance: OPEN: external adoption.
 
@@ -281,7 +300,9 @@ Contract tests: [test_local_runtime.py](https://github.com/abhishekash/agenturm/
 
 Multiplexed/app-server activity is not per-session progress; unconfirmed status remains possible. Linux process evidence and the generated soak do not cover every runtime/platform.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F12 · Unknown children counted as actionable
 
@@ -295,11 +316,13 @@ Contract tests: [test_attention.py](https://github.com/abhishekash/agenturm/blob
 
 Unknown/unlinked coverage is separated from explicit requests. New collision/loop/native heuristics must not silently turn it into an approval request.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F13 · Strong MCP screen lacks qualified recommendations
 
-**Implemented and merged; main97 matrix pending**
+**Implemented and merged; current combined CI pending/failed**
 
 Merged #81 at 093bf878; shared-query economics merged #83 at 728e0ba.
 
@@ -309,7 +332,9 @@ Contract tests: [test_explanation_integration.py](https://github.com/abhishekash
 
 Selected-tool loaded-page outcome/duration denominators, small samples, actual configured-server unobserved context and keyboard flagged-call navigation are visible and tested. No response-correctness, all-history reliability or tool-deletion conclusion follows. Earlier corrected E head and previous main `55c6244` each passed all 12 checks; final resources/live outcomes remain separate.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F14 · Generic failures without useful evidence
 
@@ -323,7 +348,9 @@ Contract tests: [test_operation_facts.py](https://github.com/abhishekash/agentur
 
 Commands/exits/output roles, occurrence ownership, safe fingerprints and exact sources are implemented. Unknown/redacted/clipped inputs cannot prove equivalence; a later success does not prove complete repair.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F15 · Historical JSON expansion/read cost
 
@@ -337,7 +364,7 @@ Contract tests: [test_cockpit_read_paths.py](https://github.com/abhishekash/agen
 
 Indexed Activity/scalar rollups and bounded source reads replace repeated full-history Activity expansion. Remaining retained MCP grouping, cold migration and combined monitor cost are material and not closed.
 
-Normalized short soak/modal preflights are functional only. No final combined one-hour RSS/WAL plateau or storage-growth acceptance; full HTTP writer-deadline failures remain invalid.
+Normalized short soak/modal preflights are functional only. No final combined one-hour RSS/WAL plateau or storage-growth acceptance; full HTTP writer-deadline failures remain invalid. Startup writer admission and readiness diagnostics merged #104 after focused validation; full CI and sustained acceptance remain open. The newer retained smoke reached initial readiness, then failed active MCP HTTP 503. The original 473 timeout and every failed cadence attempt remain retained.
 
 Acceptance: OPEN: combined resource acceptance.
 
@@ -351,11 +378,11 @@ Code: [receiver_state.py](https://github.com/abhishekash/agenturm/blob/728e0bad8
 
 Contract tests: [test_recovery_defaults.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_recovery_defaults.py), [test_http_transport.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_http_transport.py), [test_receipt_export_policy.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_receipt_export_policy.py), [test_native_storage_retry.py](https://github.com/abhishekash/agenturm/blob/e389889ff7ff7ad92716fa5fb889a0a8ea8760a8/tests/test_native_storage_retry.py), [test_feed_capture_safety.py](https://github.com/abhishekash/agenturm/blob/07e9e1a6cccdcea29d4954405e1c2bb4caa84954/tests/test_feed_capture_safety.py), [test_capture_reference_bindings.py](https://github.com/abhishekash/agenturm/blob/07e9e1a6cccdcea29d4954405e1c2bb4caa84954/tests/test_capture_reference_bindings.py), [test_capture_cli_bindings.py](https://github.com/abhishekash/agenturm/blob/07e9e1a6cccdcea29d4954405e1c2bb4caa84954/tests/test_capture_cli_bindings.py).
 
-Private token/Host/Origin/redirect checks, best-effort redaction and exact receiver/capture fences remain. New bound material denies stale, missing or different client generations; separately authored material survives. Legacy unbound material cannot establish an unseen denial while offline. No durable offline revocation ledger or universal secret/security guarantee.
+Private token/Host/Origin/redirect checks, best-effort redaction and exact receiver/capture fences remain. New bound material denies stale, missing or different client generations; separately authored material survives. Legacy unbound material cannot establish an unseen denial while offline. No durable offline revocation ledger or universal secret/security guarantee. Merged #102 partial frames never grant positive capture or content authority; denials stay sticky.
 
 Synthetic actual Feed/UI/CLI coverage includes actor-wide missing-session denial, unrelated siblings, rapid deny/reallow with no UI tick, paused/late callbacks, replacement receiver, restart generation, mixed old/new approved drafts and fresh explicit recapture. Combined full CI is separate.
 
-Acceptance: Tested contract PR94 merged; ongoing privacy invariants and combined CI remain; qualified legacy unbound/offline limits.
+Acceptance: Tested contract94 merged; ongoing privacy invariants and combined CI remain; qualified legacy unbound/offline limits.
 
 ### F17 · Native add/update edits discarded
 
@@ -371,7 +398,7 @@ Failed/unknown file attempts do not prove a persisted change. Both explicit rena
 
 Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F18 · Wrapped native checks not recognized
 
@@ -387,7 +414,7 @@ Recognized wrappers/qualified compound success are supported; no-op, masked, unk
 
 Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F19 · Exact usage rejected or misallocated
 
@@ -400,6 +427,8 @@ Code: [review_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a
 Contract tests: [test_agent_usage_allocation.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_agent_usage_allocation.py), [test_turn_task_continuity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_turn_task_continuity.py), [test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_current_native_schema.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_current_native_schema.py), [test_opencode_turn_proof.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_opencode_turn_proof.py).
 
 Exact single-owner allocations preserve unknowns and partial costs. Current OpenCode 2.2.5 source-derived fixtures verify inclusive 30 input / 13 output with cache-read 9/cache-write 4/reasoning 3; breakdowns are not added again. Missing, unsafe or stale source/member proof withholds totals. Legacy interpretation remains unchanged. These are synthetic accounting assertions, not observed live provider billing.
+
+
 
 Acceptance: Qualified tested accounting; unsupported/live allocation stays unknown.
 
@@ -417,7 +446,7 @@ Supported native text blocks reach Review and generic placeholders are suppresse
 
 Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F21 · Initiating request crowded out
 
@@ -431,7 +460,9 @@ Contract tests: [test_workflow_evidence.py](https://github.com/abhishekash/agent
 
 Independent request/update context and paging expose intent within explicit source limits. Pruned, uncaptured or clipped intent remains unavailable, never reconstructed by guesswork.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F22 · Complete captured run shows zero work
 
@@ -447,7 +478,7 @@ End-to-end native-shaped checks/edits/text/usage and generated reconstructions a
 
 Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F23 · Review JSON/task-link mismatch
 
@@ -461,23 +492,25 @@ Contract tests: [test_turn_task_continuity.py](https://github.com/abhishekash/ag
 
 Raw Review JSON composes without retyping IDs; turn members/check source traces/accounting survive. Contradictory links reject; legacy ambiguous data stays readable without trusted totals until explicit repair.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### F24 · Passing suite hid fixture mismatch
 
-**CI not all green; historical failures retained**
+**Current combined CI pending; historical failures retained**
 
-Implementation through #97 are merged. Previous main55/e434 full matrices passed. PRs #90–94 each have four failed Python jobs; PR95 one, PR96 three. Main97 fetched eight successes/four Python jobs in progress.
+Startup writer admission, actual MCP readiness fixture and deterministic native fixture connection closure merged #104. Its focused gates passed; main104 full CI is pending. PR102/main103 failures and earlier exact-head successes remain retained.
 
 Code: [operation_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/operation_facts.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/workflow_evidence.py).
 
 Contract tests: [test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_opencode_turn_review.py), [test_owned_findings.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_owned_findings.py), [test_derived_readiness_snapshot.py](https://github.com/abhishekash/agenturm/blob/ebcd03390bbbe57d18470165a4dbdb919de39357/tests/test_derived_readiness_snapshot.py), [test_incoming_catchup.py](https://github.com/abhishekash/agenturm/blob/e594a2a83c7d9d6da63e63aa497d88a8ff27b73b/tests/test_incoming_catchup.py).
 
-ResourceWarning boundaries and owned soak connections corrected in #96 without suppression. New #96 wording/readiness failures have a local correction subsequently merged #98, with remote CI pending; exact original CLI HTTP cause is unknown. Source contracts, remote CI, invalid performance runs and live/pilot outcomes are separate.
+ResourceWarning boundaries and owned soak connections corrected in #96 without suppression. New #96 wording/readiness failures have a local correction subsequently merged #98, whose exact head matrix later passed all 12 checks; exact original CLI HTTP cause is unknown. Source contracts, remote CI, invalid performance runs and live/pilot outcomes are separate.
 
-PR95/main95 and PR96/main96 run IDs and actual failure details are retained above and in JSON. Controlled pending-migration HTTP 503→ready200 proves a fixture readiness race, not a unique diagnosis of the earlier CI failure. Local passing tests are not remote all-green.
+PR95/main95 and PR96/main96 run IDs and actual failure details are retained above and in JSON. Controlled pending-migration HTTP 503→ready200 proves a fixture readiness race, not a unique diagnosis of the earlier CI failure. Local passing tests are not remote all-green. Root reproduced four MCP null/empty inspector subtest errors on main103: the test double lacks native_page_pending. The fixture-only correction merged #104 after 28 UI/model cases and an overlapping seven-model Python 3.13 gate passed; a separate 60-case combined gate passed without warnings. Earlier failures and unknown wire causes remain retained.
 
-Acceptance: OPEN: current combined CI and correction remote validation; final runtime/resource/external gates open.
+Acceptance: OPEN: current full CI; final runtime, resource and external gates.
 
 ### F25 · OpenCode prompts excluded by trace
 
@@ -490,6 +523,8 @@ Code: [opencode.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caa
 Contract tests: [test_current_native_schema.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_current_native_schema.py), [test_opencode_turn_proof.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_opencode_turn_proof.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_opencode_turn_review.py), [test_native_fixture_provenance.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_native_fixture_provenance.py).
 
 Current split-part text/user records are collected in their same SQLite snapshot and attached only to proved idle-boundary intervals. Unknown prefix remains exact-step; missing initiating text stays unavailable. Legacy whole-turn mode retains parent behavior. Exact-step mode intentionally omits other steps; no proximity reconstruction.
+
+
 
 Acceptance: Qualified implemented captured membership; uncaptured/live intent unknown.
 
@@ -519,9 +554,11 @@ Code: [attention_runner.py](https://github.com/abhishekash/agenturm/blob/1c0b795
 
 Contract tests: [test_native_inventory.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/tests/test_native_inventory.py), [test_native_activity_integration.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/tests/test_native_activity_integration.py), [test_attention_runner.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/tests/test_attention_runner.py), [test_native_review_projection_fix.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/tests/test_native_review_projection_fix.py).
 
-Headless watcher, shared claims, receiver-owned native inventory and shared Review parity are merged. Generated two-cockpit+watcher preflight passed with one fixture notification and 210 unrelated records per transition, ack/restart and exact resolution. Historical main `55c6244` CI passed; current main97 is pending; live request-contract/clock/capacity/desktop precision remain qualified; native approval stays manual.
+Headless watcher, shared claims, receiver-owned native inventory and shared Review parity are merged. Generated two-cockpit+watcher preflight passed with one fixture notification and 210 unrelated records per transition, ack/restart and exact resolution. Historical main `55c6244` CI passed; current main104 CI is pending; live request-contract/clock/capacity/desktop precision remain qualified; native approval stays manual.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+ Bootstrap #102 is display-only; it does not observe/finalize attention or acknowledge native work.
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ## Recommendations R1–R11
 
@@ -537,7 +574,9 @@ Contract tests: [test_attention_runner.py](https://github.com/abhishekash/agentu
 
 Quiet inventory, durable dedup, remote pending/resolution catch-up and acknowledgement/restart passed a generated real two-cockpit+watcher preflight. This is one functional scenario with a fixture notification sink, not measured alert precision, OS desktop delivery or live cross-runtime approval support.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### R2 · Truthful per-turn receipts with frozen Git
 
@@ -551,7 +590,9 @@ Contract tests: [test_turn_task_continuity.py](https://github.com/abhishekash/ag
 
 Review g/m explicitly maps/captures read-only Git; earlier checks do not certify the current checkout. Recorded edits and all worktree changes/pre-existing/concurrent work stay distinct.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### R3 · Actionable failure diagnosis
 
@@ -565,7 +606,9 @@ Contract tests: [test_operation_correlation.py](https://github.com/abhishekash/a
 
 Current/previous unseen reminders remain separate from archival Findings. Exact source s/container trace t, expected nonzero and later-success evidence retain source scope; no repaired-task conclusion.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### R4 · Approved automatic continuity
 
@@ -579,7 +622,9 @@ Contract tests: [test_review_continuity_ui.py](https://github.com/abhishekash/ag
 
 Review d prepares source-backed editable text, then explicit approval appends an immutable version. Human title/notes/brief/decisions are not overwritten; no human decision or intent is invented.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### R5 · Parallel-work overlap awareness
 
@@ -593,7 +638,9 @@ Contract tests: [test_review_continuity.py](https://github.com/abhishekash/agent
 
 Explicit mapped checkouts/recorded paths and strict check-before-other-edit chronology are shown. Historical branch identity often remains unverified; unknown overlap is not collision proof. Different worktrees, failed attempts and ambiguous paths do not become confirmed collisions.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### R6 · Progression and repeated-work evidence
 
@@ -607,7 +654,9 @@ Contract tests: [test_evidence_explanations.py](https://github.com/abhishekash/a
 
 Opt in via AGENTURM_WORKFLOW_PATTERNS=1. Later matching success includes failed and successful sources. Repetition observations may attach strictly timed leaf-model reported contributions only with complete exact owner/execution/source proof. Actual Store publication and resumable workflow_patterns_v2 repair are tested; unknown/partial input remains unavailable. No new always-on usage finding, waste/retry-cost attribution, cumulative delta or context-occupancy inference.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### R7 · Qualified MCP recommendations
 
@@ -621,7 +670,9 @@ Contract tests: [test_explanation_integration.py](https://github.com/abhishekash
 
 Current loaded-page outcome/duration denominators, small samples, configured-unobserved context and keyboard flagged-call navigation are wired in the existing MCP inspector. Exact receiver/capture checks remain. An observed protocol/tool success does not evaluate response correctness; absence never recommends deleting configuration.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### R8 · Usage scope, cache and optional estimates
 
@@ -635,7 +686,9 @@ Contract tests: [test_task_usage.py](https://github.com/abhishekash/agenturm/blo
 
 Whole-turn ID/member-step labels are distinct from one trace. Exact-owner captured session lifetime is separate; exact-agent calendar-day data is explicitly unavailable. Retry cost and current occupancy remain unavailable without authoritative evidence. Exact-model explicit-rate estimates stay separate from recorded cost and require complete unambiguous allocation.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### R9 · Global retrospective investigations
 
@@ -649,7 +702,9 @@ Contract tests: [test_investigation_store.py](https://github.com/abhishekash/age
 
 Activity History / Ctrl+F / palette and `agenturm investigate` are wired. Typed retained path/command/instruction queries, bounded paging, FTS availability and pinned exact source reader are tested. No match proves no activity; old lookup/index-cost data excludes final combined-source overhead.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### R10 · Safe local collection defaults
 
@@ -663,7 +718,9 @@ Contract tests: [test_recovery_defaults.py](https://github.com/abhishekash/agent
 
 Private state/token, Host/Origin, best-effort redaction, capture fences and age retention exist. No all-secrets guarantee, hard disk cap or automatic purge of independently authored task content. Main55 full CI passed; final sustained resource/terminal and external evidence remain separate. Legacy unbound/offline policy history is not manufactured; no durable offline revocation ledger.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+ Bootstrap #102 withholds content and lifecycle authority during initial history; startup repair merged #104 after focused validation, with full CI and sustained acceptance still open.
+
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ### R11 · Optional native lifecycle integration
 
@@ -679,7 +736,7 @@ Generic-v1 is explicit exact metadata; Codex notify adapter is completion-only w
 
 Optional lifecycle approval authority is distinct from transcript format parsing. #87 qualifies selected source-derived OpenCode 2.2.5/Codex 0.167.1 records, not a live native approval-hook mapping. Generic native-race preflight and installed/runtime research retain their separate limits.
 
-Acceptance: qualified implementation; main97 combined CI pending; PR96 failures retained; listed final/live/resource limits remain.
+Acceptance: qualified implementation; current main104 combined CI pending; historical failures retained; listed final/live/resource limits remain.
 
 ## F26: historical fixture provenance and current qualification
 
@@ -704,12 +761,12 @@ The current-format fixture verifies inclusive 30 input / 13 output, cache-read 9
 
 ## Remaining acceptance and external outcomes
 
-The approved [final validation protocol](final-monitor-protocol.html) retains B=`5e0c397`. Candidate e795's full common-corpus BC attempt failed; smaller e795/029719b development attempts also failed, with all deadline/503/asymmetric-input evidence retained. No successful loaded p95 or whole-monitor budget is inferred from post-abort reads. Pending ownership/bootstrap corrections, current CI and the next exact runtime/harness/corpus refreeze remain distinct from the failed prior registration.
+Verify full CI for the merged #104 startup and warning/fixture repairs, then prove/fix the active MCP readiness dependency without weakening owner, capture or source guarantees. Complete the retained-corpus workflow/restart/drain smoke before attempting actual one-hour stability. Then refreeze the exact runtime/harness/common corpus for resource acceptance. Preserve both the cold 473 timeout and new 3fb active HTTP 503 failure. The invalid 315/420 schedule and earlier writer-abort attempts supply no loaded p95. Historical direct Store comparisons are not actual HTTP.
 
-Final balanced 60-second warmup / 300-second untouched-idle pairs, one-hour active soak, sustained/modal memory, complete storage/index/WAL/drains and candidate signal/navigation checks remain open. Short normalized soak/modal preflights validate functionality only. The historical pre-combination one-hour DB numbers retain their original scope.
+Full one-hour stability/restarts/reviews, cold readiness <30 seconds, a useful native frame on the full corpus, idle CPU <5% of one core, actual Sessions/MCP HTTP p95 <100 ms, sustained RSS/modal memory, index/WAL growth and drains remain open. Independent keyboard/signal checks on 473 remain qualified functional evidence; they cannot replace the failed history workload.
 
-The pilot kit is a protocol and generated scenario, not a study. No willingness-to-pay, measured reconstruction/resumption improvement, alert precision, author repeat use or voluntary adoption is inferred from tests. Denominators remain 0 participants / 0 sessions / 0 repeat-use observations. OS desktop delivery is mocked. Live Claude Code/Pi and unsupported native request/order mappings remain unqualified.
+The pilot kit is a protocol/generated scenario, not a study. Human reconstruction/resumption, repeat use, alert precision, willingness to pay and adoption remain unmeasured: 0 participants / 0 sessions / 0 repeat-use observations. Desktop delivery is mocked; live Claude/Pi and unsupported runtime coverage remain unqualified.
 
 ## Verification of this audit
 
-The ledger enumerates F1–F27 and R1–R11 exactly once, retains the unchanged note SHA, previous91/current97 fetched CI and historical main55 green evidence. Referenced frozen code/test paths and the regenerated standalone light/dark HTML are checked independently. These are document checks, not product or performance measurements; exact current results are recorded in JSON and the delivery.
+All 38 IDs, unchanged notes/adapter manifest, preserved historical snapshots, frozen Git paths, local references and standalone responsive light/dark HTML are document-validation gates. They are not product tests or resource measurements. Exact current checks are recorded in JSON and the delivery.
