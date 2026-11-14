@@ -1,4 +1,5 @@
 """Schema2 membership proof gates real Store/HTTP Review usage, independently of adapter parsing."""
+from contextlib import closing
 import json
 import sqlite3
 import threading
@@ -18,7 +19,7 @@ class TurnProofTests(unittest.TestCase):
     setUp=fixture.OpenCodeReaderTests.setUp
 
     def prepare(self,*,closed=True):
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db,db:
             db.execute('DELETE FROM todo')
             data=json.loads(db.execute("SELECT data FROM message WHERE id='msg_test'").fetchone()[0]);stamp=data['time']['created']
             data['parentID']='user-one'
