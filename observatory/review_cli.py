@@ -37,7 +37,8 @@ def collect_review(api, *, service, agent_id='', session_id='', trace_id, pages=
     if health.get('review_trace_filter') is not True:raise ValueError('Receiver cannot filter an exact trace; update it before review.')
     local=health.get('local_agents') or {}
     item=dict(service=service,agent_id=agent_id,session_id=session_id,trace_id=trace_id,state='Unknown',task='Selected execution')
-    snapshot=SimpleNamespace(receiver_id=receiver,local_status=local,sessions=[],traces=[],updated=time.time(),error='',read_errors={},sessions_error='')
+    snapshot=SimpleNamespace(receiver_id=receiver,local_status=local,sessions=[],traces=[],updated=time.time(),error='',read_errors={},sessions_error='',
+        native_lifecycle=[],native_lifecycle_warning='',native_lifecycle_prepared=True)
     scope=scope_for(item,snapshot)
     # Capture policy applies to the selected identity even when an older run is requested.
     native=next((row for row in local.get('sessions',()) if row.get('service')==service and
@@ -61,6 +62,17 @@ def collect_review(api, *, service, agent_id='', session_id='', trace_id, pages=
         if candidate and candidate.get('trace_id')!=trace_id:raise ValueError('Run response does not match selected trace')
         exact_run=candidate
         snapshot.traces=[candidate] if candidate else []
+    if health.get('native_lifecycle_v1') is True:
+        from .native_lifecycle import inventory_observations
+        from .terminal import CockpitError
+        try:
+            inventory=api.get('/api/native-lifecycle')
+        except (OSError,ValueError,CockpitError):
+            snapshot.native_lifecycle_warning='Native lifecycle inventory read is unavailable; request state is unconfirmed.'
+        else:
+            if isinstance(inventory,dict) and inventory.get('receiver_id')!=receiver:
+                raise ValueError('Native lifecycle response identity changed; no review emitted.')
+            snapshot.native_lifecycle,snapshot.native_lifecycle_warning=inventory_observations(inventory,receiver)
     # An omitted optional session ID must not make matching native metadata disappear.
     if native and not session_id:item['session_id']=native.get('session_id') or ''
     scope=scope_for(item,snapshot)
@@ -83,6 +95,12 @@ def collect_review(api, *, service, agent_id='', session_id='', trace_id, pages=
             item.update(turn_id=turn['turn_id'],_review_usage=turn,agent_id=owner['agent_id'],session_id=owner['session_id'])
             scope=scope_for(item,snapshot)
         else:raise ValueError('No authoritative user-parent membership for this step; use --trace-id for step evidence')
+    # Whole-turn resolution may refine the initial step scope. Match native
+    # metadata only after that final explicit execution identity is established.
+    if snapshot.native_lifecycle:
+        from .native_lifecycle import overlay_observations
+        observed,_=overlay_observations([item],snapshot.native_lifecycle,receiver)
+        item=observed[0]
     history=ReviewHistory(scope,capture_revision=item.get('capture_revision',item.get('capture_content')))
     seen=set()
     for _ in range(pages):
@@ -98,10 +116,14 @@ def collect_review(api, *, service, agent_id='', session_id='', trace_id, pages=
     after=api.get('/api/health')
     if not isinstance(after,dict) or after.get('receiver_id')!=receiver:
         raise ValueError('Receiver identity changed while reading evidence; no review emitted.')
+    if (health.get('native_lifecycle_v1') is True)!=(after.get('native_lifecycle_v1') is True):
+        snapshot.native_lifecycle_warning='Native lifecycle inventory capability changed; request state is unconfirmed.'
     snapshot.local_status=after.get('local_agents') or {}
     policy=review_capture_policy(item,snapshot,scope)
     if policy.get('capture_revision')!=item.get('capture_revision') or policy.get('capture_content') is False:
         raise ValueError('Capture policy changed while reading evidence; retry to obtain a matching review.')
+    if snapshot.native_lifecycle_warning:
+        item['_review_metadata_note']=' '.join(filter(None,(item.get('_review_metadata_note'),snapshot.native_lifecycle_warning)))
     return history.projection(item)
 
 

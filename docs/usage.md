@@ -716,3 +716,14 @@ agenturm investigate instruction "keep the public API" --format json
 ```
 
 Use `--service` for an exact producer, `--pages 1..5` and `--limit 1..100` for bounded CLI reads, or the returned cursor to continue the same query. The UI retains at most five pages, 250 results and 2 MiB. Each result supplies a pinned `source_command` / `source_path`; use that complete reference to read a source. A bare event ID cannot be rebound to a fresh receiver. Capture denial, identity changes or pruned records may make evidence unavailable. SQLite FTS5 support and a ready source index are required; there is no broad raw-history fallback.
+## Attention without an open cockpit
+
+```sh
+agenturm attention watch --endpoint http://127.0.0.1:14318 --once
+agenturm attention watch --endpoint http://127.0.0.1:14318 --desktop
+agenturm attention status
+```
+
+The watcher connects to an existing receiver and shares private Workflow state with the cockpit. It never launches an agent or approves a native request. Desktop delivery requires `--desktop`; a first complete inventory establishes a quiet baseline. Known new requests observed later or during watcher downtime can become eligible once, while uncertain clocks, incomplete reads or conflicting native metadata defer delivery. Pending observations remain available when reads fail; absence does not resolve them. Handle approvals and replies in the original agent terminal.
+
+Optional native input uses explicit owner-only versioned bindings and supported runtime contracts, with replay/order fences. See the [native recipes and limits](validation/persistent-attention.md). Automatic local discovery continues without these hooks. Codex notify supplies completion metadata only; unsupported request IDs are not guessed. Restart all processes sharing Workflow state after upgrading its schema.

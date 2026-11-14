@@ -15,7 +15,7 @@ import sqlite3
 import time
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_INCIDENTS = 10_000
 ACK_RETENTION_SECONDS = 90 * 86400
 RESOLVED_RETENTION_SECONDS = 30 * 86400
@@ -75,7 +75,7 @@ def _record(value):
     if not isinstance(source,dict):
         raise WorkflowStoreError('Invalid workflow execution reference')
     execution = {}
-    for key in ('producer','agent_id','session_id','run_id','turn_id','kind','source_id'):
+    for key in ('producer','agent_id','session_id','run_id','turn_id','kind','source_id','resolution_policy','native_request_key'):
         text = source.get(key) or ''
         execution[key] = _text(text,key) if text else ''
     start = source.get('run_start_ns')
@@ -106,7 +106,7 @@ class WorkflowStore:
             with self._transaction() as db:
                 db.execute('CREATE TABLE IF NOT EXISTS workflow_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
                 version = db.execute("SELECT value FROM workflow_meta WHERE key='schema_version'").fetchone()
-                if version is not None and version[0] != str(SCHEMA_VERSION):
+                if version is not None and version[0]!=str(SCHEMA_VERSION) and not (SCHEMA_VERSION==2 and version[0]=='1'):
                     raise WorkflowSchemaError('Unsupported workflow store schema version ' + str(version[0]))
                 db.execute('''CREATE TABLE IF NOT EXISTS workflow_incidents_v1 (
                     namespace TEXT NOT NULL, id TEXT NOT NULL, scope_key TEXT NOT NULL,
@@ -123,7 +123,23 @@ class WorkflowStore:
                 db.execute('CREATE INDEX IF NOT EXISTS workflow_incidents_resolved ON workflow_incidents_v1(resolved_at)')
                 db.execute('''CREATE TABLE IF NOT EXISTS workflow_error_seen_v1 (
                     id TEXT PRIMARY KEY, seen_at REAL NOT NULL)''')
-                db.execute("INSERT OR IGNORE INTO workflow_meta VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
+                db.execute("""CREATE TABLE IF NOT EXISTS workflow_attention_baselines_v1 (
+                    namespace TEXT PRIMARY KEY, baseline_time_ns INTEGER NOT NULL,
+                    created_at REAL NOT NULL)""")
+                db.execute("""CREATE TABLE IF NOT EXISTS workflow_attention_eligibility_v1 (
+                    namespace TEXT NOT NULL,id TEXT NOT NULL,scope_key TEXT NOT NULL,
+                    eligible INTEGER NOT NULL,reason TEXT NOT NULL,PRIMARY KEY(namespace,id))""")
+                db.execute("""CREATE TABLE IF NOT EXISTS workflow_native_senders_v1 (
+                    sender_id TEXT PRIMARY KEY,namespace TEXT NOT NULL,binding_hash TEXT NOT NULL,
+                    sequence INTEGER NOT NULL DEFAULT 0,rejected INTEGER NOT NULL DEFAULT 0,last_reason TEXT NOT NULL DEFAULT '')""")
+                db.execute("""CREATE TABLE IF NOT EXISTS workflow_native_events_v1 (
+                    event_key TEXT PRIMARY KEY,sender_id TEXT NOT NULL,sequence INTEGER NOT NULL,event_hash TEXT NOT NULL,
+                    payload TEXT NOT NULL,sent INTEGER NOT NULL DEFAULT 0,UNIQUE(sender_id,sequence))""")
+                db.execute("""CREATE TABLE IF NOT EXISTS workflow_native_requests_v1 (
+                    sender_id TEXT NOT NULL,request_id TEXT NOT NULL,kind TEXT NOT NULL,resolved INTEGER NOT NULL,
+                    event_key TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(sender_id,request_id))""")
+                db.execute('CREATE INDEX IF NOT EXISTS workflow_native_namespace_v1 ON workflow_native_senders_v1(namespace,sender_id)')
+                db.execute("INSERT INTO workflow_meta VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(SCHEMA_VERSION),))
         except (OSError, sqlite3.Error) as exc:
             raise WorkflowStoreError('Workflow storage unavailable: ' + str(exc)) from exc
 
@@ -166,6 +182,8 @@ class WorkflowStore:
               SELECT 1 FROM workflow_acknowledgements_v1 AS ack
               WHERE ack.namespace=incidents.namespace AND ack.id=incidents.id
                 AND ack.scope_key=incidents.scope_key)''', (cutoff,)).rowcount
+        db.execute('''DELETE FROM workflow_attention_eligibility_v1 AS eligibility WHERE NOT EXISTS (
+            SELECT 1 FROM workflow_incidents_v1 AS incident WHERE incident.namespace=eligibility.namespace AND incident.id=eligibility.id)''')
         return {'acknowledgements': acks, 'resolved_incidents': incidents}
 
     def cleanup(self, *, now=None):
@@ -196,12 +214,15 @@ class WorkflowStore:
         where = ' WHERE incidents.namespace=?' if namespace is not None else ''
         rows = db.execute('''SELECT incidents.*,ack.action AS acknowledgement,
             ack.created_at AS acknowledged_at,claim.status AS delivery_status,
-            claim.detail AS delivery_detail,claim.attempts AS delivery_attempts
+            claim.detail AS delivery_detail,claim.attempts AS delivery_attempts,
+            eligibility.eligible AS attention_eligible,eligibility.reason AS attention_eligibility_reason
             FROM workflow_incidents_v1 AS incidents
             LEFT JOIN workflow_acknowledgements_v1 AS ack
               ON ack.namespace=incidents.namespace AND ack.id=incidents.id AND ack.scope_key=incidents.scope_key
             LEFT JOIN workflow_notification_claims_v1 AS claim
               ON claim.namespace=incidents.namespace AND claim.id=incidents.id AND claim.scope_key=incidents.scope_key
+            LEFT JOIN workflow_attention_eligibility_v1 AS eligibility
+              ON eligibility.namespace=incidents.namespace AND eligibility.id=incidents.id AND eligibility.scope_key=incidents.scope_key
             ''' + where + ' ORDER BY incidents.first_observed,incidents.id LIMIT ?',
             ([namespace] if namespace is not None else []) + [MAX_INCIDENTS]).fetchall()
         result = []
@@ -210,7 +231,9 @@ class WorkflowStore:
             record.update(first_observed_time=row['first_observed'], last_observed_time=row['last_observed'],
                           resolved_at=row['resolved_at'], acknowledgement=row['acknowledgement'],
                           acknowledged_at=row['acknowledged_at'], delivery_status=row['delivery_status'],
-                          delivery_detail=row['delivery_detail'], delivery_attempts=row['delivery_attempts'] or 0)
+                          delivery_detail=row['delivery_detail'], delivery_attempts=row['delivery_attempts'] or 0,
+                          attention_eligible=bool(row['attention_eligible']),
+                          attention_eligibility_reason=row['attention_eligibility_reason'] or '')
             result.append(record)
         return tuple(result)
 
@@ -219,7 +242,7 @@ class WorkflowStore:
             self._cleanup(db, time.time() if now is None else float(now))
             return self._rows(db, namespace)
 
-    def observe(self, incidents, *, resolved=(), now=None):
+    def observe(self, incidents, *, resolved=(), now=None, inventory=None, new_ids=(), comparable_ids=()):
         now = time.time() if now is None else float(now)
         records = [_record(incident) for incident in incidents]
         if len(records) > MAX_INCIDENTS:
@@ -258,8 +281,68 @@ class WorkflowStore:
                         (SELECT created_at FROM workflow_acknowledgements_v1 AS ack
                          WHERE ack.namespace=? AND ack.id=? AND ack.scope_key=?)) WHERE namespace=? AND id=?''',
                         (record['namespace'],record['id'],record['scope_key'],record['namespace'],record['id']))
+            self._attention_observation(db,records,inventory or {},set(new_ids),set(comparable_ids),now)
             saved = self._rows(db)
         return ObservationResult(saved, tuple(omitted))
+
+    @staticmethod
+    def _attention_observation(db,records,inventory,new_ids,comparable_ids,now):
+        """Baseline and first delivery eligibility commit with observations.
+
+        A source clock must be explicitly comparable to the receiver clock.
+        Unknown timestamps require an observed request transition in a scope
+        that was already fresh, rather than a reconstructed offline age.
+        """
+        for namespace,stamp in inventory.items():
+            _text(namespace,'namespace')
+            if type(stamp) is not int or not 0<stamp<2**63:continue
+            baseline=db.execute('SELECT baseline_time_ns FROM workflow_attention_baselines_v1 WHERE namespace=?',(namespace,)).fetchone()
+            if baseline is None:
+                if db.execute('SELECT COUNT(*) FROM workflow_attention_baselines_v1').fetchone()[0]>=MAX_INCIDENTS:
+                    db.execute('''DELETE FROM workflow_attention_baselines_v1 WHERE namespace IN (
+                        SELECT baseline.namespace FROM workflow_attention_baselines_v1 baseline
+                        WHERE NOT EXISTS (SELECT 1 FROM workflow_incidents_v1 incident WHERE incident.namespace=baseline.namespace)
+                        ORDER BY created_at LIMIT 1)''')
+                    if db.execute('SELECT COUNT(*) FROM workflow_attention_baselines_v1').fetchone()[0]>=MAX_INCIDENTS:
+                        raise WorkflowStoreError('Workflow receiver baseline capacity reached')
+                db.execute('INSERT INTO workflow_attention_baselines_v1 VALUES(?,?,?)',(namespace,stamp,now))
+                db.execute("""INSERT INTO workflow_attention_eligibility_v1
+                    SELECT namespace,id,scope_key,0,'Initial receiver inventory'
+                    FROM workflow_incidents_v1 WHERE namespace=? ON CONFLICT DO NOTHING""",(namespace,))
+                continue
+            for record in records:
+                if record['namespace']!=namespace:continue
+                source_stamp=record['source_time_ns']
+                comparable=record['id'] in comparable_ids and source_stamp>0
+                if comparable and source_stamp<=baseline[0]:
+                    eligible,reason=False,'Request predates initial receiver inventory'
+                elif comparable:
+                    eligible,reason=True,'Recorded source time is newer than receiver baseline'
+                elif record['id'] in new_ids:
+                    eligible,reason=True,'New request observed after a prior fresh scope observation'
+                else:
+                    eligible,reason=False,'Source time or clock is unavailable; offline chronology is unknown'
+                db.execute("""INSERT INTO workflow_attention_eligibility_v1 VALUES(?,?,?,?,?)
+                    ON CONFLICT DO NOTHING""",(namespace,record['id'],record['scope_key'],int(eligible),reason))
+
+    def attention_baselines(self):
+        with self._transaction(write=False) as db:
+            return {row['namespace']:row['baseline_time_ns'] for row in db.execute('SELECT * FROM workflow_attention_baselines_v1')}
+
+    def native_observations(self,namespace):
+        with self._transaction(write=False) as db:
+            rows=db.execute("""SELECT request.payload,request.resolved,request.kind FROM workflow_native_requests_v1 request
+                JOIN workflow_native_senders_v1 sender USING(sender_id)
+                JOIN workflow_native_events_v1 event ON event.event_key=request.event_key AND event.sent=1
+                WHERE sender.namespace=? ORDER BY request.sender_id,request.request_id LIMIT 1000""",(namespace,)).fetchall()
+            return [{**json.loads(row['payload']),'resolved':bool(row['resolved']),'request_kind':row['kind']} for row in rows]
+
+    def native_status(self,namespace=None):
+        with self._transaction(write=False) as db:
+            where=' WHERE namespace=?' if namespace else ''
+            rows=db.execute('SELECT sender_id,namespace,sequence,rejected,last_reason FROM workflow_native_senders_v1'+where+
+                ' ORDER BY sender_id LIMIT 1000',([namespace] if namespace else [])).fetchall()
+            return [dict(row) for row in rows]
 
     def acknowledge(self, namespace, incident_id, scope_key, *, action='seen', enabled=True, now=None):
         if action not in {'seen', 'reviewed', 'dismissed'}:

@@ -6,6 +6,7 @@ terminal framework or filesystem work is needed to prepare a source snapshot.
 from copy import deepcopy
 import time
 import weakref
+from copy import copy
 
 from .agent_hierarchy import AGENT_ID,canonical_agent_id
 from .session_status import session_health,session_phase
@@ -40,10 +41,19 @@ def prepare_sources(snapshot, include_reviews=False, *, denied_sources=frozenset
     """Prepare attributed identity and text, without clock-dependent health."""
     health_inputs={}
     connections={item['source_id']:item for item in snapshot.agents}
-    by_agent={};by_session={}
-    for event in snapshot.activity:
+    by_agent={};by_session={};native_rows=[]
+    for index,event in enumerate(snapshot.activity):
         if event.get('agent_id'):by_agent.setdefault(event['agent_id'],[]).append(event)
         if event.get('session_id'):by_session.setdefault(event['session_id'],[]).append(event)
+        if index<1000 and isinstance(event.get('native_lifecycle'),dict):
+            # Reuse this source pass, retaining only the protocol's metadata.
+            # Its row identity is independent of the claimed native envelope.
+            native_rows.append({**{key:event.get(key) for key in
+                ('receiver_id','service','agent_id','session_id','trace_id','turn_id','source_id','id')},
+                'native_lifecycle':{key:event['native_lifecycle'][key] for key in
+                    ('schema','receiver_id','sender_id','event_id','sequence','kind','request_id',
+                     'request_kind','source_clock','source_order','time_unix_nano','source_id')
+                    if key in event['native_lifecycle']}})
     result=[]
     for entry in snapshot.local_status.get('sessions',[]):
         connection=connections.pop(entry['source_id'],{})
@@ -181,7 +191,7 @@ def prepare_sources(snapshot, include_reviews=False, *, denied_sources=frozenset
                 item['task_source']='recorded user request'
         if item['id'].startswith('otlp-session:'):
             item['last_activity']=max(evidence,key=lambda event:event.get('time_unix_nano') or 0,default={})
-    return result,health_inputs
+    return result,health_inputs,tuple(native_rows)
 
 class SourcePreparation:
     """Two bounded snapshot preparations shared by this app's consumers.
@@ -247,7 +257,7 @@ class SourcePreparation:
                                     policy_snapshot=policy_snapshot),False)
         frozen=(*frozen,denied_sources)
         from types import SimpleNamespace
-        detached=SimpleNamespace(agents=frozen[2],local_status={'sessions':frozen[3]},
+        detached=SimpleNamespace(receiver_id=frozen[0],agents=frozen[2],local_status={'sessions':frozen[3]},
                                  sessions=frozen[4],activity=frozen[5])
         prepared=prepare_sources(detached,include_reviews)
         try:owner=weakref.ref(snapshot)
@@ -255,6 +265,39 @@ class SourcePreparation:
         self.entries.append((owner,include_reviews,frozen,prepared))
         del self.entries[:-2]
         return prepared,True
+
+
+def native_snapshot(snapshot,observations=(),warning=''):
+    """Detach metadata overlays before freezing a view; never read workflow state."""
+    from .native_lifecycle import merge_observations
+    activity=() if getattr(snapshot,'native_lifecycle_prepared',False) else getattr(snapshot,'activity',())
+    states,note=merge_observations(getattr(snapshot,'receiver_id',''),
+        getattr(snapshot,'native_lifecycle',()),observations,activity=activity)
+    note=warning or getattr(snapshot,'native_lifecycle_warning','') or note
+    if not states and not note:return snapshot
+    result=copy(snapshot)
+    result.native_lifecycle=states;result.native_lifecycle_warning=note;result.native_lifecycle_prepared=True
+    return result
+
+
+class NativeSnapshotProjection:
+    """Two reused overlay snapshots preserve source-cache amortization and Pause."""
+    def __init__(self):self.entries=[]
+    def get(self,snapshot,observations=(),warning=''):
+        result=native_snapshot(snapshot,observations,warning)
+        local=getattr(snapshot,'local_status',{}) or {}
+        if local.get('capture_content') is False or any(row.get('capture_content') is False for row in local.get('sessions',())):
+            self.entries.clear()
+            return result
+        if result is snapshot:return snapshot
+        key=(tuple(tuple(sorted(row.items())) for row in result.native_lifecycle),result.native_lifecycle_warning)
+        self.entries[:]=[entry for entry in self.entries if entry[0]() is not None]
+        for owner,previous,wrapper in self.entries:
+            if owner() is snapshot and previous==key:return wrapper
+        try:owner=weakref.ref(snapshot)
+        except TypeError:return result
+        self.entries.append((owner,key,result));del self.entries[:-2]
+        return result
 
 def sources(snapshot, include_reviews=False, *, preparation=None, policy_snapshot=None):
     policy=policy_snapshot if policy_snapshot is not None else snapshot
@@ -278,6 +321,30 @@ def sources(snapshot, include_reviews=False, *, preparation=None, policy_snapsho
                             stamp=entry.get('last_record_ns') or 0,
                             status_evidence='Spawn recorded · status unavailable')
             else:item.update(session_health(entry,now))
+    native=getattr(snapshot,'native_lifecycle',())
+    if not getattr(snapshot,'native_lifecycle_prepared',False):
+        from .native_lifecycle import merge_observations
+        native,_=merge_observations(getattr(snapshot,'receiver_id',''),native,activity=prepared[2])
+    if native:
+        from .attention_runner import prepared_item
+        from .native_lifecycle import overlay_observations
+        owners={tuple(row.get(key) or '' for key in ('service','agent_id','session_id'))
+                for row in native if not row.get('uncertain')}
+        # Only relevant native owners need exact usage/run preparation. No
+        # absent or shared run allocation is borrowed from another worker.
+        selected=[]
+        for item in result:
+            if tuple(item.get(key) or '' for key in ('service','agent_id','session_id')) in owners:
+                item=prepared_item(item,snapshot)
+                execution=scope_for(item,snapshot)
+                # Reuse the existing recorded execution anchor, never search
+                # nearby events or choose a native turn from arrival order.
+                if execution.run_id and not item.get('trace_id'):item['trace_id']=execution.run_id
+                item.pop('_workflow_usage',None)
+            selected.append(item)
+        result=selected
+        result,_=overlay_observations(result,native,getattr(snapshot,'receiver_id',''))
+    for item in result:
         item['attention']=attention_required(item)
         item['owns_attention']=attention_required(item)
         item['_display_attention']=session_phase(item)=='attention'

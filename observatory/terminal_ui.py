@@ -2052,7 +2052,7 @@ class ObservatoryApp(App):
         if not self.query('#health'):return
         self.update_workflow()
         if not isinstance(self.screen,ObservatoryScreen):return
-        live=self.feed.snapshot
+        live=self.source_snapshot(self.feed.snapshot)
         policy_signature=(live.receiver_id,live.local_status.get('capture_content'),tuple(sorted(tuple(str(entry.get(key) or '')
             for key in ('source_id','service','agent_id','session_id','runtime'))
             for entry in live.local_status.get('sessions',[]) if entry.get('capture_content') is False)))
@@ -2098,7 +2098,9 @@ class ObservatoryApp(App):
             health_text+='  ·  '+collection_note
         coverage=coverage_warning(data.local_status)
         if coverage:health_text+='  ·  '+coverage
-        if collection_note or coverage or live.error:health_text+='  ·  d Diagnostics'
+        native_note=getattr(data,'native_lifecycle_warning','')
+        if native_note:health_text+='  ·  '+native_note
+        if collection_note or coverage or native_note or live.error:health_text+='  ·  d Diagnostics'
         health=Text(health_text,style='#c5adff' if collection_note else '#ffbd69' if (coverage or data.sessions_error or data.read_errors) and not data.error else '#ff8799' if data.error else '#abb4a5')
         health_widget=self.query_one('#health',Static)
         health_widget.tooltip=(feedback+'\n' if feedback else '')+'While paused, counts are distinct new or changed records in the loaded view, not all database events. Collection continues.'
@@ -4011,13 +4013,20 @@ class ObservatoryApp(App):
         self.feed.retry_now()
         self.refresh_data()
 
+    def source_snapshot(self,snapshot):
+        from .source_projection import NativeSnapshotProjection
+        if not hasattr(self,'native_snapshot_projection'):self.native_snapshot_projection=NativeSnapshotProjection()
+        controller=self.workflow_controller
+        warning=controller.native_warning if controller.native_receiver==snapshot.receiver_id else ''
+        return self.native_snapshot_projection.get(snapshot,controller.native_observations,warning)
+
     def workflow_items(self):
         # The roster and Workflow have multiple consumers per generation.
         # An unrelated modal only updates the controller, so avoid admission's
         # extra copy when that one read cannot amortize it.
         shared=bool(self.screen_stack) and isinstance(self.screen,(ObservatoryScreen,WorkflowScreen))
         if not shared:self.source_preparation.clear()
-        return sources(self.feed.snapshot,self.feed.include_reviews,
+        return sources(self.source_snapshot(self.feed.snapshot),self.feed.include_reviews,
                        preparation=self.source_preparation if shared else None)
 
     def review_state(self,item):

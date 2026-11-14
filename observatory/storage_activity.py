@@ -276,12 +276,19 @@ def drain(db, limit=200):
     if investigations:
         db.execute('''INSERT OR IGNORE INTO activity_dirty_v1
             SELECT kind,owner_key FROM investigation_dirty_v1 ORDER BY kind,owner_key LIMIT ?''',(limit,))
+    native_inventory=bool(db.execute("SELECT 1 FROM sqlite_master WHERE name='native_lifecycle_dirty_v1'").fetchone())
+    native_jobs=set()
+    if native_inventory:
+        native_jobs={(row[0],row[1]) for row in db.execute('SELECT kind,owner_key FROM native_lifecycle_dirty_v1 ORDER BY kind,owner_key LIMIT ?',(limit,))}
+        db.execute('''INSERT OR IGNORE INTO activity_dirty_v1 SELECT kind,owner_key
+            FROM native_lifecycle_dirty_v1 ORDER BY kind,owner_key LIMIT ?''',(limit,))
     jobs = db.execute(
         "SELECT kind,owner_key FROM activity_dirty_v1 ORDER BY kind,owner_key LIMIT ?",
         (limit,),
     ).fetchall()
     for kind, key in jobs:
         investigation_rows = []
+        native_rows=[]
         db.execute(
             "DELETE FROM activity_index_v1 WHERE kind=? AND owner_key=?", (kind, key)
         )
@@ -391,6 +398,7 @@ def drain(db, limit=200):
                 event_key = (r["trace_id"] or "log") + ":" + row["source_id"]
                 row["id"] = event_key
                 investigation_rows.append((event_key,dict(row)))
+                if 'native_lifecycle' in row:native_rows.append((event_key,dict(row)))
                 db.execute(
                     "INSERT OR REPLACE INTO activity_index_v1 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
@@ -422,7 +430,12 @@ def drain(db, limit=200):
             from .storage_investigation import replace_owner
             replace_owner(db,kind,key,investigation_rows)
             db.execute('DELETE FROM investigation_dirty_v1 WHERE kind=? AND owner_key=?',(kind,key))
-        db.execute("DELETE FROM activity_dirty_v1 WHERE kind=? AND owner_key=?", (kind, key))
+        if native_inventory and (native_rows or (kind,key) in native_jobs):
+            from .storage_native_lifecycle import replace_owner
+            replace_owner(db,kind,key,native_rows)
+        db.execute(
+            "DELETE FROM activity_dirty_v1 WHERE kind=? AND owner_key=?", (kind, key)
+        )
     return len(jobs)
 
 

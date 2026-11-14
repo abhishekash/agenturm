@@ -11,25 +11,7 @@ from .workflow_store import WorkflowStore, WorkflowStoreError
 from .error_reminders import event_receipt
 
 
-def prepared_item(item, snapshot):
-    selected = dict(item)
-    usage = task_run_usage(snapshot.sessions, item, snapshot.traces)
-    if any(key in getattr(snapshot, 'read_errors', {}) for key in ('sessions', 'traces')):
-        usage = {}
-    if selected.get('trace_id') and usage.get('trace_id') != selected['trace_id']:
-        usage = {}
-    if usage.get('trace_id') and not selected.get('trace_id'):
-        selected['trace_id'] = usage['trace_id']
-    if usage.get('trace_id') and not usage.get('start_unix_nano'):
-        trace = next((t for t in snapshot.traces if t.get('trace_id') == usage['trace_id'] and
-                      (not t.get('service') or t['service'] == item.get('service'))), {})
-        usage = {**usage, 'start_unix_nano': trace.get('start_unix_nano')}
-    turn_owner=usage.get('scope_owner') or {}
-    if (usage.get('turn_id') and turn_owner.get('producer')==selected.get('service') and
-            turn_owner.get('agent_id')==selected.get('agent_id') and turn_owner.get('session_id')==selected.get('session_id')):
-        selected['turn_id']=usage['turn_id']
-    selected['_workflow_usage'] = usage
-    return selected
+from .attention_runner import AttentionRunner,prepared_item,inventory_deferral_reason
 
 
 class WorkflowController:
@@ -39,6 +21,7 @@ class WorkflowController:
         self.store_path = store_path
         self.store = None
         self.ledger = AttentionLedger()
+        self.runner = AttentionRunner(self.ledger)
         self.receipts = {}
         self.error_seen = set()
         self._pending_error_seen = set()
@@ -53,6 +36,8 @@ class WorkflowController:
         self._latest = None
         self._memory = False
         self._storage_error = ''
+        self.native_observations=[]
+        self.native_receiver='';self.native_warning=''
 
     def close(self):
         # Stop observations/delivery; preserve already accepted user receipts.
@@ -138,19 +123,25 @@ class WorkflowController:
             rows = list(self.ledger.rows)
             receipts = {key: dict(value) for key, value in self.ledger.records.items()}
             try:
-                self.owner.call_from_thread(self._publish, rows, receipts, self.warning, message, set(self._error_seen))
+                self.owner.call_from_thread(self._publish, rows, receipts, self.warning, message, set(self._error_seen),
+                    [dict(row) for row in self.runner.native_observations[:1000]],
+                    getattr(self.runner.latest[1],'receiver_id','') if self.runner.latest else '',self.runner.native_warning)
             except RuntimeError:
                 # UI teardown must not abandon accepted durable actions.
                 continue
 
-    def _publish(self, rows, receipts, warning, message, error_seen=None):
+    def _publish(self, rows, receipts, warning, message, error_seen=None,native_observations=None,native_receiver='',native_warning=''):
         if self._closed:
             return
         def presentation(values):
             return tuple(sorted((key, r.get('scope_key'), r.get('acknowledgement'),
                                  r.get('delivery_status')) for key, r in values.items()
                                 if r.get('acknowledgement') or r.get('delivery_status')))
-        changed = (presentation(self.receipts) != presentation(receipts)
+        native_changed=(self.native_observations!=(native_observations or []) or
+            self.native_receiver!=native_receiver or self.native_warning!=native_warning)
+        self.native_observations=[dict(row) for row in (native_observations or [])[:1000]]
+        self.native_receiver=native_receiver;self.native_warning=native_warning
+        changed = (native_changed or presentation(self.receipts) != presentation(receipts)
                    or getattr(self, '_published_warning', '') != warning
                    or bool(set(error_seen or ()) - self.error_seen))
         self._pending_error_seen.difference_update(error_seen or ())
@@ -172,11 +163,12 @@ class WorkflowController:
     def _observe(self, items, snapshot, limits, options):
         self._latest = (items, snapshot, limits, options)
         self._open_storage(options['persist'])
-        self.ledger.update([prepared_item(item, snapshot) for item in items], snapshot, limits,
-                           endpoint=options['endpoint'])
+        self.runner.update(items,snapshot,limits,endpoint=options['endpoint'],store=self.store)
         self._persist()
+        if options['notify'] and (reason:=inventory_deferral_reason(snapshot)):
+            self.warning=' '.join(filter(None,(self.warning,'Desktop delivery deferred: '+reason+'.')))
         if self.store and options['notify'] and time.time() >= options['snooze'] and not self._closed:
-            self._deliver(self.ledger.new_incidents)
+            self._deliver(self.runner.delivery_candidates())
 
     def _open_storage(self, persist):
         if not self._store_attempted:
@@ -192,25 +184,7 @@ class WorkflowController:
                     self.store = None
 
     def _persist(self):
-        if self.store:
-            result = self.store.observe((i for i in self.ledger.incidents.values() if i.persistent and
-                                        i.scope_key in (self.ledger._observed_scopes or set())),
-                                        resolved=self.ledger.resolved)
-            self.ledger.restore(result.records)
-            for identity in result.unpersisted:
-                self.ledger.records[identity] = {**self.ledger.incidents[identity].to_record(), 'memory_only': True}
-            overflow=sum(bool(record.get('memory_only')) for identity,record in self.ledger.records.items()
-                         if identity in self.ledger.incidents)
-            self.warning = (f'Workflow storage capacity reached; {overflow} incident(s) are memory only. '
-                            'Acknowledgement and desktop delivery are unavailable for them.' if overflow else '')
-        elif not self._memory:
-            for identity,incident in self.ledger.incidents.items():
-                self.ledger.records[identity]={**incident.to_record(),'memory_only':True}
-            self.warning = ('Durable workflow state is unavailable: ' + self._storage_error +
-                '. Incidents remain visible; acknowledgements and alerts are disabled. Settings → Cleanup retries storage.')
-        if not self.store:
-            self.ledger.records={key:record for key,record in self.ledger.records.items() if key in self.ledger.incidents}
-        self.ledger.render_rows(snapshot=self._latest[1] if self._latest else None)
+        self.warning=self.runner.persist(self.store,memory=self._memory,storage_error=self._storage_error)
 
     def reviewed(self, item):
         kind = {'Completed': 'completion', 'Interrupted': 'interruption', 'Error': 'failure',
@@ -313,26 +287,6 @@ class WorkflowController:
         self._deliver([incident], retry=True)
 
     def _deliver(self, incidents, *, retry=False):
-        claimed = []
-        for incident in incidents:
-            if self._closed:
-                break
-            if self.store.claim(incident.namespace, incident.id, incident.scope_key, retry=retry):
-                claimed.append(incident)
-        if not claimed or self._closed:
-            return
-        projects = []
-        for incident in claimed:
-            item = self.ledger.items.get(incident.scope_key, {})
-            projects.append(safe_text(item.get('project') or item.get('runtime') or 'Local agent').replace('\n', ' ')[:40])
-        project = ', '.join(dict.fromkeys(projects))[:120]
         from .ui_workflow import desktop_notify
-        result = desktop_notify('Agenturm · ' + project,
-            str(len(claimed)) + ' recorded attention incident(s). Open Workflow (w) to inspect.')
-        status = 'delivered' if 'delivered' in result else 'unavailable' if 'unavailable' in result else 'failed'
-        for incident in claimed:
-            self.store.finish_delivery(incident.namespace, incident.id, status=status, detail=result)
-        self.ledger.restore(self.store.load())
-        self.ledger.render_rows(snapshot=self._latest[1])
-        if not self._closed:
-            self.owner.call_from_thread(setattr, self.owner, 'workflow_delivery', result)
+        result=self.runner.deliver(self.store,incidents,notify=desktop_notify,retry=retry,stopped=lambda:self._closed)
+        if result and not self._closed:self.owner.call_from_thread(setattr,self.owner,'workflow_delivery',result)
