@@ -1,0 +1,396 @@
+{
+  "version": 1,
+  "classification": "Registered functional coverage INCOMPLETE; original harness exit0/noerrors",
+  "candidate_scope": "Frozen premerge512 application+harness; not a merged-head, one-hour or performance acceptance run.",
+  "source_commit": "512adcf98e2bfb70ffddd0c015d87e8457cb2383",
+  "harness_commit": "512adcf98e2bfb70ffddd0c015d87e8457cb2383",
+  "original_results_sha256": "fd2363e3e0e6124bdebb9d3478a95bfdd73d67a5ea811f0f9054ba9e97754f11",
+  "configured_seconds": 60.0,
+  "phase_seconds": 2.0,
+  "active_elapsed_seconds": 73.71060838690028,
+  "initial_readiness_observed_seconds": 227.27798285894096,
+  "original_driver_exit": 0,
+  "original_errors": [],
+  "completed_turns": 9,
+  "verified_turns": 9,
+  "expected_review_ids": 9,
+  "accepted_review_ids": 9,
+  "persisted_review_ids": 9,
+  "rendered_approval_inboxes": 3,
+  "recovered_after_outage": true,
+  "receiver_shutdowns": [
+    {
+      "pending_before": 0,
+      "pending_after": 0
+    },
+    {
+      "pending_before": 0,
+      "pending_after": 0
+    }
+  ],
+  "exit_statuses": [
+    {
+      "role": "receiver",
+      "status": 0
+    },
+    {
+      "role": "cockpit",
+      "status": "0",
+      "signal": ""
+    },
+    {
+      "role": "cockpit",
+      "status": "0",
+      "signal": ""
+    },
+    {
+      "role": "receiver",
+      "status": 0
+    }
+  ],
+  "final_health_allowlisted": {
+    "ok": true,
+    "receiver_id": "489658def7184afe8eb78b86722c9d1f",
+    "indexing_ready": true,
+    "indexing_error": false,
+    "native_initial_poll_complete": true,
+    "native_rows": 4
+  },
+  "seed": {
+    "path": "/tmp/agenturm-final-common-seed/raw-seed.db",
+    "sha256": "a88727a946d8ba0e1dd3b45ed100061d9365496e1dba9d15e9e4f17881df0357",
+    "raw_sha256": "a7834f8369c95c9160d16fe1d4d1c23b401e76a58c68507ce8b4bafa43948588",
+    "counts": {
+      "spans": 31000,
+      "logs": 41000,
+      "trace_activity": 5751
+    },
+    "bytes": 188383232
+  },
+  "integrity": {
+    "source_head": "512adcf98e2bfb70ffddd0c015d87e8457cb2383",
+    "source_and_harness_unchanged": true,
+    "all86_modules_and10_harness_files_unchanged": true,
+    "seed_physical_logical_hashes_unchanged": true,
+    "registration_sha256": "a59fd298585bd8ec1670a35cb72481644aeef4d338122d2fe29139d04f1affba",
+    "raw_files_sha256": {
+      "results.json": "fd2363e3e0e6124bdebb9d3478a95bfdd73d67a5ea811f0f9054ba9e97754f11",
+      "samples.jsonl": "12eb580be37b1ead0ffe451bc9b3d7168bd743d3cf76f7ec3bc1bc7e4b02c6f3",
+      "imports.jsonl": "5107a7aad78447c4619037f87bec6a43bf3339e0d779c0e5d8d4450c0048305d",
+      "ui-events.jsonl": "ece0622275280bb7f082750c2e3488c272ad1456b78ce0ff05d5f224dd21fd53",
+      "receiver-exits.jsonl": "0c185dca5ccc3a5deee9e04a5cc7c8d5a4254f1703c076c75896ee33faca290c",
+      "child-cleanup-proof.json": "d7e91758b41b444d480679528bf865d3ba1865cd6ea06749766366617d0c9ac0",
+      "receiver.log": "e04b120c722edf789492c7592f3d7833206782b14adc693008e87198453abbe3",
+      "ownership.json": "aee5d30487e0667dd511cbf5b1e971af8fb0455bf86539cec372bf61d6eaa37b"
+    },
+    "raw_health_not_published": true,
+    "post_both_restart_coverage": "INCOMPLETE: independent analyzer found no final cycle2 phase5 sample bound to both replacement lifetimes.",
+    "performance_acceptance": false,
+    "initial_coverage_annotation": "pending independent analyzer (at integrity-capture time; superseded by the final independent proof in this report)"
+  },
+  "cleanup": {
+    "observed_ns": 1794679567437374266,
+    "children": [
+      {
+        "role": "actor",
+        "pid": 2987433,
+        "pid_exists": false,
+        "registered_process_present": false
+      },
+      {
+        "role": "cockpit",
+        "pid": 2988959,
+        "pid_exists": false,
+        "registered_process_present": false
+      },
+      {
+        "role": "cockpit",
+        "pid": 2989812,
+        "pid_exists": false,
+        "registered_process_present": false
+      },
+      {
+        "role": "driver",
+        "pid": 2987360,
+        "pid_exists": false,
+        "registered_process_present": false
+      },
+      {
+        "role": "receiver",
+        "pid": 2987432,
+        "pid_exists": false,
+        "registered_process_present": false
+      },
+      {
+        "role": "receiver",
+        "pid": 2989765,
+        "pid_exists": false,
+        "registered_process_present": false
+      },
+      {
+        "role": "synthetic_daemon",
+        "pid": 2987433,
+        "pid_exists": false,
+        "registered_process_present": false
+      },
+      {
+        "role": "ui",
+        "pid": 2988959,
+        "pid_exists": false,
+        "registered_process_present": false
+      },
+      {
+        "role": "ui",
+        "pid": 2989812,
+        "pid_exists": false,
+        "registered_process_present": false
+      }
+    ],
+    "all_registered_processes_absent": true,
+    "artifacts_preserved": true,
+    "clone_deleted": false
+  },
+  "independent_proof": {
+    "coverage": "incomplete",
+    "original_run_failed": false,
+    "original_error_count": 0,
+    "blocking_reasons": [
+      "phase0_to5_after_both_replacements",
+      "post_restart_cycle_receipts_after_new_ui"
+    ],
+    "checks": {
+      "source_certificate": true,
+      "original_run_has_no_errors": true,
+      "result_shape": true,
+      "receiver_two_unambiguous_lifetimes": true,
+      "cockpit_two_unambiguous_lifetimes": true,
+      "synthetic_daemon_known_single_lifetime": true,
+      "driver_known_single_lifetime": true,
+      "no_active_owned_process": true,
+      "workflow_read_only_proof": true,
+      "receiver_imports_match": true,
+      "cockpit_imports_match": true,
+      "three_fresh_replacement_ui_heartbeats": true,
+      "phase0_to5_after_both_replacements": false,
+      "all_completed_turns_reconstructed": true,
+      "exact_all_role_cycle_incident_identities": true,
+      "exact_expected_accepted_persisted_receipts": true,
+      "post_restart_cycle_receipts_after_new_ui": false,
+      "two_clean_receiver_exits": true,
+      "two_clean_cockpit_exits": true,
+      "both_receiver_drains": true,
+      "final_coherent_receiver_ready": true
+    },
+    "post_restart_cycles": [],
+    "process_lifetimes": {
+      "receiver": [
+        {
+          "pid": 2987432,
+          "start_ticks": 106137547
+        },
+        {
+          "pid": 2989765,
+          "start_ticks": 106165216
+        }
+      ],
+      "cockpit": [
+        {
+          "pid": 2988959,
+          "start_ticks": 106160277
+        },
+        {
+          "pid": 2989812,
+          "start_ticks": 106165523
+        }
+      ]
+    },
+    "expected_receipt_ids": [
+      "148139866eb044e5d501aae18fba114f9f9b1f0bffa3092eb5ef593ca69c3c5d",
+      "19a808e60f6a0d3ec8db21340403269a8d58144c172546163de107c62a5f6629",
+      "363b1c5bb0c24d73c11da37a0997ec46ad1a7acb3628a2623595199406d26f54",
+      "612efd61a8b8d8226866b850f3346485c0b5e4bc7ab1a87f38255e2338743ed6",
+      "624b532923e833d5f2e278ee4141dbf267acff99b2af4a2c1c927cbb4db4973f",
+      "665e7bd53ee1b89f0df067fad136ed8e33e437ec8a1bdf57edb4f267ce81bfaf",
+      "765e73de89229993a8c0c45f5a62c8ce1c8df532c73122db01614c923665d05b",
+      "d546bd6da0fe62e8407e20b26528c5dd7c67de86c62f57744f4c3e25ebfdd57f",
+      "e6dc127cc6fee541c0e3374ff4f1bcc6759451fef647fcfdf8525383dfbf624d"
+    ],
+    "qualification": "Private generated functional proof only. Reconstruction is qualified by frozen harness exact-cycle assertions/noerrors plus stored exact incident/receipt scopes; no independent rehydration of full Review bodies, resource or universal-runtime claim.",
+    "analyzer_sha256": "15fcc6940a9f0f9a9f27363afea8bbdaaa93fa2e1ebd20ab74a4b3cd5c411604",
+    "input_sha256": {
+      "ownership.json": "aee5d30487e0667dd511cbf5b1e971af8fb0455bf86539cec372bf61d6eaa37b",
+      "results.json": "fd2363e3e0e6124bdebb9d3478a95bfdd73d67a5ea811f0f9054ba9e97754f11",
+      "imports.jsonl": "5107a7aad78447c4619037f87bec6a43bf3339e0d779c0e5d8d4450c0048305d",
+      "samples.jsonl": "12eb580be37b1ead0ffe451bc9b3d7168bd743d3cf76f7ec3bc1bc7e4b02c6f3",
+      "ui-events.jsonl": "ece0622275280bb7f082750c2e3488c272ad1456b78ce0ff05d5f224dd21fd53",
+      "receiver-exits.jsonl": "0c185dca5ccc3a5deee9e04a5cc7c8d5a4254f1703c076c75896ee33faca290c",
+      "state/agenturm/workflow.sqlite3": "34da2f608317f4da13b09da7682e8f265bcb719c5a6b575d4f3a32cbfba4e1ea"
+    },
+    "source_module_sha256": {
+      "observatory/__init__.py": "579545ec66331b0a0d0f8c313b7fe6786c2911e7b4686f48c7fa9f9f3818871d",
+      "observatory/__main__.py": "691dca33f79127c071843c3fce4d278e111d42b072a4538689f926adc9aa0092",
+      "observatory/agent_hierarchy.py": "3d031ad29fb66df5dec39d8beec6a9e862205fbbef1140bf3ae38db2111af694",
+      "observatory/ai_summary.py": "2919ba6c2bf4dfbbddcd3443d8dbc562c2458da028e1833f804f6098e09ece11",
+      "observatory/attention.py": "3d90196b042c7820224b5445c436582c1917e3c610fad36e4f84fcad3ab46164",
+      "observatory/attention_cli.py": "14888a636bd589a12ac1e7a43e49f86a457cc51afa7c5a83f26ba7a63ca471b3",
+      "observatory/attention_runner.py": "34fc290b78e21d0e8af89bf0b07c4ed511eb0bef9b9640d68475aba1acc72f82",
+      "observatory/auto.py": "9768a31d3d32e873abbbc2b0456a5d3e1774e8ebb9b47c175d3e35c197d21936",
+      "observatory/branding.py": "95a024db55f1b23aa9a29d81aec9427a6d8860565233f3d5af25e2ab2b864c69",
+      "observatory/client.py": "bb9276d557a2f0c63beef46d31527c6fa8c043d64c84a3b9b5fa2c446fa90ce4",
+      "observatory/command_evidence.py": "b43affecefed8c5d7dc1c009ae24f7d1221bc4ebbbb4d2708f15e934f243203c",
+      "observatory/core.py": "b1f5b304d2f20e63f593e4e0651fb16533ebee71a48b5e23dab069a11e920866",
+      "observatory/error_reminders.py": "0a8a965514e8a42ea9e3863dfde7f99a3030aebbf8071d09566505788169da07",
+      "observatory/evidence_explanations.py": "f45fe623dff7ba11554806b4a50e89266c7110a842b5f12182400b44abfe92ee",
+      "observatory/feed_requests.py": "f1a177b911795bcdbabf2cbf0d0b8cf8f70442e7b318dd2e3cdb8c2986f76c46",
+      "observatory/finding_sources.py": "f2439c55d4f48c438c7a88f616b905e2064f115b2ba529333be666b899f0716c",
+      "observatory/findings.py": "c486c1a892f787b3bdf3be0866c3907111c7b4cc72bc2a402ae1651ecd9b9150",
+      "observatory/http_transport.py": "6a31040bab9fda6e40e7c880e3c863d6bc778bc83f15c799f6c4a1182e2b8edd",
+      "observatory/integrations/__init__.py": "fa3b405552e9f94007fa3faa49d29e02b4aee4bd542b660a79279236c168efeb",
+      "observatory/integrations/langchain.py": "5405746c2a763382a65c7d4eefd5b7b44552d3a52334d6cd8ccd36fe5151cabf",
+      "observatory/integrations/openai_agents.py": "939cb3dbb4670052a84482687e22d8c515ae52df063a22f1ba03fc48f75e0b05",
+      "observatory/investigation.py": "940c68b2074b99a45a8d7ac4a0123317023da8f92053e6d8abec055130d03f09",
+      "observatory/investigation_cli.py": "2d18039210655b0766819e37e568b72a54d99ded2c67659fc21536f9b3e5a2e0",
+      "observatory/local_activity.py": "b7ea49c3085708777b243932b953323ff9a3aaf4bc0c63f6c940f117c6294e8f",
+      "observatory/local_agents.py": "12602f8c1e9c1c4d5c47c616aad7f8eb08bf271a4704394a5e49f62908cd4c8c",
+      "observatory/local_runtime.py": "899299dcf038857a269ad6b71d057e8d0f8467e5e945417edadddc4e4d90e7fc",
+      "observatory/local_state.py": "27708f3dad8399b6a2514639648f08f2cfc9e48c26627ef88d3b98d1499ab8f2",
+      "observatory/logs.py": "4c5ae4beff96a498f141e5df8d7599c5386e3c9a77e35915ba6c50a8c07ce0b2",
+      "observatory/metrics.py": "036cf1cec4e0091f092f2c1f6473fadb9fc28dbb97f69078acfc66abbe549391",
+      "observatory/native_bootstrap.py": "97a83cdc679cba01727c14c7fad5afa1405da354408c5ed195a231130b8cba02",
+      "observatory/native_json.py": "a5b75c6c4ca0eac7c668082cf59553a30ee51405621b979e448902b6a45f3444",
+      "observatory/native_lifecycle.py": "ab2406fa2bd8911efcf7a44ae59ac105a711cec506a21bf23af1bec3a13557e7",
+      "observatory/native_policy.py": "cb9425cbfcfdce82650a5f264b36bc526e616772d4f1cb2796f9c56a37a9fb8d",
+      "observatory/opencode.py": "047c02424028f14621ee01e7efdd31d7c81aa91a0c409fa292967709ece3e925",
+      "observatory/opencode_turn_proof.py": "1b4165e7788049f6358b6efb1d0b57095275d277ba56f0541ce8b0e1238c5b6f",
+      "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
+      "observatory/operation_facts.py": "48b1e304576474ad385a419e55864bb49e33980de0be64c64b243c276a56b45b",
+      "observatory/operation_preparation.py": "10426ef790c121137182c5970eb09e2ebb836675ff755cdb53ac3dd8e79ca712",
+      "observatory/otlp_proto.py": "5c6f9413ce85646670f08ea4adf44eaaf9fa370df3b9e408c5891078b52f98b4",
+      "observatory/overview.py": "a110cd63fd7ad02b25abe98d59c7fd549ab9f3c711a291e0d0ef44c8adb81202",
+      "observatory/read_connections.py": "4dd9630171565656ed965d2117cdc1bf8ac45dbb6a4bee11f014f615d7ea155c",
+      "observatory/receiver.py": "bd1aeb0a87594e9dcf62aff00bad722777650af80064521f6c7e26c240cace98",
+      "observatory/receiver_state.py": "8fb60dfce5c3f42dbca259c1e4c59c4f6326cfbe4ba22587c5b47eb71c6920d0",
+      "observatory/recorded_paths.py": "9a58c19bb88c695ed176744e8483fdb650909e3a0ab0b25c8d8f49cc0be5d28b",
+      "observatory/response_cache.py": "6ae54877876fd95d80a7da7b9564c8c81d22e396b0786ab625d70002ee50aa07",
+      "observatory/review_cli.py": "cb15d98405d1bba9d2cd5d48e3e5429156b1ae57856fb7f568c57beee3b7c466",
+      "observatory/review_continuity.py": "0026122fec4e26b1d88f984ade538e5de7f04ffc362064cbf2ad44fed9a31a8e",
+      "observatory/review_facts.py": "619b37a8faaf1ea5485bb9c8acdc195df249ce156e45811da8a5f3948b057518",
+      "observatory/saved_tasks.py": "50018ec81909589627e3a43a0c14f26c3933975eb01e2b64768035f6994b454a",
+      "observatory/server.py": "05eb08754faa8dcc4301f6ce833dbf4875bb875de3b3e0be8d1983222d533e42",
+      "observatory/session_prompts.py": "3a66f9585a1968df3cd7952f412e56c9d5873a70aea79c0147307bef9b963442",
+      "observatory/session_status.py": "c4eb29d13955163ed4a964a17383bb77a71eca72ea9606cb5583bbc9be088020",
+      "observatory/session_text.py": "12edbb3bd7e59294d294e2dc78079bfed3321d4764c6bcad49139669122216de",
+      "observatory/shutdown.py": "b00a8f782f567303e23d912522abe07cfd2ebc848b2bcb5f61eacab157e9b4a1",
+      "observatory/source_projection.py": "9495cc471113c416f603338f2e69734c3f54198566daf529907b704db249ebe1",
+      "observatory/storage_activity.py": "5fc913845e4f37c7356da854fca7c36a7411a6c754c7613a0cff64a851c9369a",
+      "observatory/storage_derived.py": "ac29357423102f72bd3d30846da861659e070ac36b9dba6c4f374654831e1ab0",
+      "observatory/storage_investigation.py": "ad8ed0ff8029071bc5344e2f68d1d00e4bdfc5085e4acc49c6443268e8b8eb44",
+      "observatory/storage_mcp.py": "f46a8eb4ac651a4c421cc6c32e11b466ba9958512565d7e1268d5214733e6fcc",
+      "observatory/storage_native_lifecycle.py": "27c07aaf8c4bb8e2e733701a2395162e0e424f9c0f5c502cfc55cadb4b3339ed",
+      "observatory/storage_sessions.py": "01025b67e31437ed3c3f03f24e55ce8f358f125fe21bb57ad9830cb67c70544f",
+      "observatory/task_cli.py": "9c068e817a0e3aaae471dc9a8a5d3383fa68deee1526815647c389b07e5fcd2e",
+      "observatory/task_workspace.py": "85a7ac226d5109fae074648269a3e5e278d3bdff7cd75640b68170cae8d9981b",
+      "observatory/terminal.py": "03a86f74459ccfff769f49de9b6d06f3ce6a1e91a0707494aaad294a604a9592",
+      "observatory/terminal_ui.py": "441448b4ab5c46b93032f4865fd618c2ecaec70b337406afc07e836f3b64abac",
+      "observatory/themes.py": "57397e1c992203458e1fbc5bca4c64c212f242bfbe76a0450787eb3a1eaf30b8",
+      "observatory/ui_coverage.py": "be7e9264478edc8dca8160f0b8dbcfdd4868a32bfb15cbabcbf3911d28b0d00f",
+      "observatory/ui_diagnostics.py": "5f720d960de3c3062745b3b81aa61300f610bbd11d3f1f604df02ff22ab4b5dd",
+      "observatory/ui_export.py": "e1b3117526e3874675fee5df2c95d005025260059e7f0325ddad1b209dc4a6c2",
+      "observatory/ui_findings.py": "f17773e55a1eb44a7256c890bd2963eabab08e351608652cec1435aaab2c728c",
+      "observatory/ui_investigations.py": "9fd95ac9a0979da8529ae708a63fed62bd646e3fd8cc02f47b8551757d3ea154",
+      "observatory/ui_keyboard.py": "be6bb9d99f1f07a72f1c48ddacc7275cbfa27aa02923ce8acabfcef9c2594b05",
+      "observatory/ui_layout.py": "4b34a5524bb329ed2af34a9b8bb6f81b3750ba711e9cbd4d80b0f1886845125e",
+      "observatory/ui_monitoring.py": "86d9781912e5158f777781dff3aa75b8c2f7010a8726c0085360520d08e7ebea",
+      "observatory/ui_preferences.py": "e70a0e3e612f28cda2e02388c43805457dbc06f7dca4fc4c8384078a3aa64d6f",
+      "observatory/ui_render.py": "69d3790285cc4984d6a97b9a80e0a246a4383f17c4e239348ef14c75569c52e7",
+      "observatory/ui_review.py": "d162d486bfb676f99bfec77791ea58301be9bae3c68a0506ac0bf2612fe956d2",
+      "observatory/ui_saved_tasks.py": "44d0b92cb7ff9d8cc4a2027e9f9f44d82bf5545b85bd64e6d310a4e77771e68a",
+      "observatory/ui_workflow.py": "3c141817aa7a0aeacaab56fd0655d2e607d856538c37a5bf88e203c4513339b9",
+      "observatory/ui_workflow_controller.py": "69a3e39df2b7492ff254a7900db9d86b6badb86977beab4262662fdf09999c5c",
+      "observatory/usage_render_key.py": "a42c124fe1351d1a3405393c5d35db4345ae71fa5b8d378de867e4c4ea92f22b",
+      "observatory/watch.py": "64d38993c546dbae1d07702a51330e6706f4c986e8c4c1857a199411b7d4f1e7",
+      "observatory/work_receipts.py": "907fc660469fe82a3997d725a337e4bd8c7708432ade9cd51b1b92ba55eae7b1",
+      "observatory/workflow_evidence.py": "6ec56a377a0450b1656e590377ef08b468e0e8c6fb2014c1d3bbe51a1d2d2065",
+      "observatory/workflow_patterns.py": "3203edbc4e267f9e59b82ca1cbf9ff9c924053763a4551caec43a0f4e5927d2d",
+      "observatory/workflow_store.py": "21b0432ec2de86b30bf8da0f80762fb9e53d9a1ac10c9c91eb913ef9aedafcae"
+    },
+    "app_sha": "512adcf98e2bfb70ffddd0c015d87e8457cb2383",
+    "harness_sha": "512adcf98e2bfb70ffddd0c015d87e8457cb2383",
+    "registration_sha256": "a59fd298585bd8ec1670a35cb72481644aeef4d338122d2fe29139d04f1affba",
+    "registered_owned_processes_active": [],
+    "artifacts_unchanged": true
+  },
+  "independent_proof_sha256": "d581937cf26ce15e67bf9ef983950497423f94d78e8038bba39ca229b921923a",
+  "independent_analyzer_sha256": "15fcc6940a9f0f9a9f27363afea8bbdaaa93fa2e1ebd20ab74a4b3cd5c411604",
+  "screened_result": {
+    "file": "frozen-512-functional-results-screened.json.gz",
+    "gzip_sha256": "b70f81701f7c329f2343e0aa13eac5346adc9aed5a5cf8caf6e6bdd1578a4f58",
+    "screened_uncompressed_sha256": "30cc86316fb1808ec3fb60a75084efe6b508f4a3328dc20b32229efda9e46dc3",
+    "original_byte_copy": false,
+    "omitted_fields": [
+      "index_availability.final_health"
+    ],
+    "explicit_allowlist": true,
+    "allowed_top_level_fields": [
+      "schema_version",
+      "source_start",
+      "source_end",
+      "host",
+      "configured_seconds",
+      "phase_seconds",
+      "elapsed_seconds",
+      "eager_tls",
+      "profile_ui",
+      "active_workload_comparison",
+      "common_seed",
+      "raw_schema_preparation",
+      "production_indexes",
+      "storage_after",
+      "seeded_history",
+      "fixture_preparation_seconds",
+      "initial_readiness_seconds",
+      "readiness_observations",
+      "request_failures",
+      "completed_turns",
+      "verified_turns",
+      "approval_requests",
+      "observed_approval_requests",
+      "accepted_review_ids",
+      "persisted_review_ids",
+      "missing_review_ids",
+      "expected_review_ids",
+      "rendered_approval_inboxes",
+      "approval_visible_latency_ms",
+      "shared_daemon_false_progress",
+      "heartbeat_samples",
+      "heartbeat_interval_p95",
+      "heartbeat_interval_max",
+      "connection_error_observations",
+      "recovered_after_outage",
+      "resources",
+      "latency_ms",
+      "reconnects",
+      "receiver_shutdowns",
+      "exit_statuses",
+      "sample_count",
+      "errors",
+      "storage",
+      "limitations"
+    ]
+  },
+  "original_private_run": "/tmp/agenturm-full-functional-512-60s",
+  "performance_targets_closed": false,
+  "registered_gate_passed": false,
+  "post_snapshot_cleanup": {
+    "original_bytes": 472137328,
+    "archive_bytes": 33332291,
+    "archive_private": true,
+    "members_byte_verified": true,
+    "registered_children_absent": true,
+    "removed_only_registered_working_clone": true,
+    "sqlite_checkpoint_or_vacuum": false,
+    "original_results_unchanged": true,
+    "seed_logs_workflow_native_config_source_preserved": true,
+    "qualification": "Later action, after report/proof snapshot; does not alter original harness success or strict coverage incompleteness."
+  }
+}
