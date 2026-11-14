@@ -1,288 +1,354 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Review Notes Completion Plan</title><style>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Current Review-Notes Completion Plan</title><style>
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.2.3</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/review-notes-completion-plan.md">Markdown source ↗</a></nav><h1>Complete review-notes implementation plan</h1>
-<p>13 November 2026. Baseline: merged <code>d75872c</code> after PRs #67–70. Input: the supplied <code>agenturm-review-notes.md</code>, preserved unchanged. Status: reconciliation and staged implementation in progress. The user authorized completing the full findings and recommendations after the controlled monitor validation, including work outside the narrower recovery plan. This is not a claim that all findings are closed.</p>
-<h2>Delivery and trust rules</h2>
-<p>Keep personal telemetry, preferences and source notes untouched. Use generated repositories, native records and receiver state for tests and measurements. Preserve private state/authentication, redaction, non-destructive migration, source ownership, capture-policy revocation, pagination and truthful unknown/partial usage. No provider key or account is required for local monitoring.</p>
-<p>Each stage has a coherent code change, regression gates, independent review and a reviewable PR. Follow the repository's admin squash-merge preference and verify the remote merged state and local main; report pending CI separately. Keep changes Unreleased until explicitly asked to release. Supply responsive self-contained light/dark HTML companions for documents.</p>
-<p>Use the existing Agents → attention → evidence → continuity surfaces. Avoid additional dashboards, generic Host/Metrics work, themes, AI-generated summaries, extra manual task fields, agent launching, native approval execution or autonomous remediation. Optional integrations must not weaken zero-config collection. Observations and human decisions remain distinct.</p>
-<h2>Reconciliation of all 27 findings</h2>
-<p>“Implemented” means a concrete code path and regression/controlled evidence exists, not universal producer compatibility or user adoption. “Partial” identifies remaining work below. Positive findings are preserved rather than treated as missing features.</p>
-<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+</style></head><body><main><nav><strong>Agenturm / review acceptance</strong><a href="#current-status-and-next-acceptance-gates">Current status</a><a href="#reconciliation-of-all-27-findings">Findings</a><a href="#coverage-of-all-eleven-recommended-value-problems">Recommendations</a></nav><h1 id="complete-review-notes-implementation-plan">Complete review-notes implementation plan</h1>
+<p>Updated <strong>14 November 2026</strong>, acceptance snapshot main <strong><code>e434fcf</code></strong>. The original 13 November baseline was <code>d75872c</code> after PRs #67–70. The supplied user-owned notes remain unchanged (SHA-256 <code>8352ce8a78edaea075083e59850ddd96bb70868164e3c146b11cd97b0a617ce3</code>). All 27 findings and 11 recommendations are reconciled in the <a href="../validation/review-notes-acceptance.html">current acceptance audit</a> and its <a href="../validation/review-notes-acceptance-data.json">JSON ledger</a>. <strong>Implementation delivery is substantially merged; the complete plan is not yet accepted.</strong></p>
+<h2 id="current-status-and-next-acceptance-gates">Current status and next acceptance gates</h2>
+<p>Source-backed Overview, operation/Findings evidence, approved Git/drafts, typed investigations, evidence-qualified MCP/Usage/progression and persistent headless attention are merged. PR81/E is <code>093bf878</code>, PR82/F is <code>e434fcf5</code>, PR83/MCP is <code>728e0ba</code>, PR84/replay is <code>11a3b7b</code>, and PR85/validation harness is <code>1aa1948</code>. Earlier E <code>928cae0</code> and F <code>1c0b795</code> each passed all 12 checks. The rebased combined-main <a href="https://github.com/abhishekash/agenturm/actions/runs/43591334638">CI run 43591334638</a> is still running at this snapshot; six superseded duplicate runs were intentionally cancelled. Those cancellations and earlier green heads are not an all-green result for the new merge heads.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable evidence table"><table>
 <thead>
 <tr>
-<th>Finding</th>
-<th>Current status and evidence</th>
-<th>Remaining contract / stage</th>
+<th>Stage</th>
+<th>Delivery now</th>
+<th>Remaining acceptance</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>F1: CPU/RSS</td>
-<td>Partial. PR70 fixed HTTP/TLS overhead. PR72 reduces generated-history idle CPU from 23.63% to 15.90% of one core and cold readiness from 184.38 to 112.96 s. The earlier active/probed hour is a different workload, not an idle baseline.</td>
-<td>Measure idle and normal-load budgets; profile readiness/read/render costs; B.</td>
+<td>A · exact scope/continuity</td>
+<td>Merged #71, with later shared-source/ownership repairs.</td>
+<td>Preserve unknown current-native membership; pending OpenCode 2.2.5 qualification is separate.</td>
 </tr>
 <tr>
-<td>F2: retention</td>
-<td>Implemented for new managed stores: 14-day age policy; existing stores need explicit opt-in. Migration/retention tests preserve legacy data.</td>
-<td>Preserve policy during optimizations; B. Age retention is not a byte cap.</td>
+<td>B · economics</td>
+<td>Read/source/Sessions/MCP/replay increments merged through #84; isolated acceptance harness merged #85.</td>
+<td>Covered-lookup <code>79ac99d</code> integration pending; frozen combined cold/idle/API/RSS/storage/soak targets remain OPEN.</td>
 </tr>
 <tr>
-<td>F3: launch-directory telemetry</td>
-<td>Implemented: private shared state, owner-only files, explicit safe legacy migration; PR67.</td>
-<td>Preserve during watcher and hook work; F.</td>
+<td>C · operation facts/Findings/Overview</td>
+<td>Merged #75/#76/#78; Overview is no longer an open PR.</td>
+<td>Final combined CI/security/ownership/capture/terminal acceptance, not another Overview feature.</td>
 </tr>
 <tr>
-<td>F4: one-shot truthfulness</td>
-<td>Implemented: readiness wait and distinct ready/error/partial/interrupt exits; PR67.</td>
-<td>Include headless regressions in B/F.</td>
+<td>D · frozen Git/approved drafts</td>
+<td>Merged #77; authored content and late-egress privacy gates preserved.</td>
+<td>Human reconstruction/resumption and voluntary reuse outcomes remain external and unmeasured.</td>
 </tr>
 <tr>
-<td>F5: OpenCode step versus turn</td>
-<td>Implemented in reader, Review UI/CLI and provenance rollups; PR67. PR71 preserves full turn membership through the UI saved-link boundary.</td>
-<td>Preserve whole-turn scope through C/D.</td>
+<td>E · qualified explanations</td>
+<td>Merged #81 at <code>093bf878</code>.</td>
+<td>New combined-main CI; windows/unknowns remain explicit, not billing or correctness proof.</td>
 </tr>
 <tr>
-<td>F6: Codex evidence omissions</td>
-<td>Implemented: native edits/checks/text/usage reach authenticated API, Review/export and task-link fixtures; PR67.</td>
-<td>Extend existing producer-shaped coverage; G.</td>
+<td>F · persistent attention/native input</td>
+<td>Merged #82 at <code>e434fcf5</code>; generated two-cockpit+watcher preflight passed.</td>
+<td>Current-version hook qualification, live desktop/alert precision and final combined gates remain open.</td>
 </tr>
 <tr>
-<td>F7: noisy attention</td>
-<td>Implemented for explicit requests/unknown separation; shared-daemon and incident-specific gates; PR67/70.</td>
-<td>Preserve the same semantics without a cockpit; F.</td>
-</tr>
-<tr>
-<td>F8: useful information density</td>
-<td>Partial. Merged PR72 uses one separator at wide sizes and two-line compact rows, retaining shading, hierarchy and keyboard selection.</td>
-<td>Source-backed Overview at wide/floor sizes remains open; B/C/D.</td>
-</tr>
-<tr>
-<td>F9: old completion backlog</td>
-<td>Implemented: recent/history selection, readable ages, frozen-ID bulk review; real terminal R fixed and 294 receipts verified in PR70.</td>
-<td>Reuse identical receipt behavior in headless runner; F.</td>
-</tr>
-<tr>
-<td>F10: no recorded continuity use</td>
-<td>External adoption evidence absent. Headless Review-to-task composition works; no participants or voluntary reuse measured.</td>
-<td>Reduce manual work via approved drafts; D. Prepare materials in G; participant outcomes stay open.</td>
-</tr>
-<tr>
-<td>F11: shared-daemon false progress</td>
-<td>Implemented: multiplexed process work never proves per-session progress; old session stayed unconfirmed throughout the hour.</td>
-<td>Preserve stronger-evidence requirements in F.</td>
-</tr>
-<tr>
-<td>F12: unknown children as attention</td>
-<td>Implemented: unknown/unlinked status is separate from actionable requests; PR67.</td>
-<td>No hook or collision heuristic may promote this into an approval.</td>
-</tr>
-<tr>
-<td>F13: strong MCP view / recommendations</td>
-<td>Existing inventory/call inspection is a preserved strength; per-tool interpretation remains incomplete.</td>
-<td>Windowed reliability/latency and coverage-qualified recommendations; E.</td>
-</tr>
-<tr>
-<td>F14: generic failure detail</td>
-<td>Partial. Commands/exit/output and expected search exits improved; structured native detail extraction and grouping still diverge.</td>
-<td>One operation/failure projection and exact navigation/recovery observations; C.</td>
-</tr>
-<tr>
-<td>F15: historical JSON expansion</td>
-<td>Partial. Source Activity and scalar/run projections exist; remaining session/MCP/readiness costs are material.</td>
-<td>Profile and remove remaining repeated historical work; B.</td>
-</tr>
-<tr>
-<td>F16: local API/redaction</td>
-<td>Implemented: local tokens, Host/Origin, redirect refusal and expanded redaction; PR67/70.</td>
-<td>Mandatory invariants for indexes, exports, background runner and hooks.</td>
-</tr>
-<tr>
-<td>F17: native add/update</td>
-<td>Implemented and regression tested; PR67.</td>
-<td>Retain failed-attempt distinction in C/D/G.</td>
-</tr>
-<tr>
-<td>F18: wrapped checks</td>
-<td>Implemented with conservative shell recognition and masked/compound/no-op negative cases; PR67.</td>
-<td>Share command semantics in C.</td>
-</tr>
-<tr>
-<td>F19: usage ownership</td>
-<td>Implemented for proved exact-run/turn allocation, unknown fields and partial costs; PR67.</td>
-<td>PR71 closed the UI turn-link downgrade; explain qualified usage in E.</td>
-</tr>
-<tr>
-<td>F20: assistant placeholders</td>
-<td>Implemented for supported native text variants; placeholders suppressed; PR67.</td>
-<td>Continue schema/version-shaped fixtures in G.</td>
-</tr>
-<tr>
-<td>F21: lost initiating intent</td>
-<td>Implemented: bounded independent request/update context and explicit coverage; PR67.</td>
-<td>Typed instruction investigation in G uses the same source references.</td>
-</tr>
-<tr>
-<td>F22: complete run shows no work</td>
-<td>Implemented ingestion → API → Review/export contracts; 294 turn reconstructions in PR70.</td>
-<td>Preserve through all later projections.</td>
-</tr>
-<tr>
-<td>F23: Review/task mismatch</td>
-<td>Implemented in PR71: UI/CLI links preserve turn identity/membership/usage and reject contradictory snapshots. Older ambiguous links stay readable with untrusted totals until explicitly repaired.</td>
-<td>Preserve consent, provenance and authored fields through C/D.</td>
-</tr>
-<tr>
-<td>F24: passing suite / fixture gap</td>
-<td>Preserved baseline strength; PR72 passed all 12 final CI jobs: 775 minimal-suite cases per supported Python version with 14 optional skips, plus separate SDK jobs.</td>
-<td>Current native-shaped golden journeys remain release gates, not test counts alone.</td>
-</tr>
-<tr>
-<td>F25: OpenCode prompt exclusion</td>
-<td>Implemented via explicit recorded-turn membership; exact-step mode remains explicit.</td>
-<td>A/C/D must preserve full turn scope.</td>
-</tr>
-<tr>
-<td>F26: idealized fixtures</td>
-<td>Current Codex/OpenCode-shaped fixtures and end-to-end journeys implemented.</td>
-<td>Extend deidentified, version-labelled supported-runtime coverage in G. Live Claude/Pi claims require actual evidence.</td>
-</tr>
-<tr>
-<td>F27: cockpit-bound delivery / native events / Git</td>
-<td>Open outside the first recovery scope. A receiver collects independently but does not share durable attention delivery; Review lacks frozen current Git correlation.</td>
-<td>Read-only Git D; shared headless attention and optional lifecycle F.</td>
+<td>G · typed investigations/pilot kit</td>
+<td>Merged #80.</td>
+<td>Combined indexing/storage resource cost and consented participant outcomes remain open.</td>
 </tr>
 </tbody>
 </table></div>
-<h2>Coverage of all eleven recommended value problems</h2>
-<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<p>The generated native concurrency preflight used two real cockpits plus a headless watcher and one fixture notification, preserved acknowledgement across restart, and resolved an exact request after 210 unrelated records per transition with clean exits. Baseline keyboard smoke 4 passed 24 checks including floor/too-small and terminal restoration. Tiny baseline idle preflight 2 had no errors but is explicitly non-publishable. These are functional preflights, not resource or live-runtime acceptance.</p>
+<p>Finish the already accepted scope in this order: integrate and verify the pending OpenCode 2.2.5 proof/adapter/cache/reasoning and narrow Sessions lookup corrections; record exact new merge/CI outcomes; freeze combined C against B=<code>5e0c397</code>; coordinate quiet matched resource windows; complete real candidate terminal/modal/soak/storage gates. The <a href="../validation/final-monitor-protocol.html">validation protocol</a> supplies generated-only isolation and headroom/cleanup rules. Do not publish preflight timings as budgets. Cold &lt;30 seconds, idle complete-monitor CPU &lt;5% of one core, Sessions/MCP under-write p95 &lt;100 ms, sustained RSS/modal bounds and index/WAL growth remain OPEN. Pilot evidence remains <strong>0 participants / 0 sessions / 0 repeat-use observations</strong>; live Claude/Pi remains unavailable.</p>
+<p>Historical stage measurements below retain their original source/workload boundaries. The current table and acceptance audit supersede their at-time delivery labels; historical green matrices are never silently transferred to a new head.</p>
+<h2 id="delivery-and-trust-rules">Delivery and trust rules</h2>
+<p>Keep personal telemetry, preferences and source notes untouched. Use generated repositories, native records and receiver state for tests and measurements. Preserve private state/authentication, redaction, non-destructive migration, source ownership, capture-policy revocation, pagination and truthful unknown/partial usage. No provider key or account is required for local monitoring.</p>
+<p>Each stage has a coherent code change, regression gates, independent review and a reviewable PR. Follow the repository's admin squash-merge preference and verify the remote merged state and local main; report pending CI separately. Keep changes Unreleased until explicitly asked to release. Supply responsive self-contained light/dark HTML companions for documents.</p>
+<p>Use the existing Agents → attention → evidence → continuity surfaces. Avoid additional dashboards, generic Host/Metrics work, themes, AI-generated summaries, extra manual task fields, agent launching, native approval execution or autonomous remediation. Optional integrations must not weaken zero-config collection. Observations and human decisions remain distinct.</p>
+<h2 id="reconciliation-of-all-27-findings">Reconciliation of all 27 findings</h2>
+<p>“Implemented” means the stated tested contract, not universal runtime compatibility, final resource acceptance or user adoption. The <a href="../validation/review-notes-acceptance.html">full acceptance ledger</a> supplies frozen code/test links and delivery evidence for every row.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable evidence table"><table>
+<thead>
+<tr>
+<th>Finding</th>
+<th>Current delivery/status</th>
+<th>Remaining contract / limit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>F1: CPU/RSS economics</td>
+<td>Open resource acceptance. Read/source increments merged through #84; validation harness merged #85. Sessions covered-lookup 79ac99d is delivered, integration pending.</td>
+<td>Cold &lt;30 s, complete-monitor idle &lt;5%, endpoint p95 &lt;100 ms and final combined memory/WAL acceptance remain open. Endpoint/call-count results do not prove whole-monitor improvement.</td>
+</tr>
+<tr>
+<td>F2: No default retention</td>
+<td>Implemented, qualified. Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a>.</td>
+<td>New managed stores use a 14-day age policy; existing stores require explicit opt-in. Age retention is not a byte cap, immediate file shrink or proof of a memory/WAL plateau.</td>
+</tr>
+<tr>
+<td>F3: Telemetry in the launch directory</td>
+<td>Implemented, qualified. Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a>.</td>
+<td>Private XDG state and explicit non-destructive legacy migration are provided. Explicit --db remains an intentional user override; captured content is still sensitive.</td>
+</tr>
+<tr>
+<td>F4: Unreliable one-shot scripting</td>
+<td>Implemented, qualified. Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> and follow-up <a href="https://github.com/abhishekash/agenturm/pull/70">#70</a>.</td>
+<td>Readiness/error/partial/interrupt are distinguished; missing data is not a zero-success snapshot. Discovery/readiness can exceed the deadline and return partial rather than pretend success.</td>
+</tr>
+<tr>
+<td>F5: OpenCode step mistaken for turn</td>
+<td>Legacy contract implemented; current-version qualification pending. Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/71">#71</a>.</td>
+<td>Legacy recorded user-parent membership joins prompt/assistant steps. OpenCode 2.2.5 uses a different persisted shape; adapter/idle-boundary proof and nonzero cache/reasoning accounting qualification are pending. Missing initiating text or membership stays unavailable; no proximity join.</td>
+</tr>
+<tr>
+<td>F6: Codex Review omits real evidence</td>
+<td>Implemented for tested contracts. Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a>.</td>
+<td>Native-shaped ingestion→Store→authenticated API→Review/export assertions cover edits/checks/text/usage. This is not universal producer-version compatibility; F26 provenance remains qualified.</td>
+</tr>
+<tr>
+<td>F7: Noisy attention signal</td>
+<td>Implemented, qualified. Merged #67/#70; persistent semantics merged #82 at e434fcf.</td>
+<td>Explicit request/unknown separation and incident identity are present. Advisory stalled/failed states are not native approval authority; unsupported clocks/coverage defer reliable delivery.</td>
+</tr>
+<tr>
+<td>F8: Low roster/Overview information density</td>
+<td>Implemented, qualified. Merged <a href="https://github.com/abhishekash/agenturm/pull/72">#72</a> / <a href="https://github.com/abhishekash/agenturm/pull/74">#74</a> / <a href="https://github.com/abhishekash/agenturm/pull/78">#78</a>.</td>
+<td>Compact/expanded inspectors show recorded paths/checks/issues before assistant claims; hierarchy/shading/keyboard behavior retained. Loaded bounded evidence is not a full-history summary.</td>
+</tr>
+<tr>
+<td>F9: Old completion backlog</td>
+<td>Implemented, qualified. Merged #67/#70; the same durable receipts are reused by merged #82.</td>
+<td>Today/history, human-readable ages and frozen-ID bulk review exist. Marking reviewed is neither native approval nor proof of resolution; old archived records remain inspectable.</td>
+</tr>
+<tr>
+<td>F10: No observed continuity adoption</td>
+<td>External outcome open. Technical drafts merged <a href="https://github.com/abhishekash/agenturm/pull/77">#77</a>; pilot materials in merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>.</td>
+<td>No new participant, author-use or voluntary repeat-use observation is established. Pilot denominator is 0 participants / 0 sessions / 0 repeat-use observations; do not infer adoption from tests.</td>
+</tr>
+<tr>
+<td>F11: Shared daemon falsely proves progress</td>
+<td>Implemented, qualified. Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/70">#70</a>.</td>
+<td>Multiplexed/app-server activity is not per-session progress; unconfirmed status remains possible. Linux process evidence and the generated soak do not cover every runtime/platform.</td>
+</tr>
+<tr>
+<td>F12: Unknown children counted as actionable</td>
+<td>Implemented, qualified. Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a>.</td>
+<td>Unknown/unlinked coverage is separated from explicit requests. New collision/loop/native heuristics must not silently turn it into an approval request.</td>
+</tr>
+<tr>
+<td>F13: Strong MCP screen lacks qualified recommendations</td>
+<td>Implemented and merged; combined CI pending. Merged #81 at 093bf878; shared-query economics merged #83 at 728e0ba.</td>
+<td>Selected-tool loaded-page outcome/duration denominators, small samples, actual configured-server unobserved context and keyboard flagged-call navigation are visible and tested. No response-correctness, all-history reliability or tool-deletion conclusion follows. Earlier corrected E head passed 12 checks; rebased/main combined CI is a separate unfinished gate.</td>
+</tr>
+<tr>
+<td>F14: Generic failures without useful evidence</td>
+<td>Implemented, qualified. Merged #75/#76; replay qualification/reference preservation merged #84 at 11a3b7b.</td>
+<td>Commands/exits/output roles, occurrence ownership, safe fingerprints and exact sources are implemented. Unknown/redacted/clipped inputs cannot prove equivalence; a later success does not prove complete repair.</td>
+</tr>
+<tr>
+<td>F15: Historical JSON expansion/read cost</td>
+<td>Partial resource acceptance. Merged indexed/scalar/source/Sessions/MCP increments through #84; validation harness merged #85. Covered-log followup 79ac99d is delivered, integration pending.</td>
+<td>Indexed Activity/scalar rollups and bounded source reads replace repeated full-history Activity expansion. Remaining retained MCP grouping, cold migration and combined monitor cost are material and not closed.</td>
+</tr>
+<tr>
+<td>F16: Local API/privacy/redaction defaults</td>
+<td>Implemented safeguards; continuous invariant. Merged safeguards through #77; merged E/F/G paths inherit the same invariants.</td>
+<td>Private token/Host/Origin/redirect checks, expanded best-effort redaction and late-egress capture fences exist. No universal secret-detection or security guarantee follows; new paths still need combined-source gates.</td>
+</tr>
+<tr>
+<td>F17: Native add/update edits discarded</td>
+<td>Implemented, qualified. Native actions merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a>; typed rename integration in merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>.</td>
+<td>Failed/unknown file attempts do not prove a persisted change. Both explicit rename paths survive typed argument projection in G; no arrow/path equivalence guessing.</td>
+</tr>
+<tr>
+<td>F18: Wrapped native checks not recognized</td>
+<td>Implemented, qualified. Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a>.</td>
+<td>Recognized wrappers/qualified compound success are supported; no-op, masked, unknown or ambiguous failure remains unverified. Recorded success does not certify later worktree changes.</td>
+</tr>
+<tr>
+<td>F19: Exact usage rejected or misallocated</td>
+<td>Implemented and merged; current native qualification pending. Allocation/continuity merged #67/#71/#75; usage explanation wiring merged #81 at 093bf878.</td>
+<td>Single-owner/turn usage, unknown fields and partial costs are preserved. R8 label/selection work is separate from accounting; no shared-trace allocation or zero from missing data. OpenCode 2.2.5 adapter and source-membership/cache/reasoning qualification remain pending; missing or stale proof must withhold totals.</td>
+</tr>
+<tr>
+<td>F20: Assistant-message placeholders</td>
+<td>Implemented for tested contracts. Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a>.</td>
+<td>Supported native text blocks reach Review and generic placeholders are suppressed. New upstream schemas and live Claude/Pi compatibility are not proven by these synthetic contracts.</td>
+</tr>
+<tr>
+<td>F21: Initiating request crowded out</td>
+<td>Implemented, bounded. Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a>; instruction investigation in merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>.</td>
+<td>Independent request/update context and paging expose intent within explicit source limits. Pruned, uncaptured or clipped intent remains unavailable, never reconstructed by guesswork.</td>
+</tr>
+<tr>
+<td>F22: Complete captured run shows zero work</td>
+<td>Implemented for tested contracts. Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/70">#70</a> / <a href="https://github.com/abhishekash/agenturm/pull/71">#71</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a>.</td>
+<td>End-to-end native-shaped checks/edits/text/usage and generated reconstructions are verified. Coverage limits and unsupported producer variants remain explicit; tests are not current live participant evidence.</td>
+</tr>
+<tr>
+<td>F23: Review JSON/task-link mismatch</td>
+<td>Implemented, qualified. Merged <a href="https://github.com/abhishekash/agenturm/pull/71">#71</a> / <a href="https://github.com/abhishekash/agenturm/pull/77">#77</a>.</td>
+<td>Raw Review JSON composes without retyping IDs; turn members/check source traces/accounting survive. Contradictory links reject; legacy ambiguous data stays readable without trusted totals until explicit repair.</td>
+</tr>
+<tr>
+<td>F24: Passing suite hid fixture mismatch</td>
+<td>Strength preserved; final matrix pending. Implementation merges #79–#85 are recorded separately from their exact tested heads and the combined-main matrix.</td>
+<td>Earlier corrected E head <code>928cae0</code>/F head <code>1c0b795</code> each passed 12 checks. Rebased PR81/82/85 heads include intentionally cancelled duplicate runs; these are not all-green matrices. Main e434fcf run 43591334638 is still active at this snapshot. Final native-version, packaging/security/ownership/capture/terminal and resource gates remain.</td>
+</tr>
+<tr>
+<td>F25: OpenCode prompts excluded by trace</td>
+<td>Legacy prompt membership implemented; current-version qualification pending. Merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a> / <a href="https://github.com/abhishekash/agenturm/pull/71">#71</a>.</td>
+<td>Legacy whole-turn mode includes a recorded initiating prompt when present. Current OpenCode 2.2.5 may lack that persisted legacy user-parent record; absent text must stay unavailable. Adapter/idle-boundary qualification is pending; exact-step mode remains separate.</td>
+</tr>
+<tr>
+<td>F26: Idealized rather than version-labelled goldens</td>
+<td>Partial provenance; current-version integration pending. Native-shaped tests merged <a href="https://github.com/abhishekash/agenturm/pull/67">#67</a>; G pilot/search in merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>.</td>
+<td>Historical synthetic repository fixtures have unknown originating upstream versions. Current version-labelled manifest and OpenCode 2.2.5 positive/cache/reasoning gates are adapter-owned and pending integration; this audit does not overwrite that manifest. Live Claude/Pi and future-version compatibility remain open.</td>
+</tr>
+<tr>
+<td>F27: Cockpit-bound delivery, native events and Git</td>
+<td>Implemented and merged; runtime/external gates open. Git/drafts merged #77; persistent/native delivery merged #82 at e434fcf.</td>
+<td>Headless watcher, shared claims, receiver-owned native inventory and shared Review parity are merged. Generated two-cockpit+watcher preflight passed with one fixture notification and 210 unrelated records per transition, ack/restart and exact resolution. Combined CI and live request-contract/clock/capacity/desktop precision remain qualified; native approval stays manual.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="coverage-of-all-eleven-recommended-value-problems">Coverage of all eleven recommended value problems</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable evidence table"><table>
 <thead>
 <tr>
 <th>Recommendation</th>
 <th>Implementation contract</th>
+<th>Current delivery/status</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>R1: reliable cross-runtime attention</td>
 <td>Existing classifier/terminal handoff plus persistent headless delivery with durable dedup; F.</td>
+<td>Implemented and merged; external precision open. Shared classifier, headless delivery and native inventory merged #82 at e434fcf.</td>
 </tr>
 <tr>
 <td>R2: truthful turn receipts + Git</td>
 <td>Scope repair A; shared facts C; frozen read-only current Git correlation D. No worktree attribution or check certification.</td>
+<td>Implemented, qualified. Merged <a href="https://github.com/abhishekash/agenturm/pull/71">#71</a> / <a href="https://github.com/abhishekash/agenturm/pull/75">#75</a> / <a href="https://github.com/abhishekash/agenturm/pull/77">#77</a>.</td>
 </tr>
 <tr>
 <td>R3: actionable failure diagnosis</td>
 <td>Structured command/exit/output/arguments, occurrence-preserving fingerprints, expected nonzero distinctions and matching-later-success evidence and occurrence-owned Findings filtering/counts; C.</td>
+<td>Implemented and merged; diagnosis remains qualified. Operation/Findings facts merged #75/#76; opt-in later matching-success observations merged #81.</td>
 </tr>
 <tr>
 <td>R4: automatic continuity</td>
 <td>Editable draft from observed request/edits/checks/errors, existing human decisions and captured Git; explicit approval before saving, no authored-field overwrite; D.</td>
+<td>Implemented; adoption external. Merged <a href="https://github.com/abhishekash/agenturm/pull/77">#77</a>.</td>
 </tr>
 <tr>
 <td>R5: parallel collisions</td>
 <td>Recorded modifying-path overlap only within proved workspace/branch, with rename/attempt/worktree/unknown handling and cross-agent check/edit chronology; D/E.</td>
+<td>Implemented, qualified. Merged <a href="https://github.com/abhishekash/agenturm/pull/77">#77</a>; typed rename pair fidelity in merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>.</td>
 </tr>
 <tr>
 <td>R6: waste/loops</td>
 <td>Conservative progression observations combining repeated failures/calls/compactions and usage with captured edit/check progress; E. No declaration that intentional work is waste.</td>
+<td>Implemented opt-in and merged; qualified observations. Merged #81 at 093bf878 includes progression, source-complete Store publication and versioned legacy-cache repair.</td>
 </tr>
 <tr>
 <td>R7: MCP recommendations</td>
 <td>Per-tool outcomes/durations with denominators, windows and capture coverage; “unobserved” never means unnecessary; E.</td>
+<td>Implemented and merged; window-qualified. Merged #81/#83; loaded-page MCP explanations and shared grouped inventory remain separate from response-quality evaluation.</td>
 </tr>
 <tr>
 <td>R8: task usage explanation</td>
 <td>Explicit turn/day/lifetime labels, retry/cache explanations, authoritative context occupancy only, and optional clearly labelled user-configured estimates separate from recorded cost; E.</td>
+<td>Implemented and merged; unsupported windows remain unknown. Allocation plus merged #81 explanations distinguish turn/step/session scope and optional exact-model estimates.</td>
 </tr>
 <tr>
 <td>R9: retrospective investigations</td>
 <td>Typed path/command/instruction searches over retained indexed evidence, bounded paging, CLI output and exact source navigation; G.</td>
+<td>Implemented and merged; resource limits remain. Merged <a href="https://github.com/abhishekash/agenturm/pull/80">#80</a>, all 12 final checks green.</td>
 </tr>
 <tr>
 <td>R10: safe collection</td>
 <td>PR67 defaults remain non-negotiable; new data/projections obey capture policy, retention, redaction and auth; all stages.</td>
+<td>Implemented safeguards; combined gates open. Merged defaults #67/#70 and merged E/F/G paths inherit invariants; combined-source acceptance remains separate.</td>
 </tr>
 <tr>
 <td>R11: optional native lifecycle</td>
 <td>Versioned opt-in input and supported-runtime recipes researched from primary/native contracts; preserve unknown identities and zero-config discovery; F.</td>
+<td>Implemented supported contract; coverage qualified. Optional bounded lifecycle metadata, watcher/native CLI and receiver inventory merged #82.</td>
 </tr>
 </tbody>
 </table></div>
 <p>The seven recommended recovery steps map to A/C/G (native correctness), A/F (turn model), B (economics), F (persistent accurate attention), inherited safety gates, D (drafts), and G (pilot materials/external outcomes).</p>
-<h2>Stage A — scope consistency and UI continuity repair</h2>
+<h2 id="stage-a-scope-consistency-and-ui-continuity-repair">Stage A — scope consistency and UI continuity repair</h2>
 <p>First fix <code>capture_selected_run()</code> and <code>_link()</code> so a whole-turn snapshot cannot be accepted under a step key. Carry receiver/producer/agent/session/turn identity and the full bounded step membership from the same frozen projection. Reject contradictory wrapper/snapshot scope kind, identity or membership. Preserve readable legacy task/decision content while making previously ambiguous link accounting unavailable until explicitly repaired; do not silently reinterpret stored human data.</p>
 <p>Gate: actual Review → saved-task UI → handoff preserves turn identity, checks and usage; UI and headless imports agree; turn plus contained step cannot double-count; contradictory snapshots fail; legacy incomplete links remain inspectable without trusted totals; capture-policy and size limits remain intact.</p>
-<h2>Stage B — measured economics and useful existing views</h2>
+<h2 id="stage-b-measured-economics-and-useful-existing-views">Stage B — measured economics and useful existing views</h2>
 <p>Profile the retained fixture before choosing queries or caches. Investigate connection-count JSON grouping, repeated session scalar/label lookups, MCP aggregation and per-trace migration connection/transaction work. Any cache must distinguish raw/derived/ownership/capture revisions and cross-process writes, and must not serve text under another owner or namespace. Migrations remain resumable and readiness truthful.</p>
 <p>Use public framework lifecycle patterns to investigate repeated modal/render retention; avoid an unmeasured private-framework patch. Improve useful roster density while preserving one clear separation between roots, deeper child indentation, alternate shading and stable keyboard/scroll position. Existing Overview should show readable source-backed work, not generic placeholder summaries.</p>
 <p>Targets on the same generated corpus/reference host: substantially shorten cold readiness (target under 30 seconds), steady idle complete-monitor CPU under 5% of one core, and session/MCP p95 under 100 ms under the controlled write workload. Record achieved values and limitations; do not trade away correctness to meet targets or call changed workloads a before/after result. Repeat normal-load and active-probe comparisons with identical conditions. If a target is missed, keep it explicitly open.</p>
 <p>Gate: indexed query plans, source/derived invalidation, concurrent ownership/content snapshots, pruning, file replacement, partial/unknown usage and interrupted migration remain correct. Render 120×36, 80×24 and 60×18. Keep packet/disk/subprocess work off the UI event thread.</p>
-<h2>Stage C — shared actionable operation and failure facts</h2>
+<h2 id="stage-c-shared-actionable-operation-and-failure-facts">Stage C — shared actionable operation and failure facts</h2>
 <p>Extract structured native command/result/output once for Findings, Review, diagnostics and later search/drafts. Group by a safe operation/error fingerprint while retaining every occurrence's actor/session/turn/source ID. Different arguments/errors and redacted-ambiguous inputs must not collapse into one supposed failure or recovery.</p>
 <p>Expected nonzero search/comparison results require actual command and exit evidence; unknown wrappers/compound failures cannot be declared informational. A passing retry is “later matching success observed,” not proof all consequences were repaired. Show bounded useful stderr/result excerpts and an exact event action. Keep current/previous-conversation unseen error reminders and incident receipts independent from archival findings and native approvals.</p>
 <p>Peer-reviewed acceptance details: command/arguments and terminal results keep typed field provenance; arbitrary JSON in output must not become command or exit evidence. Conflicting exits/results remain uncertain, and combined output is never renamed stderr. Input equivalence includes captured cwd and tool/server identity, preserving types and list order; shell whitespace and quoting are not broadly normalized. Input and output clipping qualify matching independently. Redacted, missing or contradictory inputs and incomplete error signatures cannot prove equivalence. Only authoritative simple-shell terminal evidence can make exit code 1 informational; blocked/denied/MCP error evidence and compound failures remain visible. A matching success needs a strictly later comparable timestamp and the same receiver/actor/session/execution scope.</p>
 <p>Correlation fingerprints are versioned and computed after capture/redaction policy, never from raw secrets. Durable viewed-error receipts keep their occurrence identity. Findings page rows, counts and hydration must use each occurrence's actual producer/actor/session in one source snapshot, including shared parent/child traces; trace-summary ownership is insufficient. Turn references and capture revocation must survive every projection/export.</p>
 <p>Gate: wrapped/nested native shapes, masked failures, grep/diff versus validation errors, secrets, different workers/directories, retries, stale history, equal timestamps, clipped arguments, legacy references and later successes; exact source navigation preserves filters and selection.</p>
-<h2>Stage D — frozen Git correlation and approved handoff drafts</h2>
+<h2 id="stage-d-frozen-git-correlation-and-approved-handoff-drafts">Stage D — frozen Git correlation and approved handoff drafts</h2>
 <p>Reuse <code>capture_workspace()</code> and its bounded read-only Git safeguards. Require a proven local workspace binding or an explicit user-selected remote-to-local mapping; a remote receiver's cwd string is not proof that a local directory is its checkout. Freeze current branch/HEAD/status/diff, observation time, workspace/base provenance and clipping with the evidence receipt. Explicitly distinguish recorded agent paths from all current worktree changes, pre-existing work and concurrent edits. An earlier check does not validate the current worktree. Capture only on deliberate review/draft actions in a worker; no Git polling storm. Metadata-only or revoked source capture must not expose derived Git diff content through Review, drafts or exports; separately authored saved-task material keeps its own explicit ownership and consent boundary.</p>
 <p>Generate a clearly labelled editable draft from the original request, scoped evidence, captured Git and saved accepted/rejected human decisions. Drafting must remove repeated identifier entry. Preserve authored fields and require an explicit approve/save action for durable task updates; do not manufacture decisions, constraints or intent from assistant claims. Path-overlap observations use recorded modifying events within proved workspace/branch; handle rename pairs, failed attempts, separate worktrees and missing identity. Same-directory occupancy alone is not a collision.</p>
 <p>Gate: real temporary Git repositories with dirty/staged/committed/untracked/renamed states, moved HEAD, partial output, filters/hooks/lazy-fetch defense and timeouts; overlapping writers and check-before-other-agent-edit chronology; draft → edit → approve → saved task/handoff, with no mutation before approval and no authored-field loss.</p>
-<h2>Stage E — evidence-qualified MCP, progression and usage explanations</h2>
+<h2 id="stage-e-evidence-qualified-mcp-progression-and-usage-explanations">Stage E — evidence-qualified MCP, progression and usage explanations</h2>
 <p>Add per-tool reliability/latency windows with known/unknown outcome and duration counts. Explain small samples, scope, capture boundaries and configured-but-unobserved servers. Recommendations link to observed calls/configuration context; never suggest deleting configuration from absence alone.</p>
 <p>Extend opt-in repeated-work observations with source-linked progress context, failures/successes/edits/checks, compaction and usage growth. Exclude routine polling and unprovable equivalence. Keep heuristics out of explicit request counts and desktop alerts. Explain turn/day/lifetime usage, retry contributions and cache semantics. Show context occupancy only from explicit authoritative runtime fields. Optional estimates use explicit rates/units/accounting assumptions, are separate from recorded cost, and become unavailable when allocations are ambiguous.</p>
 <p>Gate: mixed runtimes/workers, window boundaries, unknown durations/outcomes, redacted arguments, intentional retries/polls, new progress, missing context/usage and partial model/rate coverage. No hypothetical provider cost is presented as a bill.</p>
-<h2>Stage F — persistent attention and optional lifecycle integration</h2>
+<h2 id="stage-f-persistent-attention-and-optional-lifecycle-integration">Stage F — persistent attention and optional lifecycle integration</h2>
 <p>Factor scope preparation, classification, persistence and delivery into one UI-independent runner. A long-running local receiver/watcher can deliver without an open full-screen client; the TUI remains an optional client. Reuse the existing durable claims and receipts so multiple cockpits/watchers do not duplicate alerts. First-install inventory is a quiet baseline. An established watcher must deliver once a still-pending, never-delivered request that arose while it was offline; already-delivered or acknowledged incidents must not repeat. Reconnect must not turn baseline silence into permanent loss of new requests. A fresh explicit request remains until a matching positive resolution. Storage failure is visible and cannot produce optimistic acknowledgements.</p>
 <p>Define and fixture a bounded versioned optional native input before wiring recipes. Research current supported runtime contracts from primary documentation/local schemas; do not invent a hook or infer missing turn/request identity from time proximity. Validate sender/session/worker/turn relationships, request IDs, event ordering, replay and source precedence; preserve unscoped/contradictory evidence as uncertain. Installation/configuration is explicit. Collection and notifications never approve a native request, launch an agent or run a remediation command.</p>
 <p>Gate: watcher/receiver restarts, two cockpits plus watcher, duplicate delivery claims, offline catch-up, same-text new request, acknowledgement, stale/reordered/duplicate events, missing/foreign parents, storage failure and bounded graceful drain. Auth, Host/Origin, local-token discovery, redaction and retention apply to the new path.</p>
-<h2>Stage G — retrospective investigations and participant-ready pilot kit</h2>
+<h2 id="stage-g-retrospective-investigations-and-participant-ready-pilot-kit">Stage G — retrospective investigations and participant-ready pilot kit</h2>
 <p>Build typed path/command/instruction investigations on the same indexed source identities. Preserve global retained-history scope, bounded paging, disclosed clipping/pruning and exact event navigation; add reproducible CLI results. Reuse existing Activity storage/search instead of creating competing ownership or unbounded JSON scans. Measure any extra search indexing/read cost.</p>
 <p>Prepare generated scenarios, expected answers, observer timing/error sheets, consent/data-handling instructions and reconstruction/resumption exercises using the existing pilot protocol. Include explicit approval versus unknown status, older check/later edit, turn membership, native terminal handoff, overlapping paths, reconnect and resumed decisions. No personal transcripts or participant identifiers belong in fixtures.</p>
 <p>Gate: investigations answer which session changed a path, which command failed and which agent received an instruction across producers, including renames, unicode, missing IDs, pagination and retention. CLI/UI source navigation agrees. Participant materials render at desktop/mobile sizes and clearly state proposed measures and zero observed participant outcomes.</p>
-<h2>External validation and completion ledger</h2>
-<h3>Stage A implementation — merged <a href="https://github.com/abhishekash/agenturm/pull/71">PR #71</a></h3>
+<h2 id="external-validation-and-completion-ledger">External validation and completion ledger</h2>
+<h3 id="stage-a-implementation-merged-pr-71-https-github-com-abhishekash-agenturm-pull-71">Stage A implementation — merged <a href="https://github.com/abhishekash/agenturm/pull/71">PR #71</a></h3>
 <p>Terminal capture now uses the shared execution preparation and preserves the frozen turn boundary, member trace IDs and each check's source trace. Task import rejects contradictory wrapper/snapshot identity, kind, membership and usage. Existing inconsistent links stay readable and retain authored data; their usage is withheld with a repair warning until an explicit relink or unlink. Turn-plus-contained-step accounting remains ambiguous instead of double-counted.</p>
-<p>Validation includes an actual keyboard-driven Review → Save task → edit → Ctrl+S → task → handoff journey, UI/CLI import equality, later-member selection, contradictory imports, legacy reads/edits/explicit repair and metadata-only capture. Peer review exposed additional usage, consent and excerpt-provenance gaps: frozen usage now owns accounting; same-receiver capture revocation is rechecked before capture and task persistence without losing authored fields; decision excerpts retain their actual member trace instead of the turn anchor. Explicitly saving an older frozen receipt after receiver replacement retains only that receipt's facts. The focused gate passed 72 tests in 79.87 seconds; all 12 turn-continuity cases passed again after the final queued-save and frozen-namespace policy guards. HTML companions were rendered at 1280-pixel light and 390-pixel dark widths without document overflow or external assets. Stages B–G remain open; this stage does not complete the full review.</p>
-<h3>Stage B first increment — merged <a href="https://github.com/abhishekash/agenturm/pull/72">PR #72</a></h3>
-<p>The frozen source adds indexed MCP/source lookups, bounded original-title reads, fair resumable derived batches, denser roster rows and public-API Workflow reuse. Peer review also closed reproduced cross-worker MCP enrichment, collector retry/replacement and sticky internal-capture races. The 219-test combined gate and 66-test final native delta gate passed; independent final retry review passed 24 tests. The final healthy matched comparison measured cold readiness 184.38 → 112.96 seconds, complete idle CPU 23.63% → 15.90% of one core, session-under-write p95 373.58 → 284.90 ms and MCP-under-write p95 246.09 → 142.60 ms. All three targets remain open. The earlier <code>ca93</code> run is invalid for resource claims because native ingestion recorded SQLite lock failures. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/history-read-economics.md">measurement report</a> for source hashes, raw figures and limitations. Stage B remains open until its remaining useful-view and resource work is accounted for; C–G remain open.</p>
-<h3>Stage B compatibility watcher increment — merged <a href="https://github.com/abhishekash/agenturm/pull/73">PR #73</a></h3>
-<p>The empty compatibility-queue probe reuses a read-only lease and releases it before writer acquisition. A fresh matched pair measured whole-monitor idle CPU 17.80% → 14.90% of one core, with unchanged cold readiness/read latency and all health/drain gates passing. Seven new concurrency/lifecycle cases, a 32-test focused gate and independent 18-test review passed. All 12 final CI jobs passed. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/idle-history-watch.md">separate measurements</a>. Resource targets and source-backed Overview remain open; C–G remain open.</p>
-<h3>Stage B source preparation — merged <a href="https://github.com/abhishekash/agenturm/pull/74">PR #74</a></h3>
+<p>Validation includes an actual keyboard-driven Review → Save task → edit → Ctrl+S → task → handoff journey, UI/CLI import equality, later-member selection, contradictory imports, legacy reads/edits/explicit repair and metadata-only capture. Peer review exposed additional usage, consent and excerpt-provenance gaps: frozen usage now owns accounting; same-receiver capture revocation is rechecked before capture and task persistence without losing authored fields; decision excerpts retain their actual member trace instead of the turn anchor. Explicitly saving an older frozen receipt after receiver replacement retains only that receipt's facts. The focused gate passed 72 tests in 79.87 seconds; all 12 turn-continuity cases passed again after the final queued-save and frozen-namespace policy guards. HTML companions were rendered at 1280-pixel light and 390-pixel dark widths without document overflow or external assets. This historical stage result does not complete the full review; current delivery and remaining acceptance are summarized above.</p>
+<h3 id="stage-b-first-increment-merged-pr-72-https-github-com-abhishekash-agenturm-pull-72">Stage B first increment — merged <a href="https://github.com/abhishekash/agenturm/pull/72">PR #72</a></h3>
+<p>The frozen source adds indexed MCP/source lookups, bounded original-title reads, fair resumable derived batches, denser roster rows and public-API Workflow reuse. Peer review also closed reproduced cross-worker MCP enrichment, collector retry/replacement and sticky internal-capture races. The 219-test combined gate and 66-test final native delta gate passed; independent final retry review passed 24 tests. The final healthy matched comparison measured cold readiness 184.38 → 112.96 seconds, complete idle CPU 23.63% → 15.90% of one core, session-under-write p95 373.58 → 284.90 ms and MCP-under-write p95 246.09 → 142.60 ms. All three targets remain open. The earlier <code>ca93</code> run is invalid for resource claims because native ingestion recorded SQLite lock failures. See the <a href="../validation/history-read-economics.md">measurement report</a> for source hashes, raw figures and limitations. Stage B remains open until its remaining useful-view and resource work is accounted for; Current stage delivery is summarized above; this historical resource result does not close their remaining acceptance.</p>
+<h3 id="stage-b-compatibility-watcher-increment-merged-pr-73-https-github-com-abhishekash-agenturm-pull-73">Stage B compatibility watcher increment — merged <a href="https://github.com/abhishekash/agenturm/pull/73">PR #73</a></h3>
+<p>The empty compatibility-queue probe reuses a read-only lease and releases it before writer acquisition. A fresh matched pair measured whole-monitor idle CPU 17.80% → 14.90% of one core, with unchanged cold readiness/read latency and all health/drain gates passing. Seven new concurrency/lifecycle cases, a 32-test focused gate and independent 18-test review passed. All 12 final CI jobs passed. See the <a href="../validation/idle-history-watch.md">separate measurements</a>. Resource targets remain open; source-backed Overview subsequently merged in PR78; Current stage delivery is summarized above; this historical resource result does not close their remaining acceptance.</p>
+<h3 id="stage-b-source-preparation-merged-pr-74-https-github-com-abhishekash-agenturm-pull-74">Stage B source preparation — merged <a href="https://github.com/abhishekash/agenturm/pull/74">PR #74</a></h3>
 <p>The roster and Workflow share bounded static preparation within the same snapshot, retaining clock-based health and independent mutable results. In-place changes invalidate it. Policy revocation overrides stale Activity and paused content using the existing exact Review policy; late evidence and AI-summary dispatch/publication are guarded. Weak references and explicit character/node/depth/row limits bound retained inputs. Unrelated modals use the uncached single-consumer path.</p>
-<p>All 12 final CI jobs passed for PR #74. The isolated projection benchmark includes admission costs and reports one, two and three consumers plus metadata-only/oversized bypass cases. Three reads improved median elapsed preparation work by about 21% for canonical titles and 34% for prompt fallback; two canonical reads were nearly flat/slightly slower and one read regressed. This is not a complete-monitor CPU result. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/source-preparation.md">full report and raw samples</a>. Resource targets and the shared source-backed Overview remain open; C–G remain open.</p>
-<h3>Stage B bounded Sessions read — implemented, integration CI pending</h3>
-<p>The full Sessions method batches scalar labels and uncovered log candidates while preserving per-session caps, owner-compatible covered cutoffs, exact ordering and one source snapshot. All typed failures/recoveries remain; opaque nonfailure labels skip redundant reminder hashing. Focused gates passed 74 tests plus a final 21-test delta. One controlled canonical-index generated-corpus pair measured under-write p95 441.02 → 286.34 ms, with equal frozen outputs and 91 accepted/zero-error writer batches. The &lt;100 ms target stays open. This corpus differs from PR #72, and no complete-monitor CPU/cold/MCP result follows. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/session-projection-batch.md">full measurements, rejected helper-only result and limits</a>.</p>
-<h3>Stage B shared MCP grouping — implemented, CI pending</h3>
-<p>One request-local grouped call set now supplies complete scoped inventory and bounded candidate keys. Search/cursor filters affect only candidates; exact ownership, ambiguous calls, metric counters, falsy payloads and snapshot hydration remain unchanged. The 91-test focused gate passed in 38.339 seconds. Query VM work is lower in diagnostics; both controlled pairs have lower medians but under-write p95 directions disagree (230.88 → 239.96 ms; repeat 343.53 → 307.98 ms). Both runs remain separate; the &lt;100 ms target is open and no whole-monitor CPU benefit is claimed. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/mcp-inventory-grouping.md">full report and preserved raw samples</a>.</p>
-<h3>Stage C shared operation facts — merged <a href="https://github.com/abhishekash/agenturm/pull/75">PR #75</a></h3>
-<p>Review, Activity failure grouping and recent reminders now share bounded typed command/result/output facts, conservative sanitized fingerprints and exact receiver/producer/actor/session/turn boundaries. Existing indexed results and derived summaries have a resumable versioned upgrade. Later matching success is an observation, not a repaired-task assertion; receipt IDs remain stable. The first focused gate passed 67 tests, with a further 56-test source/native/Review gate passing and independent peer signoff; all twelve final CI jobs passed. Merge commit: <code>a601ad2236f22ef75600129e920ff763883bee7c</code>. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/operation-evidence.md">implementation and limits</a>.</p>
+<p>All 12 final CI jobs passed for PR #74. The isolated projection benchmark includes admission costs and reports one, two and three consumers plus metadata-only/oversized bypass cases. Three reads improved median elapsed preparation work by about 21% for canonical titles and 34% for prompt fallback; two canonical reads were nearly flat/slightly slower and one read regressed. This is not a complete-monitor CPU result. See the <a href="../validation/source-preparation.md">full report and raw samples</a>. Resource targets remain open; source-backed Overview subsequently merged in PR78; Current stage delivery is summarized above; this historical resource result does not close their remaining acceptance.</p>
+<h3 id="stage-b-bounded-sessions-read-merged-pr-79-https-github-com-abhishekash-agenturm-pull-79">Stage B bounded Sessions read — merged <a href="https://github.com/abhishekash/agenturm/pull/79">PR #79</a></h3>
+<p>The full Sessions method batches scalar labels and uncovered log candidates while preserving per-session caps, owner-compatible covered cutoffs, exact ordering and one source snapshot. All typed failures/recoveries remain; opaque nonfailure labels skip redundant reminder hashing. Focused gates passed 74 tests plus a final 21-test delta. One controlled canonical-index generated-corpus pair measured under-write p95 441.02 → 286.34 ms, with equal frozen outputs and 91 accepted/zero-error writer batches. The &lt;100 ms target stays open. This corpus differs from PR #72, and no complete-monitor CPU/cold/MCP result follows. See the <a href="../validation/session-projection-batch.md">full measurements, rejected helper-only result and limits</a>.</p>
+<h3 id="stage-b-shared-mcp-grouping-merged-pr-83-https-github-com-abhishekash-agenturm-pull-83">Stage B shared MCP grouping — merged <a href="https://github.com/abhishekash/agenturm/pull/83">PR #83</a></h3>
+<p>One request-local grouped call set now supplies complete scoped inventory and bounded candidate keys. Search/cursor filters affect only candidates; exact ownership, ambiguous calls, metric counters, falsy payloads and snapshot hydration remain unchanged. The 91-test focused gate passed in 38.339 seconds. Query VM work is lower in diagnostics; both controlled pairs have lower medians but under-write p95 directions disagree (230.88 → 239.96 ms; repeat 343.53 → 307.98 ms). Both runs remain separate; the &lt;100 ms target is open and no whole-monitor CPU benefit is claimed. See the <a href="../validation/mcp-inventory-grouping.md">full report and preserved raw samples</a>.</p>
+<h3 id="stage-c-shared-operation-facts-merged-pr-75-https-github-com-abhishekash-agenturm-pull-75">Stage C shared operation facts — merged <a href="https://github.com/abhishekash/agenturm/pull/75">PR #75</a></h3>
+<p>Review, Activity failure grouping and recent reminders now share bounded typed command/result/output facts, conservative sanitized fingerprints and exact receiver/producer/actor/session/turn boundaries. Existing indexed results and derived summaries have a resumable versioned upgrade. Later matching success is an observation, not a repaired-task assertion; receipt IDs remain stable. The first focused gate passed 67 tests, with a further 56-test source/native/Review gate passing and independent peer signoff; all twelve final CI jobs passed. Merge commit: <code>a601ad2236f22ef75600129e920ff763883bee7c</code>. See the <a href="../validation/operation-evidence.md">implementation and limits</a>.</p>
 <p>C1 and C2 are merged and validated; C3 implementation is recorded below. Resource targets and stages D–G remain open.</p>
-<h3>Stage C occurrence-owned Findings — merged <a href="https://github.com/abhishekash/agenturm/pull/76">PR #76</a></h3>
-<p>Findings filtering, keyset paging, scalar counts and exact source resolution now share one SQLite snapshot and receiver namespace. Each occurrence retains its actual producer/actor/session/turn; unknown ownership stays global, and root task/status is not borrowed. Shared operation facts drive error detail, expected-nonzero and conflict handling. Changes from older writers atomically invalidate evidence and queue bounded, restart-safe rebuilds. <code>s</code> opens exact sources, <code>t</code> explicitly opens the container trace. Capture revocation fences late reads, copy and export, including already-open previews. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/owned-findings.md">implementation record</a>.</p>
-<p>The 157-test storage/API/ownership/native/receipt/UI gate passed in 94.587 seconds. The latest privacy/alias and source-navigation delta passed 40 tests in 25.197 seconds; final peer review found no remaining blockers. C2 merged as <code>da90e73a4b3051e5d8e7e4566a4a1a2aa77fbc9b</code>, with all twelve final CI jobs passing on head <code>7bd840f</code>. C3 and all remaining stage gates below stay open.</p>
-<h3>Stage D Git and approved drafts — merged <a href="https://github.com/abhishekash/agenturm/pull/77">PR #77</a></h3>
-<p>Explicit workspace mapping, frozen bounded Git receipts, editable source-backed drafts, additive approval versions and qualified parallel-path/check observations are implemented. Authored task title/workspace/notes/brief/decisions remain intact. Every contributing source and receiver is rechecked at formatting, preview, copy and final export worker; peer-only revocation and restoration cannot revive a denied preview. Integrated baseline 64 tests and final privacy/UI/CLI 13 tests passed; independent review found no remaining Stage D blocker. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/frozen-git-continuity.md">implementation report</a>. All twelve final CI jobs passed; merged as <code>449f64f4296cc7258bc370c0156745e6e6f0570b</code>. Implementation is not observed adoption.</p>
-<h3>Stage C source-backed Overview — implementation ready for review</h3>
-<p>The compact and expanded Agents inspectors show recorded edits, paths, check outcomes and issues before assistant claims. The shared Review projection enforces exact source/execution ownership, typed results and bounded partial coverage. Source preparation is UI-free for headless parity, and native log batches can pin receiver identity transactionally. The 44-test source/cache/session-view gate, latest 11-test pure delta, three-frame actual-app journey and three receiver-fence cases passed. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/source-backed-overview.md">implementation and limits</a>. Independent final review found no blocker; its pure overview/source gate passed eight tests in 0.971 seconds. <a href="https://github.com/abhishekash/agenturm/pull/78">PR #78</a> is in CI; no resource target is closed by this UI change.</p>
-<h3>Stage G typed investigation — merged PR80</h3>
-<p>Typed path/command/instruction terms, scalar source ownership and literal phrase matching now feed bounded authenticated API, CLI and keyboard UI. Exact source reads pin the receiver/reference before hydration and validate all six actual execution fields. Durable invalidation/backfill, prune/restart, unavailable-FTS behavior and role-labelled rename pairs are covered. The integrated 69-test gate passed in 43.433 seconds and a 33-test storage/CLI/watcher delta in 5.600 seconds. Ctrl+F and Activity’s History action open the 60×18-compatible single-modal workflow. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/typed-investigations.md">implementation and index-cost limits</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/typed-investigation-ui.md">keyboard validation</a>. Pilot materials exist; participant outcomes remain zero. PR80 merged at <code>1e8bdcb</code> with all 12 checks green. Final combined acceptance remains open.</p>
-<h3>Stage E existing evidence explanations — integrated, CI pending</h3>
-<p>MCP tool details now disclose known/unknown outcome and duration denominators for the loaded page. Shared progress observations remain conservative and never create attention/waste claims. Usage details separate cache breakdowns, cumulative usage, unavailable context/retry allocation and optional exact-model configured estimates. Every formatting option participates in the bounded detached key; live policy still runs. A modal’s live Feed, original owner and receiver fence stale details through denial/restoration. The 39-test integrated gate passed in 61.255 seconds; independent final review found no remaining blocker in the reviewed scope. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/evidence-explanations.md">implementation record</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/task-usage-render-guard.md">formatting guard</a>. Whole-monitor resource effects remain unmeasured; final PR CI/merge are pending.</p>
-<h3>Stage F shared persistent attention — integrated, CI pending</h3>
-<p>The headless watcher/status/native commands share durable baseline, acknowledgement and delivery with the cockpit. A receiver-owned metadata-only native inventory preserves pending/resolved request state beyond recent Activity and across restart; exact owner/receiver/order checks, source invalidation, capacity and unknown clock/coverage gates remain conservative. Agents/Review/Workflow/headless consumers share one bounded overlay, with Pause frozen and capture revocation live. The integrated 100-test gate passed in 78.050 seconds; the latest 27-test inventory/native/watcher delta passed in 6.027 seconds. Independent peer review verified the lifecycle conflict fix. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/persistent-attention.md">persistent attention</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/shared-native-projection.md">shared projection</a>. Optional runtime capabilities are version-labelled; unsupported request identities remain unsupported, and live Claude/Pi/participant evidence is absent. Final PR CI/merge and combined resource budgets remain open.</p>
-<h3>Parallel implementation ownership and remaining acceptance gates</h3>
-<p>Root owns shared evidence/storage/UI integration, C3 Overview, Stage E explanations and Stage B performance. The Git/handoff agent owns D in <code>feat/frozen-git-drafts</code>; the attention agent owns F in <code>feat/persistent-attention</code>; the investigations agent owns G in its isolated branch. Shared-file changes and CLI/API hooks are integrated by root, with separate tests/review/merge gates for each contribution.</p>
-<p>Stage B remains actively owned by root: cold readiness 112.96 s against &lt;30 s, idle CPU 14.90% of one core against &lt;5%, and sessions/MCP under-write p95 284.90/142.60 ms against &lt;100 ms remain open. Profile and rerun matched conditions after shared projections land; also measure memory plateau and index/WAL growth. No heavy tests run during controlled measurement intervals.</p>
-<p>Before full completion, every F1–F27 and R1–R11 entry must identify code, regression evidence, merged commit and limits, separating implementation, validation, merge and external outcomes. Validate the combined tree's integration/security/ownership/capture paths, packaging and real terminal behavior. C3 needs rendered source-backed frames; D needs approved drafts and qualified collision boundaries; E needs denominators/unknowns; F needs offline catch-up/shared durable delivery; G needs indexed search and CLI/UI source parity. F26 also requires producer/schema-version-labelled golden provenance. A pilot kit is not participant evidence.</p>
+<h3 id="stage-c-occurrence-owned-findings-merged-pr-76-https-github-com-abhishekash-agenturm-pull-76">Stage C occurrence-owned Findings — merged <a href="https://github.com/abhishekash/agenturm/pull/76">PR #76</a></h3>
+<p>Findings filtering, keyset paging, scalar counts and exact source resolution now share one SQLite snapshot and receiver namespace. Each occurrence retains its actual producer/actor/session/turn; unknown ownership stays global, and root task/status is not borrowed. Shared operation facts drive error detail, expected-nonzero and conflict handling. Changes from older writers atomically invalidate evidence and queue bounded, restart-safe rebuilds. <code>s</code> opens exact sources, <code>t</code> explicitly opens the container trace. Capture revocation fences late reads, copy and export, including already-open previews. See the <a href="../validation/owned-findings.md">implementation record</a>.</p>
+<p>The 157-test storage/API/ownership/native/receipt/UI gate passed in 94.587 seconds. The latest privacy/alias and source-navigation delta passed 40 tests in 25.197 seconds; final peer review found no remaining blockers. C2 merged as <code>da90e73a4b3051e5d8e7e4566a4a1a2aa77fbc9b</code>, with all twelve final CI jobs passing on head <code>7bd840f</code>. C3 Overview subsequently merged as PR78; remaining combined acceptance is summarized above.</p>
+<h3 id="stage-d-git-and-approved-drafts-merged-pr-77-https-github-com-abhishekash-agenturm-pull-77">Stage D Git and approved drafts — merged <a href="https://github.com/abhishekash/agenturm/pull/77">PR #77</a></h3>
+<p>Explicit workspace mapping, frozen bounded Git receipts, editable source-backed drafts, additive approval versions and qualified parallel-path/check observations are implemented. Authored task title/workspace/notes/brief/decisions remain intact. Every contributing source and receiver is rechecked at formatting, preview, copy and final export worker; peer-only revocation and restoration cannot revive a denied preview. Integrated baseline 64 tests and final privacy/UI/CLI 13 tests passed; independent review found no remaining Stage D blocker. See the <a href="../validation/frozen-git-continuity.md">implementation report</a>. All twelve final CI jobs passed; merged as <code>449f64f4296cc7258bc370c0156745e6e6f0570b</code>. Implementation is not observed adoption.</p>
+<h3 id="stage-c-source-backed-overview-merged-pr-78-https-github-com-abhishekash-agenturm-pull-78">Stage C source-backed Overview — merged <a href="https://github.com/abhishekash/agenturm/pull/78">PR #78</a></h3>
+<p>The compact and expanded Agents inspectors show recorded edits, paths, check outcomes and issues before assistant claims. The shared Review projection enforces exact source/execution ownership, typed results and bounded partial coverage. Source preparation is UI-free for headless parity, and native log batches can pin receiver identity transactionally. The 44-test source/cache/session-view gate, latest 11-test pure delta, three-frame actual-app journey and three receiver-fence cases passed. See the <a href="../validation/source-backed-overview.md">implementation and limits</a>. Independent final review found no blocker; its pure overview/source gate passed eight tests in 0.971 seconds. <a href="https://github.com/abhishekash/agenturm/pull/78">PR #78</a> is merged; current combined-main CI is separate; no resource target is closed by this UI change.</p>
+<h3 id="stage-g-typed-investigation-merged-pr80">Stage G typed investigation — merged PR80</h3>
+<p>Typed path/command/instruction terms, scalar source ownership and literal phrase matching now feed bounded authenticated API, CLI and keyboard UI. Exact source reads pin the receiver/reference before hydration and validate all six actual execution fields. Durable invalidation/backfill, prune/restart, unavailable-FTS behavior and role-labelled rename pairs are covered. The integrated 69-test gate passed in 43.433 seconds and a 33-test storage/CLI/watcher delta in 5.600 seconds. Ctrl+F and Activity’s History action open the 60×18-compatible single-modal workflow. See <a href="../validation/typed-investigations.md">implementation and index-cost limits</a> and <a href="../validation/typed-investigation-ui.md">keyboard validation</a>. Pilot materials exist; participant outcomes remain zero. PR80 merged at <code>1e8bdcb</code> with all 12 checks green. Final combined acceptance remains open.</p>
+<h3 id="stage-e-existing-evidence-explanations-merged-pr81-combined-ci-pending">Stage E existing evidence explanations — merged PR81, combined CI pending</h3>
+<p>MCP tool details now disclose known/unknown outcome and duration denominators for the loaded page. Shared progress observations remain conservative and never create attention/waste claims. Usage details separate cache breakdowns, cumulative usage, unavailable context/retry allocation and optional exact-model configured estimates. Every formatting option participates in the bounded detached key; live policy still runs. A modal’s live Feed, original owner and receiver fence stale details through denial/restoration. The 39-test integrated gate passed in 61.255 seconds; independent final review found no remaining blocker in the reviewed scope. See the <a href="../validation/evidence-explanations.md">implementation record</a> and <a href="../validation/task-usage-render-guard.md">formatting guard</a>. Merged as <code>093bf878</code>; earlier corrected head E head <code>928cae0</code> passed all 12 checks. Whole-monitor resource effects remain unmeasured; the rebased combined-main matrix is pending.</p>
+<h3 id="stage-f-shared-persistent-attention-merged-pr82-combined-ci-pending">Stage F shared persistent attention — merged PR82, combined CI pending</h3>
+<p>The headless watcher/status/native commands share durable baseline, acknowledgement and delivery with the cockpit. A receiver-owned metadata-only native inventory preserves pending/resolved request state beyond recent Activity and across restart; exact owner/receiver/order checks, source invalidation, capacity and unknown clock/coverage gates remain conservative. Agents/Review/Workflow/headless consumers share one bounded overlay, with Pause frozen and capture revocation live. The integrated 100-test gate passed in 78.050 seconds; the latest 27-test inventory/native/watcher delta passed in 6.027 seconds. Independent peer review verified the lifecycle conflict fix. See <a href="../validation/persistent-attention.md">persistent attention</a> and <a href="../validation/shared-native-projection.md">shared projection</a>. Optional runtime capabilities are version-labelled; unsupported request identities remain unsupported, and live Claude/Pi/participant evidence is absent. Merged as <code>e434fcf5</code>; earlier corrected head F head <code>1c0b795</code> passed all 12 checks. The rebased combined-main matrix and resource budgets remain open.</p>
+<h3 id="parallel-implementation-ownership-and-remaining-acceptance-gates">Parallel implementation ownership and remaining acceptance gates</h3>
+<p>Root coordinates final integration, exact CI state and frozen acceptance windows. A/C/D/E/F/G implementation increments are merged as recorded above. The adapter agent owns the pending current producer-version manifest/positive qualification; the Sessions covered-query delta is delivered for root integration. Documentation records evidence and limits without overwriting the adapter-owned manifest or user notes. Shared-file changes retain independent review and explicit integration gates.</p>
+<p>Stage B remains open. Historical PR72/73 pairs measured cold 112.96 s and idle 14.90%; the later normalized PR79 Sessions pair measured under-write p95 286.34 ms, while PR83 MCP tails were mixed and remained above 100 ms. These different corpora/workloads must not be pooled into a final combined baseline. Final frozen cold/idle/API targets, memory plateau and index/WAL growth still require matched validation. No heavy tests or browser/Git activity run during registered quiet intervals.</p>
+<p>Before full completion, every F1–F27 and R1–R11 entry must identify code, regression evidence, merged commit and limits, separating implementation, validation, merge and external outcomes. Validate the combined tree's integration/security/ownership/capture paths, packaging and real terminal behavior. C3 source-backed frames, D approved drafts/privacy, E denominators/unknowns, F shared durable delivery and G indexed CLI/UI source parity have tested implementation evidence. Their final combined acceptance must preserve those contracts; functional preflights do not substitute for long-run resources or native-version qualification. F26 also requires producer/schema-version-labelled golden provenance. A pilot kit is not participant evidence.</p>
 <p>Participant recruitment/consent, live Claude/Pi data not available in this environment, measured human reconstruction/resumption time and voluntary repeat use cannot be manufactured by automated tests. Prepare the materials and report these dependencies with denominators; do not mark F10/adoption evidence complete without participants. Native integration capabilities unsupported by a runtime must be labelled rather than guessed.</p>
 <p>After each merged stage, update this reconciliation with concrete files, tests, measurements and PR links. Technical delivery and observed user outcomes are separate statuses. The final full-note record must account for every F1–F27 and R1–R11, preserve the stated limits, and identify any external dependency still open.</p>
-<h3>Replay follow-up — bounded integration, combined resource gate open</h3>
-<p>The error-reference projection now qualifies each original source once and reuses compact metadata. Fourteen frozen serialized fixture groups remain byte-identical; full raw qualification fell from 237 to 134 calls. A narrow partial metadata index serves the existing exact linked-log query without changing hydration, byte limits, ordering or semantic checks. The 55-test integration and final 18-test replay/reminder gates passed. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/error-reference-projection.html">Qualification report</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/activity-linked-index.html">index footprint/write diagnostics</a> separate diagnostic work from accepted resource measurements. PR83's MCP grouping is merged at <code>728e0ba</code>, all 12 checks green; its mixed tail measurements leave the 100 ms target open. Whole-monitor cold/idle/RSS/WAL, combined index costs and final acceptance remain open.</p>
-<h3>Stage E R6–R8 closure pass — integrated, new-head CI pending</h3>
-<p>The MCP view names window-qualified configured/unobserved servers and cycles exact flagged calls by keyboard. Usage distinguishes whole turn, member steps and captured session lifetime; day/context/retry allocation stays explicitly unavailable without safely attributed source evidence. Opt-in observations expose source-backed later matching success and bounded reported model contributions, with no waste/repair/context claims. Existing heuristic caches receive a resumable versioned repair. The 55-test integrated gate passed in 75.184 seconds after rebasing onto PR83; original positive fixtures now include required receiver, single-owner and typed-input proof, with negative safeguards retained. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/evidence-explanations.html">implementation and limits</a>. Independent final review and new-head full CI are separate delivery gates.</p>
-<h3>Stage F delivery correction — integrated, new-head CI pending</h3>
-<p>Full CI exposed a real headless Review minimal-context crash and doubled Activity traversal. The correction retains exact once-per-refresh visits, gathers bounded native metadata in the existing pass, preserves receiver identity in detached preparation, and uses the shared inventory validator with final capture/namespace fences. Review's proven execution anchor now gives the same pending state as Agents/headless even when usage is unavailable, without adding bookkeeping to content evidence. The rebased 57-case Review/native/investigation/watcher gate passed in 15.042 seconds; the original three CI failures and new actual HTTP/80×24 parity tests pass. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/native-review-projection-fix.html">correction and limits</a>. Combined CI/resource/native-version and external evidence gates remain distinct.</p>
-<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
+<h3 id="replay-follow-up-bounded-integration-combined-resource-gate-open">Replay follow-up — bounded integration, combined resource gate open</h3>
+<p>The error-reference projection now qualifies each original source once and reuses compact metadata. Fourteen frozen serialized fixture groups remain byte-identical; full raw qualification fell from 237 to 134 calls. A narrow partial metadata index serves the existing exact linked-log query without changing hydration, byte limits, ordering or semantic checks. The 55-test integration and final 18-test replay/reminder gates passed. <a href="../validation/error-reference-projection.html">Qualification report</a> and <a href="../validation/activity-linked-index.html">index footprint/write diagnostics</a> separate diagnostic work from accepted resource measurements. PR83's MCP grouping is merged at <code>728e0ba</code>, all 12 checks green; its mixed tail measurements leave the 100 ms target open. Whole-monitor cold/idle/RSS/WAL, combined index costs and final acceptance remain open.</p>
+<h3 id="stage-e-r6-r8-closure-pass-merged-pr81-combined-acceptance-pending">Stage E R6–R8 closure pass — merged PR81; combined acceptance pending</h3>
+<p>The MCP view names window-qualified configured/unobserved servers and cycles exact flagged calls by keyboard. Usage distinguishes whole turn, member steps and captured session lifetime; day/context/retry allocation stays explicitly unavailable without safely attributed source evidence. Opt-in observations expose source-backed later matching success and bounded reported model contributions, with no waste/repair/context claims. Existing heuristic caches receive a resumable versioned repair. The 55-test integrated gate passed in 75.184 seconds after rebasing onto PR83; original positive fixtures now include required receiver, single-owner and typed-input proof, with negative safeguards retained. See <a href="../validation/evidence-explanations.html">implementation and limits</a>. Independent final review completed and the earlier corrected head passed all 12 checks. Merge is recorded above; rebased combined-main CI remains a separate gate.</p>
+<h3 id="stage-f-delivery-correction-merged-pr82-combined-acceptance-pending">Stage F delivery correction — merged PR82; combined acceptance pending</h3>
+<p>Full CI exposed a real headless Review minimal-context crash and doubled Activity traversal. The correction retains exact once-per-refresh visits, gathers bounded native metadata in the existing pass, preserves receiver identity in detached preparation, and uses the shared inventory validator with final capture/namespace fences. Review's proven execution anchor now gives the same pending state as Agents/headless even when usage is unavailable, without adding bookkeeping to content evidence. The rebased 57-case Review/native/investigation/watcher gate passed in 15.042 seconds; the original three CI failures and new actual HTTP/80×24 parity tests pass. See <a href="../validation/native-review-projection-fix.html">correction and limits</a>. Combined CI/resource/native-version and external evidence gates remain distinct.</p>
+<h3 id="final-acceptance-harness-merged-pr85-resource-runs-remain-open">Final acceptance harness — merged PR85; resource runs remain open</h3>
+<p>One committed generated-only harness selects the application import root explicitly, clones a frozen common seed, observes already published source state without extra preparation, and checks fresh same-receiver data, source/index/native completeness and clean drains. PID plus start identity prevents restart artefacts; whole-monitor RSS is sampled contemporaneously. Real tmux paths isolate provider/config/home discovery and use the production terminal wrapper. Owned-artifact cleanup preserves seeds/raw results and refuses unregistered paths or unsafe sidecars. See <a href="../validation/final-monitor-protocol.html">protocol and limitations</a>.</p>
+<p>Successful native concurrency, baseline keyboard smoke and non-publishable tiny idle preflights are now recorded in the <a href="../validation/review-notes-acceptance.html">acceptance audit</a>. They do not close the final one-hour soak, modal memory, storage growth, candidate signal matrix, CPU/readiness/API budgets or external outcomes. Pending current OpenCode 2.2.5/cache/reasoning qualification and Sessions covered lookup must be integrated before the final candidate freeze. Update both ledgers after those merges and actual combined CI/results; do not mark the entire plan complete from merged code alone.</p>
+<footer>Evidence snapshot 2026-11-14T11:51:14.142427+00:00. Document validation does not establish product or resource acceptance.</footer></main></body></html>
