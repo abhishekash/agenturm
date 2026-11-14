@@ -1,0 +1,252 @@
+{
+  "scope": "Startup integration correctness and failure preservation; not resource acceptance",
+  "base": "7c80dc3946f7df7f88f8b3c541f0fc08a4bfa9fb",
+  "pre_report_head": "1690857ad41dde6a5241a30c21604978888f47bc",
+  "readme_preserved": true,
+  "integrated_changes": [
+    {
+      "delivered": "3fb82549d08730c753bd76553b19b41e48545bf8",
+      "integrated": "86fed26",
+      "scope": "Reviewed core writer admission"
+    },
+    {
+      "delivered": "883958949c024784c5b01c4afa35bc65dc2359a8",
+      "integrated": "7e9f202",
+      "scope": "Reviewed readiness harness"
+    },
+    {
+      "delivered": "adb13508d6ed1a84a8b485852c2807a0aea84d6a",
+      "integrated": "66a612b",
+      "scope": "Independent authenticated startup tests"
+    },
+    {
+      "delivered": "2354ecf2f7f0d1dc2bbc0d2c312e4b3f7dcecced",
+      "integrated": "a9665e1",
+      "scope": "Actual MCP readiness fixture"
+    },
+    {
+      "delivered": "eace36b6f824904e07fc80896749690e27142d07",
+      "integrated": "b5590dc",
+      "scope": "Preserved full-corpus failed smoke"
+    },
+    {
+      "delivered": "9e0b3ac8bf6c071754d688861edb15b31f3cf856",
+      "integrated": "1690857",
+      "scope": "Next-run safe HTTP failure diagnostics"
+    }
+  ],
+  "fixture_connection_fix": {
+    "commit": "b46e8a9",
+    "file": "tests/test_opencode_turn_proof.py",
+    "old_line": 21,
+    "change": "closing(connect) plus existing transaction context; no assertions removed"
+  },
+  "core_sha256": "a91eb782970314004302e40177469f23875867f4f2388dceee8061e80b399d20",
+  "final_source_hashes": {
+    "observatory/core.py": "a91eb782970314004302e40177469f23875867f4f2388dceee8061e80b399d20",
+    "scripts/soak_monitor.py": "77df2895bddf8961dfaafdc15c4067c7330afd8435918eb6397afb80fd2d465e",
+    "tests/test_startup_receiver_health.py": "4dea5bde07eb774cc59bc8e611083ebff77bab4a291f5c4cdddef43a41de0f86",
+    "tests/test_opencode_turn_proof.py": "8c68252b92e41fbd99c96be4e9ba2ca8f90cefd12e0abc6af4edf54b369a989b",
+    "tests/test_local_monitoring.py": "f2547f4ab9181532a6bd27c44306dd77bf1af138bfa02f2f2ec41f50efced180"
+  },
+  "combined_gate": {
+    "modules": [
+      "tests.test_startup_writer_admission",
+      "tests.test_startup_receiver_health",
+      "tests.test_soak_readiness_errors",
+      "tests.test_soak_monitor",
+      "tests.test_derived_readiness_snapshot",
+      "tests.test_activity_worker_scope",
+      "tests.test_storage_derived"
+    ],
+    "python": "3.13.5",
+    "exit_code": 0,
+    "wall_seconds": 39.09013293799944,
+    "tests": 60,
+    "unittest_seconds": 38.757,
+    "resource_or_unraisable_warning": false,
+    "source_hashes": {
+      "observatory/core.py": "a91eb782970314004302e40177469f23875867f4f2388dceee8061e80b399d20",
+      "scripts/soak_monitor.py": "b5166be4b8d61223432643819e10d563a705eef54a1d11b9e884225210ec1a9e",
+      "tests/test_startup_receiver_health.py": "4dea5bde07eb774cc59bc8e611083ebff77bab4a291f5c4cdddef43a41de0f86",
+      "tests/test_opencode_turn_proof.py": "8c68252b92e41fbd99c96be4e9ba2ca8f90cefd12e0abc6af4edf54b369a989b"
+    },
+    "qualification": "Final normal-module focused correctness gate; no diagnostic instrumentation or performance claim"
+  },
+  "targeted_http_gate": {
+    "modules": [
+      "tests.test_soak_http_diagnostics",
+      "tests.test_soak_readiness_errors",
+      "tests.test_soak_monitor"
+    ],
+    "python": "3.13.5",
+    "exit_code": 0,
+    "tests": 22,
+    "unittest_seconds": 0.874,
+    "wall_seconds": 1.1450411289697513,
+    "resource_or_unraisable_warning": false,
+    "qualification": "Targeted harness gate after metadata-only HTTP failure diagnostics; overlaps combined60 gate"
+  },
+  "affected_fixture_gate": {
+    "python": "3.13.5",
+    "tests": 9,
+    "seconds": 5.173,
+    "resource_warnings_observed": false,
+    "scope": "Nested snapshot case plus complete native-turn proof module"
+  },
+  "coordinator_reported_gates": [
+    {
+      "tests": 28,
+      "seconds": 34.654,
+      "scope": "Monitoring models and native bootstrap; strict ResourceWarning"
+    },
+    {
+      "tests": 7,
+      "seconds": 2.022,
+      "python": "3.13.5",
+      "scope": "Monitoring models; strict ResourceWarning; overlaps28"
+    }
+  ],
+  "validation_qualification": "Gates overlap and are not summed into a unique test count. Combined60 predates HTTP-diagnostic-only helper; subsequent targeted22 covers that helper plus existing readiness/soak. Both have explicit clean stderr checks. No benchmark launched by this integration track.",
+  "first_combined_attempt": {
+    "assertions": "60 passed",
+    "seconds": 39.417,
+    "warning_free": false,
+    "warning": "Unraisable ResourceWarning: unclosed SQLite connection",
+    "source": "Allocation later proved at native-turn fixture prepare before deterministic closure"
+  },
+  "allocation_diagnostic": {
+    "actual_source": "tests/test_opencode_turn_proof.py:21 TurnProofTests.prepare",
+    "consumer": "DerivedStoreReadinessTests.test_nested_native_turn_uses_the_same_session_snapshot",
+    "method": "sqlite3.connect/handle audit records stack strings only, plus post-test garbage collection",
+    "warnings_found": 1,
+    "limitations": [
+      "Earlier full-tracemalloc2-test diagnostic hit the existing HTTP timeout and did not establish allocation.",
+      "The60-test audit run from stdin hit a multiprocessing spawn path limitation in one case; this is diagnostic-runner failure, not a product failure.",
+      "The final ordinary -m unittest gate has no instrumentation and includes the cross-process case."
+    ]
+  },
+  "evidence": [
+    {
+      "local_path": "/tmp/agenturm-startup-integration-gate.json",
+      "sha256": "ea0d7858715e416ad5398af85768ea917b086f7ba8c9cd3bf07436505384434d"
+    },
+    {
+      "local_path": "/tmp/agenturm-startup-integration-warning-proof.json",
+      "sha256": "09f0f06d6e3003d72023f7f3004123ebe1ea9eab15803e39121b1e3115799dd4"
+    },
+    {
+      "local_path": "/tmp/agenturm-startup-integration-allocation-audit.json",
+      "sha256": "bfb4137b4199fcf698ef7d12b8e8091c32d9f4090879a5130e7efc9694698db1"
+    },
+    {
+      "local_path": "/tmp/agenturm-startup-integration-gate-final.json",
+      "sha256": "56bf73ee0c00e6fc6f525c474911951e45ce2e41377d3ee6358af07fc62fd9c3"
+    },
+    {
+      "local_path": "/tmp/agenturm-startup-integration-http-gate.json",
+      "sha256": "2dd71096877332978b582a70a64e83d3125475c4a45e20006821a502aad144ec"
+    }
+  ],
+  "full_corpus_functional_smoke": {
+    "classification": "FAILED full-corpus functional startup/short active smoke; not one-hour or performance acceptance",
+    "app_commit": "3fb82549d08730c753bd76553b19b41e48545bf8",
+    "harness_commit": "883958949c024784c5b01c4afa35bc65dc2359a8",
+    "initial_readiness_observed_seconds": 221.50466720294207,
+    "cold_start": {
+      "ready": true,
+      "index_error": false,
+      "processed": 52002,
+      "runs_prepared": 5752,
+      "native_initial_poll_complete": true
+    },
+    "active_elapsed_seconds": 7.304737390019,
+    "failure": {
+      "phase_index": 2,
+      "cycle": 0,
+      "path": "/api/mcp?limit=20",
+      "status": 503,
+      "exception": "urllib.error.HTTPError: HTTP Error503: Service Unavailable",
+      "failed_request_body_retained": false,
+      "previous_sample_phase": 1
+    },
+    "errors": [
+      "HTTPError: HTTP Error 503: Service Unavailable",
+      "No keyboard review acknowledgements were accepted",
+      "No complete three-worker cycle reconstructed",
+      "Required receiver/cockpit restart did not occur",
+      "Derived work was not confirmed drained at both receiver shutdowns",
+      "Two receiver exit statuses were not confirmed",
+      "Two successful warning-free cockpit shutdowns were not confirmed"
+    ],
+    "sample_count": 3,
+    "completed_turns": 0,
+    "verified_turns": 0,
+    "receiver_shutdowns": [
+      {
+        "pending_before": 2,
+        "pending_after": 0
+      }
+    ],
+    "exit_statuses": [
+      {
+        "role": "receiver",
+        "status": 0
+      }
+    ],
+    "graceful_cockpit_exit_records": 0,
+    "driver_exit_status": 1
+  },
+  "failed_smoke_evidence": {
+    "path": "full-corpus-startup-3fb-results.json.gz",
+    "uncompressed_sha256": "093927512e524be8f791f01b7849042ba2880deba48a13d220c16f02b71d390b",
+    "byte_identical_original": true,
+    "sensitive_payload_fields_absent": true,
+    "final_health": null
+  },
+  "post_snapshot_archive_cleanup": {
+    "original_clone_bytes": 525127264,
+    "verified_archive_bytes": 37779168,
+    "coordinator_verified_byte_identity": true,
+    "all_four_registered_pids_absent": true,
+    "scope": "Reversible removal of registered stopped failed working clone only; logs/results/config/seed/source unchanged. Earlier raw result/report records remain frozen.",
+    "evidence": [
+      {
+        "local_path": "/tmp/agenturm-full-startup-3fb-smoke/stopped-failed-clone-archive.json",
+        "sha256": "d1811b868d305661a278773bdc0f14091f64fde18bde1c3e9487a365150cdd2b"
+      },
+      {
+        "local_path": "/tmp/agenturm-full-startup-3fb-smoke/stopped-failed-clone-cleanup.json",
+        "sha256": "373f722385ef5a7cfbe76c05acf76ec54c02a007e64e8fd522b63976d403d7e9"
+      }
+    ]
+  },
+  "original473_unchanged": true,
+  "limitations": [
+    "Cold startup reached readiness;221.505s is descriptive and does not meet/close a cold SLO.",
+    "Active phase failed on MCP503; original response body was not retained, so exact503 cause remains unknown.",
+    "No completed cycle/restarts or graceful cockpit-exit proof from failed smoke; all7errors retained.",
+    "HTTP diagnostics are for a future run and cannot reconstruct the old body.",
+    "All strict HTTP/cadence, cold/idle/CPU/RSS/WAL and sustained one-hour acceptance targets remain open.",
+    "No push/merge or remote all-green CI is claimed."
+  ],
+  "html_qa": {
+    "cases": 6,
+    "documents": [
+      "startup-integration.html",
+      "full-corpus-startup-3fb.html",
+      "changelog.html"
+    ],
+    "viewports": [
+      "1280/light",
+      "390/dark"
+    ],
+    "document_and_body_overflow": false,
+    "page_errors": [],
+    "external_requests": [],
+    "broken_images": 0,
+    "mobile_visual_inspection": "Integration and failed full-corpus report mobile frames inspected; readable. Initial integration command-block overflow was contained with embedded responsive CSS before final QA.",
+    "coordinator_independent_qa": "Root independently passed4 final integration/changelog viewport cases after the CSS correction."
+  },
+  "readme_sha256": "b749f46d9541109c07d159fed72bfa55331ae6064c37ec0b35c301bf2b944008"
+}
