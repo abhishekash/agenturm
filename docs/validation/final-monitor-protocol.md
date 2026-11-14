@@ -1,6 +1,6 @@
 # Final combined-build validation protocol
 
-Prepared 14 November 2026. **Harness preparation only: no soak, profiling, timed benchmark or new tmux session has been run for this protocol.** The coordinator approved the script-only boundary. Nine contract tests and tiny fixture-only smokes have passed; the final candidate must be frozen after the pending runtime PRs, including current native-schema qualification before controlled execution.
+Prepared 14 November 2026. **No final controlled resource run or one-hour acceptance has completed.** Short synthetic functional preflights and their retained failures are documented in [the final candidate registration report](final-candidate-registration.html). The coordinator approved the script-only boundary. Nine contract tests and tiny fixture-only smokes have passed; the final candidate must be frozen after the pending runtime PRs, including current native-schema qualification before controlled execution.
 
 ## Scope and frozen inputs
 
@@ -51,6 +51,8 @@ Record all four runs, their ordering, per-role and whole-monitor results, readin
 ### 3. Active stability and storage growth
 
 Run the one-hour generated native soak on C using the reviewed manifest, with parent/child plus OpenCode outcomes, stale-session negative control and planned same-store receiver/cockpit restarts. Existing UI/API probes make this an active workload, not idle. If fixed absolute scheduling has not been implemented, its CPU/RSS numbers remain descriptive and must include completed-cycle/event counts.
+
+Record active index availability separately from corruption: only the exact error-free incoming-change state, after complete initial inventory, with durable-marker and stable receiver/file proof plus successful subsequent data reads, may be recorded as incoming unavailability. Retain every such sample; unknown/migration/error/missing-proof states fail. Exact per-cycle outcomes, final fresh ready recovery and all shutdown drains remain mandatory. This is not an HTTP availability pass; idle and external HTTP gates remain strict. See [the registered detail](final-candidate-registration.html).
 
 Record database, WAL and shared-memory sizes before startup, after readiness, at fixed active-phase boundaries, before shutdown and after all connections close. Add public index status/queue coverage, source/derived row counts, SQLite page/freelist counts and, where supported, `dbstat` index bytes **outside untouched idle and latency windows**. Report source growth, index amplification, peak database-plus-WAL, post-drain size and WAL plateau. Do not force checkpoints or VACUUM during timing to conceal growth. Growing databases are expected when the workload adds records; distinguish growth per accepted event from unbounded growth with fixed input. Run integrity checks only after the timed phase.
 
