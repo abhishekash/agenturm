@@ -178,6 +178,22 @@ class CurrentOpenCodeBoundaryTests(unittest.TestCase):
         self.assertNotEqual(self.reader.sessions[0]['agent_id'], old_agent)
         self.assertNotEqual(self.store.review_turn(self.trace())['turn_id'], self.store.review_turn(old_trace)['turn_id'])
 
+    def test_legacy_inline_layout_retains_legacy_step_and_parent_identities(self):
+        self.edit('DROP TABLE session_part')
+        with sqlite3.connect(self.path) as db:
+            data=json.loads(db.execute("SELECT data FROM session_message WHERE id='msg_step_one'").fetchone()[0])
+            data['parentID']='msg_user_one'
+            data['content']=[dict(type='text',text='Legacy inline assistant')]
+            db.execute("UPDATE session_message SET data=? WHERE id='msg_step_one'",(json.dumps(data),))
+        self.poll()
+        trace=identity('opencode-trace','ses_schema_fixture','msg_step_one')
+        turn=self.store.review_turn(trace)
+        self.assertEqual(turn['turn_id'],identity('opencode-turn',self.reader.source_id,'ses_schema_fixture','msg_user_one'))
+        self.assertIn('Legacy inline assistant',{row['subject']for row in self.store.activity_page(trace_id=trace)['activity']})
+        with self.store._connect() as db:
+            attrs=json.loads(db.execute("SELECT attributes FROM spans WHERE trace_id=? AND name='agent.run'",(trace,)).fetchone()[0])
+        self.assertNotIn(PREFIX+'schema',attrs)
+
     def test_equal_timestamp_equal_length_split_text_update_is_observed(self):
         self.poll()
         with sqlite3.connect(self.path) as db:
