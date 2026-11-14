@@ -1,6 +1,5 @@
 """Absence of execution records is a snapshot fact, never association evidence."""
 from contextlib import contextmanager
-import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import MethodType
