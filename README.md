@@ -57,7 +57,7 @@ Follow a refresh-token fix: find a worker that needs input, read the requests, i
 
 ## Get your first useful view
 
-Requires **Python 3.11+** and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Requires **Python 3.11+**. Use [uv](https://docs.astral.sh/uv/getting-started/installation/) or pip to install.
 
 Keep your coding agents open. In another terminal, run:
 
@@ -79,6 +79,15 @@ For a persistent command:
 uv tool install agenturm
 agenturm
 ```
+
+Or install with pip in your Python environment:
+
+```sh
+pip install agenturm
+agenturm
+```
+
+To upgrade a pip installation, run `pip install --upgrade agenturm`.
 
 To upgrade, run `uv tool upgrade agenturm`, then restart Agenturm and any separately running receiver. [Other installation methods](docs/usage.md#install-and-launch-the-terminal-cockpit).
 
