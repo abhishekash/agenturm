@@ -11,18 +11,20 @@ import os
 import platform
 from pathlib import Path
 import secrets
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import time
+from tempfile import TemporaryDirectory
 from urllib.parse import quote
 
 HARNESS_ROOT=Path(__file__).resolve().parents[1]
 GIB=1024**3
 MARKER='agenturm-validation-owned-v1'
 HARNESSES=('validation_support.py','soak_monitor.py','benchmark_monitor_idle.py',
-    'verify_keyboard_tmux.py','validate_combined_monitor.py','benchmark_history.py','benchmark_app.py','soak_workflows.py','benchmark_resources.py')
+    'benchmark_http_tails.py','verify_keyboard_tmux.py','validate_combined_monitor.py','benchmark_history.py','benchmark_app.py','soak_workflows.py','benchmark_resources.py')
 
 
 def file_hash(path):
@@ -161,6 +163,102 @@ def cleanup_clone(base,name,*,children_stopped=False):
     return removed
 
 
+def fresh_schema_manifest(base,store_factory):
+    """Inspect an empty, private, normally initialized same-version Store."""
+    base=Path(base).resolve()
+    if json.loads((base/'ownership.json').read_text()).get('format')!=MARKER:
+        raise ValueError('Fresh schema needs an owned validation directory')
+    with TemporaryDirectory(prefix='empty-schema-',dir=base) as directory:
+        path=Path(directory)/'schema.db';store=store_factory(path,workflow_patterns=False)
+        try:
+            deadline=time.monotonic()+30
+            while store.index_status().get('ready') is not True:
+                if store.last_derived_error or time.monotonic()>deadline:raise RuntimeError('Empty production schema did not become ready')
+                time.sleep(.01)
+            with closing(readonly(path)) as db:
+                result=dict(named_indexes=dict(db.execute("SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL")),
+                    schema_meta_sql=db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='schema_meta'").fetchone()[0])
+        finally:
+            workers=[getattr(store,name,None) for name in ('_migration_thread','_derived_thread')]
+            store.close()
+            if any(worker and worker.is_alive() for worker in workers):raise RuntimeError('Empty schema worker did not stop')
+    return result
+
+
+def prepare_raw_clone(base,name,*,schema_meta_sql):
+    """Remove inherited derived schema ONLY from a registered stopped clone.
+
+    The three raw tables and their constraints/rows remain untouched. Real
+    nonempty source/configuration inputs refuse preparation rather than being
+    silently discarded. Dirty queues are derived and are rebuilt normally.
+    """
+    started=time.monotonic();base=Path(base).absolute();target=base/name
+    marker=json.loads((base/'ownership.json').read_text())
+    if (base.is_symlink() or Path(name).name!=name or target.is_symlink() or
+        marker.get('format')!=MARKER or marker.get('clones',{}).get(name,{}).get('role')!='working_clone'):
+        raise ValueError('Raw preparation needs a registered owned clone')
+    if marker['clones'][name].get('raw_preparation'):raise ValueError('Clone was already prepared')
+    seed_path=Path(marker['clones'][name]['seed']['path'])
+    if any(Path(str(target)+suffix).is_symlink()for suffix in ('','-wal','-shm'))or os.path.samefile(target,seed_path):
+        raise ValueError('Clone/seed alias or linked sidecar is unsafe')
+    if not isinstance(schema_meta_sql,str)or not re.match(r'^CREATE TABLE(?: IF NOT EXISTS)?\s+schema_meta\s*\(',schema_meta_sql,re.I):
+        raise ValueError('Expected fresh production schema_meta table DDL')
+    seed_before=raw_manifest(marker['clones'][name]['seed']['path']);before=raw_manifest(target)
+    if seed_before!=marker['clones'][name]['seed']or before!=marker['clones'][name]['clone']:
+        raise ValueError('Seed or registered clone changed before preparation')
+    raw={'spans','logs','trace_activity'};removed=[]
+    with closing(sqlite3.connect(target)) as db:
+        db.execute('PRAGMA foreign_keys=OFF');db.execute('BEGIN IMMEDIATE')
+        schema=list(db.execute("SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"))
+        tables={row[1]for row in schema if row[0]=='table'}
+        raw_ddl={row[1]:row[2]for row in schema if row[0]=='table'and row[1]in raw}
+        # These are source evidence or durable policy/configuration, rather
+        # than derived projection caches. Unknown future input additions must
+        # be reviewed before extending this generated-only protocol.
+        source_tables={'progress','metric_points','outcomes','agent_connections','agent_nodes','agent_identity','native_source_policy_v1'}
+        for table in source_tables&tables:
+            if db.execute('SELECT 1 FROM "'+table+'" LIMIT 1').fetchone():raise ValueError('Nonempty canonical input table: '+table)
+        derived={'endpoints','endpoint_services','endpoint_traces','trace_summaries','finding_cache','finding_dirty_v1',
+            'derived_span_stats_v1','activity_index_v1','activity_dirty_v1','live_run_stats_v1','live_log_usage_v1',
+            'live_summaries_v1','investigation_fts_v1','investigation_fts_v1_data','investigation_fts_v1_idx',
+            'investigation_fts_v1_docsize','investigation_fts_v1_config','investigation_terms_v1',
+            'investigation_dirty_v1','native_lifecycle_index_v1','native_lifecycle_dirty_v1','schema_meta'}
+        for table in tables-raw-source_tables-derived:
+            if db.execute('SELECT 1 FROM "'+table.replace('"','""')+'" LIMIT 1').fetchone():
+                raise ValueError('Unknown nonempty input table: '+table)
+        if 'schema_meta'in tables:
+            policies=db.execute("SELECT key FROM schema_meta WHERE key LIKE 'native_source_policy%' LIMIT 1").fetchone()
+            if policies:raise ValueError('Durable native source policy cannot be discarded')
+        for kind in ('trigger','view','index','table'):
+            for actual,name_,sql in schema:
+                if actual!=kind or (kind=='table' and name_ in raw)or(kind=='index'and sql is None):continue
+                if kind=='index' and name_.startswith('sqlite_'):continue
+                db.execute('DROP '+kind.upper()+' IF EXISTS "'+name_.replace('"','""')+'"')
+                removed.append(dict(type=kind,name=name_,sql=sql))
+        db.execute(schema_meta_sql)
+        db.execute("INSERT INTO schema_meta(key,value) VALUES('trace_activity_v1','1')")
+        db.commit();db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+    after=raw_manifest(target);seed_after=raw_manifest(seed_before['path'])
+    if before['raw_sha256']!=after['raw_sha256']or before['counts']!=after['counts']or seed_before!=seed_after:
+        raise RuntimeError('Raw facts or immutable seed changed during preparation')
+    result=dict(protocol='clean-raw-schema-v1',before=before,after=after,seed_before=seed_before,seed_after=seed_after,
+        removed_schema=removed,retained_tables=sorted(raw),retained_markers=['trace_activity_v1'],
+        raw_table_ddl=raw_ddl,
+        seconds=time.monotonic()-started)
+    marker['clones'][name]['raw_preparation']=result
+    (base/'ownership.json').write_text(json.dumps(marker,indent=2)+'\n')
+    return result
+
+
+def verify_named_indexes(path,manifest):
+    with closing(readonly(path)) as db:
+        actual=dict(db.execute("SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"))
+    expected=manifest['named_indexes']
+    result=dict(equal=actual==expected,expected=expected,actual=actual)
+    if not result['equal']:raise RuntimeError('Initialized clone indexes differ from fresh same-version production schema')
+    return result
+
+
 def storage_snapshot(path):
     path=Path(path);result=dict(files={suffix or 'db':Path(str(path)+suffix).stat().st_size
         if Path(str(path)+suffix).exists() else 0 for suffix in ('','-wal','-shm')})
@@ -199,6 +297,7 @@ def published_heartbeat(app,*,at=None):
         source_schema_errors=sum(int(row.get('schema_errors') or 0) for row in diagnostics),
         states=[dict(session=item.get('session_id'),state=item.get('state'),request=item.get('request_id'),parent=item.get('parent_agent_id')) for item in sources[:500]],
         published_sources_clipped=len(sources)>500,screen=type(screen).__name__ if screen else '',
+        visible_agent_rows=len(getattr(app,'table_data',{}).get('agent-table',{})),
         selected_source=getattr(app,'selected_source',None),
         selected_session=getattr(app,'source_map',{}).get(getattr(app,'selected_source',None),{}).get('session_id'),
         review_scope={key:getattr(scope,key,None) for key in ('receiver','producer','agent_id','session_id','run_id','turn_id')} if scope is not None else None,

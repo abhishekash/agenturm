@@ -25,7 +25,8 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from scripts.soak_monitor import Workload, process_sample, seed_history, source_revision
 from scripts.validation_support import (bind_application,clone_seed,create_owned_directory,
-    disk_gate,isolated_env,monitor_budgets,storage_snapshot,strict_heartbeat_errors)
+    disk_gate,isolated_env,monitor_budgets,storage_snapshot,strict_heartbeat_errors,
+    fresh_schema_manifest,prepare_raw_clone,verify_named_indexes)
 
 
 def main():
@@ -85,14 +86,24 @@ def idle_publishable(args,source,errors):
         not args.smoke and not args.allow_dirty and args.seconds>=300 and args.warmup>=60)
 
 
+def useful_agents_heartbeat(row,receiver_id):
+    """Published visible rows, not merely an internal source inventory."""
+    return bool(not strict_heartbeat_errors(row,receiver_id) and len(row.get('states',[]))>=4 and
+        type(row.get('visible_agent_rows'))is int and row['visible_agent_rows']>=1)
+
+
 def measure(args):
     bind_application(args.app_root)
     from observatory.terminal import Api
     reserve=args.minimum_free_mib*1024**2;disk=disk_gate(args.output,reserve_bytes=reserve)
     base=args.output.resolve();create_owned_directory(base)
     source=revision(args.app_root)
-    preparation_started=time.monotonic();workload=Workload(base);seed=None
-    if args.seed:seed=clone_seed(args.seed,base/'telemetry.db',reserve_bytes=reserve)
+    preparation_started=time.monotonic();workload=Workload(base);seed=None;raw_preparation=None;expected_schema=None;index_check=None
+    if args.seed:
+        from observatory.core import Store
+        seed=clone_seed(args.seed,base/'telemetry.db',reserve_bytes=reserve)
+        expected_schema=fresh_schema_manifest(base,Store)
+        raw_preparation=prepare_raw_clone(base,'telemetry.db',schema_meta_sql=expected_schema['schema_meta_sql'])
     elif args.history:seed_history(base/'telemetry.db')
     preparation_seconds=time.monotonic()-preparation_started
     before_storage=storage_snapshot(base/'telemetry.db')
@@ -129,6 +140,7 @@ def measure(args):
         else:raise RuntimeError('Receiver readiness deadline exceeded')
         ready_seconds=time.monotonic()-started
         receiver_id=health['receiver_id']
+        if expected_schema:index_check=verify_named_indexes(base/'telemetry.db',expected_schema)
         # Verify retained data before timing. Agents deliberately does not poll
         # the hidden MCP view; requiring its counter in idle heartbeats would
         # either reject a healthy cockpit or accidentally widen idle work.
@@ -144,10 +156,12 @@ def measure(args):
         while time.monotonic()<useful_deadline:
             events=[json.loads(line) for line in (base/'ui-events.jsonl').read_text().splitlines()] if (base/'ui-events.jsonl').exists() else []
             beats=[row for row in events if row.get('kind')=='heartbeat' and row.get('pid')==ui]
-            if beats and not strict_heartbeat_errors(beats[-1],receiver_id) and len(beats[-1].get('states',[]))>=4:break
+            if beats and useful_agents_heartbeat(beats[-1],receiver_id):break
             time.sleep(.2)
         else:raise RuntimeError('Useful nonempty Agents frame did not arrive')
         useful_seconds=time.monotonic()-started
+        first_useful_visible_rows=beats[-1]['visible_agent_rows']
+        (base/'first-useful-screen.txt').write_text(tmux('capture-pane','-p','-t','monitor'))
         warm_until=time.monotonic()+args.warmup
         while time.monotonic()<warm_until:time.sleep(.2)
         roles={'receiver':receiver.pid,'cockpit':ui,'driver':os.getpid()}
@@ -209,8 +223,10 @@ def measure(args):
     result=dict(source=source,publishable=idle_publishable(args,source,errors),
         smoke=args.smoke,disk_headroom=disk,seed=seed,storage_before=before_storage,storage_after=after_storage,
         fixture_preparation_seconds=preparation_seconds,
+        raw_schema_preparation=raw_preparation,production_indexes=index_check,
         terminal_size='120x36',history=args.history,profiling=args.profile,warmup_seconds=args.warmup,
         initial_readiness_seconds=ready_seconds,first_useful_agents_seconds=locals().get('useful_seconds'),requested_idle_seconds=args.seconds,processes=budgets,
+        first_useful_visible_agent_rows=locals().get('first_useful_visible_rows'),
         whole_monitor=whole,
         whole_monitor_idle_cpu_one_core_percent=sum(budgets.get(role,{}).get('cpu_one_core_percent',0) for role in ('receiver','cockpit')) if budgets else None,
         no_timed_api_or_keyboard_work=True,no_provider_calls=True,exit_status=exit_status,
