@@ -1,0 +1,109 @@
+{
+  "kind": "Short generated development diagnostic, not controlled resource/API/cold acceptance",
+  "publishable_performance": false,
+  "source_commit": "e795f064c861cd59b54d1180697e4b19c9959b34",
+  "candidate_source_sha256": "be1691af9fc4e9ebdee0fcee6b9aad1542258039bd14d97e423ba90bd98c9444",
+  "fixture": {
+    "traces": 96,
+    "spans": 576,
+    "logs": 672,
+    "trace_chunk": 16
+  },
+  "rows": [
+    {
+      "arm": "original",
+      "instrumented": false,
+      "elapsed_s": 2.3008240619674325,
+      "per_trace_ms": 23.966917312160756,
+      "output_sha256": "0808aa233a514d487bea012dff5935f5f5e5106fd19d70b2a3ad649f73540031"
+    },
+    {
+      "arm": "reuse",
+      "instrumented": false,
+      "elapsed_s": 1.9027190511114895,
+      "per_trace_ms": 19.819990115744684,
+      "output_sha256": "0808aa233a514d487bea012dff5935f5f5e5106fd19d70b2a3ad649f73540031"
+    },
+    {
+      "arm": "reuse",
+      "instrumented": false,
+      "elapsed_s": 1.8794928659917787,
+      "per_trace_ms": 19.57805068741436,
+      "output_sha256": "0808aa233a514d487bea012dff5935f5f5e5106fd19d70b2a3ad649f73540031"
+    },
+    {
+      "arm": "original",
+      "instrumented": false,
+      "elapsed_s": 2.3164068199694157,
+      "per_trace_ms": 24.129237708014745,
+      "output_sha256": "0808aa233a514d487bea012dff5935f5f5e5106fd19d70b2a3ad649f73540031"
+    },
+    {
+      "arm": "original",
+      "instrumented": true,
+      "elapsed_s": 2.418257607962005,
+      "per_trace_ms": 25.190183416270884,
+      "output_sha256": "0808aa233a514d487bea012dff5935f5f5e5106fd19d70b2a3ad649f73540031",
+      "counts": {
+        "sql_executions": 3846,
+        "udf_registrations": 192,
+        "usage_ddl": 288
+      },
+      "compile_authorizations": 72396,
+      "vm_steps_approx": 593400
+    },
+    {
+      "arm": "reuse",
+      "instrumented": true,
+      "elapsed_s": 2.05881329998374,
+      "per_trace_ms": 21.445971874830622,
+      "output_sha256": "0808aa233a514d487bea012dff5935f5f5e5106fd19d70b2a3ad649f73540031",
+      "counts": {
+        "sql_executions": 3948,
+        "udf_registrations": 12,
+        "usage_ddl": 6
+      },
+      "compile_authorizations": 5952,
+      "vm_steps_approx": 590400
+    }
+  ],
+  "arm_roles": {
+    "original": "Original e795 storage_derived.py in otherwise unchanged e795 application",
+    "reuse": "Connection-local scratch/UDF reuse in otherwise unchanged e795 application"
+  },
+  "qualification": "Development-load isolated derivation diagnostic only. These arms are not the registered whole-application B=5e0c397/C comparison; no HTTP, quiet window, cold readiness, CPU, RSS or storage-budget acceptance.",
+  "profile_before": {
+    "cold_stats": {
+      "elapsed_s": 5.1949488130630925,
+      "per_trace_ms": 54.11405013607388,
+      "counts": {
+        "other": 3558,
+        "udf_registrations": 192,
+        "ddl_usage": 288
+      },
+      "sql_seconds": {
+        "other": 0.7743314763065428,
+        "ddl_usage": 0.03606921050231904
+      },
+      "compile_authorizations": 72396,
+      "vm_steps_approx": 593400,
+      "output_sha256": "0808aa233a514d487bea012dff5935f5f5e5106fd19d70b2a3ad649f73540031"
+    },
+    "cached_stats": {
+      "elapsed_s": 4.617730553029105,
+      "per_trace_ms": 48.10135992738651,
+      "counts": {
+        "other": 3558,
+        "udf_registrations": 192,
+        "ddl_usage": 288
+      },
+      "sql_seconds": {
+        "other": 0.6244164040545002,
+        "ddl_usage": 0.032828208059072495
+      },
+      "compile_authorizations": 72396,
+      "vm_steps_approx": 574200,
+      "output_sha256": "0808aa233a514d487bea012dff5935f5f5e5106fd19d70b2a3ad649f73540031"
+    }
+  }
+}
