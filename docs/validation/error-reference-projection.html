@@ -1,0 +1,85 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Error reference projection</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / B diagnostic</strong><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/error-reference-projection.md">Markdown source ↗</a></nav><h1>Reuse qualified error-reference metadata</h1>
+<p>14 November 2026 · B readiness diagnostic and narrow implementation. This is a diagnostic CPU-work investigation, not an accepted cold-start, latency, RSS or whole-history performance comparison.</p>
+<h2>What the bounded profile measured</h2>
+<p>The generated retained fixture was opened read-only and backed up to private diagnostic databases. <code>Store</code> was never instantiated on the source. The source held 32,079 spans, 42,765 logs and 6,046 traces. Three diagnostic-only indexes were removed from the copy; its resulting 51 named indexes matched a fresh production Store at baseline <code>449f64f</code>.</p>
+<p>A full constructor profile was stopped because replaying all 74,844 source records under cProfile was too large for this bounded investigation. Its incomplete run is not used for timing claims. A separate private backup used a test-only constructor monkeypatch to defer full migration, then explicitly profiled 500 log and 500 span Activity jobs and 16 distinct traces selected from latest/oldest/largest-trace lists. The trace sample contained 78 spans and 115 logs. Its queues were deliberately sampled, so it cannot establish whole-history readiness or startup cost.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Diagnostic phase / function</th>
+<th style="text-align:right">Calls</th>
+<th style="text-align:right">cProfile cumulative seconds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Activity sample</td>
+<td style="text-align:right">1,000 source jobs</td>
+<td style="text-align:right">2.612 total</td>
+</tr>
+<tr>
+<td>SQLite <code>execute</code> during Activity replay</td>
+<td style="text-align:right">4,931</td>
+<td style="text-align:right">2.028</td>
+</tr>
+<tr>
+<td><code>_activity_for</code> during Activity replay</td>
+<td style="text-align:right">1,000</td>
+<td style="text-align:right">0.301</td>
+</tr>
+<tr>
+<td><code>normalize_operation_result</code> during Activity replay</td>
+<td style="text-align:right">1,338</td>
+<td style="text-align:right">0.0019</td>
+</tr>
+<tr>
+<td>Derived trace sample</td>
+<td style="text-align:right">16 traces</td>
+<td style="text-align:right">1.227 total</td>
+</tr>
+<tr>
+<td><code>operation_facts</code> during derived refresh</td>
+<td style="text-align:right">544</td>
+<td style="text-align:right">0.859</td>
+</tr>
+<tr>
+<td><code>safe_value</code> during derived refresh</td>
+<td style="text-align:right">1,712</td>
+<td style="text-align:right">0.758</td>
+</tr>
+<tr>
+<td><code>trace_error_references</code></td>
+<td style="text-align:right">16</td>
+<td style="text-align:right">0.544</td>
+</tr>
+<tr>
+<td>Its <code>correlation_facts</code> calls</td>
+<td style="text-align:right">332</td>
+<td style="text-align:right">0.534</td>
+</tr>
+<tr>
+<td>Credential scanning</td>
+<td style="text-align:right">195 top-level calls</td>
+<td style="text-align:right">0.070</td>
+</tr>
+<tr>
+<td><code>_review_owner</code></td>
+<td style="text-align:right">16</td>
+<td style="text-align:right">0.010</td>
+</tr>
+</tbody>
+</table></div>
+<p>Cumulative times overlap and must not be added. cProfile overhead, concurrent work, fixture selection and partial migration make these diagnostic observations only. The useful result is repeated semantic work: error-reference generation traversed the same 166 canonical events twice through full operation qualification. Double tool-result normalization was cheap in this particular Activity sample, and owner proof/credential scanning were not the first target.</p>
+<h2>The narrow change</h2>
+<p><code>trace_error_references()</code> now qualifies each original source once through the existing <code>error_reference()</code> / <code>operation_metadata()</code> protocol. Both existing scans then consume those compact, server-generated references. The pending-failure and successful-step algorithms, sorting, limits, fingerprints and strict-later rule remain unchanged. There is no global cache, retained fact/output cache or omitted redaction/owner check.</p>
+<p>The temporary references contain identity, terminal flags and sanitized fingerprints; command bodies, arguments, output text and raw attributes are absent. A temporary Boolean-derived status label preserves legacy references whose failure was reported only through <code>status</code>; that label does not enter returned references. The original Activity is not mutated.</p>
+<h2>Verification before any controlled comparison</h2>
+<p>Fourteen fixture groups freeze the exact serialized reference output of baseline <code>449f64f</code>: typed retries, equal timestamps, different operations, foreign producer/actor/session/turn, existing caller namespace binding, unknown/redacted/clipped inputs, printed JSON roles, compact inputs, unsupported versions/conflicts, missing/duplicate sources, informational nonzero search results and separate 20-failure/20-success limits. Outputs must remain byte-for-byte identical. The unknown compact status case caught and prevented an initial behavior regression.</p>
+<p>Across these fixtures, full raw-fact qualification calls fell from <strong>237 to 134</strong>: once for each raw source event, with existing compact references never replayed as raw evidence. This is a call-count result, not a CPU or cold-start improvement claim. Returned reference schemas retain no command, output, argument or body content.</p>
+<p>The focused gate passed <strong>46 tests in 16.860 seconds</strong>, including the frozen outputs/call-count proof and existing reminder, typed provenance and owned-Findings regressions. Runtime edits are confined to this one function; core, storage, Findings and credential scanners are unchanged. The coordinator peer-reviewed the narrow patch and frozen outputs before integration. The self-contained report passed Chrome checks at 1280 px/light and 390 px/dark with no page overflow or external assets; mobile rendering was visually inspected. Any controlled resource comparison remains a separate coordinated step.</p>
+<p>The source fixture, personal telemetry, preferences and review notes remain untouched. Diagnostic scripts and profiles are under <code>/tmp</code>; they are not release benchmarks.</p>
+<footer>Self-contained report · Generated fixture · Diagnostic timings only</footer></main></body></html>
