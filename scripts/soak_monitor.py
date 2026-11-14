@@ -14,7 +14,7 @@ inventory is real; project configuration discovery is restricted to the fixture.
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -35,7 +35,32 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from scripts.validation_support import (application_revision,bind_application,harness_manifest,
-    isolated_env,load_harness,published_heartbeat,nearest_rank,disk_gate,create_owned_directory,clone_seed,storage_snapshot)
+    isolated_env,load_harness,published_heartbeat,nearest_rank,disk_gate,create_owned_directory,clone_seed,storage_snapshot,
+    fresh_schema_manifest,prepare_raw_clone,verify_named_indexes,readonly)
+
+
+def index_proof(path,receiver,observed_receiver):
+    """Active-soak metadata only; never used in an untouched idle window."""
+    try:
+        before=path.stat()
+        with closing(readonly(path)) as db:
+            db.execute('PRAGMA busy_timeout=50');db.execute('BEGIN')
+            rows=dict(db.execute("SELECT key,value FROM schema_meta WHERE key IN ('receiver_id','trace_derived_v15')"))
+        after=path.stat()
+        return dict(receiver_matches=rows.get('receiver_id')==receiver,
+            health_matches=observed_receiver==receiver,
+            derived_marker_complete=rows.get('trace_derived_v15')=='1',
+            file_unchanged=(before.st_dev,before.st_ino)==(after.st_dev,after.st_ino))
+    except (OSError,sqlite3.Error):return {}
+
+
+def active_index_state(indexing,proof,initial_complete,data_reads_complete):
+    """Keep ordinary incoming work visible without calling it corruption."""
+    if (not all(proof.get(key)is True for key in ('receiver_matches','health_matches','derived_marker_complete','file_unchanged'))
+            or initial_complete is not True or data_reads_complete is not True or indexing.get('error')):return 'failure'
+    if indexing.get('ready')is True:return 'ready'
+    if indexing.get('ready')is False and indexing.get('stage')=='Indexing incoming source changes':return 'incoming'
+    return 'failure'
 
 
 def write_json(path, value):
@@ -159,7 +184,9 @@ def child(mode, directory, port):
             previous = [time.monotonic()]
             def heartbeat():
                 now = time.monotonic()
-                append(telemetry,{**published_heartbeat(app), 'interval':now-previous[0]})
+                append(telemetry,{**published_heartbeat(app), 'interval':now-previous[0],
+                    'focus':app.focused.id if app.focused else None,
+                    'terminal_size':[app.size.width,app.size.height]})
                 previous[0] = now
             app.set_interval(1, heartbeat)
         stack.enter_context(patch.object(WorkflowController, '_enqueue', enqueue))
@@ -292,9 +319,12 @@ def run(args):
     disk_gate(args.output,required_bytes=0,reserve_bytes=int(getattr(args,'minimum_free_mib',4096))*1024**2)
     base=args.output.resolve();create_owned_directory(base)
     workload=Workload(base)
-    preparation_started=time.monotonic();seed=None
+    preparation_started=time.monotonic();seed=None;raw_preparation=None;expected_schema=None;index_check=None
     if getattr(args,'seed',None):
         seed=clone_seed(args.seed,base/'telemetry.db',reserve_bytes=int(args.minimum_free_mib)*1024**2)
+        from observatory.core import Store
+        expected_schema=fresh_schema_manifest(base,Store)
+        raw_preparation=prepare_raw_clone(base,'telemetry.db',schema_meta_sql=expected_schema['schema_meta_sql'])
     elif args.history:
         seed_history(base/'telemetry.db')
     preparation_seconds=time.monotonic()-preparation_started
@@ -331,7 +361,30 @@ def run(args):
         # default shell or its startup files. This server reads no tmux config.
         tmux('new-session','-d','-s','monitor','-x',width,'-y',height,*command,'_child','ui',str(base),str(port))
         tmux('set-option','-t','monitor','remain-on-exit','on')
-        ui_pids.append(ui_pid())
+        pid=ui_pid();ui_pids.append(pid)
+        # A freshly started compact cockpit may not have installed input yet.
+        # Observe its published frames before sending workflow or quit keys.
+        deadline=time.monotonic()+30
+        while time.monotonic()<deadline:
+            telemetry=base/'ui-events.jsonl'
+            if telemetry.exists():
+                with telemetry.open('rb') as stream:
+                    stream.seek(0,os.SEEK_END);size=stream.tell();stream.seek(max(0,size-128*1024))
+                    lines=stream.read().splitlines()
+                if size>128*1024:lines=lines[1:]
+                beats=[]
+                for line in lines:
+                    try:row=json.loads(line)
+                    except (ValueError,UnicodeDecodeError):continue
+                    if (row.get('kind')=='heartbeat' and row.get('pid')==pid and
+                            row.get('screen')=='ObservatoryScreen' and row.get('visible_agent_rows',0)>0 and
+                            row.get('focus')=='agent-table' and row.get('terminal_size')==[int(width),int(height)] and
+                            not row.get('error')):beats.append(row)
+                if len(beats)>=3:return
+            dead=tmux('display-message','-p','-t','monitor','#{pane_dead}',capture=True).strip()
+            if dead=='1':raise RuntimeError('Cockpit exited before sustained published frames')
+            time.sleep(.15)
+        raise RuntimeError('Cockpit did not publish sustained input-ready frames')
     def ui_pid():
         return int(tmux('display-message','-p','-t','monitor','#{pane_pid}',capture=True).strip())
     def stop_ui():
@@ -380,8 +433,12 @@ def run(args):
             if token_file.exists():break
             if receiver.poll() is not None:raise RuntimeError('Receiver failed; see receiver.log')
             time.sleep(.1)
-        api=Api(endpoint,token_file.read_text().strip());wait_ready(api,timeout=600 if args.history else 25)
+        api=Api(endpoint,token_file.read_text().strip());initial_health=wait_ready(api,timeout=600 if args.history or getattr(args,'seed',None) else 25)
+        registered_receiver=initial_health['receiver_id']
         initial_readiness_seconds=time.monotonic()-started
+        if expected_schema:
+            index_check=verify_named_indexes(base/'telemetry.db',expected_schema)
+            if not index_check['equal']:raise RuntimeError('Initialized indexes differ from this source tree production schema')
         start_ui()
         # Timed workload begins after first receiver readiness.
         started=time.monotonic();next_sample=started;sample_interval=args.phase_seconds
@@ -438,7 +495,8 @@ def run(args):
                 next_phase=time.monotonic()+args.phase_seconds
             if now>=next_sample:
                 disk_gate(base,reserve_bytes=int(getattr(args,'minimum_free_mib',4096))*1024**2)
-                health=request(api,'/api/health');local=health.get('local_agents',{})
+                health=request(api,'/api/health');index_observed_elapsed=time.monotonic()-started
+                local=health.get('local_agents',{})
                 if pending_cycle is not None:
                     row=next((row for row in local.get('sessions',[]) if row.get('session_id')=='soak-parent'),{})
                     expected=identity(row.get('source_id'),f'parent-turn-{pending_cycle}','request',f'approval-{pending_cycle}')
@@ -447,13 +505,17 @@ def run(args):
                         pending_cycle=None
                 for path in ('/api/sessions','/api/activity?limit=50','/api/metrics','/api/mcp?limit=20'):
                     request(api,path)
-                record=dict(elapsed=elapsed,backlog_bytes=local.get('backlog_bytes'),
+                record=dict(elapsed=elapsed,index_observed_elapsed=index_observed_elapsed,
+                    cycle=last_phase//6,phase=last_phase%6,backlog_bytes=local.get('backlog_bytes'),
                     opencode_backlog=local.get('opencode_diagnostics',{}).get('backlog_records'),
                     read_errors=local.get('read_errors'),schema_errors=local.get('schema_errors'),
                     pending_storage_records=sum((item.get('diagnostics') or {}).get('pending_storage_records',0) for item in local.get('sessions',())),
                     hierarchy_write_errors=(local.get('hierarchy') or {}).get('write_errors'),
                     opencode_read_errors=local.get('opencode_read_errors'),opencode_schema_errors=(local.get('opencode_diagnostics') or {}).get('schema_errors'),
                     indexing_ready=(health.get('indexing') or {}).get('ready'),
+                    indexing=dict(health.get('indexing') or {}),
+                    index_proof=index_proof(base/'telemetry.db',registered_receiver,health.get('receiver_id')),
+                    initial_poll_complete=local.get('initial_poll_complete'),data_reads_complete=True,
                     database_bytes=(base/'telemetry.db').stat().st_size,
                     wal_bytes=(base/'telemetry.db-wal').stat().st_size if (base/'telemetry.db-wal').exists() else 0,
                     processes={})
@@ -481,6 +543,12 @@ def run(args):
                 next_phase=time.monotonic()+args.phase_seconds
                 reconnects.append(dict(kind='cockpit',at=elapsed))
             time.sleep(.15)
+        final_health=wait_ready(api)
+        final_index_proof=index_proof(base/'telemetry.db',registered_receiver,final_health.get('receiver_id'))
+        if active_index_state(
+                final_health.get('indexing')or {},final_index_proof,
+                final_health.get('local_agents',{}).get('initial_poll_complete'),True)!='ready':
+            raise RuntimeError('Final receiver/index recovery was not proved')
         screen('final');stop_ui()
         stop_receiver()
     except Exception as exc:
@@ -523,7 +591,9 @@ def run(args):
         if not any(any(item['session']=='soak-stale' for item in row['states']) for row in pid_beats):errors.append('Stale-session observation missing after cockpit start/restart')
     for role in ('receiver','cockpit','synthetic_daemon','driver'):
         if sum(role in row['processes'] for row in samples)<args.duration/args.phase_seconds*.5:errors.append(f'Insufficient {role} process samples')
-    if any(any(row.get(key) for key in ('read_errors','schema_errors','pending_storage_records','hierarchy_write_errors','opencode_read_errors','opencode_schema_errors')) or row.get('indexing_ready') is not True for row in samples):
+    index_states=[active_index_state(row.get('indexing')or {},row.get('index_proof')or {},
+        row.get('initial_poll_complete'),row.get('data_reads_complete'))for row in samples]
+    if any(any(row.get(key) for key in ('read_errors','schema_errors','pending_storage_records','hierarchy_write_errors','opencode_read_errors','opencode_schema_errors')) for row in samples) or 'failure'in index_states:
         errors.append('Source/storage/index readiness failures occurred')
     storage_after=storage_snapshot(base/'telemetry.db')
     if any(count for name,count in storage_after.get('rows',{}).items() if 'dirty' in name):errors.append('Derived/index queues remain after shutdown')
@@ -563,7 +633,16 @@ def run(args):
         host=dict(system=platform.system(),architecture=platform.machine(),python=platform.python_version(),logical_cpus=os.cpu_count()),
         configured_seconds=args.duration,phase_seconds=args.phase_seconds,elapsed_seconds=duration,eager_tls=args.eager_tls,profile_ui=args.profile_ui,
         active_workload_comparison='descriptive only: phases follow completion time, not fixed absolute cadence',
-        common_seed=seed,storage_after=storage_after,
+        common_seed=seed,raw_schema_preparation=raw_preparation,
+        production_indexes=index_check,
+        index_availability=dict(samples=len(samples),ready_samples=index_states.count('ready'),
+            incoming_samples=index_states.count('incoming'),failed_samples=index_states.count('failure'),
+            observations=[dict(elapsed=row['index_observed_elapsed'],cycle=row['cycle'],phase=row['phase'],
+                state=state,indexing=row.get('indexing'),proof=row.get('index_proof'))
+                for row,state in zip(samples,index_states)],
+            final_health=locals().get('final_health'),final_proof=locals().get('final_index_proof'),
+            qualification='Incoming is explicit active unavailability, with successful subsequent data reads; not an HTTP availability pass.'),
+        storage_after=storage_after,
         seeded_history=dict(traces=5751,spans=31000,logs=41000,days=35,newest_age_days=2) if args.history else None,
         fixture_preparation_seconds=preparation_seconds,initial_readiness_seconds=locals().get('initial_readiness_seconds'),
         completed_turns=len(workload.completed),verified_turns=len(verified),approval_requests=len(workload.requests),observed_approval_requests=len({row['cycle'] for row in observed_requests}),

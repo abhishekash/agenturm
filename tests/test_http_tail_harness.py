@@ -93,6 +93,16 @@ class HttpTailContractTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()),{'port':123})
             self.assertEqual(list(path.parent.iterdir()),[path])
 
+    def test_registered_candidate_is_explicit_and_balanced_order_keeps_roles(self):
+        args=SimpleNamespace(smoke=False,candidate_commit='c'*40,baseline_root=Path('/B'),candidate_root=Path('/C'),order='CB')
+        rows=harness.registered_versions(args)
+        self.assertEqual([row[0]for row in rows],['C','B'])
+        self.assertEqual(rows[0],('C',Path('/C'),'c'*40))
+        self.assertEqual(len(rows[1][2]),40)
+        for invalid in (None,'main','55c6244','C'*40):
+            args.candidate_commit=invalid
+            with self.assertRaisesRegex(ValueError,'exact full'):harness.registered_versions(args)
+
 
 def tiny_raw_seed(path):
     """Generate only raw canonical tables; each child must build its own schema."""
@@ -124,28 +134,91 @@ class HttpTailSmokeTests(unittest.TestCase):
                 capture_output=True,text=True,timeout=60)
             report=json.loads((output/'results.json').read_text())
             self.assertIn(result.returncode,(0,1),(result.stderr,report['errors']))
-            self.assertFalse(report['publishable']);self.assertTrue(report['writer_inputs_equal'])
+            self.assertFalse(report['publishable'])
             self.assertNotEqual(report['versions']['B']['result']['pid'],report['versions']['C']['result']['pid'])
-            expected_errors=[]
+            expected_errors=[];writer_hashes=[];settings=report['settings']
             for role in ('B','C'):
                 row=report['versions'][role]['result']
                 self.assertFalse(row['native_monitor_enabled']);self.assertEqual(row['unauthenticated_status'],401)
                 self.assertNotEqual(row['pid'],row['client_pid'])
                 self.assertTrue(row['production_indexes']['equal'])
                 self.assertEqual(row['imports']['root'],str(harness.ROOT))
-                self.assertEqual(len(row['idle']),4);self.assertEqual(len(row['loaded']['reads']),4)
-                self.assertEqual(len(row['loaded']['writes']),10);self.assertEqual(row['loaded']['accepted_records'],20)
+                self.assertEqual(len(row['idle']),2*settings['idle_pairs'])
+                self.assertTrue(all(item['valid'] for item in row['idle']))
+                loaded=row['loaded'];reads=loaded['reads'];writes=loaded['writes']
+                self.assertGreater(len(reads),0);self.assertGreater(len(writes),0)
+                self.assertLessEqual(len(reads),2*settings['loaded_pairs'])
+                self.assertLessEqual(len(writes),settings['write_batches'])
+                self.assertEqual([item['sequence'] for item in writes],list(range(len(writes))))
+                self.assertTrue(all(item['valid'] and item['status']==200 and
+                    item['accepted']==settings['records_per_batch'] for item in writes),row['errors'])
+                self.assertEqual(loaded['accepted_records'],len(writes)*settings['records_per_batch'])
+                self.assertEqual(len(reads)%2,0)
+                self.assertEqual([item['pair'] for item in reads],[pair for pair in range(len(reads)//2) for _ in range(2)])
+                for pair in range(len(reads)//2):
+                    paths=harness.ENDPOINTS if pair%2==0 else tuple(reversed(harness.ENDPOINTS))
+                    self.assertEqual([item['path'] for item in reads[2*pair:2*pair+2]],list(paths))
                 self.assertTrue(row['drained']);self.assertEqual(row['seed_before'],row['seed_after'])
                 self.assertFalse((output/role/'working.db').exists())
                 self.assertEqual(row['source_before'],row['source_after'])
-                failed=[item for item in row['loaded']['reads']if not item['valid']]
+                self.assertFalse(any(count for name,count in row['schema_after']['rows'].items() if 'dirty' in name))
+                missed=loaded['missed_slots']
+                self.assertTrue(all(item['kind'] in ('read','write') for item in missed))
+                read_misses=[item for item in missed if item['kind']=='read']
+                write_misses=[item for item in missed if item['kind']=='write']
+                self.assertLessEqual(len(read_misses),1);self.assertLessEqual(len(write_misses),1)
+                for item in missed:
+                    period=settings['read_period_s'] if item['kind']=='read' else settings['write_period_s']
+                    slot=item['pair'] if item['kind']=='read' else item['sequence']
+                    self.assertGreaterEqual(slot,0)
+                    self.assertLess(slot,settings['loaded_pairs'] if item['kind']=='read' else settings['write_batches'])
+                    offset=settings['read_offset_s'] if item['kind']=='read' else 0
+                    self.assertEqual(item['scheduled_ns'],loaded['start_ns']+int((offset+slot*period)*1e9))
+                    self.assertGreater(item['observed_ns']-item['scheduled_ns'],int(period*1e9))
+                if len(reads)<2*settings['loaded_pairs']:
+                    self.assertEqual([item['pair'] for item in read_misses],[len(reads)//2])
+                else:self.assertEqual(read_misses,[])
+                late_writes=[item['sequence'] for item in writes if item['lateness_ms']>settings['write_period_s']*1000]
+                self.assertFalse(write_misses and late_writes)
+                if late_writes:self.assertEqual(late_writes,[len(writes)-1])
+                if write_misses:self.assertEqual([item['sequence'] for item in write_misses],[len(writes)])
+                if len(writes)<settings['write_batches']:self.assertTrue(write_misses or late_writes)
+                actual_errors=[]
+                if write_misses or late_writes:actual_errors.append('Writer missed its slot period; refusing burst catchup')
+                if len(reads)!=2*settings['loaded_pairs']:actual_errors.append('Fixed read count/slot deadline failed; no catchup attempted')
+                if len(writes)!=settings['write_batches']:actual_errors.append('Fixed writer count/acceptance failed')
+                if any(item['started_ns']<loaded['start_ns'] or item['finished_ns']>loaded['scheduled_end_ns'] for item in reads):
+                    actual_errors.append('Read escaped scheduled writer window')
+                if any(item['pair_lateness_ms']>settings['read_period_s']*1000 for item in reads):
+                    actual_errors.append('Reader missed its pair slot period')
+                failed=[item for item in reads if not item['valid']]
                 # Real incoming-history 503s remain a protocol failure, not
                 # something this short functional smoke retries or hides.
                 self.assertTrue(all(item['status']==503 for item in failed),row['errors'])
-                self.assertEqual(row['errors'],['Loaded HTTP response failed']if failed else [])
-                if failed:
-                    self.assertFalse(row['publishable']);expected_errors.append(role+' invalid: Loaded HTTP response failed')
+                if failed:actual_errors.append('Loaded HTTP response failed')
+                for path in harness.ENDPOINTS:
+                    selected=[item for item in reads if item['path']==path]
+                    stat=loaded['statistics'][path]
+                    self.assertEqual(stat['attempts'],len(selected))
+                    self.assertEqual(stat['valid_attempts'],sum(item['valid'] for item in selected))
+                    self.assertEqual(stat['maximum_ms'],max(item['elapsed_ms'] for item in selected))
+                    first=min(item['started_ns'] for item in selected);last=max(item['finished_ns'] for item in selected)
+                    progress=dict(accepted_before=sum(item['finished_ns']<=first for item in writes),
+                        accepted_during=sum(first<item['finished_ns']<last for item in writes),
+                        accepted_after=sum(item['finished_ns']>=last for item in writes))
+                    self.assertEqual(loaded['accepted_progress'][path],progress)
+                    if not all(progress.values()):actual_errors.append('Accepted writer progress did not span endpoint sample window')
+                self.assertEqual(loaded['errors'],actual_errors)
+                self.assertEqual(row['errors'],actual_errors)
+                if actual_errors:expected_errors.append(role+' invalid: '+'; '.join(actual_errors))
+                self.assertFalse(row['publishable'])
                 self.assertTrue(all(value is None for value in row['loaded_p95_under100ms'].values()))
+                writer_hashes.append([item['request_sha256'] for item in writes])
+            prefix=min(map(len,writer_hashes))
+            self.assertEqual(writer_hashes[0][:prefix],writer_hashes[1][:prefix])
+            same=writer_hashes[0]==writer_hashes[1]
+            self.assertEqual(report['writer_inputs_equal'],same)
+            if not same:expected_errors.append('B/C writer inputs differ')
             self.assertEqual(report['errors'],expected_errors)
             self.assertEqual(result.returncode,1 if expected_errors else 0)
 

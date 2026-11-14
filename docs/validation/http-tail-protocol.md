@@ -2,7 +2,7 @@
 
 This harness distinguishes earlier `Store.sessions`/`Store.mcp_page` method timings from actual authenticated HTTP endpoint timings. It is an API-only receiver benchmark. It starts no native discovery, provider, agent launcher, watcher or notification. Whole-monitor CPU, memory, cold readiness and useful Agents frames remain separate measurements.
 
-`benchmark_http_tails.py` runs the complete baseline **5e0c397** and candidate **55c6244** source trees in separate receiver processes. An external coordinator issues direct loopback HTTP requests and paced writes. It does not patch older methods into a newer Store. Each source imports its own Store/server and builds its own normal production derived schema. The same committed harness, Python environment and immutable generated seed serve both versions.
+`benchmark_http_tails.py` runs the complete baseline **5e0c397** and a candidate explicitly registered by its full commit SHA before timing source trees in separate receiver processes. An external coordinator issues direct loopback HTTP requests and paced writes. It does not patch older methods into a newer Store. Each source imports its own Store/server and builds its own normal production derived schema. The same committed harness, Python environment and immutable generated seed serve both versions.
 
 ## Registered preparation
 
@@ -52,11 +52,15 @@ python scripts/benchmark_http_tails.py run \
   --seed /tmp/agenturm-final-common-seed/raw-seed.db \
   --verified-synthetic-source \
   --baseline-root /tmp/agenturm-http-baseline-5e0 \
-  --candidate-root /tmp/agenturm-http-candidate-55c \
+  --candidate-root /tmp/agenturm-final-candidate \
+  --candidate-commit FULL_FROZEN_CANDIDATE_SHA \
+  --order BC \
   --output /tmp/new-http-tails
 ```
 
-`--smoke` uses a tiny generated fixture, one warmup pair, two idle pairs, two loaded pairs and ten batches. It is always nonpublishable. The actual tiny B/C functional check proved separate correct source imports, normal named indexes, authentication/namespace binding, unchanged seeds, accepted 10/10 batches and clean shutdown/cleanup. Its loaded requests returned transient 503 while incoming history was indexed. Those responses are retained as invalid, and establish **no API latency or availability pass**. No full-corpus HTTP measurement has been performed for this report.
+Run again with `--order CB` in a new output directory for the balanced counterpart. A short branch name or omitted candidate SHA cannot authorize a controlled run. Each version retains its B/C role regardless of execution order.
+
+`--smoke` now uses a tiny generated fixture, one warmup pair, two idle pairs, two loaded pairs and thirty batches at the full protocol cadence (one-second read pairs, 100 ms writes). The original 50 ms smoke pair cadence could not accommodate two legitimate 75 ms catch-up waits; that failed short gate is retained and does not establish a product regression or a performance pass. The full 420-batch protocol is unchanged. It is always nonpublishable. The earlier ten-batch tiny B/C functional check proved separate correct source imports, normal named indexes, authentication/namespace binding, unchanged seeds, accepted 10/10 batches and clean shutdown/cleanup. Its loaded requests returned transient 503 while incoming history was indexed. Those responses are retained as invalid, and establish **no API latency or availability pass**. No full-corpus HTTP measurement has been performed for this report.
 
 The shared heartbeat now records `visible_agent_rows` from the already published `app.table_data['agent-table']`, without preparing sources or querying widgets. The idle first-useful gate requires at least one such row in addition to four fresh known fixture sources. It saves the count and first useful terminal frame. An internal source map with an empty visible table cannot establish a useful Agents frame.
 
