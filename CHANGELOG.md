@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reuse qualified retry references and index exact bounded linked-log lookups during Activity replay. Preserve source semantics and disclose the index footprint and write cost; complete-monitor resource acceptance remains separate.
+
 - Put recorded edits, paths, checks and issues before agent claims in the session Overview, with explicit evidence coverage. Share UI-free source preparation with headless consumers and fence optional native log batches to the receiver inside their write transaction.
 
 - Freeze explicitly mapped read-only Git observations in Review and prepare editable continuity drafts with explicit approval. Preserve authored task fields and decisions; qualify bounded path-overlap/check chronology and fence every contributing source through copy and export.
