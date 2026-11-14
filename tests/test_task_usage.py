@@ -108,9 +108,14 @@ class TaskUsageJourney(unittest.IsolatedAsyncioTestCase):
             row['known_cost_usd']=99
             row['input_tokens']=999999
         get=feed.api.get
-        feed.api.get=lambda path: {'sessions':summaries} if path.split('?')[0]=='/api/sessions' else get(path)
+        def scoped_get(path):
+            value={'sessions':summaries} if path.split('?')[0]=='/api/sessions' else get(path)
+            return {**value,'receiver_id':'fixture-receiver'}
+        feed.api.get=scoped_get
         feed.api.traces[0].update(input_tokens=10,output_tokens=2,cache_read_input_tokens=8,
-                                  cache_write_input_tokens=1,known_cost_usd=.03,cost_complete=True)
+                                  cache_write_input_tokens=1,known_cost_usd=.03,cost_complete=True,
+                                  agent_count=1,agent_count_complete=True,
+                                  review_owner=dict(producer='codex',agent_id='recorded-trace-owner',session_id='session-1'))
         feed.sessions_attempted=None;feed.refresh()
         app=ObservatoryApp(feed,persist_preferences=False)
         async with app.run_test(size=(120,40)) as pilot:

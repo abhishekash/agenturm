@@ -1237,6 +1237,8 @@ class ObservatoryApp(App):
     .inspector-actions Button:focus { color: $agent-primary; background: $agent-focus; }
     #activity-inspector .inspector-actions { layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 1; height: 2; }
     #activity-inspector .inspector-actions Button { min-width: 0; }
+    #mcp-inspector .inspector-actions { layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 1; height: 2; }
+    #mcp-inspector .inspector-actions Button { min-width: 0; }
     #agent-bottom .inspector-actions { layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 1; height: auto; }
     #agent-reviewed, #agent-dismissed, #agent-summary { column-span: 2; }
     .expand-button { min-width: 12; }
@@ -1554,6 +1556,7 @@ class ObservatoryApp(App):
                         with Horizontal(classes='inspector-actions'):
                             yield Button(Text('Trace · t'),id='mcp-trace',tooltip='Follow the selected call into its trace')
                             yield Button(Text('Copy · c'),id='mcp-copy')
+                            yield Button('Inspect flagged call',id='mcp-flagged',tooltip='Select the next failed or unknown call for this tool in the loaded page')
                             yield Button(Text('Expand · e'),id='expand-mcp',classes='expand-button')
             with TabPane('4  Traces',id='traces'):
                 with Horizontal(classes='split'):
@@ -1595,6 +1598,7 @@ class ObservatoryApp(App):
     def get_system_commands(self,screen):
         """Keep important cockpit actions discoverable in Textual's fuzzy palette."""
         yield from super().get_system_commands(screen)
+        if not isinstance(screen,ObservatoryScreen):return
         commands=(
             ('Go to Agents','Show the task-first session list',lambda:self.action_page('agents')),
             ('Go to Activity','Inspect recorded session events',lambda:self.action_page('activity')),
@@ -2206,7 +2210,8 @@ class ObservatoryApp(App):
         key=self.selected_source if page=='agents' or self.scope_value=='all' else self.scope_value
         item=getattr(self,'source_map',{}).get(key) or {}
         usage=task_run_usage(self.data.sessions,item,self.data.traces)
-        return usage,usage.get('task') or task_preview(item),'trace',usage.get('trace_id') or ''
+        scope='turn' if usage.get('turn_id') else 'trace'
+        return usage,usage.get('task') or task_preview(item),scope,usage.get('turn_id') or usage.get('trace_id') or ''
 
     def prepared_task_usage(self):
         usage,title,scope,identity=self.selected_task_usage()
@@ -2235,16 +2240,24 @@ class ObservatoryApp(App):
             title='Selected trace (metadata-only)' if page=='traces' else 'Selected execution (metadata-only)'
         return usage,title,scope,identity,item,policy,recorded_receiver
 
-    def task_usage_options(self,usage,*,allowed=True):
+    def task_usage_options(self,usage,*,allowed=True,item=None):
         owner=usage.get('scope_owner') if usage.get('turn_id') else usage.get('review_owner')
         owner=owner if isinstance(owner,dict) else {}
         proven=(type(usage.get('agent_count')) is int and usage['agent_count']==1 and
             usage.get('agent_count_complete') is True and all(isinstance(owner.get(key),str) and owner[key]
             for key in ('producer','agent_id','session_id')))
+        proven=bool(proven and self.data.receiver_id and item and all(owner.get(key)==item.get(field)
+            for key,field in (('producer','service'),('agent_id','agent_id'),('session_id','session_id'))))
         models=usage.get('models')
         model=models[0] if usage.get('models_complete') is True and isinstance(models,list) and len(models)==1 else ''
+        lifetime=session_usage(self.data.sessions,item or {})
+        lifetime_owner=bool(item and isinstance(item.get('agent_id'),str) and item['agent_id'] and
+            lifetime.get('agent_id')==item['agent_id'] and lifetime.get('session_id')==item.get('session_id') and
+            (lifetime.get('services') or [lifetime.get('service')])==[item.get('service')])
         return dict(rates=(self.cost_estimate_rates or None) if allowed else None,model=model if allowed else '',
-            allocation_proven=proven,explanations=True)
+            allocation_proven=proven,explanations=True,session_context={key:lifetime[key] for key in
+                ('input_tokens','output_tokens','input_tokens_reported','output_tokens_reported','usage_complete','trace_count')
+                if key in lifetime} if lifetime_owner and allowed else None)
 
     def refresh_task_usage(self):
         if not self.query('#usage-summary'):return
@@ -2252,7 +2265,7 @@ class ObservatoryApp(App):
         from .usage_render_key import usage_render_key
         page=self.query_one('#pages',TabbedContent).active
         selection=self.selected_source if page=='agents' or self.scope_value=='all' else self.scope_value
-        options=self.task_usage_options(usage,allowed=policy.get('capture_content') is not False)
+        options=self.task_usage_options(usage,allowed=policy.get('capture_content') is not False,item=item)
         owner={key:item.get(key) for key in ('id','source_id','service','agent_id','session_id',
             'trace_id','turn_id','run_start_ns','run_end_ns','capture_content','capture_revision')}
         inputs=None
@@ -3256,8 +3269,8 @@ class ObservatoryApp(App):
         self.query_one('#agent-open',Button).disabled=False
         summary=session_usage(self.data.sessions,item)
         run_usage=task_run_usage(self.data.sessions,item,self.data.traces)
-        usage_text,_=task_usage_summary(run_usage,run_usage.get('task') or task_preview(item),scope='trace',
-                                      identity=run_usage.get('trace_id') or '',compact=self.size.width<100)
+        usage_text,_=task_usage_summary(run_usage,run_usage.get('task') or task_preview(item),scope='turn' if run_usage.get('turn_id') else 'trace',
+                                      identity=run_usage.get('turn_id') or run_usage.get('trace_id') or '',compact=self.size.width<100)
         pending_errors=getattr(self,'agent_error_reminders',{}).get(item['id'],[]) if captured else []
         self.agent_has_failures=bool(pending_errors)
         trace_button=self.query_one('#agent-trace',Button)
@@ -3510,6 +3523,17 @@ class ObservatoryApp(App):
 
     def show_mcp(self):
         item=self.table_data.get('mcp-table',{}).get(self.selected_mcp)
+        from .evidence_explanations import mcp_window,configured_servers
+        loaded=self.data.mcp_results if self.data.mcp_results is not None else self.data.mcp
+        window=mcp_window(loaded,configured=configured_servers(self.data.local_status.get('mcp_configurations',[])),
+            window=dict(receiver_id=self.data.receiver_id,label='Currently loaded MCP page'),complete=False)
+        missing=window['configured_unobserved']
+        configuration_context=[('Configured · this loaded page',
+            ', '.join(row['server'] for row in missing[:5])+(' · +'+str(len(missing)-5)+' more' if len(missing)>5 else '')+
+            '\nNo matching captured calls in this page. Capture, filters and paging may omit calls; absence does not justify removing configuration.')]
+        if not missing:configuration_context=[]
+        self.mcp_flagged_references=[]
+        self.query_one('#mcp-flagged',Button).disabled=True
         self.query_one('#mcp-trace',Button).disabled=not bool(item and item.get('trace_id'))
         if not item:
             if not self.data.mcp_available:
@@ -3527,7 +3551,7 @@ class ObservatoryApp(App):
             else:
                 title='No MCP operations in this scope'
                 note='Calls identified as Model Context Protocol appear here. Other tool activity remains in Activity.'
-            self.inspect('mcp-detail',title,[('Scope',self.scope_label())],[('How to proceed',note)])
+            self.inspect('mcp-detail',title,[('Scope',self.scope_label())],[('How to proceed',note)]+configuration_context)
             return
         operation=item.get('tool') if item.get('tool') not in ('', 'Not reported') else item.get('method') or 'MCP operation'
         def captured(field):
@@ -3536,15 +3560,13 @@ class ObservatoryApp(App):
                 if value is None:return 'null (recorded)'
                 if value=='':return 'Empty text (recorded)'
             return value
-        from .evidence_explanations import mcp_window
-        loaded=self.data.mcp_results if self.data.mcp_results is not None else self.data.mcp
-        window=mcp_window(loaded,configured=self.data.local_status.get('mcp_configurations',[]),
-            window=dict(receiver_id=self.data.receiver_id,label='Currently loaded MCP page'),complete=False)
         tool_window=next((row for row in window['tools'] if row['receiver_id']==self.data.receiver_id and
             row['producer']==item.get('service') and row['server']==item.get('server') and row['tool']==item.get('tool')),None)
         explanation=[]
         if tool_window:
             row=tool_window;known=row['outcome_known']
+            self.mcp_flagged_references=row['failure_references'] or row['unknown_references']
+            self.query_one('#mcp-flagged',Button).disabled=not any(ref.get('id') in self.table_data.get('mcp-table',{}) for ref in self.mcp_flagged_references)
             outcomes=f"{row['failed']} failed / {known} known outcomes · {row['outcome_unknown']} unknown · {row['calls']} calls"
             latency=(f"p50 {timing(row['p50_ms'])} · p95 {timing(row['p95_ms'])} · {row['duration_known']} known durations · {row['duration_unknown']} unknown"
                 if row['duration_known'] else 'Latency unavailable · no known durations')
@@ -3556,7 +3578,7 @@ class ObservatoryApp(App):
             ('Result',str(status(item.get('status')))+' · '+timing(item.get('duration_ms'))),
             ('Agent',(item.get('service') or 'Not reported')+' · '+str(item.get('session_id') or 'Unknown session')[-12:]),
             ('Method',item.get('method') or 'Not reported'),('Observed',when(item.get('time_unix_nano') or 0))],
-            explanation+[('Arguments',captured('arguments')),('Response',captured('output')),
+            explanation+configuration_context+[('Arguments',captured('arguments')),('Response',captured('output')),
              ('Runtime metadata',item.get('metadata')),
              ('Evidence',item.get('source')),('Session ID',item.get('session_id')),
              ('Trace ID',item.get('trace_id') or 'Not linked'),('Span ID',item.get('span_id') or 'Not linked')])
@@ -3912,6 +3934,7 @@ class ObservatoryApp(App):
         elif event.button.id=='agent-dismissed':self.action_dismiss_attention()
         elif event.button.id=='agent-summary':self.request_ai_summary()
         elif event.button.id=='activity-investigate':self.action_investigate()
+        elif event.button.id=='mcp-flagged':self.action_mcp_flagged()
         elif event.button.id in {'activity-trace','mcp-trace','metrics-trace','finding-trace'}:self.action_open_trace()
         elif event.button.id in {'activity-copy','mcp-copy','metrics-copy','finding-copy'}:self.action_copy()
 
@@ -4063,6 +4086,19 @@ class ObservatoryApp(App):
         if isinstance(self.screen,InvestigationsScreen):return
         if not isinstance(self.screen,ObservatoryScreen):return
         self.push_screen(InvestigationsScreen(self),self.resume_cockpit)
+    def action_mcp_flagged(self):
+        from .review_facts import review_capture_policy
+        references=getattr(self,'mcp_flagged_references',[])
+        identities=[reference.get('id') for reference in references]
+        start=(identities.index(self.selected_mcp)+1)%len(references) if self.selected_mcp in identities and references else 0
+        for reference in references[start:]+references[:start]:
+            if reference.get('receiver_id')!=self.data.receiver_id or self.feed.snapshot.receiver_id!=self.data.receiver_id:continue
+            if review_capture_policy(reference,self.feed.snapshot,scope_for(reference,self.feed.snapshot)).get('capture_content') is False:continue
+            identity=reference.get('id');table=self.table_data.get('mcp-table',{})
+            if identity not in table:continue
+            self.selected_mcp=identity
+            self.query_one('#mcp-table',DataTable).move_cursor(row=list(table).index(identity),animate=False)
+            self.show_mcp();self.query_one('#mcp-detail',RichLog).focus();return
 
     def action_usage(self):
         usage,title,scope,identity,item,policy,receiver=self.prepared_task_usage()
@@ -4070,7 +4106,7 @@ class ObservatoryApp(App):
         from .review_facts import review_capture_policy
         valid=lambda: receiver==self.feed.snapshot.receiver_id and review_capture_policy(item,self.feed.snapshot,frozen_scope).get('capture_content') is not False
         details=task_usage_summary(usage,title,scope=scope,identity=identity,
-            **self.task_usage_options(usage,allowed=policy.get('capture_content') is not False))[1]
+            **self.task_usage_options(usage,allowed=policy.get('capture_content') is not False,item=item))[1]
         self.push_screen(UsageScreen(details=details,valid=valid),self.resume_cockpit)
 
     def action_help(self):

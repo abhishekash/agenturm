@@ -175,7 +175,7 @@ def usage_summary(totals):
 
 
 def task_usage_label(usage, *, compact=False):
-    text,_=task_usage_summary(usage,scope='trace',compact=True)
+    text,_=task_usage_summary(usage,scope='turn' if usage.get('turn_id') else 'trace',compact=True)
     first=text.splitlines()[0]
     money,tokens=first.removeprefix('Task cost ').split(' · Tokens ')
     if compact:
@@ -189,13 +189,14 @@ def task_usage_label(usage, *, compact=False):
 
 def task_usage_summary(usage, title='', *, scope='session', identity='', compact=False,
                        rates=None, model='', allocation_proven=False, explanations=False,
-                       context=None, scope_owner=None):
+                       context=None, scope_owner=None, session_context=None):
     known=lambda key: usage.get(key) is not None and usage.get(key+'_reported') is not False
     partial=usage.get('usage_complete') is False
     token=lambda key: f"{int(usage[key]):,}"+('+' if partial else '') if known(key) else 'Not reported'
     tokens=(f"{int(usage['input_tokens'])+int(usage['output_tokens']):,}"+('+' if partial else '')
             if known('input_tokens') and known('output_tokens') else 'Not reported')
-    runs=usage.get('trace_count',1 if scope=='trace' and usage else 0)
+    steps=usage.get('step_trace_ids')
+    runs=usage.get('trace_count',len(steps) if scope=='turn' and isinstance(steps,list) else 1 if scope in {'trace','turn'} and usage else 0)
     missing=usage.get('unknown_cost_runs',int(usage.get('cost_complete') is False))
     cost=usage.get('known_cost_usd')
     priced=max(0,runs-missing)
@@ -225,9 +226,11 @@ def task_usage_summary(usage, title='', *, scope='session', identity='', compact
         f"Cached input: {token('cache_read_input_tokens')}"+cached_suffix,
         *([f"Cache write: {token('cache_write_input_tokens')}"] if known('cache_write_input_tokens') else []),
         f"Reasoning output: {token('reasoning_output_tokens')}",'',
-        ('Scope: this recorded run (trace).' if scope=='trace' else
+        ('Scope: this recorded user turn across its captured steps.' if scope=='turn' else
+         'Scope: this recorded run (trace).' if scope=='trace' else
          'Scope: this agent session across its recorded runs; excludes other agents and sessions.'),
-        ('Trace: ' if scope=='trace' else 'Session: ')+(identity or 'Not reported'),'',
+        ('Turn: ' if scope=='turn' else 'Trace: ' if scope=='trace' else 'Session: ')+(identity or 'Not reported'),
+        *([f'Captured steps: {len(steps)}'+(' · membership incomplete' if usage.get('turn_members_clipped') or usage.get('turn_usage_complete') is not True else '')] if scope=='turn' and isinstance(steps,list) else []),'',
         'Cache reads/writes are input breakdowns; reasoning is an output breakdown. Do not add them to total tokens.',
         'Cached percentage means cached input divided by reported input tokens, not a request hit rate.',
         'A + marks a partial reported subtotal. Missing telemetry is not zero.',
@@ -252,6 +255,12 @@ def task_usage_summary(usage, title='', *, scope='session', identity='', compact
         context_label=(f"{occupancy['used_tokens']:,} / {occupancy['capacity_tokens']:,} tokens ({occupancy['fraction']:.0%})"
                        if occupancy['available'] else occupancy['reason'])
         details+='\n\nRECORDED USAGE INTERPRETATION\nCached input: '+cache_label+'\n'+cache['note']+'\nContext occupancy: '+context_label+'\n'+explanation['retry_cost']['note']
+        details+='\n\nOTHER ACCOUNTING WINDOWS\nCalendar day: no exact-agent day aggregate was supplied. A run or turn is not a day total.'
+        if isinstance(session_context,dict) and session_context:
+            available=lambda key: type(session_context.get(key)) is int and session_context[key]>=0 and session_context.get(key+'_reported') is not False
+            values=('Input '+f"{session_context['input_tokens']:,}" if available('input_tokens') else 'Input not reported')+' · '+('Output '+f"{session_context['output_tokens']:,}" if available('output_tokens') else 'Output not reported')
+            details+='\nCaptured session lifetime: '+values+(' · partial' if session_context.get('usage_complete') is False else '')+'\nRetained runs for this exact producer/agent/session; separate from this selection and provider lifetime billing.'
+        else:details+='\nCaptured session lifetime: unavailable without exact owner/session allocation; no shared totals were substituted.'
     return '\n'.join(lines),details
 
 

@@ -42,6 +42,24 @@ def _call_facts(row):
     return operation_facts(dict(domain='mcp',action=row.get('method') or 'call',result=result,attributes=attrs))
 
 
+def configured_servers(configurations):
+    """Project bounded server names from the existing file-shaped inventory."""
+    result=[];seen=set()
+    for entry in configurations[:100] if isinstance(configurations,(list,tuple)) else []:
+        if isinstance(entry,str):names=[entry];producer=None
+        elif isinstance(entry,dict):
+            names=entry.get('servers')
+            names=names[:100] if isinstance(names,(list,tuple)) else [entry.get('server') or entry.get('name')]
+            producer=label(entry.get('service'))
+        else:continue
+        for value in names:
+            server=label(value)
+            if server and (producer,server) not in seen:
+                seen.add((producer,server));result.append(dict(service=producer,server=server))
+                if len(result)>=100:return result
+    return result
+
+
 def mcp_window(calls,*,configured=(),window=None,complete=False):
     """Per-tool recorded outcomes/durations for the supplied explicit loaded page."""
     input_size=len(calls) if isinstance(calls,(list,tuple)) else 0
@@ -70,7 +88,7 @@ def mcp_window(calls,*,configured=(),window=None,complete=False):
             seen.add(occurrence)
         key=(namespace,producer,server,tool) if all((namespace,producer,server,tool)) else ('incomplete',ordinal)
         item=groups.setdefault(key,dict(receiver_id=namespace,producer=producer,server=server,tool=tool,identity_complete=all((namespace,producer,server,tool)),
-            calls=0,passed=0,failed=0,unknown=0,durations=[],duration_unknown=0,references=[]))
+            calls=0,passed=0,failed=0,unknown=0,durations=[],duration_unknown=0,references=[],failure_references=[],unknown_references=[]))
         item['calls']+=1;facts=_call_facts(row)
         result=facts['result'] if not facts['result_conflict'] else 'unknown'
         item[result if result in {'passed','failed'} else 'unknown']+=1
@@ -78,6 +96,8 @@ def mcp_window(calls,*,configured=(),window=None,complete=False):
         if duration is None:item['duration_unknown']+=1
         else:item['durations'].append(duration)
         if len(item['references'])<MAX_REFS:item['references'].append(reference({**row,'receiver_id':namespace}))
+        target='failure_references' if result=='failed' else 'unknown_references' if result not in {'passed','failed'} else None
+        if target and len(item[target])<MAX_REFS:item[target].append(reference({**row,'receiver_id':namespace}))
     result=[]
     for item in groups.values():
         durations=sorted(item.pop('durations'));known=item['passed']+item['failed'];n=len(durations)

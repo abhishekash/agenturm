@@ -65,11 +65,32 @@ class ExplanationIntegration(unittest.IsolatedAsyncioTestCase):
                 {**base,'id':'one','status':'OK','duration_ms':10},
                 {**base,'id':'two','status':'ERROR','duration_ms':30},
                 {**base,'id':'three','status':'unknown','duration_ms':None,'output':None}])
-            app.render_mcp();await pilot.pause()
+            app.data.local_status['mcp_configurations']=[dict(server='github'),dict(server='unobserved-server')]
+            feed.snapshot=app.data;app.render_mcp();await pilot.pause()
             text=app.query_one('#mcp-detail').plain_text
             self.assertIn('1 failed / 2 known outcomes',text)
             self.assertIn('1 unknown',text);self.assertIn('2 known durations',text)
             self.assertIn('Small sample',text);self.assertIn('Loaded records only',text)
+            self.assertIn('unobserved-server',text);self.assertIn('absence does not justify',text)
+            app.query_one('#mcp-flagged').focus();await pilot.press('enter');await pilot.pause()
+            self.assertEqual(app.selected_mcp,'two')
+            self.assertTrue(app.query_one('#mcp-detail').has_focus)
+
+    async def test_turn_usage_is_labelled_separately_from_trace_and_session_lifetime(self):
+        feed=usage_feed();app=ObservatoryApp(feed,persist_preferences=False)
+        async with app.run_test(size=(80,24)) as pilot:
+            await self.mount(app,pilot);item=app.source_map['source-1']
+            session=app.data.sessions[0];session.update(agent_id=item['agent_id'],input_tokens=900,output_tokens=100,usage_complete=True)
+            session['latest_run']['turn_usage']={**session['latest_run'],
+                'turn_id':'recorded-user-turn','step_trace_ids':['run-1','run-2'],'turn_usage_complete':True}
+            app.refresh_task_usage();app.action_usage();await pilot.pause()
+            text=app.screen.details
+            self.assertIn('Turn: recorded-user-turn',text);self.assertIn('Captured steps: 2',text)
+            self.assertIn('this recorded user turn',text);self.assertNotIn('this recorded run (trace)',text)
+            self.assertIn('Captured session lifetime: Input 900',text)
+            self.assertIn('Calendar day: no exact-agent day aggregate',text)
+            commands=list(app.get_system_commands(app.screen))
+            self.assertFalse(any(getattr(command,'title','')=='Copy selected evidence' for command in commands))
 
 
 if __name__=='__main__':unittest.main()
