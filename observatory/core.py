@@ -2318,6 +2318,14 @@ class Store:
         # prompts, and resource reads are useful agent activity too.
         from .storage_activity import MCP_PREDICATE
         from .storage_mcp import call_key_sql, session_sql, execution_match_sql, text_sql, text_value, inventory_page
+        # Both inventory errors and I/O enrichment require this exact recorded
+        # execution type. Prove its absence in this same read snapshot before
+        # constructing the much larger ownership/uniqueness joins. A positive
+        # result still uses those joins unchanged; this is never association
+        # evidence and no result survives the request.
+        has_executions = db.execute("""SELECT 1 FROM spans
+            WHERE lower(json_extract(attributes,'$."gen_ai.tool.type"'))='mcptool'
+            LIMIT 1""").fetchone() is not None
         match = MCP_PREDICATE
         clauses, params = [match], []
         if service:
@@ -2375,7 +2383,8 @@ class Store:
                 f"(json_type({result_value},'$.isError')='true' "
                 f"OR json_type({result_value},'$.is_error')='true') ELSE 0 END"
             )
-        mcp_tool_failed = f"EXISTS (SELECT 1 FROM spans execution WHERE {execution_match_sql()} AND ({mcp_result_error_sql}))"
+        mcp_tool_failed = (f"EXISTS (SELECT 1 FROM spans execution WHERE {execution_match_sql()} AND ({mcp_result_error_sql}))"
+                           if has_executions else '0')
         body_value="json_extract(body,'$')"
         direction_sql="json_extract(attributes,'$.\"observatory.mcp.io.direction\"')"
         no_output_attributes=' AND '.join(
@@ -2560,7 +2569,7 @@ class Store:
         # show arguments and results that the transport span itself omits.
         execution_spans = []
         span_keys=[row['mcp_key'] for row in spans]
-        if span_keys:
+        if span_keys and has_executions:
             placeholders=','.join('?' for _ in span_keys)
             execution_spans=db.execute(f"""SELECT {call_key_sql('span','spans')} AS call_key,
                 execution.trace_id,execution.span_id,execution.attributes,
