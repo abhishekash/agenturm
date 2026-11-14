@@ -1,0 +1,258 @@
+{
+  "diagnostic_only": true,
+  "acceptance": false,
+  "protocol": "Separate process ABBA; identical private SQLite backup per arm; 3 warmups,16 timed Store.mcp_page reads; no HTTP, concurrent writer, UI, cold-readiness or monitor-resource claim.",
+  "cases": {
+    "negative": [
+      {
+        "root": "/tmp/agenturm-derived-economics",
+        "head": "029719b024ee309f7b3caae1560d0a968060b0cc",
+        "samples_ms": [
+          57.914766,
+          58.616496,
+          48.006408,
+          59.499707,
+          65.236641,
+          56.052494,
+          55.371016,
+          53.687135,
+          53.65645,
+          51.829654,
+          48.585773,
+          52.997212,
+          47.855093,
+          51.985182,
+          49.110741,
+          51.100075
+        ],
+        "complete_output_sha256": "6359bb16859696e938c7071ac9fe7b4c6fea3cdfa393ccab4a2c4369afac7b51",
+        "calls": 1,
+        "executions_present": false,
+        "probe_plan": [
+          "SCAN spans USING INDEX spans_mcp_execution_v1"
+        ]
+      },
+      {
+        "root": "/tmp/agenturm-mcp-negative-association",
+        "head": "bb81cc7ec49826facb534e419ba4734c595d968a",
+        "samples_ms": [
+          12.327026,
+          11.878134,
+          13.004709,
+          13.972891,
+          11.948637,
+          12.163712,
+          12.178425,
+          12.650212,
+          12.577776,
+          11.922525,
+          12.158175,
+          12.465635,
+          12.204138,
+          12.223115,
+          12.228765,
+          16.643519
+        ],
+        "complete_output_sha256": "6359bb16859696e938c7071ac9fe7b4c6fea3cdfa393ccab4a2c4369afac7b51",
+        "calls": 1,
+        "executions_present": false,
+        "probe_plan": [
+          "SCAN spans USING INDEX spans_mcp_execution_v1"
+        ]
+      },
+      {
+        "root": "/tmp/agenturm-mcp-negative-association",
+        "head": "bb81cc7ec49826facb534e419ba4734c595d968a",
+        "samples_ms": [
+          14.139721,
+          13.193996,
+          13.616767,
+          13.705422,
+          12.447553,
+          12.662631,
+          12.286168,
+          12.524513,
+          13.679489,
+          11.591617,
+          11.770577,
+          12.005608,
+          11.577809,
+          13.009128,
+          13.528588,
+          12.774469
+        ],
+        "complete_output_sha256": "6359bb16859696e938c7071ac9fe7b4c6fea3cdfa393ccab4a2c4369afac7b51",
+        "calls": 1,
+        "executions_present": false,
+        "probe_plan": [
+          "SCAN spans USING INDEX spans_mcp_execution_v1"
+        ]
+      },
+      {
+        "root": "/tmp/agenturm-derived-economics",
+        "head": "029719b024ee309f7b3caae1560d0a968060b0cc",
+        "samples_ms": [
+          56.086187,
+          57.913571,
+          62.126181,
+          48.458143,
+          51.766879,
+          61.622787,
+          63.507428,
+          53.25419,
+          72.473899,
+          51.68405,
+          51.146116,
+          50.048841,
+          50.143423,
+          53.033527,
+          52.618798,
+          50.930681
+        ],
+        "complete_output_sha256": "6359bb16859696e938c7071ac9fe7b4c6fea3cdfa393ccab4a2c4369afac7b51",
+        "calls": 1,
+        "executions_present": false,
+        "probe_plan": [
+          "SCAN spans USING INDEX spans_mcp_execution_v1"
+        ]
+      }
+    ],
+    "positive": [
+      {
+        "root": "/tmp/agenturm-derived-economics",
+        "head": "029719b024ee309f7b3caae1560d0a968060b0cc",
+        "samples_ms": [
+          31.946481,
+          31.248148,
+          29.115503,
+          30.182118,
+          29.34094,
+          30.170898,
+          26.26559,
+          25.854046,
+          27.12139,
+          27.4035,
+          26.818019,
+          26.758522,
+          26.099034,
+          28.042627,
+          29.78305,
+          27.31729
+        ],
+        "complete_output_sha256": "aa5b993618dc7197f826b632f84a247e3a52660a0c0c8b29ad91223e8f04254f",
+        "calls": 0,
+        "executions_present": false,
+        "probe_plan": [
+          "SCAN spans USING INDEX spans_mcp_execution_v1"
+        ]
+      },
+      {
+        "root": "/tmp/agenturm-mcp-negative-association",
+        "head": "bb81cc7ec49826facb534e419ba4734c595d968a",
+        "samples_ms": [
+          8.141035,
+          8.318426,
+          8.400133,
+          8.591427,
+          8.644348,
+          8.802715,
+          8.405159,
+          8.443601,
+          9.246493,
+          8.606304,
+          8.154264,
+          7.933707,
+          7.993923,
+          8.15316,
+          8.393326,
+          8.576626
+        ],
+        "complete_output_sha256": "aa5b993618dc7197f826b632f84a247e3a52660a0c0c8b29ad91223e8f04254f",
+        "calls": 0,
+        "executions_present": false,
+        "probe_plan": [
+          "SCAN spans USING INDEX spans_mcp_execution_v1"
+        ]
+      },
+      {
+        "root": "/tmp/agenturm-mcp-negative-association",
+        "head": "bb81cc7ec49826facb534e419ba4734c595d968a",
+        "samples_ms": [
+          8.381812,
+          8.08153,
+          8.113457,
+          8.823681,
+          9.325253,
+          11.604915,
+          15.436551,
+          15.266067,
+          15.398405,
+          11.717435,
+          8.428839,
+          8.741485,
+          9.211613,
+          11.299391,
+          12.794566,
+          11.849214
+        ],
+        "complete_output_sha256": "aa5b993618dc7197f826b632f84a247e3a52660a0c0c8b29ad91223e8f04254f",
+        "calls": 0,
+        "executions_present": false,
+        "probe_plan": [
+          "SCAN spans USING INDEX spans_mcp_execution_v1"
+        ]
+      },
+      {
+        "root": "/tmp/agenturm-derived-economics",
+        "head": "029719b024ee309f7b3caae1560d0a968060b0cc",
+        "samples_ms": [
+          27.636551,
+          27.395093,
+          29.837566,
+          28.463737,
+          29.496172,
+          28.707937,
+          37.786215,
+          36.623627,
+          34.610801,
+          33.516628,
+          27.474527,
+          27.189025,
+          27.04168,
+          35.05034,
+          27.314484,
+          32.753289
+        ],
+        "complete_output_sha256": "aa5b993618dc7197f826b632f84a247e3a52660a0c0c8b29ad91223e8f04254f",
+        "calls": 0,
+        "executions_present": false,
+        "probe_plan": [
+          "SCAN spans USING INDEX spans_mcp_execution_v1"
+        ]
+      }
+    ]
+  },
+  "historical_probe_only": {
+    "source_sha256": "a88727a946d8ba0e1dd3b45ed100061d9365496e1dba9d15e9e4f17881df0357",
+    "spans": 31000,
+    "executions_present": false,
+    "samples_ms": [
+      4.681798,
+      0.013582,
+      0.006774,
+      0.006111,
+      0.006593,
+      0.006276,
+      0.00597,
+      0.00601,
+      0.006204,
+      0.006345,
+      0.006023,
+      0.006051
+    ],
+    "query_plan": [
+      "SCAN spans USING INDEX spans_mcp_execution_v1"
+    ],
+    "qualification": "Immutable read-only existing synthetic raw fixture; this is only the added absence probe, not a complete historical Store-page benchmark."
+  }
+}

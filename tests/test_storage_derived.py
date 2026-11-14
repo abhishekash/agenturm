@@ -251,8 +251,8 @@ class DerivedStorageTests(unittest.TestCase):
         read = threading.Event()
         release = threading.Event()
 
-        def paused(db, trace_id):
-            result = derive_trace(db, trace_id)
+        def paused(db, trace_id,**kwargs):
+            result = derive_trace(db, trace_id,**kwargs)
             read.set()
             if not release.wait(5):
                 raise RuntimeError("release timeout")
@@ -282,8 +282,8 @@ class DerivedStorageTests(unittest.TestCase):
         release = threading.Event()
         read = threading.Event()
 
-        def paused(db, trace_id):
-            result = derive_trace(db, trace_id)
+        def paused(db, trace_id,**kwargs):
+            result = derive_trace(db, trace_id,**kwargs)
             read.set()
             if not release.wait(5):
                 raise RuntimeError("release timeout")

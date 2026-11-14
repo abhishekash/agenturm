@@ -76,9 +76,9 @@ def initialize(db):
 
 def session_for_trace(db, trace_id):
     """Resolve identity over all sources, independently of evidence sampling."""
-    from .core import SESSION_KEYS, _session_value
+    from .core import SESSION_KEYS
 
-    db.create_function("derived_session_value", 1, _session_value)
+    _prepare_connection(db)
     def source_value(key):
         path = "'$.\"" + key + "\"'"
         value = f"json_extract(attributes,{path})"
@@ -149,10 +149,9 @@ def _compact_statistics(values):
                       separators=(',', ':'))
 
 
-def aggregate_spans(db, trace_id, summary):
+def _statistics_callback():
     from .core import INPUT_TOKEN_KEYS, OUTPUT_TOKEN_KEYS, TOKEN_BREAKDOWN_KEYS
     from .findings import mcp_result_error
-
     fields = {"input_tokens": INPUT_TOKEN_KEYS, "output_tokens": OUTPUT_TOKEN_KEYS,
               **TOKEN_BREAKDOWN_KEYS}
     cost_bit = 1 << len(fields)
@@ -196,80 +195,106 @@ def aggregate_spans(db, trace_id, summary):
                       active=name == "agent.run" and attrs.get("agent.run.state") == "running")
         return _compact_statistics(values)
 
-    db.create_function("derived_statistics", 3, statistics)
-    db.execute("""INSERT INTO derived_span_stats_v1(trace_id,span_id,stats)
-        SELECT s.trace_id,s.span_id,derived_statistics(
-            CASE WHEN length(CAST(s.attributes AS BLOB))<=65536 THEN s.attributes ELSE NULL END,
-            substr(s.name,1,256),s.status)
-        FROM spans s WHERE s.trace_id=? AND NOT EXISTS (
-            SELECT 1 FROM derived_span_stats_v1 d WHERE d.trace_id=s.trace_id AND d.span_id=s.span_id)
-        """, (trace_id,))
-    db.execute("DROP TABLE IF EXISTS temp.derived_usage")
+    return statistics
+
+
+def _prepare_connection(db):
+    """Connection-local scratch and pure functions; never retained source facts.
+
+    The private temp table is the preparation marker. It and the functions die
+    with the caller's existing connection (normally one 16-trace write chunk).
+    A rolled-back CREATE is prepared again on the next call.
+    """
+    if db.execute("SELECT 1 FROM sqlite_temp_master WHERE name='derived_usage' AND type='table'").fetchone():
+        return
+    from .core import _session_value
+    db.create_function("derived_statistics", 3, _statistics_callback(), deterministic=True)
+    db.create_function("derived_session_value", 1, _session_value, deterministic=True)
     db.execute("""CREATE TEMP TABLE derived_usage (
         span_id TEXT PRIMARY KEY, parent_span_id TEXT, stats TEXT, leaves INTEGER)""")
-    db.execute("""INSERT INTO derived_usage(span_id,parent_span_id,stats)
-        SELECT s.span_id,s.parent_span_id,d.stats FROM spans s
-        JOIN derived_span_stats_v1 d ON d.trace_id=s.trace_id AND d.span_id=s.span_id
-        WHERE s.trace_id=?""", (trace_id,))
-    db.execute("UPDATE derived_usage SET leaves=json_extract(stats,'$.mask')")
-    # UNION (not UNION ALL) terminates malformed cyclic parent graphs as well.
-    for index in range(len(fields) + 1):
-        bit = 1 << index
-        db.execute("""WITH RECURSIVE ancestors(ancestor) AS (
-            SELECT parent_span_id FROM derived_usage WHERE leaves & ? != 0
-            UNION SELECT p.parent_span_id FROM ancestors a
-                JOIN derived_usage p ON p.span_id=a.ancestor
-        ) UPDATE derived_usage SET leaves=leaves & ~?
-            WHERE span_id IN (SELECT ancestor FROM ancestors)""", (bit, bit))
-    totals = db.execute("""SELECT COUNT(*) AS count,MIN(start_ns) AS start,
-        MAX(end_ns) AS end FROM spans WHERE trace_id=?""", (trace_id,)).fetchone()
-    summary.update(span_count=totals["count"], start_unix_nano=totals["start"],
-                   end_unix_nano=totals["end"],
-                   duration_ms=round((totals["end"] - totals["start"]) / 1e6, 3))
-    for index, field in enumerate(fields):
-        row = db.execute(f"""SELECT COUNT(*) AS count,
-            SUM(json_extract(stats,'$.{field}')) AS total
-            FROM derived_usage WHERE leaves & ? != 0""", (1 << index,)).fetchone()
-        summary[field] = int(row["total"] or 0)
-        summary[field + "_reported"] = bool(row["count"])
-    row = db.execute("""SELECT
-        SUM(CASE WHEN leaves & ? != 0 THEN json_extract(stats,'$.cost') ELSE 0 END) AS cost,
-        SUM(leaves & 3 != 0) AS usage_count,
-        SUM(leaves & ? != 0) AS cost_count,
-        SUM(CASE WHEN leaves & ? != 0 AND NOT COALESCE(json_extract(stats,'$.complete'),0) THEN 1 ELSE 0 END) AS unknown,
-        MAX(json_extract(stats,'$.error')) AS error,
-        MAX(json_extract(stats,'$.active')) AS active,
-        MAX(json_extract(stats,'$.unsupported')) AS unsupported,
-        MAX(json_extract(stats,'$.model_truncated')) AS model_truncated FROM derived_usage""",
-                     (cost_bit, cost_bit, cost_bit)).fetchone()
-    summary["known_cost_usd"] = round(row["cost"] or 0, 8)
-    summary["cost_complete"] = bool(row["usage_count"] and
-                                    row["usage_count"] == row["cost_count"] and not row["unknown"])
-    summary["active"] = bool(row["active"])
-    summary["status"] = ("ERROR" if row["error"] else "INCOMPLETE"
-                         if summary.get("outcome") and summary["outcome"] != "completed"
-                         else "UNKNOWN" if row["unsupported"] else "RUNNING" if row["active"] else "OK")
-    summary["usage_complete"] = not bool(row["unsupported"])
-    summary["status_complete"] = not bool(row["unsupported"])
-    if row["unsupported"]:
-        for field in fields:
-            summary[field] = None
-            summary[field + "_reported"] = None
-        summary["known_cost_usd"] = None
-        summary["cost_complete"] = False
-        summary["active"] = None
-    services = db.execute("""SELECT substr(service,1,128),length(service)<=128
-        FROM spans WHERE trace_id=? GROUP BY service ORDER BY service LIMIT ?""",
-                          (trace_id, GROUP_LIMIT + 1)).fetchall()
-    summary["services"] = [r[0] for r in services[:GROUP_LIMIT]]
-    summary["services_complete"] = len(services) <= GROUP_LIMIT and all(r[1] for r in services)
-    models = [r[0] for r in db.execute("""SELECT DISTINCT json_extract(stats,'$.model')
-        FROM derived_usage WHERE json_extract(stats,'$.model') IS NOT NULL ORDER BY 1 LIMIT ?""",
-                                      (GROUP_LIMIT + 1,))]
-    summary["models"] = models[:GROUP_LIMIT]
-    summary["models_complete"] = (len(models) <= GROUP_LIMIT and not row["unsupported"]
-                                  and not row["model_truncated"])
-    db.execute("DROP TABLE derived_usage")
+
+
+def aggregate_spans(db, trace_id, summary):
+    from .core import INPUT_TOKEN_KEYS, OUTPUT_TOKEN_KEYS, TOKEN_BREAKDOWN_KEYS
+    fields = {"input_tokens": INPUT_TOKEN_KEYS, "output_tokens": OUTPUT_TOKEN_KEYS,
+              **TOKEN_BREAKDOWN_KEYS}
+    cost_bit = 1 << len(fields)
+    _prepare_connection(db)
+    # Clear before every trace, including after an interrupted/rolled-back
+    # caller; shared span IDs from a previous trace must never join this one.
+    db.execute("DELETE FROM temp.derived_usage")
+    try:
+        db.execute("""INSERT INTO derived_span_stats_v1(trace_id,span_id,stats)
+            SELECT s.trace_id,s.span_id,derived_statistics(
+                CASE WHEN length(CAST(s.attributes AS BLOB))<=65536 THEN s.attributes ELSE NULL END,
+                substr(s.name,1,256),s.status)
+            FROM spans s WHERE s.trace_id=? AND NOT EXISTS (
+                SELECT 1 FROM derived_span_stats_v1 d WHERE d.trace_id=s.trace_id AND d.span_id=s.span_id)
+            """, (trace_id,))
+        db.execute("""INSERT INTO derived_usage(span_id,parent_span_id,stats)
+            SELECT s.span_id,s.parent_span_id,d.stats FROM spans s
+            JOIN derived_span_stats_v1 d ON d.trace_id=s.trace_id AND d.span_id=s.span_id
+            WHERE s.trace_id=?""", (trace_id,))
+        db.execute("UPDATE derived_usage SET leaves=json_extract(stats,'$.mask')")
+        # UNION (not UNION ALL) terminates malformed cyclic parent graphs as well.
+        for index in range(len(fields) + 1):
+            bit = 1 << index
+            db.execute("""WITH RECURSIVE ancestors(ancestor) AS (
+                SELECT parent_span_id FROM derived_usage WHERE leaves & ? != 0
+                UNION SELECT p.parent_span_id FROM ancestors a
+                    JOIN derived_usage p ON p.span_id=a.ancestor
+            ) UPDATE derived_usage SET leaves=leaves & ~?
+                WHERE span_id IN (SELECT ancestor FROM ancestors)""", (bit, bit))
+        totals = db.execute("""SELECT COUNT(*) AS count,MIN(start_ns) AS start,
+            MAX(end_ns) AS end FROM spans WHERE trace_id=?""", (trace_id,)).fetchone()
+        summary.update(span_count=totals["count"], start_unix_nano=totals["start"],
+                       end_unix_nano=totals["end"],
+                       duration_ms=round((totals["end"] - totals["start"]) / 1e6, 3))
+        for index, field in enumerate(fields):
+            row = db.execute(f"""SELECT COUNT(*) AS count,
+                SUM(json_extract(stats,'$.{field}')) AS total
+                FROM derived_usage WHERE leaves & ? != 0""", (1 << index,)).fetchone()
+            summary[field] = int(row["total"] or 0)
+            summary[field + "_reported"] = bool(row["count"])
+        row = db.execute("""SELECT
+            SUM(CASE WHEN leaves & ? != 0 THEN json_extract(stats,'$.cost') ELSE 0 END) AS cost,
+            SUM(leaves & 3 != 0) AS usage_count,
+            SUM(leaves & ? != 0) AS cost_count,
+            SUM(CASE WHEN leaves & ? != 0 AND NOT COALESCE(json_extract(stats,'$.complete'),0) THEN 1 ELSE 0 END) AS unknown,
+            MAX(json_extract(stats,'$.error')) AS error,
+            MAX(json_extract(stats,'$.active')) AS active,
+            MAX(json_extract(stats,'$.unsupported')) AS unsupported,
+            MAX(json_extract(stats,'$.model_truncated')) AS model_truncated FROM derived_usage""",
+                         (cost_bit, cost_bit, cost_bit)).fetchone()
+        summary["known_cost_usd"] = round(row["cost"] or 0, 8)
+        summary["cost_complete"] = bool(row["usage_count"] and
+                                        row["usage_count"] == row["cost_count"] and not row["unknown"])
+        summary["active"] = bool(row["active"])
+        summary["status"] = ("ERROR" if row["error"] else "INCOMPLETE"
+                             if summary.get("outcome") and summary["outcome"] != "completed"
+                             else "UNKNOWN" if row["unsupported"] else "RUNNING" if row["active"] else "OK")
+        summary["usage_complete"] = not bool(row["unsupported"])
+        summary["status_complete"] = not bool(row["unsupported"])
+        if row["unsupported"]:
+            for field in fields:
+                summary[field] = None
+                summary[field + "_reported"] = None
+            summary["known_cost_usd"] = None
+            summary["cost_complete"] = False
+            summary["active"] = None
+        services = db.execute("""SELECT substr(service,1,128),length(service)<=128
+            FROM spans WHERE trace_id=? GROUP BY service ORDER BY service LIMIT ?""",
+                              (trace_id, GROUP_LIMIT + 1)).fetchall()
+        summary["services"] = [r[0] for r in services[:GROUP_LIMIT]]
+        summary["services_complete"] = len(services) <= GROUP_LIMIT and all(r[1] for r in services)
+        models = [r[0] for r in db.execute("""SELECT DISTINCT json_extract(stats,'$.model')
+            FROM derived_usage WHERE json_extract(stats,'$.model') IS NOT NULL ORDER BY 1 LIMIT ?""",
+                                          (GROUP_LIMIT + 1,))]
+        summary["models"] = models[:GROUP_LIMIT]
+        summary["models_complete"] = (len(models) <= GROUP_LIMIT and not row["unsupported"]
+                                      and not row["model_truncated"])
+    finally:
+        db.execute("DELETE FROM temp.derived_usage")
 
 
 def task_outcome_for_trace(db, trace_id):
@@ -317,7 +342,7 @@ def task_outcome_for_trace(db, trace_id):
     return state, stamp
 
 
-def derive_trace(db, trace_id, workflow_patterns=False):
+def derive_trace(db, trace_id, workflow_patterns=False, *, operation_preparation=None):
     # Lazy import keeps the existing public normalization/summary API unchanged.
     from .core import (summarize, summarize_progress, apply_outcome, _activity_for,
                        _progress_from_log, _recorded_activity_agents, _review_owner)
@@ -415,6 +440,7 @@ def derive_trace(db, trace_id, workflow_patterns=False):
     summary["session_id"] = session_for_trace(db, trace_id)
     summary["session_complete"] = True
     activity = _activity_for(spans, logs)
+    if operation_preparation is not None:operation_preparation.bind(activity)
     summary["activity_terms"] = sorted({str(value)[:200] for item in activity
         for value in (item["domain"], item["action"], item["subject"], item["actor"]) if value})
     search_keys = ("tool.name", "tool.type", "gen_ai.tool.name", "gen_ai.tool.type", "exception.type",
@@ -452,7 +478,8 @@ def derive_trace(db, trace_id, workflow_patterns=False):
     timestamp = db.execute("SELECT last_ns FROM trace_activity WHERE trace_id=?", (trace_id,)).fetchone()
     timestamp = timestamp[0] if timestamp else summary["end_unix_nano"]
     receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
-    findings = analyze(spans, logs, outcome,activity=activity,receiver=receiver,outcome_owner=summary.get('review_owner'))
+    findings = analyze(spans, logs, outcome,activity=activity,receiver=receiver,outcome_owner=summary.get('review_owner'),
+        operation_preparation=operation_preparation)
     if workflow_patterns:
         from .workflow_patterns import analyze_patterns
         findings = [item for item in findings if item['kind'] != 'repeated_tool_error']

@@ -80,6 +80,9 @@ class MCPInventoryBatchTests(unittest.TestCase):
         self.assertEqual(self.store.mcp_page(session_id='one')['summary']['metric_calls'], 0)
 
     def test_one_group_materialization_and_existing_execution_trace_indexes(self):
+        # Exercise the authoritative association plan, including its existing
+        # trace indexes, with an actual execution candidate in the snapshot.
+        self.store.ingest([record(30, 'parent', 'one', execution=True)])
         statements = []
         original = self.store._connect
         @contextmanager

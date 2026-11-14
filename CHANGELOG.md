@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Publish ingested span identities atomically, coalesce already-completed derived repairs, reuse bounded sanitized per-trace facts and connection-local aggregation state, and skip provably empty MCP execution joins. Preserve redaction, source ownership and snapshot certification; retain failed cadence measurements while full resource acceptance remains open.
+
 - Reuse qualified retry references and index exact bounded linked-log lookups during Activity replay. Preserve source semantics and disclose the index footprint and write cost; complete-monitor resource acceptance remains separate.
 
 - Put recorded edits, paths, checks and issues before agent claims in the session Overview, with explicit evidence coverage. Share UI-free source preparation with headless consumers and fence optional native log batches to the receiver inside their write transaction.

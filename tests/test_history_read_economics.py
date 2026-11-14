@@ -22,6 +22,12 @@ class HistoryReadEconomicsTests(unittest.TestCase):
         self.store.ingest([normalize_native(dict(trace_id='a'*32,span_id='b'*16,name='MCP call',
             start_unix_nano=1,end_unix_nano=2,resource_attributes={'observatory.source_id':7},
             attributes={'mcp.method.name':'tools/call','mcp.server.name':'fixture','mcp.tool.name':'search'}),'fixture')])
+        # The authoritative execution join is needed only when a candidate
+        # exists. Keep this index assertion on that positive path without
+        # adding another record to the legacy numeric-source count above.
+        self.store.ingest([normalize_native(dict(trace_id='a'*32,span_id='c'*16,
+            parent_span_id='b'*16,name='execute MCP tool',start_unix_nano=1,end_unix_nano=2,
+            attributes={'gen_ai.tool.type':'MCPTool','gen_ai.tool.name':'search'}),'fixture')])
         queries=[];original=self.store._connect;original_read=self.store._read
         @contextmanager
         def traced():
@@ -94,11 +100,11 @@ class HistoryReadEconomicsTests(unittest.TestCase):
         with self.store._connect() as db:
             db.execute("UPDATE trace_summaries SET summary_json=json_set(summary_json,'$.task','Stale task')")
         calls=0
-        def interrupted(db,trace):
+        def interrupted(db,trace,**kwargs):
             nonlocal calls
             calls+=1
             if calls==20:raise RuntimeError('Simulated rebuild interruption')
-            return derive_trace(db,trace)
+            return derive_trace(db,trace,**kwargs)
         ids=[row['trace_id'] for row in records]
         with patch('observatory.storage_derived.derive_trace',side_effect=interrupted),self.assertRaises(RuntimeError):
             self.store._refresh_summaries(ids)
