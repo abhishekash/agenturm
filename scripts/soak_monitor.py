@@ -39,6 +39,68 @@ from scripts.validation_support import (application_revision,bind_application,ha
     fresh_schema_manifest,prepare_raw_clone,verify_named_indexes,readonly)
 
 
+class ReadinessIndexError(RuntimeError):
+    """A successful health response reported a fatal indexing error."""
+
+    def __init__(self, observation):
+        self.observation=dict(observation)
+        super().__init__('Receiver reported an indexing error ('+observation['indexing_error_kind']+')')
+
+
+def _readiness_observation(health, *, phase, status, polls, connection_errors, elapsed):
+    """Allowlisted diagnostics only; health may contain captured source data."""
+    source=health if isinstance(health,dict)else {}
+    indexing=source.get('indexing')
+    local=source.get('local_agents')
+    indexing=indexing if isinstance(indexing,dict)else {}
+    local=local if isinstance(local,dict)else {}
+    error=indexing.get('error')
+    kind=('sqlite_database_locked'if type(error)is str and error.strip()=='database is locked'
+          else 'reported_indexing_error'if error else None)
+    stage=indexing.get('stage')
+    stages={'Preparing indexed history','Refreshing ownership and run summaries',
+        'Indexing incoming source changes','Refreshing incoming finding evidence',
+        'History migration failed; restart to resume','Incoming derivation failed','Ready'}
+    processed=indexing.get('processed')
+    return dict(phase=phase if phase in {'initial','restart','final'}else 'readiness',status=status,
+        polls=polls,connection_errors=connection_errors,elapsed_seconds=elapsed,
+        health_response_observed=isinstance(health,dict),
+        health_metadata_basis='last_successful_health_response'if isinstance(health,dict)else 'unavailable',
+        indexing_ready=indexing.get('ready')if type(indexing.get('ready'))is bool else None,
+        indexing_error=bool(error),indexing_error_kind=kind,
+        indexing_stage=stage if type(stage)is str and stage in stages else None,
+        indexed_records=processed if type(processed)is int and 0<=processed<=2**53-1 else None,
+        native_initial_poll_complete=local.get('initial_poll_complete')
+            if type(local.get('initial_poll_complete'))is bool else None)
+
+
+def wait_ready(api, timeout=25, *, observations=None, phase='initial'):
+    """Keep ordinary startup waiting; fail on an explicit indexing error."""
+    started=time.monotonic();deadline=started+timeout
+    polls=0;connection_errors=0;health=None
+    def record(status):
+        observation=_readiness_observation(health,phase=phase,status=status,polls=polls,
+            connection_errors=connection_errors,elapsed=time.monotonic()-started)
+        if observations is not None:
+            observations.append(observation)
+            del observations[:-8]
+        return observation
+    while time.monotonic()<deadline:
+        try:
+            polls+=1;health=api.get('/api/health')
+        except OSError:
+            connection_errors+=1
+        else:
+            if health.get('indexing',{}).get('error'):
+                raise ReadinessIndexError(record('indexing_error'))
+            if (health.get('indexing',{}).get('ready')is True
+                    and health.get('local_agents',{}).get('initial_poll_complete')is True):
+                record('ready');return health
+        time.sleep(.2)
+    record('timeout')
+    raise RuntimeError('Receiver readiness deadline exceeded')
+
+
 def index_proof(path,receiver,observed_receiver):
     """Active-soak metadata only; never used in an untouched idle window."""
     try:
@@ -337,6 +399,7 @@ def run(args):
     endpoint=f'http://127.0.0.1:{port}'
     command=[sys.executable,str(Path(__file__).resolve())]
     receiver=None;actor=None;streams=[];errors=[];samples=[];latencies={};verified=[];reconnects=[]
+    readiness_observations=[]
     expected_reviews=set();rendered_approvals=set();ui_pids=[];exit_statuses=[];approval_latencies=[]
     checked_receivers=set()
     def spawn(mode):
@@ -401,15 +464,6 @@ def run(args):
                 return
             time.sleep(.1)
         errors.append('cockpit did not finish graceful exit within eight seconds')
-    def wait_ready(api, timeout=25):
-        deadline=time.monotonic()+timeout
-        while time.monotonic()<deadline:
-            try:
-                health=api.get('/api/health')
-                if health.get('indexing',{}).get('ready') and health.get('local_agents',{}).get('initial_poll_complete'):return health
-            except OSError:pass
-            time.sleep(.2)
-        raise RuntimeError('Receiver readiness deadline exceeded')
     def stop_receiver():
         nonlocal receiver
         if not receiver or receiver.pid in checked_receivers:return
@@ -433,7 +487,8 @@ def run(args):
             if token_file.exists():break
             if receiver.poll() is not None:raise RuntimeError('Receiver failed; see receiver.log')
             time.sleep(.1)
-        api=Api(endpoint,token_file.read_text().strip());initial_health=wait_ready(api,timeout=600 if args.history or getattr(args,'seed',None) else 25)
+        api=Api(endpoint,token_file.read_text().strip());initial_health=wait_ready(api,
+            timeout=600 if args.history or getattr(args,'seed',None) else 25,observations=readiness_observations)
         registered_receiver=initial_health['receiver_id']
         initial_readiness_seconds=time.monotonic()-started
         if expected_schema:
@@ -533,7 +588,7 @@ def run(args):
             # Restart at phase 5 boundaries, never skip a pending input phase.
             if last_phase%6==5 and elapsed>args.duration*.33 and not receiver_restart:
                 before=time.monotonic();old_id=health['receiver_id'];stop_receiver()
-                time.sleep(8);receiver=spawn('receiver');new=wait_ready(api)
+                time.sleep(8);receiver=spawn('receiver');new=wait_ready(api,observations=readiness_observations,phase='restart')
                 if new['receiver_id']!=old_id:errors.append('Receiver identity changed on restart')
                 reconnects.append(dict(kind='receiver',at=elapsed,seconds=time.monotonic()-before));receiver_restart=True
                 next_phase=time.monotonic()+args.phase_seconds
@@ -543,7 +598,7 @@ def run(args):
                 next_phase=time.monotonic()+args.phase_seconds
                 reconnects.append(dict(kind='cockpit',at=elapsed))
             time.sleep(.15)
-        final_health=wait_ready(api)
+        final_health=wait_ready(api,observations=readiness_observations,phase='final')
         final_index_proof=index_proof(base/'telemetry.db',registered_receiver,final_health.get('receiver_id'))
         if active_index_state(
                 final_health.get('indexing')or {},final_index_proof,
@@ -645,6 +700,7 @@ def run(args):
         storage_after=storage_after,
         seeded_history=dict(traces=5751,spans=31000,logs=41000,days=35,newest_age_days=2) if args.history else None,
         fixture_preparation_seconds=preparation_seconds,initial_readiness_seconds=locals().get('initial_readiness_seconds'),
+        readiness_observations=readiness_observations,
         completed_turns=len(workload.completed),verified_turns=len(verified),approval_requests=len(workload.requests),observed_approval_requests=len({row['cycle'] for row in observed_requests}),
         accepted_review_ids=len(accepted),persisted_review_ids=len(persisted),missing_review_ids=len(missing),
         expected_review_ids=len(expected_reviews),rendered_approval_inboxes=len(rendered_approvals),
