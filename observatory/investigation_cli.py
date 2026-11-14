@@ -130,8 +130,9 @@ def collect_source(api, event_id, reference):
         if (not isinstance(entry, dict) or not isinstance(entry.get('scope'), dict)
                 or entry.get('id') != original.get('source_id') or entry.get('type') != original.get('source')):
             raise ValueError('Exact source record differs from the selected reference.')
-        if any(entry['scope'].get(key) != expected.get(key) for key in ('service', 'agent_id', 'session_id')):
-            raise ValueError('Exact source owner changed; evidence is withheld.')
+        identity_keys = ('service', 'agent_id', 'session_id', 'trace_id', 'span_id', 'turn_id')
+        if any(key not in entry['scope'] or entry['scope'][key] != expected.get(key) for key in identity_keys):
+            raise ValueError('Exact source owner/execution changed; evidence is withheld.')
         references.append({**entry['scope'], 'receiver_id': snapshot.receiver_id})
     if any(not _allowed(reference, snapshot) for reference in references):
         raise ValueError('Source capture policy forbids this evidence.')

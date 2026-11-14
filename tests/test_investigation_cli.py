@@ -85,7 +85,8 @@ class InvestigationCliTests(unittest.TestCase):
     def test_exact_source_rechecks_each_owner_and_original_reference(self):
         api = Api()
         api.source = dict(receiver_id='receiver', event_id='event', source_reference=match()['source_reference'],
-                          sources=[dict(type='log', id='b' * 64, scope=dict(service='sdk', agent_id='worker', session_id='session'), record={'output': 'Recorded'})])
+                          sources=[dict(type='log', id='b' * 64, scope=dict(service='sdk', agent_id='worker', session_id='session',
+                              trace_id='a' * 32, span_id=None, turn_id=None), record={'output': 'Recorded'})])
         self.assertEqual(collect_source(api, 'event', match()['source_reference'])['sources'][0]['record']['output'], 'Recorded')
         api.change_after = lambda api: setattr(api, 'policy', {'sessions': [dict(service='sdk', agent_id='worker',
                                                                session_id='session', capture_content=False)]})
@@ -122,7 +123,24 @@ class InvestigationCliTests(unittest.TestCase):
         api = Api()
         api.source = dict(receiver_id='receiver', event_id='event', source_reference=expected,
             sources=[dict(type='log', id='b' * 64, scope=dict(service='other', agent_id='other', session_id='other'), record={})])
-        with self.assertRaisesRegex(ValueError, 'owner changed'):
+        with self.assertRaisesRegex(ValueError, 'owner/execution changed'):
+            collect_source(api, 'event', expected)
+
+    def test_actual_source_execution_cannot_drift_beneath_correct_original_reference(self):
+        expected = match()['source_reference']
+        base_scope = {key: expected.get(key) for key in ('service', 'agent_id', 'session_id', 'trace_id', 'span_id', 'turn_id')}
+        for field in ('trace_id', 'span_id', 'turn_id'):
+            api = Api()
+            api.source = dict(receiver_id='receiver', event_id='event', source_reference=expected,
+                sources=[dict(type='log', id='b' * 64, scope={**base_scope, field: 'FOREIGN_EXECUTION'}, record={})])
+            with self.assertRaisesRegex(ValueError, 'owner/execution changed'):
+                collect_source(api, 'event', expected)
+        api = Api()
+        missing = dict(base_scope)
+        missing.pop('span_id')
+        api.source = dict(receiver_id='receiver', event_id='event', source_reference=expected,
+            sources=[dict(type='log', id='b' * 64, scope=missing, record={})])
+        with self.assertRaisesRegex(ValueError, 'owner/execution changed'):
             collect_source(api, 'event', expected)
 
     def test_stdout_stderr_and_exit_status_without_tty_or_color(self):
