@@ -2214,15 +2214,30 @@ class ObservatoryApp(App):
         page=self.query_one('#pages',TabbedContent).active
         selection=self.selected_source if page=='agents' or self.scope_value=='all' else self.scope_value
         item=getattr(self,'source_map',{}).get(selection) or {}
+        recorded_receiver=self.data.receiver_id
+        trace_proven=True
+        if page=='traces':
+            trace_owner=usage.get('review_owner') or {}
+            detail=self.data.detail or {}
+            recorded_receiver=(detail.get('receiver_id') if detail.get('trace_id')==identity and
+                detail.get('summary') is usage else usage.get('receiver_id'))
+            trace_proven=(type(usage.get('agent_count')) is int and usage['agent_count']==1 and
+                usage.get('agent_count_complete') is True and isinstance(trace_owner,dict) and
+                all(isinstance(trace_owner.get(key),str) and trace_owner[key] for key in ('producer','agent_id','session_id')) and
+                bool(recorded_receiver) and recorded_receiver==self.data.receiver_id)
+            item=dict(service=trace_owner['producer'],agent_id=trace_owner['agent_id'],
+                session_id=trace_owner['session_id'],trace_id=identity) if trace_proven else {}
         policy=review_capture_policy(item,self.data,scope_for(item,self.data,self.feed.api.endpoint))
+        if not trace_proven:policy['capture_content']=False
         # Capture checks stay live. Denied sources retain no content-derived key,
         # and a stale run title cannot reappear in the usage tooltip.
-        if policy.get('capture_content') is False:title='Selected execution (metadata-only)'
+        if policy.get('capture_content') is False:
+            title='Selected trace (metadata-only)' if page=='traces' else 'Selected execution (metadata-only)'
         owner={key:item.get(key) for key in ('id','source_id','service','agent_id','session_id',
             'trace_id','turn_id','run_start_ns','run_end_ns','capture_content','capture_revision')}
         inputs=None
         if policy.get('capture_content') is not False:
-            inputs=usage_render_key(usage,title,scope,identity,dict(receiver=self.data.receiver_id,
+            inputs=usage_render_key(usage,title,scope,identity,dict(receiver=self.data.receiver_id,recorded_receiver=recorded_receiver,
                 page=page,selection=selection,scope_value=self.scope_value,owner=owner,policy=policy,
                 capture_content=self.data.local_status.get('capture_content'),
                 capture_revision=self.data.local_status.get('capture_revision'),
