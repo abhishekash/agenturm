@@ -11,9 +11,15 @@ from .saved_tasks import (BRIEF_FIELDS, MAX_NOTES, TaskConflict, TaskError, Task
     backup_task_database, default_path, export_handoff, render_handoff)
 
 
+def _source_api(args):
+    from .terminal import Api,CockpitError
+    try:return Api(args.endpoint,args.token)
+    except CockpitError as exc:raise TaskError(str(exc)) from exc
+
+
 def add_task_parser(subparsers):
     parser = subparsers.add_parser('task', help='save tasks and prepare local handoffs',
-        description='Save work across agent sessions. These commands work without a receiver.',
+        description='Saved tasks work offline. Source-backed drafting/approval revalidates the exact receiver.',
         epilog='Example: agenturm task create --title "Fix refresh expiry" --workspace . '
                'Exit codes: 0 success, 2 invalid input/storage error, 3 revision conflict.')
     parser.add_argument('--tasks-db', help='saved-task database (or AGENTURM_TASKS_DB)')
@@ -35,6 +41,21 @@ def add_task_parser(subparsers):
     def guard(item):
         item.add_argument('--expected-revision', type=int, help='refuse changes if the task has changed since this revision')
 
+    draft=action('draft','prepare an editable source-backed draft without saving a task')
+    draft.add_argument('--review-file',type=Path,required=True,help='frozen exact Review JSON')
+    draft.add_argument('--endpoint',required=True,help='revalidate this exact receiver and source capture policy')
+    draft.add_argument('--token',help='receiver token; normal local token discovery also applies')
+    draft.add_argument('--workspace',help='explicit user mapping to a local checkout; receiver cwd is not local proof')
+    draft.add_argument('--task-id',help='include an existing task’s current human decisions and revision')
+    draft.add_argument('--format',choices=('json','markdown','html'),default='json')
+    draft.add_argument('-o','--output',type=Path,help='new .json/.md/.html artifact; Markdown/HTML companions are written')
+    approve=action('approve-draft','explicitly save reviewed draft text, preserving authored fields')
+    approve.add_argument('draft_file',type=Path)
+    approve.add_argument('--endpoint',required=True)
+    approve.add_argument('--token')
+    approve.add_argument('--title',help='title for a new task; an existing task title is never changed')
+    approve.add_argument('--workspace',default='',help='local workspace for a new task only')
+    guard(approve)
     listing = action('list', 'list the 1,000 most recently updated tasks')
     listing.add_argument('--all', action='store_true', help='include archived tasks')
     listing.add_argument('--offset', type=int, default=0, help='skip this many tasks to read the next page (default: 0)')
@@ -69,6 +90,8 @@ def add_task_parser(subparsers):
     handoff = action('handoff', 'print a brief or export new Markdown and HTML files', True)
     handoff.add_argument('--format', choices=('markdown', 'html', 'json'), default='markdown', help='stdout format (default: markdown)')
     handoff.add_argument('-o', '--output', type=Path, help='new .md/.html/.json path; Markdown and HTML companions are always created')
+    handoff.add_argument('--endpoint',help='revalidate source-backed continuity/Git sections; omitted sections stay withheld offline')
+    handoff.add_argument('--token')
     handoff.add_argument('--include-decision-history', action='store_true', help='include superseded decisions in stdout handoff')
     brief = action('brief', 'show or update structured task fields', True)
     brief.add_argument('--file', type=Path, help='bounded UTF-8 JSON object of structured brief fields')
@@ -134,10 +157,40 @@ def run_task_command(args, parser):
             path = backup_task_database(args.tasks_db or default_path(), args.destination)
             print(json.dumps({'format': 'agenturm-task-backup-v1', 'path': path}) if structured else path, flush=True)
             return 0
+        if args.task_action=='draft':
+            from .review_continuity import source_scope,bind_workspace,capture_review_workspace,freeze_workspace,editable_draft,policy_checker,draft_formats
+            from .terminal import Api
+            from .work_receipts import export_receipt
+            try:projection=json.loads(_read(args.review_file,3*1024*1024))
+            except (ValueError,RecursionError) as exc:raise TaskError('Review file must contain one frozen Review object.') from exc
+            source_scope(projection);check=policy_checker(_source_api(args),projection);check()
+            if args.workspace:
+                binding=bind_workspace(projection,args.workspace)
+                projection=freeze_workspace(projection,capture_review_workspace(projection,binding))
+                check()
+            task=TaskStore(args.tasks_db).get(args.task_id) if args.task_id else None
+            draft=editable_draft(projection,task);formats=draft_formats(draft);check()
+            if args.output:
+                files=export_receipt(args.output,formats)
+                print(json.dumps({'format':'agenturm-continuity-draft-export-v1','files':files}) if structured else '\n'.join(files),flush=True)
+            else:print(formats['json' if structured else args.format],end='',flush=True)
+            return 0
         store = TaskStore(args.tasks_db)
         action = args.task_action
         revision = getattr(args, 'expected_revision', None)
-        if action == 'list':
+        if action=='approve-draft':
+            from .review_continuity import validate_draft,policy_checker
+            from .terminal import Api
+            try:draft=validate_draft(json.loads(_read(args.draft_file,3*1024*1024)))
+            except (ValueError,RecursionError) as exc:raise TaskError(str(exc)) from exc
+            check=policy_checker(_source_api(args),draft['review']);check()
+            if draft.get('task_id'):
+                expected=revision if revision is not None else draft.get('task_revision')
+                result=store.approve_continuity(draft['task_id'],draft,expected_revision=expected,source_allowed=check())
+            else:
+                result=store.create(args.title or draft['title'],args.workspace,'',continuity_draft=draft,source_allowed=check())
+            text=result['id']
+        elif action == 'list':
             entries = store.list(args.all, offset=args.offset)
             total = store.count(args.all)
             next_offset = args.offset + len(entries) if args.offset + len(entries) < total else None
@@ -227,14 +280,28 @@ def run_task_command(args, parser):
             text = result['path']
         else:
             task = store.get(args.task_id)
+            source_policy=None
+            if args.endpoint:
+                from .terminal import Api
+                from .review_continuity import policy_checker
+                api=_source_api(args)
+                def source_policy(scope):
+                    # Only scopes already validated and persisted by approval/linking
+                    # are used here; the checker does not infer a new source owner.
+                    from .workflow_evidence import ExecutionScope
+                    from .review_facts import review_capture_policy
+                    from types import SimpleNamespace
+                    health=api.get('/api/health')
+                    if health.get('receiver_id')!=scope.get('receiver'):return False
+                    return review_capture_policy({},SimpleNamespace(receiver_id=health['receiver_id'],local_status=health.get('local_agents') or {}),ExecutionScope(**scope)).get('capture_content') is not False
             if args.output:
                 result = {'format': 'agenturm-task-export-v1', 'files': export_handoff(task, args.output,
-                    include_decision_history=args.include_decision_history)}
+                    include_decision_history=args.include_decision_history,source_policy=source_policy)}
                 text = '\n'.join(result['files'])
             else:
                 # Streaming output is the primary result; nothing else goes to stdout.
                 print(render_handoff(task, 'json' if structured else args.format,
-                    include_decision_history=args.include_decision_history), end='', flush=True)
+                    include_decision_history=args.include_decision_history,source_policy=source_policy), end='', flush=True)
                 return 0
         print(json.dumps(result, ensure_ascii=False, indent=2) if structured else text, flush=True)
         return 0

@@ -36,6 +36,12 @@ def receipt_markdown(projection):
         lines += ['### '+str(number)+'. '+kind.replace('_',' '), '',fenced(label), '',
                   fenced(json.dumps(identity,ensure_ascii=False,sort_keys=True,indent=2)), '']
     if not sources:lines+=['No source observations in this loaded window.', '']
+    if projection.get('workspace_observation'):
+        from .review_continuity import render_workspace
+        lines+=['## Frozen local Git observation','',fenced(render_workspace(projection['workspace_observation'])),'']
+    if projection.get('parallel_path_observations'):
+        from .review_continuity import render_parallel
+        lines+=['## Recorded parallel-work observations','',fenced(render_parallel(projection['parallel_path_observations'])),'']
     lines += ['## Frozen scope and capture', '',fenced(json.dumps({
         'format':projection['format'],'scope':projection['scope'],
         'captured_at':projection['captured_at'],'window':projection['window']},ensure_ascii=False,indent=2)), '']

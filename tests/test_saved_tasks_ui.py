@@ -56,7 +56,8 @@ class SelectedRunTests(unittest.TestCase):
         self.assertIn("cd -- '/tmp/local repo'", result['resume_command'])
         self.assertEqual(result['local_workspace'], '')  # A remote path is not a local checkout.
         feed.api.endpoint = 'http://127.0.0.1:4318'
-        self.assertEqual(capture_selected_run(owner)['local_workspace'], '/tmp/local repo')
+        # Loopback is a transport address, not proof of a matching local checkout.
+        self.assertEqual(capture_selected_run(owner)['local_workspace'], '')
         feed.snapshot.sessions[0]['latest_run'].update(known_cost_usd=0, cost_complete=False)
         self.assertIsNone(capture_selected_run(owner)['usage']['known_cost_usd'])
         self.assertEqual(feed.snapshot.sessions[0]['latest_run']['known_cost_usd'], 0)
