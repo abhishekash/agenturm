@@ -37,3 +37,6 @@ After the approved change, a bounded query-work diagnostic ran the captured old 
 The old query recorded approximately **1,257,000 VM operations**; the new query recorded approximately **1,082,000**, about **13.9% fewer**. VM instructions have unequal costs, and callback instrumentation changes execution. These are query-work observations, not CPU percentages, API p95, monitor CPU/RSS, cold-readiness or whole-method speedup claims. Exact SQL, parameters, both query plans, counts and hashes are preserved in [the diagnostic artifact](session-covered-query-work.json).
 
 The candidate is based on `1aa1948`; the artifact records the candidate runtime and regression-test file hashes. Frozen combined-build measurement remains the coordinator's next gate. This change does not close Stage B or any remaining resource target.
+
+
+The coordinator independently reviewed the primary-key equivalence and ran a combined Sessions/native-inventory gate on main through PR82: **21 tests passed in 14.316 seconds**. This confirms the query change integrates with the shared native dirty-index path. It does not close endpoint latency or whole-monitor budgets.
