@@ -9,7 +9,7 @@ from observatory.workflow_evidence import scope_for
 
 def snapshot(now=100, **values):
     return SimpleNamespace(**dict(dict(updated=now,error='',receiver_id='receiver-one',activity=[],
-        sessions=[],traces=[],local_status={},read_errors={}), **values))
+        sessions=[],traces=[],local_status={},read_errors={},indexing_ready=True,receiver_time_ns=int(now*1e9)), **values))
 
 
 def item(**values):
