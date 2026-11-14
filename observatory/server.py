@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
 from .agent_hierarchy import CAPABILITIES, HierarchyGraph
-from .core import Store, normalize_native, normalize_otlp, TRACE_ID
+from .core import Store, IndexNotReady, normalize_native, normalize_otlp, TRACE_ID
 from .otlp_proto import decode_trace_request
 from .logs import normalize_otlp_logs, decode_log_request
 from .metrics import normalize_otlp_metrics, decode_metric_request
@@ -88,6 +88,12 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
             return route
 
         def do_GET(self):
+            try:
+                self._read_GET()
+            except IndexNotReady as exc:
+                self._json(503, {'error': str(exc), 'indexing': exc.indexing})
+
+        def _read_GET(self):
             self._cache_version = None
             self._get_receiver_id = None
             route = self._route()
@@ -336,10 +342,13 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 if "span_limit" in query:
                     try:
                         limit = max(1, min(500, int(query.get("span_limit", [200])[0])))
-                        result = store.trace_overview(trace_id)
-                        span_page = store.span_page(trace_id, limit=limit,
-                            query=query.get("q", [""])[0].strip()[:200],
-                            span_filter=query.get("filter", ["all"])[0])
+                        def read_trace(db):
+                            result=store.trace_overview(trace_id,_db=db)
+                            page=store.span_page(trace_id,limit=limit,
+                                query=query.get("q",[""])[0].strip()[:200],
+                                span_filter=query.get("filter",["all"])[0],_db=db)
+                            return result,page
+                        result,span_page=store._derived_snapshot(read_trace)
                     except ValueError as exc:
                         self._json(400, {"error": str(exc)})
                         return
