@@ -915,12 +915,17 @@ class OpenCodeReader:
                             for index, block in enumerate(content[:MAX_PARTS_PER_MESSAGE]):
                                 if not isinstance(block, dict) or block.get("type") != "tool":
                                     continue
-                                inline_id = str(block.get("id") or f'{message_id}:tool:{index}')
+                                inline_id = (f'{message_id}:ordinal:{index}' if current_layout else
+                                             str(block.get("id") or f'{message_id}:tool:{index}'))
                                 if inline_id in known_part_ids:
                                     continue
                                 inline_state = dict(block.get("state") or {})
                                 if "output" not in inline_state and "content" in inline_state:
                                     inline_state["output"] = inline_state["content"]
+                                if current_layout:
+                                    timing=block.get('time') if isinstance(block.get('time'),dict) else {}
+                                    inline_state['time']={'start':timing.get('ran',timing.get('created')),
+                                                          'end':timing.get('completed')}
                                 inline = {"type": "tool", "tool": block.get("name") or "tool",
                                           "state": inline_state,
                                           "metadata": block.get("providerState") or {}}
