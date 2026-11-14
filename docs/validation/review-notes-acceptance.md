@@ -1,12 +1,12 @@
 # Review-notes acceptance audit
 
-Current snapshot: **2026-11-14T11:51:14.142427+00:00**, main **`e434fcf54b83a19ecdbb94a1e1712f4a43772ec6`**. Core E/F/G, replay and the acceptance harness are merged. **The complete review-notes plan is not yet accepted:** combined CI, current native-version qualification, final resource/soak/storage acceptance and external pilot/live-runtime evidence remain open.
+Current snapshot: **2026-11-14T12:23:07.335342+00:00**, main **`55c6244bf0c1caad2a22cd5c826020f50a677e54`**. Core E/F/G, replay, the acceptance harness, Sessions lookup and source-derived current native formats are merged. **All 12 current main CI checks passed; the complete plan is not yet accepted:** final HTTP/resource/soak/storage/terminal acceptance and external live/pilot evidence remain open.
 
 ## Current decision
 
 - **Delivered:** source-backed Overview; exact operation/Findings evidence; frozen Git and approved drafts; evidence-qualified MCP/Usage/progression; typed investigations; persistent shared headless attention; isolated acceptance harness.
-- **CI:** [combined main run 43591334638](https://github.com/abhishekash/agenturm/actions/runs/43591334638) is `in_progress` at this snapshot (8 success, 4 running). Earlier E `928cae0` and F `1c0b795` each passed 12 checks. Six superseded duplicate runs were intentionally cancelled. A cancellation or an earlier green head does not establish all-green CI for the rebased merge heads.
-- **Next delivery:** OpenCode 2.2.5 adapter/provenance/cache/reasoning positive qualification and Sessions covered-lookup `79ac99d` are pending integration. Do not attribute either to this frozen main yet.
+- **CI:** [main `55c6244` run 43592577149](https://github.com/abhishekash/agenturm/actions/runs/43592577149) completed successfully with all 12 jobs; [earlier main e434 run 43591334638](https://github.com/abhishekash/agenturm/actions/runs/43591334638) also completed all 12. Earlier corrected E/F green heads and six intentionally cancelled superseded duplicate runs remain historical, separately attributed.
+- **New merged delivery:** #86 Sessions lookup at `8e9d46f` and #87 source-derived current native formats/proof/provenance at `55c6244`. Remaining work is final accepted validation, not another runtime feature.
 - **Acceptance still open:** matched cold/idle/API targets, final one-hour soak, sustained RSS/modal retention, index/WAL growth and drains, live Claude/Pi, and consented reconstruction/resumption/repeat-use outcomes. Pilot denominator remains **0 participants / 0 sessions / 0 repeat-use observations**.
 
 ## Audit basis
@@ -24,8 +24,10 @@ The user-owned `agenturm-review-notes.md` is read-only and unchanged: SHA-256 `8
 | [#83](https://github.com/abhishekash/agenturm/pull/83) | MERGED | `ca9b51918a7932b492a1f67ccb2d066dde34ca95` | 12 success | `728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c` |
 | [#84](https://github.com/abhishekash/agenturm/pull/84) | MERGED | `3368e09cdf6cb7a4cb582e588e0959fc76ef5f40` | 12 success | `11a3b7b72e0e18f8d92650d6e14f57f3a8a72d3d` |
 | [#85](https://github.com/abhishekash/agenturm/pull/85) | MERGED | `b56a353654696941489a1d0853d1c68f1fc94c4c` | 4 cancelled, 8 success | `1aa1948f9723ac4da88a0b5e0ea93322bb8f0f39` |
+| [#86](https://github.com/abhishekash/agenturm/pull/86) | MERGED | `bdda67dceef40221f6ba704d205fe3cc6c4f59e7` | 12 success | `8e9d46fd0f75218705ac581447d69fc862b69d44` |
+| [#87](https://github.com/abhishekash/agenturm/pull/87) | MERGED | `e2c6a4d0a0a2a70a7e01e55acb228f0e0dbc22e9` | 11 success, 1 failure | `55c6244bf0c1caad2a22cd5c826020f50a677e54` |
 
-Earlier corrected E/F heads had complete green matrices before rebasing. Current merged PR81/82/85 duplicate runs were cancelled intentionally; main's active matrix is the combined gate. PR84 and the earlier PR79/80/83 head matrices remain historical successes. No new merge-head or combined all-green claim is made.
+Earlier corrected E/F heads had complete green matrices before rebasing. Merged PR81/82/85 duplicate runs were cancelled intentionally; completed full main e434 and main `55c6244` matrices are the combined evidence. PR84, PR86 and the earlier PR79/80/83 head matrices remain historical successes. PR87 head `e2c6a4d` retains one [Python 3.14 failure](https://github.com/abhishekash/agenturm/actions/runs/43592510668/job/132440055787); the later full main `55c6244` matrix passed independently. The earlier failure is neither removed nor assigned an unverified cause. The all-green claim applies exactly to those completed main matrices, not cancelled PR-head runs or unexecuted resource tests.
 
 The original E failures exposed positive fixtures missing required receiver/single-owner/typed-command proof. The corrected contract retained strict negative safeguards. The original F matrix exposed a real lightweight headless Review crash and doubled Activity traversal; the fix restored exact once-per-refresh visits and Review/native parity. These failure histories are retained in the JSON ledger and linked implementation reports. Focused gates overlap and are not summed as independent coverage.
 
@@ -36,13 +38,15 @@ The original E failures exposed positive fixtures missing required receiver/sing
 | Native concurrency, main e434fcf | Two real tmux cockpits plus one headless watcher; quiet baseline; exactly one fixture notification; 210 newer unrelated records per transition; acknowledgement/restart and exact remote resolution; all owned exits clean, no errors. | One generated generic native-contract scenario. Notification sink is mocked; no native request approved. Not alert precision or live OS/runtime compatibility. |
 | Baseline keyboard smoke 4 | 24 checks passed: prompt arrows/Home/End/read/section/help, 120×36/80×24/60×18, 50×14 too-small, normal quit and terminal restoration. | Functional baseline only; final candidate signal/modal/keyboard matrix remains open. |
 | Tiny baseline idle preflight 2 | No errors; cockpit/receiver clean exit; `smoke=true`, `publishable=false`. | Harness sanity only. No CPU/readiness/RSS target can be closed from this short run. |
+| Main e434 two-cycle modal/Investigate preflight | Two distinct Review scopes, Usage and Investigate source/back paths; no errors and clean owned exits. | Two cycles with no warmup are functional sanity only, not an RSS plateau or the planned 100-cycle retained-memory series. |
+| Tiny main `55c6244` candidate idle preflight | No errors, clean cockpit/receiver exit; `smoke=true`, `publishable=false`. | Tiny fixture and short interval; no accepted CPU/readiness/RSS comparison. |
 
 Raw local paths, exact source/harness heads and result hashes are recorded in the JSON ledger. Raw directories contain generated receiver credentials; publish only sanitized reports, not whole artifact directories.
 
 ## Resource acceptance ledger
 
 
-The targets remain **cold readiness <30 s**, **complete-monitor idle CPU <5% of one core**, and **Sessions/MCP p95 <100 ms** on a matched corpus/reference host. Different corpora and workloads are kept separate.
+The targets remain **cold readiness <30 s**, **complete-monitor idle CPU <5% of one core**, and **Sessions/MCP p95 <100 ms** on a matched corpus/reference host. Different corpora and workloads are kept separate. The PR79 Sessions and PR83 MCP numbers below are direct Store-method comparisons, **not actual HTTP**. Separate-process authenticated HTTP validation and production-index-normalized clones are being prepared before final quiet-window registration; no new accepted HTTP samples are reported here.
 
 | Experiment | What is supported | What remains open |
 | --- | --- | --- |
@@ -53,6 +57,7 @@ The targets remain **cold readiness <30 s**, **complete-monitor idle CPU <5% of 
 | [PR83 shared MCP grouping](https://github.com/abhishekash/agenturm/blob/ca9b51918a7932b492a1f67ccb2d066dde34ca95/docs/validation/mcp-inventory-grouping.md) | Same 6,047-trace corpus: both pairs lower median; first under-write p95 230.88→239.96 ms, unchanged-source repeat 343.53→307.98 ms. | Mixed tails; no general p95 improvement, both >100 ms. Retained inventory remains proportional to source population. |
 | [G isolated index cost](https://github.com/abhishekash/agenturm/blob/0ac4c7560e3395985e8ec79d9f6d32ba5a8374f7/docs/validation/typed-investigations.md) | 6,000 synthetic events: median build 608.53→4,017.29 ms; DB +19.4%; typed reads measured in isolation. | Predates final identity/dirty-queue/rename integration. No combined monitor resource acceptance. |
 | Merged PR84 source qualification / linked-log seeks | Frozen serialized output equivalence across 14 fixture groups; raw operation-fact projections 237→134; 46 focused tests pass. A narrow linked-log index has independent output/query gates; its timing is diagnostic. | Diagnostic profiler samples only; no controlled whole-cold or monitor CPU claim. |
+| [PR86 covered-log query](session-covered-lookup.html) | Exact frozen payload/order parity; 21 root integration tests in 14.316 seconds. Approximately 1,257,000 → 1,082,000 VM operations (~14% fewer) for one private-copy query. | Diagnostic query work only; not HTTP/API p95, complete-monitor CPU or target acceptance. |
 
 The earlier one-hour generated active/probed run reported DB 427.82 MiB and max DB+WAL 433.56 MiB, but it predates the final E/F/G/MCP combination. It does **not** establish a final normal-load memory plateau or WAL-growth bound. Final combined cold readiness, CPU, sustained RSS and DB/WAL acceptance have not been measured.
 
@@ -71,15 +76,15 @@ The earlier one-hour generated active/probed run reported DB 427.82 MiB and max 
 
 **Open resource acceptance**
 
-Read/source increments merged through #84; validation harness merged #85. Sessions covered-lookup 79ac99d is delivered, integration pending.
+Read/source increments merged through #84; harness #85 and covered-lookup #86 are merged. Final combined main `55c6244` CI passed all 12 checks.
 
 Code: [storage_activity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_activity.py), [storage_sessions.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_sessions.py), [storage_mcp.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_mcp.py), [read_connections.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/read_connections.py).
 
 Contract tests: [test_history_read_economics.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_history_read_economics.py), [test_idle_history_watch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_idle_history_watch.py), [test_session_projection_batch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_projection_batch.py).
 
-Cold <30 s, complete-monitor idle <5%, endpoint p95 <100 ms and final combined memory/WAL acceptance remain open. Endpoint/call-count results do not prove whole-monitor improvement.
+Cold readiness <30 s, complete-monitor idle CPU <5%, Sessions/MCP actual HTTP under-write p95 <100 ms and final combined memory/WAL acceptance remain open. Direct Store/query-work results do not prove those HTTP or whole-monitor targets.
 
-Controlled historical results stay workload-labelled. New tiny idle smoke is error-free but non-publishable; final frozen combined resource runs remain open.
+Historical controlled results retain workload boundaries. The #86 query VM diagnostic is not API latency; tiny baseline/candidate idle smokes are non-publishable. Actual separate-process HTTP and final frozen resource acceptance remain open.
 
 ### F2 · No default retention
 
@@ -119,15 +124,15 @@ Readiness/error/partial/interrupt are distinguished; missing data is not a zero-
 
 ### F5 · OpenCode step mistaken for turn
 
-**Legacy contract implemented; current-version qualification pending**
+**Implemented for source-derived current and legacy contracts**
 
-Merged [#67](https://github.com/abhishekash/agenturm/pull/67) / [#71](https://github.com/abhishekash/agenturm/pull/71).
+Legacy turn repairs merged #67/#71; current split-part/idle-boundary adapter and bounded membership proof merged #87 at 55c6244.
 
-Code: [opencode.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/opencode.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/workflow_evidence.py), [review_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/review_facts.py).
+Code: [opencode.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/opencode.py), [opencode_turns.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/opencode_turns.py), [opencode_turn_proof.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/opencode_turn_proof.py), [core.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/core.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/workflow_evidence.py).
 
-Contract tests: [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_opencode_turn_review.py), [test_turn_task_continuity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_turn_task_continuity.py).
+Contract tests: [test_current_native_schema.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_current_native_schema.py), [test_opencode_turn_proof.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_opencode_turn_proof.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_opencode_turn_review.py), [test_native_fixture_provenance.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_native_fixture_provenance.py).
 
-Legacy recorded user-parent membership joins prompt/assistant steps. OpenCode 2.2.5 uses a different persisted shape; adapter/idle-boundary proof and nonzero cache/reasoning accounting qualification are pending. Missing initiating text or membership stays unavailable; no proximity join.
+Source-derived OpenCode 2.2.5 intervals use recorded preceding/closing idle boundaries; steered prompts remain in the same interval. Unknown prefix stays exact-step, partial/clipped/epoch-conflicting membership and stale summaries withhold totals. Legacy IDs/parent behavior remain. Missing captured prompt or idle evidence is not invented. This is selected-format synthetic qualification, not a live-agent certification.
 
 ### F6 · Codex Review omits real evidence
 
@@ -140,6 +145,8 @@ Code: [local_agents.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a
 Contract tests: [test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_operation_hydration.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_operation_hydration.py).
 
 Native-shaped ingestion→Store→authenticated API→Review/export assertions cover edits/checks/text/usage. This is not universal producer-version compatibility; F26 provenance remains qualified.
+
+Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.
 
 ### F7 · Noisy attention signal
 
@@ -217,7 +224,7 @@ Unknown/unlinked coverage is separated from explicit requests. New collision/loo
 
 ### F13 · Strong MCP screen lacks qualified recommendations
 
-**Implemented and merged; combined CI pending**
+**Implemented and merged; current main CI passed**
 
 Merged #81 at 093bf878; shared-query economics merged #83 at 728e0ba.
 
@@ -225,7 +232,7 @@ Code: [terminal_ui.py](https://github.com/abhishekash/agenturm/blob/928cae06ea9f
 
 Contract tests: [test_explanation_integration.py](https://github.com/abhishekash/agenturm/blob/928cae06ea9f8703966c105aa02d42b2dd179f12/tests/test_explanation_integration.py), [test_evidence_explanations.py](https://github.com/abhishekash/agenturm/blob/928cae06ea9f8703966c105aa02d42b2dd179f12/tests/test_evidence_explanations.py).
 
-Selected-tool loaded-page outcome/duration denominators, small samples, actual configured-server unobserved context and keyboard flagged-call navigation are visible and tested. No response-correctness, all-history reliability or tool-deletion conclusion follows. Earlier corrected E head passed 12 checks; rebased/main combined CI is a separate unfinished gate.
+Selected-tool loaded-page outcome/duration denominators, small samples, actual configured-server unobserved context and keyboard flagged-call navigation are visible and tested. No response-correctness, all-history reliability or tool-deletion conclusion follows. Earlier corrected E head and current main `55c6244` each passed all 12 checks; final resources/live outcomes remain separate.
 
 ### F14 · Generic failures without useful evidence
 
@@ -243,13 +250,15 @@ Commands/exits/output roles, occurrence ownership, safe fingerprints and exact s
 
 **Partial resource acceptance**
 
-Merged indexed/scalar/source/Sessions/MCP increments through #84; validation harness merged #85. Covered-log followup 79ac99d is delivered, integration pending.
+Indexed/scalar/source/Sessions/MCP/replay increments and validation harness are merged through #86.
 
 Code: [storage_activity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_activity.py), [storage_derived.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_derived.py), [storage_sessions.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_sessions.py), [storage_mcp.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/storage_mcp.py).
 
 Contract tests: [test_cockpit_read_paths.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_cockpit_read_paths.py), [test_session_projection_batch.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_projection_batch.py), [test_history_read_economics.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_history_read_economics.py).
 
 Indexed Activity/scalar rollups and bounded source reads replace repeated full-history Activity expansion. Remaining retained MCP grouping, cold migration and combined monitor cost are material and not closed.
+
+The #86 covered query removes one redundant aggregation with unchanged payload and about 14% fewer VM steps in a private-copy diagnostic. Actual HTTP and final combined monitor economics remain open.
 
 ### F16 · Local API/privacy/redaction defaults
 
@@ -275,6 +284,8 @@ Contract tests: [test_native_review_contract.py](https://github.com/abhishekash/
 
 Failed/unknown file attempts do not prove a persisted change. Both explicit rename paths survive typed argument projection in G; no arrow/path equivalence guessing.
 
+Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.
+
 ### F18 · Wrapped native checks not recognized
 
 **Implemented, qualified**
@@ -287,17 +298,19 @@ Contract tests: [test_native_review_contract.py](https://github.com/abhishekash/
 
 Recognized wrappers/qualified compound success are supported; no-op, masked, unknown or ambiguous failure remains unverified. Recorded success does not certify later worktree changes.
 
+Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.
+
 ### F19 · Exact usage rejected or misallocated
 
-**Implemented and merged; current native qualification pending**
+**Implemented and qualified for tested current/legacy source contracts**
 
-Allocation/continuity merged #67/#71/#75; usage explanation wiring merged #81 at 093bf878.
+Allocation/continuity #67/#71/#75, explanations #81 and current native membership/accounting #87 are merged.
 
-Code: [review_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/review_facts.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/workflow_evidence.py), [core.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/core.py).
+Code: [review_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/review_facts.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/workflow_evidence.py), [core.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/core.py), [opencode_turn_proof.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/opencode_turn_proof.py).
 
-Contract tests: [test_agent_usage_allocation.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_agent_usage_allocation.py), [test_turn_task_continuity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_turn_task_continuity.py), [test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py).
+Contract tests: [test_agent_usage_allocation.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_agent_usage_allocation.py), [test_turn_task_continuity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_turn_task_continuity.py), [test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_current_native_schema.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_current_native_schema.py), [test_opencode_turn_proof.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_opencode_turn_proof.py).
 
-Single-owner/turn usage, unknown fields and partial costs are preserved. R8 label/selection work is separate from accounting; no shared-trace allocation or zero from missing data. OpenCode 2.2.5 adapter and source-membership/cache/reasoning qualification remain pending; missing or stale proof must withhold totals.
+Exact single-owner allocations preserve unknowns and partial costs. Current OpenCode 2.2.5 source-derived fixtures verify inclusive 30 input / 13 output with cache-read 9/cache-write 4/reasoning 3; breakdowns are not added again. Missing, unsafe or stale source/member proof withholds totals. Legacy interpretation remains unchanged. These are synthetic accounting assertions, not observed live provider billing.
 
 ### F20 · Assistant-message placeholders
 
@@ -310,6 +323,8 @@ Code: [local_agents.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a
 Contract tests: [test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_native_sessions.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_sessions.py), [test_session_text.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_session_text.py).
 
 Supported native text blocks reach Review and generic placeholders are suppressed. New upstream schemas and live Claude/Pi compatibility are not proven by these synthetic contracts.
+
+Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.
 
 ### F21 · Initiating request crowded out
 
@@ -335,6 +350,8 @@ Contract tests: [test_native_review_contract.py](https://github.com/abhishekash/
 
 End-to-end native-shaped checks/edits/text/usage and generated reconstructions are verified. Coverage limits and unsupported producer variants remain explicit; tests are not current live participant evidence.
 
+Source-derived Codex 0.167.1 fixture compatibility through Review/export is merged #87; it is synthetic, not a live transcript.
+
 ### F23 · Review JSON/task-link mismatch
 
 **Implemented, qualified**
@@ -349,39 +366,41 @@ Raw Review JSON composes without retyping IDs; turn members/check source traces/
 
 ### F24 · Passing suite hid fixture mismatch
 
-**Strength preserved; final matrix pending**
+**Current combined matrix passed; fidelity remains qualified**
 
-Implementation merges #79–#85 are recorded separately from their exact tested heads and the combined-main matrix.
+Implementation #79–#87 merged. Main e434 run 43591334638 and main `55c6244` run 43592577149 each completed all 12 checks successfully.
 
 Code: [operation_facts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/operation_facts.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/workflow_evidence.py).
 
 Contract tests: [test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_opencode_turn_review.py), [test_owned_findings.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_owned_findings.py).
 
-Earlier corrected E head `928cae0`/F head `1c0b795` each passed 12 checks. Rebased PR81/82/85 heads include intentionally cancelled duplicate runs; these are not all-green matrices. Main e434fcf run 43591334638 is still active at this snapshot. Final native-version, packaging/security/ownership/capture/terminal and resource gates remain.
+Earlier E/F and cancelled superseded PR-head runs remain separately recorded. Full main `55c6244` green establishes that matrix, not live compatibility, resource budgets, final sustained terminal/soak/storage behavior or user outcomes. Source-derived current fixtures close selected schema gaps without inventing observed upstream versions.
 
 ### F25 · OpenCode prompts excluded by trace
 
-**Legacy prompt membership implemented; current-version qualification pending**
+**Implemented for captured current/legacy membership**
 
-Merged [#67](https://github.com/abhishekash/agenturm/pull/67) / [#71](https://github.com/abhishekash/agenturm/pull/71).
+Legacy prompt membership #67/#71 and source-derived current-layout turn/parts handling #87 are merged.
 
-Code: [opencode.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/opencode.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/workflow_evidence.py), [review_cli.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/review_cli.py).
+Code: [opencode.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/opencode.py), [opencode_turns.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/opencode_turns.py), [opencode_turn_proof.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/opencode_turn_proof.py), [core.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/core.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/workflow_evidence.py).
 
-Contract tests: [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_opencode_turn_review.py), [test_turn_task_continuity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_turn_task_continuity.py).
+Contract tests: [test_current_native_schema.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_current_native_schema.py), [test_opencode_turn_proof.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_opencode_turn_proof.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_opencode_turn_review.py), [test_native_fixture_provenance.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_native_fixture_provenance.py).
 
-Legacy whole-turn mode includes a recorded initiating prompt when present. Current OpenCode 2.2.5 may lack that persisted legacy user-parent record; absent text must stay unavailable. Adapter/idle-boundary qualification is pending; exact-step mode remains separate.
+Current split-part text/user records are collected in their same SQLite snapshot and attached only to proved idle-boundary intervals. Unknown prefix remains exact-step; missing initiating text stays unavailable. Legacy whole-turn mode retains parent behavior. Exact-step mode intentionally omits other steps; no proximity reconstruction.
 
 ### F26 · Idealized rather than version-labelled goldens
 
-**Partial provenance; current-version integration pending**
+**Implemented source-derived provenance; live coverage open**
 
-Native-shaped tests merged [#67](https://github.com/abhishekash/agenturm/pull/67); G pilot/search in merged [#80](https://github.com/abhishekash/agenturm/pull/80).
+Version-labelled selected-format fixtures, immutable primary-source hashes, reader hashes and compatibility proof merged #87.
 
-Code: [local_agents.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/local_agents.py), [opencode.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/opencode.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/workflow_evidence.py).
+Code: [opencode.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/opencode.py), [opencode_turns.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/opencode_turns.py), [opencode_turn_proof.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/opencode_turn_proof.py), [core.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/core.py), [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/observatory/workflow_evidence.py).
 
-Contract tests: [test_native_review_contract.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_review_contract.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_opencode_turn_review.py), [test_native_sessions.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_native_sessions.py).
+Contract tests: [test_current_native_schema.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_current_native_schema.py), [test_opencode_turn_proof.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_opencode_turn_proof.py), [test_opencode_turn_review.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_opencode_turn_review.py), [test_native_fixture_provenance.py](https://github.com/abhishekash/agenturm/blob/55c6244bf0c1caad2a22cd5c826020f50a677e54/tests/test_native_fixture_provenance.py).
 
-Historical synthetic repository fixtures have unknown originating upstream versions. Current version-labelled manifest and OpenCode 2.2.5 positive/cache/reasoning gates are adapter-owned and pending integration; this audit does not overwrite that manifest. Live Claude/Pi and future-version compatibility remain open.
+Current synthetic schema targets are OpenCode 2.2.5 and Codex 0.167.1, derived from immutable primary source contracts; all observed_producer_version fields remain null and captured_from_live_agent false. Legacy observed versions remain null. Full upstream decoding/migrations, live Claude/Pi, universal/future-version compatibility and participant capture are not established.
+
+See [current native source compatibility report](native-fixture-provenance.html) and [authoritative fixture manifest](../../tests/fixtures/native_review/provenance.json). Runtime/provenance peers reviewed the scope; local 78-test gate in 60.817 seconds and root 33-test gate in 23.697 seconds are functional, not resource measurements.
 
 ### F27 · Cockpit-bound delivery, native events and Git
 
@@ -393,7 +412,7 @@ Code: [attention_runner.py](https://github.com/abhishekash/agenturm/blob/1c0b795
 
 Contract tests: [test_native_inventory.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/tests/test_native_inventory.py), [test_native_activity_integration.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/tests/test_native_activity_integration.py), [test_attention_runner.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/tests/test_attention_runner.py), [test_native_review_projection_fix.py](https://github.com/abhishekash/agenturm/blob/1c0b795c842a7f41a12f2b562a558bc44e3b5610/tests/test_native_review_projection_fix.py).
 
-Headless watcher, shared claims, receiver-owned native inventory and shared Review parity are merged. Generated two-cockpit+watcher preflight passed with one fixture notification and 210 unrelated records per transition, ack/restart and exact resolution. Combined CI and live request-contract/clock/capacity/desktop precision remain qualified; native approval stays manual.
+Headless watcher, shared claims, receiver-owned native inventory and shared Review parity are merged. Generated two-cockpit+watcher preflight passed with one fixture notification and 210 unrelated records per transition, ack/restart and exact resolution. Current main CI passed; live request-contract/clock/capacity/desktop precision remain qualified; native approval stays manual.
 
 ## Recommendations R1–R11
 
@@ -413,7 +432,7 @@ Quiet inventory, durable dedup, remote pending/resolution catch-up and acknowled
 
 **Implemented, qualified**
 
-Merged [#71](https://github.com/abhishekash/agenturm/pull/71) / [#75](https://github.com/abhishekash/agenturm/pull/75) / [#77](https://github.com/abhishekash/agenturm/pull/77).
+Merged [#71](https://github.com/abhishekash/agenturm/pull/71) / [#75](https://github.com/abhishekash/agenturm/pull/75) / [#77](https://github.com/abhishekash/agenturm/pull/77). Current split-part/idle-boundary proof and persisted links are also covered by merged #87.
 
 Code: [workflow_evidence.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/workflow_evidence.py), [review_continuity.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/review_continuity.py), [work_receipts.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/observatory/work_receipts.py).
 
@@ -515,7 +534,7 @@ Code: [receiver_state.py](https://github.com/abhishekash/agenturm/blob/728e0bad8
 
 Contract tests: [test_recovery_defaults.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_recovery_defaults.py), [test_storage_receiver_hardening.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_storage_receiver_hardening.py), [test_http_transport.py](https://github.com/abhishekash/agenturm/blob/728e0bad85a3e0cde3e62c5599f7a4b6e7ff995c/tests/test_http_transport.py).
 
-Private state/token, Host/Origin, best-effort redaction, capture fences and age retention exist. No all-secrets guarantee, hard disk cap or automatic purge of independently authored task content.
+Private state/token, Host/Origin, best-effort redaction, capture fences and age retention exist. No all-secrets guarantee, hard disk cap or automatic purge of independently authored task content. Main55 full CI passed; final sustained resource/terminal and external evidence remain separate.
 
 ### R11 · Optional native lifecycle integration
 
@@ -529,9 +548,11 @@ Contract tests: [test_native_lifecycle.py](https://github.com/abhishekash/agentu
 
 Generic-v1 is explicit exact metadata; Codex notify adapter is completion-only with independently checked turns. Claude/Pi/OpenCode approval contracts without authoritative request/order mapping remain unsupported/uncertain. Installed version inspection is not live compatibility testing.
 
-Installed/runtime research and generated exact-contract tests are separately recorded. The successful native-race preflight is generic metadata, not a live Claude/Pi/OpenCode approval-hook qualification.
+Optional lifecycle approval authority is distinct from transcript format parsing. #87 qualifies selected source-derived OpenCode 2.2.5/Codex 0.167.1 records, not a live native approval-hook mapping. Generic native-race preflight and installed/runtime research retain their separate limits.
 
 ## F26: historical fixture provenance and current qualification
+
+
 
 
 The historical hash table below fingerprints the earlier synthetic repository contracts at published main `728e0ba`. It is not the current adapter-owned producer manifest; no old manifest is imported or overwritten by this audit. Codex JSONL and generated OpenCode SQLite fixtures are synthetic/schema-derived. Their originating upstream producer build and schema revision were **not recorded**. Inspected installed CLI versions used for hook research cannot be retroactively assigned to these fixtures.
@@ -546,15 +567,17 @@ The readers and listed fixtures at main `728e0bad85a3e0cde3e62c5599f7a4b6e7ff995
 | `tests/test_opencode.py` | `bc065e066131d8e89c04da2ad1690389c0b256f0d5d2cdf9f8e927ebfdc8a186` |
 | `tests/test_opencode_turn_review.py` | `892bc2a828c96f12b6d4f25ada2b603eec50ccb3d79479724d01fae1039cc62b` |
 
-The legacy hashes above must not be relabelled as OpenCode 2.2.5 evidence. The current producer/schema-labelled adapter and nonzero cache/reasoning assertions are pending peer/integration gates; this audit neither imports nor overwrites its manifest. F26 remains **partial** until consent-safe, producer/schema-version-labelled goldens cover the claimed supported versions through ingestion → Store → authenticated API → Review/export. Live Claude Code and Pi validation remains unavailable at this snapshot.
+The legacy hashes above must not be relabelled as OpenCode 2.2.5 evidence. The new [source compatibility/provenance report](native-fixture-provenance.html) and [adapter-owned fixture manifest](../../tests/fixtures/native_review/provenance.json) are merged #87 and independently peer reviewed. They bind immutable upstream source contracts, synthetic fixture hashes and reader hashes for selected OpenCode 2.2.5 and Codex 0.167.1 formats. All observed producer versions remain null; none is a captured live transcript, and the complete upstream decoder/migration is not claimed.
+
+The current-format fixture verifies inclusive 30 input / 13 output, cache-read 9/cache-write 4 and reasoning 3 without adding breakdowns twice. Unknown prefix does not join a whole interval. Epoch changes, partial/count/digest/clipped proof, queued stale summaries and open-versus-closed/as-of boundaries remain conservative. The local 78-test gate passed in 60.817 seconds, root 33 cases in 23.697 seconds; these are correctness/provenance gates, not resource economics. Live Claude Code/Pi, universal/future-version compatibility and external outcomes remain open. This audit only crosslinks the manifest and never rewrites it.
 
 ## Remaining acceptance and external outcomes
 
-The approved [final validation protocol](final-monitor-protocol.html) uses frozen B=`5e0c397` and a still-to-be-frozen combined C, one committed harness/common raw seed and balanced 60-second warmup plus 300-second idle pairs. The harness/preflights are delivered; the final matched resource runs have not been accepted. Final one-hour active soak, modal retained-memory series, complete storage/index/WAL/drain accounting and candidate signal/navigation checks remain open. Existing historical resource and profiler results retain their own source/workload boundaries.
+The approved [final validation protocol](final-monitor-protocol.html) uses B=`5e0c397` and candidate runtime `55c6244`, with the exact combined C/HTTP harness/normalized raw clones still to be registered before quiet execution, one committed harness/common raw seed and balanced 60-second warmup plus 300-second idle pairs. The harness/preflights are delivered; the final matched resource runs have not been accepted. Final one-hour active soak, modal retained-memory series, complete storage/index/WAL/drain accounting and candidate signal/navigation checks remain open. Existing historical resource and profiler results retain their own source/workload boundaries.
 
 The pilot kit is a protocol and generated scenario, not a study. No willingness-to-pay, measured reconstruction/resumption improvement, alert precision, author repeat use or voluntary adoption result is inferred from tests. Actual OS desktop delivery remains mocked. Live Claude Code and Pi remain untested; unsupported authoritative request/order mappings remain unsupported.
 
-The next update must record the actual native adapter and Sessions-followup merge commits, their exact CI results, then the frozen candidate and measured acceptance outcomes. No additional dashboard or speculative automation is required to finish this scope.
+The next update must record the frozen candidate/harness/normalized corpus and actual HTTP, matched resource, sustained terminal/modal/soak/storage results. Native/Sessions merges and main `55c6244` full CI are now recorded; they do not substitute for those acceptance measurements. No additional dashboard or speculative automation is required to finish this scope.
 
 ## Verification of this audit
 
