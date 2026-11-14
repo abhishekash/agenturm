@@ -1,5 +1,6 @@
 """Local monitoring journeys: freeze, investigate, return, and honest spend."""
 import copy
+import asyncio
 import tempfile
 import time
 import unittest
@@ -187,7 +188,15 @@ class LocalMonitoringJourneys(unittest.IsolatedAsyncioTestCase):
                 'traceId':tid,'spanId':sid,'timeUnixNano':now,'severityNumber':17,
                 'body':{'stringValue':'local assertion failed'},
                 'attributes':[{'key':key,'value':{'stringValue':value}} for key,value in attrs.items()]}]}]}]}))
-            receiver.store.metrics()  # Drain deferred summaries before publishing the first snapshot.
+            # Cached reads certify their own ready snapshot; they do not drain
+            # asynchronous migration/derivation as a side effect.
+            for _ in range(100):
+                indexing=receiver.store.index_status()
+                self.assertNotIn('error',indexing,indexing)
+                if indexing['ready']:break
+                await asyncio.sleep(.05)
+            else:self.fail('Local fixture did not finish indexing: '+repr(indexing))
+            receiver.store.metrics()
             feed.detail_enabled=False;feed.refresh()
             app=ObservatoryApp(feed,persist_preferences=False)
             try:

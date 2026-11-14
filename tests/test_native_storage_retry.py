@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from observatory.core import Store, normalize_native
+from observatory.core import IndexNotReady, Store, normalize_native
 from observatory.local_agents import Session, LocalAgents
 
 
@@ -95,10 +95,17 @@ class NativeStorageRetryTests(unittest.TestCase):
     def append(self,row):
         with self.path.open('a') as stream:stream.write(json.dumps(row)+'\n')
 
-    def captured(self):
-        with self.store._connect() as db:
-            return str([tuple(row) for row in db.execute('SELECT attributes,events,links FROM spans')])+str([
-                tuple(row) for row in db.execute('SELECT body,attributes FROM logs')])+json.dumps(self.store.sessions())
+    def captured(self, *, include_sessions=True):
+        # Inspect retained text without repairing or bypassing public readiness.
+        # This is needed while redaction deliberately leaves derivation pending.
+        with self.store._read() as db:
+            db.execute('BEGIN')
+            captured=''.join(str([tuple(row) for row in db.execute(sql)]) for sql in (
+                'SELECT attributes,events,links FROM spans',
+                'SELECT body,attributes FROM logs',
+                'SELECT summary_json,activity_json,error_refs_json FROM trace_summaries',
+                'SELECT finding_json FROM finding_cache'))
+        return captured+(json.dumps(self.store.sessions()) if include_sessions else '')
 
     def test_pending_old_collector_cannot_overwrite_newer_completion(self):
         for stage in ('ingest','ingest_logs'):
@@ -133,12 +140,22 @@ class NativeStorageRetryTests(unittest.TestCase):
     def test_redaction_invalidates_derived_text_before_async_refresh(self):
         self.session.poll()
         self.assertIn('Original request to preserve',json.dumps(self.store.sessions()))
-        with patch.object(self.store,'_refresh_after_write'):
+        with patch.object(self.store,'_refresh_after_write') as scheduled:
             self.store.redact_internal_source(self.session.source_id)
-        self.assertNotIn('Original request to preserve',self.captured())
+        scheduled.assert_called_once()
+        self.assertNotIn('Original request to preserve',self.captured(include_sessions=False))
+        with self.assertRaises(IndexNotReady):self.store.sessions()
         with self.store._connect() as db:
             trace_ids=[row[0] for row in db.execute('SELECT trace_id FROM trace_activity')]
+            self.assertTrue(trace_ids)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM trace_summaries').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM finding_cache').fetchone()[0],0)
         self.store._refresh_summaries(trace_ids)
+        self.assertNotIn('Original request to preserve',self.captured(include_sessions=False))
+        # Raw redaction also invalidates Activity. Repair through the existing
+        # path only after proving the pre-refresh privacy contract above.
+        self.store._drain_external_activity()
+        self.assertTrue(self.store.index_status()['ready'])
         self.assertNotIn('Original request to preserve',self.captured())
 
     def test_write_policy_survives_reopen_and_rejects_legacy_unsafe_writer(self):
@@ -171,8 +188,10 @@ class NativeStorageRetryTests(unittest.TestCase):
             db.execute("UPDATE spans SET service='codex-review'")
             db.execute("UPDATE logs SET service='codex-review'")
             db.execute("DELETE FROM schema_meta WHERE key='native_internal_policy_v1'")
-        self.assertIn('Original request to preserve',self.captured())
+        self.assertIn('Original request to preserve',self.captured(include_sessions=False))
+        with self.assertRaises(IndexNotReady):self.store.sessions()
         upgraded=Store(self.store.path);self.addCleanup(upgraded.close)
+        self.assertTrue(upgraded.index_status()['ready'])
         self.assertIn(self.session.source_id,upgraded.internal_source_ids([self.session.source_id]))
         self.assertNotIn('Original request to preserve',self.captured())
 
