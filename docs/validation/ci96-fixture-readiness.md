@@ -2,7 +2,7 @@
 
 ## What failed
 
-PR96 failed Python 3.12 and 3.14 on an exact revocation-status phrase. Main 96 failed Python 3.13 on the same assertion. The policy timer can legitimately replace the approval failure with a source-withholding notice. The test still requires the editor to remain open and the task count to remain zero; it now accepts either revocation or withholding language.
+PR96 failed Python 3.12 and 3.14 on an exact revocation-status phrase. Main 96 failed Python 3.13 on the same assertion. The policy timer can legitimately replace the approval failure with a source-withholding notice. The test still requires the editor to remain open and the task count to remain zero; it now accepts the actual capture-change, revocation or withholding messages.
 
 ## HTTP readiness evidence
 
@@ -14,7 +14,9 @@ The authenticated HTTP journey now waits at most five seconds for actual asynchr
 
 ## Validation and limits
 
-The two affected checks passed with ResourceWarning treated as an error on Python 3.12.3 (5.501 seconds) and Python 3.13.5 (5.275 seconds). No product behavior, timeout, source policy, immediate revocation assertion, or performance protocol changed. The failed CI runs remain failed; corrected integrated CI is a separate gate.
+The two affected checks passed with ResourceWarning treated as an error on Python 3.12.3 (5.501 seconds) and Python 3.13.5 (5.275 seconds). The independent root integration onto main97 initially caught a third valid message: “Source capture or receiver changed.” The first root gate failed one status-text assertion (2 checks, 5.716 seconds); its HTTP journey passed. The corrected assertion names all three actual policy-change messages and retains the open-editor/zero-tasks requirements. The same two integrated checks then passed with ResourceWarning treated as an error in **5.362 seconds**. Both root logs are retained in `/tmp/agenturm-ci96-root-gate.log` and `/tmp/agenturm-ci96-root-gate2.log`.
+
+No product behavior, timeout, source policy, immediate revocation assertion, or performance protocol changed. The failed CI runs remain failed; corrected integrated CI is a separate gate.
 
 ```sh
 python -W error::ResourceWarning -m unittest tests.test_review_continuity_ui.ReviewContinuityJourney.test_source_revocation_blocks_draft_approval_without_task_mutation tests.test_work_receipts.HeadlessReceiverJourney

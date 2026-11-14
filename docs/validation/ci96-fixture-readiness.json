@@ -72,5 +72,21 @@
       "passed": true
     }
   ],
-  "qualification_performance": "Functional fixtures only. No corrected CI, full-suite or resource-budget pass claimed."
+  "qualification_performance": "Functional fixtures only. No corrected CI, full-suite or resource-budget pass claimed.",
+  "root_integration": {
+    "base": "d5538e6af2bcc7961ddc7af48fb4c79b978c32fd",
+    "first_gate": {
+      "tests": 2,
+      "seconds": 5.716,
+      "passed": false,
+      "failure": "One status-text assertion missed actual Source capture or receiver changed message; HTTP journey passed."
+    },
+    "corrected_gate": {
+      "tests": 2,
+      "seconds": 5.362,
+      "passed": true,
+      "resource_warning": "error"
+    },
+    "invariants": "Editor remains open; TaskStore count is zero; actual source/auth/export assertions retained."
+  }
 }

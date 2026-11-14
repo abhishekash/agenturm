@@ -1,76 +1,15 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Deterministic source review fixtures</title><style>:root{color-scheme:light dark;--bg:#f6f7fb;--card:#fff;--fg:#182333;--muted:#52637a;--line:#d7dfea;--link:#174eac}@media(prefers-color-scheme:dark){:root{--bg:#101722;--card:#192333;--fg:#e7eef9;--muted:#b5c3d8;--line:#35455f;--link:#9ac2ff}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,sans-serif}main{max-width:900px;margin:auto;padding:clamp(18px,4vw,44px)}header,section,details{background:var(--card);border:1px solid var(--line);padding:clamp(16px,3vw,28px);border-radius:12px;margin-bottom:18px}h1{font-size:clamp(25px,5vw,38px);line-height:1.2}h2{font-size:21px}p,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap;font-size:12px}.note{color:var(--muted)}a{color:var(--link)}summary{cursor:pointer;font-weight:650}</style><main><header><p class="note">Validation · main 96 · synthetic fixtures</p><h1>Deterministic source review fixtures</h1><p>Keep privacy and authentication assertions while observing the correct readiness boundary.</p></header><section><h2>What failed</h2><p>PR96 failed Python 3.12 and 3.14 on an exact revocation-status phrase. Main 96 failed Python 3.13 on the same assertion. The policy timer can legitimately replace the approval failure with a source-withholding notice. The test still requires the editor to remain open and the task count to remain zero; it now accepts either revocation or withholding language.</p></section><section><h2>HTTP readiness evidence</h2><p>PR96 Python 3.13 separately returned the CLI’s generic receiver/filesystem error. That CI run did not record HTTP statuses, so its exact cause remains unknown. A controlled scheduling check held only the actual migration thread: after ingest and manual summary refresh, health returned 200 while Sessions returned 503, producing the same CLI error. Releasing migration and observing true readiness made the unchanged command succeed.</p></section><section><h2>Fixture changes</h2><p>The authenticated HTTP journey now waits at most five seconds for actual asynchronous index readiness, failing immediately on a reported migration or worker error. It does not repair or retry the CLI command. A test-only observer records actual response statuses and API paths without query strings, tokens, or bodies, so future failures are diagnosable. All worker-scope, request, check chronology, unavailable-usage, stdout/file parity, three-format export, and authentication assertions remain unchanged.</p></section><section><h2>Validation and limits</h2><p>The two affected checks passed with ResourceWarning treated as an error on Python 3.12.3 (5.501 seconds) and Python 3.13.5 (5.275 seconds). No product behavior, timeout, source policy, immediate revocation assertion, or performance protocol changed. The failed CI runs remain failed; corrected integrated CI is a separate gate.</p></section><section><h2>Reproduce focused checks</h2><pre>python -W error::ResourceWarning -m unittest tests.test_review_continuity_ui.ReviewContinuityJourney.test_source_revocation_blocks_draft_approval_without_task_mutation tests.test_work_receipts.HeadlessReceiverJourney</pre><p><a href="https://github.com/abhishekash/agenturm/actions/runs/43606287537">PR96 failed CI</a> · <a href="https://github.com/abhishekash/agenturm/actions/runs/43606443606">Main 96 failed CI</a></p></section><details><summary>Embedded controlled HTTP evidence</summary><pre>{
-  &quot;qualification&quot;: &quot;Controlled actual-HTTP scheduling proof; original CI generic error has no captured HTTP status, so its exact cause remains unknown.&quot;,
-  &quot;manual_summary_refresh_did_not_certify_initial_readiness&quot;: {
-    &quot;ready&quot;: false,
-    &quot;stage&quot;: &quot;Preparing indexed history&quot;,
-    &quot;processed&quot;: 0
-  },
-  &quot;first_cli_returncode&quot;: 2,
-  &quot;first_cli_stderr&quot;: &quot;Agenturm review: Cannot read the receiver or write the destination; check the endpoint, token and file permissions.\n&quot;,
-  &quot;first_http&quot;: [
-    {
-      &quot;path&quot;: &quot;/api/health&quot;,
-      &quot;status&quot;: 200
-    },
-    {
-      &quot;path&quot;: &quot;/api/sessions&quot;,
-      &quot;status&quot;: 503
-    }
-  ],
-  &quot;settled_indexing&quot;: {
-    &quot;ready&quot;: true,
-    &quot;stage&quot;: &quot;Ready&quot;,
-    &quot;processed&quot;: 0,
-    &quot;runs_refreshed&quot;: 1,
-    &quot;total_runs&quot;: 1
-  },
-  &quot;settled_cli_returncode&quot;: 0,
-  &quot;settled_http&quot;: [
-    {
-      &quot;path&quot;: &quot;/api/health&quot;,
-      &quot;status&quot;: 200
-    },
-    {
-      &quot;path&quot;: &quot;/api/sessions&quot;,
-      &quot;status&quot;: 200
-    },
-    {
-      &quot;path&quot;: &quot;/api/review-run&quot;,
-      &quot;status&quot;: 200
-    },
-    {
-      &quot;path&quot;: &quot;/api/native-lifecycle&quot;,
-      &quot;status&quot;: 200
-    },
-    {
-      &quot;path&quot;: &quot;/api/activity&quot;,
-      &quot;status&quot;: 200
-    },
-    {
-      &quot;path&quot;: &quot;/api/health&quot;,
-      &quot;status&quot;: 200
-    }
-  ],
-  &quot;base_commit&quot;: &quot;1cb1a99b2f920f90efbd58b3a96fc7cc6d1b2009&quot;,
-  &quot;ci_failed_runs&quot;: [
-    43606287537,
-    43606443606
-  ],
-  &quot;gates&quot;: [
-    {
-      &quot;python&quot;: &quot;3.12.3&quot;,
-      &quot;resource_warning&quot;: &quot;error&quot;,
-      &quot;tests&quot;: 2,
-      &quot;seconds&quot;: 5.501,
-      &quot;passed&quot;: true
-    },
-    {
-      &quot;python&quot;: &quot;3.13.5&quot;,
-      &quot;resource_warning&quot;: &quot;error&quot;,
-      &quot;tests&quot;: 2,
-      &quot;seconds&quot;: 5.275,
-      &quot;passed&quot;: true
-    }
-  ],
-  &quot;qualification_performance&quot;: &quot;Functional fixtures only. No corrected CI, full-suite or resource-budget pass claimed.&quot;
-}</pre></details></main></html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Deterministic source review fixtures</title><style>:root{color-scheme:light dark;--bg:#f6f7fb;--card:#fff;--fg:#182333;--muted:#52637a;--line:#d7dfea;--link:#174eac}@media(prefers-color-scheme:dark){:root{--bg:#101722;--card:#192333;--fg:#e7eef9;--muted:#b5c3d8;--line:#35455f;--link:#9ac2ff}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,sans-serif}main{max-width:900px;margin:auto;padding:clamp(18px,4vw,44px)}header,section,details{background:var(--card);border:1px solid var(--line);padding:clamp(16px,3vw,28px);border-radius:12px;margin-bottom:18px}h1{font-size:clamp(25px,5vw,38px);line-height:1.2}h2{font-size:21px}p,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap;font-size:12px}.note{color:var(--muted)}a{color:var(--link)}summary{cursor:pointer;font-weight:650}</style></head><body><main><h1>Deterministic source review fixtures</h1>
+<h2>What failed</h2>
+<p>PR96 failed Python 3.12 and 3.14 on an exact revocation-status phrase. Main 96 failed Python 3.13 on the same assertion. The policy timer can legitimately replace the approval failure with a source-withholding notice. The test still requires the editor to remain open and the task count to remain zero; it now accepts the actual capture-change, revocation or withholding messages.</p>
+<h2>HTTP readiness evidence</h2>
+<p>PR96 Python 3.13 separately returned the CLI’s generic receiver/filesystem error. That CI run did not record HTTP statuses, so its exact cause remains unknown. A controlled scheduling check held only the actual migration thread: after ingest and manual summary refresh, health returned 200 while Sessions returned 503, producing the same CLI error. Releasing migration and observing true readiness made the unchanged command succeed.</p>
+<h2>Fixture changes</h2>
+<p>The authenticated HTTP journey now waits at most five seconds for actual asynchronous index readiness, failing immediately on a reported migration or worker error. It does not repair or retry the CLI command. A test-only observer records actual response statuses and API paths without query strings, tokens, or bodies, so future failures are diagnosable. All worker-scope, request, check chronology, unavailable-usage, stdout/file parity, three-format export, and authentication assertions remain unchanged.</p>
+<h2>Validation and limits</h2>
+<p>The two affected checks passed with ResourceWarning treated as an error on Python 3.12.3 (5.501 seconds) and Python 3.13.5 (5.275 seconds). The independent root integration onto main97 initially caught a third valid message: “Source capture or receiver changed.” The first root gate failed one status-text assertion (2 checks, 5.716 seconds); its HTTP journey passed. The corrected assertion names all three actual policy-change messages and retains the open-editor/zero-tasks requirements. The same two integrated checks then passed with ResourceWarning treated as an error in <strong>5.362 seconds</strong>. Both root logs are retained in <code>/tmp/agenturm-ci96-root-gate.log</code> and <code>/tmp/agenturm-ci96-root-gate2.log</code>.</p>
+<p>No product behavior, timeout, source policy, immediate revocation assertion, or performance protocol changed. The failed CI runs remain failed; corrected integrated CI is a separate gate.</p>
+<pre><code class="language-sh">python -W error::ResourceWarning -m unittest tests.test_review_continuity_ui.ReviewContinuityJourney.test_source_revocation_blocks_draft_approval_without_task_mutation tests.test_work_receipts.HeadlessReceiverJourney
+</code></pre>
+<p><a href="https://github.com/abhishekash/agenturm/actions/runs/43606287537">PR96 failed run</a> · <a href="https://github.com/abhishekash/agenturm/actions/runs/43606443606">main 96 failed run</a></p>
+<p><a href="ci96-fixture-readiness.html">Standalone HTML</a> · <a href="ci96-fixture-readiness.json">Controlled HTTP evidence</a></p>
+</main></body></html>

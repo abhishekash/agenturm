@@ -102,7 +102,9 @@ class ReviewContinuityJourney(unittest.IsolatedAsyncioTestCase):
                 # The periodic source guard can replace the approval failure
                 # with its withholding notice before this UI turn is observed.
                 status=str(editor.query_one('#task-status').content).casefold()
-                self.assertTrue('revoked' in status or 'withheld' in status,status)
+                self.assertTrue(any(message in status for message in (
+                    'source capture or receiver changed', 'source capture was revoked',
+                    'source content withheld')),status)
 
     async def test_late_git_result_cannot_restore_revoked_content(self):
         gate=threading.Event();started=threading.Event()
