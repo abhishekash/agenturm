@@ -23,6 +23,10 @@ def safe_preferences(value):
     for key in ('reviews', 'prompts', 'workflow_notify'):
         if isinstance(value.get(key), bool):
             result[key] = value[key]
+    if isinstance(value.get('cost_estimate_rates'),dict):
+        from .evidence_explanations import validate_rates
+        rates=validate_rates(value['cost_estimate_rates'])
+        if rates:result['cost_estimate_rates']=rates
     if isinstance(value.get('workflow_limits'),dict):
         result['workflow_limits']={k:float(v) for k,v in value['workflow_limits'].items()
             if k in {'tokens','cost','minutes'} and isinstance(v,(int,float)) and not isinstance(v,bool)
