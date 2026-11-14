@@ -99,7 +99,12 @@ class ReviewContinuityJourney(unittest.IsolatedAsyncioTestCase):
                 owner.feed.snapshot=replace(owner.feed.snapshot,local_status={'capture_content':False})
                 await pilot.press('ctrl+s');await self.ready(pilot,lambda:not editor.busy)
                 self.assertIs(app.screen,editor);self.assertEqual(TaskStore(root/'tasks.db').count(),0)
-                self.assertIn('Source capture',str(editor.query_one('#task-status').content))
+                # The periodic source guard can replace the approval failure
+                # with its withholding notice before this UI turn is observed.
+                status=str(editor.query_one('#task-status').content).casefold()
+                self.assertTrue(any(message in status for message in (
+                    'source capture or receiver changed', 'source capture was revoked',
+                    'source content withheld')),status)
 
     async def test_late_git_result_cannot_restore_revoked_content(self):
         gate=threading.Event();started=threading.Event()
