@@ -49,6 +49,7 @@ class TurnProofTests(unittest.TestCase):
                 else:
                     self.proof['closed']=closed;self.proof.pop('closed_id');self.proof.pop('closed_seq')
                     for trace in self.traces:self.write_proof(trace,self.proof)
+                    self.store._refresh_summaries(self.traces)
                 turn=self.store.review_turn(self.traces[0])
                 self.assertTrue(turn['turn_usage_complete']);self.assertEqual(turn['input_tokens'],17)
                 self.assertEqual(turn['turn_closed'],closed);self.assertEqual(turn['turn_coverage_reasons'],[])
@@ -87,6 +88,60 @@ class TurnProofTests(unittest.TestCase):
         receipt=freeze_receipt(projection)
         for name in ('json','markdown','html'):
             self.assertIn('Assistant steps disagree',receipt[name])
+
+    def test_pending_source_usage_withholds_old_totals_until_refresh(self):
+        self.prepare()
+        trace=self.traces[0]
+        with self.store._connect() as db:
+            row=db.execute("SELECT span_id,attributes FROM spans WHERE trace_id=? AND name='chat model-x'",(trace,)).fetchone()
+            attrs=json.loads(row['attributes']);attrs['gen_ai.usage.input_tokens']=999
+            db.execute('UPDATE spans SET attributes=? WHERE trace_id=? AND span_id=?',(json.dumps(attrs),trace,row['span_id']))
+        turn=self.store.review_turn(trace)
+        self.assertFalse(turn['turn_usage_complete']);self.assertNotIn('input_tokens',turn)
+        self.assertIn('catching up',' '.join(turn['turn_coverage_reasons']))
+        self.store._refresh_summaries([trace])
+        self.assertEqual(self.store.review_turn(trace)['input_tokens'],1004)
+
+    def test_incomplete_turn_metadata_survives_task_allocation_for_review(self):
+        from observatory.review_facts import task_run_usage
+        self.prepare(closed=False)
+        self.write_proof(self.traces[1],{**self.proof,'source_complete':False})
+        turn=self.store.review_turn(self.traces[0]);owner=turn['scope_owner']
+        selected=dict(service='opencode',agent_id=owner['agent_id'],session_id='ses_test',trace_id=self.traces[0])
+        session=dict(services=['opencode'],agent_id=owner['agent_id'],session_id='ses_test',latest_run=dict(trace_id=self.traces[0],turn_usage=turn))
+        usage=task_run_usage([session],selected)
+        self.assertEqual(usage['turn_coverage_reasons'],turn['turn_coverage_reasons'])
+        self.assertIs(usage['turn_closed'],False);self.assertNotIn('input_tokens',usage)
+
+    def test_sql_projects_only_bounded_proof_and_usage_metadata(self):
+        from observatory.opencode_turn_proof import proof_sql,usage_sql
+        self.prepare()
+        with self.store._connect() as db:
+            row=db.execute("SELECT span_id,attributes FROM spans WHERE trace_id=? AND name='agent.run'",(self.traces[0],)).fetchone()
+            attrs=json.loads(row['attributes']);attrs['private.raw.body']='x'*(1024*1024)
+            db.execute('UPDATE spans SET attributes=? WHERE trace_id=? AND span_id=?',(json.dumps(attrs),self.traces[0],row['span_id']))
+            value=db.execute('SELECT '+proof_sql('attributes')+' FROM spans WHERE trace_id=? AND span_id=?',(self.traces[0],row['span_id'])).fetchone()[0]
+            self.assertLess(len(value.encode()),4096);self.assertNotIn('private.raw.body',value)
+            self.assertEqual(json.loads(value)[PREFIX+'schema'],0)
+            summary=db.execute('SELECT '+usage_sql('summary_json')+' FROM live_summaries_v1 WHERE trace_id=?',(self.traces[0],)).fetchone()[0]
+            self.assertLess(len(summary.encode()),4096);self.assertNotIn('latest_activity',summary)
+
+    def test_thousand_members_keep_metadata_within_cumulative_budget(self):
+        self.prepare()
+        traces=self.traces+[f'{value:032x}' for value in range(100,1098)]
+        proof={**self.proof,'boundary_id':'b'*1024,'closed_id':'c'*1024,
+            'expected_assistants':1000,'membership_sha256':membership_digest(traces)}
+        for trace in self.traces:self.write_proof(trace,proof)
+        with self.store._connect() as db:
+            root=dict(db.execute("SELECT * FROM spans WHERE trace_id=? AND name='agent.run'",(self.traces[0],)).fetchone())
+            columns=','.join(root);parameters=','.join('?' for _ in root)
+            for trace in traces[2:]:
+                root['trace_id']=trace
+                db.execute(f'INSERT INTO spans({columns}) VALUES({parameters})',tuple(root.values()))
+        turn=self.store.review_turn(self.traces[0])
+        self.assertEqual(len(turn['step_trace_ids']),1000)
+        self.assertFalse(turn['turn_usage_complete']);self.assertNotIn('input_tokens',turn)
+        self.assertIn('retained byte limit',' '.join(turn['turn_coverage_reasons']))
 
     def test_pure_clipping_and_duplicate_roots_fail_closed(self):
         proof={PREFIX+key:value for key,value in dict(schema=2,source_epoch='a'*32,boundary_kind='idle',boundary_id='idle',boundary_seq=0,

@@ -256,7 +256,7 @@ class ReviewHistory:
             type(candidate.get('agent_count')) is int and candidate['agent_count']==1 and candidate.get('agent_count_complete') is True and
             owner.get('producer')==self.scope.producer and owner.get('agent_id')==self.scope.agent_id and
             (not self.scope.session_id or owner.get('session_id')==self.scope.session_id))
-        usage=dict(scope=('recorded user turn' if self.scope.turn_id else 'exact run') if exact_usage else 'unavailable',trace_id=self.scope.run_id or None,
+        usage=dict(scope=(('recorded turn interval' if candidate.get('turn_membership')=='recorded idle-boundary interval' else 'recorded user turn') if self.scope.turn_id else 'exact run') if exact_usage else 'unavailable',trace_id=self.scope.run_id or None,
             turn_coverage_reasons=turn_reasons,turn_closed=candidate.get('turn_closed') if self.scope.turn_id else None,
             step_trace_ids=list(candidate.get('step_trace_ids') or ()),agent_count=candidate.get('agent_count'),allocation=candidate.get('usage_allocation') or ('single recorded agent' if exact_usage else 'agent allocation unverified'),
             values={key:candidate[key] for key in ('input_tokens','output_tokens','cache_read_input_tokens',
@@ -326,6 +326,10 @@ def render_review(projection):
     if not projection['errors']:lines.append('None in the loaded interval.')
     usage=projection.get('usage') or {};values=usage.get('values') or {}
     lines += ['', 'RECORDED USAGE · '+usage.get('scope','unavailable')]
+    if scope.get('turn_id') and usage.get('turn_closed') is False:
+        lines.append('Turn remains open; usage covers captured assistant steps as of this snapshot.')
+    elif scope.get('turn_id') and usage.get('turn_closed') is True:
+        lines.append('Turn ended at a recorded idle boundary; completion or correctness is not implied.')
     if usage.get('scope')=='unavailable':lines.append(usage.get('allocation') or 'Per-agent allocation unavailable.')
     labels={'input_tokens':'Input tokens','output_tokens':'Output tokens','cache_read_input_tokens':'Cached input tokens','cache_write_input_tokens':'Cache write tokens','known_cost_usd':'Recorded USD','cost_usd':'Recorded USD'}
     for key,label in labels.items():
