@@ -185,7 +185,8 @@ class OwnedFindingTests(unittest.TestCase):
             db.execute('INSERT INTO progress(trace_id,time_ns,stage,message,percent,session_id,service) VALUES(?,?,?,?,?,?,?)',
                 (self.trace,100,'Working','Recorded progress',None,'session','fixture'))
         self.assertFalse(self.store.index_status()['ready'])
-        self.store._drain_external_activity()
+        self.assertEqual(self.store._drain_external_activity(),0)  # Only derived progress work, no Activity source rows.
+        self.assertTrue(self.store.index_status()['ready'])
         after=next(item for item in self.rows() if item['kind']=='failed_outcome')
         self.assertIsNone(after['agent_id'])
         self.assertFalse(any(item['kind']=='failed_outcome' for item in self.rows(agent_id=owner)))

@@ -930,7 +930,7 @@ class Store:
             count=drain(db,limit=200)
             traces=[row[0] for row in db.execute('SELECT trace_id FROM finding_dirty_v1 ORDER BY trace_id LIMIT 16')]
         if traces:self._refresh_summaries(traces)
-        return count+len(traces)
+        return count  # Preserve the Activity drain-count contract; derived repair is additional.
 
     def index_status(self):
         state=dict(self.migration_status)
