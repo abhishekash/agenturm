@@ -928,7 +928,8 @@ class OpenCodeReader:
                                                           'end':timing.get('completed')}
                                 inline = {"type": "tool", "tool": block.get("name") or "tool",
                                           "state": inline_state,
-                                          "metadata": block.get("providerState") or {}}
+                                          "metadata": ((block.get('native') if isinstance(block.get('native'),dict) else {})
+                                                       if current_layout else block.get("providerState") or {})}
                                 parts.append((inline_id, json.dumps(inline, ensure_ascii=False)))
                                 part_stamps[inline_id] = None
                         for part in parts:
