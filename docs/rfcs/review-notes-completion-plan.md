@@ -187,3 +187,8 @@ Before full completion, every F1–F27 and R1–R11 entry must identify code, re
 Participant recruitment/consent, live Claude/Pi data not available in this environment, measured human reconstruction/resumption time and voluntary repeat use cannot be manufactured by automated tests. Prepare the materials and report these dependencies with denominators; do not mark F10/adoption evidence complete without participants. Native integration capabilities unsupported by a runtime must be labelled rather than guessed.
 
 After each merged stage, update this reconciliation with concrete files, tests, measurements and PR links. Technical delivery and observed user outcomes are separate statuses. The final full-note record must account for every F1–F27 and R1–R11, preserve the stated limits, and identify any external dependency still open.
+
+
+### Replay follow-up — bounded integration, combined resource gate open
+
+The error-reference projection now qualifies each original source once and reuses compact metadata. Fourteen frozen serialized fixture groups remain byte-identical; full raw qualification fell from 237 to 134 calls. A narrow partial metadata index serves the existing exact linked-log query without changing hydration, byte limits, ordering or semantic checks. The 55-test integration and final 18-test replay/reminder gates passed. [Qualification report](../validation/error-reference-projection.html) and [index footprint/write diagnostics](../validation/activity-linked-index.html) separate diagnostic work from accepted resource measurements. PR83's MCP grouping is merged at `728e0ba`, all 12 checks green; its mixed tail measurements leave the 100 ms target open. Whole-monitor cold/idle/RSS/WAL, combined index costs and final acceptance remain open.
