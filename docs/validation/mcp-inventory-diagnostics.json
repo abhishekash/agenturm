@@ -1,0 +1,1339 @@
+{
+  "diagnostic_only": true,
+  "synthetic": true,
+  "source_commit": "1ef63709ab97fdda31ff137e7018463fba9d02eb",
+  "limitations": "Instrumentation, concurrent development load and uncontrolled CPU scheduling alter timings. These are diagnostic work/phase observations, not resource-budget or latency comparisons. Blocks cannot be attributed to temp spill or WAL; wall-minus-threadCPU does not identify its waiting cause.",
+  "scope": "Generated6047trace retained corpus, fullMCP limit100; no personal files/provider/native discovery.",
+  "sqlite_version": "3.45.1",
+  "grouping_vm_steps": {
+    "baseline_approximate": 358000,
+    "current_approximate": 266000,
+    "callback_granularity": 1000
+  },
+  "profiles": {
+    "before": {
+      "calls": 3,
+      "instrumented_wall_ms": 376.520652,
+      "queries": [
+        {
+          "sql_sha256": "a7a2e4afed2ed13869e53f84f20fb7414395c42954b3c539c7bf0c8f04055670",
+          "prefix": "WITH evidence AS ( SELECT 'mcp-v3:' || json_array(service,agent_id,COALESCE(CASE WHEN json_type(attr",
+          "ms": 151.834107,
+          "execute_ns": 151656385,
+          "fetch_ns": 177722,
+          "calls": 3,
+          "rows": 3,
+          "parameters": 0
+        },
+        {
+          "sql_sha256": "5af4d56c89dfa60ce4d0a9a53c3fb9f0aaacfeed7d0fa523eba3264afba6c894",
+          "prefix": "WITH evidence AS ( SELECT 'mcp-v3:' || json_array(service,agent_id,COALESCE(CASE WHEN json_type(attr",
+          "ms": 74.773773,
+          "execute_ns": 74166267,
+          "fetch_ns": 607506,
+          "calls": 3,
+          "rows": 303,
+          "parameters": 1
+        },
+        {
+          "sql_sha256": "e5113c3ed851e2f5b3814016ce1775602b45201ab8cae39a81805f2331d9dfdb",
+          "prefix": "SELECT 'mcp-v3:' || json_array(spans.service,spans.agent_id,COALESCE(CASE WHEN json_type(spans.attri",
+          "ms": 41.811443,
+          "execute_ns": 41800836,
+          "fetch_ns": 10607,
+          "calls": 3,
+          "rows": 0,
+          "parameters": 100
+        },
+        {
+          "sql_sha256": "65f1694d4f524ac69cc351351d6d21a2c6f6799e75094785d2d48f73a27d075e",
+          "prefix": "SELECT *,'mcp-v3:' || json_array(service,agent_id,COALESCE(CASE WHEN json_type(attributes,'$.\"gen_ai",
+          "ms": 15.379029,
+          "execute_ns": 8531665,
+          "fetch_ns": 6847364,
+          "calls": 3,
+          "rows": 300,
+          "parameters": 100
+        },
+        {
+          "sql_sha256": "48e6dac8d1eb5b44869aafd2e9da466e42b5d342897e628463e3493996953399",
+          "prefix": "SELECT *,'mcp-v3:' || json_array(service,agent_id,COALESCE(CASE WHEN json_type(attributes,'$.\"gen_ai",
+          "ms": 8.645256,
+          "execute_ns": 8634450,
+          "fetch_ns": 10806,
+          "calls": 3,
+          "rows": 0,
+          "parameters": 100
+        },
+        {
+          "sql_sha256": "f26923262f24ce9c79bd64c6e81b9178f1ea14d8e0b74455aa84612bacd33f41",
+          "prefix": "SELECT digest,time_ns,temporality,attributes, resource_attributes,scope_name,data, COALESCE(NULLIF(j",
+          "ms": 0.531079,
+          "execute_ns": 523144,
+          "fetch_ns": 7935,
+          "calls": 3,
+          "rows": 0,
+          "parameters": 0
+        },
+        {
+          "sql_sha256": "a8402858d4f1e1d27afee976520485ebb4b96a5387355b823f0d0b8079729032",
+          "prefix": "BEGIN",
+          "ms": 0.0565,
+          "execute_ns": 56500,
+          "fetch_ns": 0,
+          "calls": 3,
+          "rows": 0,
+          "parameters": 0
+        }
+      ],
+      "cpu_profile": "         25588 function calls (25566 primitive calls) in 0.373 seconds\n\n   Ordered by: cumulative time\n   List reduced from 133 to 35 due to restriction <35>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        3    0.000    0.000    0.373    0.124 core.py:2092(mcp_page)\n        3    0.007    0.002    0.366    0.122 core.py:2100(_mcp_page)\n       21    0.001    0.000    0.326    0.016 profile_mcp_inventory.py:46(execute)\n       21    0.285    0.014    0.285    0.014 {method 'execute' of 'sqlite3.Connection' objects}\n       21    0.000    0.000    0.039    0.002 __init__.py:179(sub)\n       21    0.039    0.002    0.039    0.002 {method 'sub' of 're.Pattern' objects}\n1512/1506    0.001    0.000    0.011    0.000 {built-in method builtins.next}\n       18    0.000    0.000    0.008    0.000 profile_mcp_inventory.py:25(fetchall)\n       18    0.008    0.000    0.008    0.000 {method 'fetchall' of 'sqlite3.Cursor' objects}\n        6    0.000    0.000    0.007    0.001 profile_mcp_inventory.py:93(connection)\n        6    0.000    0.000    0.007    0.001 core.py:956(_connect)\n      6/3    0.000    0.000    0.006    0.002 contextlib.py:141(__exit__)\n        3    0.006    0.002    0.006    0.002 {method 'close' of 'sqlite3.Connection' objects}\n      300    0.001    0.000    0.006    0.000 __init__.py:299(loads)\n      300    0.001    0.000    0.005    0.000 decoder.py:332(decode)\n      300    0.002    0.000    0.005    0.000 findings.py:89(mcp_result_error)\n      900    0.001    0.000    0.005    0.000 storage_mcp.py:22(text_value)\n     12/6    0.001    0.000    0.003    0.001 storage_mcp.py:51(execution_match_sql)\n      900    0.002    0.000    0.003    0.000 {built-in method builtins.any}\n       90    0.002    0.000    0.003    0.000 storage_mcp.py:4(session_sql)\n      300    0.003    0.000    0.003    0.000 decoder.py:343(raw_decode)\n      900    0.002    0.000    0.003    0.000 storage_mcp.py:23(<genexpr>)\n      600    0.001    0.000    0.002    0.000 core.py:2288(recorded_payload)\n       12    0.000    0.000    0.002    0.000 storage_mcp.py:26(call_key_sql)\n     3301    0.001    0.000    0.001    0.000 {method 'get' of 'dict' objects}\n      171    0.001    0.000    0.001    0.000 {method 'join' of 'str' objects}\n     3953    0.001    0.000    0.001    0.000 {built-in method builtins.isinstance}\n      900    0.001    0.000    0.001    0.000 findings.py:92(<genexpr>)\n       48    0.000    0.000    0.001    0.000 storage_mcp.py:46(identity_claim_sql)\n       21    0.001    0.000    0.001    0.000 {method 'setdefault' of 'dict' objects}\n      600    0.001    0.000    0.001    0.000 {method 'match' of 're.Pattern' objects}\n       21    0.000    0.000    0.001    0.000 __init__.py:280(_compile)\n     1639    0.000    0.000    0.000    0.000 {method 'append' of 'list' objects}\n1563/1561    0.000    0.000    0.000    0.000 {built-in method builtins.len}\n     1500    0.000    0.000    0.000    0.000 core.py:2317(<genexpr>)\n\n\n"
+    },
+    "after": {
+      "calls": 3,
+      "instrumented_wall_ms": 329.17186,
+      "queries": [
+        {
+          "sql_sha256": "ebd78b2fe2b897ec1eeca6ba03b85dd3750c1d3a829be0022ca6ee7ff24244ec",
+          "prefix": "WITH evidence AS ( SELECT 'mcp-v3:' || json_array(service,agent_id,COALESCE(CASE WHEN json_type(attr",
+          "ms": 175.158465,
+          "execute_ns": 174291490,
+          "fetch_ns": 866975,
+          "calls": 3,
+          "rows": 306,
+          "parameters": 1
+        },
+        {
+          "sql_sha256": "e5113c3ed851e2f5b3814016ce1775602b45201ab8cae39a81805f2331d9dfdb",
+          "prefix": "SELECT 'mcp-v3:' || json_array(spans.service,spans.agent_id,COALESCE(CASE WHEN json_type(spans.attri",
+          "ms": 52.915947,
+          "execute_ns": 52902616,
+          "fetch_ns": 13331,
+          "calls": 3,
+          "rows": 0,
+          "parameters": 100
+        },
+        {
+          "sql_sha256": "65f1694d4f524ac69cc351351d6d21a2c6f6799e75094785d2d48f73a27d075e",
+          "prefix": "SELECT *,'mcp-v3:' || json_array(service,agent_id,COALESCE(CASE WHEN json_type(attributes,'$.\"gen_ai",
+          "ms": 12.679257,
+          "execute_ns": 6594394,
+          "fetch_ns": 6084863,
+          "calls": 3,
+          "rows": 300,
+          "parameters": 100
+        },
+        {
+          "sql_sha256": "48e6dac8d1eb5b44869aafd2e9da466e42b5d342897e628463e3493996953399",
+          "prefix": "SELECT *,'mcp-v3:' || json_array(service,agent_id,COALESCE(CASE WHEN json_type(attributes,'$.\"gen_ai",
+          "ms": 7.37435,
+          "execute_ns": 7365086,
+          "fetch_ns": 9264,
+          "calls": 3,
+          "rows": 0,
+          "parameters": 100
+        },
+        {
+          "sql_sha256": "f26923262f24ce9c79bd64c6e81b9178f1ea14d8e0b74455aa84612bacd33f41",
+          "prefix": "SELECT digest,time_ns,temporality,attributes, resource_attributes,scope_name,data, COALESCE(NULLIF(j",
+          "ms": 0.478688,
+          "execute_ns": 470154,
+          "fetch_ns": 8534,
+          "calls": 3,
+          "rows": 0,
+          "parameters": 0
+        },
+        {
+          "sql_sha256": "a8402858d4f1e1d27afee976520485ebb4b96a5387355b823f0d0b8079729032",
+          "prefix": "BEGIN",
+          "ms": 0.063419,
+          "execute_ns": 63419,
+          "fetch_ns": 0,
+          "calls": 3,
+          "rows": 0,
+          "parameters": 0
+        }
+      ],
+      "cpu_profile": "         25534 function calls (25512 primitive calls) in 0.326 seconds\n\n   Ordered by: cumulative time\n   List reduced from 132 to 35 due to restriction <35>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        3    0.000    0.000    0.326    0.109 core.py:2092(mcp_page)\n        3    0.006    0.002    0.317    0.106 core.py:2100(_mcp_page)\n       18    0.000    0.000    0.282    0.016 profile_mcp_inventory.py:46(execute)\n       18    0.242    0.013    0.242    0.013 {method 'execute' of 'sqlite3.Connection' objects}\n        3    0.000    0.000    0.193    0.064 storage_mcp.py:4(inventory_page)\n       18    0.000    0.000    0.039    0.002 __init__.py:179(sub)\n       18    0.039    0.002    0.039    0.002 {method 'sub' of 're.Pattern' objects}\n1512/1506    0.001    0.000    0.012    0.000 {built-in method builtins.next}\n        6    0.000    0.000    0.008    0.001 profile_mcp_inventory.py:93(connection)\n        6    0.000    0.000    0.008    0.001 core.py:956(_connect)\n      6/3    0.000    0.000    0.008    0.003 contextlib.py:141(__exit__)\n        3    0.008    0.003    0.008    0.003 {method 'close' of 'sqlite3.Connection' objects}\n       15    0.000    0.000    0.007    0.000 profile_mcp_inventory.py:25(fetchall)\n       15    0.007    0.000    0.007    0.000 {method 'fetchall' of 'sqlite3.Cursor' objects}\n      300    0.001    0.000    0.005    0.000 __init__.py:299(loads)\n      300    0.001    0.000    0.004    0.000 decoder.py:332(decode)\n      300    0.002    0.000    0.004    0.000 findings.py:89(mcp_result_error)\n      900    0.001    0.000    0.004    0.000 storage_mcp.py:56(text_value)\n     12/6    0.001    0.000    0.003    0.001 storage_mcp.py:85(execution_match_sql)\n       90    0.002    0.000    0.003    0.000 storage_mcp.py:38(session_sql)\n      900    0.001    0.000    0.003    0.000 {built-in method builtins.any}\n      300    0.002    0.000    0.002    0.000 decoder.py:343(raw_decode)\n      900    0.001    0.000    0.002    0.000 storage_mcp.py:57(<genexpr>)\n       12    0.000    0.000    0.002    0.000 storage_mcp.py:60(call_key_sql)\n      600    0.001    0.000    0.001    0.000 core.py:2276(recorded_payload)\n      171    0.001    0.000    0.001    0.000 {method 'join' of 'str' objects}\n     3301    0.001    0.000    0.001    0.000 {method 'get' of 'dict' objects}\n     3950    0.001    0.000    0.001    0.000 {built-in method builtins.isinstance}\n       48    0.000    0.000    0.001    0.000 storage_mcp.py:80(identity_claim_sql)\n       18    0.001    0.000    0.001    0.000 {method 'setdefault' of 'dict' objects}\n      900    0.000    0.000    0.001    0.000 findings.py:92(<genexpr>)\n      6/3    0.000    0.000    0.000    0.000 contextlib.py:132(__enter__)\n     1639    0.000    0.000    0.000    0.000 {method 'append' of 'list' objects}\n       18    0.000    0.000    0.000    0.000 __init__.py:280(_compile)\n1557/1555    0.000    0.000    0.000    0.000 {built-in method builtins.len}\n\n\n"
+    }
+  },
+  "inline_probe": {
+    "results": {
+      "current": [
+        {
+          "wall_ms": 64.151838,
+          "thread_cpu_ms": 64.133108,
+          "approx_vm_steps": 266000,
+          "input_blocks": 0,
+          "output_blocks": 64
+        },
+        {
+          "wall_ms": 62.144653,
+          "thread_cpu_ms": 61.729533,
+          "approx_vm_steps": 266000,
+          "input_blocks": 0,
+          "output_blocks": 64
+        },
+        {
+          "wall_ms": 73.908804,
+          "thread_cpu_ms": 73.657401,
+          "approx_vm_steps": 266000,
+          "input_blocks": 0,
+          "output_blocks": 56
+        },
+        {
+          "wall_ms": 58.791311,
+          "thread_cpu_ms": 58.797234,
+          "approx_vm_steps": 266000,
+          "input_blocks": 0,
+          "output_blocks": 56
+        },
+        {
+          "wall_ms": 58.643399,
+          "thread_cpu_ms": 58.648856,
+          "approx_vm_steps": 266000,
+          "input_blocks": 0,
+          "output_blocks": 64
+        },
+        {
+          "wall_ms": 79.105778,
+          "thread_cpu_ms": 79.111527,
+          "approx_vm_steps": 266000,
+          "input_blocks": 0,
+          "output_blocks": 56
+        },
+        {
+          "wall_ms": 74.544771,
+          "thread_cpu_ms": 74.550103,
+          "approx_vm_steps": 266000,
+          "input_blocks": 0,
+          "output_blocks": 64
+        }
+      ],
+      "inline": [
+        {
+          "wall_ms": 64.627422,
+          "thread_cpu_ms": 64.522469,
+          "approx_vm_steps": 265000,
+          "input_blocks": 0,
+          "output_blocks": 64
+        },
+        {
+          "wall_ms": 64.163746,
+          "thread_cpu_ms": 63.742912,
+          "approx_vm_steps": 265000,
+          "input_blocks": 0,
+          "output_blocks": 64
+        },
+        {
+          "wall_ms": 81.491241,
+          "thread_cpu_ms": 81.467337,
+          "approx_vm_steps": 265000,
+          "input_blocks": 0,
+          "output_blocks": 64
+        },
+        {
+          "wall_ms": 72.110991,
+          "thread_cpu_ms": 72.087311,
+          "approx_vm_steps": 265000,
+          "input_blocks": 0,
+          "output_blocks": 64
+        },
+        {
+          "wall_ms": 60.7766,
+          "thread_cpu_ms": 60.781793,
+          "approx_vm_steps": 265000,
+          "input_blocks": 0,
+          "output_blocks": 56
+        },
+        {
+          "wall_ms": 65.373339,
+          "thread_cpu_ms": 65.378655,
+          "approx_vm_steps": 265000,
+          "input_blocks": 0,
+          "output_blocks": 56
+        },
+        {
+          "wall_ms": 66.899415,
+          "thread_cpu_ms": 66.90455,
+          "approx_vm_steps": 265000,
+          "input_blocks": 0,
+          "output_blocks": 64
+        }
+      ]
+    },
+    "plans": {
+      "current": [
+        "MERGE (UNION ALL)",
+        "LEFT",
+        "CO-ROUTINE inventory",
+        "MATERIALIZE calls",
+        "MATERIALIZE evidence",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN spans USING INDEX spans_mcp_time_v1",
+        "CORRELATED SCALAR SUBQUERY 22",
+        "SEARCH execution USING INDEX spans_mcp_execution_v1 (trace_id=? AND service=? AND agent_id=? AND <expr>=?)",
+        "CORRELATED SCALAR SUBQUERY 2",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SEARCH known USING INDEX spans_trace_start (trace_id=?)",
+        "UNION ALL",
+        "SEARCH known USING INDEX logs_trace (trace_id=?)",
+        "CORRELATED SCALAR SUBQUERY 5",
+        "CO-ROUTINE (subquery-4)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SEARCH known USING INDEX spans_trace_start (trace_id=?)",
+        "UNION ALL",
+        "SEARCH known USING INDEX logs_trace (trace_id=?)",
+        "USE TEMP B-TREE FOR count(DISTINCT)",
+        "SCAN (subquery-4)",
+        "CORRELATED SCALAR SUBQUERY 7",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SEARCH known USING INDEX spans_trace_start (trace_id=?)",
+        "UNION ALL",
+        "SEARCH known USING INDEX logs_trace (trace_id=?)",
+        "CORRELATED SCALAR SUBQUERY 8",
+        "SEARCH other USING INDEX spans_mcp_owner_trace_v1 (trace_id=?)",
+        "CORRELATED SCALAR SUBQUERY 9",
+        "SEARCH other USING INDEX spans_mcp_owner_trace_v1 (trace_id=? AND service=? AND agent_id=?)",
+        "CORRELATED SCALAR SUBQUERY 10",
+        "SEARCH other USING INDEX spans_mcp_execution_v1 (trace_id=? AND service=? AND agent_id=? AND <expr>=?)",
+        "CORRELATED SCALAR SUBQUERY 21",
+        "SEARCH candidate_execution USING INDEX spans_mcp_execution_v1 (trace_id=? AND service=? AND agent_id=? AND <expr>=?)",
+        "CORRELATED SCALAR SUBQUERY 12",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SEARCH known USING INDEX spans_trace_start (trace_id=?)",
+        "UNION ALL",
+        "SEARCH known USING INDEX logs_trace (trace_id=?)",
+        "CORRELATED SCALAR SUBQUERY 15",
+        "CO-ROUTINE (subquery-14)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SEARCH known USING INDEX spans_trace_start (trace_id=?)",
+        "UNION ALL",
+        "SEARCH known USING INDEX logs_trace (trace_id=?)",
+        "USE TEMP B-TREE FOR count(DISTINCT)",
+        "SCAN (subquery-14)",
+        "CORRELATED SCALAR SUBQUERY 17",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SEARCH known USING INDEX spans_trace_start (trace_id=?)",
+        "UNION ALL",
+        "SEARCH known USING INDEX logs_trace (trace_id=?)",
+        "CORRELATED SCALAR SUBQUERY 18",
+        "SEARCH other USING INDEX spans_mcp_owner_trace_v1 (trace_id=?)",
+        "CORRELATED SCALAR SUBQUERY 19",
+        "SEARCH other USING INDEX spans_mcp_owner_trace_v1 (trace_id=? AND service=? AND agent_id=?)",
+        "CORRELATED SCALAR SUBQUERY 20",
+        "SEARCH other USING INDEX spans_mcp_execution_v1 (trace_id=? AND service=? AND agent_id=? AND <expr>=?)",
+        "UNION ALL",
+        "SCAN logs USING INDEX logs_mcp_time_v1",
+        "SCAN evidence",
+        "USE TEMP B-TREE FOR GROUP BY",
+        "SCAN calls",
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR count(DISTINCT)",
+        "SCAN inventory",
+        "USE TEMP B-TREE FOR ORDER BY",
+        "RIGHT",
+        "CO-ROUTINE visible",
+        "SCAN calls",
+        "USE TEMP B-TREE FOR ORDER BY",
+        "SCAN visible",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "inline": [
+        "MERGE (UNION ALL)",
+        "LEFT",
+        "CO-ROUTINE inventory",
+        "MATERIALIZE calls",
+        "CO-ROUTINE evidence",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN spans USING INDEX spans_mcp_time_v1",
+        "CORRELATED SCALAR SUBQUERY 22",
+        "SEARCH execution USING INDEX spans_mcp_execution_v1 (trace_id=? AND service=? AND agent_id=? AND <expr>=?)",
+        "CORRELATED SCALAR SUBQUERY 2",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SEARCH known USING INDEX spans_trace_start (trace_id=?)",
+        "UNION ALL",
+        "SEARCH known USING INDEX logs_trace (trace_id=?)",
+        "CORRELATED SCALAR SUBQUERY 5",
+        "CO-ROUTINE (subquery-4)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SEARCH known USING INDEX spans_trace_start (trace_id=?)",
+        "UNION ALL",
+        "SEARCH known USING INDEX logs_trace (trace_id=?)",
+        "USE TEMP B-TREE FOR count(DISTINCT)",
+        "SCAN (subquery-4)",
+        "CORRELATED SCALAR SUBQUERY 7",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SEARCH known USING INDEX spans_trace_start (trace_id=?)",
+        "UNION ALL",
+        "SEARCH known USING INDEX logs_trace (trace_id=?)",
+        "CORRELATED SCALAR SUBQUERY 8",
+        "SEARCH other USING INDEX spans_mcp_owner_trace_v1 (trace_id=?)",
+        "CORRELATED SCALAR SUBQUERY 9",
+        "SEARCH other USING INDEX spans_mcp_owner_trace_v1 (trace_id=? AND service=? AND agent_id=?)",
+        "CORRELATED SCALAR SUBQUERY 10",
+        "SEARCH other USING INDEX spans_mcp_execution_v1 (trace_id=? AND service=? AND agent_id=? AND <expr>=?)",
+        "CORRELATED SCALAR SUBQUERY 21",
+        "SEARCH candidate_execution USING INDEX spans_mcp_execution_v1 (trace_id=? AND service=? AND agent_id=? AND <expr>=?)",
+        "CORRELATED SCALAR SUBQUERY 12",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SEARCH known USING INDEX spans_trace_start (trace_id=?)",
+        "UNION ALL",
+        "SEARCH known USING INDEX logs_trace (trace_id=?)",
+        "CORRELATED SCALAR SUBQUERY 15",
+        "CO-ROUTINE (subquery-14)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SEARCH known USING INDEX spans_trace_start (trace_id=?)",
+        "UNION ALL",
+        "SEARCH known USING INDEX logs_trace (trace_id=?)",
+        "USE TEMP B-TREE FOR count(DISTINCT)",
+        "SCAN (subquery-14)",
+        "CORRELATED SCALAR SUBQUERY 17",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SEARCH known USING INDEX spans_trace_start (trace_id=?)",
+        "UNION ALL",
+        "SEARCH known USING INDEX logs_trace (trace_id=?)",
+        "CORRELATED SCALAR SUBQUERY 18",
+        "SEARCH other USING INDEX spans_mcp_owner_trace_v1 (trace_id=?)",
+        "CORRELATED SCALAR SUBQUERY 19",
+        "SEARCH other USING INDEX spans_mcp_owner_trace_v1 (trace_id=? AND service=? AND agent_id=?)",
+        "CORRELATED SCALAR SUBQUERY 20",
+        "SEARCH other USING INDEX spans_mcp_execution_v1 (trace_id=? AND service=? AND agent_id=? AND <expr>=?)",
+        "UNION ALL",
+        "SCAN logs USING INDEX logs_mcp_time_v1",
+        "SCAN evidence",
+        "USE TEMP B-TREE FOR GROUP BY",
+        "SCAN calls",
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR count(DISTINCT)",
+        "SCAN inventory",
+        "USE TEMP B-TREE FOR ORDER BY",
+        "RIGHT",
+        "CO-ROUTINE visible",
+        "SCAN calls",
+        "USE TEMP B-TREE FOR ORDER BY",
+        "SCAN visible",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "runtime_changed": false,
+    "conclusion": "Removing evidence materialization gave no demonstrated CPU or block-I/O reduction; existing shared-CTE runtime retained."
+  },
+  "paced_write_thread_cpu": {
+    "diagnostic_only": true,
+    "synthetic": true,
+    "samples": [
+      {
+        "mode": "baseline",
+        "index": 0,
+        "cpu_ms": 251.181495,
+        "wall_ms": 312.621149,
+        "phases": {
+          "other": {
+            "cpu_ns": 487981,
+            "wall_ns": 491378,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 175831675,
+            "wall_ns": 190241625,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 15952428,
+            "wall_ns": 42415041,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 44702540,
+            "wall_ns": 60479492,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 0,
+        "cpu_ms": 199.459954,
+        "wall_ms": 294.55757,
+        "phases": {
+          "other": {
+            "cpu_ns": 383328,
+            "wall_ns": 385544,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 127514561,
+            "wall_ns": 165024370,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 16014270,
+            "wall_ns": 19261813,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 38335395,
+            "wall_ns": 81521567,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 1,
+        "cpu_ms": 223.469538,
+        "wall_ms": 229.35756,
+        "phases": {
+          "other": {
+            "cpu_ns": 313246,
+            "wall_ns": 316507,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 158104283,
+            "wall_ns": 163218266,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 12958738,
+            "wall_ns": 12990333,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 30142691,
+            "wall_ns": 30214392,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 1,
+        "cpu_ms": 239.805691,
+        "wall_ms": 261.1965,
+        "phases": {
+          "other": {
+            "cpu_ns": 216207,
+            "wall_ns": 218560,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 164536112,
+            "wall_ns": 181168639,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 17329993,
+            "wall_ns": 17762901,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 46650820,
+            "wall_ns": 50939053,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 2,
+        "cpu_ms": 172.621867,
+        "wall_ms": 185.000311,
+        "phases": {
+          "other": {
+            "cpu_ns": 209743,
+            "wall_ns": 212233,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 97734935,
+            "wall_ns": 98815267,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 11041811,
+            "wall_ns": 11269053,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 52303736,
+            "wall_ns": 63388279,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 2,
+        "cpu_ms": 235.099874,
+        "wall_ms": 265.461075,
+        "phases": {
+          "other": {
+            "cpu_ns": 348827,
+            "wall_ns": 381558,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 158825677,
+            "wall_ns": 186091218,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 27743510,
+            "wall_ns": 29361756,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 37508987,
+            "wall_ns": 38958740,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 3,
+        "cpu_ms": 127.019387,
+        "wall_ms": 128.743286,
+        "phases": {
+          "other": {
+            "cpu_ns": 200488,
+            "wall_ns": 202406,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 68026788,
+            "wall_ns": 68354317,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 7740153,
+            "wall_ns": 7747962,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 37369811,
+            "wall_ns": 38327090,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 3,
+        "cpu_ms": 210.268899,
+        "wall_ms": 256.685699,
+        "phases": {
+          "other": {
+            "cpu_ns": 318155,
+            "wall_ns": 319978,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 146856757,
+            "wall_ns": 173619254,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 13317698,
+            "wall_ns": 32545253,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 38502558,
+            "wall_ns": 38946456,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 4,
+        "cpu_ms": 213.211936,
+        "wall_ms": 214.051597,
+        "phases": {
+          "other": {
+            "cpu_ns": 280104,
+            "wall_ns": 283364,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 161723832,
+            "wall_ns": 162551019,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 12266726,
+            "wall_ns": 12276969,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 27292721,
+            "wall_ns": 27313111,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 4,
+        "cpu_ms": 192.430341,
+        "wall_ms": 210.498053,
+        "phases": {
+          "other": {
+            "cpu_ns": 377696,
+            "wall_ns": 390807,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 153258006,
+            "wall_ns": 171103886,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 14538144,
+            "wall_ns": 14758171,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 15948626,
+            "wall_ns": 15950993,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 5,
+        "cpu_ms": 143.334277,
+        "wall_ms": 144.150854,
+        "phases": {
+          "other": {
+            "cpu_ns": 230749,
+            "wall_ns": 233296,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 111154024,
+            "wall_ns": 111969890,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 8068732,
+            "wall_ns": 8076451,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 16366237,
+            "wall_ns": 16369300,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 5,
+        "cpu_ms": 206.761423,
+        "wall_ms": 271.205297,
+        "phases": {
+          "other": {
+            "cpu_ns": 359903,
+            "wall_ns": 361703,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 145664061,
+            "wall_ns": 170911448,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 9929847,
+            "wall_ns": 46539475,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 42731146,
+            "wall_ns": 45335368,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 6,
+        "cpu_ms": 172.482119,
+        "wall_ms": 194.789758,
+        "phases": {
+          "other": {
+            "cpu_ns": 195622,
+            "wall_ns": 197819,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 111644658,
+            "wall_ns": 112642759,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 12146034,
+            "wall_ns": 12156493,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 36815945,
+            "wall_ns": 37461144,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 6,
+        "cpu_ms": 183.077572,
+        "wall_ms": 196.127044,
+        "phases": {
+          "other": {
+            "cpu_ns": 287233,
+            "wall_ns": 5343040,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 134785250,
+            "wall_ns": 137716541,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 9930143,
+            "wall_ns": 9939590,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 27168714,
+            "wall_ns": 27185969,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 7,
+        "cpu_ms": 226.844303,
+        "wall_ms": 312.725422,
+        "phases": {
+          "other": {
+            "cpu_ns": 395046,
+            "wall_ns": 10332393,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 159633377,
+            "wall_ns": 234002796,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 15544337,
+            "wall_ns": 15876937,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 34828955,
+            "wall_ns": 35572096,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 7,
+        "cpu_ms": 237.040061,
+        "wall_ms": 250.665962,
+        "phases": {
+          "other": {
+            "cpu_ns": 285912,
+            "wall_ns": 289473,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 162053778,
+            "wall_ns": 167438126,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 14079124,
+            "wall_ns": 14638935,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 41831544,
+            "wall_ns": 49113340,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 8,
+        "cpu_ms": 172.271952,
+        "wall_ms": 185.195016,
+        "phases": {
+          "other": {
+            "cpu_ns": 245507,
+            "wall_ns": 248444,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 136686434,
+            "wall_ns": 149400408,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 8574099,
+            "wall_ns": 8680231,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 19301462,
+            "wall_ns": 19385711,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 8,
+        "cpu_ms": 170.960004,
+        "wall_ms": 173.016456,
+        "phases": {
+          "other": {
+            "cpu_ns": 348054,
+            "wall_ns": 351609,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 96508854,
+            "wall_ns": 97538326,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 17068244,
+            "wall_ns": 17312581,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 36327921,
+            "wall_ns": 36780198,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 9,
+        "cpu_ms": 203.196773,
+        "wall_ms": 314.495212,
+        "phases": {
+          "other": {
+            "cpu_ns": 243390,
+            "wall_ns": 246318,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 139556914,
+            "wall_ns": 249125859,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 10346219,
+            "wall_ns": 10513997,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 41170303,
+            "wall_ns": 42662825,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 9,
+        "cpu_ms": 223.543185,
+        "wall_ms": 250.851961,
+        "phases": {
+          "other": {
+            "cpu_ns": 292069,
+            "wall_ns": 921866,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 143558914,
+            "wall_ns": 168810261,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 14048539,
+            "wall_ns": 14260318,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 47777948,
+            "wall_ns": 48785212,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 10,
+        "cpu_ms": 231.087288,
+        "wall_ms": 239.024156,
+        "phases": {
+          "other": {
+            "cpu_ns": 346261,
+            "wall_ns": 360085,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 141554724,
+            "wall_ns": 142578621,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 24932467,
+            "wall_ns": 25755856,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 44953632,
+            "wall_ns": 45775112,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 10,
+        "cpu_ms": 152.79001,
+        "wall_ms": 169.008797,
+        "phases": {
+          "other": {
+            "cpu_ns": 344054,
+            "wall_ns": 5409831,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 101781107,
+            "wall_ns": 107643424,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 15149473,
+            "wall_ns": 15324355,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 23584672,
+            "wall_ns": 23660706,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 11,
+        "cpu_ms": 150.278204,
+        "wall_ms": 152.299095,
+        "phases": {
+          "other": {
+            "cpu_ns": 338322,
+            "wall_ns": 344816,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 79228525,
+            "wall_ns": 80268804,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 22418059,
+            "wall_ns": 22981191,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 38139419,
+            "wall_ns": 38562906,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 11,
+        "cpu_ms": 236.793766,
+        "wall_ms": 322.261411,
+        "phases": {
+          "other": {
+            "cpu_ns": 457695,
+            "wall_ns": 10758268,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 190467316,
+            "wall_ns": 226190722,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 20118435,
+            "wall_ns": 23050626,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 16173606,
+            "wall_ns": 26293994,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 12,
+        "cpu_ms": 177.29479,
+        "wall_ms": 196.702841,
+        "phases": {
+          "other": {
+            "cpu_ns": 257082,
+            "wall_ns": 5317848,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 111545909,
+            "wall_ns": 117992744,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 17969797,
+            "wall_ns": 20483080,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 39733675,
+            "wall_ns": 40073372,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 12,
+        "cpu_ms": 134.257387,
+        "wall_ms": 136.246459,
+        "phases": {
+          "other": {
+            "cpu_ns": 227447,
+            "wall_ns": 230059,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 72953666,
+            "wall_ns": 73209008,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 7580162,
+            "wall_ns": 7587489,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 38608714,
+            "wall_ns": 39098462,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 13,
+        "cpu_ms": 219.160441,
+        "wall_ms": 339.492977,
+        "phases": {
+          "other": {
+            "cpu_ns": 380964,
+            "wall_ns": 390033,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 145062482,
+            "wall_ns": 238471965,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 13163528,
+            "wall_ns": 13454284,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 48220638,
+            "wall_ns": 69921167,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 13,
+        "cpu_ms": 200.69537,
+        "wall_ms": 249.836886,
+        "phases": {
+          "other": {
+            "cpu_ns": 393973,
+            "wall_ns": 5993753,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 148076797,
+            "wall_ns": 191382191,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 12925254,
+            "wall_ns": 13118011,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 27491444,
+            "wall_ns": 27494832,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 14,
+        "cpu_ms": 243.967675,
+        "wall_ms": 381.500501,
+        "phases": {
+          "other": {
+            "cpu_ns": 266620,
+            "wall_ns": 268866,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 172100700,
+            "wall_ns": 194712810,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 11917266,
+            "wall_ns": 123188176,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 39806133,
+            "wall_ns": 41693395,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 14,
+        "cpu_ms": 169.634176,
+        "wall_ms": 219.939444,
+        "phases": {
+          "other": {
+            "cpu_ns": 303511,
+            "wall_ns": 306140,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 121948619,
+            "wall_ns": 171532675,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 8476207,
+            "wall_ns": 8517353,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 23376962,
+            "wall_ns": 23835705,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "current",
+        "index": 15,
+        "cpu_ms": 205.603274,
+        "wall_ms": 206.240665,
+        "phases": {
+          "other": {
+            "cpu_ns": 302421,
+            "wall_ns": 304881,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 151750091,
+            "wall_ns": 152350914,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 13033429,
+            "wall_ns": 13044176,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 28602071,
+            "wall_ns": 28639648,
+            "rows": 0
+          }
+        }
+      },
+      {
+        "mode": "baseline",
+        "index": 15,
+        "cpu_ms": 209.496338,
+        "wall_ms": 360.85808,
+        "phases": {
+          "other": {
+            "cpu_ns": 376445,
+            "wall_ns": 4327733,
+            "rows": 0
+          },
+          "grouped": {
+            "cpu_ns": 144194755,
+            "wall_ns": 235991979,
+            "rows": 103
+          },
+          "hydrate": {
+            "cpu_ns": 11605791,
+            "wall_ns": 11914302,
+            "rows": 100
+          },
+          "execution": {
+            "cpu_ns": 43550071,
+            "wall_ns": 55603605,
+            "rows": 0
+          }
+        }
+      }
+    ],
+    "writes": 32,
+    "errors": []
+  }
+}
