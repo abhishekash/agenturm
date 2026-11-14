@@ -172,6 +172,9 @@ class Snapshot:
     receiver_time_ns: int = 0
     indexing_ready: bool = False
     review_trace_filter: bool = False
+    native_lifecycle: list = field(default_factory=list)
+    native_lifecycle_warning: str = ""
+    native_lifecycle_prepared: bool = False
 
 
 class Feed:
@@ -558,13 +561,36 @@ class Feed:
             if history!={page:tuple(cursors) for page,cursors in self.history.items()}:
                 self.wake.set()
                 return
-            self.selected_trace = selected
+            from .native_lifecycle import merge_observations,inventory_observations
+            inventory=[];inventory_warning=''
+            if health.get('native_lifecycle_v1') is True:
+                try:inventory,inventory_warning=inventory_observations(get('/api/native-lifecycle'),receiver_id)
+                except (OSError,ValueError,CockpitError):inventory_warning='Native lifecycle inventory read is unavailable.'
+                # RequestBatch caches the prefetched health Future; this must
+                # be an independent read after the native inventory response.
+                from .feed_requests import shared_get
+                confirmed=shared_get(self.api,'/api/health',cancelled=self.stop.is_set)
+                if confirmed.get('receiver_id')!=receiver_id:
+                    raise ValueError('Receiver identity changed during native inventory read; retrying')
+                if confirmed.get('native_lifecycle_v1') is not True:
+                    inventory_warning='Native lifecycle inventory capability changed during the read.'
+                health=confirmed;local_status=health.get('local_agents') or {}
+            if self.stop.is_set():return
+            if requested_scope!=FeedScope.capture(self) or history!={page:tuple(cursors) for page,cursors in self.history.items()}:
+                self.wake.set();return
             clock=health.get('observed_time_unix_nano')
             receiver_time=clock if type(clock) is int and 0<clock<2**63 else 0
             indexing=health.get('indexing')
+            native,native_warning=merge_observations(receiver_id,
+                old.native_lifecycle if old.receiver_id==receiver_id else (),inventory,activity=activity)
+            native_warning=inventory_warning or native_warning
+            if old.receiver_id==receiver_id and old.native_lifecycle_warning.startswith('Native lifecycle evidence reached'):
+                native_warning=native_warning or old.native_lifecycle_warning
+            self.selected_trace = selected
             self.snapshot = Snapshot(totals, agents, traces, detail, findings, updated=time.time(), local_status=local_status, activity=activity,
                                      sessions=sessions,receiver_id=health.get("receiver_id") or "",
                                      receiver_time_ns=receiver_time,indexing_ready=isinstance(indexing,dict) and indexing.get("ready") is True,
+                                     native_lifecycle=native,native_lifecycle_warning=native_warning,native_lifecycle_prepared=True,
                                      review_trace_filter=health.get("review_trace_filter") is True,
                                      sessions_error=self.sessions_error,
                                      sessions_updated=self.sessions_updated,
