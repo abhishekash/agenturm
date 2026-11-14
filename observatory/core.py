@@ -240,6 +240,10 @@ def _activity_row(attrs, time_ns, source, source_id, span_id=None, service="unkn
         if evidence['qualified_detail']:
             row.update(detail=evidence_detail(evidence),detail_role='operation_v1')
     from .operation_facts import normalize_operation_result
+    if type(attrs.get('observatory.native.schema')) is int and attrs['observatory.native.schema']==1:
+        from .native_lifecycle import native_metadata
+        native=native_metadata(attrs,resource_attributes)
+        if native is not None:row['native_lifecycle']=native
     return normalize_operation_result(row)
 
 
