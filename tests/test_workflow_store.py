@@ -1,10 +1,13 @@
 """Durable review receipts are private, bounded and safe across cockpits."""
 import concurrent.futures
+from contextlib import closing
+from enum import Enum
 import json
 import os
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +15,20 @@ from observatory.attention import classify
 from observatory.workflow_evidence import scope_for
 from observatory.workflow_store import WorkflowStore, WorkflowStoreError, WorkflowSchemaError
 from tests.test_attention import item,snapshot
+
+
+class ClaimResult(Enum):
+    DEFERRED='SQLite writer contention; claim outcome is unavailable'
+
+
+def claim_or_deferred(store,incident,*,now):
+    try:return store.claim(incident.namespace,incident.id,incident.scope_key,now=now)
+    except WorkflowStoreError as exc:
+        cause=exc.__cause__
+        if (isinstance(cause,sqlite3.OperationalError) and
+                getattr(cause,'sqlite_errorcode',None) in {sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED}):
+            return ClaimResult.DEFERRED
+        raise
 
 
 class WorkflowStoreTests(unittest.TestCase):
@@ -46,15 +63,69 @@ class WorkflowStoreTests(unittest.TestCase):
     def test_two_cockpits_claim_once_then_failed_attempt_needs_explicit_retry(self):
         incident=self.incident();self.store.observe([incident],now=100)
         other=WorkflowStore(self.path)
-        def claim(store):return store.claim(incident.namespace,incident.id,incident.scope_key,now=101)
+        def claim(store):return claim_or_deferred(store,incident,now=101)
+        stores=[self.store,other]
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            self.assertEqual(sorted(pool.map(claim,[self.store,other])),[False,True])
+            results=list(pool.map(claim,stores))
+        self.assertEqual(sum(result is True for result in results),1)
+        # A bounded busy timeout is unavailable, never an optimistic "already
+        # claimed" result. Settle only after both concurrent attempts stop.
+        settled=[store.claim(incident.namespace,incident.id,incident.scope_key,now=101)
+                 if result is ClaimResult.DEFERRED else result for store,result in zip(stores,results)]
+        self.assertEqual(sorted(settled),[False,True])
+        with closing(sqlite3.connect(self.path)) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM workflow_notification_claims_v1').fetchone()[0],1)
         self.store.finish_delivery(incident.namespace,incident.id,status='failed',now=102)
         self.assertFalse(claim(other))
         self.assertTrue(other.claim(incident.namespace,incident.id,incident.scope_key,retry=True,now=103))
         self.assertFalse(self.store.claim(incident.namespace,incident.id,incident.scope_key,retry=True,now=103))
         other.finish_delivery(incident.namespace,incident.id,status='delivered',now=104)
         self.assertEqual(self.store.load(now=105)[0]['delivery_attempts'],2)
+
+    def test_busy_contender_never_records_an_optimistic_claim_before_holder_commits(self):
+        incident=self.incident();self.store.observe([incident],now=100)
+        other=WorkflowStore(self.path)
+        holding=threading.Event();release=threading.Event();connect=sqlite3.connect
+        def observed_connect(*args,**kwargs):
+            db=connect(*args,**kwargs)
+            if threading.current_thread().name.startswith('held-claim'):
+                def trace(statement):
+                    if statement.startswith('SELECT payload FROM workflow_incidents_v1'):
+                        # This real SELECT follows the real BEGIN IMMEDIATE;
+                        # only the test holder's scheduling is controlled.
+                        holding.set();release.wait()
+                db.set_trace_callback(trace)
+            return db
+        with patch('observatory.workflow_store.sqlite3.connect',side_effect=observed_connect):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1,thread_name_prefix='held-claim') as pool:
+                holder=pool.submit(self.store.claim,incident.namespace,incident.id,incident.scope_key,now=101)
+                try:
+                    self.assertTrue(holding.wait(5),'Real claim holder never acquired its write transaction')
+                    deferred=claim_or_deferred(other,incident,now=101)
+                    self.assertIs(deferred,ClaimResult.DEFERRED)
+                    with closing(connect(self.path)) as db:
+                        self.assertEqual(db.execute('SELECT COUNT(*) FROM workflow_notification_claims_v1').fetchone()[0],0)
+                finally:release.set()
+                self.assertIs(holder.result(timeout=5),True)
+        self.assertIs(other.claim(incident.namespace,incident.id,incident.scope_key,now=101),False)
+        with closing(connect(self.path)) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM workflow_notification_claims_v1').fetchone()[0],1)
+
+    def test_only_exact_wrapped_sqlite_busy_or_locked_is_a_deferred_claim(self):
+        incident=self.incident()
+        for code in (sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED,sqlite3.SQLITE_CORRUPT,sqlite3.SQLITE_BUSY|256):
+            cause=sqlite3.OperationalError('synthetic database failure');cause.sqlite_errorcode=code
+            error=WorkflowStoreError('synthetic storage unavailable');error.__cause__=cause
+            with self.subTest(code=code),patch.object(self.store,'claim',side_effect=error):
+                if code in {sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED}:
+                    self.assertIs(claim_or_deferred(self.store,incident,now=101),ClaimResult.DEFERRED)
+                else:
+                    with self.assertRaises(WorkflowStoreError):claim_or_deferred(self.store,incident,now=101)
+        with patch.object(self.store,'claim',side_effect=WorkflowStoreError('database is locked')):
+            with self.assertRaises(WorkflowStoreError):claim_or_deferred(self.store,incident,now=101)
+        unwrapped=sqlite3.OperationalError('synthetic busy');unwrapped.sqlite_errorcode=sqlite3.SQLITE_BUSY
+        with patch.object(self.store,'claim',side_effect=unwrapped):
+            with self.assertRaises(sqlite3.OperationalError):claim_or_deferred(self.store,incident,now=101)
 
     def test_claim_isolated_by_receiver_and_never_delivers_seen_or_completion(self):
         first=self.incident();second=self.incident(receiver='second')
