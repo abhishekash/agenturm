@@ -44,10 +44,19 @@ The generated lock-contention preflight uses a real `LocalAgents` poll, one gene
 
 While that writer is held, native ingestion has entered its real Store path, `initial_poll_complete` remains false, and the health request remains unfinished because health also persists hierarchy facts. After release, polling completes and Feed can publish metadata while the deliberately pending history state remains false. The raw preflight is retained in `native-bootstrap-lock-preflight.json`.
 
-This proves a dependency, not a full retained-history speed result. Native ingestion and health-side hierarchy persistence can still wait on SQLite. Writer fairness and bounded derivation remain separate work. There is no demonstrated sub-30-second first-native frame on the full corpus, and the approximately six-minute prior coherent-cold problem is not relabelled as solved by this partial frame.
+This proves a dependency, not a full retained-history speed result. Native ingestion and health-side hierarchy persistence can still wait on SQLite. Writer fairness and bounded derivation remain separate work. There is no demonstrated sub-30-second first-native frame on the full corpus, and the earlier multi-minute API-readiness observation, which included preparation, is not relabelled as a solved logical-cold or first-UI-frame budget.
 
 ## Verification
 
 The broader local Feed concurrency, source preparation, capture-revocation and Agents observation-deck run passed 99 tests in 217.666 seconds before the last narrow rendering refinements. The final native-bootstrap/once/workflow-controller gate passed 35 tests in 33.924 seconds with `ResourceWarning` treated as an error. It includes numeric 2–7 navigation, direct search/render callbacks, unknown paging, coherent restoration, Diagnostics, actual 60×18 keyboard use, late prompt/evidence buffers, same/different-receiver publication races, sticky denials, strict stage/clock rejection and the real writer-lock preflight. The overlapping run counts are not additive unique-test totals.
 
 Independent reviewers reproduced and checked the canonical ID, policy-tombstone, different-receiver late-callback and missing-diagnostic-total boundaries. Final narrow source review found no remaining blocker; main integration and CI remain the release gates. No performance SLO or external adoption result is claimed here.
+
+
+## Root integration and real-terminal lifecycle
+
+The independent combined-source gate passed **54 tests in 70.267 seconds** with ResourceWarning treated as an error, including live capture revocation and retained reference bindings. Async debug timing notices remain in the original log; they are not performance measurements or suppressed test errors.
+
+On frozen `473d338`, actual isolated tmux runs each passed **26 checks** for normal quit, SIGINT while reading and SIGTERM while reading. Prompt arrows, Home/End, navigator/reader transitions, section shortcuts, F1 help, 120×36/80×24/60×18 and the explicit 50×14 too-small state all passed. Terminal settings were restored, with exit codes **0 / 130 / 143**. Separate startup-signal runs also restored the terminal and returned **130 / 143**. The [complete results and frame hashes](native-bootstrap-keyboard.json) retain exact application/harness/dependency provenance. No personal session, provider or existing terminal was used.
+
+A separate one-hour retained-history stability run is in progress on a detached `473d338` checkout and the common synthetic seed. Its result is **pending**, not accepted. The frozen runtime remains independent of subsequent documentation commits. Strict active HTTP remains failed at 315/420 writes; [the success-projection report](success-only-projection.html) retains every 503 and missed slot. [The remaining CPU/reuse assessment](canonical-activity-reuse.html) explains the dominant constructor cost and why existing clean indexes cannot safely replace it. These engineering limits remain open.

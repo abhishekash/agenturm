@@ -1,0 +1,440 @@
+{
+  "qualification": "Actual isolated tmux functional fixture, normal coherent prompts plus new runtime; not retained-history/resource acceptance. Headless tests separately cover initial metadata pages.",
+  "source_head": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+  "gates": [
+    {
+      "case": "q",
+      "result": {
+        "return_code": 0,
+        "termios_restored": true,
+        "module": "/tmp/agenturm-bootstrap-integration/observatory/__init__.py",
+        "fixture_helper": "/tmp/agenturm-bootstrap-integration/tests/test_inspector_layout.py",
+        "fixture_helper_sha256": "2d99fc5873fc30c3d60138f1093c35a2bf0856c2dec5620fd90cb67fbb0c7cbe",
+        "tmux": "tmux 3.4",
+        "sizes": [
+          "120x36",
+          "50x14",
+          "80x24",
+          "60x18"
+        ],
+        "checks": [
+          "monitor startup",
+          "agent list history fixture",
+          "explicit too-small frame",
+          "wide layout restored",
+          "wide layout model settled",
+          "agent table focus restored",
+          "inspector tabs focus",
+          "prompt section",
+          "Up from prompt tabs enters older request",
+          "wide prompt navigator",
+          "Up chooses older",
+          "Down chooses newer",
+          "Home chooses first",
+          "End chooses latest",
+          "Enter reads",
+          "Ctrl+Right changes inspector section",
+          "Ctrl+Left returns to prompt navigator",
+          "Right reads",
+          "Left returns to index",
+          "compact navigator focus",
+          "compact arrows confirm and read",
+          "unchanged compact choice confirms and reads",
+          "F1 opens help",
+          "help returns to reader after resize",
+          "compact navigator after help",
+          "terminal output after restoration"
+        ],
+        "steps": 26,
+        "passed": true,
+        "source": {
+          "application": {
+            "root": "/tmp/agenturm-bootstrap-integration",
+            "head": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+            "dirty": false,
+            "untracked_code": []
+          },
+          "harness": {
+            "root": "/tmp/agenturm-bootstrap-integration",
+            "revision": {
+              "root": "/tmp/agenturm-bootstrap-integration",
+              "head": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+              "dirty": false,
+              "untracked_code": []
+            },
+            "files": {
+              "validation_support.py": "0e47958722af154a08de6f043c03b2323eb343ece9afe9fb9fb575312b61839f",
+              "soak_monitor.py": "17f5488a94f396c4513e20e7a9b7ce1b96f36bfec299671a51f5ea56dcb3f172",
+              "benchmark_monitor_idle.py": "2a93e0fc8f3ea02116c114b8a137ff67bd3586babf9bf29dd6e4477c24497b24",
+              "benchmark_http_tails.py": "7ef62e70cd6bc91bdfe4c01fe849fe2acca8015830cf8fed1688c0c1a015ef5c",
+              "verify_keyboard_tmux.py": "67310c8581dae59f07ddeb5382c304ff803b90ebecc5b781f8b32a82ba93883d",
+              "validate_combined_monitor.py": "d996bfad1df7ff76fe292e67b5d8a6c33203bcee02b738bd023f4b6f08bb6a4d",
+              "benchmark_history.py": "5ad9649f371e34840f76ec7c03bce982965b3c91e36cc02a5aa71dbaf57325ef",
+              "benchmark_app.py": "7f88b43ebc57f1bbdfbf39be57f7a51c964c8d4857bda7b0616b5b4a664ee258",
+              "soak_workflows.py": "489daa2ea541b806897deb341768b98f0e7c087c267d9a06095932a0f5eef809",
+              "benchmark_resources.py": "049a12673a41024c23b7cc1c466245280b5c740f72310da7a5bf849c04451723"
+            },
+            "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+            "executable": "/usr/bin/python3.12",
+            "host": {
+              "system": "Linux",
+              "kernel": "7.0.0-38-generic",
+              "machine": "x86_64",
+              "cpus": 8
+            },
+            "terminal": {
+              "term": "xterm-256color",
+              "tmux": "tmux 3.4"
+            },
+            "lock_sha256": "d3f1c0c5f9f20df48be710855fef8f5a2d7769539e27d3191a4ca43ae2c83bcf",
+            "packages": {
+              "textual": "8.2.8",
+              "rich": "15.0.0",
+              "markdown-it-py": "4.2.0"
+            }
+          }
+        },
+        "shutdown": "q",
+        "signal_at": "reader"
+      },
+      "result_sha256": "35d2287ac17030c7df35389c3540337cacff03e1094f59edf32d1a2269937660",
+      "frames_sha256": "6d98d3f779af0ae2899d5810b90f2820b6ae8f2134a40046a1b5d1de0ebbb5c5"
+    },
+    {
+      "case": "int",
+      "result": {
+        "return_code": 130,
+        "termios_restored": true,
+        "module": "/tmp/agenturm-bootstrap-integration/observatory/__init__.py",
+        "fixture_helper": "/tmp/agenturm-bootstrap-integration/tests/test_inspector_layout.py",
+        "fixture_helper_sha256": "2d99fc5873fc30c3d60138f1093c35a2bf0856c2dec5620fd90cb67fbb0c7cbe",
+        "tmux": "tmux 3.4",
+        "sizes": [
+          "120x36",
+          "50x14",
+          "80x24",
+          "60x18"
+        ],
+        "checks": [
+          "monitor startup",
+          "agent list history fixture",
+          "explicit too-small frame",
+          "wide layout restored",
+          "wide layout model settled",
+          "agent table focus restored",
+          "inspector tabs focus",
+          "prompt section",
+          "Up from prompt tabs enters older request",
+          "wide prompt navigator",
+          "Up chooses older",
+          "Down chooses newer",
+          "Home chooses first",
+          "End chooses latest",
+          "Enter reads",
+          "Ctrl+Right changes inspector section",
+          "Ctrl+Left returns to prompt navigator",
+          "Right reads",
+          "Left returns to index",
+          "compact navigator focus",
+          "compact arrows confirm and read",
+          "unchanged compact choice confirms and reads",
+          "F1 opens help",
+          "help returns to reader after resize",
+          "compact navigator after help",
+          "terminal output after restoration"
+        ],
+        "steps": 26,
+        "passed": true,
+        "source": {
+          "application": {
+            "root": "/tmp/agenturm-bootstrap-integration",
+            "head": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+            "dirty": false,
+            "untracked_code": []
+          },
+          "harness": {
+            "root": "/tmp/agenturm-bootstrap-integration",
+            "revision": {
+              "root": "/tmp/agenturm-bootstrap-integration",
+              "head": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+              "dirty": false,
+              "untracked_code": []
+            },
+            "files": {
+              "validation_support.py": "0e47958722af154a08de6f043c03b2323eb343ece9afe9fb9fb575312b61839f",
+              "soak_monitor.py": "17f5488a94f396c4513e20e7a9b7ce1b96f36bfec299671a51f5ea56dcb3f172",
+              "benchmark_monitor_idle.py": "2a93e0fc8f3ea02116c114b8a137ff67bd3586babf9bf29dd6e4477c24497b24",
+              "benchmark_http_tails.py": "7ef62e70cd6bc91bdfe4c01fe849fe2acca8015830cf8fed1688c0c1a015ef5c",
+              "verify_keyboard_tmux.py": "67310c8581dae59f07ddeb5382c304ff803b90ebecc5b781f8b32a82ba93883d",
+              "validate_combined_monitor.py": "d996bfad1df7ff76fe292e67b5d8a6c33203bcee02b738bd023f4b6f08bb6a4d",
+              "benchmark_history.py": "5ad9649f371e34840f76ec7c03bce982965b3c91e36cc02a5aa71dbaf57325ef",
+              "benchmark_app.py": "7f88b43ebc57f1bbdfbf39be57f7a51c964c8d4857bda7b0616b5b4a664ee258",
+              "soak_workflows.py": "489daa2ea541b806897deb341768b98f0e7c087c267d9a06095932a0f5eef809",
+              "benchmark_resources.py": "049a12673a41024c23b7cc1c466245280b5c740f72310da7a5bf849c04451723"
+            },
+            "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+            "executable": "/usr/bin/python3.12",
+            "host": {
+              "system": "Linux",
+              "kernel": "7.0.0-38-generic",
+              "machine": "x86_64",
+              "cpus": 8
+            },
+            "terminal": {
+              "term": "xterm-256color",
+              "tmux": "tmux 3.4"
+            },
+            "lock_sha256": "d3f1c0c5f9f20df48be710855fef8f5a2d7769539e27d3191a4ca43ae2c83bcf",
+            "packages": {
+              "textual": "8.2.8",
+              "rich": "15.0.0",
+              "markdown-it-py": "4.2.0"
+            }
+          }
+        },
+        "shutdown": "sigint",
+        "signal_at": "reader"
+      },
+      "result_sha256": "5580e942c483dc303a1e304d33fa245ff12c2904b6120445b44b345df65b79a8",
+      "frames_sha256": "cd04221d330e7948d54c0d66f883e252831099ed4c9b3d81137fd5d36aa56bb9"
+    },
+    {
+      "case": "term",
+      "result": {
+        "return_code": 143,
+        "termios_restored": true,
+        "module": "/tmp/agenturm-bootstrap-integration/observatory/__init__.py",
+        "fixture_helper": "/tmp/agenturm-bootstrap-integration/tests/test_inspector_layout.py",
+        "fixture_helper_sha256": "2d99fc5873fc30c3d60138f1093c35a2bf0856c2dec5620fd90cb67fbb0c7cbe",
+        "tmux": "tmux 3.4",
+        "sizes": [
+          "120x36",
+          "50x14",
+          "80x24",
+          "60x18"
+        ],
+        "checks": [
+          "monitor startup",
+          "agent list history fixture",
+          "explicit too-small frame",
+          "wide layout restored",
+          "wide layout model settled",
+          "agent table focus restored",
+          "inspector tabs focus",
+          "prompt section",
+          "Up from prompt tabs enters older request",
+          "wide prompt navigator",
+          "Up chooses older",
+          "Down chooses newer",
+          "Home chooses first",
+          "End chooses latest",
+          "Enter reads",
+          "Ctrl+Right changes inspector section",
+          "Ctrl+Left returns to prompt navigator",
+          "Right reads",
+          "Left returns to index",
+          "compact navigator focus",
+          "compact arrows confirm and read",
+          "unchanged compact choice confirms and reads",
+          "F1 opens help",
+          "help returns to reader after resize",
+          "compact navigator after help",
+          "terminal output after restoration"
+        ],
+        "steps": 26,
+        "passed": true,
+        "source": {
+          "application": {
+            "root": "/tmp/agenturm-bootstrap-integration",
+            "head": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+            "dirty": false,
+            "untracked_code": []
+          },
+          "harness": {
+            "root": "/tmp/agenturm-bootstrap-integration",
+            "revision": {
+              "root": "/tmp/agenturm-bootstrap-integration",
+              "head": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+              "dirty": false,
+              "untracked_code": []
+            },
+            "files": {
+              "validation_support.py": "0e47958722af154a08de6f043c03b2323eb343ece9afe9fb9fb575312b61839f",
+              "soak_monitor.py": "17f5488a94f396c4513e20e7a9b7ce1b96f36bfec299671a51f5ea56dcb3f172",
+              "benchmark_monitor_idle.py": "2a93e0fc8f3ea02116c114b8a137ff67bd3586babf9bf29dd6e4477c24497b24",
+              "benchmark_http_tails.py": "7ef62e70cd6bc91bdfe4c01fe849fe2acca8015830cf8fed1688c0c1a015ef5c",
+              "verify_keyboard_tmux.py": "67310c8581dae59f07ddeb5382c304ff803b90ebecc5b781f8b32a82ba93883d",
+              "validate_combined_monitor.py": "d996bfad1df7ff76fe292e67b5d8a6c33203bcee02b738bd023f4b6f08bb6a4d",
+              "benchmark_history.py": "5ad9649f371e34840f76ec7c03bce982965b3c91e36cc02a5aa71dbaf57325ef",
+              "benchmark_app.py": "7f88b43ebc57f1bbdfbf39be57f7a51c964c8d4857bda7b0616b5b4a664ee258",
+              "soak_workflows.py": "489daa2ea541b806897deb341768b98f0e7c087c267d9a06095932a0f5eef809",
+              "benchmark_resources.py": "049a12673a41024c23b7cc1c466245280b5c740f72310da7a5bf849c04451723"
+            },
+            "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+            "executable": "/usr/bin/python3.12",
+            "host": {
+              "system": "Linux",
+              "kernel": "7.0.0-38-generic",
+              "machine": "x86_64",
+              "cpus": 8
+            },
+            "terminal": {
+              "term": "xterm-256color",
+              "tmux": "tmux 3.4"
+            },
+            "lock_sha256": "d3f1c0c5f9f20df48be710855fef8f5a2d7769539e27d3191a4ca43ae2c83bcf",
+            "packages": {
+              "textual": "8.2.8",
+              "rich": "15.0.0",
+              "markdown-it-py": "4.2.0"
+            }
+          }
+        },
+        "shutdown": "sigterm",
+        "signal_at": "reader"
+      },
+      "result_sha256": "90ab5f24ed8a371b745bf8f596189ac3f4a86a95b83531c6d8f6bd6873a456e2",
+      "frames_sha256": "5553541e91ccc8a414846e3041ab415b6d9204723ef4259b7c513374fd61b42b"
+    },
+    {
+      "case": "int-start",
+      "result": {
+        "return_code": 130,
+        "termios_restored": true,
+        "module": "/tmp/agenturm-bootstrap-integration/observatory/__init__.py",
+        "fixture_helper": "/tmp/agenturm-bootstrap-integration/tests/test_inspector_layout.py",
+        "fixture_helper_sha256": "2d99fc5873fc30c3d60138f1093c35a2bf0856c2dec5620fd90cb67fbb0c7cbe",
+        "tmux": "tmux 3.4",
+        "sizes": [
+          "120x36"
+        ],
+        "checks": [
+          "terminal output after restoration"
+        ],
+        "steps": 1,
+        "passed": true,
+        "source": {
+          "application": {
+            "root": "/tmp/agenturm-bootstrap-integration",
+            "head": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+            "dirty": false,
+            "untracked_code": []
+          },
+          "harness": {
+            "root": "/tmp/agenturm-bootstrap-integration",
+            "revision": {
+              "root": "/tmp/agenturm-bootstrap-integration",
+              "head": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+              "dirty": false,
+              "untracked_code": []
+            },
+            "files": {
+              "validation_support.py": "0e47958722af154a08de6f043c03b2323eb343ece9afe9fb9fb575312b61839f",
+              "soak_monitor.py": "17f5488a94f396c4513e20e7a9b7ce1b96f36bfec299671a51f5ea56dcb3f172",
+              "benchmark_monitor_idle.py": "2a93e0fc8f3ea02116c114b8a137ff67bd3586babf9bf29dd6e4477c24497b24",
+              "benchmark_http_tails.py": "7ef62e70cd6bc91bdfe4c01fe849fe2acca8015830cf8fed1688c0c1a015ef5c",
+              "verify_keyboard_tmux.py": "67310c8581dae59f07ddeb5382c304ff803b90ebecc5b781f8b32a82ba93883d",
+              "validate_combined_monitor.py": "d996bfad1df7ff76fe292e67b5d8a6c33203bcee02b738bd023f4b6f08bb6a4d",
+              "benchmark_history.py": "5ad9649f371e34840f76ec7c03bce982965b3c91e36cc02a5aa71dbaf57325ef",
+              "benchmark_app.py": "7f88b43ebc57f1bbdfbf39be57f7a51c964c8d4857bda7b0616b5b4a664ee258",
+              "soak_workflows.py": "489daa2ea541b806897deb341768b98f0e7c087c267d9a06095932a0f5eef809",
+              "benchmark_resources.py": "049a12673a41024c23b7cc1c466245280b5c740f72310da7a5bf849c04451723"
+            },
+            "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+            "executable": "/usr/bin/python3.12",
+            "host": {
+              "system": "Linux",
+              "kernel": "7.0.0-38-generic",
+              "machine": "x86_64",
+              "cpus": 8
+            },
+            "terminal": {
+              "term": "xterm-256color",
+              "tmux": "tmux 3.4"
+            },
+            "lock_sha256": "d3f1c0c5f9f20df48be710855fef8f5a2d7769539e27d3191a4ca43ae2c83bcf",
+            "packages": {
+              "textual": "8.2.8",
+              "rich": "15.0.0",
+              "markdown-it-py": "4.2.0"
+            }
+          }
+        },
+        "shutdown": "sigint",
+        "signal_at": "startup"
+      },
+      "result_sha256": "d097eb8d671a0b9565de21d10a6e933914ac803d5c6a134e1f9091a7da6418f9",
+      "frames_sha256": "ce82f7e73d1f34da7207812639b70135b17aa41a8e12f02b77a2f4da1b3244a1"
+    },
+    {
+      "case": "term-start",
+      "result": {
+        "return_code": 143,
+        "termios_restored": true,
+        "module": "/tmp/agenturm-bootstrap-integration/observatory/__init__.py",
+        "fixture_helper": "/tmp/agenturm-bootstrap-integration/tests/test_inspector_layout.py",
+        "fixture_helper_sha256": "2d99fc5873fc30c3d60138f1093c35a2bf0856c2dec5620fd90cb67fbb0c7cbe",
+        "tmux": "tmux 3.4",
+        "sizes": [
+          "120x36"
+        ],
+        "checks": [
+          "terminal output after restoration"
+        ],
+        "steps": 1,
+        "passed": true,
+        "source": {
+          "application": {
+            "root": "/tmp/agenturm-bootstrap-integration",
+            "head": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+            "dirty": false,
+            "untracked_code": []
+          },
+          "harness": {
+            "root": "/tmp/agenturm-bootstrap-integration",
+            "revision": {
+              "root": "/tmp/agenturm-bootstrap-integration",
+              "head": "473d3388e6cd6966d5c2fb8e90001990573d224b",
+              "dirty": false,
+              "untracked_code": []
+            },
+            "files": {
+              "validation_support.py": "0e47958722af154a08de6f043c03b2323eb343ece9afe9fb9fb575312b61839f",
+              "soak_monitor.py": "17f5488a94f396c4513e20e7a9b7ce1b96f36bfec299671a51f5ea56dcb3f172",
+              "benchmark_monitor_idle.py": "2a93e0fc8f3ea02116c114b8a137ff67bd3586babf9bf29dd6e4477c24497b24",
+              "benchmark_http_tails.py": "7ef62e70cd6bc91bdfe4c01fe849fe2acca8015830cf8fed1688c0c1a015ef5c",
+              "verify_keyboard_tmux.py": "67310c8581dae59f07ddeb5382c304ff803b90ebecc5b781f8b32a82ba93883d",
+              "validate_combined_monitor.py": "d996bfad1df7ff76fe292e67b5d8a6c33203bcee02b738bd023f4b6f08bb6a4d",
+              "benchmark_history.py": "5ad9649f371e34840f76ec7c03bce982965b3c91e36cc02a5aa71dbaf57325ef",
+              "benchmark_app.py": "7f88b43ebc57f1bbdfbf39be57f7a51c964c8d4857bda7b0616b5b4a664ee258",
+              "soak_workflows.py": "489daa2ea541b806897deb341768b98f0e7c087c267d9a06095932a0f5eef809",
+              "benchmark_resources.py": "049a12673a41024c23b7cc1c466245280b5c740f72310da7a5bf849c04451723"
+            },
+            "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+            "executable": "/usr/bin/python3.12",
+            "host": {
+              "system": "Linux",
+              "kernel": "7.0.0-38-generic",
+              "machine": "x86_64",
+              "cpus": 8
+            },
+            "terminal": {
+              "term": "xterm-256color",
+              "tmux": "tmux 3.4"
+            },
+            "lock_sha256": "d3f1c0c5f9f20df48be710855fef8f5a2d7769539e27d3191a4ca43ae2c83bcf",
+            "packages": {
+              "textual": "8.2.8",
+              "rich": "15.0.0",
+              "markdown-it-py": "4.2.0"
+            }
+          }
+        },
+        "shutdown": "sigterm",
+        "signal_at": "startup"
+      },
+      "result_sha256": "65c494e2d20493902dc7d87b46d581216eda5d30e9f180a1ca6f10371fa55cc0",
+      "frames_sha256": "89bc1f72a13069e564f4e5dd0bd7173c399abbb953584bec3550939801820e52"
+    }
+  ]
+}
