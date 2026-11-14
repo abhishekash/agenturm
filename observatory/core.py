@@ -929,7 +929,7 @@ class Store:
                     pending=[row[0] for row in db.execute('SELECT trace_id FROM finding_dirty_v1 ORDER BY trace_id LIMIT 16')]
                 if not pending:break
                 self.migration_status={**self.migration_status,'stage':'Refreshing incoming finding evidence'}
-                self._refresh_summaries(pending)
+                self._refresh_summaries(pending, require_dirty=True)
                 if self._migration_stop.wait(.025):return
             if self._migration_stop.is_set():return
             self.migration_status={**self.migration_status,'ready':True,'stage':'Ready'}
@@ -960,7 +960,7 @@ class Store:
                 db.execute('BEGIN IMMEDIATE')
                 count=drain(db,limit=200)
                 traces=[row[0] for row in db.execute('SELECT trace_id FROM finding_dirty_v1 ORDER BY trace_id LIMIT 16')]
-            if traces:self._refresh_summaries(traces)
+            if traces:self._refresh_summaries(traces, require_dirty=True)
             return count  # Preserve the Activity drain-count contract; derived repair is additional.
         finally:
             self._notify_derived_progress()
@@ -1179,7 +1179,7 @@ class Store:
         db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('agent_hierarchy_revision',?)",
                    (str(current + 1),))
 
-    def upsert_agent_nodes(self, nodes):
+    def upsert_agent_nodes(self, nodes, *, _db=None):
         """Idempotently persist normalized identities and bounded evidence.
 
         The canonical child identity is the conflict key.  A later observation
@@ -1192,7 +1192,7 @@ class Store:
             raise ValueError("too many agent nodes")
         now = time.time_ns()
         changed = 0
-        with self._connect() as db:
+        with self._read_db(_db) as db:
             for raw in nodes:
                 try:
                     node = normalize_node(raw)
@@ -1572,11 +1572,11 @@ class Store:
         with self._connect() as db:
             db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('endpoint_inventory_v1','1')")
 
-    def _refresh_summaries(self, trace_ids):
+    def _refresh_summaries(self, trace_ids, *, require_dirty=False):
         with self._derived_lock:
-            self._refresh_summaries_locked(trace_ids)
+            self._refresh_summaries_locked(trace_ids, require_dirty=require_dirty)
 
-    def _refresh_summaries_locked(self, trace_ids):
+    def _refresh_summaries_locked(self, trace_ids, *, require_dirty=False):
         from .storage_derived import derive_trace
 
         active_pattern_runs = set()
@@ -1593,6 +1593,13 @@ class Store:
                 db.execute("BEGIN IMMEDIATE")
                 receiver=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
                 for trace_id in trace_ids[offset:offset+16]:
+                    # Another local/background receiver may already have
+                    # repaired this job while we waited for its writer. A
+                    # missing cache is still repair work even without a dirty
+                    # row (the read-side repair path can enqueue it directly).
+                    if require_dirty and not db.execute('SELECT 1 FROM finding_dirty_v1 WHERE trace_id=? UNION ALL '
+                            'SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM trace_summaries WHERE trace_id=?) LIMIT 1',
+                            (trace_id,trace_id)).fetchone():continue
                     db.execute('DELETE FROM finding_dirty_v1 WHERE trace_id=?',(trace_id,))
                     derived = (derive_trace(db, trace_id, workflow_patterns=True) if trace_id in active_pattern_runs
                                else derive_trace(db, trace_id))
@@ -1661,7 +1668,7 @@ class Store:
                     continue
                 pending = {trace_id: self._derived_pending.pop(trace_id) for trace_id in ready}
             try:
-                self._refresh_summaries(ready)
+                self._refresh_summaries(ready, require_dirty=True)
                 self.last_derived_error = None
             except Exception as exc:
                 self.last_derived_error = str(exc)
@@ -1969,11 +1976,11 @@ class Store:
             self._update_endpoints(db, spans)
             from .storage_activity import drain
             drain(db,limit=10000)
-        self._ingest_agent_nodes_from_spans(spans)
+            self._ingest_agent_nodes_from_spans(spans,_db=db)
         self._refresh_after_write(s["trace_id"] for s in spans)
         return len(spans)
 
-    def _ingest_agent_nodes_from_spans(self, spans):
+    def _ingest_agent_nodes_from_spans(self, spans, *, _db=None):
         nodes = []
         for span in spans:
             if span.get("scope_name") in {"observatory.local_agents", "observatory.opencode"}:
@@ -1985,7 +1992,7 @@ class Store:
             if node:
                 nodes.append(node)
         if nodes:
-            self.upsert_agent_nodes(nodes[:5000])
+            self.upsert_agent_nodes(nodes[:5000],_db=_db)
 
     def add_progress(self, trace_id, stage, message, percent=None, session_id=None, service=None):
         trace_id = _id(trace_id, TRACE_ID, "trace_id")
