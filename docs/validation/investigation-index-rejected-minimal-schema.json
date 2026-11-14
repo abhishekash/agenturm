@@ -1,0 +1,325 @@
+{
+  "format": "agenturm-investigation-benchmark-v1",
+  "synthetic": true,
+  "events": 6000,
+  "samples": 3,
+  "sqlite_version": "3.45.1",
+  "source_hashes": {
+    "scripts/benchmark_investigation.py": "2ae096de6b308167fc8a4b59a8e4e4f8e9d9270656789bdb20d5ddc7c35a63b8",
+    "observatory/investigation.py": "44ded027cee4c71e94622d088ae5f15075d6fccdf0240a83d4889c61dd6484ae",
+    "observatory/storage_investigation.py": "5415699dc65316dfa6fda4ac552f7f4fd10df8b3d00cac1ab64deb52e4eb11f9",
+    "observatory/recorded_paths.py": "d7e4aca0847e011b25518f71bd226ace617d7f6bb631190bd31d828a32769e96"
+  },
+  "scope": "Isolated SQLite Activity write/index/query microbenchmark; excludes receiver, UI, native discovery and raw-source hydration.",
+  "runs": [
+    {
+      "baseline": {
+        "build_ms": 203.014765,
+        "database_bytes": 6254592
+      },
+      "indexed": {
+        "build_ms": 13816.179601,
+        "database_bytes": 10272768
+      },
+      "reads": {
+        "path": {
+          "median_ms": 4.677156,
+          "p95_ms": 4.964486,
+          "samples_ms": [
+            5.94737,
+            4.964486,
+            4.722911,
+            4.694662,
+            4.651875,
+            4.638066,
+            4.640417,
+            4.678892,
+            4.612381,
+            4.856171,
+            4.737766,
+            4.652271,
+            4.575352,
+            4.38132,
+            4.718558,
+            4.712222,
+            4.653651,
+            4.659409,
+            4.67542,
+            4.679281
+          ],
+          "returned": 50,
+          "has_more": true
+        },
+        "command": {
+          "median_ms": 32.607176,
+          "p95_ms": 56.957294,
+          "samples_ms": [
+            36.891866,
+            32.321336,
+            29.698274,
+            29.972296,
+            34.097584,
+            29.772976,
+            29.535834,
+            29.452476,
+            38.418358,
+            52.025808,
+            59.847101,
+            56.957294,
+            39.441827,
+            36.318034,
+            32.893016,
+            31.754655,
+            31.45822,
+            30.714346,
+            29.360845,
+            32.961337
+          ],
+          "returned": 50,
+          "has_more": true
+        },
+        "instruction": {
+          "median_ms": 31.5611345,
+          "p95_ms": 37.148478,
+          "samples_ms": [
+            33.15871,
+            31.130772,
+            32.98257,
+            33.274185,
+            31.16077,
+            30.768864,
+            31.09081,
+            31.685798,
+            31.049904,
+            31.140824,
+            30.759255,
+            31.305292,
+            31.822823,
+            31.580347,
+            32.707819,
+            33.304766,
+            40.875929,
+            37.148478,
+            31.541922,
+            31.498485
+          ],
+          "returned": 50,
+          "has_more": true
+        }
+      },
+      "terms": 6000
+    },
+    {
+      "indexed": {
+        "build_ms": 14159.010192,
+        "database_bytes": 10272768
+      },
+      "reads": {
+        "path": {
+          "median_ms": 2.4913805,
+          "p95_ms": 2.86084,
+          "samples_ms": [
+            3.484156,
+            2.860169,
+            2.86084,
+            2.691026,
+            2.592919,
+            2.562646,
+            2.40984,
+            2.609109,
+            2.414979,
+            2.626897,
+            2.460234,
+            2.442718,
+            2.396854,
+            2.422099,
+            2.510895,
+            2.451167,
+            2.471866,
+            2.524716,
+            2.375055,
+            2.387834
+          ],
+          "returned": 50,
+          "has_more": true
+        },
+        "command": {
+          "median_ms": 33.270414,
+          "p95_ms": 36.894432,
+          "samples_ms": [
+            31.515006,
+            34.633696,
+            33.448948,
+            32.104075,
+            29.967308,
+            30.49376,
+            29.478324,
+            28.800052,
+            29.470971,
+            30.519918,
+            33.740311,
+            34.137128,
+            42.217125,
+            36.002316,
+            36.894432,
+            31.028236,
+            33.986887,
+            33.781533,
+            33.09188,
+            36.462776
+          ],
+          "returned": 50,
+          "has_more": true
+        },
+        "instruction": {
+          "median_ms": 31.4503065,
+          "p95_ms": 39.70234,
+          "samples_ms": [
+            31.05188,
+            36.487417,
+            33.925893,
+            31.370107,
+            45.13585,
+            38.445003,
+            30.893266,
+            32.336714,
+            31.383708,
+            31.516905,
+            30.450761,
+            30.963299,
+            36.95216,
+            32.437572,
+            32.400101,
+            30.504004,
+            29.803456,
+            29.675481,
+            30.543404,
+            39.70234
+          ],
+          "returned": 50,
+          "has_more": true
+        }
+      },
+      "terms": 6000,
+      "baseline": {
+        "build_ms": 188.661681,
+        "database_bytes": 6254592
+      }
+    },
+    {
+      "baseline": {
+        "build_ms": 179.516308,
+        "database_bytes": 6254592
+      },
+      "indexed": {
+        "build_ms": 13594.468102,
+        "database_bytes": 10272768
+      },
+      "reads": {
+        "path": {
+          "median_ms": 2.6797435,
+          "p95_ms": 3.017452,
+          "samples_ms": [
+            4.068105,
+            2.966764,
+            2.844018,
+            3.017452,
+            2.656416,
+            2.638377,
+            2.67851,
+            2.57597,
+            2.620903,
+            2.680977,
+            2.742009,
+            2.37631,
+            2.787863,
+            2.927202,
+            2.720032,
+            2.555074,
+            2.521075,
+            2.432833,
+            2.715672,
+            2.519853
+          ],
+          "returned": 50,
+          "has_more": true
+        },
+        "command": {
+          "median_ms": 31.7520415,
+          "p95_ms": 37.165392,
+          "samples_ms": [
+            33.167377,
+            30.338065,
+            37.165392,
+            31.981307,
+            30.959207,
+            30.501863,
+            30.788974,
+            49.48628,
+            33.623127,
+            32.638759,
+            30.377179,
+            32.126023,
+            33.521344,
+            34.271103,
+            31.522776,
+            30.387464,
+            30.456801,
+            30.966511,
+            29.956689,
+            31.988352
+          ],
+          "returned": 50,
+          "has_more": true
+        },
+        "instruction": {
+          "median_ms": 33.5575695,
+          "p95_ms": 36.158422,
+          "samples_ms": [
+            36.70553,
+            33.836273,
+            30.90663,
+            33.625619,
+            29.317649,
+            31.05858,
+            36.158422,
+            34.719613,
+            34.045488,
+            34.852662,
+            33.955374,
+            33.48952,
+            31.556214,
+            34.065515,
+            30.082704,
+            29.724844,
+            34.470638,
+            28.975469,
+            30.606014,
+            29.612571
+          ],
+          "returned": 50,
+          "has_more": true
+        }
+      },
+      "terms": 6000
+    }
+  ],
+  "medians": {
+    "baseline_build_ms": 188.661681,
+    "indexed_build_ms": 13816.179601,
+    "baseline_database_bytes": 6254592,
+    "indexed_database_bytes": 10272768
+  },
+  "measurement": {
+    "source_commit": "a4d0495",
+    "quiet_window_coordinated": true,
+    "started_utc": "2026-11-14T08:58:19.209340+00:00",
+    "finished_utc": "2026-11-14T08:59:05.714204+00:00",
+    "started_monotonic": 696367.414740447,
+    "finished_monotonic": 696413.919631617,
+    "elapsed_seconds": 46.504891698015854,
+    "background_boundary": "Root and both parallel agents held local tests, browsers and heavy tools for this interval; remote CI was outside this host."
+  },
+  "accepted_for_cost_claims": false,
+  "rejection_reason": "Benchmark omitted existing activity_owner_v1 and other Activity indexes; per-owner index replacement scanned the synthetic Activity table. Actual receiver has the owner index. Superseded by corrected protocol."
+}
