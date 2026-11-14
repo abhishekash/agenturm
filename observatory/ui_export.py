@@ -205,6 +205,6 @@ class ReceiptExportScreen(ExportScreen):
 
     def finish_export(self,error):
         if not self.is_mounted:return
-        self.query_one('#export-confirm',Button).disabled=False
+        self.query_one('#export-confirm',Button).disabled=self._export_invalidated
         if error:self.notify(error,severity='error');return
         self.dismiss();self.app.notify('Frozen Markdown and HTML receipt exported. Review before sharing.')

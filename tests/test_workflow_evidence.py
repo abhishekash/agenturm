@@ -203,7 +203,8 @@ class ReviewJourney(unittest.IsolatedAsyncioTestCase):
             with TemporaryDirectory() as directory:
                 # Exercise the real inherited Button.Pressed route, not a direct method call.
                 target=Path(directory)/'blocked.md'
-                app.push_screen(ReceiptExportScreen(freeze_receipt(screen.projection),valid=lambda:False))
+                allowed=[True]
+                app.push_screen(ReceiptExportScreen(freeze_receipt(screen.projection),valid=lambda:allowed[0]))
                 await pilot.pause();app.screen.query_one('#export-path',Input).value=str(target)
                 preview=app.screen.query_one('#export-preview')
                 self.assertEqual(preview.scroll_y,0)
@@ -211,6 +212,17 @@ class ReviewJourney(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('# Agenturm execution evidence',preview.lines[0].text)
                 for widget in app.screen.query('#export-dialog > *'):
                     self.assertTrue(app.screen.region.contains_region(widget.region),widget.id)
+                # Layout assertions require a permitted preview. Once revoked,
+                # the timer must clear it even before the user presses Write.
+                export_screen=app.screen;allowed[0]=False
+                for _ in range(20):
+                    if export_screen._export_invalidated:break
+                    await pilot.pause(.05)
+                self.assertTrue(export_screen._export_invalidated)
+                self.assertTrue(export_screen.query_one('#export-confirm').disabled)
+                self.assertFalse(preview.lines)
+                self.assertEqual(export_screen.content,'')
+                self.assertEqual(export_screen.formats,{})
                 await pilot.click('#export-confirm');await app.workers.wait_for_complete();await pilot.pause()
                 self.assertFalse(target.exists());self.assertFalse(target.with_suffix('.html').exists())
 
