@@ -364,7 +364,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                         if route.path == "/v1/traces":
                             store.ingest(decode_trace_request(raw))
                         elif route.path == "/v1/logs":
-                            store.ingest_logs(decode_log_request(raw))
+                            store.ingest_logs(decode_log_request(raw),expected_receiver=self.headers.get('X-Agenturm-Expected-Receiver-ID'))
                         else:
                             store.ingest_metrics(decode_metric_request(raw))
                         self._protobuf_ok()
@@ -384,7 +384,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     count = store.ingest(normalize_otlp(body))
                     self._json(200, {"partialSuccess": {"rejectedSpans": 0}, "accepted": count})
                 elif route.path == "/v1/logs":
-                    count = store.ingest_logs(normalize_otlp_logs(body))
+                    count = store.ingest_logs(normalize_otlp_logs(body),expected_receiver=self.headers.get('X-Agenturm-Expected-Receiver-ID'))
                     self._json(200, {"partialSuccess": {"rejectedLogRecords": 0}, "accepted": count})
                 elif route.path == "/v1/metrics":
                     count = store.ingest_metrics(normalize_otlp_metrics(body))
