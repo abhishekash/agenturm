@@ -221,12 +221,14 @@ def progress_observations(events,*,receiver=''):
             compact=row.get('action') in {'compact','compaction','truncation','context_truncated'}))
     observations=[]
     for scope,items in groups.items():
-        chain=[];compactions=[];failures=defaultdict(list);successful={}
+        chain=[];compactions=[];failures=defaultdict(list);recovery_failures=defaultdict(list);successful={}
         def emit(kind,selected,note):
             if len(observations)<32:observations.append(dict(kind=kind,scope=scope,references=[reference(item['row']) for item in selected[:MAX_REFS]],
                 count=len(selected),note=note,attention=False))
         for item in items:
             stamp=item['stamp'];facts=item['facts'];key=item['key']
+            if key and not item['polling'] and facts['result']=='passed' and not facts['result_conflict']:
+                successful[key]=item
             if item['progress']:
                 chain=[previous for previous in chain if previous['stamp']>=stamp]
                 compactions=[previous for previous in compactions if previous['stamp']>=stamp]
@@ -236,18 +238,137 @@ def progress_observations(events,*,receiver=''):
                 if len(compactions)==3:emit('repeated_compaction',compactions,'Three recorded compactions within ten minutes; context loss or stalled work is not established.')
             if item['progress'] or not key or item['polling'] or facts['expected_nonzero']:continue
             if facts['result']=='failed' and facts['error_fingerprint']:
-                signature=(key,facts['error_fingerprint']);failures[signature]=[old for old in failures[signature] if stamp-old['stamp']<=300_000_000_000]+[item]
+                signature=(key,facts['error_fingerprint']);recovery_failures[signature].append(item);failures[signature]=[old for old in failures[signature] if stamp-old['stamp']<=300_000_000_000]+[item]
                 if len(failures[signature])==3:emit('repeated_tool_error',failures[signature],'Three complete matching failures within five minutes; retries may be intentional.')
-            if facts['result']=='passed' and not facts['result_conflict']:
-                successful[key]=stamp
             chain=chain+[item] if chain and chain[-1]['key']==key and stamp>chain[-1]['stamp'] else [item]
             if len(chain)==5 and not any(old['progress'] for old in chain):
                 emit('repeated_equivalent_call',chain,'Five consecutive complete matching calls without intervening captured edit/check progress; no waste or stalled-work claim is made.')
         # A later matching success is only an observation. Do not infer task repair.
-        for (key,_),failed in failures.items():
-            later=successful.get(key,0)
-            matched=[item for item in failed if later>item['stamp']]
-            if matched:emit('later_matching_success',matched,'A strictly later matching success was recorded in this exact scope; consequences or full recovery are not established.')
+        for (key,_),failed in recovery_failures.items():
+            later=successful.get(key)
+            matched=[item for item in failed if later is not None and later['stamp']>item['stamp']]
+            if matched:emit('later_matching_success',[*matched[:MAX_REFS-1],later],'A strictly later matching success was recorded in this exact scope; consequences or full recovery are not established.')
     return dict(observations=observations,coverage=dict(limit=MAX_EVENTS,input_clipped=len(events)>MAX_EVENTS if isinstance(events,(list,tuple)) else False,
         unknown_scope_records=unknown_scope,unknown_timestamp_records=unknown_time,
         note='Loaded captured evidence only. Explanations never create explicit attention incidents or desktop notifications.'))
+
+
+def reported_usage_context(spans,events,observation,*,receiver='',source_complete=False):
+    """Reported leaf contributions inside a captured repeat interval, never deltas.
+
+    The candidate/ancestor rule matches summarize's input/output leaf accounting.
+    Additional completeness, ownership and timing gates make this explanation
+    unavailable whenever the narrower interval cannot be accounted for safely.
+    """
+    from .core import INPUT_TOKEN_KEYS,OUTPUT_TOKEN_KEYS,_agent_id_from_attributes,_activity_session
+    from .workflow_evidence import check_observation
+    def unavailable(reason):return dict(available=False,reason=reason,attention=False)
+    if source_complete is not True:return unavailable('The complete source window is not proved.')
+    if not isinstance(spans,(list,tuple)) or len(spans)>MAX_EVENTS or not isinstance(events,(list,tuple)) or len(events)>MAX_EVENTS:
+        return unavailable('The source/progress window exceeds its bounded input limit.')
+    scope=observation.get('scope') if isinstance(observation,dict) else None
+    if not isinstance(scope,(tuple,list)) or len(scope)!=5 or any(not label(value) for value in scope[:4]):
+        return unavailable('Exact receiver, producer, actor and session are required.')
+    execution=scope[4]
+    if (not isinstance(execution,(tuple,list)) or len(execution)!=2 or execution[0] not in {'trace','turn'}
+        or not label(execution[1]) or scope[0]!=receiver):return unavailable('Exact execution/receiver is unavailable.')
+    wanted=tuple(scope[:4])+(tuple(execution),)
+    references=observation.get('references') or []
+    stamps=[ref.get('time_unix_nano') for ref in references if isinstance(ref,dict)]
+    if (len(stamps)!=len(references) or len(stamps)<2 or any(type(stamp) is not int or stamp<=0 for stamp in stamps)
+        or min(stamps)>=max(stamps)):return unavailable('A strict comparable observation interval is required.')
+    lower,upper=min(stamps),max(stamps)
+    traces={ref.get('trace_id') for ref in references}
+    if len(traces)!=1 or not all(label(trace) for trace in traces):return unavailable('A single explicit trace is required for source navigation.')
+    trace=next(iter(traces))
+    def owner(row):
+        attrs=row.get('attributes') or {};resource=row.get('resource_attributes') or {}
+        if not isinstance(attrs,dict) or not isinstance(resource,dict):return None
+        raw=attrs.get('agent.id',resource.get('agent.id'))
+        if not label(raw):return None
+        namespace=label(row.get('receiver_id')) or label(receiver)
+        if namespace!=receiver:return None
+        actor=_agent_id_from_attributes(attrs,resource,row.get('service'));session=_activity_session(attrs,resource)
+        turn=attrs.get('agent.turn.id')
+        anchor=('turn',turn) if turn else ('trace',row.get('trace_id'))
+        values=(namespace,row.get('service'),actor,session)
+        return (*values,anchor) if all(label(value) for value in values) and label(anchor[1]) else None
+    by_id={};usage={};matching={}
+    fields={'input_tokens':INPUT_TOKEN_KEYS,'output_tokens':OUTPUT_TOKEN_KEYS}
+    for row in spans:
+        if not isinstance(row,dict):return unavailable('Malformed source record.')
+        key=(row.get('trace_id'),row.get('span_id'))
+        if not all(isinstance(value,str) and value for value in key):return unavailable('Source execution/span identity is missing.')
+        if key in by_id:return unavailable('Duplicate source span identity.')
+        by_id[key]=row
+        attrs=row.get('attributes') or {}
+        if not isinstance(attrs,dict):return unavailable('Malformed source usage fields.')
+        if row.get('name')=='agent.run' or not any(name in attrs for keys in fields.values() for name in keys):continue
+        usage[key]=owner(row)
+        if usage[key] is None:return unavailable('Usage ownership or receiver is unknown/contradictory.')
+        if usage[key]!=wanted:continue
+        if key[0]!=trace:return unavailable('Cross-trace turn contributions cannot use this per-trace source reader.')
+        if not re.fullmatch(r'[0-9a-f]{16}',key[1]) or not re.fullmatch(r'[0-9a-f]{32}',key[0]):
+            return unavailable('Exact source reference is unavailable.')
+        values={}
+        for field,keys in fields.items():
+            present=[attrs[name] for name in keys if name in attrs]
+            if present and (any(count(value) is None for value in present) or len(set(present))!=1):
+                return unavailable('Reported token fields are invalid or contradictory.')
+            if present:values[field]=present[0]
+        matching[key]=values
+    if not matching:return unavailable('No exactly owned reported usage sources were supplied.')
+    # Full ancestry is required here. The general aggregate can remain useful
+    # when ancestry is missing; this narrower explanatory interval cannot.
+    ancestors={}
+    for key,record_owner in usage.items():
+        chain=[];seen={key};parent=by_id[key].get('parent_span_id')
+        while parent:
+            if not isinstance(parent,str):return unavailable('Source ancestry is malformed.')
+            parent_key=(key[0],parent)
+            if parent_key in seen:return unavailable('Source ancestry is cyclic.')
+            if parent_key not in by_id:return unavailable('Source ancestry is incomplete.')
+            seen.add(parent_key);chain.append(parent_key)
+            if parent_key in usage and usage[parent_key]!=record_owner and (record_owner==wanted or usage[parent_key]==wanted):
+                return unavailable('Cross-owner usage ancestry cannot allocate contributions.')
+            parent=by_id[parent_key].get('parent_span_id')
+        ancestors[key]=chain
+    leaves={}
+    for field in fields:
+        candidates={key for key,values in matching.items() if field in values}
+        wrappers={parent for key in candidates for parent in ancestors[key] if parent in candidates}
+        leaves[field]=candidates-wrappers
+    selected={};totals={field:0 for field in fields};present={field:False for field in fields}
+    for key in set().union(*leaves.values()):
+        row=by_id[key];start=row.get('start_unix_nano');end=row.get('end_unix_nano')
+        if any(type(value) is not int or value<=0 for value in (start,end)) or end<start:
+            return unavailable('Source contribution timing is unavailable.')
+        if end<lower or start>upper:continue
+        if start<=lower or end>=upper:return unavailable('A contribution crosses or equals the observation boundary.')
+        if row.get('status') not in {'OK','ERROR','UNSET'} or row.get('capture_content') is False:
+            return unavailable('Source terminal/capture status is uncertain.')
+        selected[key]=row
+        for field in fields:
+            if key in leaves[field]:totals[field]+=matching[key][field];present[field]=True
+    if (len(selected)<2 or len({row['end_unix_nano'] for row in selected.values()})<2
+        or not all(present.values()) or not any(totals.values())):
+        return unavailable('At least two ordered positive usage sources with both token directions are required.')
+    for row in events:
+        if not isinstance(row,dict):return unavailable('Malformed progress source.')
+        namespace=label(row.get('receiver_id')) or label(receiver)
+        anchor=('turn',row.get('turn_id')) if row.get('turn_id') else ('trace',row.get('trace_id'))
+        if (namespace,row.get('service'),row.get('agent_id'),row.get('session_id'),anchor)!=wanted:continue
+        relevant_file=row.get('domain')=='file' and row.get('action') in {'write','edit','add','update','delete','create','patch','rename','move'}
+        check=check_observation(row) if row.get('domain')=='shell' else None
+        if not relevant_file and (not check or check['result']=='failed'):continue
+        stamp=operation_stamp(row)
+        if stamp is None:return unavailable('Progress timing is unavailable.')
+        if stamp in {lower,upper}:return unavailable('Progress ordering at an interval boundary is unknown.')
+        if lower<stamp<upper:
+            return unavailable('Captured edit/check progress or effect uncertainty occurs in this interval.')
+    ordered=sorted(selected.values(),key=lambda row:(row['end_unix_nano'],row['trace_id'],row['span_id']))
+    refs=[dict(type='span',id=row['span_id'],trace_id=row['trace_id'],service=row['service'],
+        agent_id=wanted[2],session_id=wanted[3],receiver_id=receiver) for row in ordered[:MAX_REFS]]
+    return dict(available=True,**totals,source_records=len(selected),references=refs,references_clipped=len(selected)>MAX_REFS,
+        interval_start_ns=lower,interval_end_ns=upper,attention=False,
+        note=f"{totals['input_tokens']:,} reported input and {totals['output_tokens']:,} output tokens from {len(selected)} completed leaf source records strictly inside this captured interval; no successful captured edit/check progress is established. These are per-record contributions, not cumulative-counter deltas, retry costs, context occupancy or proof of waste.")
