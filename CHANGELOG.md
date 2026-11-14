@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Put recorded edits, paths, checks and issues before agent claims in the session Overview, with explicit evidence coverage. Share UI-free source preparation with headless consumers and fence optional native log batches to the receiver inside their write transaction.
+
 - Freeze explicitly mapped read-only Git observations in Review and prepare editable continuity drafts with explicit approval. Preserve authored task fields and decisions; qualify bounded path-overlap/check chronology and fence every contributing source through copy and export.
 
 - Attribute Findings rows, counts and source reads to each recorded occurrence in one snapshot. Rebuild invalidated evidence after old-writer changes and restart. Read exact sources with `s`; preserve capture-policy fences through previews, copy and export.

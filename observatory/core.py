@@ -1889,11 +1889,16 @@ class Store:
         deleted["cutoff_unix_nano"] = cutoff_ns
         return deleted
 
-    def ingest_logs(self, records, *, native_retry=False, native_source_path=None):
+    def ingest_logs(self, records, *, native_retry=False, native_source_path=None, expected_receiver=None):
         records = list(records)
         from .native_policy import native_update_guard
         with self._connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            if expected_receiver is not None:
+                if not isinstance(expected_receiver,str) or not 0<len(expected_receiver)<=128:
+                    raise ValueError('Invalid expected receiver identity')
+                actual=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
+                if actual!=expected_receiver:raise ValueError('Receiver namespace changed; no log records were written')
             records=self._policy_records(records,'log',db)
             stale_generation=self._stale_native_generation(records,native_retry,native_source_path)
             rows = []
