@@ -171,7 +171,8 @@
       "independent_peer_proof_sha256": "2a49c2fe1b536925e112c9351370ac09cd078244e53fa8e2c21cbdce8c965d05",
       "independent_checks": 22,
       "independent_all_checks_passed": true,
-      "common_seed": {
+      "production_indexes_equal": true,
+      "working_clone_manifest_at_preparation": {
         "sha256": "5418206cd39d72e397dbf0104fafe16a1c6ad298e4c3b9dd4b8cdfe9c8d8b682",
         "raw_sha256": "a7834f8369c95c9160d16fe1d4d1c23b401e76a58c68507ce8b4bafa43948588",
         "counts": {
@@ -181,7 +182,10 @@
         },
         "bytes": 188383232
       },
-      "production_indexes_equal": true
+      "frozen_seed_file": {
+        "sha256": "a88727a946d8ba0e1dd3b45ed100061d9365496e1dba9d15e9e4f17881df0357",
+        "bytes": 188383232
+      }
     },
     "strengthened_metrics": {
       "tests": 8,
