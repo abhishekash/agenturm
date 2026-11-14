@@ -218,6 +218,9 @@ class OpenCodeReader:
         self._session_cursor = 0
         self.backlog_records = 0
         self._message_bytes = 0
+        self._v2_windows = {}
+        self._file_generation = None
+        self._capture_mode = bool(capture_details)
 
     def diagnostics(self):
         return {"source_path": str(self.path), "last_success_ns": self.updated_ns,
@@ -347,7 +350,8 @@ class OpenCodeReader:
         evidence = f"OpenCode recorded {row['role']}" + (f" ({row['outcome']})" if row['outcome'] else '') + "."
         return state, timestamp(row['stamp']), evidence
 
-    def _plan_progress(self, db, tables, session_id, trace_id, root_span_id, updated_ns):
+    def _plan_progress(self, db, tables, session_id, trace_id, root_span_id, updated_ns,
+                       *, agent_id=None, turn_id=None):
         """Convert OpenCode's durable todo checklist into a deduplicated progress event."""
         if "todo" not in tables:
             return None
@@ -388,8 +392,9 @@ class OpenCodeReader:
                 "service": "opencode", "severity_number": 9, "severity_text": "INFO",
                 "event_name": "agent.progress", "body": message,
                 "attributes": {"session.id": session_id,
-                    "agent.id": canonical_agent_id("OpenCode", self.source_id, session_id),
+                    "agent.id": agent_id or canonical_agent_id("OpenCode", self.source_id, session_id),
                     "agent.runtime": "OpenCode",
+                    **({'agent.turn.id':turn_id} if turn_id else {}),
                     "agent.progress.stage": "Plan",
                     "agent.progress.message": message, "agent.progress.percent": percent,
                     "observatory.record_id": event_id},
@@ -409,8 +414,17 @@ class OpenCodeReader:
             self._progress_revisions.clear()
             self._part_revisions.clear()
             self._payload_cursors.clear()
+            self._v2_windows.clear()
             self.backlog_records = 0
             return 0
+        capture_mode = bool(self.capture_details)
+        if self._file_generation != fingerprint[-2:] or self._capture_mode != capture_mode:
+            self.fingerprint = None
+            self._message_revisions.clear(); self._reply_revisions.clear(); self._prompt_revisions.clear()
+            self._initial_tasks.clear(); self._progress_revisions.clear(); self._part_revisions.clear()
+            self._payload_cursors.clear(); self._v2_windows.clear()
+            self._file_generation = fingerprint[-2:]
+            self._capture_mode = capture_mode
         if fingerprint == self.fingerprint and not self.backlog_records and time.monotonic() - self._last_refresh < LOOKBACK_REFRESH_SECONDS:
             self.checked_ns = time.time_ns()
             return 0
@@ -431,6 +445,9 @@ class OpenCodeReader:
         message_window = set()
         part_windows = {}
         progress_revisions = {}
+        v2_windows = {key:{**value,'pending':list(value.get('pending',()))}
+                      for key,value in self._v2_windows.items()}
+        membership_budget = [1000]
         try:
             uri = self.path.resolve().as_uri() + "?mode=ro"
             with closing(sqlite3.connect(uri, uri=True, timeout=0.25)) as db:
@@ -438,6 +455,10 @@ class OpenCodeReader:
                 db.execute("PRAGMA query_only=ON")
                 db.execute("PRAGMA busy_timeout=250")
                 db.execute("BEGIN")
+                current_generation = self._fingerprint()
+                if not current_generation or current_generation[-2:] != fingerprint[-2:]:
+                    self.fingerprint=None;self.sessions=[];self.backlog_records=1
+                    return 0
                 tables = self._tables(db)
                 session_tables = [table for table in ("session_v2", "session")
                                   if table in tables and {"id", "time_updated"} <= self._columns(db, table)]
@@ -481,7 +502,7 @@ class OpenCodeReader:
                 # message activity as well as the session row timestamp.
                 activity_updates = {}
                 activity_tables = {}
-                for table in ("message", "session_message"):
+                for table in ("message", "session_message", "session_part"):
                     if table not in tables:
                         continue
                     cols = self._columns(db, table)
@@ -576,15 +597,30 @@ class OpenCodeReader:
                 for session in rows:
                     data = dict(session)
                     session_id = str(data["id"])
+                    table_candidates = [(updates.get(session_id, 0), name)
+                                        for name, updates in activity_tables.items() if name!='session_part']
+                    if activity_tables.get('session_part',{}).get(session_id) and 'session_message' in tables:
+                        table_candidates.append((activity_tables['session_part'][session_id], 'session_message'))
+                    read_table = max(table_candidates, default=(0, message_table))[1]
+                    read_columns = self._columns(db, read_table) if read_table else set()
+                    current_layout = read_table=='session_message' and {'seq','type','time_updated'} <= read_columns
+                    native_namespace = self.source_id
+                    resolver = None
+                    source_epoch = None
+                    if current_layout:
+                        from . import opencode_turns
+                        source_epoch = opencode_turns.epoch(self.source_id,fingerprint)
+                        native_namespace = opencode_turns.namespace(self.source_id,source_epoch)
+                        resolver = opencode_turns.Resolver(db,self.source_id,source_epoch,session_id,membership_budget)
                     directory = str(data.get("directory") or "")
                     project = project_names.get(data.get("project_id")) or Path(directory).name or ""
                     updated = timestamp(data.get("_last_activity_ns", data.get("time_updated")))
                     parent_session = data.get("parent_id")
                     parent_supported = bool(data.get("_parent_supported", supports_parent))
-                    agent_id = canonical_agent_id("OpenCode", self.source_id, session_id)
-                    parent_agent_id = (canonical_agent_id("OpenCode", self.source_id, str(parent_session))
+                    agent_id = canonical_agent_id("OpenCode", native_namespace, session_id)
+                    parent_agent_id = (canonical_agent_id("OpenCode", native_namespace, str(parent_session))
                                        if isinstance(parent_session, str) and parent_session else None)
-                    item = {"source_id": identity(self.source_id, session_id), "runtime": "OpenCode",
+                    item = {"source_id": identity(native_namespace, session_id), "runtime": "OpenCode",
                             "service": "opencode", "session_id": session_id, "project": project,
                             "working_directory": directory if self.capture_details else "",
                             "model": _model(data.get("model")), "last_update_ns": updated,
@@ -594,7 +630,8 @@ class OpenCodeReader:
                             "last_activity": {"time_unix_nano": updated, "domain": "agent",
                                               "action": "session update", "subject": project or "OpenCode session",
                                               "result": "observed"}, "bytes_read": 0,
-                            "agent_id": agent_id, "source_namespace": self.source_id,
+                            "agent_id": agent_id, "source_namespace": native_namespace,
+                            **({'source_epoch':source_epoch} if current_layout else {}),
                             "native_session_id": session_id, "native_worker_id": None,
                             "parent_agent_id": parent_agent_id,
                             "relationship_kind": "delegated" if parent_agent_id else "unknown",
@@ -615,10 +652,6 @@ class OpenCodeReader:
                     # Prefer the message table that actually has the latest
                     # records for this session. Old databases may retain both
                     # tables after migration; existence alone is not enough.
-                    table_candidates = [(updates.get(session_id, 0), name)
-                                        for name, updates in activity_tables.items()]
-                    read_table = max(table_candidates, default=(0, message_table))[1]
-                    read_columns = self._columns(db, read_table) if read_table else set()
                     if self.capture_details and read_table:
                         task_key = (fingerprint[-2:], read_table, session_id)
                         prompt = initial_tasks.get(task_key) or _first_user_prompt(db, read_table, read_columns, session_id, part_columns)
@@ -631,16 +664,20 @@ class OpenCodeReader:
                     state, lifecycle_ns, evidence = self._lifecycle(db, read_table, read_columns, session_id)
                     item.update(run_state=state, state_since_ns=lifecycle_ns,
                                 last_record_ns=lifecycle_ns, status_evidence=evidence)
-                    msg_fields = [name for name in ("id", "session_id", "type", "time_created", "time_updated", "data") if name in read_columns]
+                    msg_fields = [name for name in ("id", "session_id", "type", "seq", "time_created", "time_updated", "data") if name in read_columns]
                     order_by = ' ORDER BY "time_created" DESC' if "time_created" in read_columns else ""
-                    messages, message_ids = self._payload_rows(db, read_table, msg_fields,
+                    latest_assistant = None
+                    if current_layout:
+                        messages,message_ids,latest_assistant=opencode_turns.message_window(self,db,session_id,msg_fields,v2_windows,cursors,fingerprint)
+                    else:
+                        messages, message_ids = self._payload_rows(db, read_table, msg_fields,
                         f' WHERE "session_id"=?{order_by} LIMIT ?', (session_id, MAX_MESSAGES_PER_SESSION),
                         cursors=cursors, cursor_key=(read_table, session_id, None), messages=True,
                         # Advance a complete message window on its session's
                         # priority poll, not on every visit: otherwise equal
                         # session/message counts can phase-lock and starve the
                         # same messages in legacy content-comparison schemas.
-                        advance=session_id == str(rows[0]['id']))
+                            advance=session_id == str(rows[0]['id']))
                     if not message_ids and read_table == "message" and "session_message" in tables:
                         v2_columns = self._columns(db, "session_message")
                         if {"id", "session_id", "data"} <= v2_columns:
@@ -655,21 +692,28 @@ class OpenCodeReader:
                     message_window.update((session_id, mid) for mid in message_ids)
                     latest_trace = latest_root_id = None
                     latest_order = float("inf")
+                    if current_layout and latest_assistant:
+                        latest_trace=opencode_turns.trace_id(self.source_id,source_epoch,session_id,latest_assistant['id'])
+                        latest_root_id=identity('opencode-v2-root',native_namespace,session_id,latest_assistant['id'],size=16)
+                        item['turn_id']=resolver.for_message(latest_assistant['id'],latest_assistant['seq']).turn_id
                     for message in messages:
                         message_data = self._decode(message["data"])
-                        role = message_data.get("role") or (message["type"] if "type" in message.keys() else "")
+                        role = message['type'] if current_layout else message_data.get("role") or (message["type"] if "type" in message.keys() else "")
+                        native_turn = resolver.for_message(str(message['id']),message.get('seq')) if resolver and role in {'user','assistant'} else None
+                        native_attrs = native_turn.attrs if native_turn else {}
                         if str(role) == "user":
                             message_id = str(message["id"])
                             key = (session_id, message_id)
                             prompt = (_user_message_text(db, message, message_data, session_id, part_columns)
                                       if self.capture_details else "")
                             if prompt:
-                                revision = hashlib.sha256(prompt.encode("utf-8", "replace")).digest()
+                                prompt_identity = json.dumps((prompt,native_turn.turn_id),ensure_ascii=True) if current_layout else prompt
+                                revision = hashlib.sha256(prompt_identity.encode("utf-8", "replace")).digest()
                                 if prompt_revisions.get(key) != revision:
                                     message_created = message["time_created"] if "time_created" in message.keys() else 0
                                     stamp = _first_timestamp((message_data.get("time") or {}).get("created"),
                                                              message_created)
-                                    record_id = identity("opencode-prompt", self.source_id, session_id, message_id)
+                                    record_id = identity("opencode-prompt", native_namespace, session_id, message_id)
                                     prompt_logs.append({
                                         "time_unix_nano": stamp, "trace_id": None, "span_id": None,
                                         "service": "opencode",
@@ -677,9 +721,11 @@ class OpenCodeReader:
                                         "event_name": "agent.activity", "body": prompt,
                                         "attributes": {
                                             "session.id": session_id,
-                                            "agent.turn.id": identity("opencode-turn",self.source_id,session_id,message_id),
+                                            **({'agent.turn.id':native_turn.turn_id} if native_turn and native_turn.turn_id else
+                                               {} if current_layout else {'agent.turn.id':identity('opencode-turn',self.source_id,session_id,message_id)}),
                                             "agent.id": agent_id,
                                             "agent.runtime": "OpenCode",
+                                            **({'agent.namespace':native_namespace} if current_layout else {}),
                                             **({"agent.session.task": item['initial_task']} if item.get('initial_task') else {}),
                                             "observatory.project": project,
                                             "agent.activity.domain": "message",
@@ -702,20 +748,21 @@ class OpenCodeReader:
                         if str(role) != "assistant":
                             continue
                         message_id = str(message["id"])
-                        trace_id = identity("opencode-trace", session_id, message_id)
-                        root_id = identity("opencode-root", session_id, message_id, size=16)
+                        trace_id = (opencode_turns.trace_id(self.source_id,source_epoch,session_id,message_id)
+                                    if current_layout else identity("opencode-trace", session_id, message_id))
+                        root_id = identity("opencode-v2-root",native_namespace,session_id,message_id,size=16) if current_layout else identity("opencode-root", session_id, message_id, size=16)
                         # Parent references are authoritative only when they name
                         # a user message in this same session, never by proximity.
                         parent_values = {str(value) for value in (message_data.get('parentID'),message_data.get('parent_id')) if value}
-                        turn_id = None
-                        if len(parent_values)==1:
+                        turn_id = native_turn.turn_id if native_turn else None
+                        if not current_layout and len(parent_values)==1:
                             parent_id=next(iter(parent_values))
                             role_sql="CASE WHEN json_valid(data) THEN json_extract(data,'$.role') END"
                             if 'type' in read_columns:role_sql=f'COALESCE({role_sql},type)'
                             parent=db.execute(f'SELECT {role_sql} FROM "{read_table}" WHERE session_id=? AND id=?',(session_id,parent_id)).fetchone()
                             if parent and parent[0]=='user':
                                 turn_id=identity('opencode-turn',self.source_id,session_id,parent_id)
-                        if message["_window_order"] < latest_order:
+                        if not current_layout and message["_window_order"] < latest_order:
                             latest_trace, latest_root_id = trace_id, root_id
                             latest_order = message["_window_order"]
                         # A write anywhere in OpenCode's DB used to re-import
@@ -728,12 +775,14 @@ class OpenCodeReader:
                         part_params = (session_id, message_id, MAX_PARTS_PER_MESSAGE)
                         part_query = ' FROM "part" WHERE "session_id"=? AND "message_id"=?' + part_order + ' LIMIT ?'
                         revision = hashlib.sha256(json.dumps(
-                            (read_table, dict(message), data.get("title"), data.get("model"), project,turn_id),
+                            (read_table, dict(message), data.get("title"), data.get("model"), project,turn_id,native_attrs,capture_mode),
                             ensure_ascii=False, sort_keys=True).encode()).digest()
                         key = (session_id, message_id)
                         message_changed = self._message_revisions.get(key) != revision
                         message_revisions[key] = revision
                         part_stamps = {}
+                        native_text_parts=[]
+                        current_parts_present=False
                         if has_parts:
                             field = '"time_updated"' if 'time_updated' in part_columns else 'NULL'
                             part_stamps = {str(row[0]): row[1] for row in db.execute(
@@ -751,6 +800,19 @@ class OpenCodeReader:
                                     (session_id, message_id, *wanted, MAX_PARTS_PER_MESSAGE),
                                     cursors=cursors, cursor_key=('part', session_id, message_id))
                                 parts = [(row['id'], row['data']) for row in part_rows]
+                        if (current_layout and 'session_part' in tables and
+                                {'message_id','session_id','ordinal','type','call_id','time_created','time_updated','data'} <= self._columns(db,'session_part')):
+                            current_parts,current_stamps,native_text_parts,parts_complete,current_parts_present=opencode_turns.read_parts(
+                                self,db,session_id,message_id,cursors=cursors)
+                            if current_parts_present:
+                                parts=current_parts;part_stamps=current_stamps
+                                part_windows[key]=set(part_stamps)
+                            if not parts_complete:
+                                native_attrs={**native_attrs,'observatory.opencode.turn.source_complete':False,
+                                              'observatory.opencode.turn.coverage_reason':'Native part evidence is clipped or deferred.'}
+                                revision=hashlib.sha256(revision+b'parts-incomplete').digest()
+                                message_changed=self._message_revisions.get(key)!=revision
+                                message_revisions[key]=revision
                         message_created = message["time_created"] if "time_created" in message.keys() else 0
                         message_updated = message["time_updated"] if "time_updated" in message.keys() else message_created
                         start_ns = _first_timestamp((message_data.get("time") or {}).get("created"), message_created)
@@ -763,6 +825,8 @@ class OpenCodeReader:
                             start_ns = end_ns
                         finish = str(message_data.get("finish") or "")
                         state = "error" if finish.casefold() in {"error", "failed"} else "completed"
+                        if current_layout:
+                            state = {'succeeded':'completed','failed':'error','interrupted':'interrupted'}.get(native_turn.outcome,'running')
                         task = (str(data.get("title") or item.get("task") or "")[:500]
                                 if self.capture_details else "")
                         root_attrs = {"session.id": session_id, "agent.run.state": state,
@@ -770,6 +834,8 @@ class OpenCodeReader:
                                       **({"agent.session.task": item['initial_task']} if item.get('initial_task') else {}),
                                       "agent.id": agent_id,
                                       "agent.runtime": "OpenCode",
+                                      **({'agent.namespace':native_namespace} if current_layout else {}),
+                                      **native_attrs,
                                       "observatory.project": project, **({"agent.turn.id": turn_id} if turn_id else {})}
                         if parent_agent_id:
                             root_attrs["agent.parent_id"] = parent_agent_id
@@ -780,9 +846,9 @@ class OpenCodeReader:
                                 "observatory.source_id": self.source_id, "observatory.capture": "local-session-database"},
                             "scope_name": "observatory.opencode"}, "opencode")
                         reply_changed=False
-                        if self.capture_details and (message_changed or parts):
+                        if self.capture_details and (current_layout or message_changed or parts or native_text_parts):
                             from .local_activity import plaintext
-                            reply=plaintext(message_data.get('content'))
+                            reply=plaintext(native_text_parts if current_parts_present else message_data.get('content'))
                             if not reply and has_parts:
                                 # Tool outputs never enter this text-only read.
                                 # _payload_rows accounts each transferred byte.
@@ -807,12 +873,13 @@ class OpenCodeReader:
                         if model or tokens:
                             model_data = message_data.get("model") if isinstance(message_data.get("model"), dict) else {}
                             model_attrs = {"session.id": session_id, "agent.id": agent_id, "agent.runtime": "OpenCode", **({"agent.turn.id":turn_id} if turn_id else {}), "gen_ai.operation.name": "chat",
+                                           **({'agent.namespace':native_namespace} if current_layout else {}),
                                            "gen_ai.provider.name": str(message_data.get("providerID") or model_data.get("providerID") or "unknown"),
                                            "gen_ai.request.model": model or "Not reported"}
-                            for source, target in (("input", "gen_ai.usage.input_tokens"),
+                            for source, target in (() if current_layout else (("input", "gen_ai.usage.input_tokens"),
                                 ("output", "gen_ai.usage.output_tokens"), ("reasoning", "gen_ai.usage.reasoning_tokens"),
                                 ("cache.read", "gen_ai.usage.cache_read.input_tokens"),
-                                ("cache.write", "gen_ai.usage.cache_write.input_tokens")):
+                                ("cache.write", "gen_ai.usage.cache_write.input_tokens"))):
                                 if source.startswith("cache."):
                                     cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
                                     value = cache.get(source.split(".", 1)[1])
@@ -820,10 +887,12 @@ class OpenCodeReader:
                                     value = tokens.get(source)
                                 if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 and (not isinstance(value, float) or math.isfinite(value)):
                                     model_attrs[target] = int(value)
+                            if current_layout:
+                                model_attrs.update(opencode_turns.usage_attributes(tokens))
                             cost = message_data.get("cost")
                             if isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost) and cost > 0:
                                 model_attrs["gen_ai.usage.cost"] = float(cost)
-                            model_id = identity("opencode-model", session_id, message_id, size=16)
+                            model_id = identity("opencode-v2-model",native_namespace,session_id,message_id,size=16) if current_layout else identity("opencode-model", session_id, message_id, size=16)
                             model_span = normalize_native({"trace_id": trace_id, "span_id": model_id,
                                 "parent_span_id": root_id, "name": "chat " + (model or "model call"),
                                 "start_unix_nano": start_ns, "end_unix_nano": end_ns,
@@ -835,7 +904,7 @@ class OpenCodeReader:
                         # New OpenCode session_message records carry tool
                         # blocks inline instead of referencing rows in part.
                         known_part_ids = {str(part_id) for part_id, _ in parts}
-                        content = message_data.get("content")
+                        content = [] if current_parts_present else message_data.get("content")
                         if isinstance(content, list):
                             for index, block in enumerate(content[:MAX_PARTS_PER_MESSAGE]):
                                 if not isinstance(block, dict) or block.get("type") != "tool":
@@ -869,12 +938,21 @@ class OpenCodeReader:
                             tool_metadata=tool_state.get('metadata') if isinstance(tool_state.get('metadata'),dict) else {}
                             shell_tool=tool_name.casefold() in {'bash','shell'}
                             terminal_exit=tool_metadata.get('exit')
+                            if current_layout and shell_tool:
+                                # A completed background-launch tool is not a
+                                # completed command. The native shell contract
+                                # carries its execution status separately.
+                                if tool_metadata.get('status')=='running':
+                                    tool_status='running';tool_error=False;terminal_exit=None
+                                elif tool_metadata.get('timeout') is True or isinstance(tool_metadata.get('signal'),str) and tool_metadata['signal']:
+                                    tool_error=True
                             if shell_tool and type(terminal_exit) is int and terminal_exit!=0:tool_error=True
                             tool_start = _first_timestamp((tool_state.get("time") or {}).get("start"), start_ns) or start_ns
                             tool_end = _first_timestamp((tool_state.get("time") or {}).get("end"), end_ns) or end_ns
                             mcp = mcp_attributes(tool_name) or _opencode_mcp_attributes(tool_name, self.mcp_servers)
                             tool_attrs = {"session.id": session_id, "agent.id": agent_id,
                                           "agent.runtime": "OpenCode",
+                                          **({'agent.namespace':native_namespace} if current_layout else {}),
                                           "observatory.operation.capture_version": 1,
                                           "gen_ai.operation.name": "execute_tool",
                                           "tool.name": tool_name, "tool.result_status": tool_status,
@@ -882,7 +960,10 @@ class OpenCodeReader:
                                           "agent.activity.action": "call", "agent.activity.subject": tool_name,
                                           "agent.activity.result": "error" if tool_error else "success" if tool_status == "completed" else "unknown"}
                             if turn_id:tool_attrs['agent.turn.id']=turn_id
-                            if shell_tool and 'exit' in tool_metadata:tool_attrs['process.exit.code']=terminal_exit
+                            if shell_tool and 'exit' in tool_metadata and not (current_layout and tool_metadata.get('status')=='running'):
+                                tool_attrs['process.exit.code']=terminal_exit
+                            if current_layout and tool_metadata.get('truncated') is True:
+                                tool_attrs['observatory.operation.output_clipped']=True
                             if shell_tool and self.capture_details:
                                 tool_input=tool_state.get('input') or {}
                                 command=tool_input.get('command') if isinstance(tool_input,dict) else None
@@ -896,6 +977,13 @@ class OpenCodeReader:
                                     cwd=next((tool_input[key] for key in ('workdir','cwd','working_directory')
                                         if isinstance(tool_input.get(key),str) and tool_input[key]),None)
                                     if cwd:tool_attrs['process.working_directory']=safe(cwd,2000)
+                            if current_layout and self.capture_details and tool_name.casefold() in {'edit','write'}:
+                                file_input=tool_state.get('input')
+                                path=file_input.get('path') if isinstance(file_input,dict) else None
+                                if isinstance(path,str) and path:
+                                    tool_attrs.update({'gen_ai.tool.type':'file','tool.action':tool_name.casefold(),
+                                        'agent.activity.domain':'file','agent.activity.action':tool_name.casefold(),
+                                        'agent.activity.subject':safe(path,4000)})
                             tool_attrs.update(mcp)
                             metadata = part_data.get("metadata")
                             if isinstance(metadata, dict):
@@ -909,7 +997,7 @@ class OpenCodeReader:
                                     tool_attrs["output.value"] = safe(tool_state["output"], 4000)
                             if tool_end < tool_start:
                                 tool_start = tool_end
-                            span_id = identity("opencode-tool", session_id, part_id, size=16)
+                            span_id = identity("opencode-v2-tool",native_namespace,session_id,part_id,size=16) if current_layout else identity("opencode-tool", session_id, part_id, size=16)
                             accepted.append(normalize_native({"trace_id": trace_id, "span_id": span_id,
                                 "parent_span_id": model_id or root_id, "name": tool_name,
                                 "start_unix_nano": tool_start, "end_unix_nano": tool_end,
@@ -919,7 +1007,8 @@ class OpenCodeReader:
                                 "scope_name": "observatory.opencode"}, "opencode"))
                     if latest_trace and latest_root_id:
                         progress = self._plan_progress(db, tables, session_id, latest_trace,
-                                                       latest_root_id, updated)
+                                                       latest_root_id, updated,agent_id=agent_id,
+                                                       turn_id=item.get('turn_id'))
                         if progress:
                             revision = progress['attributes']['observatory.record_id']
                             progress_revisions[session_id] = revision
@@ -929,13 +1018,18 @@ class OpenCodeReader:
             self.errors += 1
             self.schema_errors += 1
             return 0
-        self.sessions = sorted(sessions, key=lambda item: (-item['last_update_ns'], item['session_id']))
+        current_generation=self._fingerprint()
+        if (not current_generation or current_generation[-2:]!=fingerprint[-2:]
+                or bool(self.capture_details)!=capture_mode):
+            self.fingerprint=None;self.sessions=[];self.backlog_records=1
+            return 0
         if accepted:
             self.store.ingest(accepted)
         if progress_logs:
             self.store.ingest_logs(progress_logs)
         if prompt_logs:
             self.store.ingest_logs(prompt_logs)
+        self.sessions = sorted(sessions, key=lambda item: (-item['last_update_ns'], item['session_id']))
         # Publish only after successful ingestion, so a failure can be retried.
         self._message_revisions = {key: value for key, value in message_revisions.items() if key in message_window}
         self._reply_revisions = {key:value for key,value in reply_revisions.items() if key in message_window}
@@ -944,6 +1038,7 @@ class OpenCodeReader:
                                 if key[:2] in message_window and
                                 (key[:2] not in part_windows or key[2] in part_windows[key[:2]])}
         session_ids = {item['session_id'] for item in sessions}
+        self._v2_windows={key:value for key,value in v2_windows.items() if key in session_ids}
         self._initial_tasks = {key:value for key,value in initial_tasks.items()
                                if key[0]==fingerprint[-2:] and key[2] in session_ids}
         self._payload_cursors = {key: value for key, value in cursors.items()
