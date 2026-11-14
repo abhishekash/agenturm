@@ -7,7 +7,7 @@ import sys
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
-from .investigation import render_investigation, validate_query
+from .investigation import decode_reference, reference_matches, render_investigation, source_path, validate_query
 from .review_facts import review_capture_policy
 from .workflow_evidence import scope_for
 
@@ -17,7 +17,7 @@ MAX_BYTES = 2 * 1024 * 1024
 def add_investigation_parser(sub):
     parser = sub.add_parser('investigate', help='find recorded paths, commands or user instructions across retained history',
         epilog='Examples: agenturm investigate path src/retry.py; agenturm investigate command pytest --failed; '
-               'agenturm investigate instruction "keep the public API"; agenturm investigate source EVENT_ID. '
+               'agenturm investigate instruction "keep the public API"; agenturm investigate source EVENT_ID --reference TOKEN. '
                'Exit 0: bounded result, including no matches; 2: invalid request/unavailable receiver. No agent or receiver is started.')
     parser.add_argument('kind', choices=('path', 'command', 'instruction', 'source'))
     parser.add_argument('query', help='exact recorded path, literal word phrase, or source EVENT_ID')
@@ -27,6 +27,7 @@ def add_investigation_parser(sub):
     parser.add_argument('--limit', type=int, choices=range(1, 101), default=50, metavar='1..100')
     parser.add_argument('--pages', type=int, choices=range(1, 6), default=1, metavar='1..5')
     parser.add_argument('--cursor', help='resume the same query and receiver from a previous result')
+    parser.add_argument('--reference', help='exact pinned source reference returned by a search; required for source reads')
     parser.add_argument('--format', choices=('text', 'json'), default='text')
     return parser
 
@@ -107,24 +108,30 @@ def collect_investigation(api, *, kind, query, limit=50, pages=1, cursor=None, s
             'limited': cursor is not None, 'payload_limit_bytes': MAX_BYTES}
 
 
-def collect_source(api, event_id):
+def collect_source(api, event_id, reference):
     if not isinstance(event_id, str) or not 0 < len(event_id) <= 512:
         raise ValueError('Provide an exact investigation EVENT_ID.')
-    snapshot = _health(api)
-    response = api.get('/api/investigations/source?' + urlencode({'event_id': event_id}))
+    expected = decode_reference(reference)
+    if expected['event_id'] != event_id:
+        raise ValueError('Source reference differs from selected event.')
+    snapshot = _health(api, expected['receiver_id'])
+    if not _allowed(expected, snapshot):
+        raise ValueError('Source capture policy forbids this evidence.')
+    response = api.get(source_path(expected))
     if (not isinstance(response, dict) or response.get('receiver_id') != snapshot.receiver_id
             or response.get('event_id') != event_id or not isinstance(response.get('sources'), list)
             or len(response['sources']) > 8 or len(json.dumps(response, ensure_ascii=False).encode()) > 65536):
         raise ValueError('Exact source response is unavailable or does not match the selected event.')
     original = response.get('source_reference')
-    if (not isinstance(original, dict) or original.get('event_id') != event_id
-            or original.get('receiver_id') != snapshot.receiver_id):
+    if not reference_matches(expected, original):
         raise ValueError('Exact source reference changed; evidence is withheld.')
-    references = [original]
+    references = [expected, original]
     for entry in response['sources']:
         if (not isinstance(entry, dict) or not isinstance(entry.get('scope'), dict)
                 or entry.get('id') != original.get('source_id') or entry.get('type') != original.get('source')):
             raise ValueError('Exact source record differs from the selected reference.')
+        if any(entry['scope'].get(key) != expected.get(key) for key in ('service', 'agent_id', 'session_id')):
+            raise ValueError('Exact source owner changed; evidence is withheld.')
         references.append({**entry['scope'], 'receiver_id': snapshot.receiver_id})
     if any(not _allowed(reference, snapshot) for reference in references):
         raise ValueError('Source capture policy forbids this evidence.')
@@ -141,9 +148,13 @@ def run_investigation_command(args):
         if args.kind == 'source':
             if args.failed or args.service or args.cursor or args.pages != 1:
                 raise ValueError('Source reads accept one exact event ID, without search filters or paging.')
-            result = collect_source(api, args.query)
+            if not args.reference:
+                raise ValueError('Source reads require --reference from the selected investigation result; no fresh-namespace fallback is used.')
+            result = collect_source(api, args.query, args.reference)
             text = json.dumps(result, ensure_ascii=False, indent=2)
         else:
+            if args.reference:
+                raise ValueError('--reference is for exact source reads only.')
             result = collect_investigation(api, kind=args.kind, query=args.query, limit=args.limit,
                 pages=args.pages, cursor=args.cursor, service=args.service, failed=args.failed)
             text = render_investigation(result)
