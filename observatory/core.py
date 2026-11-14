@@ -2845,26 +2845,34 @@ class Store:
                 selected=[]
                 for field in fields:selected.extend([f'COALESCE(SUM(l.{field}),0) AS {field}',f'MAX(l.{field}_reported) AS {field}_reported'])
                 log_usage_rows=db.execute('SELECT l.session_id,'+','.join(selected)+' FROM live_log_usage_v1 l WHERE l.session_id IN ('+placeholders+') AND NOT EXISTS(SELECT 1 FROM live_summaries_v1 s WHERE s.session_id=l.session_id) GROUP BY l.session_id',session_ids).fetchall()
-            for session in log_sessions:
+            if log_sessions:
                 # Filter scalar source identities before reading any captured
                 # payload. Native logs already covered by a run summary need
                 # neither JSON parsing nor another preview of their bodies.
-                log_rows.extend(db.execute(f"""WITH candidates AS (
-                    SELECT activity.owner_key AS digest,activity.stamp AS stamp
-                    FROM activity_index_v1 activity
-                    WHERE activity.kind='log' AND activity.session_id=?
-                      AND NOT EXISTS (SELECT 1 FROM live_summaries_v1 covered JOIN trace_activity covered_time USING(trace_id)
-                        WHERE activity.agent_id IS NOT NULL AND covered.trace_id=activity.trace_id
-                          AND covered.agent_id=activity.agent_id AND covered_time.last_ns>=activity.stamp)
+                requested_values=','.join(f'(?,{index})' for index in range(len(log_sessions)))
+                log_rows.extend(db.execute(f"""WITH requested(session_id,session_position) AS (
+                    VALUES {requested_values}), covered AS (
+                    SELECT summary.trace_id,summary.agent_id,MAX(activity.last_ns) AS last_ns
+                    FROM live_summaries_v1 summary JOIN trace_activity activity USING(trace_id)
+                    WHERE summary.agent_id IS NOT NULL GROUP BY summary.trace_id,summary.agent_id), candidates AS (
+                    SELECT requested.session_id,activity.owner_key AS digest,activity.stamp AS stamp
+                    FROM activity_index_v1 activity JOIN requested ON requested.session_id=activity.session_id
+                    LEFT JOIN covered ON covered.trace_id=activity.trace_id
+                        AND activity.agent_id IS NOT NULL AND covered.agent_id=activity.agent_id
+                        AND covered.last_ns>=activity.stamp
+                    WHERE activity.kind='log' AND covered.trace_id IS NULL
                     UNION ALL
-                    SELECT l.digest,l.time_ns AS stamp FROM logs l
-                    WHERE {session_expr}=? AND l.event_name!='agent.activity'
-                    ORDER BY stamp DESC,digest DESC LIMIT 50)
+                    SELECT requested.session_id,l.digest,l.time_ns AS stamp FROM logs l
+                    JOIN requested ON requested.session_id={session_expr}
+                    WHERE l.event_name!='agent.activity'), ranked AS (
+                    SELECT *,ROW_NUMBER() OVER(PARTITION BY session_id ORDER BY stamp DESC,digest DESC) AS position
+                    FROM candidates)
                     SELECT l.digest,l.span_id,l.trace_id,l.time_ns,l.service,l.event_name,l.severity_number,
                         l.attributes,l.resource_attributes,l.body,{session_expr} AS session_id
-                    FROM candidates JOIN logs l USING(digest)
-                    ORDER BY candidates.stamp DESC,candidates.digest DESC""",
-                    (session['session_id'],session['session_id'])).fetchall())
+                    FROM ranked JOIN requested USING(session_id) JOIN logs l USING(digest)
+                    WHERE ranked.position<=50
+                    ORDER BY requested.session_position,ranked.stamp DESC,ranked.digest DESC""",
+                    [session['session_id'] for session in log_sessions]).fetchall())
             # Error reminders use bounded concrete evidence, never lifetime totals.
             # Read only the newest two traces for each execution identity.
             recent_traces = set()
@@ -2963,6 +2971,7 @@ class Store:
         # Some runtimes emit session-tagged events without trace context. Keep
         # those sessions visible in the roster instead of making Activity the
         # only place their work can be found.
+        from .error_reminders import failure
         for row in log_rows:
             session_id = _session_value(row["session_id"])
             if not session_id:
@@ -2977,8 +2986,13 @@ class Store:
                 event = _activity_row(attrs, row['time_ns'], 'log', row['digest'],
                                       row['span_id'],row['service'],body,
                                       resource_attributes=resource)
-                reminder_events.append({**event, 'trace_id': row['trace_id'],
-                    'id': (row['trace_id'] or 'log') + ':' + row['digest'],'receiver_id':receiver})
+                # Unqualified nonfailure labels cannot supply input identity or
+                # a terminal failure, so projecting/hashing their output again
+                # cannot contribute reminder or recovery evidence. All typed
+                # roles and recorded failures retain the full conservative path.
+                if event.get('detail_role')=='operation_v1' or failure(event):
+                    reminder_events.append({**event, 'trace_id': row['trace_id'],
+                        'id': (row['trace_id'] or 'log') + ':' + row['digest'],'receiver_id':receiver})
             log_agent_id = _agent_id_from_attributes(attrs, resource, row["service"])
             key = (session_id, log_agent_id)
             item = grouped.get(key)

@@ -67,18 +67,15 @@ def session_projection(db, limit):
     # before the cap so one label cannot consume two positions.
     label_rows = db.execute("""WITH scoped AS (
         SELECT session_id,agent_id,services_json,models_json FROM live_run_stats_v1
-        WHERE session_id IN (""" + marks + """)), distinct_labels AS (
-        SELECT source.session_id,source.agent_id,'services' AS field,
-            substr(CAST(entry.value AS TEXT),1,128) AS label,
-            MIN(length(CAST(entry.value AS TEXT))<=128) AS complete
-        FROM scoped source,json_each(source.services_json) entry
-        GROUP BY source.session_id,source.agent_id,label
+        WHERE session_id IN (""" + marks + """)), arrays AS (
+        SELECT DISTINCT session_id,agent_id,'services' AS field,services_json AS payload FROM scoped
         UNION ALL
-        SELECT source.session_id,source.agent_id,'models' AS field,
+        SELECT DISTINCT session_id,agent_id,'models' AS field,models_json AS payload FROM scoped), distinct_labels AS (
+        SELECT source.session_id,source.agent_id,source.field,
             substr(CAST(entry.value AS TEXT),1,128) AS label,
             MIN(length(CAST(entry.value AS TEXT))<=128) AS complete
-        FROM scoped source,json_each(source.models_json) entry
-        GROUP BY source.session_id,source.agent_id,label), ranked AS (
+        FROM arrays source,json_each(source.payload) entry
+        GROUP BY source.session_id,source.agent_id,source.field,label), ranked AS (
         SELECT *,ROW_NUMBER() OVER(PARTITION BY session_id,agent_id,field ORDER BY label) AS position
         FROM distinct_labels)
         SELECT session_id,agent_id,field,label,complete FROM ranked WHERE position<=129
