@@ -261,7 +261,11 @@ def activity_evidence(attrs,detail,domain,subject,*,body=None):
 def normalize_operation_result(row):
     """Index the typed terminal observation; retain differing producer labels."""
     if row.get('detail_role')!='operation_v1':return row
-    facts=operation_facts(row)
+    terminal=_terminal_projection(row,normalized_evidence(row))
+    # Exit one is command-dependent (grep/diff can report an expected absence).
+    # Keep its full redaction and command-completeness qualification unchanged.
+    facts=(operation_facts(row)if row.get('domain')=='shell'and terminal['has_code_one']else
+        {**terminal,'expected_nonzero':False})
     original=row.get('result')
     if facts['result_conflict']:result='unknown'
     elif facts['expected_nonzero']:result='informational'
@@ -276,11 +280,13 @@ def supersedes_operation(original,replacement):
     """A source link alone never authorizes borrowing another worker's facts."""
     if not all(original.get(key) and original.get(key)==replacement.get(key)
                for key in ('service','agent_id','session_id')):return False
-    first=operation_facts(original);second=operation_facts(replacement)
     if not original.get('detail_role') and not original.get('detail'):
         operation_domains={'shell','tool','mcp','file','browser'}
+        first=_terminal_projection(original,normalized_evidence(original))
+        second=_terminal_projection(replacement,normalized_evidence(replacement))
         return ((replacement.get('domain') in operation_domains or original.get('domain')==replacement.get('domain'))
                 and (first['result']=='unknown' or first['result']==second['result']))
+    first=operation_facts(original);second=operation_facts(replacement)
     if not first['operation_fingerprint'] or first['operation_fingerprint']!=second['operation_fingerprint']:
         return False
     if first['exit_code'] is not None and first['exit_code']!=second['exit_code']:return False
@@ -344,16 +350,40 @@ def useful_error(value):
     return False
 
 
+def _evidence_entries(evidence,key,size):
+    values=evidence.get(key) or []
+    if not isinstance(values,(list,tuple)):return [],False
+    rows=[tuple(value) for value in values[:8] if isinstance(value,(list,tuple))
+          and len(value)==size and isinstance(value[0],str)
+          and re.fullmatch(r'[A-Za-z0-9_.: -]{1,128}',value[0])]
+    return rows,len(rows)==len(values) and len(values)<=8
+
+
+def _terminal_projection(event,evidence):
+    """Typed terminal metadata only, with the full projection's exact bounds."""
+    raw_exits,exits_valid=_evidence_entries(evidence,'exits',2)
+    exits=[(origin,exit_code(value)) for origin,value in raw_exits]
+    malformed_exit=any(value is not None and parsed is None for (_,value),(_,parsed) in zip(raw_exits,exits))
+    codes={value for _,value in exits if value is not None}
+    code=next(iter(codes)) if len(codes)==1 else None
+    reported=event['reported_result'] if 'reported_result' in event else event.get('result') or event.get('status') or ''
+    result=reported[:64].casefold() if isinstance(reported,str) else 'unknown'
+    if result not in FAILURES|SUCCESSES:result='unknown'
+    is_error=evidence.get('is_error') is True
+    conflict=(not exits_valid or evidence.get('terminal_incomplete') is True or malformed_exit or len(codes)>1
+        or (code==0 and (result in FAILURES or is_error)) or (code not in (None,0) and result in SUCCESSES))
+    terminal=('unknown' if conflict else 'failed' if is_error else 'passed' if code==0 else
+        'failed' if code is not None else 'passed' if result in SUCCESSES else 'failed' if result in FAILURES else 'unknown')
+    return dict(exit_code=code,exit_sources=[origin for origin,_ in exits],result=terminal,result_conflict=conflict,
+        result_basis='invalid recorded exit code' if malformed_exit else 'conflicting recorded results' if conflict else 'recorded exit code' if code is not None else
+            'producer result label' if terminal!='unknown' else 'no terminal result',
+        producer_result=result,is_error=is_error,has_code_one=1 in codes)
+
+
 def operation_facts(event):
     evidence=normalized_evidence(event)
     domain=event.get('domain') if isinstance(event.get('domain'),str) else ''
-    def entries(key,size):
-        values=evidence.get(key) or []
-        if not isinstance(values,(list,tuple)):return [],False
-        rows=[tuple(value) for value in values[:8] if isinstance(value,(list,tuple))
-              and len(value)==size and isinstance(value[0],str)
-              and re.fullmatch(r'[A-Za-z0-9_.: -]{1,128}',value[0])]
-        return rows,len(rows)==len(values) and len(values)<=8
+    def entries(key,size):return _evidence_entries(evidence,key,size)
     inputs,inputs_valid=entries('inputs',2)
     raw_commands,commands_valid=entries('commands',2)
     command_clipped=any(isinstance(value,str) and len(value)>MAX_TEXT for _,value in raw_commands)
@@ -390,19 +420,8 @@ def operation_facts(event):
         and (domain!='shell' or isinstance(cwd,str) and cwd.strip())
         and (not (domain[:64].casefold() in {'mcp','mcptool'} or evidence.get('is_mcp') is True)
              or isinstance(evidence.get('server'),str) and evidence['server'].strip()))
-    raw_exits,exits_valid=entries('exits',2)
-    exits=[(origin,exit_code(value)) for origin,value in raw_exits]
-    malformed_exit=any(value is not None and parsed is None for (_,value),(_,parsed) in zip(raw_exits,exits))
-    codes={value for _,value in exits if value is not None}
-    code=next(iter(codes)) if len(codes)==1 else None
-    reported=event['reported_result'] if 'reported_result' in event else event.get('result') or event.get('status') or ''
-    result=reported[:64].casefold() if isinstance(reported,str) else 'unknown'
-    if result not in FAILURES|SUCCESSES:result='unknown'
-    is_error=evidence.get('is_error') is True
-    conflict=(not exits_valid or evidence.get('terminal_incomplete') is True or malformed_exit or len(codes)>1
-        or (code==0 and (result in FAILURES or is_error)) or (code not in (None,0) and result in SUCCESSES))
-    terminal=('unknown' if conflict else 'failed' if is_error else 'passed' if code==0 else
-        'failed' if code is not None else 'passed' if result in SUCCESSES else 'failed' if result in FAILURES else 'unknown')
+    terminal=_terminal_projection(event,evidence)
+    code=terminal['exit_code'];result=terminal['producer_result'];is_error=terminal['is_error'];conflict=terminal['result_conflict']
     outputs=[]
     raw_outputs,outputs_valid=entries('outputs',3)
     decoded_outputs=[(origin,kind,decode(value)) for origin,kind,value in raw_outputs]
@@ -427,15 +446,14 @@ def operation_facts(event):
         arguments=safe_input.get('arguments'),cwd=safe_input.get('cwd'),tool=safe_input.get('tool'),server=safe_input.get('server'),
         input_complete=input_complete,input_conflict=input_conflict,
         input_origins=[origin for origin,_ in inputs],exit_code=code,
-        exit_sources=[origin for origin,_ in exits],result=terminal,result_conflict=conflict,
-        result_basis='invalid recorded exit code' if malformed_exit else 'conflicting recorded results' if conflict else 'recorded exit code' if code is not None else
-            'producer result label' if terminal!='unknown' else 'no terminal result',
+        exit_sources=terminal['exit_sources'],result=terminal['result'],result_conflict=conflict,
+        result_basis=terminal['result_basis'],
         output=text[:1500],output_kind=kind or None,output_origin=origin or None,output_reported=bool(raw_outputs),
         output_clipped=bool(outputs and (len(text)>1500 or not complete)) or evidence.get('output_clipped') is True,
         expected_nonzero=bool(informational),
         operation_fingerprint=digest({'version':VERSION,'input':safe_input}) if input_complete else None,
         error_fingerprint=digest({'version':VERSION,'exit':code,
-            'result':result if result in {'blocked','denied','policy_denied'} else terminal,'is_error':is_error,
+            'result':result if result in {'blocked','denied','policy_denied'} else terminal['result'],'is_error':is_error,
             'outputs':[(kind,value) for _,kind,value,_,_ in outputs]})
             if text and any(entry[4] for entry in outputs) and complete and not conflict else None)
 

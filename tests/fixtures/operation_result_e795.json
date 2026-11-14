@@ -1,0 +1,41 @@
+{
+  "runtime_revision": "e795f064c861cd59b54d1180697e4b19c9959b34",
+  "module_sha256": "07a1991b6e77a9834eaa9a1297e5ad9b5b2b681981195e786eafb60904b1ca09",
+  "groups": {
+    "terminal_matrix": {
+      "count": 5376,
+      "facts": "b912e668db216b4330dbac761bcb48cf5e474f2ed734e96ef65c636785c13f5c",
+      "normalization": "ecafe9a1415746b1ab832bbd4107b31c3e6e8e4660d7f705d72a25dd489de85d"
+    },
+    "shell_one_qualification": {
+      "count": 69,
+      "facts": "dee012b6eb09a6a8997aa08ee9290cfdcedbc740506cbecbe0e3060245f3b10d",
+      "normalization": "b3d59df039b841075ecc132df4619314c4fc8bdd2e79a6ae99e6b240a05f412a"
+    },
+    "malformed_labels_and_domains": {
+      "count": 198,
+      "facts": "d1bb73389a1a0d8ce810d02378b0557b887e6fb538747860c4822bfcf0080e05",
+      "normalization": "a5128ea2b4fa23d271260adce269ad6998639696a70081799065e3e9a34fadf6"
+    },
+    "terminal_bounds_and_status_fallback": {
+      "count": 224,
+      "facts": "d636fb982426df670c486940ff1d2cfc38e742fcfd039995d03f9a8678ef9567",
+      "normalization": "54d33be0122e97cb9d84168e6e3335977e516bb41a64181a341f32cd0fd078c2"
+    },
+    "provenance_credentials_unicode": {
+      "count": 30,
+      "facts": "460e7fdec2c7052d12da10bb63327c135c27afde91364e1879b24312125f0249",
+      "normalization": "237427956488113a424f7ceba1e66bbbf5fbdbbb6b598ae32d2470cfd4542219"
+    }
+  },
+  "supersedes_groups": {
+    "generic_and_qualified_results": {
+      "count": 243,
+      "sha256": "12abf98f7401feedb3d80678603e6e8087f1f2d51070127815961805f795f552"
+    },
+    "negative_qualification_and_execution_guards": {
+      "count": 208,
+      "sha256": "fc72bbab6ed6b248e60bda126958b0a41cdd6d3841f2cbe0ae5facff27740f64"
+    }
+  }
+}

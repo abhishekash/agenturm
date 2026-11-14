@@ -1,0 +1,75 @@
+{
+  "diagnostic_only": true,
+  "publishable": false,
+  "design": "Unprofiled development ABBA phases in separate processes; not coordinated resource/HTTP acceptance.",
+  "seed_sha256_before": "2fa960c0f80219fe4d3dcd53ff755a3f7ca3bff2e27e4fb5b65cfae7e29c8a43",
+  "seed_sha256_after": "2fa960c0f80219fe4d3dcd53ff755a3f7ca3bff2e27e4fb5b65cfae7e29c8a43",
+  "old_module_sha256": "7ec1e1efa6f938325069a75d503db762f3612d74c171cb27ca309a51f27dcea9",
+  "new_module_sha256": "57310d6a3004b456921cba551025dfdcb7593ce78a3d23e8aeb5bb2cf5c58091",
+  "rows": [
+    {
+      "mode": "before",
+      "counts": {
+        "spans": 576,
+        "logs": 672,
+        "trace_activity": 96
+      },
+      "processed": 1248,
+      "activity_count": 1156,
+      "activity_sha256": "f8c820616a0c4f4eeb0e2e63ea350a5b9e9da5edc761a65314502deaf341aabd",
+      "derived_sha256": "82034172cb6a61514a65e5850799ae2f6818d4d4bd82a72cd693329ca230e76d",
+      "drain_wall_s": 1.598980222013779,
+      "drain_process_cpu_s": 1.5946265760000005,
+      "derive_wall_s": 1.825859303935431,
+      "derive_process_cpu_s": 1.8253690320000002
+    },
+    {
+      "mode": "after",
+      "counts": {
+        "spans": 576,
+        "logs": 672,
+        "trace_activity": 96
+      },
+      "processed": 1248,
+      "activity_count": 1156,
+      "activity_sha256": "f8c820616a0c4f4eeb0e2e63ea350a5b9e9da5edc761a65314502deaf341aabd",
+      "derived_sha256": "82034172cb6a61514a65e5850799ae2f6818d4d4bd82a72cd693329ca230e76d",
+      "drain_wall_s": 1.5842065560864285,
+      "drain_process_cpu_s": 1.5726242690000003,
+      "derive_wall_s": 2.009559031925164,
+      "derive_process_cpu_s": 2.0070505500000007
+    },
+    {
+      "mode": "after",
+      "counts": {
+        "spans": 576,
+        "logs": 672,
+        "trace_activity": 96
+      },
+      "processed": 1248,
+      "activity_count": 1156,
+      "activity_sha256": "f8c820616a0c4f4eeb0e2e63ea350a5b9e9da5edc761a65314502deaf341aabd",
+      "derived_sha256": "82034172cb6a61514a65e5850799ae2f6818d4d4bd82a72cd693329ca230e76d",
+      "drain_wall_s": 1.6078431099886075,
+      "drain_process_cpu_s": 1.6030026300000007,
+      "derive_wall_s": 1.9024030469590798,
+      "derive_process_cpu_s": 1.9016190120000003
+    },
+    {
+      "mode": "before",
+      "counts": {
+        "spans": 576,
+        "logs": 672,
+        "trace_activity": 96
+      },
+      "processed": 1248,
+      "activity_count": 1156,
+      "activity_sha256": "f8c820616a0c4f4eeb0e2e63ea350a5b9e9da5edc761a65314502deaf341aabd",
+      "derived_sha256": "82034172cb6a61514a65e5850799ae2f6818d4d4bd82a72cd693329ca230e76d",
+      "drain_wall_s": 1.612026729970239,
+      "drain_process_cpu_s": 1.6079073150000003,
+      "derive_wall_s": 1.9043013750342652,
+      "derive_process_cpu_s": 1.9026417050000006
+    }
+  ]
+}
