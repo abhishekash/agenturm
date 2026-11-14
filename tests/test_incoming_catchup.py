@@ -45,6 +45,7 @@ class IncomingHTTPTests(unittest.TestCase):
                 elif code==200:
                     row=next(row for row in body['sessions'] if row['session_id']=='snapshot')
                     observed=(row['last_unix_nano']-stamp)//10**6
+                    self.assertGreaterEqual(observed,counter,'A write accepted before the read cannot be omitted from a successful snapshot')
                     self.assertEqual(row['input_tokens'],observed or 5,row)
                     self.assertTrue(row['usage_complete']);record.update(source_counter=observed,input_tokens=row['input_tokens'])
                 else:

@@ -20,11 +20,11 @@ The 75 ms is the catch-up allowance, **not** a whole-request latency promise or 
 
 ## Functional verification
 
-The new availability cases plus the previous source-snapshot regression gate passed **17 tests in 17.367 seconds**. A separate compatibility, recovery, retention, receiver replacement, read-pool and response-cache gate passed **32 tests in 7.305 seconds**. These are functional tests under development load, not controlled or publishable performance measurements. Integration CI and peer review are separate gates.
+The new availability cases plus the previous source-snapshot regression gate passed **17 tests in 17.367 seconds**. A separate compatibility, recovery, retention, receiver replacement, read-pool and response-cache gate passed **32 tests in 7.305 seconds**. These are functional tests under development load, not controlled or publishable performance measurements. Root integration passed 42 tests in 25.078 seconds; the strengthened accepted-counter case passed separately in 1.674 seconds. Independent peer review found no runtime blocker. Integration CI remains a separate gate.
 
 The new cases cover:
 
-- Eight accepted writes scheduled at 100 ms intervals through a generated two-span fixture, using authenticated real HTTP health and Sessions reads. Every successful Sessions total matches its returned source timestamp/counter, including a potentially coherent older view. The final total is eight and the source still contains two spans.
+- Eight accepted writes scheduled at 100 ms intervals through a generated two-span fixture, using authenticated real HTTP health and Sessions reads. Every successful Sessions total matches its returned source timestamp/counter, never omitting a write accepted before the read. A view can omit only commits arriving after its guarded snapshot begins. The final total is eight and the source still contains two spans.
 - A held slow worker returning visible 503 within a bounded functional deadline, with no read lease retained during the condition wait; the later settled result is 999.
 - Four concurrent timed-out requests sharing one existing trace job, all four returning 503, followed by the settled 999 result. No duplicated job or token contribution is introduced.
 - An external dirty source with an empty local pending dictionary staying unavailable until normal compatibility drain.
