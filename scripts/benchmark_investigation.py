@@ -21,7 +21,16 @@ from observatory.storage_investigation import initialize, read_page, replace_own
 
 SCHEMA = '''CREATE TABLE schema_meta(key TEXT PRIMARY KEY,value TEXT);
 CREATE TABLE activity_index_v1(event_key TEXT PRIMARY KEY,kind TEXT,owner_key TEXT,stamp INTEGER,
-trace_id TEXT,session_id TEXT,agent_id TEXT,service TEXT,domain TEXT,action TEXT,result TEXT,turn_id TEXT,payload TEXT);'''
+trace_id TEXT,session_id TEXT,agent_id TEXT,service TEXT,domain TEXT,action TEXT,result TEXT,turn_id TEXT,payload TEXT);
+CREATE INDEX activity_order_v1 ON activity_index_v1(stamp DESC,event_key DESC);
+CREATE INDEX activity_trace_v1 ON activity_index_v1(trace_id,stamp DESC,event_key DESC);
+CREATE INDEX activity_agent_v1 ON activity_index_v1(agent_id,stamp DESC,event_key DESC);
+CREATE INDEX activity_session_v1 ON activity_index_v1(session_id,stamp DESC,event_key DESC);
+CREATE INDEX activity_turn_v1 ON activity_index_v1(service,turn_id,stamp DESC,event_key DESC);
+CREATE INDEX activity_context_v1 ON activity_index_v1(trace_id,domain,action,stamp DESC,event_key DESC);
+CREATE INDEX activity_turn_context_v1 ON activity_index_v1(service,turn_id,domain,action,stamp DESC,event_key DESC);
+CREATE INDEX activity_owner_v1 ON activity_index_v1(kind,owner_key);
+CREATE INDEX activity_log_preview_v2 ON activity_index_v1(session_id,stamp DESC,event_key DESC,owner_key,agent_id,trace_id) WHERE kind='log';'''
 
 
 def fixture(count):
@@ -50,6 +59,10 @@ def build(path, rows, indexed):
     db.executescript(SCHEMA)
     if indexed:
         initialize(db)
+    owner_plan = db.execute('EXPLAIN QUERY PLAN SELECT event_key FROM activity_index_v1 WHERE kind=? AND owner_key=?',
+                           ('log', 'synthetic')).fetchall()
+    if not any('activity_owner_v1' in row[3] and 'SEARCH' in row[3] for row in owner_plan):
+        raise ValueError('Benchmark requires the receiver\'s existing Activity owner lookup index.')
     start = time.perf_counter_ns()
     for offset in range(0, len(rows), 100):
         with db:
