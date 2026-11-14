@@ -18,6 +18,8 @@
 
 - Investigate exact recorded paths and literal command/instruction phrases across retained indexed history with `agenturm investigate`, Ctrl+F and Activity History. Keep source navigation pinned to receiver and full execution identity, with bounded paging, keyboard reading and sticky capture revocation.
 
+- Explain per-tool loaded-window outcome/latency denominators and selected task cache/usage limits. Keep optional exact-model configured estimates separate from reported cost, skip unchanged bounded formatting, and clear usage modals on live Feed capture or receiver changes.
+
 - Reuse read-only leases for the background compatibility watcher’s empty probe, releasing them before transactional repair. Preserve the polling interval, bounded drain and live external-writer invalidation.
 
 - Keep MCP scope, call identity, hydration and execution enrichment in one source snapshot. Separate producer/worker/session/server collisions, retain ambiguous calls, and expose typed recorded payloads without borrowing trace-root ownership.

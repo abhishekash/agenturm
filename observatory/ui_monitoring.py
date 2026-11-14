@@ -175,7 +175,7 @@ def usage_summary(totals):
 
 
 def task_usage_label(usage, *, compact=False):
-    text,_=task_usage_summary(usage,scope='trace',compact=True)
+    text,_=task_usage_summary(usage,scope='turn' if usage.get('turn_id') else 'trace',compact=True)
     first=text.splitlines()[0]
     money,tokens=first.removeprefix('Task cost ').split(' · Tokens ')
     if compact:
@@ -187,13 +187,16 @@ def task_usage_label(usage, *, compact=False):
     return f'Tokens {tokens} · Cost {money}'.replace('Not reported','—')
 
 
-def task_usage_summary(usage, title='', *, scope='session', identity='', compact=False):
+def task_usage_summary(usage, title='', *, scope='session', identity='', compact=False,
+                       rates=None, model='', allocation_proven=False, explanations=False,
+                       context=None, scope_owner=None, session_context=None):
     known=lambda key: usage.get(key) is not None and usage.get(key+'_reported') is not False
     partial=usage.get('usage_complete') is False
     token=lambda key: f"{int(usage[key]):,}"+('+' if partial else '') if known(key) else 'Not reported'
     tokens=(f"{int(usage['input_tokens'])+int(usage['output_tokens']):,}"+('+' if partial else '')
             if known('input_tokens') and known('output_tokens') else 'Not reported')
-    runs=usage.get('trace_count',1 if scope=='trace' and usage else 0)
+    steps=usage.get('step_trace_ids')
+    runs=usage.get('trace_count',len(steps) if scope=='turn' and isinstance(steps,list) else 1 if scope in {'trace','turn'} and usage else 0)
     missing=usage.get('unknown_cost_runs',int(usage.get('cost_complete') is False))
     cost=usage.get('known_cost_usd')
     priced=max(0,runs-missing)
@@ -223,15 +226,41 @@ def task_usage_summary(usage, title='', *, scope='session', identity='', compact
         f"Cached input: {token('cache_read_input_tokens')}"+cached_suffix,
         *([f"Cache write: {token('cache_write_input_tokens')}"] if known('cache_write_input_tokens') else []),
         f"Reasoning output: {token('reasoning_output_tokens')}",'',
-        ('Scope: this recorded run (trace).' if scope=='trace' else
+        ('Scope: this recorded user turn across its captured steps.' if scope=='turn' else
+         'Scope: this recorded run (trace).' if scope=='trace' else
          'Scope: this agent session across its recorded runs; excludes other agents and sessions.'),
-        ('Trace: ' if scope=='trace' else 'Session: ')+(identity or 'Not reported'),'',
+        ('Turn: ' if scope=='turn' else 'Trace: ' if scope=='trace' else 'Session: ')+(identity or 'Not reported'),
+        *([f'Captured steps: {len(steps)}'+(' · membership incomplete' if usage.get('turn_members_clipped') or usage.get('turn_usage_complete') is not True else '')] if scope=='turn' and isinstance(steps,list) else []),'',
         'Cache reads/writes are input breakdowns; reasoning is an output breakdown. Do not add them to total tokens.',
         'Cached percentage means cached input divided by reported input tokens, not a request hit rate.',
         'A + marks a partial reported subtotal. Missing telemetry is not zero.',
         'Cost is reported USD for this task, not an all-history total or a subscription bill estimate.',
         *([usage['usage_allocation']+' · Whole-trace totals remain available in Traces.'] if usage.get('usage_allocation') else []),
         'Press Esc to return.'])
+    if rates is not None:
+        from .evidence_explanations import configured_estimate
+        estimate=configured_estimate(usage,model=model,rates=rates,allocation_proven=allocation_proven)
+        if estimate.get('available'):
+            label=f"Configured estimate ${estimate['estimated_usd']:,.4f}"
+            lines.append(label+' · explicit user rates')
+            details+='\n\n'+label+'\n'+estimate['kind']+'\n'+estimate['assumption']+'\n'+estimate['note']
+        else:
+            details+='\n\nConfigured estimate unavailable: '+str(estimate.get('reason') or 'allocation or rate not proven')
+    if explanations:
+        from .evidence_explanations import usage_explanation
+        explanation=usage_explanation(usage,scope=scope,context=context,scope_owner=scope_owner)
+        cache=explanation['cache'];occupancy=explanation['context']
+        fraction=cache['cached_input_fraction']
+        cache_label=f'{fraction:.0%} of reported input' if fraction is not None else 'Unavailable from compatible complete token breakdowns'
+        context_label=(f"{occupancy['used_tokens']:,} / {occupancy['capacity_tokens']:,} tokens ({occupancy['fraction']:.0%})"
+                       if occupancy['available'] else occupancy['reason'])
+        details+='\n\nRECORDED USAGE INTERPRETATION\nCached input: '+cache_label+'\n'+cache['note']+'\nContext occupancy: '+context_label+'\n'+explanation['retry_cost']['note']
+        details+='\n\nOTHER ACCOUNTING WINDOWS\nCalendar day: no exact-agent day aggregate was supplied. A run or turn is not a day total.'
+        if isinstance(session_context,dict) and session_context:
+            available=lambda key: type(session_context.get(key)) is int and session_context[key]>=0 and session_context.get(key+'_reported') is not False
+            values=('Input '+f"{session_context['input_tokens']:,}" if available('input_tokens') else 'Input not reported')+' · '+('Output '+f"{session_context['output_tokens']:,}" if available('output_tokens') else 'Output not reported')
+            details+='\nCaptured session lifetime: '+values+(' · partial' if session_context.get('usage_complete') is False else '')+'\nRetained runs for this exact producer/agent/session; separate from this selection and provider lifetime billing.'
+        else:details+='\nCaptured session lifetime: unavailable without exact owner/session allocation; no shared totals were substituted.'
     return '\n'.join(lines),details
 
 
@@ -242,11 +271,13 @@ class UsageScreen(ModalScreen):
     #usage-log { height: 1fr; }
     #usage-close { width: 100%; }
     '''
-    BINDINGS = [('escape', 'dismiss', 'Close')]
+    BINDINGS = [('escape', 'dismiss', 'Close'),('ctrl+c','dismiss','Close'),
+                ('c','withhold_action',''),('x','withhold_action','')]
 
-    def __init__(self, totals=None, *, details=None):
+    def __init__(self, totals=None, *, details=None, valid=None):
         super().__init__()
         self.details = details if details is not None else usage_summary(totals or {})[1]
+        self.valid=valid;self.invalidated=False
 
     def compose(self):
         with Vertical(id='usage-dialog'):
@@ -257,6 +288,20 @@ class UsageScreen(ModalScreen):
         log=self.query_one(RichLog)
         log.write(Text(self.details))
         log.focus()
+        if self.valid is not None:
+            self.check_policy();self.set_interval(.25,self.check_policy)
+
+    def check_policy(self):
+        try:allowed=not self.invalidated and (self.valid is None or self.valid())
+        except Exception:allowed=False
+        if allowed:return
+        self.invalidated=True;self.details='Source policy or receiver changed. Close and reopen usage from current evidence.'
+        log=self.query_one(RichLog);log.clear();log.write(Text(self.details))
+
+    def action_withhold_action(self):
+        # Usage has no copy/export workflow; never invoke a background view's
+        # selected-record actions from this modal.
+        self.check_policy()
 
     @on(Button.Pressed, '#usage-close')
     def close_dialog(self):

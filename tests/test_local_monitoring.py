@@ -25,6 +25,7 @@ class MonitoringModelsTests(unittest.TestCase):
                 item=dict(server='fixture',tool='search',method='tools/call',status='OK',
                     arguments=value,arguments_reported=reported,output=value,output_reported=reported)
                 owner=SimpleNamespace(table_data={'mcp-table':{'call':item}},selected_mcp='call',
+                    data=SimpleNamespace(mcp_results=None,mcp=[item],local_status={},receiver_id='fixture'),
                     query_one=lambda *args:SimpleNamespace(disabled=False),
                     inspect=lambda *args,**kwargs:captured.append(args))
                 ObservatoryApp.show_mcp(owner)

@@ -455,7 +455,8 @@ def derive_trace(db, trace_id, workflow_patterns=False):
     if workflow_patterns:
         from .workflow_patterns import analyze_patterns
         findings = [item for item in findings if item['kind'] != 'repeated_tool_error']
-        findings.extend(analyze_patterns(spans, logs, outcome))
+        findings.extend(analyze_patterns(spans, logs, outcome,receiver=receiver,activity=activity,
+            source_complete=summary['evidence_window']['complete']))
     for finding in findings:
         if finding.get('workflow_pattern'):
             from .operation_facts import digest
