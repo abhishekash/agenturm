@@ -126,6 +126,7 @@ def analyze(spans, logs, outcome=None, *, activity=None, receiver='', outcome_ow
     if not spans and not logs and not outcome:return []
     from .core import _activity_for,_activity_row,_event_activity_identity,_tool_activity
     from .operation_facts import operation_facts,operation_key,operation_metadata,digest
+    from .operation_preparation import canonical_terminal
     facts_for=operation_preparation.full if operation_preparation is not None else operation_facts
     trace_id = spans[0]['trace_id'] if spans else logs[0]['trace_id'] if logs else outcome['trace_id']
     if activity is None:activity=_activity_for(spans,logs)
@@ -162,6 +163,10 @@ def analyze(spans, logs, outcome=None, *, activity=None, receiver='', outcome_ow
             [{'type':source,'id':source_id}],
             f"Detected {labels} in {', '.join(fields[:8]) or 'captured content'}. Values are omitted; inspect the linked source.",owner)
     for event in activity:
+        terminal=canonical_terminal(event)
+        if (terminal is not None and str(event.get('result')or '').casefold()not in {'error','failed','blocked','denied','policy_denied','incomplete'}
+                and terminal['result']!='failed' and not terminal['result_conflict'] and not terminal['has_code_one']):
+            continue
         facts=facts_for(event)
         raw=str(event.get('result') or '').casefold()
         failed=raw in {'error','failed','blocked','denied','policy_denied','incomplete'} or facts['result']=='failed' or facts['result_conflict']
