@@ -8,6 +8,8 @@
 
 - Share bounded static session preparation across the Agents roster and Workflow while recomputing health and attention. Honor fresh capture revocation in paused inspectors, retained prompt/evidence buffers and in-flight AI summaries; retain exact receiver/producer/worker/session boundaries.
 
+- Batch bounded session identity, label and uncovered-log reads in one source snapshot. Preserve older uncovered errors, typed recovery references and nullable ownership; record the paired latency gain and still-open resource targets.
+
 - Reuse read-only leases for the background compatibility watcher’s empty probe, releasing them before transactional repair. Preserve the polling interval, bounded drain and live external-writer invalidation.
 
 - Keep MCP scope, call identity, hydration and execution enrichment in one source snapshot. Separate producer/worker/session/server collisions, retain ambiguous calls, and expose typed recorded payloads without borrowing trace-root ownership.
