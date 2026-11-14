@@ -79,14 +79,22 @@ def validate_idle(events, start, end, pid, receiver_id, history,minimum_history=
     return errors
 
 
+def idle_publishable(args,source,errors):
+    """Short/diagnostic runs cannot become the registered 300s idle budget."""
+    return bool(not errors and not source['dirty'] and not args.profile and
+        not args.smoke and not args.allow_dirty and args.seconds>=300 and args.warmup>=60)
+
+
 def measure(args):
     bind_application(args.app_root)
     from observatory.terminal import Api
     reserve=args.minimum_free_mib*1024**2;disk=disk_gate(args.output,reserve_bytes=reserve)
     base=args.output.resolve();create_owned_directory(base)
-    source=revision(args.app_root);workload=Workload(base);seed=None
+    source=revision(args.app_root)
+    preparation_started=time.monotonic();workload=Workload(base);seed=None
     if args.seed:seed=clone_seed(args.seed,base/'telemetry.db',reserve_bytes=reserve)
     elif args.history:seed_history(base/'telemetry.db')
+    preparation_seconds=time.monotonic()-preparation_started
     before_storage=storage_snapshot(base/'telemetry.db')
     env=isolated_env(base,args.app_root)
     if args.profile:env['AGENTURM_SOAK_PROFILE']='1'
@@ -198,8 +206,9 @@ def measure(args):
         errors.append('OpenCode fixture read/schema errors')
     after_storage=storage_snapshot(base/'telemetry.db')
     if any(count for name,count in after_storage.get('rows',{}).items() if 'dirty' in name):errors.append('Derived/index queues remain after shutdown')
-    result=dict(source=source,publishable=not source['dirty'] and not args.profile and not args.smoke and not errors,
+    result=dict(source=source,publishable=idle_publishable(args,source,errors),
         smoke=args.smoke,disk_headroom=disk,seed=seed,storage_before=before_storage,storage_after=after_storage,
+        fixture_preparation_seconds=preparation_seconds,
         terminal_size='120x36',history=args.history,profiling=args.profile,warmup_seconds=args.warmup,
         initial_readiness_seconds=ready_seconds,first_useful_agents_seconds=locals().get('useful_seconds'),requested_idle_seconds=args.seconds,processes=budgets,
         whole_monitor=whole,
