@@ -27,8 +27,10 @@ class MonitoringModelsTests(unittest.TestCase):
                     arguments=value,arguments_reported=reported,output=value,output_reported=reported)
                 owner=SimpleNamespace(table_data={'mcp-table':{'call':item}},selected_mcp='call',
                     data=SimpleNamespace(mcp_results=None,mcp=[item],local_status={},receiver_id='fixture'),
+                    query=lambda *args:[],
                     query_one=lambda *args:SimpleNamespace(disabled=False),
                     inspect=lambda *args,**kwargs:captured.append(args))
+                owner.native_page_pending=lambda page:ObservatoryApp.native_page_pending(owner,page)
                 ObservatoryApp.show_mcp(owner)
                 sections=dict(captured[0][3])
                 self.assertEqual(sections['Arguments'],expected)

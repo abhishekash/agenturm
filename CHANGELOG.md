@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Coordinate health-side metadata writes with bounded startup indexing and backfill transactions. Preserve caller-owned transactions, exact source snapshots and visible fatal errors; active HTTP availability remains under validation.
+
+- Stop soak startup on explicit indexing errors and retain bounded metadata-safe diagnostics for failed active HTTP reads. Require actual readiness booleans, preserve original failures and keep ordinary startup deadlines and polling cadence.
+
+- Exercise the current MCP readiness check in monitoring fixtures and close the native-turn proof fixture's SQLite connection deterministically, preserving all evidence assertions.
+
 - Show fresh, read-only native agent observations while initial history indexes. Keep task text, history totals and workflow actions unavailable, with truthful keyboard-reachable loading states on every view and normal behavior restored after coherent data arrives.
 
 - Keep locally queued and in-flight derivation with its worker, fence source commits through queue publication, and bound fair repair batches. Preserve external-writer reconciliation and truthful unavailable reads while growing-trace latency remains under validation.
