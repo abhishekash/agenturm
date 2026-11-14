@@ -701,3 +701,18 @@ failures remain visible, with basic monitoring available.
 Unknown or unconfirmed lifecycle evidence stays visible as **Status unknown** and does not count as actionable attention. A shared Codex daemon is not proof that a particular session is advancing. Explicit approvals/replies, recorded failures and genuine possible stalls retain their evidence-based behavior.
 
 Workflow defaults to completion reviews from the last 24 hours. Press `h` to include older completions; pending requests remain visible. `Shift+R` reviews the exact completion IDs in the current filtered inbox together; it excludes approvals, replies, budget incidents and later arrivals. Ages use hours/days. Accepted acknowledgements and viewed-error receipts drain on graceful shutdown with a bounded failure notice; SIGKILL cannot provide that guarantee.
+
+
+## Investigate retained paths, commands and instructions
+
+Press **Ctrl+F** in the monitor, choose **History** in Activity, or use the command palette’s **Investigate retained history** action. Choose Path, Command or Instruction and enter a query. Paths match exactly, including case and Unicode. Commands and instructions match a literal word phrase. Results describe retained recorded observations; no matches does not prove no activity.
+
+Use arrows, Page Up/Down and Home/End to select a result, then Enter to read exact recorded evidence. Escape returns to results, then the monitor. Tab reaches Filters, More and Back; Ctrl+C cancels the current read or goes back. The same screen fits a 60×18 terminal. Queries never execute commands or retry agent work.
+
+```sh
+agenturm investigate path src/retry.py
+agenturm investigate command pytest --failed
+agenturm investigate instruction "keep the public API" --format json
+```
+
+Use `--service` for an exact producer, `--pages 1..5` and `--limit 1..100` for bounded CLI reads, or the returned cursor to continue the same query. The UI retains at most five pages, 250 results and 2 MiB. Each result supplies a pinned `source_command` / `source_path`; use that complete reference to read a source. A bare event ID cannot be rebound to a fresh receiver. Capture denial, identity changes or pruned records may make evidence unavailable. SQLite FTS5 support and a ready source index are required; there is no broad raw-history fallback.
