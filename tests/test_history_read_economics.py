@@ -22,6 +22,12 @@ class HistoryReadEconomicsTests(unittest.TestCase):
         self.store.ingest([normalize_native(dict(trace_id='a'*32,span_id='b'*16,name='MCP call',
             start_unix_nano=1,end_unix_nano=2,resource_attributes={'observatory.source_id':7},
             attributes={'mcp.method.name':'tools/call','mcp.server.name':'fixture','mcp.tool.name':'search'}),'fixture')])
+        # The authoritative execution join is needed only when a candidate
+        # exists. Keep this index assertion on that positive path without
+        # adding another record to the legacy numeric-source count above.
+        self.store.ingest([normalize_native(dict(trace_id='a'*32,span_id='c'*16,
+            parent_span_id='b'*16,name='execute MCP tool',start_unix_nano=1,end_unix_nano=2,
+            attributes={'gen_ai.tool.type':'MCPTool','gen_ai.tool.name':'search'}),'fixture')])
         queries=[];original=self.store._connect;original_read=self.store._read
         @contextmanager
         def traced():
