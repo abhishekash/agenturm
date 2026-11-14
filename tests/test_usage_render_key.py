@@ -4,7 +4,7 @@ from dataclasses import replace
 import unittest
 from unittest.mock import patch
 
-from textual.widgets import Static
+from textual.widgets import Static,TabbedContent
 from observatory.terminal_ui import ObservatoryApp
 from observatory.usage_render_key import usage_render_key,MAX_NODES,MAX_TEXT_BYTES,MAX_DEPTH
 from tests.test_terminal_search import ManualFeed
@@ -121,6 +121,46 @@ class UsageRenderJourney(unittest.IsolatedAsyncioTestCase):
             self.assertIn('metadata-only',tooltip)
             self.assertIsNone(app._task_usage_inputs)
             app.refresh_task_usage();self.assertIsNone(app._task_usage_inputs)
+
+    async def test_trace_owner_b_policy_is_independent_of_selected_roster_a(self):
+        app=ObservatoryApp(usage_feed(),persist_preferences=False)
+        async with app.run_test(size=(120,36)) as pilot:
+            await self.mounted(app,pilot)
+            self.assertEqual(app.selected_source,'source-1')
+            app.query_one('#pages',TabbedContent).active='traces'
+            await pilot.pause()
+            app.data.receiver_id='fixture-receiver'
+            trace=dict(trace_id='trace-b',task='Private trace B request',input_tokens=500,output_tokens=20,
+                agent_count=1,agent_count_complete=True,
+                review_owner=dict(producer='claude',agent_id='worker-b',session_id='session-2'))
+            app.data.detail=dict(receiver_id=app.data.receiver_id,trace_id='trace-b',summary=trace)
+            app.feed.selected_trace='trace-b'
+            app.refresh_task_usage()
+            self.assertIn('Private trace B request',app.query_one('#usage-summary',Static).tooltip)
+            self.assertIsNotNone(app._task_usage_inputs)
+            # Roster A is still selected; only B's policy is changed in place.
+            selected_b=app.data.local_status['sessions'][1]
+            selected_b.update(agent_id='worker-b',capture_content=False,capture_revision=2)
+            app.refresh_task_usage()
+            self.assertNotIn('Private trace B request',app.query_one('#usage-summary',Static).tooltip)
+            self.assertIsNone(app._task_usage_inputs)
+            selected_b['capture_content']=True
+            app.refresh_task_usage()
+            self.assertIn('Private trace B request',app.query_one('#usage-summary',Static).tooltip)
+            app.data.receiver_id='replacement-receiver'
+            app.refresh_task_usage()
+            self.assertNotIn('Private trace B request',app.query_one('#usage-summary',Static).tooltip)
+            self.assertIn('metadata-only',app.query_one('#usage-summary',Static).tooltip)
+            self.assertIsNone(app._task_usage_inputs)
+            app.data.detail['receiver_id']=app.data.receiver_id
+            app.refresh_task_usage()
+            self.assertIn('Private trace B request',app.query_one('#usage-summary',Static).tooltip)
+            for changes in (dict(review_owner=None),dict(agent_count=2),dict(agent_count_complete=False)):
+                original={key:trace.get(key) for key in changes}
+                trace.update(changes);app.refresh_task_usage()
+                self.assertNotIn('Private trace B request',app.query_one('#usage-summary',Static).tooltip)
+                self.assertIsNone(app._task_usage_inputs)
+                trace.update(original)
 
 
 if __name__=='__main__':unittest.main()
