@@ -24,7 +24,8 @@ import urllib.request
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from scripts.validation_support import (bind_application,cleanup_clone,clone_seed,create_owned_directory,
-    disk_gate,harness_manifest,isolated_env,raw_manifest,storage_snapshot,application_revision,nearest_rank,strict_heartbeat_errors)
+    disk_gate,harness_manifest,isolated_env,raw_manifest,storage_snapshot,application_revision,nearest_rank,strict_heartbeat_errors,
+    fresh_schema_manifest,prepare_raw_clone,verify_named_indexes)
 from scripts.soak_monitor import Workload,process_sample,seed_history,append,write_json,event,native
 
 
@@ -64,12 +65,17 @@ class FixtureSession:
                     command=['pytest','-q'],status='completed',exit_code=0,aggregated_output='Generated check passed'))
                 native(path,'event_msg',type='task_complete',turn_id=f'modal-turn-{index}')
         self.seed=clone_seed(args.seed,self.base/'telemetry.db',reserve_bytes=args.minimum_free_mib*1024**2) if args.seed else None
+        self.expected_schema=None;raw_preparation=None
+        if self.seed:
+            from observatory.core import Store
+            self.expected_schema=fresh_schema_manifest(self.base,Store)
+            raw_preparation=prepare_raw_clone(self.base,'telemetry.db',schema_meta_sql=self.expected_schema['schema_meta_sql'])
         self.env=isolated_env(self.base,args.app_root);self.channel='agenturm-validation-'+str(os.getpid())
         with socket.socket() as sock:sock.bind(('127.0.0.1',0));self.port=sock.getsockname()[1]
         self.command=[sys.executable,str(ROOT/'scripts/soak_monitor.py'),'_child']
         self.before=dict(application=application_revision(args.app_root),harness=harness_manifest())
         self.report=dict(protocol='agenturm-final-validation-v1',mode=args.mode,source=self.before,disk=self.disk,
-            seed=self.seed,no_provider_calls=True,notification_sink='fixture only',errors=[])
+            seed=self.seed,raw_schema_preparation=raw_preparation,no_provider_calls=True,notification_sink='fixture only',errors=[])
     def tmux(self,*args):
         return subprocess.check_output(['tmux','-L',self.channel,'-f','/dev/null',*args],env=self.env,cwd=self.base/'project',text=True,stderr=subprocess.STDOUT,timeout=5)
     def spawn(self,role,mode):
@@ -89,6 +95,9 @@ class FixtureSession:
             except OSError:return None
             return value if value.get('indexing',{}).get('ready') is True and value.get('local_agents',{}).get('initial_poll_complete') is True else None
         self.health=until(ready,'Receiver readiness',timeout=600)
+        if self.expected_schema:
+            self.report['production_indexes']=verify_named_indexes(self.base/'telemetry.db',self.expected_schema)
+            if not self.report['production_indexes']['equal']:raise RuntimeError('Initialized indexes differ from this source tree production schema')
         self.workload.phase(0,0)
         if self.args.mode=='modals':
             for phase in range(1,5):self.workload.phase(0,phase)

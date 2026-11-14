@@ -35,7 +35,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from scripts.validation_support import (application_revision,bind_application,harness_manifest,
-    isolated_env,load_harness,published_heartbeat,nearest_rank,disk_gate,create_owned_directory,clone_seed,storage_snapshot)
+    isolated_env,load_harness,published_heartbeat,nearest_rank,disk_gate,create_owned_directory,clone_seed,storage_snapshot,
+    fresh_schema_manifest,prepare_raw_clone,verify_named_indexes)
 
 
 def write_json(path, value):
@@ -159,7 +160,9 @@ def child(mode, directory, port):
             previous = [time.monotonic()]
             def heartbeat():
                 now = time.monotonic()
-                append(telemetry,{**published_heartbeat(app), 'interval':now-previous[0]})
+                append(telemetry,{**published_heartbeat(app), 'interval':now-previous[0],
+                    'focus':app.focused.id if app.focused else None,
+                    'terminal_size':[app.size.width,app.size.height]})
                 previous[0] = now
             app.set_interval(1, heartbeat)
         stack.enter_context(patch.object(WorkflowController, '_enqueue', enqueue))
@@ -292,9 +295,12 @@ def run(args):
     disk_gate(args.output,required_bytes=0,reserve_bytes=int(getattr(args,'minimum_free_mib',4096))*1024**2)
     base=args.output.resolve();create_owned_directory(base)
     workload=Workload(base)
-    preparation_started=time.monotonic();seed=None
+    preparation_started=time.monotonic();seed=None;raw_preparation=None;expected_schema=None;index_check=None
     if getattr(args,'seed',None):
         seed=clone_seed(args.seed,base/'telemetry.db',reserve_bytes=int(args.minimum_free_mib)*1024**2)
+        from observatory.core import Store
+        expected_schema=fresh_schema_manifest(base,Store)
+        raw_preparation=prepare_raw_clone(base,'telemetry.db',schema_meta_sql=expected_schema['schema_meta_sql'])
     elif args.history:
         seed_history(base/'telemetry.db')
     preparation_seconds=time.monotonic()-preparation_started
@@ -331,7 +337,30 @@ def run(args):
         # default shell or its startup files. This server reads no tmux config.
         tmux('new-session','-d','-s','monitor','-x',width,'-y',height,*command,'_child','ui',str(base),str(port))
         tmux('set-option','-t','monitor','remain-on-exit','on')
-        ui_pids.append(ui_pid())
+        pid=ui_pid();ui_pids.append(pid)
+        # A freshly started compact cockpit may not have installed input yet.
+        # Observe its published frames before sending workflow or quit keys.
+        deadline=time.monotonic()+30
+        while time.monotonic()<deadline:
+            telemetry=base/'ui-events.jsonl'
+            if telemetry.exists():
+                with telemetry.open('rb') as stream:
+                    stream.seek(0,os.SEEK_END);size=stream.tell();stream.seek(max(0,size-128*1024))
+                    lines=stream.read().splitlines()
+                if size>128*1024:lines=lines[1:]
+                beats=[]
+                for line in lines:
+                    try:row=json.loads(line)
+                    except (ValueError,UnicodeDecodeError):continue
+                    if (row.get('kind')=='heartbeat' and row.get('pid')==pid and
+                            row.get('screen')=='ObservatoryScreen' and row.get('visible_agent_rows',0)>0 and
+                            row.get('focus')=='agent-table' and row.get('terminal_size')==[int(width),int(height)] and
+                            not row.get('error')):beats.append(row)
+                if len(beats)>=3:return
+            dead=tmux('display-message','-p','-t','monitor','#{pane_dead}',capture=True).strip()
+            if dead=='1':raise RuntimeError('Cockpit exited before sustained published frames')
+            time.sleep(.15)
+        raise RuntimeError('Cockpit did not publish sustained input-ready frames')
     def ui_pid():
         return int(tmux('display-message','-p','-t','monitor','#{pane_pid}',capture=True).strip())
     def stop_ui():
@@ -380,8 +409,11 @@ def run(args):
             if token_file.exists():break
             if receiver.poll() is not None:raise RuntimeError('Receiver failed; see receiver.log')
             time.sleep(.1)
-        api=Api(endpoint,token_file.read_text().strip());wait_ready(api,timeout=600 if args.history else 25)
+        api=Api(endpoint,token_file.read_text().strip());wait_ready(api,timeout=600 if args.history or getattr(args,'seed',None) else 25)
         initial_readiness_seconds=time.monotonic()-started
+        if expected_schema:
+            index_check=verify_named_indexes(base/'telemetry.db',expected_schema)
+            if not index_check['equal']:raise RuntimeError('Initialized indexes differ from this source tree production schema')
         start_ui()
         # Timed workload begins after first receiver readiness.
         started=time.monotonic();next_sample=started;sample_interval=args.phase_seconds
@@ -563,7 +595,9 @@ def run(args):
         host=dict(system=platform.system(),architecture=platform.machine(),python=platform.python_version(),logical_cpus=os.cpu_count()),
         configured_seconds=args.duration,phase_seconds=args.phase_seconds,elapsed_seconds=duration,eager_tls=args.eager_tls,profile_ui=args.profile_ui,
         active_workload_comparison='descriptive only: phases follow completion time, not fixed absolute cadence',
-        common_seed=seed,storage_after=storage_after,
+        common_seed=seed,raw_schema_preparation=raw_preparation,
+        production_indexes=index_check,
+        storage_after=storage_after,
         seeded_history=dict(traces=5751,spans=31000,logs=41000,days=35,newest_age_days=2) if args.history else None,
         fixture_preparation_seconds=preparation_seconds,initial_readiness_seconds=locals().get('initial_readiness_seconds'),
         completed_turns=len(workload.completed),verified_turns=len(verified),approval_requests=len(workload.requests),observed_approval_requests=len({row['cycle'] for row in observed_requests}),

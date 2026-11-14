@@ -28,7 +28,6 @@ from scripts.validation_support import (application_revision,bind_application,cl
     raw_manifest,readonly,storage_snapshot,fresh_schema_manifest,prepare_raw_clone,verify_named_indexes)
 
 BASELINE='5e0c397'
-CANDIDATE='55c6244'
 ENDPOINTS=('/api/sessions?limit=500','/api/mcp?limit=100')
 PROTOCOL='agenturm-authenticated-http-tails-v1'
 TRACE=hashlib.sha256(PROTOCOL.encode()).hexdigest()[:32]
@@ -43,9 +42,9 @@ def invalid_constant(value):raise ValueError('Nonfinite JSON value')
 
 def protocol(smoke=False):
     return dict(smoke=smoke,warmups=1 if smoke else 5,idle_pairs=2 if smoke else 20,
-        loaded_pairs=2 if smoke else 40,read_period_s=.05 if smoke else 1.,
-        write_period_s=.05 if smoke else .1,write_batches=10 if smoke else 420,
-        read_offset_s=.05 if smoke else .3,records_per_batch=2,
+        loaded_pairs=2 if smoke else 40,read_period_s=1.,
+        write_period_s=.1,write_batches=30 if smoke else 420,
+        read_offset_s=.3,records_per_batch=2,
         endpoints=list(ENDPOINTS),request_timeout_s=5.,ready_timeout_s=600.,
         deadline_policy='No skipped slots or burst catchup; lateness over one respective period invalidates the run.',
         preparation_protocol='clean-raw-schema-v1, registered clone only; full source production Store builds its own derived schema.',
@@ -355,14 +354,14 @@ def run(args):
     output=args.output.resolve();create_owned_directory(output)
     settings=protocol(args.smoke);seed=raw_manifest(args.seed)
     report=dict(protocol=PROTOCOL,settings=settings,seed=seed,started_utc=utc(),versions={},errors=[],
-        harness_before=harness_state(),coordinator_pid=os.getpid())
+        harness_before=harness_state(),coordinator_pid=os.getpid(),
+        run_order=args.order,registered_candidate_commit=args.candidate_commit)
     try:
         if not args.smoke and seed['counts']!={'spans':31000,'logs':41000,'trace_activity':5751}:
             raise ValueError('Use the registered 5,751-trace common generated corpus; smaller corpora are smoke-only')
-        for role,app_root,expected in (('B',args.baseline_root,BASELINE),('C',args.candidate_root,CANDIDATE)):
+        for role,app_root,expected in registered_versions(args):
             app_root=app_root.resolve();actual=application_revision(app_root)
-            expected_full=subprocess.check_output(['git','rev-parse',expected],cwd=ROOT,text=True).strip()
-            if not args.smoke and actual['head']!=expected_full:raise ValueError('Use exact registered '+role+' source commit')
+            if not args.smoke and actual['head']!=expected:raise ValueError('Use exact registered '+role+' source commit')
             base=output/role;create_owned_directory(base)
             config=dict(output=str(base),app_root=str(app_root),seed=str(args.seed.resolve()),role=role,settings=settings,
                 token=secrets.token_hex(32),parent_pid=os.getpid())
@@ -406,12 +405,24 @@ def run(args):
     return 0 if not report['errors']else 1
 
 
+def registered_versions(args):
+    """Pin the candidate before timing; allow either balanced execution order."""
+    candidate=args.candidate_commit
+    if not args.smoke and (not isinstance(candidate,str) or re.fullmatch('[0-9a-f]{40}',candidate)is None):
+        raise ValueError('Register an exact full --candidate-commit before a controlled run')
+    baseline=subprocess.check_output(['git','rev-parse',BASELINE],cwd=ROOT,text=True).strip()
+    versions={'B':('B',args.baseline_root,baseline),'C':('C',args.candidate_root,candidate)}
+    return [versions[role]for role in args.order]
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__);sub=parser.add_subparsers(dest='command',required=True)
     public=sub.add_parser('run');public.add_argument('--seed',type=Path,required=True)
     public.add_argument('--verified-synthetic-source',action='store_true',required=True)
     public.add_argument('--baseline-root',type=Path,required=True);public.add_argument('--candidate-root',type=Path,required=True)
     public.add_argument('--output',type=Path,required=True);public.add_argument('--smoke',action='store_true')
+    public.add_argument('--candidate-commit',help='Full frozen candidate SHA; required for controlled runs')
+    public.add_argument('--order',choices=('BC','CB'),default='BC',help='Run both balanced orders in separate output directories')
     internal=sub.add_parser('_child');internal.add_argument('--config',type=Path,required=True)
     args=parser.parse_args();return child(args)if args.command=='_child'else run(args)
 
