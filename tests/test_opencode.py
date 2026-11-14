@@ -96,9 +96,12 @@ class OpenCodeReaderTests(unittest.TestCase):
         self.assertEqual(mcp["calls"][0]["tool"], "search_issues")
         self.assertIn("[REDACTED]", str(mcp["calls"][0]["arguments"]))
         tool_activity=self.store.activity_page(session_id='ses_test',domain='mcp')['activity']
-        self.assertIn('Input:',tool_activity[0]['detail'])
-        self.assertIn('"query": "bug"',tool_activity[0]['detail'])
-        self.assertIn('"count": 2',tool_activity[0]['detail'])
+        from observatory.operation_facts import operation_facts
+        facts=operation_facts(tool_activity[0])
+        self.assertEqual(facts['arguments']['query'],'bug')
+        self.assertEqual(facts['arguments']['Authorization'],'[REDACTED]')
+        self.assertIn('"count": 2',facts['output'])
+        self.assertEqual(facts['output_origin'],'output.value')
         db = sqlite3.connect(self.database)
         self.assertEqual(db.execute("SELECT COUNT(*) FROM part").fetchone()[0], 1)
         db.close()

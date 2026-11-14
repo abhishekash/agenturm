@@ -408,8 +408,9 @@ def operation_facts(event):
             outputs_valid=False;continue
         origin,kind,sanitized=row
         text=sanitized if isinstance(sanitized,str) else json.dumps(sanitized,ensure_ascii=False,sort_keys=True)
-        if text:outputs.append((str(origin),str(kind),text,output_complete,useful_error(sanitized)))
+        outputs.append((str(origin),str(kind),text,output_complete,useful_error(sanitized)))
     output=next((entry for kind in ('stderr','error','output','stdout') for entry in outputs if entry[1]==kind and entry[4]),None)
+    if output is None and outputs:output=outputs[0]
     origin,kind,text,complete,_=output or ('','','',output_complete,False)
     complete=complete and outputs_valid and all(entry[3] for entry in outputs) and not evidence.get('output_clipped')
     command_complete=bool(command and commands[0][0]!='subject' and not command_clipped

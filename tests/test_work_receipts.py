@@ -15,7 +15,13 @@ from observatory.review_cli import add_review_parser, collect_review, run_review
 from observatory.review_facts import refreshed_review_item
 from observatory.workflow_evidence import ExecutionScope, ReviewHistory, check_kind
 from observatory.work_receipts import freeze_receipt, export_receipt
-from tests.test_workflow_evidence import event
+from tests.test_workflow_evidence import event as source_event
+
+
+def event(identity='one',**changes):
+    row=source_event(identity,**changes)
+    row['attributes']={'process.command_line':row['subject']}
+    return row
 
 
 class ReceiptTests(unittest.TestCase):
@@ -257,7 +263,8 @@ class HeadlessReceiverJourney(unittest.TestCase):
                 def activity(domain,action,subject,stamp):
                     return dict(name='agent.activity',time_unix_nano=stamp,attributes={
                         'agent.activity.domain':domain,'agent.activity.action':action,
-                        'agent.activity.subject':subject,'agent.activity.result':'success'})
+                        'agent.activity.subject':subject,'agent.activity.result':'success',
+                        **({'process.command_line':subject,'process.exit.code':0} if domain=='shell' else {})})
                 return normalize_native(dict(trace_id=trace,span_id=f'{number:016x}',name='agent.run',
                     start_unix_nano=1,end_unix_nano=9,status='OK',attributes=attrs,events=[
                     activity('message','user','Fix retries '+worker,2),activity('shell','execute','pytest '+worker,3),

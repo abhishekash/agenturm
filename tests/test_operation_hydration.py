@@ -170,6 +170,8 @@ class OperationHydrationTests(unittest.TestCase):
             log=_activity_row({**attrs,'agent.activity.domain':'mcp','agent.activity.result':'unknown'},
                 2,'log','source',self.span,'sdk')
             self.assertEqual(facts['result'],'unknown',value)
+            self.assertEqual(facts['output'],json.dumps(value,sort_keys=True))
+            self.assertEqual(facts['output_origin'],'output.value')
             self.assertNotIn('Ignored alias',facts['output'])
             self.assertIsNone(facts['error_fingerprint'])
             self.assertEqual(facts['result'],operation_facts(log)['result'])
