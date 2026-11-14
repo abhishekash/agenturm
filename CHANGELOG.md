@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep raw MCP HTTP inventory available while unrelated derived queues catch up. Certify initial history, receiver identity and raw snapshots, preserve healthy caching and keep agent-scoped reads strict.
+
 - Coordinate health-side metadata writes with bounded startup indexing and backfill transactions. Preserve caller-owned transactions, exact source snapshots and visible fatal errors; active HTTP availability remains under validation.
 
 - Stop soak startup on explicit indexing errors and retain bounded metadata-safe diagnostics for failed active HTTP reads. Require actual readiness booleans, preserve original failures and keep ordinary startup deadlines and polling cadence.

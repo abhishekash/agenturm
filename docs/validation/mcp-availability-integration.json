@@ -1,0 +1,161 @@
+{
+  "base": "ab0a0496d41b84b21293a8b837f1645140575a8d",
+  "mcp_delivery": "7306aeb3128a077bacfc9c66848db62e8203a135",
+  "mcp_integrated": "75740e503f2c1a01fb65f14e77d9336bc66c32ff",
+  "registration_delivery": "37b5cd15c07d6d664ab59fc936190f1732f7319d",
+  "registration_integrated": "dec7a91",
+  "runtime_sha256": {
+    "core.py": "b1f5b304d2f20e63f593e4e0651fb16533ebee71a48b5e23dab069a11e920866",
+    "server.py": "05eb08754faa8dcc4301f6ce833dbf4875bb875de3b3e0be8d1983222d533e42"
+  },
+  "final_gate": {
+    "command": [
+      "/home/abhishekash/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/bin/python3.13",
+      "-W",
+      "error::ResourceWarning",
+      "-m",
+      "unittest",
+      "tests.test_mcp_initial_certificate",
+      "tests.test_response_cache",
+      "tests.test_soak_http_roundtrip",
+      "-q"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 7.587902128929272,
+    "tests": 22,
+    "unittest_seconds": 7.307,
+    "resource_warning_or_unraisable": false,
+    "pass_gate": true
+  },
+  "first_root_gate": {
+    "tests": 20,
+    "seconds": 6.45,
+    "assertions_passed": true,
+    "warning_free": false,
+    "unraisable_sqlite_warnings": 7,
+    "log_sha256": "5745c67291283bffaa3400d2b7356cacad1a7a03af45526fe704b9a5f18098ed"
+  },
+  "allocation_diagnostic": {
+    "tests": 4,
+    "seconds": 0.044,
+    "diagnostic_only": true,
+    "interpreter": "Python3.13.5",
+    "flags": [
+      "tracemalloc=5",
+      "always::ResourceWarning"
+    ],
+    "proved_sites": [
+      "tests/test_response_cache.py:20",
+      "tests/test_response_cache.py:27",
+      "tests/test_response_cache.py:42"
+    ],
+    "explanation": "Transaction contexts committed but did not close four setup, two journal-mode and one replacement connection.",
+    "log_sha256": "bc3ab8e62ff70a9dcc0ef5b16ed9ab45d4fecfbc0f04f4a0b68f93b79387696e"
+  },
+  "actual_http_root_gate": {
+    "tests": 2,
+    "seconds": 1.012,
+    "log_sha256": "dd8aae3e55e62cd76fd752940db482df86e06ff04e6deeae86568388257f8d06"
+  },
+  "final_log_sha256": "b52f20a609ad48c8b36bacd1771143c7ad4661ab1d8beb95fe6487a56d5a114f",
+  "performance_acceptance": false,
+  "retained_functional_rerun": "Pending exact freeze;60seconds/2secondphases and actual post-both-restarts coverage mandatory",
+  "warnings_suppressed": false,
+  "provider_or_personal_data": false,
+  "html_qa": {
+    "browser": "Google Chrome via Playwright",
+    "cases": [
+      {
+        "document": "docs/validation/mcp-initial-certificate.html",
+        "sha256": "eb417028b4b3ef04c0d4b1f05f55f1b6c193273ff92ccad2a04f3535f19d8a97",
+        "width": 1280,
+        "theme": "light",
+        "pass": true,
+        "documentWidth": 1280,
+        "bodyWidth": 1280,
+        "brokenImages": 0
+      },
+      {
+        "document": "docs/validation/mcp-initial-certificate.html",
+        "sha256": "eb417028b4b3ef04c0d4b1f05f55f1b6c193273ff92ccad2a04f3535f19d8a97",
+        "width": 390,
+        "theme": "dark",
+        "pass": true,
+        "documentWidth": 390,
+        "bodyWidth": 390,
+        "brokenImages": 0
+      },
+      {
+        "document": "docs/validation/mcp-availability-integration.html",
+        "sha256": "ee2bd1108928ece9cb1e462752d7073542ada80bb2655e8c878c93bdf7515b12",
+        "width": 1280,
+        "theme": "light",
+        "pass": true,
+        "documentWidth": 1280,
+        "bodyWidth": 1280,
+        "brokenImages": 0
+      },
+      {
+        "document": "docs/validation/mcp-availability-integration.html",
+        "sha256": "ee2bd1108928ece9cb1e462752d7073542ada80bb2655e8c878c93bdf7515b12",
+        "width": 390,
+        "theme": "dark",
+        "pass": true,
+        "documentWidth": 390,
+        "bodyWidth": 390,
+        "brokenImages": 0
+      },
+      {
+        "document": "docs/validation/next-retained-functional-registration.html",
+        "sha256": "27a58aa37d66a56550c8c23c4ee6f2338d2c56b938723d6153f6071ebf6889c0",
+        "width": 1280,
+        "theme": "light",
+        "pass": true,
+        "documentWidth": 1280,
+        "bodyWidth": 1280,
+        "brokenImages": 0
+      },
+      {
+        "document": "docs/validation/next-retained-functional-registration.html",
+        "sha256": "27a58aa37d66a56550c8c23c4ee6f2338d2c56b938723d6153f6071ebf6889c0",
+        "width": 390,
+        "theme": "dark",
+        "pass": true,
+        "documentWidth": 390,
+        "bodyWidth": 390,
+        "brokenImages": 0
+      },
+      {
+        "document": "docs/changelog.html",
+        "sha256": "958cebd053d6fccba9c677ec2b883bc9b874f4656e41700a14fa14062fc97ceb",
+        "width": 1280,
+        "theme": "light",
+        "pass": true,
+        "documentWidth": 1280,
+        "bodyWidth": 1280,
+        "brokenImages": 0
+      },
+      {
+        "document": "docs/changelog.html",
+        "sha256": "958cebd053d6fccba9c677ec2b883bc9b874f4656e41700a14fa14062fc97ceb",
+        "width": 390,
+        "theme": "dark",
+        "pass": true,
+        "documentWidth": 390,
+        "bodyWidth": 390,
+        "brokenImages": 0
+      }
+    ],
+    "external_requests": 0,
+    "page_errors": 0
+  },
+  "historical_ci104": {
+    "pr_run": 43622359625,
+    "main_run": 43622391716,
+    "pr_head": "b08c7ae4c872d2e1a64152f6d00e08f4f888cafc",
+    "main_head": "1ca4fafe71aed559d381b7e613efb748b9ae9878",
+    "jobs_success": 12,
+    "workflow_conclusion": "success",
+    "qualification": "Confirmed17:56:29\u201331UTC; applies to104 only, not this newerMCP runtime or resource acceptance."
+  }
+}

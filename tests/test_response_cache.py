@@ -1,4 +1,5 @@
 """Cache hits must preserve freshness, authorization and bounded memory."""
+from contextlib import closing
 import io
 import json
 import sqlite3
@@ -17,14 +18,14 @@ class ResponseCacheTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / 'cache.db'
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute('CREATE TABLE records(value)')
         self.cache = ResponseCache(self.path)
         self.addCleanup(self.cache.close)
 
     def test_external_commits_and_racing_writes_invalidate_in_both_journal_modes(self):
         for mode in ('delete', 'wal'):
-            with self.subTest(mode=mode), sqlite3.connect(self.path) as db:
+            with self.subTest(mode=mode), closing(sqlite3.connect(self.path)) as db, db:
                 db.execute('PRAGMA journal_mode=' + mode)
                 version, _ = self.cache.get('key')
                 self.cache.put('key', version, b'before')
@@ -39,7 +40,7 @@ class ResponseCacheTests(unittest.TestCase):
         version, _ = self.cache.get('key')
         self.cache.put('key', version, b'old')
         replacement = self.path.with_suffix('.new')
-        with sqlite3.connect(replacement) as db:
+        with closing(sqlite3.connect(replacement)) as db, db:
             db.execute('CREATE TABLE replacement(value)')
         replacement.replace(self.path)
         self.assertIsNone(self.cache.get('key')[1])
