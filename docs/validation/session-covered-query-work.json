@@ -1,0 +1,409 @@
+{
+  "diagnostic_only": true,
+  "private_copy": "/tmp/agenturm-api-tail-diagnostic-20261114/private.db",
+  "source_unchanged_in_parent_diagnostic": true,
+  "scope": "One original/current captured covered-log query, unchanged read transaction, no writes, concurrent development load.",
+  "progress_granularity": 1000,
+  "queries": {
+    "before": {
+      "sql": "WITH requested(session_id,session_position) AS ( VALUES (?,0),(?,1),(?,2),(?,3),(?,4),(?,5),(?,6),(?,7),(?,8),(?,9),(?,10),(?,11),(?,12),(?,13),(?,14),(?,15),(?,16),(?,17),(?,18),(?,19),(?,20),(?,21),(?,22),(?,23),(?,24),(?,25),(?,26),(?,27),(?,28),(?,29),(?,30),(?,31),(?,32),(?,33),(?,34),(?,35),(?,36),(?,37),(?,38),(?,39)), covered AS ( SELECT summary.trace_id,summary.agent_id,MAX(activity.last_ns) AS last_ns FROM live_summaries_v1 summary JOIN trace_activity activity USING(trace_id) WHERE summary.agent_id IS NOT NULL GROUP BY summary.trace_id,summary.agent_id), candidates AS ( SELECT requested.session_id,activity.owner_key AS digest,activity.stamp AS stamp FROM activity_index_v1 activity JOIN requested ON requested.session_id=activity.session_id LEFT JOIN covered ON covered.trace_id=activity.trace_id AND activity.agent_id IS NOT NULL AND covered.agent_id=activity.agent_id AND covered.last_ns>=activity.stamp WHERE activity.kind='log' AND covered.trace_id IS NULL UNION ALL SELECT requested.session_id,l.digest,l.time_ns AS stamp FROM logs l JOIN requested ON requested.session_id=COALESCE(NULLIF(json_extract(l.attributes, '$.\"gen_ai.conversation.id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"gen_ai.conversation.id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"session.id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"session.id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"agent.session_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"agent.session_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"session_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"session_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"conversation_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"conversation_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"thread_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"thread_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"langgraph.thread_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"langgraph.thread_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"langchain.session_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"langchain.session_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"cursor.conversation.id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"cursor.conversation.id\"'), '')) WHERE l.event_name!='agent.activity'), ranked AS ( SELECT *,ROW_NUMBER() OVER(PARTITION BY session_id ORDER BY stamp DESC,digest DESC) AS position FROM candidates) SELECT l.digest,l.span_id,l.trace_id,l.time_ns,l.service,l.event_name,l.severity_number, l.attributes,l.resource_attributes,l.body,COALESCE(NULLIF(json_extract(l.attributes, '$.\"gen_ai.conversation.id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"gen_ai.conversation.id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"session.id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"session.id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"agent.session_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"agent.session_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"session_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"session_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"conversation_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"conversation_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"thread_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"thread_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"langgraph.thread_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"langgraph.thread_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"langchain.session_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"langchain.session_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"cursor.conversation.id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"cursor.conversation.id\"'), '')) AS session_id FROM ranked JOIN requested USING(session_id) JOIN logs l USING(digest) WHERE ranked.position<=50 ORDER BY requested.session_position,ranked.stamp DESC,ranked.digest DESC",
+      "parameters": [
+        "soak-child",
+        "soak-parent",
+        "soak-opencode",
+        "soak-stale",
+        "session-26",
+        "session-25",
+        "session-24",
+        "session-23",
+        "session-22",
+        "session-21",
+        "session-20",
+        "session-19",
+        "session-18",
+        "session-17",
+        "session-16",
+        "session-15",
+        "session-14",
+        "session-13",
+        "session-12",
+        "session-11",
+        "session-10",
+        "session-9",
+        "session-8",
+        "session-7",
+        "session-6",
+        "session-5",
+        "session-4",
+        "session-3",
+        "session-2",
+        "session-1",
+        "session-0",
+        "session-35",
+        "session-34",
+        "session-33",
+        "session-32",
+        "session-31",
+        "session-30",
+        "session-29",
+        "session-28",
+        "session-27"
+      ],
+      "rows": 50,
+      "payload_sha256": "5680e26223169983932b6aecfba6fed143594e2d580ea419e70ad5591c351e21",
+      "vm_steps_approx": 1257000,
+      "plan": [
+        [
+          2,
+          0,
+          0,
+          "CO-ROUTINE ranked"
+        ],
+        [
+          5,
+          2,
+          0,
+          "CO-ROUTINE (subquery-46)"
+        ],
+        [
+          6,
+          5,
+          0,
+          "MERGE (UNION ALL)"
+        ],
+        [
+          8,
+          6,
+          0,
+          "LEFT"
+        ],
+        [
+          11,
+          8,
+          0,
+          "MATERIALIZE requested"
+        ],
+        [
+          13,
+          11,
+          0,
+          "SCAN 40 CONSTANT ROWS"
+        ],
+        [
+          217,
+          8,
+          0,
+          "MATERIALIZE covered"
+        ],
+        [
+          227,
+          217,
+          0,
+          "SCAN summary USING INDEX sqlite_autoindex_live_summaries_v1_1"
+        ],
+        [
+          232,
+          217,
+          0,
+          "SEARCH activity USING INDEX sqlite_autoindex_trace_activity_1 (trace_id=?)"
+        ],
+        [
+          238,
+          217,
+          0,
+          "USE TEMP B-TREE FOR GROUP BY"
+        ],
+        [
+          287,
+          8,
+          0,
+          "SCAN requested"
+        ],
+        [
+          289,
+          8,
+          0,
+          "SEARCH activity USING COVERING INDEX activity_log_preview_v2 (session_id=?)"
+        ],
+        [
+          307,
+          8,
+          0,
+          "SEARCH covered USING AUTOMATIC COVERING INDEX (trace_id=? AND agent_id=?) LEFT-JOIN"
+        ],
+        [
+          337,
+          8,
+          0,
+          "USE TEMP B-TREE FOR ORDER BY"
+        ],
+        [
+          351,
+          6,
+          0,
+          "RIGHT"
+        ],
+        [
+          357,
+          351,
+          0,
+          "SCAN l USING INDEX logs_non_activity_session_v1"
+        ],
+        [
+          362,
+          351,
+          0,
+          "BLOOM FILTER ON requested (session_id=?)"
+        ],
+        [
+          371,
+          351,
+          0,
+          "SEARCH requested USING AUTOMATIC COVERING INDEX (session_id=?)"
+        ],
+        [
+          387,
+          351,
+          0,
+          "USE TEMP B-TREE FOR ORDER BY"
+        ],
+        [
+          430,
+          2,
+          0,
+          "SCAN (subquery-46)"
+        ],
+        [
+          483,
+          0,
+          0,
+          "SCAN requested"
+        ],
+        [
+          487,
+          0,
+          0,
+          "BLOOM FILTER ON ranked (session_id=?)"
+        ],
+        [
+          503,
+          0,
+          0,
+          "SEARCH ranked USING AUTOMATIC PARTIAL COVERING INDEX (session_id=?)"
+        ],
+        [
+          511,
+          0,
+          0,
+          "SEARCH l USING INDEX sqlite_autoindex_logs_1 (digest=?)"
+        ],
+        [
+          624,
+          0,
+          0,
+          "USE TEMP B-TREE FOR ORDER BY"
+        ]
+      ]
+    },
+    "current": {
+      "sql": "WITH requested(session_id,session_position) AS ( VALUES (?,0),(?,1),(?,2),(?,3),(?,4),(?,5),(?,6),(?,7),(?,8),(?,9),(?,10),(?,11),(?,12),(?,13),(?,14),(?,15),(?,16),(?,17),(?,18),(?,19),(?,20),(?,21),(?,22),(?,23),(?,24),(?,25),(?,26),(?,27),(?,28),(?,29),(?,30),(?,31),(?,32),(?,33),(?,34),(?,35),(?,36),(?,37),(?,38),(?,39)), covered AS ( SELECT summary.trace_id,summary.agent_id,activity.last_ns AS last_ns FROM live_summaries_v1 summary JOIN trace_activity activity USING(trace_id) WHERE summary.agent_id IS NOT NULL), candidates AS ( SELECT requested.session_id,activity.owner_key AS digest,activity.stamp AS stamp FROM activity_index_v1 activity JOIN requested ON requested.session_id=activity.session_id LEFT JOIN covered ON covered.trace_id=activity.trace_id AND activity.agent_id IS NOT NULL AND covered.agent_id=activity.agent_id AND covered.last_ns>=activity.stamp WHERE activity.kind='log' AND covered.trace_id IS NULL UNION ALL SELECT requested.session_id,l.digest,l.time_ns AS stamp FROM logs l JOIN requested ON requested.session_id=COALESCE(NULLIF(json_extract(l.attributes, '$.\"gen_ai.conversation.id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"gen_ai.conversation.id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"session.id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"session.id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"agent.session_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"agent.session_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"session_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"session_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"conversation_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"conversation_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"thread_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"thread_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"langgraph.thread_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"langgraph.thread_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"langchain.session_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"langchain.session_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"cursor.conversation.id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"cursor.conversation.id\"'), '')) WHERE l.event_name!='agent.activity'), ranked AS ( SELECT *,ROW_NUMBER() OVER(PARTITION BY session_id ORDER BY stamp DESC,digest DESC) AS position FROM candidates) SELECT l.digest,l.span_id,l.trace_id,l.time_ns,l.service,l.event_name,l.severity_number, l.attributes,l.resource_attributes,l.body,COALESCE(NULLIF(json_extract(l.attributes, '$.\"gen_ai.conversation.id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"gen_ai.conversation.id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"session.id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"session.id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"agent.session_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"agent.session_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"session_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"session_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"conversation_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"conversation_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"thread_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"thread_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"langgraph.thread_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"langgraph.thread_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"langchain.session_id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"langchain.session_id\"'), ''),NULLIF(json_extract(l.attributes, '$.\"cursor.conversation.id\"'), ''),NULLIF(json_extract(l.resource_attributes, '$.\"cursor.conversation.id\"'), '')) AS session_id FROM ranked JOIN requested USING(session_id) JOIN logs l USING(digest) WHERE ranked.position<=50 ORDER BY requested.session_position,ranked.stamp DESC,ranked.digest DESC",
+      "parameters": [
+        "soak-child",
+        "soak-parent",
+        "soak-opencode",
+        "soak-stale",
+        "session-26",
+        "session-25",
+        "session-24",
+        "session-23",
+        "session-22",
+        "session-21",
+        "session-20",
+        "session-19",
+        "session-18",
+        "session-17",
+        "session-16",
+        "session-15",
+        "session-14",
+        "session-13",
+        "session-12",
+        "session-11",
+        "session-10",
+        "session-9",
+        "session-8",
+        "session-7",
+        "session-6",
+        "session-5",
+        "session-4",
+        "session-3",
+        "session-2",
+        "session-1",
+        "session-0",
+        "session-35",
+        "session-34",
+        "session-33",
+        "session-32",
+        "session-31",
+        "session-30",
+        "session-29",
+        "session-28",
+        "session-27"
+      ],
+      "rows": 50,
+      "payload_sha256": "5680e26223169983932b6aecfba6fed143594e2d580ea419e70ad5591c351e21",
+      "vm_steps_approx": 1082000,
+      "plan": [
+        [
+          2,
+          0,
+          0,
+          "CO-ROUTINE ranked"
+        ],
+        [
+          5,
+          2,
+          0,
+          "CO-ROUTINE (subquery-46)"
+        ],
+        [
+          6,
+          5,
+          0,
+          "MERGE (UNION ALL)"
+        ],
+        [
+          8,
+          6,
+          0,
+          "LEFT"
+        ],
+        [
+          11,
+          8,
+          0,
+          "MATERIALIZE requested"
+        ],
+        [
+          13,
+          11,
+          0,
+          "SCAN 40 CONSTANT ROWS"
+        ],
+        [
+          217,
+          8,
+          0,
+          "MATERIALIZE covered"
+        ],
+        [
+          222,
+          217,
+          0,
+          "SCAN summary"
+        ],
+        [
+          226,
+          217,
+          0,
+          "SEARCH activity USING INDEX sqlite_autoindex_trace_activity_1 (trace_id=?)"
+        ],
+        [
+          245,
+          8,
+          0,
+          "SCAN requested"
+        ],
+        [
+          247,
+          8,
+          0,
+          "SEARCH activity USING COVERING INDEX activity_log_preview_v2 (session_id=?)"
+        ],
+        [
+          265,
+          8,
+          0,
+          "SEARCH covered USING AUTOMATIC COVERING INDEX (trace_id=? AND agent_id=?) LEFT-JOIN"
+        ],
+        [
+          295,
+          8,
+          0,
+          "USE TEMP B-TREE FOR ORDER BY"
+        ],
+        [
+          309,
+          6,
+          0,
+          "RIGHT"
+        ],
+        [
+          315,
+          309,
+          0,
+          "SCAN l USING INDEX logs_non_activity_session_v1"
+        ],
+        [
+          320,
+          309,
+          0,
+          "BLOOM FILTER ON requested (session_id=?)"
+        ],
+        [
+          329,
+          309,
+          0,
+          "SEARCH requested USING AUTOMATIC COVERING INDEX (session_id=?)"
+        ],
+        [
+          345,
+          309,
+          0,
+          "USE TEMP B-TREE FOR ORDER BY"
+        ],
+        [
+          388,
+          2,
+          0,
+          "SCAN (subquery-46)"
+        ],
+        [
+          441,
+          0,
+          0,
+          "SCAN requested"
+        ],
+        [
+          445,
+          0,
+          0,
+          "BLOOM FILTER ON ranked (session_id=?)"
+        ],
+        [
+          461,
+          0,
+          0,
+          "SEARCH ranked USING AUTOMATIC PARTIAL COVERING INDEX (session_id=?)"
+        ],
+        [
+          469,
+          0,
+          0,
+          "SEARCH l USING INDEX sqlite_autoindex_logs_1 (digest=?)"
+        ],
+        [
+          582,
+          0,
+          0,
+          "USE TEMP B-TREE FOR ORDER BY"
+        ]
+      ]
+    }
+  },
+  "exact_ordered_payload_parity": true,
+  "runtime_base": "1aa1948f9723ac4da88a0b5e0ea93322bb8f0f39",
+  "candidate_source_sha256": {
+    "observatory/core.py": "4a6b2a37441523c7e18a9692254db5c4c27e512892f54d28a7aac634531492ff",
+    "tests/test_session_covered_lookup.py": "ec3395c6be59241d19ce7318803239d53b5fca7cf3755bb5ce51e9741bc74736"
+  }
+}

@@ -2915,12 +2915,14 @@ class Store:
                 # Filter scalar source identities before reading any captured
                 # payload. Native logs already covered by a run summary need
                 # neither JSON parsing nor another preview of their bodies.
+                # Both joined tables have trace_id primary keys: each retained
+                # owner/cutoff has one row, so aggregation cannot add evidence.
                 requested_values=','.join(f'(?,{index})' for index in range(len(log_sessions)))
                 log_rows.extend(db.execute(f"""WITH requested(session_id,session_position) AS (
                     VALUES {requested_values}), covered AS (
-                    SELECT summary.trace_id,summary.agent_id,MAX(activity.last_ns) AS last_ns
+                    SELECT summary.trace_id,summary.agent_id,activity.last_ns AS last_ns
                     FROM live_summaries_v1 summary JOIN trace_activity activity USING(trace_id)
-                    WHERE summary.agent_id IS NOT NULL GROUP BY summary.trace_id,summary.agent_id), candidates AS (
+                    WHERE summary.agent_id IS NOT NULL), candidates AS (
                     SELECT requested.session_id,activity.owner_key AS digest,activity.stamp AS stamp
                     FROM activity_index_v1 activity JOIN requested ON requested.session_id=activity.session_id
                     LEFT JOIN covered ON covered.trace_id=activity.trace_id
