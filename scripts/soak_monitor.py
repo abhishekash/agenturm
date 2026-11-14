@@ -33,6 +33,9 @@ import traceback
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
+from scripts.validation_support import (application_revision,bind_application,harness_manifest,
+    isolated_env,load_harness,published_heartbeat,nearest_rank,disk_gate,create_owned_directory,clone_seed,storage_snapshot)
 
 
 def write_json(path, value):
@@ -44,16 +47,15 @@ def append(path, value):
         stream.write(json.dumps(value, separators=(',', ':')) + '\n')
 
 
-def source_revision():
-    return dict(head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
-        dirty=bool(subprocess.run(['git','diff','HEAD','--quiet'],cwd=ROOT).returncode),
-        files={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in
-               ('scripts/soak_monitor.py','observatory/http_transport.py','observatory/ui_workflow.py')})
+def source_revision(app_root=None):
+    root=Path(app_root or os.environ.get('AGENTURM_VALIDATION_APP_ROOT',ROOT)).resolve()
+    application=application_revision(root);harness=harness_manifest()
+    return {**application,'application_dirty':application['dirty'],
+        'dirty':application['dirty'] or harness['revision']['dirty'],'harness':harness}
 
 
 def seed_history(path, *, traces=5751, span_count=31000, log_count=41000):
-    from scripts.benchmark_history import build
-    build(path,traces=traces,span_count=span_count,log_count=log_count)
+    load_harness('benchmark_history.py').build(path,traces=traces,span_count=span_count,log_count=log_count)
     # The full corpus remains retained, but its newest outcome predates the
     # default completion inbox. Exact review receipts then cover new turns only.
     offset=2*86400*10**9
@@ -74,11 +76,13 @@ def native(path, kind, **payload):
 
 def child(mode, directory, port):
     base = Path(directory).resolve()
-    sys.path.insert(0, str(ROOT))
     # No HOME/CODEX_HOME override; only this isolated process sees the fixture
     # home through the platform API. No user transcript/config roots are read.
     with ExitStack() as stack:
         stack.enter_context(patch.object(Path, 'home', return_value=base/'fixture-home'))
+        imported=bind_application(os.environ.get('AGENTURM_VALIDATION_APP_ROOT',ROOT))
+        role=os.environ.get('AGENTURM_VALIDATION_ROLE',mode)
+        append(base/'imports.jsonl',dict(role=role,pid=os.getpid(),application=imported,harness=harness_manifest()))
         if os.environ.get('AGENTURM_SOAK_EAGER_TLS')=='1':
             from observatory import http_transport
             import urllib.request
@@ -119,12 +123,28 @@ def child(mode, directory, port):
                     profiler.disable();profiler.dump_stats(str(base/f'receiver-{os.getpid()}.prof'))
             else:main()
             return
-        if mode != 'ui':
+        def notification(title,body):
+            append(base/'notification-events.jsonl',dict(role=role,pid=os.getpid(),at=time.time(),title=title,body=body))
+            return 'Desktop notification delivered'
+        if mode=='watcher':
+            import threading
+            from observatory.attention_cli import run_watch
+            from observatory.terminal import Api
+            stop=threading.Event()
+            for signum in (signal.SIGINT,signal.SIGTERM):signal.signal(signum,lambda *_:stop.set())
+            token=(base/'state/agenturm'/f'receiver-{port}.token').read_text().strip()
+            args=argparse.Namespace(endpoint=f'http://127.0.0.1:{port}',state=None,interval=1,desktop=True,once=False)
+            with (base/'watcher-events.jsonl').open('a') as stream:
+                return run_watch(args,api=Api(args.endpoint,token),stop=stop,notify=notification,stdout=stream)
+        if mode not in {'ui','ui-observer'}:
             raise ValueError(mode)
         from observatory.terminal_ui import ObservatoryApp
         from observatory.ui_workflow_controller import WorkflowController
         from observatory.terminal import Api, Feed, _run_terminal_app
-        telemetry = base/'ui-events.jsonl'
+        telemetry = base/('ui-events.jsonl' if role=='ui' else 'ui-events-'+role+'.jsonl')
+        if mode=='ui-observer':
+            from observatory import ui_workflow
+            stack.enter_context(patch.object(ui_workflow,'desktop_notify',notification))
         original_mount = ObservatoryApp.on_mount
         original_enqueue = WorkflowController._enqueue
         def enqueue(controller, job):
@@ -135,26 +155,11 @@ def child(mode, directory, port):
             return result
         def mount(app):
             original_mount(app)
+            if mode=='ui-observer':app.workflow_notify=True
             previous = [time.monotonic()]
             def heartbeat():
                 now = time.monotonic()
-                append(telemetry, dict(kind='heartbeat', at=time.time(), pid=os.getpid(),
-                    interval=now-previous[0], error=app.feed.snapshot.error,
-                    receiver_id=app.feed.snapshot.receiver_id,updated=app.feed.snapshot.updated,
-                    read_errors=app.feed.snapshot.read_errors,sessions_error=app.feed.snapshot.sessions_error,
-                    session_count=len(app.feed.snapshot.sessions),mcp_calls=app.feed.snapshot.mcp_summary.get('calls',0),
-                    native_sessions=[row.get('session_id') for row in app.feed.snapshot.local_status.get('sessions',[])],
-                    initial_poll_complete=app.feed.snapshot.local_status.get('initial_poll_complete'),
-                    native_read_errors=app.feed.snapshot.local_status.get('read_errors',0),
-                    native_schema_errors=app.feed.snapshot.local_status.get('schema_errors',0),
-                    opencode_read_errors=app.feed.snapshot.local_status.get('opencode_read_errors',0),
-                    opencode_diagnostics=app.feed.snapshot.local_status.get('opencode_diagnostics',{}),
-                    states=[dict(session=item.get('session_id'), state=item.get('state'),
-                                 request=item.get('request_id'), parent=item.get('parent_agent_id'))
-                            for item in app.workflow_items()],
-                    approval_requests=[item.get('request_id') for item,_,_ in app.workflow_ledger.rows
-                                       if item.get('state')=='Waiting' and item.get('_attention_kind')=='approval'],
-                    warning=app.workflow_controller.warning))
+                append(telemetry,{**published_heartbeat(app), 'interval':now-previous[0]})
                 previous[0] = now
             app.set_interval(1, heartbeat)
         stack.enter_context(patch.object(WorkflowController, '_enqueue', enqueue))
@@ -263,35 +268,38 @@ def process_sample(pid):
         fields=path.joinpath('stat').read_text().rsplit(')',1)[1].split()
         status=dict(line.split(':',1) for line in path.joinpath('status').read_text().splitlines() if ':' in line)
         return dict(pid=pid,cpu_seconds=(int(fields[11])+int(fields[12]))/os.sysconf('SC_CLK_TCK'),
+                    start_ticks=int(fields[19]),
                     sampled_at=time.monotonic(),
                     rss_mib=int(status.get('VmRSS','0 kB').split()[0])/1024,
+                    open_fds=len(list((path/'fd').iterdir())),threads=int(status.get('Threads','0').strip()),
                     peak_rss_mib=int(status.get('VmHWM','0 kB').split()[0])/1024)
     except (OSError,ValueError,IndexError):
         return None
 
 
 def percentile(values, fraction):
-    return sorted(values)[min(len(values)-1,int((len(values)-1)*fraction))] if values else None
+    return nearest_rank(values,fraction)
 
 
 def run(args):
+    bind_application(getattr(args,'app_root',ROOT))
     from observatory.terminal import Api
     from observatory.local_agents import identity
     from observatory.review_cli import collect_review
     from observatory.workflow_evidence import ExecutionScope
     from observatory.attention import classify
-    revision_start=source_revision()
-    base=args.output.resolve();base.mkdir(mode=0o700)
+    revision_start=source_revision(getattr(args,'app_root',ROOT))
+    disk_gate(args.output,required_bytes=0,reserve_bytes=int(getattr(args,'minimum_free_mib',4096))*1024**2)
+    base=args.output.resolve();create_owned_directory(base)
     workload=Workload(base)
-    preparation_started=time.monotonic()
-    if args.history:
+    preparation_started=time.monotonic();seed=None
+    if getattr(args,'seed',None):
+        seed=clone_seed(args.seed,base/'telemetry.db',reserve_bytes=int(args.minimum_free_mib)*1024**2)
+    elif args.history:
         seed_history(base/'telemetry.db')
     preparation_seconds=time.monotonic()-preparation_started
     channel='agenturm-soak-'+str(os.getpid())
-    env={key:os.environ[key] for key in ('PATH','LANG','LC_ALL','LD_LIBRARY_PATH') if key in os.environ}
-    env.update(XDG_STATE_HOME=str(base/'state'),XDG_CONFIG_HOME=str(base/'config'),
-               XDG_DATA_HOME=str(base/'data'),OPENCODE_DB=str(workload.database),TERM='xterm-256color',PYTHONUNBUFFERED='1',
-               GEMINI_CLI_SYSTEM_SETTINGS_PATH=str(base/'config/gemini-system.json'))
+    env=isolated_env(base,getattr(args,'app_root',ROOT))
     if args.profile_ui:env['AGENTURM_SOAK_PROFILE']='1'
     if args.eager_tls:env['AGENTURM_SOAK_EAGER_TLS']='1'
     with socket.socket() as sock:
@@ -305,7 +313,7 @@ def run(args):
         log=(base/(mode+'.log')).open('a');streams.append(log)
         return subprocess.Popen([*command,'_child',mode,str(base),str(port),'app-server'],env=env,cwd=base/'project',stdout=log,stderr=subprocess.STDOUT)
     def tmux(*values, capture=False):
-        result=subprocess.run(['tmux','-L',channel,'-f','/dev/null',*values],env=env,text=True,capture_output=True,timeout=5)
+        result=subprocess.run(['tmux','-L',channel,'-f','/dev/null',*values],env=env,cwd=base/'project',text=True,capture_output=True,timeout=5)
         if result.returncode:raise RuntimeError('tmux: '+result.stderr)
         return result.stdout if capture else None
     def screen(label):
@@ -429,6 +437,7 @@ def run(args):
                     if cycle%5==0:screen(f'cycle-{cycle}')
                 next_phase=time.monotonic()+args.phase_seconds
             if now>=next_sample:
+                disk_gate(base,reserve_bytes=int(getattr(args,'minimum_free_mib',4096))*1024**2)
                 health=request(api,'/api/health');local=health.get('local_agents',{})
                 if pending_cycle is not None:
                     row=next((row for row in local.get('sessions',[]) if row.get('session_id')=='soak-parent'),{})
@@ -441,6 +450,10 @@ def run(args):
                 record=dict(elapsed=elapsed,backlog_bytes=local.get('backlog_bytes'),
                     opencode_backlog=local.get('opencode_diagnostics',{}).get('backlog_records'),
                     read_errors=local.get('read_errors'),schema_errors=local.get('schema_errors'),
+                    pending_storage_records=sum((item.get('diagnostics') or {}).get('pending_storage_records',0) for item in local.get('sessions',())),
+                    hierarchy_write_errors=(local.get('hierarchy') or {}).get('write_errors'),
+                    opencode_read_errors=local.get('opencode_read_errors'),opencode_schema_errors=(local.get('opencode_diagnostics') or {}).get('schema_errors'),
+                    indexing_ready=(health.get('indexing') or {}).get('ready'),
                     database_bytes=(base/'telemetry.db').stat().st_size,
                     wal_bytes=(base/'telemetry.db-wal').stat().st_size if (base/'telemetry.db-wal').exists() else 0,
                     processes={})
@@ -448,11 +461,11 @@ def run(args):
                     value=process_sample(pid)
                     if value:
                         old=previous.get(role)
-                        if old and old[0]==pid:
+                        if old and old[0]==(pid,value['start_ticks']):
                             value['sample_seconds']=value['sampled_at']-old[2]
                             value['cpu_delta_seconds']=value['cpu_seconds']-old[1]
                             value['cpu_percent_one_core']=value['cpu_delta_seconds']/value['sample_seconds']*100
-                        previous[role]=(pid,value['cpu_seconds'],value['sampled_at']);record['processes'][role]=value
+                        previous[role]=((pid,value['start_ticks']),value['cpu_seconds'],value['sampled_at']);record['processes'][role]=value
                 samples.append(record);append(base/'samples.jsonl',record)
                 next_sample=now+sample_interval
             # Restart at phase 5 boundaries, never skip a pending input phase.
@@ -510,7 +523,10 @@ def run(args):
         if not any(any(item['session']=='soak-stale' for item in row['states']) for row in pid_beats):errors.append('Stale-session observation missing after cockpit start/restart')
     for role in ('receiver','cockpit','synthetic_daemon','driver'):
         if sum(role in row['processes'] for row in samples)<args.duration/args.phase_seconds*.5:errors.append(f'Insufficient {role} process samples')
-    if any(row.get('read_errors') or row.get('schema_errors') for row in samples):errors.append('Native read/schema errors occurred')
+    if any(any(row.get(key) for key in ('read_errors','schema_errors','pending_storage_records','hierarchy_write_errors','opencode_read_errors','opencode_schema_errors')) or row.get('indexing_ready') is not True for row in samples):
+        errors.append('Source/storage/index readiness failures occurred')
+    storage_after=storage_snapshot(base/'telemetry.db')
+    if any(count for name,count in storage_after.get('rows',{}).items() if 'dirty' in name):errors.append('Derived/index queues remain after shutdown')
     exits=[json.loads(line) for line in (base/'receiver-exits.jsonl').read_text().splitlines()] if (base/'receiver-exits.jsonl').exists() else []
     if len(exits)!=2 or any(row['pending_after'] for row in exits):errors.append('Derived work was not confirmed drained at both receiver shutdowns')
     if len([row for row in exit_statuses if row['role']=='receiver'])!=2:errors.append('Two receiver exit statuses were not confirmed')
@@ -522,7 +538,7 @@ def run(args):
     if rendered_approvals!={cycle for cycle,_ in workload.requests}:errors.append('Not every approval had a rendered pending inbox')
     ui_exits=[row for row in ui_events if row['kind']=='exit']
     if len(ui_exits)!=2 or any(row['code']!=0 or row['warning'] for row in ui_exits):errors.append('Two successful warning-free cockpit shutdowns were not confirmed')
-    revision_end=source_revision()
+    revision_end=source_revision(getattr(args,'app_root',ROOT))
     if revision_start!=revision_end or revision_start['dirty']:errors.append('Measured source was dirty or changed during the run')
     resources={}
     for role in ('receiver','cockpit','synthetic_daemon','driver'):
@@ -546,6 +562,8 @@ def run(args):
     result=dict(schema_version=1,source_start=revision_start,source_end=revision_end,
         host=dict(system=platform.system(),architecture=platform.machine(),python=platform.python_version(),logical_cpus=os.cpu_count()),
         configured_seconds=args.duration,phase_seconds=args.phase_seconds,elapsed_seconds=duration,eager_tls=args.eager_tls,profile_ui=args.profile_ui,
+        active_workload_comparison='descriptive only: phases follow completion time, not fixed absolute cadence',
+        common_seed=seed,storage_after=storage_after,
         seeded_history=dict(traces=5751,spans=31000,logs=41000,days=35,newest_age_days=2) if args.history else None,
         fixture_preparation_seconds=preparation_seconds,initial_readiness_seconds=locals().get('initial_readiness_seconds'),
         completed_turns=len(workload.completed),verified_turns=len(verified),approval_requests=len(workload.requests),observed_approval_requests=len({row['cycle'] for row in observed_requests}),
@@ -580,6 +598,9 @@ def main():
     parser.add_argument('--profile-ui',action='store_true',help='diagnostic cProfile; do not compare its CPU timings to unprofiled runs')
     parser.add_argument('--eager-tls',action='store_true',help='diagnostic baseline: restore pre-fix per-request TLS handler initialization in the cockpit')
     parser.add_argument('--history',action='store_true',help='seed the existing synthetic 35-day / 31k-span / 41k-log fixture before timing the live monitor')
+    parser.add_argument('--app-root',type=Path,default=ROOT,help='frozen application checkout; harness remains this script revision')
+    parser.add_argument('--seed',type=Path,help='frozen common raw seed; copy/checkpoint occurs outside timing')
+    parser.add_argument('--minimum-free-mib',type=int,default=4096,help='disk reserve; full runs default to 4 GiB')
     args=parser.parse_args()
     if args.duration<args.phase_seconds*6 or args.phase_seconds<2:parser.error('Use at least one cycle and phases >=2 seconds')
     if sys.platform!='linux' or not shutil.which('tmux'):parser.error('This measurement harness requires Linux /proc and tmux')

@@ -9,7 +9,7 @@ Run: uv run python scripts/soak_workflows.py --duration 1200 --output /tmp/soak.
 Duration is real wall time, not a virtual-clock or multi-hour stability claim.
 """
 
-import argparse, asyncio, json, math, sqlite3, sys, tempfile, threading, time, urllib.request
+import argparse, asyncio, importlib.util, json, math, sqlite3, sys, tempfile, threading, time, urllib.request
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,87 +103,136 @@ def post(api, records):
         assert response.status == 200
 
 
+def native_durable_cycle(root,snapshot,tick):
+    """Use real eligibility/delivery and exact resolution, with fixture notifier."""
+    from observatory.attention_runner import AttentionRunner
+    state=WorkflowStore(root/'workflow.sqlite3');runner=AttentionRunner();runner.ledger.restore(state.load())
+    stamp=time.time_ns()
+    observed=SimpleNamespace(updated=time.time(),error='',read_errors={},receiver_id=snapshot.receiver_id,
+        receiver_time_ns=stamp,indexing_ready=True,activity=[],sessions=[],traces=[],local_status={},
+        native_lifecycle=[],native_lifecycle_warning='',native_lifecycle_prepared=True)
+    base=dict(id='attention-fixture',service='validation-attention',agent_id='ag1_'+'f'*32,
+        session_id='attention-fixture',trace_id='f'*32,state='Working',waiting_for='',task='SENSITIVE_SYNTHETIC_ATTENTION_TASK')
+    runner.update([base],observed,{},store=state);runner.persist(state)
+    pending=dict(schema=1,receiver_id=snapshot.receiver_id,sender_id='validation-attention',event_id=f'request-{tick}',
+        sequence=tick*2+1,kind='approval_requested',request_id=f'request-{tick}',request_kind='approval_requested',
+        source_clock='receiver',source_order='sender-sequence',time_unix_nano=time.time_ns(),source_id='fixture-source',
+        service=base['service'],agent_id=base['agent_id'],session_id=base['session_id'],trace_id=base['trace_id'],turn_id='',resolved=False)
+    observed.native_lifecycle=[pending];observed.receiver_time_ns=time.time_ns();observed.updated=time.time()
+    runner.update([base],observed,{},store=state);runner.persist(state)
+    incident=next(value for value in runner.ledger.incidents.values() if value.anchor=='request:'+pending['request_id'])
+    attempts=[]
+    def failed(*values):attempts.append('failed');return 'Desktop notification delivery failed'
+    def delivered(*values):attempts.append('delivered');return 'Desktop notification delivered'
+    runner.deliver(state,runner.delivery_candidates(),notify=failed)
+    runner.deliver(state,runner.delivery_candidates(),notify=delivered)
+    assert attempts==['failed'],'Automatic delivery retried without explicit intent'
+    runner.deliver(state,[incident],notify=delivered,retry=True)
+    assert attempts==['failed','delivered']
+    state.acknowledge(incident.namespace,incident.id,incident.scope_key,action='seen')
+    restarted=AttentionRunner();restarted.ledger.restore(WorkflowStore(root/'workflow.sqlite3').load())
+    restarted.update([base],observed,{},store=state);restarted.persist(state)
+    assert any(row[0].get('_attention_seen') for row in restarted.ledger.rows),'Seen request vanished on restart'
+    # Missing metadata or an unrelated working status is not native resolution.
+    observed.native_lifecycle=[]
+    restarted.update([base],observed,{},store=state);restarted.persist(state)
+    assert incident.id in restarted.ledger.incidents,'Working incorrectly resolved exact native request'
+    observed.native_lifecycle=[{**pending,'event_id':f'resolved-{tick}','sequence':tick*2+2,
+        'kind':'request_resolved','time_unix_nano':time.time_ns(),'resolved':True}]
+    restarted.update([base],observed,{},store=state);restarted.persist(state)
+    saved=next(row for row in state.load() if row['id']==incident.id)
+    assert saved['resolved_at'] is not None and saved['acknowledgement']=='seen'
+    assert saved['delivery_status']=='delivered'
+    assert 'SENSITIVE_SYNTHETIC_ATTENTION_TASK' not in json.dumps(state.load())
+    return dict(kind='AttentionRunner exact native lifecycle',notification_attempts=len(attempts),
+        acknowledgement_survived_restart=True,working_did_not_resolve=True,exact_resolution=True,no_real_notifications=True)
+
+
 def durable_cycle(root, snapshot, projection, scope, tick):
-    state = WorkflowStore(root / "workflow.sqlite3")
-    ledger = AttentionLedger()
-    ledger.restore(state.load())
-    # Headless UI intentionally disables durable controller writes. Exercise
-    # the real ledger/store separately with an explicit, non-empty fixture.
-    observed = SimpleNamespace(
-        updated=time.time(),
-        error="",
-        read_errors={},
-        receiver_id=snapshot.receiver_id,
-        activity=[],
-        sessions=[],
-        traces=[],
-        local_status={},
-    )
-    waiting = dict(
-        id="attention-fixture",
-        service="validation-attention",
-        agent_id="ag1_" + "f" * 32,
-        session_id="attention-fixture",
-        trace_id="f" * 32,
-        state="Waiting",
-        waiting_for="Approval",
-        request_id=f"request-{tick}",
-        task="SENSITIVE_SYNTHETIC_ATTENTION_TASK",
-    )
-    ledger.update([waiting], observed, {}, time.time())
-    result = state.observe(list(ledger.incidents.values()), resolved=ledger.resolved)
-    assert not result.unpersisted
-    incident = next(
-        value
-        for value in ledger.incidents.values()
-        if value.anchor == "request:" + waiting["request_id"]
-    )
-    record = incident.to_record()
-    assert state.claim(record["namespace"], record["id"], record["scope_key"])
-    assert not WorkflowStore(root / "workflow.sqlite3").claim(
-        record["namespace"], record["id"], record["scope_key"]
-    )
-    state.finish_delivery(
-        record["namespace"],
-        record["id"],
-        status="failed",
-        detail="Synthetic delivery only",
-    )
-    assert state.claim(
-        record["namespace"], record["id"], record["scope_key"], retry=True
-    )
-    state.finish_delivery(
-        record["namespace"],
-        record["id"],
-        status="delivered",
-        detail="Synthetic delivery only",
-    )
-    state.acknowledge(
-        record["namespace"], record["id"], record["scope_key"], action="seen"
-    )
-    restarted = AttentionLedger()
-    restarted.restore(WorkflowStore(root / "workflow.sqlite3").load())
-    restarted.update([waiting], observed, {}, time.time())
-    assert any(row[0].get("_attention_seen") for row in restarted.rows), (
-        "Seen request disappeared on restart"
-    )
-    restarted.update(
-        [{**waiting, "state": "Working", "waiting_for": None}],
-        observed,
-        {},
-        time.time(),
-    )
-    assert (record["namespace"], record["id"]) in restarted.resolved, (
-        "Fresh positive evidence did not resolve request"
-    )
-    state.observe(list(restarted.incidents.values()), resolved=restarted.resolved)
-    loaded = WorkflowStore(root / "workflow.sqlite3").load()
-    saved = next(value for value in loaded if value["id"] == record["id"])
-    assert saved["resolved_at"] is not None and saved["acknowledgement"] == "seen"
-    assert len(loaded) <= 10000
-    assert "SENSITIVE_SYNTHETIC_ATTENTION_TASK" not in json.dumps(loaded), (
-        "Workflow receipts leaked task content"
-    )
+    if importlib.util.find_spec("observatory.attention_runner") is not None:
+        native_durable_cycle(root,snapshot,tick)
+    else:
+        # Baseline capability is explicitly legacy; it does not validate native v1.
+        state = WorkflowStore(root / "workflow.sqlite3")
+        ledger = AttentionLedger()
+        ledger.restore(state.load())
+        # Headless UI intentionally disables durable controller writes. Exercise
+        # the real ledger/store separately with an explicit, non-empty fixture.
+        observed = SimpleNamespace(
+            updated=time.time(),
+            error="",
+            read_errors={},
+            receiver_id=snapshot.receiver_id,
+            activity=[],
+            sessions=[],
+            traces=[],
+            local_status={},
+        )
+        waiting = dict(
+            id="attention-fixture",
+            service="validation-attention",
+            agent_id="ag1_" + "f" * 32,
+            session_id="attention-fixture",
+            trace_id="f" * 32,
+            state="Waiting",
+            waiting_for="Approval",
+            request_id=f"request-{tick}",
+            task="SENSITIVE_SYNTHETIC_ATTENTION_TASK",
+        )
+        ledger.update([waiting], observed, {}, time.time())
+        result = state.observe(list(ledger.incidents.values()), resolved=ledger.resolved)
+        assert not result.unpersisted
+        incident = next(
+            value
+            for value in ledger.incidents.values()
+            if value.anchor == "request:" + waiting["request_id"]
+        )
+        record = incident.to_record()
+        assert state.claim(record["namespace"], record["id"], record["scope_key"])
+        assert not WorkflowStore(root / "workflow.sqlite3").claim(
+            record["namespace"], record["id"], record["scope_key"]
+        )
+        state.finish_delivery(
+            record["namespace"],
+            record["id"],
+            status="failed",
+            detail="Synthetic delivery only",
+        )
+        assert state.claim(
+            record["namespace"], record["id"], record["scope_key"], retry=True
+        )
+        state.finish_delivery(
+            record["namespace"],
+            record["id"],
+            status="delivered",
+            detail="Synthetic delivery only",
+        )
+        state.acknowledge(
+            record["namespace"], record["id"], record["scope_key"], action="seen"
+        )
+        restarted = AttentionLedger()
+        restarted.restore(WorkflowStore(root / "workflow.sqlite3").load())
+        restarted.update([waiting], observed, {}, time.time())
+        assert any(row[0].get("_attention_seen") for row in restarted.rows), (
+            "Seen request disappeared on restart"
+        )
+        restarted.update(
+            [{**waiting, "state": "Working", "waiting_for": None}],
+            observed,
+            {},
+            time.time(),
+        )
+        assert (record["namespace"], record["id"]) in restarted.resolved, (
+            "Fresh positive evidence did not resolve request"
+        )
+        state.observe(list(restarted.incidents.values()), resolved=restarted.resolved)
+        loaded = WorkflowStore(root / "workflow.sqlite3").load()
+        saved = next(value for value in loaded if value["id"] == record["id"])
+        assert saved["resolved_at"] is not None and saved["acknowledgement"] == "seen"
+        assert len(loaded) <= 10000
+        assert "SENSITIVE_SYNTHETIC_ATTENTION_TASK" not in json.dumps(loaded), (
+            "Workflow receipts leaked task content"
+        )
     store = TaskStore(root / "tasks.sqlite3")
     summaries = store.list()
     task = (
