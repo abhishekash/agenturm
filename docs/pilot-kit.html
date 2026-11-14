@@ -20,7 +20,7 @@ agenturm investigate command &quot;python migrate.py&quot; --failed --endpoint h
 agenturm investigate instruction &quot;public API stable&quot; --endpoint http://127.0.0.1:19418
 agenturm investigate path src/古い.py --endpoint http://127.0.0.1:19418
 </code></pre>
-<p>Use a returned <code>event_id</code> with <code>agenturm investigate source EVENT_ID</code> to inspect the exact bounded record. Query matching is not workspace proof: a recorded relative path in two sessions does not establish that they edited the same checkout. Source reads and search results are retained observations, with capture, redaction and pruning limits.</p>
+<p>Use the returned <code>source_command</code> (<code>agenturm investigate source EVENT_ID --reference TOKEN</code>) to inspect the exact bounded record. The reference pins the selected receiver, owner and execution; if any identity changes, rerun the search rather than broadening the source read. The token is encoded identity metadata, not encryption or authentication. Query matching is not workspace proof: a recorded relative path in two sessions does not establish that they edited the same checkout. Source reads and search results are retained observations, with capture, redaction and pruning limits.</p>
 <h2>Generated scenario and task cards</h2>
 <p>All names, producers, paths and commands here are synthetic. The database includes nine explicit Activity records and two generated OpenCode-shaped step anchors. It is not a live-runtime interoperability test.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>

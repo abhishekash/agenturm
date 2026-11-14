@@ -10,7 +10,7 @@ import hashlib
 import json
 import sqlite3
 
-from .investigation import prepare_terms, source_path, source_reference, validate_query
+from .investigation import prepare_terms, source_command, source_path, source_reference, validate_query
 
 VERSION = 1
 MARKER = 'investigation_terms_v1'
@@ -128,7 +128,7 @@ def read_page(db, kind, query, *, limit=50, cursor=None, receiver='',
             time_unix_nano=row['stamp'], result=event.get('result') or 'unknown',
             action=event.get('action'), term_complete=bool(row['term_complete']),
             effect='recorded operation; effect requires source review',
-            source_reference=reference, source_path=source_path(reference)))
+            source_reference=reference, source_path=source_path(reference), source_command=source_command(reference)))
     next_cursor = None
     if len(rows) > limit:
         last = rows[limit - 1]

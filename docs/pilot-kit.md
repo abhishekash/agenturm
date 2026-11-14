@@ -30,7 +30,7 @@ agenturm investigate instruction "public API stable" --endpoint http://127.0.0.1
 agenturm investigate path src/古い.py --endpoint http://127.0.0.1:19418
 ```
 
-Use a returned `event_id` with `agenturm investigate source EVENT_ID` to inspect the exact bounded record. Query matching is not workspace proof: a recorded relative path in two sessions does not establish that they edited the same checkout. Source reads and search results are retained observations, with capture, redaction and pruning limits.
+Use the returned `source_command` (`agenturm investigate source EVENT_ID --reference TOKEN`) to inspect the exact bounded record. The reference pins the selected receiver, owner and execution; if any identity changes, rerun the search rather than broadening the source read. The token is encoded identity metadata, not encryption or authentication. Query matching is not workspace proof: a recorded relative path in two sessions does not establish that they edited the same checkout. Source reads and search results are retained observations, with capture, redaction and pruning limits.
 
 ## Generated scenario and task cards
 

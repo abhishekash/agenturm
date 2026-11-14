@@ -8,7 +8,8 @@ from .operation_facts import safe_value
 
 
 def path_facts(event):
-    action = modifying_action(event)
+    action = ('rename' if event.get('domain') == 'file' and str(event.get('action') or '').casefold() == 'move'
+              else modifying_action(event))
     result = dict(action=action, paths=[], complete=True, reasons=[])
     if not action:
         return result
@@ -51,6 +52,10 @@ def path_facts(event):
         if not {'from', 'to'} <= {item['role'] for item in result['paths']}:
             result['complete'] = False
             result['reasons'].append('Both rename paths were not explicitly recorded')
+        if any(len({item['path'] for item in result['paths'] if item['role'] == role}) > 1
+               for role in ('from', 'to')):
+            result['complete'] = False
+            result['reasons'].append('Recorded rename fields conflict')
     if not result['paths']:
         result['complete'] = False
         result['reasons'].append('No usable recorded path')
