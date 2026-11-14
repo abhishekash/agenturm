@@ -100,10 +100,13 @@ class DerivedHTTPReadinessTests(unittest.TestCase):
         for index,path in enumerate(self.paths()):
             with self.subTest(path=path):
                 self.update(5);wait_ready(self.store);old_logs=self.store._log_count()
-                captured=threading.Event();release=threading.Event();original=self.store._require_index_ready
+                captured=threading.Event();release=threading.Event();original=self.store._require_index_ready;guards=[]
                 def require(db):
                     original(db)
-                    if not captured.is_set():
+                    guards.append(True)
+                    # Metrics/Sessions certify before cache lookup. Pin
+                    # the aggregate's hydration transaction, not that probe.
+                    if not captured.is_set()and(not path.startswith(('/api/metrics','/api/sessions'))or len(guards)>1):
                         captured.set()
                         if not release.wait(3):raise AssertionError('Snapshot release deadline')
                         raw=db.execute('SELECT attributes FROM spans WHERE trace_id=? AND span_id=?',(TRACE,'2'*16)).fetchone()[0]

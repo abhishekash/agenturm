@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Publish bounded prepared native source updates and their canonical summaries in one transaction. Preserve large-update background processing, rollback safety, capture policy and older-job checks.
+
+- Keep Activity, Metrics and Sessions HTTP pages readable while unrelated derived indexes catch up. Certify their own readiness, source snapshots and cache responses; preserve strict scoped reads and redaction. Validate retained-history reconstruction, receiver/cockpit restarts and clean shutdowns.
+
 - Record each completed functional-soak cycle with a fresh observation, including the final cycle. Preserve missing evidence and screen retained run reports without publishing raw health content.
 
 - Keep raw MCP HTTP inventory available while unrelated derived queues catch up. Certify initial history, receiver identity and raw snapshots, preserve healthy caching and keep agent-scoped reads strict.

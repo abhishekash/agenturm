@@ -45,6 +45,12 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     changed = current != receiver or body_receiver and body_receiver != receiver
                     identity=getattr(self,'_mcp_file_identity',None)
                     if identity is not None:changed=changed or store._mcp_file_identity()!=identity
+                    identity=getattr(self,'_activity_file_identity',None)
+                    if identity is not None:changed=changed or store._source_file_identity('Activity')!=identity
+                    identity=getattr(self,'_metrics_file_identity',None)
+                    if identity is not None:changed=changed or store._source_file_identity('Metrics')!=identity
+                    identity=getattr(self,'_sessions_file_identity',None)
+                    if identity is not None:changed=changed or store._source_file_identity('Sessions')!=identity
                 except (OSError, ValueError, sqlite3.Error):
                     changed = True
                 if changed:
@@ -99,6 +105,9 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
             self._cache_version = None
             self._get_receiver_id = None
             self._mcp_file_identity = None
+            self._activity_file_identity = None
+            self._metrics_file_identity = None
+            self._sessions_file_identity = None
             route = self._route()
             if route is None:
                 return
@@ -108,13 +117,19 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
             certified_mcp=(path=='/api/mcp'and callable(getattr(store,'certify_initial_mcp',None)))
             raw_mcp=(certified_mcp and
                 not {'agent_id','subtree','scope_revision'}.intersection(parse_qs(route.query,keep_blank_values=True)))
-            mcp_cache_ready=True
+            certified_activity=(path=='/api/activity'and callable(getattr(store,'certify_initial_activity',None)))
+            indexed_activity=(certified_activity and not
+                {'agent_id','subtree','scope_revision','trace_id','turn_id','review'}.intersection(parse_qs(route.query,keep_blank_values=True)))
+            certified_metrics=(path=='/api/metrics'and callable(getattr(store,'certify_initial_metrics',None)))
+            certified_sessions=(path=='/api/sessions'and callable(getattr(store,'certify_initial_sessions',None)))
+            independent_read=raw_mcp or indexed_activity or certified_metrics or certified_sessions
+            independent_cache_ready=True
             if path not in {'/','/api/health'} and path.startswith('/api/') and hasattr(store,'index_status'):
                 indexing=store.index_status()
-                mcp_cache_ready=indexing.get('ready')is True
-                if not raw_mcp and not indexing.get('ready') and callable(getattr(store,'catch_up_incoming',None)):
+                independent_cache_ready=indexing.get('ready')is True
+                if not independent_read and not indexing.get('ready') and callable(getattr(store,'catch_up_incoming',None)):
                     indexing=store.catch_up_incoming(indexing)
-                if not raw_mcp and not indexing.get('ready'):
+                if not independent_read and not indexing.get('ready'):
                     self._json(503,{'error':'History index is not ready','indexing':indexing})
                     return
             # The fast recovery probe deliberately avoids SQLite. Full health
@@ -128,7 +143,26 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                         self._json(503, {'error': 'Receiver identity is temporarily unavailable. Retry the request.'})
                         return
             if certified_mcp:self._mcp_file_identity=store.certify_initial_mcp(self._get_receiver_id,strict=not raw_mcp)
-            if cache.eligible(path)and(not raw_mcp or mcp_cache_ready):
+            def certificate(read,**options):
+                nonlocal independent_cache_ready
+                try:return read(self._get_receiver_id,**options)
+                except IndexNotReady as exc:
+                    # Preserve the existing single 75 ms worker-demand budget
+                    # when this endpoint's own incoming dependencies are dirty.
+                    # The failed certificate released its read lease already;
+                    # unrelated work never arms this wait, and stale data is
+                    # still rejected by a fresh certificate after the budget.
+                    catch_up=getattr(store,'catch_up_incoming',None)
+                    if (not independent_read or exc.indexing.get('error')or
+                            exc.indexing.get('stage')!='Indexing incoming source changes'or not callable(catch_up)):
+                        raise
+                    independent_cache_ready=False
+                    catch_up(exc.indexing)
+                    return read(self._get_receiver_id,**options)
+            if certified_activity:self._activity_file_identity=certificate(store.certify_initial_activity,strict=not indexed_activity)
+            if certified_metrics:self._metrics_file_identity=certificate(store.certify_initial_metrics)
+            if certified_sessions:self._sessions_file_identity=certificate(store.certify_initial_sessions)
+            if cache.eligible(path)and(not independent_read or independent_cache_ready):
                 self._cache_version, cached = cache.get(self.path)
                 if cached is not None:
                     self._json_bytes(200, cached)
@@ -189,6 +223,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
             elif path == "/api/activity":
                 query = parse_qs(route.query)
                 try:
+                    certificate=({'_initial_receiver':self._get_receiver_id,'_initial_file':self._activity_file_identity,
+                                  '_strict_read':not indexed_activity}if certified_activity else {})
                     page = store.activity_page(limit=int(query.get("limit", [100])[0]),
                         service=query.get("service", [None])[0], domain=query.get("domain", [None])[0],
                         query=query.get("q", [None])[0], session_id=query.get("session_id", [None])[0],
@@ -200,12 +236,13 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                         subtree=query.get("subtree", ["0"])[0]=="1",
                         scope_revision=query.get("scope_revision", [None])[0],
                         trace_id=query.get("trace_id", [None])[0], turn_id=query.get("turn_id", [None])[0],
-                        review=query.get("review", ["0"])[0]=="1")
+                        review=query.get("review", ["0"])[0]=="1",**certificate)
                     self._json(200, page)
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
             elif path == "/api/metrics":
-                self._json(200, store.metrics())
+                certificate=({'_initial_receiver':self._get_receiver_id,'_initial_file':self._metrics_file_identity}if certified_metrics else {})
+                self._json(200, store.metrics(**certificate))
             elif path == "/api/mcp":
                 query = parse_qs(route.query)
                 try:
@@ -295,7 +332,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 query = parse_qs(route.query)
                 try:
                     limit = max(1, min(500, int(query.get("limit", [100])[0])))
-                    self._json(200, {"sessions": store.sessions(limit=limit)})
+                    certificate=({'_initial_receiver':self._get_receiver_id,'_initial_file':self._sessions_file_identity}if certified_sessions else {})
+                    self._json(200, {"sessions": store.sessions(limit=limit,**certificate)})
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
             elif path == "/api/endpoints":

@@ -89,6 +89,35 @@ class IncomingHTTPTests(unittest.TestCase):
         base.wait_ready(self.store)
         self.assertEqual(self.get('/api/sessions')[1]['sessions'][0]['input_tokens'],999)
 
+    def test_certified_rollups_allow_existing_worker_budget_then_read_current_data(self):
+        # A normal accepted write publishes a local summary job. Hold
+        # the worker until the HTTP demand is waiting, then let it catch up.
+        # This is one HTTP request, not a client retry or a read-side repair.
+        paths=('/api/metrics','/api/sessions')
+        for value,path in enumerate(paths,21):
+            with self.subTest(path=path):
+                base.wait_ready(self.store);waiting=threading.Event();wait=self.store._derived_condition.wait
+                def observed_wait(timeout=None):
+                    if threading.current_thread()not in(self.store._derived_thread,self.store._migration_thread):waiting.set()
+                    return wait(timeout=timeout)
+                self.store._derived_lock.acquire();held=True
+                try:
+                    self.update(value)
+                    with patch.object(self.store._derived_condition,'wait',observed_wait),patch.object(self.store,'catch_up_incoming',wraps=self.store.catch_up_incoming)as demand:
+                        with ThreadPoolExecutor(max_workers=1)as pool:
+                            future=pool.submit(self.get,path)
+                            try:self.assertTrue(waiting.wait(3),'Certificate skipped the existing incoming demand')
+                            finally:self.store._derived_lock.release();held=False
+                            code,body=future.result(timeout=5)
+                        self.assertEqual(code,200,body);self.assertEqual(demand.call_count,1)
+                    base.wait_ready(self.store)
+                    if path=='/api/metrics':
+                        self.assertEqual(body,self.store.metrics());self.assertEqual(body['input_tokens'],value)
+                    else:
+                        self.assertEqual(body,{'sessions':self.store.sessions()});self.assertEqual(body['sessions'][0]['input_tokens'],value)
+                finally:
+                    if held:self.store._derived_lock.release()
+
     def test_initial_error_probe_and_missing_marker_do_not_arm_demand(self):
         cases=(dict(ready=False,stage='Preparing history'),dict(ready=True,error='fixture migration failure'))
         for state in cases:
