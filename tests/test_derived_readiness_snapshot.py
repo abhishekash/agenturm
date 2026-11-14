@@ -104,9 +104,9 @@ class DerivedHTTPReadinessTests(unittest.TestCase):
                 def require(db):
                     original(db)
                     guards.append(True)
-                    # Metrics additionally certifies before cache lookup. Pin
+                    # Metrics/Sessions certify before cache lookup. Pin
                     # the aggregate's hydration transaction, not that probe.
-                    if not captured.is_set()and(path!='/api/metrics'or len(guards)>1):
+                    if not captured.is_set()and(not path.startswith(('/api/metrics','/api/sessions'))or len(guards)>1):
                         captured.set()
                         if not release.wait(3):raise AssertionError('Snapshot release deadline')
                         raw=db.execute('SELECT attributes FROM spans WHERE trace_id=? AND span_id=?',(TRACE,'2'*16)).fetchone()[0]

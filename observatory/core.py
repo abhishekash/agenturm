@@ -2497,14 +2497,20 @@ class Store:
         return identity
 
     def _require_initial_metrics(self,db,receiver,file_identity):
-        self._require_initial_source(db,receiver,file_identity,label='Metrics')
+        self._require_initial_rollup(db,receiver,file_identity,label='Metrics')
+
+    def _require_initial_sessions(self,db,receiver,file_identity):
+        self._require_initial_rollup(db,receiver,file_identity,label='Sessions')
+
+    def _require_initial_rollup(self,db,receiver,file_identity,*,label):
+        self._require_initial_source(db,receiver,file_identity,label=label)
         # Totals mix run summaries, log usage and raw counts. Both derived
         # queues must be clean in the very snapshot used for aggregation.
         self._require_index_ready(db)
         markers=('activity_sources_v2','activity_operation_facts_v2','live_stats_v3')
         actual=dict(db.execute("SELECT key,value FROM schema_meta WHERE key IN (?,?,?)",markers))
         if any(actual.get(key)!='1'for key in markers):
-            raise IndexNotReady({**self.migration_status,'ready':False,'stage':'Preparing indexed Metrics'})
+            raise IndexNotReady({**self.migration_status,'ready':False,'stage':f'Preparing indexed {label}'})
 
     def certify_initial_metrics(self,receiver):
         identity=self._source_file_identity('Metrics')
@@ -2514,6 +2520,16 @@ class Store:
                 self._require_initial_metrics(db,receiver,identity)
         except (OSError,sqlite3.Error)as exc:
             raise IndexNotReady({**self.migration_status,'ready':False,'stage':'Metrics preparation proof is unavailable'})from exc
+        return identity
+
+    def certify_initial_sessions(self,receiver):
+        identity=self._source_file_identity('Sessions')
+        try:
+            with self._source_read('Sessions')as db:
+                db.execute('BEGIN')
+                self._require_initial_sessions(db,receiver,identity)
+        except (OSError,sqlite3.Error)as exc:
+            raise IndexNotReady({**self.migration_status,'ready':False,'stage':'Sessions preparation proof is unavailable'})from exc
         return identity
 
     def mcp_page(self, limit=100, service=None, session_id=None, query=None, cursor=None,
@@ -3296,9 +3312,17 @@ class Store:
                               "ORDER BY time_ns DESC,finding_id", (trace_id,)).fetchall()
         return [json.loads(row["finding_json"]) for row in rows]
 
-    def sessions(self, limit=100):
+    def sessions(self, limit=100,*,_initial_receiver=None,_initial_file=None):
         if not 1 <= int(limit) <= 500:
             raise ValueError("limit must be between 1 and 500")
+        if _initial_file is not None:
+            try:
+                with self._source_read('Sessions')as db:
+                    db.execute('BEGIN')
+                    self._require_initial_sessions(db,_initial_receiver,_initial_file)
+                    return self._sessions(limit,_db=db)
+            except (OSError,sqlite3.Error)as exc:
+                raise IndexNotReady({**self.migration_status,'ready':False,'stage':'Sessions preparation proof is unavailable'})from exc
         return self._derived_snapshot(lambda db:self._sessions(limit,_db=db))
 
     def _sessions(self, limit=100, *, _db):
