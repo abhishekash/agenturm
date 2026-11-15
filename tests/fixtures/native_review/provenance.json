@@ -1,17 +1,30 @@
 {
   "format": "agenturm-native-fixture-provenance-v1",
-  "verified_on": "2026-11-14",
+  "verified_on": "2026-11-15",
   "reader": {
     "legacy_verified_baseline": "1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8",
     "adapter_commit": "cc63b7d0209df1c71126f3447122a271f32c607b",
     "files": {
-      "observatory/opencode.py": "047c02424028f14621ee01e7efdd31d7c81aa91a0c409fa292967709ece3e925",
-      "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec"
+      "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
+      "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
+      "observatory/local_agents.py": "353ac34be641ecb653677a9024a85a4b2d04d3c072cf65b5c00c3e1ddb4310b1"
     },
     "core_membership_commits": [
       "d955cbbc5f87a04a1055ee0bf07ed52ef85e8fc9",
       "c4e423167eb487cf087330d4549d073528f9097e"
-    ]
+    ],
+    "file_hash_history": [
+      {
+        "commit": "cc63b7d0209df1c71126f3447122a271f32c607b",
+        "files": {
+          "observatory/opencode.py": "047c02424028f14621ee01e7efdd31d7c81aa91a0c409fa292967709ece3e925",
+          "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec"
+        },
+        "qualification": "Historical selected-format adapter hashes before transaction-publication opt-in; not discarded or relabelled as current."
+      }
+    ],
+    "verified_reader_commit": "4beb84aa93edf1922123686eb22894d1536b503b",
+    "verification_scope": "Same selected-format decoding and unchanged upstream schemas. OpenCode only adds the explicit Store native no-op opt-in; local_agents adds coherent storage diagnostics/delivery bookkeeping, not producer field decoding. These current hashes do not establish live-agent or universal compatibility."
   },
   "fixtures": [
     {
@@ -85,11 +98,19 @@
     {
       "path": "tests/test_opencode_turn_review.py",
       "locator": "OpenCodeTurnTests",
-      "sha256": "892bc2a828c96f12b6d4f25ada2b603eec50ccb3d79479724d01fae1039cc62b",
+      "sha256": "2bcce3e7b3f281d8ce9fbad4e3aea835b379f084322f578751b396ebe642763f",
       "kind": "synthetic-reader-contract-legacy",
       "observed_producer_version": null,
       "captured_from_live_agent": false,
-      "schema_target": null
+      "schema_target": null,
+      "hash_history": [
+        {
+          "commit": "cc63b7d0209df1c71126f3447122a271f32c607b",
+          "sha256": "892bc2a828c96f12b6d4f25ada2b603eec50ccb3d79479724d01fae1039cc62b",
+          "qualification": "Before explicit closing(sqlite3.connect(...)) contexts. Fixture values and assertions are unchanged."
+        }
+      ],
+      "current_hash_scope": "Whole builder/test-file hash at delivery b6f8eb6; only connection closure changed since the original synthetic builder. No producer transcript was captured."
     }
   ],
   "primary_sources": [
@@ -264,6 +285,15 @@
         "tests": 78,
         "seconds": 60.817,
         "condition": "All final owned source/test changes at cc63b7d; local compatibility test duration, not a controlled performance measurement."
+      },
+      {
+        "command": "python -W error::ResourceWarning -m unittest tests.test_native_reader_budgets tests.test_native_fixture_provenance tests.test_opencode_turn_review tests.test_native_noop_publication -q",
+        "tests": 37,
+        "seconds": 12.302,
+        "python": "3.12.3",
+        "reader_commit": "4beb84aa93edf1922123686eb22894d1536b503b",
+        "delivery_base": "b6f8eb6ef6ec6bf32180eefee93a175e72afc954",
+        "condition": "Delivery-only fixture keyword forwarding and provenance-hash refresh. No assertions, fixture bytes, upstream schema targets or runtime source changed. ResourceWarning=error; captured output additionally checked for ResourceWarning/unraisable/ignored exceptions. Local compatibility evidence, not a full CI rerun, hour or performance result."
       }
     ]
   },
@@ -272,5 +302,22 @@
     "Selected schema field proofs do not execute the full upstream decoder or migration.",
     "No captured live OpenCode/Codex journey; no live Claude/Pi evidence or external participant/adoption claim.",
     "Resource/whole-monitor measurements and final combined-tree CI belong to the separate integration gate."
+  ],
+  "verification_followups": [
+    {
+      "head": "b6f8eb6ef6ec6bf32180eefee93a175e72afc954",
+      "scope": "Failed remote Python 3.13 job; preserved, not relabelled by the local follow-up",
+      "tests": 1351,
+      "optional_skips": 14,
+      "outcome": "FAILED",
+      "failures": 2,
+      "errors": 2,
+      "causes": [
+        "Budget capture lambda did not accept the new internal skip_unchanged_native keyword; the following subtest then cascaded on existing fixture directory",
+        "Stale whole-builder hash after explicit SQLite connection closure and stale reader hash after transactional publication opt-in"
+      ],
+      "source_log_sha256": "63d0a5479b4ac806166f6535a0dbe154b2f42cb9b9ebf7b6bd1f3441b4ba5c3d",
+      "correction_scope": "Test protocol compatibility and audited provenance binding only; frozen runtime unchanged"
+    }
   ]
 }

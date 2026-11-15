@@ -20,15 +20,21 @@ Codex 0.167.1's [rollout wire payload](https://raw.githubusercontent.com/openai/
 
 ## Local validation
 
-Reader baseline: `1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8`. Final adapter/test commit: `cc63b7d` (including the conservative legacy-shape and current-inline equivalence followups). The root-owned membership proof commits are `d955cbb` and `c4e4231`; the manifest records owned source hashes independently of cherry-pick hashes.
+Reader baseline: `1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8`. Original adapter/test commit: `cc63b7d` (including the conservative legacy-shape and current-inline equivalence followups). The root-owned membership proof commits are `d955cbb` and `c4e4231`; the manifest records owned source hashes independently of cherry-pick hashes.
 
 - The final native/legacy/turn-proof/budget/provenance batch passed **78 tests in 60.817 seconds**. This is local compatibility validation, not a controlled performance measurement.
 - The current-format tests exercise actual Store ingestion, authenticated HTTP Review, exact-turn JSON, Markdown/HTML receipts and persisted task links. A same-Store split→inline→split roundtrip retains one tool span, stable source identity, native timing, output/metadata and exactly one Review check.
-- Offline provenance tests validate immutable source locators, fixture and reader hashes, format distinctions and explicitly unknown legacy versions. CI evidence is not asserted in this report; the integration commit must run its own checks.
+- Offline provenance tests validate immutable source locators, fixture and reader hashes, format distinctions and explicitly unknown legacy versions. No passing CI certification is asserted in this report; each integration commit must run its own checks.
 
 Boundary cases cover split-part ordering and deletion; equal-timestamp text changes; nonzero cache/reasoning and unsafe counts; open intervals; unknown prefixes; reader restart/database replacement; source replacement and capture revocation during a read; a concurrent WAL update; member/part caps; bounded rotating byte windows; and a changing live message while older messages are still being indexed. The metadata-only fixture preserves usage and boundary facts without importing prompt, assistant or command text. No test executes the synthetic check commands.
 
 The existing limits remain: 50 discovered sessions, 30 message envelopes per session/poll, 200 parts per selected assistant, 2 MiB per source payload, 16 MiB aggregate source payload per poll and 1,000 assistant membership IDs. Scalar cursor state and proof digests are retained; source bodies are not cached between polls. Oversize/partial evidence produces incomplete coverage rather than extrapolated totals.
+
+## Transaction-publication follow-up
+
+The original adapter commit and source hashes above remain historical provenance. The manifest now separately pins reader bytes from frozen runtime `4beb84aa93edf1922123686eb22894d1536b503b`. OpenCode adds only the explicit Store no-op transaction opt-in; `local_agents.py` is additionally pinned for its coherent storage diagnostics and delivery bookkeeping. Producer field decoding, upstream immutable source hashes and fixture bytes are unchanged.
+
+The legacy turn-builder file hash changed because its SQLite connections now close explicitly; its generated values and assertions are unchanged. Prior reader/builder hashes remain in the manifest history. The budget fixture accepts the new internal ingestion keyword while preserving its import, payload-bound and later-record assertions. These are compatibility/fixture corrections, not evidence of a live producer capture, a passed hour, resource acceptance or successful remote CI. The local strict-warning follow-up passed **37 tests in 12.302 seconds on Python 3.12.3**. The original failed remote `b6f8eb6` Python 3.13 job (1,351 tests, 14 optional skips, two failures and two errors) remains failed in the manifest history; this focused local pass is not a full CI rerun. `observed_producer_version` remains null and all fixture capture flags remain false.
 
 ## Remaining evidence
 
