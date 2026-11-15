@@ -18,6 +18,7 @@ from contextlib import ExitStack, closing
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -167,6 +168,65 @@ def active_index_state(indexing,proof,initial_complete,data_reads_complete):
     return 'failure'
 
 
+def storage_observation(local, *, elapsed, tracking, quiescent=False):
+    """Classify native storage work without treating an active write as loss.
+
+    The total buffered-batch count still gates source authority. This separate
+    validation protocol rejects retries, unknown states and work that fails to
+    finish or advance within five seconds. Never infer idle from a missing key.
+    """
+    result=dict(total_buffered_records=0,in_flight_records=0,retry_records=0,
+        retry_pending_sources=0,failures=[],sources=[])
+    for row in local.get('sessions',()):
+        diagnostics=row.get('diagnostics')or{}
+        # OpenCode has a separate snapshot/backlog/read-error contract, checked
+        # by the existing sampler. Native file readers must report this schema.
+        if row.get('runtime')=='OpenCode' and 'pending_storage_records'not in diagnostics:continue
+        state=diagnostics.get('storage_state');identity=row.get('source_id')
+        counts=[diagnostics.get(k)for k in ('pending_storage_records','storage_in_flight_records',
+            'storage_retry_records','storage_unknown_records')]
+        ages=[diagnostics.get(k)for k in ('storage_batch_age_seconds','storage_progress_age_seconds')]
+        retry=diagnostics.get('storage_retry_pending');attempt=diagnostics.get('storage_attempt_in_flight')
+        sequence=diagnostics.get('storage_progress_sequence');batch=diagnostics.get('storage_batch_id')
+        valid=(diagnostics.get('storage_diagnostics_version')==1 and
+            type(diagnostics.get('storage_diagnostics_version'))is int and
+            type(state)is str and state in {'idle','writing','retry','unknown'} and isinstance(identity,str)and bool(identity)and
+            all(type(value)is int and value>=0 for value in counts)and
+            all(type(value)in(int,float)and math.isfinite(value)and value>=0 for value in ages)and
+            type(retry)is bool and type(attempt)is bool and type(sequence)is int and sequence>=0 and
+            (batch is None and state=='idle'or isinstance(batch,str)and len(batch)<=128))
+        if not valid:
+            result['failures'].append('Missing or invalid native storage classification');continue
+        total,inflight,retrying,unknown=counts;batch_age,progress_age=ages
+        result['total_buffered_records']+=total;result['in_flight_records']+=inflight
+        result['retry_records']+=retrying;result['retry_pending_sources']+=int(retry)
+        coherent=(total==inflight+retrying+unknown and
+            (state!='idle'or(total==0 and not retry and not attempt))and
+            (state!='writing'or(bool(batch)and not retry and inflight==total and attempt))and
+            (state!='retry'or(bool(batch)and retry and retrying==total)))
+        if not coherent:result['failures'].append('Incoherent native storage classification')
+        if state=='unknown'or unknown:result['failures'].append('Unknown native storage state')
+        if retry or state=='retry':result['failures'].append('Native storage retry pending')
+        if state=='writing':
+            if batch_age>5 or progress_age>5:result['failures'].append('Native storage write exceeded five seconds')
+            previous=tracking.get(identity)
+            if previous and previous[:2]==(batch,sequence):
+                first_seen=previous[2]
+                if elapsed-first_seen>5:result['failures'].append('Native storage progress did not advance within five seconds')
+            else:first_seen=elapsed
+            tracking[identity]=(batch,sequence,first_seen)
+        else:tracking.pop(identity,None)
+        if quiescent and (state!='idle'or total or retry or attempt):
+            result['failures'].append('Final native storage batch did not drain')
+        fields=('storage_diagnostics_version','storage_state','pending_storage_records',
+            'storage_in_flight_records','storage_retry_records','storage_unknown_records',
+            'storage_retry_pending','storage_attempt_in_flight','storage_batch_id',
+            'storage_batch_age_seconds','storage_progress_age_seconds','storage_progress_sequence')
+        result['sources'].append(dict(source_id=identity,runtime=row.get('runtime'),
+            diagnostics={key:diagnostics[key]for key in fields}))
+    return result
+
+
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + '\n')
 
@@ -290,6 +350,7 @@ def child(mode, directory, port):
                 now = time.monotonic()
                 append(telemetry,{**published_heartbeat(app), 'interval':now-previous[0],
                     'focus':app.focused.id if app.focused else None,
+                    'focused_control_type':type(app.focused).__name__ if app.focused else None,
                     'terminal_size':[app.size.width,app.size.height]})
                 previous[0] = now
             app.set_interval(1, heartbeat)
@@ -443,7 +504,7 @@ def run(args):
     receiver=None;actor=None;streams=[];errors=[];samples=[];latencies={};verified=[];reconnects=[]
     readiness_observations=[];request_failures=[]
     expected_reviews=set();rendered_approvals=set();ui_pids=[];exit_statuses=[];approval_latencies=[]
-    checked_receivers=set()
+    checked_receivers=set();storage_tracking={};final_storage=None
     def spawn(mode):
         log=(base/(mode+'.log')).open('a');streams.append(log)
         return subprocess.Popen([*command,'_child',mode,str(base),str(port),'app-server'],env=env,cwd=base/'project',stdout=log,stderr=subprocess.STDOUT)
@@ -519,7 +580,7 @@ def run(args):
         if receiver.returncode!=0:errors.append(f'Receiver exited unsuccessfully: {receiver.returncode}')
     def request(api, path):
         return observed_request(api,path,latencies=latencies,failures=request_failures,phase_index=last_phase)
-    started=time.monotonic();last_phase=-1;mid_restart=False;receiver_restart=False
+    started=time.monotonic();last_phase=-1;mid_restart=False;receiver_restart=False;active_workload_seconds=None
     try:
         receiver=spawn('receiver');actor=spawn('actor')
         token_file=base/'state/agenturm'/f'receiver-{port}.token'
@@ -603,11 +664,13 @@ def run(args):
                         pending_cycle=None
                 for path in ('/api/sessions','/api/activity?limit=50','/api/metrics','/api/mcp?limit=20'):
                     request(api,path)
+                storage=storage_observation(local,elapsed=index_observed_elapsed,tracking=storage_tracking)
                 record=dict(elapsed=sample_now-started,index_observed_elapsed=index_observed_elapsed,
                     cycle=last_phase//6,phase=last_phase%6,backlog_bytes=local.get('backlog_bytes'),
                     opencode_backlog=local.get('opencode_diagnostics',{}).get('backlog_records'),
                     read_errors=local.get('read_errors'),schema_errors=local.get('schema_errors'),
                     pending_storage_records=sum((item.get('diagnostics') or {}).get('pending_storage_records',0) for item in local.get('sessions',())),
+                    storage_observation=storage,
                     hierarchy_write_errors=(local.get('hierarchy') or {}).get('write_errors'),
                     opencode_read_errors=local.get('opencode_read_errors'),opencode_schema_errors=(local.get('opencode_diagnostics') or {}).get('schema_errors'),
                     indexing_ready=(health.get('indexing') or {}).get('ready'),
@@ -641,7 +704,13 @@ def run(args):
                 next_phase=time.monotonic()+args.phase_seconds
                 reconnects.append(dict(kind='cockpit',at=elapsed))
             time.sleep(.15)
+        # Capture the actual active boundary before final recovery/shutdown;
+        # configured duration or total command time cannot prove an hour.
+        active_workload_seconds=time.monotonic()-started
         final_health=wait_ready(api,observations=readiness_observations,phase='final')
+        final_storage=storage_observation(final_health.get('local_agents',{}),
+            elapsed=time.monotonic()-started,tracking=storage_tracking,quiescent=True)
+        if final_storage['failures']:raise RuntimeError('Final native storage did not quiesce')
         final_index_proof=index_proof(base/'telemetry.db',registered_receiver,final_health.get('receiver_id'))
         if active_index_state(
                 final_health.get('indexing')or {},final_index_proof,
@@ -691,8 +760,10 @@ def run(args):
         if sum(role in row['processes'] for row in samples)<args.duration/args.phase_seconds*.5:errors.append(f'Insufficient {role} process samples')
     index_states=[active_index_state(row.get('indexing')or {},row.get('index_proof')or {},
         row.get('initial_poll_complete'),row.get('data_reads_complete'))for row in samples]
-    if any(any(row.get(key) for key in ('read_errors','schema_errors','pending_storage_records','hierarchy_write_errors','opencode_read_errors','opencode_schema_errors')) for row in samples) or 'failure'in index_states:
+    if any(any(row.get(key) for key in ('read_errors','schema_errors','hierarchy_write_errors','opencode_read_errors','opencode_schema_errors')) or
+            row.get('storage_observation',{}).get('failures') for row in samples) or 'failure'in index_states:
         errors.append('Source/storage/index readiness failures occurred')
+    if final_storage is None or final_storage['failures']:errors.append('Final native storage drain was not confirmed')
     storage_after=storage_snapshot(base/'telemetry.db')
     if any(count for name,count in storage_after.get('rows',{}).items() if 'dirty' in name):errors.append('Derived/index queues remain after shutdown')
     exits=[json.loads(line) for line in (base/'receiver-exits.jsonl').read_text().splitlines()] if (base/'receiver-exits.jsonl').exists() else []
@@ -727,7 +798,9 @@ def run(args):
                 last_minute_rss_median_mib=statistics.median(tail),
                 warm_to_tail_delta_mib=statistics.median(tail)-statistics.median(warm) if warm else None))
         resources[role]['rss_segments']=segments
-    result=dict(schema_version=1,source_start=revision_start,source_end=revision_end,
+    result=dict(schema_version=1,storage_protocol='classified-native-storage-v1',final_storage_observation=final_storage,
+        active_workload_seconds=active_workload_seconds,
+        source_start=revision_start,source_end=revision_end,
         host=dict(system=platform.system(),architecture=platform.machine(),python=platform.python_version(),logical_cpus=os.cpu_count()),
         configured_seconds=args.duration,phase_seconds=args.phase_seconds,elapsed_seconds=duration,eager_tls=args.eager_tls,profile_ui=args.profile_ui,
         active_workload_comparison='descriptive only: phases follow completion time, not fixed absolute cadence',

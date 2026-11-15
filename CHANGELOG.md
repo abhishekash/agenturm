@@ -4,6 +4,8 @@
 
 ## 0.2.4
 
+- Skip exact unchanged OpenCode storage rows inside their policy-fenced transaction while preserving SDK counts and repair work. Distinguish healthy in-flight native writes from retries, including policy-only failures; retain all pending-data authority fences. Validate keyboard modal transitions against fresh foreground focus and close test-fixture connections deterministically.
+
 - Reduce redundant safety scanning and operation parsing during history preparation, with frozen-behavior comparisons covering redaction, ownership, duplicate occurrences and source mutation. Keep uncertain and typed evidence on the full validation path.
 - Bound initial source indexing so newly discovered agents do not inherit an entire unrelated history batch. Close generated-workload database connections deterministically and measure the first useful native terminal frame separately from full readiness.
 

@@ -113,6 +113,22 @@ class FixtureSession:
         self.roles[role]=int(self.tmux('display-message','-p','-t',role,'#{pane_pid}').strip())
         return self.wait_ui(role)
     def beats(self,role):return [row for row in rows(self.base/('ui-events-'+role+'.jsonl')) if row.get('kind')=='heartbeat']
+    def wait_cockpit(self,role,*,after):
+        def ready():
+            beats=self.beats(role)
+            if not beats:return None
+            row=beats[-1]
+            return row if (row.get('pid')==self.roles[role]and row.get('at',0)>=after and row.get('screen')=='ObservatoryScreen'
+                and row.get('modal_stack')==1 and row.get('focus')=='agent-table')else None
+        return until(ready,'Cockpit keyboard readiness')
+    def wait_palette(self,role,*,after):
+        def ready():
+            beats=self.beats(role)
+            if not beats:return None
+            row=beats[-1]
+            return row if (row.get('pid')==self.roles[role]and row.get('at',0)>=after and row.get('screen')=='CommandPalette'
+                and row.get('focused_control_type')=='CommandInput')else None
+        return until(ready,'Command palette input readiness')
     def wait_ui(self,role):
         def ready():
             beats=self.beats(role)
@@ -240,10 +256,15 @@ def modal_cycles(session):
         if beat['review_scope'].get('receiver')!=session.health['receiver_id'] or beat['review_scope'].get('session_id')!=f'validation-modal-{selected}':
             raise RuntimeError('Review scope differs from keyboard-selected source')
         scopes.add(json.dumps(beat['review_scope'],sort_keys=True))
-        session.keys('cockpit','PageDown','Escape','u');session.wait_screen('cockpit','SELECTED TASK USAGE')
-        session.keys('cockpit','PageDown','Escape')
+        boundary=time.time()
+        session.keys('cockpit','PageDown','Escape');session.wait_cockpit('cockpit',after=boundary)
+        session.keys('cockpit','u');session.wait_screen('cockpit','SELECTED TASK USAGE')
+        boundary=time.time();session.keys('cockpit','PageDown','Escape')
+        session.wait_cockpit('cockpit',after=boundary)
         if session.args.investigate:
-            session.keys('cockpit','C-p');session.text('cockpit','Investigate');session.keys('cockpit','Enter')
+            boundary=time.time();session.keys('cockpit','C-p');session.wait_palette('cockpit',after=boundary)
+            session.text('cockpit','Investigate');session.wait_screen('cockpit','Investigate retained history')
+            session.keys('cockpit','Enter')
             session.wait_screen('cockpit','Investigate retained activity')
             session.text('cockpit','src/parent_0.py');session.keys('cockpit','Enter')
             session.wait_screen('cockpit','retained observations')
@@ -313,12 +334,15 @@ def main():
     if args.mode=='smoke':return smoke(args)
     if not shutil.which('tmux') or sys.platform!='linux':parser.error('Real tmux and Linux /proc required')
     session=FixtureSession(args)
+    interrupted=False
     try:
         session.start()
         (native_race if args.mode=='native-race' else modal_cycles)(session)
+    except KeyboardInterrupt:
+        interrupted=True;session.report['errors'].append('Validation interrupted before completion')
     except Exception as exc:session.report['errors'].append(type(exc).__name__+': '+str(exc))
     finally:session.close()
-    print(json.dumps(session.report,indent=2));return 0 if session.report['passed'] else 1
+    print(json.dumps(session.report,indent=2));return 130 if interrupted else 0 if session.report['passed'] else 1
 
 
 if __name__=='__main__':
