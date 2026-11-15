@@ -136,7 +136,7 @@ class FixtureSession:
             row=beats[-1]
             return row if (row.get('pid')==self.roles[role]and row.get('at',0)>=after
                 and row.get('screen')=='ObservatoryScreen'and row.get('modal_stack')==1
-                and row.get('focus')=='search-agents'and row.get('focused_control_type')=='Input')else None
+                and row.get('focus')=='search-agents'and row.get('focused_control_type')=='SearchInput')else None
         return until(ready,'Agent search input readiness')
     def wait_agent_selection(self,role,*,after,session_id,source_id):
         def ready():

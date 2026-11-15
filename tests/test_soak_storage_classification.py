@@ -78,16 +78,18 @@ class StorageClassificationTests(unittest.TestCase):
 
 class ModalInputReadinessTests(unittest.TestCase):
     def test_search_and_exact_selection_require_fresh_foreground_focus(self):
+        from observatory.terminal_ui import SearchInput
         with patch('scripts.validate_combined_monitor.until',side_effect=lambda predicate,*a,**k:predicate()):
             row=dict(pid=42,at=100,screen='ObservatoryScreen',modal_stack=1,
-                focus='search-agents',focused_control_type='Input',
+                focus='search-agents',focused_control_type=type(SearchInput()).__name__,
                 selected_session='validation-modal-2',selected_source='generated-source-2')
             def session(changes):
                 value=FixtureSession.__new__(FixtureSession);value.roles={'cockpit':42}
                 value.beats=lambda role:[{**row,**changes}];return value
             self.assertIsNotNone(session({}).wait_agent_search('cockpit',after=99))
             for changes in (dict(at=98),dict(pid=41),dict(screen='ReviewScreen'),
-                    dict(modal_stack=2),dict(focus='agent-table'),dict(focused_control_type=None)):
+                    dict(modal_stack=2),dict(focus='agent-table'),dict(focused_control_type=None),
+                    dict(focused_control_type='Input')):
                 self.assertIsNone(session(changes).wait_agent_search('cockpit',after=99))
             def selection(changes):
                 return session({'focus':'agent-table',**changes}).wait_agent_selection('cockpit',after=99,
