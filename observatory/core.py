@@ -2106,7 +2106,11 @@ class Store:
                     [(s["trace_id"], s["end_unix_nano"]) for s in spans])
                 self._update_endpoints(db, spans)
                 from .storage_activity import drain
-                drain(db,limit=10000)
+                # Initial native discovery must not inherit an unrelated
+                # retained-history rebuild while holding the source writer.
+                # Durable dirty rows remain for the migration worker; readers
+                # still certify readiness rather than serving partial history.
+                drain(db,limit=200 if self._async_derived_refresh and not self.migration_status.get('ready') else 10000)
                 self._ingest_agent_nodes_from_spans(spans,_db=db)
                 published=self._publish_native_summaries(db,spans)
             if not published:refresh.update(s["trace_id"] for s in spans)
@@ -2258,7 +2262,7 @@ class Store:
                     [(log["trace_id"], log["time_unix_nano"]) for log in records if log["trace_id"]])
                 self._update_endpoints(db, records)
                 from .storage_activity import drain
-                drain(db,limit=10000)
+                drain(db,limit=200 if self._async_derived_refresh and not self.migration_status.get('ready') else 10000)
                 published=self._publish_native_summaries(db,records)
             nodes = [_agent_node_from_attributes(log.get("attributes"), log.get("resource_attributes"),
                                                  log.get("service"), log.get("time_unix_nano"),

@@ -33,6 +33,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--history',action='store_true')
+    parser.add_argument('--first-frame-only',action='store_true',help='separate early-UI startup observation; never an idle resource budget')
     parser.add_argument('--seconds',type=float,default=300)
     parser.add_argument('--warmup',type=float,default=60)
     parser.add_argument('--app-root',type=Path,default=ROOT)
@@ -48,6 +49,8 @@ def main():
     if sys.platform!='linux' or not shutil.which('tmux'):parser.error('Linux /proc and tmux required')
     if args.output.exists():parser.error('Output directory must not exist')
     if args.minimum_free_mib<1 or args.expected_history_sessions<1:parser.error('Disk reserve/session count must be positive')
+    if args.first_frame_only and not args.seed:parser.error('First-frame observations require an explicit frozen generated --seed')
+    if args.first_frame_only and args.profile:parser.error('First-frame observation is not a profiling mode')
     if revision(args.app_root)['dirty'] and not args.allow_dirty:parser.error('Commit source before measuring; --allow-dirty is for non-publishable diagnostics')
     if args.seed:args.history=True
     with patch('urllib.request.getproxies',return_value={}):
@@ -92,7 +95,242 @@ def useful_agents_heartbeat(row,receiver_id):
         type(row.get('visible_agent_rows'))is int and row['visible_agent_rows']>=1)
 
 
+FIRST_FRAME_PRIVATE='PRIVATE_FIRST_FRAME_PAYLOAD'
+FIRST_FRAME_SESSIONS={'soak-parent','soak-child','soak-stale','soak-opencode'}
+
+
+def first_frame_kind(row,frame,*,pid,receiver,observed,private_markers=(FIRST_FRAME_PRIVATE,)):
+    """Require both already-published metadata and a real terminal capture.
+
+    This deliberately does not reuse coherent readiness for partial frames.
+    Missing history is unknown, never an empty/successful historical view.
+    """
+    def finite(value):return type(value)in(int,float)and math.isfinite(value)
+    if not isinstance(row,dict)or not isinstance(frame,str):return None
+    if 'History indexing'in frame and any(marker and marker in frame for marker in private_markers):
+        raise ValueError('Partial frame exposed synthetic source content')
+    states=row.get('states');sessions=row.get('native_sessions')
+    if not isinstance(states,list)or any(not isinstance(item,dict)for item in states)or not isinstance(sessions,list):return None
+    if (row.get('harness_version')!=2 or row.get('pid')!=pid or
+            row.get('receiver_id')!=receiver or row.get('display_receiver_id')!=receiver or
+            not receiver or row.get('screen')!='ObservatoryScreen' or
+            row.get('terminal_size')!=[120,36] or row.get('focus')!='agent-table' or
+            type(row.get('visible_agent_rows'))is not int or row['visible_agent_rows']<1 or
+            not finite(row.get('monotonic_at')) or not 0<=observed-row['monotonic_at']<=2.5 or
+            row.get('error') or row.get('warning') or row.get('published_sources_clipped') or
+            not FIRST_FRAME_SESSIONS.issubset(sessions) or
+            not FIRST_FRAME_SESSIONS.issubset({item.get('session')for item in states}) or
+            row.get('initial_poll_complete')is not True or 'Agents'not in frame):return None
+    if row.get('native_bootstrap')is True and row.get('display_native_bootstrap')is True:
+        if FIRST_FRAME_PRIVATE in frame:raise ValueError('Partial frame exposed synthetic source content')
+        times=[row.get(key)for key in ('at','bootstrap_updated','display_bootstrap_updated')]
+        if (any(not finite(row.get(key))or row[key]!=0 for key in ('updated','display_updated'))or row.get('indexing_ready')is not False or
+                any(not finite(value)or value<=0 for value in times) or
+                any(not 0<=times[0]-value<=6 for value in times[1:]) or
+                'History indexing'not in frame or 'Native observations'not in frame or
+                any('session '+name not in frame for name in ('soak-parent','soak-child'))):return None
+        return 'native_partial'
+    if (row.get('native_bootstrap')is False and row.get('display_native_bootstrap')is False and
+            useful_agents_heartbeat(row,receiver) and 'History indexing'not in frame):return 'coherent'
+    return None
+
+
+def observe_first_frames(observe,confirm,*,started,timeout=600,clock=time.monotonic,pause=time.sleep):
+    """Observe actual captures before querying full readiness, on one lifetime.
+
+    Callbacks perform the production tmux capture and authenticated health read;
+    tests replace only those IO boundaries, not this admission/state machine.
+    """
+    deadline=started+timeout;receiver=None;identity=None;partial=None;full=None
+    while clock()<deadline:
+        value=observe();now=clock()
+        current=value['identity']
+        if (not isinstance(current,tuple)or len(current)!=2 or
+                any(type(part)is not int or part<=0 for part in current)):raise ValueError('Invalid cockpit process identity')
+        if identity is None:identity=current
+        if current!=identity:raise ValueError('Cockpit process identity changed')
+        row=value.get('heartbeat')or {};candidate=row.get('receiver_id')
+        if candidate:
+            if not isinstance(candidate,str)or len(candidate)>512:raise ValueError('Invalid receiver identity')
+            if receiver is not None and receiver!=candidate:raise ValueError('Receiver identity changed')
+            receiver=candidate
+        kind=first_frame_kind(row,value.get('frame'),pid=identity[0],receiver=receiver,observed=now,
+            private_markers=value.get('private_markers',(FIRST_FRAME_PRIVATE,)))
+        if kind:
+            proof=dict(observed_seconds=now-started,heartbeat_seconds=row['monotonic_at']-started,
+                pid=identity[0],start_ticks=identity[1],receiver_id=receiver,visible_agent_rows=row['visible_agent_rows'])
+            if kind=='native_partial'and partial is None:
+                partial=proof;value['retain']('first-native-partial-screen.txt',proof)
+            if full is None:
+                health=confirm(max(.01,deadline-clock()))
+                if (health.get('receiver_id')!=receiver or health.get('ok')is not True or
+                        health.get('indexing',{}).get('ready')is not True or health.get('indexing',{}).get('error') or
+                        health.get('local_agents',{}).get('initial_poll_complete')is not True):
+                    raise ValueError('Independent full readiness failed')
+                full=clock()-started
+            if kind=='coherent':
+                # The health read can take time; obtain a new captured coherent
+                # frame rather than returning the pre-health observation.
+                if now-started<full:continue
+                value['retain']('first-coherent-screen.txt',proof)
+                return dict(receiver_id=receiver,first_native_partial=partial,
+                    partial_observation='observed'if partial else'unobserved',
+                    full_readiness_seconds=full,first_coherent=proof,
+                    timing='Monotonic terminal capture upper bounds; one-second heartbeat observation granularity.')
+        pause(.1)
+    raise TimeoutError('No admissible coherent terminal frame before the startup deadline')
+
+
+def measure_first_frame(args):
+    """Separate instrumented early-UI workload; never a cold/idle comparison."""
+    bind_application(args.app_root)
+    from observatory.terminal import Api
+    from scripts.soak_monitor import native,wait_ready,index_proof
+    from scripts.validation_support import raw_manifest
+    reserve=args.minimum_free_mib*1024**2;disk=disk_gate(args.output,reserve_bytes=reserve)
+    base=args.output.resolve();create_owned_directory(base);source=revision(args.app_root)
+    prepared=time.monotonic();workload=Workload(base)
+    # Static fresh parent/child work makes the metadata view useful while its
+    # source text sentinel must remain absent from every partial capture.
+    for name in ('parent','child'):
+        native(workload.paths[name],'event_msg',type='task_started',turn_id='first-frame-'+name)
+        native(workload.paths[name],'event_msg',type='item_completed',item=dict(type='UserMessage',id='first-frame-'+name,
+            content=[dict(type='text',text=FIRST_FRAME_PRIVATE)]))
+    seed=raw=None;schema=None;indexes=None
+    if args.seed:
+        from observatory.core import Store
+        seed=clone_seed(args.seed,base/'telemetry.db',reserve_bytes=reserve)
+        schema=fresh_schema_manifest(base,Store)
+        raw=prepare_raw_clone(base,'telemetry.db',schema_meta_sql=schema['schema_meta_sql'])
+    elif args.history:seed_history(base/'telemetry.db')
+    preparation_seconds=time.monotonic()-prepared
+    env=isolated_env(base,args.app_root);channel='agenturm-first-frame-'+str(os.getpid())
+    command=[sys.executable,str(ROOT/'scripts/soak_monitor.py'),'_child']
+    def tmux(*values):
+        return subprocess.run(['tmux','-L',channel,'-f','/dev/null',*values],env=env,cwd=base/'project',
+            text=True,capture_output=True,timeout=5,check=True).stdout
+    def events():
+        path=base/'ui-events.jsonl'
+        if not path.exists():return []
+        with path.open('rb')as stream:
+            stream.seek(0,2);size=stream.tell();stream.seek(max(0,size-128*1024));lines=stream.read().splitlines()
+        if size>128*1024:lines=lines[1:]
+        rows=[]
+        for line in lines:
+            try:rows.append(json.loads(line))
+            except (ValueError,UnicodeDecodeError):continue
+        return rows
+    errors=[];exits={};receiver=log=None;ui=None;ui_identity=None;proof=None;health={};readiness=[];captures={}
+    try:
+        with socket.socket()as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
+        log=(base/'receiver.log').open('w');started=time.monotonic()
+        receiver=subprocess.Popen([*command,'receiver',str(base),str(port)],env=env,cwd=base/'project',stdout=log,stderr=subprocess.STDOUT)
+        initial_receiver=process_sample(receiver.pid)
+        if initial_receiver is None:raise RuntimeError('Receiver process is unavailable')
+        token=base/'state/agenturm'/f'receiver-{port}.token'
+        while not token.exists():
+            if receiver.poll()is not None:raise RuntimeError('Receiver exited before token publication')
+            if time.monotonic()-started>=600:raise TimeoutError('Receiver token deadline exceeded')
+            time.sleep(.05)
+        info=(base/'telemetry.db').stat();initial_file=(info.st_dev,info.st_ino)
+        def same_file():
+            info=(base/'telemetry.db').stat()
+            if (info.st_dev,info.st_ino)!=initial_file:raise RuntimeError('Receiver file identity changed')
+        api=Api(f'http://127.0.0.1:{port}',token.read_text().strip())
+        # Intentionally before ANY full-readiness wait. Default measure() does
+        # not enter this branch and still launches its UI after full readiness.
+        tmux('new-session','-d','-s','monitor','-x','120','-y','36',*command,'ui',str(base),str(port))
+        tmux('set-option','-t','monitor','remain-on-exit','on')
+        ui=int(tmux('display-message','-p','-t','monitor','#{pane_pid}').strip())
+        point=process_sample(ui)
+        if point is None:raise RuntimeError('Cockpit process is unavailable')
+        ui_identity=(ui,point['start_ticks'])
+        def observe():
+            same_file()
+            if receiver.poll()is not None:raise RuntimeError('Receiver exited during frame observation')
+            current_receiver=process_sample(receiver.pid);current=process_sample(ui)
+            if (not current or not current_receiver or
+                    current_receiver['start_ticks']!=initial_receiver['start_ticks']):raise RuntimeError('An owned process changed')
+            pane,dead=tmux('display-message','-p','-t','monitor','#{pane_pid}:#{pane_dead}').strip().split(':')
+            if int(pane)!=ui or dead!='0':raise RuntimeError('Cockpit pane exited or changed')
+            if (ui,current['start_ticks'])!=ui_identity:raise RuntimeError('Cockpit process identity changed')
+            rows=[row for row in events()if row.get('kind')=='heartbeat'and row.get('pid')==ui]
+            frame=tmux('capture-pane','-p','-t','monitor')
+            def retain(name,metadata):
+                (base/name).write_text(frame);captures[name]=metadata
+            return dict(identity=(ui,current['start_ticks']),heartbeat=rows[-1]if rows else {},frame=frame,
+                retain=retain,private_markers=(FIRST_FRAME_PRIVATE,str(base/'project'),str(base/'fixture-home')))
+        def confirm(timeout):
+            same_file();value=wait_ready(api,timeout=timeout,observations=readiness);same_file();return value
+        proof=observe_first_frames(observe,confirm,started=started)
+        same_file()
+        health=api.get('/api/health')
+        same_file()
+        local=health.get('local_agents')or {}
+        if (health.get('receiver_id')!=proof['receiver_id']or health.get('ok')is not True or
+                health.get('indexing',{}).get('ready')is not True or health.get('indexing',{}).get('error') or
+                local.get('enabled')is not True or local.get('initial_poll_complete')is not True or
+                any(local.get(key)for key in ('read_errors','schema_errors','opencode_read_errors'))or
+                any((local.get('opencode_diagnostics')or {}).get(key)for key in ('read_errors','schema_errors','backlog_records'))or
+                not FIRST_FRAME_SESSIONS.issubset({row.get('session_id')for row in local.get('sessions',[])if isinstance(row,dict)})):
+            raise RuntimeError('Final readiness or namespace changed')
+        final_proof=index_proof(base/'telemetry.db',proof['receiver_id'],health['receiver_id'])
+        if not all(final_proof.get(key)is True for key in ('receiver_matches','health_matches','derived_marker_complete','file_unchanged')):
+            raise RuntimeError('Final source proof is incomplete')
+        if schema:indexes=verify_named_indexes(base/'telemetry.db',schema)
+        if args.history:
+            if len(api.get('/api/sessions?limit=500').get('sessions',[]))<args.expected_history_sessions:raise RuntimeError('Retained sessions missing')
+            if api.get('/api/mcp?limit=20').get('summary',{}).get('calls',0)<1:raise RuntimeError('Retained MCP missing')
+        for key in ('Escape','Escape','q'):tmux('send-keys','-t','monitor',key);time.sleep(.25)
+        deadline=time.monotonic()+10
+        while time.monotonic()<deadline:
+            dead,status,signum=tmux('display-message','-p','-t','monitor','#{pane_dead}:#{pane_dead_status}:#{pane_dead_signal}').strip().split(':')
+            if dead=='1'and(status or signum):
+                exits['cockpit']=dict(status=status,signal=signum)
+                if status!='0'or signum:raise RuntimeError('Cockpit exit failed')
+                break
+            time.sleep(.1)
+        else:raise TimeoutError('Cockpit shutdown deadline exceeded')
+    except Exception as exc:errors.append('First-frame observation failed: '+type(exc).__name__)
+    finally:
+        if receiver is not None:
+            if receiver.poll()is None:
+                receiver.send_signal(signal.SIGINT)
+                try:receiver.wait(timeout=20)
+                except subprocess.TimeoutExpired:receiver.kill();receiver.wait();errors.append('Forced receiver shutdown')
+            exits['receiver']=receiver.returncode
+            if receiver.returncode!=0:errors.append('Receiver exit failed')
+        subprocess.run(['tmux','-L',channel,'-f','/dev/null','kill-server'],env=env,capture_output=True)
+        if ui_identity:
+            deadline=time.monotonic()+5
+            while time.monotonic()<deadline:
+                point=process_sample(ui)
+                if point is None or (ui,point['start_ticks'])!=ui_identity:break
+                time.sleep(.05)
+            else:errors.append('Owned cockpit process survived cleanup')
+        if log is not None:log.close()
+    rows=events()
+    if not any(row.get('kind')=='exit'and row.get('pid')==ui and row.get('code')==0 and not row.get('warning')for row in rows):errors.append('No clean cockpit receipt drain')
+    path=base/'receiver-exits.jsonl'
+    drained=[json.loads(line)for line in path.read_text().splitlines()]if path.exists()else []
+    if len(drained)!=1 or drained[0].get('pending_after')!=0:errors.append('Receiver drain not confirmed')
+    if source!=revision(args.app_root):errors.append('Source changed')
+    if args.seed and raw_manifest(args.seed)!=raw['seed_after']:errors.append('Frozen seed changed')
+    storage=storage_snapshot(base/'telemetry.db')
+    if any(value for name,value in storage.get('rows',{}).items()if 'dirty'in name):errors.append('Queues remain after shutdown')
+    valid=bool(proof and not errors and not source['dirty']and not args.profile and not args.allow_dirty and not args.smoke)
+    result=dict(mode='first-frame-only',source=source,observation_valid=valid,publishable=False,
+        idle_budget=False,startup_workload='Instrumented early UI; not comparable with default late-UI cold/idle timing.',
+        retained_history_fixture=bool(seed and seed.get('counts')=={'spans':31000,'logs':41000,'trace_activity':5751}),
+        proof=proof,captured_observations=captures,fixture_preparation_seconds=preparation_seconds,seed=seed,raw_schema_preparation=raw,
+        production_indexes=indexes,disk_headroom=disk,readiness_observations=readiness,storage_after=storage,
+        exit_status=exits,errors=errors,no_provider_calls=True)
+    (base/'results.json').write_text(json.dumps(result,indent=2)+'\n')
+    print(json.dumps(result,indent=2));return 1 if errors else 0
+
+
 def measure(args):
+    if getattr(args,'first_frame_only',False):return measure_first_frame(args)
     bind_application(args.app_root)
     from observatory.terminal import Api
     reserve=args.minimum_free_mib*1024**2;disk=disk_gate(args.output,reserve_bytes=reserve)

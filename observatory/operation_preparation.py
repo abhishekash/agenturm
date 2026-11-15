@@ -33,6 +33,38 @@ def canonical_terminal(event):
         return None
 
 
+def unstructured_terminal(event):
+    """Prove the label only when no typed terminal evidence can be present.
+
+    Printed output cannot supply an exit/error flag. Mutable, compact and
+    explicit envelopes keep the full path and its existing mutation order.
+    """
+    if (type(event)is not dict or
+            any(key in event for key in ('attributes','operation_evidence','detail_role','exit_code','operation_reference'))or
+            any(type(event.get(key))not in(str,type(None))for key in ('result','status','reported_result'))):return None
+    from .operation_facts import _terminal_projection
+    return _terminal_projection(event,{})
+
+
+def terminal_without_input(event):
+    """Return terminal metadata only when an operation key is impossible.
+
+    Inspect immutable canonical envelopes only. A label recorded as subject
+    is never a qualified command/input, regardless of printed output.
+    """
+    terminal=unstructured_terminal(event)
+    if terminal is not None:return terminal
+    if not canonical_terminal_candidate(event):return None
+    from .operation_facts import VERSION,decode,_terminal_projection
+    detail=decode(event['detail'])
+    if not isinstance(detail,dict)or type(detail.get('version'))is not int or detail['version']!=VERSION:return None
+    inputs=detail.get('inputs');commands=detail.get('commands')
+    if (not isinstance(inputs,(list,tuple))or inputs or not isinstance(commands,(list,tuple))or
+            any(not isinstance(row,(list,tuple))or len(row)!=2 or row[0]!='subject'for row in commands)):
+        return None
+    return _terminal_projection(event,detail)
+
+
 class OperationPreparation:
     """Own no source objects; the caller keeps its bound activity list alive.
 

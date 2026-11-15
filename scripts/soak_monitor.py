@@ -330,7 +330,7 @@ class Workload:
         stamp=time.time()-3600;os.utime(self.paths['stale'], (stamp,stamp))
         (base/'project').mkdir()
         self.database=base/'opencode.db'
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             db.executescript('''
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE project(id TEXT PRIMARY KEY,name TEXT,worktree TEXT);
@@ -372,7 +372,7 @@ class Workload:
                 self.completed.append((name,cycle))
         now=time.time_ns()//1_000_000
         uid=f'open-user-{cycle}';mid=f'open-step-{cycle}'
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             if phase==0:
                 for key,data in [(uid,dict(role='user',content=[dict(type='text',text=f'Validate OpenCode cycle {cycle}')])),
                     (mid,dict(role='assistant',parentID=uid,modelID='model-synthetic',time=dict(created=now),tokens=dict(input=30,output=5)))]:
@@ -667,7 +667,7 @@ def run(args):
     persisted=set()
     workflow=base/'state/agenturm/workflow.sqlite3'
     if workflow.exists():
-        with sqlite3.connect(workflow) as db:
+        with closing(sqlite3.connect(workflow)) as db:
             persisted={row[0] for row in db.execute('SELECT id FROM workflow_acknowledgements_v1')}
     missing=accepted-persisted
     if missing:errors.append(f'{len(missing)} accepted reviews missing after shutdown')

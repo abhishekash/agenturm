@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.4
+
+- Reduce redundant safety scanning and operation parsing during history preparation, with frozen-behavior comparisons covering redaction, ownership, duplicate occurrences and source mutation. Keep uncertain and typed evidence on the full validation path.
+- Bound initial source indexing so newly discovered agents do not inherit an entire unrelated history batch. Close generated-workload database connections deterministically and measure the first useful native terminal frame separately from full readiness.
+
 - Publish bounded prepared native source updates and their canonical summaries in one transaction. Preserve large-update background processing, rollback safety, capture policy and older-job checks.
 
 - Keep Activity, Metrics and Sessions HTTP pages readable while unrelated derived indexes catch up. Certify their own readiness, source snapshots and cache responses; preserve strict scoped reads and redaction. Validate retained-history reconstruction, receiver/cockpit restarts and clean shutdowns.

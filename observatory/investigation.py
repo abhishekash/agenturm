@@ -42,7 +42,12 @@ def prepare_terms(event):
     paths = path_facts(event)
     for value in paths['paths']:
         candidates.append(('path', value['path'], value['role'], paths['complete']))
-    if event.get('domain') == 'shell':
+    # A subject-only command label can never prove command_complete. Arbitrary
+    # output JSON is deliberately not an input role in normalized_evidence.
+    qualified=(isinstance(event.get('operation_evidence'),dict)or
+        event.get('detail_role')=='operation_v1'or isinstance(event.get('attributes'),dict))
+    from .operation_preparation import terminal_without_input
+    if event.get('domain') == 'shell' and qualified and terminal_without_input(event)is None:
         facts = operation_facts(event)
         if facts.get('command_complete'):
             candidates.append(('command', facts['command'], 'command', True))

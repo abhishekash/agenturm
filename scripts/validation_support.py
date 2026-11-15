@@ -280,6 +280,9 @@ def published_heartbeat(app,*,at=None):
     sources=list(getattr(app,'source_map',{}).values())
     screen=getattr(app,'screen',None);scope=getattr(screen,'scope',None)
     return dict(kind='heartbeat',harness_version=2,at=time.time() if at is None else at,pid=os.getpid(),
+        monotonic_at=time.monotonic(),
+        native_bootstrap=getattr(snapshot,'native_bootstrap',False),bootstrap_updated=getattr(snapshot,'bootstrap_updated',0),
+        display_native_bootstrap=getattr(display,'native_bootstrap',False),display_bootstrap_updated=getattr(display,'bootstrap_updated',0),
         error=snapshot.error,receiver_id=snapshot.receiver_id,updated=snapshot.updated,
         display_receiver_id=getattr(display,'receiver_id',''),display_updated=getattr(display,'updated',0),
         read_errors=snapshot.read_errors,sessions_error=snapshot.sessions_error,indexing_ready=getattr(snapshot,'indexing_ready',None),

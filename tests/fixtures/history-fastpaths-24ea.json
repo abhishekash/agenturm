@@ -1,0 +1,2439 @@
+{
+  "baseline_commit": "24ea0a9bab53c4f31fc450d04ed0cc2b00655626",
+  "cases": {
+    "aliased-mutable-envelope": {
+      "after_sha256": "d835aa9a1a99b3a05dc010f18e59a0712bb874595917bda2a9becab853340e87",
+      "before_sha256": "e8f51595b7c5fc744e39ed16561cc3580c268140b4286c77170c2527e048f1ae",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "grep x generated",
+          "detail": "grep x generated\nExit code: 1\nconflicting recorded results",
+          "detail_clipped": true,
+          "error_fingerprint": null,
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": 1,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "unknown",
+          "operation_result_conflict": true,
+          "operation_version": 1,
+          "output_kind": null,
+          "output_origin": null,
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "conflicting recorded results",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation has conflicting results",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        },
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "grep x generated",
+          "detail": "grep x generated\nExit code: 1\nconflicting recorded results",
+          "detail_clipped": true,
+          "error_fingerprint": null,
+          "evidence": [
+            {
+              "id": "2222222222222222",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": 1,
+          "group_key": "4245cb0c6ecfc6c1",
+          "id": "4245cb0c6ecfc6c1",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "unknown",
+          "operation_result_conflict": true,
+          "operation_version": 1,
+          "output_kind": null,
+          "output_origin": null,
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "conflicting recorded results",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation has conflicting results",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "d835aa9a1a99b3a05dc010f18e59a0712bb874595917bda2a9becab853340e87",
+      "references": [],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "command",
+            "role": "command",
+            "text": "grep x generated"
+          }
+        ],
+        [
+          {
+            "complete": true,
+            "kind": "command",
+            "role": "command",
+            "text": "grep x generated"
+          }
+        ]
+      ]
+    },
+    "credential-log-owner": {
+      "after_sha256": "79adac22d34fe8f4239b25ec6c493c63dbb7ae8c92653f389e78cdbde9bf83da",
+      "before_sha256": "79adac22d34fe8f4239b25ec6c493c63dbb7ae8c92653f389e78cdbde9bf83da",
+      "findings": [
+        {
+          "agent_id": "ag1_b86f9b4e08425e51026491dd8280c9fa",
+          "detail": "Detected GitHub token pattern in captured text. Values are omitted; inspect the linked source.",
+          "evidence": [
+            {
+              "id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "type": "log"
+            }
+          ],
+          "group_key": "d0374c0f9becb78f",
+          "id": "d0374c0f9becb78f",
+          "kind": "credential_exposure",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-b",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 3,
+          "title": "Possible credential material captured",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": ""
+        },
+        {
+          "agent_id": "ag1_b86f9b4e08425e51026491dd8280c9fa",
+          "detail": "[REDACTED GitHub token]",
+          "evidence": [
+            {
+              "id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "type": "log"
+            }
+          ],
+          "group_key": "8b6742d42445edb9",
+          "id": "8b6742d42445edb9",
+          "kind": "error_log",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-b",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 3,
+          "title": "Error log recorded",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": ""
+        }
+      ],
+      "reference_after_sha256": "79adac22d34fe8f4239b25ec6c493c63dbb7ae8c92653f389e78cdbde9bf83da",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "credential-outcome": {
+      "after_sha256": "6f39cadda84c17040e5261805f039704ed4c5ec9d838b4389741014e0b159e67",
+      "before_sha256": "6f39cadda84c17040e5261805f039704ed4c5ec9d838b4389741014e0b159e67",
+      "findings": [
+        {
+          "agent_id": null,
+          "detail": "api_key=[REDACTED]",
+          "evidence": [
+            {
+              "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "type": "outcome"
+            }
+          ],
+          "group_key": "c36e26ec9b7469e3",
+          "id": "c36e26ec9b7469e3",
+          "kind": "failed_outcome",
+          "ownership_version": 1,
+          "producer": null,
+          "receiver_id": "generated-receiver",
+          "run_status": "UNKNOWN",
+          "service": null,
+          "session_id": null,
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 0,
+          "title": "Task outcome failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        },
+        {
+          "agent_id": null,
+          "detail": "Detected credential assignment in error. Values are omitted; inspect the linked source.",
+          "evidence": [
+            {
+              "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "type": "outcome"
+            }
+          ],
+          "group_key": "0044478e7ae10ccf",
+          "id": "0044478e7ae10ccf",
+          "kind": "credential_exposure",
+          "ownership_version": 1,
+          "producer": null,
+          "receiver_id": "generated-receiver",
+          "run_status": "UNKNOWN",
+          "service": null,
+          "session_id": null,
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 0,
+          "title": "Possible credential material captured",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "6f39cadda84c17040e5261805f039704ed4c5ec9d838b4389741014e0b159e67",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "credential-span-and-event-owner": {
+      "after_sha256": "847999f22c1d1511234e1cac2576a6bbb52f7e306b13272b7495641952908209",
+      "before_sha256": "847999f22c1d1511234e1cac2576a6bbb52f7e306b13272b7495641952908209",
+      "findings": [
+        {
+          "agent_id": "ag1_f34766cba3ed424e522e48be540653df",
+          "detail": "Detected bearer token, sensitive field in output.value, password. Values are omitted; inspect the linked source.",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "group_key": "4a70005b5ff4f73b",
+          "id": "4a70005b5ff4f73b",
+          "kind": "credential_exposure",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Possible credential material captured",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": ""
+        },
+        {
+          "agent_id": "ag1_b86f9b4e08425e51026491dd8280c9fa",
+          "detail": "Detected sensitive field in api_key. Values are omitted; inspect the linked source.",
+          "evidence": [
+            {
+              "id": "1111111111111111:event:0",
+              "type": "span"
+            }
+          ],
+          "group_key": "ddf1d6e3372b7b85",
+          "id": "ddf1d6e3372b7b85",
+          "kind": "credential_exposure",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": null,
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Possible credential material captured",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": ""
+        }
+      ],
+      "reference_after_sha256": "847999f22c1d1511234e1cac2576a6bbb52f7e306b13272b7495641952908209",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "duplicate-failure-after-success": {
+      "after_sha256": "74fd91c9a8d9ddd51cffc29e49ac33d51ff75d24ec9e9f9e6c9fdff5b48d4c7a",
+      "before_sha256": "74fd91c9a8d9ddd51cffc29e49ac33d51ff75d24ec9e9f9e6c9fdff5b48d4c7a",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 200,
+          "title": "Recorded operation failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "74fd91c9a8d9ddd51cffc29e49ac33d51ff75d24ec9e9f9e6c9fdff5b48d4c7a",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "error",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 200,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        [],
+        []
+      ]
+    },
+    "duplicate-success-occupies-failed-identity": {
+      "after_sha256": "6f0a63c1224a65c33fc1106c9478dde86d5435cf1bf3fb6f30c66ef3c3383c7a",
+      "before_sha256": "6f0a63c1224a65c33fc1106c9478dde86d5435cf1bf3fb6f30c66ef3c3383c7a",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 100,
+          "title": "Recorded operation failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "6f0a63c1224a65c33fc1106c9478dde86d5435cf1bf3fb6f30c66ef3c3383c7a",
+      "references": [],
+      "terms": [
+        [],
+        []
+      ]
+    },
+    "file-edit": {
+      "after_sha256": "c8e056aee8b76841b458c1987d0a3bbf85851014adcfb329a7291b047efe5ba7",
+      "before_sha256": "c8e056aee8b76841b458c1987d0a3bbf85851014adcfb329a7291b047efe5ba7",
+      "findings": [],
+      "reference_after_sha256": "c8e056aee8b76841b458c1987d0a3bbf85851014adcfb329a7291b047efe5ba7",
+      "references": [],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "path",
+            "role": "recorded",
+            "text": "src/generated.py"
+          }
+        ]
+      ]
+    },
+    "file-move": {
+      "after_sha256": "11a85d562fca15d60463b735bb616d63c6c6d68c8616eabe2747a94b85a83f24",
+      "before_sha256": "11a85d562fca15d60463b735bb616d63c6c6d68c8616eabe2747a94b85a83f24",
+      "findings": [],
+      "reference_after_sha256": "11a85d562fca15d60463b735bb616d63c6c6d68c8616eabe2747a94b85a83f24",
+      "references": [],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "path",
+            "role": "recorded",
+            "text": "src/generated.py"
+          },
+          {
+            "complete": true,
+            "kind": "path",
+            "role": "from",
+            "text": "src/old.py"
+          },
+          {
+            "complete": true,
+            "kind": "path",
+            "role": "to",
+            "text": "src/new.py"
+          }
+        ]
+      ]
+    },
+    "file-rename": {
+      "after_sha256": "0ed3e8ac89facb53d5ce79034d9a5088783581bfdfa6e5dec05ca7f94d24619a",
+      "before_sha256": "0ed3e8ac89facb53d5ce79034d9a5088783581bfdfa6e5dec05ca7f94d24619a",
+      "findings": [],
+      "reference_after_sha256": "0ed3e8ac89facb53d5ce79034d9a5088783581bfdfa6e5dec05ca7f94d24619a",
+      "references": [],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "path",
+            "role": "recorded",
+            "text": "src/generated.py"
+          },
+          {
+            "complete": true,
+            "kind": "path",
+            "role": "from",
+            "text": "src/old.py"
+          },
+          {
+            "complete": true,
+            "kind": "path",
+            "role": "to",
+            "text": "src/new.py"
+          }
+        ]
+      ]
+    },
+    "guard-attributes-{'command': 'grep x fixture', 'process.exit.code': 1}": {
+      "after_sha256": "5bee8cea11f6dc9671c6d3941f4f4984fbbe2ef6fb41663e5fb3abc256196a54",
+      "before_sha256": "5bee8cea11f6dc9671c6d3941f4f4984fbbe2ef6fb41663e5fb3abc256196a54",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "grep x fixture",
+          "detail": "grep x fixture\nExit code: 1\nGenerated output\nconflicting recorded results",
+          "detail_clipped": false,
+          "error_fingerprint": null,
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": 1,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "unknown",
+          "operation_result_conflict": true,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "conflicting recorded results",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation has conflicting results",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "5bee8cea11f6dc9671c6d3941f4f4984fbbe2ef6fb41663e5fb3abc256196a54",
+      "references": [],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "command",
+            "role": "command",
+            "text": "grep x fixture"
+          }
+        ]
+      ]
+    },
+    "guard-attributes-{}": {
+      "after_sha256": "c303a77ded9b76c24121e5202b0ff8f1e3d74e9457d051c24ca75300da1cb0d9",
+      "before_sha256": "c303a77ded9b76c24121e5202b0ff8f1e3d74e9457d051c24ca75300da1cb0d9",
+      "findings": [],
+      "reference_after_sha256": "c303a77ded9b76c24121e5202b0ff8f1e3d74e9457d051c24ca75300da1cb0d9",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "guard-detail_role-unknown": {
+      "after_sha256": "51e6d77ee0a739f2b441e905444303b3a3057772aac75f58b71c4d03585f0027",
+      "before_sha256": "51e6d77ee0a739f2b441e905444303b3a3057772aac75f58b71c4d03585f0027",
+      "findings": [],
+      "reference_after_sha256": "51e6d77ee0a739f2b441e905444303b3a3057772aac75f58b71c4d03585f0027",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "guard-exit_code-1": {
+      "after_sha256": "c5a58f7b515c31bda5f36f76de8b0a441ab7a46879dda48e68a1d8840133307a",
+      "before_sha256": "c5a58f7b515c31bda5f36f76de8b0a441ab7a46879dda48e68a1d8840133307a",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nExit code: 1\nGenerated output\nconflicting recorded results",
+          "detail_clipped": false,
+          "error_fingerprint": null,
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": 1,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "unknown",
+          "operation_result_conflict": true,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "conflicting recorded results",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation has conflicting results",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "c5a58f7b515c31bda5f36f76de8b0a441ab7a46879dda48e68a1d8840133307a",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "guard-exit_code-None": {
+      "after_sha256": "427343e1006e497de429b5b5e494528dc0e484e56d194a240d01fca015c3dc54",
+      "before_sha256": "427343e1006e497de429b5b5e494528dc0e484e56d194a240d01fca015c3dc54",
+      "findings": [],
+      "reference_after_sha256": "427343e1006e497de429b5b5e494528dc0e484e56d194a240d01fca015c3dc54",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "guard-operation_evidence-{}": {
+      "after_sha256": "f1537328a6f9ea72473c4dbe83cfd37a8890dce1211c2de9e51a7a0e122bd2a6",
+      "before_sha256": "f1537328a6f9ea72473c4dbe83cfd37a8890dce1211c2de9e51a7a0e122bd2a6",
+      "findings": [],
+      "reference_after_sha256": "f1537328a6f9ea72473c4dbe83cfd37a8890dce1211c2de9e51a7a0e122bd2a6",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "guard-operation_reference-True": {
+      "after_sha256": "0308498068aefa170ee5c0e8cba9c683c4d7aa4fed55c5292e58ea2b23549a2d",
+      "before_sha256": "0308498068aefa170ee5c0e8cba9c683c4d7aa4fed55c5292e58ea2b23549a2d",
+      "findings": [],
+      "reference_after_sha256": "0308498068aefa170ee5c0e8cba9c683c4d7aa4fed55c5292e58ea2b23549a2d",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "label--None": {
+      "after_sha256": "999655536041d2363e03cb57984c5e2329b2207c5d8c5f234408d98861d41b1e",
+      "before_sha256": "999655536041d2363e03cb57984c5e2329b2207c5d8c5f234408d98861d41b1e",
+      "findings": [],
+      "reference_after_sha256": "999655536041d2363e03cb57984c5e2329b2207c5d8c5f234408d98861d41b1e",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "label--failed": {
+      "after_sha256": "9cb9a7563e001ea1cebc173af9898f2cc8736a082bef43e63b17bb30059bb503",
+      "before_sha256": "9cb9a7563e001ea1cebc173af9898f2cc8736a082bef43e63b17bb30059bb503",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "9cb9a7563e001ea1cebc173af9898f2cc8736a082bef43e63b17bb30059bb503",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label--success": {
+      "after_sha256": "43330981bc622449bde016e6a45b64f09dc9aea79b68d3615e5cdd8338dd003a",
+      "before_sha256": "43330981bc622449bde016e6a45b64f09dc9aea79b68d3615e5cdd8338dd003a",
+      "findings": [],
+      "reference_after_sha256": "43330981bc622449bde016e6a45b64f09dc9aea79b68d3615e5cdd8338dd003a",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "label-blocked-None": {
+      "after_sha256": "a34c28e249028bd2e1dbe798a6a4b34a08e0fc32aa9baa36c41324da0e28df79",
+      "before_sha256": "a34c28e249028bd2e1dbe798a6a4b34a08e0fc32aa9baa36c41324da0e28df79",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "dae1d31477219240a3b6ad73c8e9a5d3430c9ac431a85b783e32af1568ada862",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "26094f88e528bf06",
+          "id": "26094f88e528bf06",
+          "kind": "blocked_activity",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Blocked agent activity",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "a34c28e249028bd2e1dbe798a6a4b34a08e0fc32aa9baa36c41324da0e28df79",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "dae1d31477219240a3b6ad73c8e9a5d3430c9ac431a85b783e32af1568ada862",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "blocked",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-blocked-failed": {
+      "after_sha256": "e9f8203492dd987c0c90f5424ea6fb93cd213019e4146a5bca4b6d49c80fe5b2",
+      "before_sha256": "e9f8203492dd987c0c90f5424ea6fb93cd213019e4146a5bca4b6d49c80fe5b2",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "26094f88e528bf06",
+          "id": "26094f88e528bf06",
+          "kind": "blocked_activity",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Blocked agent activity",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "e9f8203492dd987c0c90f5424ea6fb93cd213019e4146a5bca4b6d49c80fe5b2",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "blocked",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-blocked-success": {
+      "after_sha256": "8f8272d3eb5e16c73470c23ee5bc651637cf55029152d773c8424e5a2a1c3fbd",
+      "before_sha256": "8f8272d3eb5e16c73470c23ee5bc651637cf55029152d773c8424e5a2a1c3fbd",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "69c52461ef74ab94fc4a0cf1ed330d47f881f5abaf692afad25b4409b1f20619",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "26094f88e528bf06",
+          "id": "26094f88e528bf06",
+          "kind": "blocked_activity",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "passed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Blocked agent activity",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "8f8272d3eb5e16c73470c23ee5bc651637cf55029152d773c8424e5a2a1c3fbd",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "69c52461ef74ab94fc4a0cf1ed330d47f881f5abaf692afad25b4409b1f20619",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "unknown",
+          "operation_result_conflict": true,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "blocked",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-denied-None": {
+      "after_sha256": "d8965a490b230bc8ef3742a7e05f364da5139e6cbe0d1f626b3ad39c87783274",
+      "before_sha256": "d8965a490b230bc8ef3742a7e05f364da5139e6cbe0d1f626b3ad39c87783274",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "60ec0f7a14fdee777990719537f8fc9ebbc3c4954af9b84b09ebf875b91d12ac",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "26094f88e528bf06",
+          "id": "26094f88e528bf06",
+          "kind": "blocked_activity",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Blocked agent activity",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "d8965a490b230bc8ef3742a7e05f364da5139e6cbe0d1f626b3ad39c87783274",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "60ec0f7a14fdee777990719537f8fc9ebbc3c4954af9b84b09ebf875b91d12ac",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "denied",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-denied-failed": {
+      "after_sha256": "9da0f8f29d04c4224d4808925808b9d684b332d5c4e12c691a220757c23e2090",
+      "before_sha256": "9da0f8f29d04c4224d4808925808b9d684b332d5c4e12c691a220757c23e2090",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "26094f88e528bf06",
+          "id": "26094f88e528bf06",
+          "kind": "blocked_activity",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Blocked agent activity",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "9da0f8f29d04c4224d4808925808b9d684b332d5c4e12c691a220757c23e2090",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "denied",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-denied-success": {
+      "after_sha256": "b57f463d050359f61e5bccfa76e33ddad9b9f0b8eb91183084be58fafd6f639c",
+      "before_sha256": "b57f463d050359f61e5bccfa76e33ddad9b9f0b8eb91183084be58fafd6f639c",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "69c52461ef74ab94fc4a0cf1ed330d47f881f5abaf692afad25b4409b1f20619",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "26094f88e528bf06",
+          "id": "26094f88e528bf06",
+          "kind": "blocked_activity",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "passed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Blocked agent activity",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "b57f463d050359f61e5bccfa76e33ddad9b9f0b8eb91183084be58fafd6f639c",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "69c52461ef74ab94fc4a0cf1ed330d47f881f5abaf692afad25b4409b1f20619",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "unknown",
+          "operation_result_conflict": true,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "denied",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-error-None": {
+      "after_sha256": "b07b8fc444ca148ab87b33888602b3192e040b61c96b8e5b4811ac7ec4f71af0",
+      "before_sha256": "b07b8fc444ca148ab87b33888602b3192e040b61c96b8e5b4811ac7ec4f71af0",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "b07b8fc444ca148ab87b33888602b3192e040b61c96b8e5b4811ac7ec4f71af0",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "error",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-error-failed": {
+      "after_sha256": "8f21c274277d5018f90d519f536baa30b5d7943b94e7b42fd77c5712b9bf58dc",
+      "before_sha256": "8f21c274277d5018f90d519f536baa30b5d7943b94e7b42fd77c5712b9bf58dc",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "8f21c274277d5018f90d519f536baa30b5d7943b94e7b42fd77c5712b9bf58dc",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "error",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-error-success": {
+      "after_sha256": "8bd9820084d7f3b722fae80d34d40e10b6d0770ddaec044ce9b05f812213e51c",
+      "before_sha256": "8bd9820084d7f3b722fae80d34d40e10b6d0770ddaec044ce9b05f812213e51c",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "69c52461ef74ab94fc4a0cf1ed330d47f881f5abaf692afad25b4409b1f20619",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "passed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "8bd9820084d7f3b722fae80d34d40e10b6d0770ddaec044ce9b05f812213e51c",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "69c52461ef74ab94fc4a0cf1ed330d47f881f5abaf692afad25b4409b1f20619",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "unknown",
+          "operation_result_conflict": true,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "error",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-failed-None": {
+      "after_sha256": "29eea44c6bdf563d5d013b3e3b72a70f59038ec45b845cd9c92db6e7b012e7c2",
+      "before_sha256": "29eea44c6bdf563d5d013b3e3b72a70f59038ec45b845cd9c92db6e7b012e7c2",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "29eea44c6bdf563d5d013b3e3b72a70f59038ec45b845cd9c92db6e7b012e7c2",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "failed",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-failed-failed": {
+      "after_sha256": "0b8d003d8d5a306f6002ccf820843a71442cfcdf94a370df3e0dd003c8c5247b",
+      "before_sha256": "0b8d003d8d5a306f6002ccf820843a71442cfcdf94a370df3e0dd003c8c5247b",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "0b8d003d8d5a306f6002ccf820843a71442cfcdf94a370df3e0dd003c8c5247b",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "failed",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-failed-success": {
+      "after_sha256": "bce127f937b9d83c5b65805741681b6c3b37e176045d68fe0aef929c3f9a5c6c",
+      "before_sha256": "bce127f937b9d83c5b65805741681b6c3b37e176045d68fe0aef929c3f9a5c6c",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "69c52461ef74ab94fc4a0cf1ed330d47f881f5abaf692afad25b4409b1f20619",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "passed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "bce127f937b9d83c5b65805741681b6c3b37e176045d68fe0aef929c3f9a5c6c",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "69c52461ef74ab94fc4a0cf1ed330d47f881f5abaf692afad25b4409b1f20619",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "unknown",
+          "operation_result_conflict": true,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "failed",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-informational-None": {
+      "after_sha256": "4d012f4dc803d6d5db2fce6e74b76739564db88730435fb84fca37e7de143e18",
+      "before_sha256": "4d012f4dc803d6d5db2fce6e74b76739564db88730435fb84fca37e7de143e18",
+      "findings": [],
+      "reference_after_sha256": "4d012f4dc803d6d5db2fce6e74b76739564db88730435fb84fca37e7de143e18",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "label-informational-failed": {
+      "after_sha256": "716ac62d83f1d5d371062efe5df7614a975f99db17af857768f5ec10b9175f83",
+      "before_sha256": "716ac62d83f1d5d371062efe5df7614a975f99db17af857768f5ec10b9175f83",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "716ac62d83f1d5d371062efe5df7614a975f99db17af857768f5ec10b9175f83",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "informational",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-informational-success": {
+      "after_sha256": "08de9001d6b3f64a32737f94450e48d23ca0a1c16866051a703c4ee38bf15942",
+      "before_sha256": "08de9001d6b3f64a32737f94450e48d23ca0a1c16866051a703c4ee38bf15942",
+      "findings": [],
+      "reference_after_sha256": "08de9001d6b3f64a32737f94450e48d23ca0a1c16866051a703c4ee38bf15942",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "label-success-None": {
+      "after_sha256": "a20d4c66bf44e9b58d6caf69129ea9ec8b1920c39d5807fa1aa439a16db32e9d",
+      "before_sha256": "a20d4c66bf44e9b58d6caf69129ea9ec8b1920c39d5807fa1aa439a16db32e9d",
+      "findings": [],
+      "reference_after_sha256": "a20d4c66bf44e9b58d6caf69129ea9ec8b1920c39d5807fa1aa439a16db32e9d",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "label-success-failed": {
+      "after_sha256": "93138754a65f5eb849b8548cf6288be1d5a2a059d9402b6b407a945124482901",
+      "before_sha256": "93138754a65f5eb849b8548cf6288be1d5a2a059d9402b6b407a945124482901",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "93138754a65f5eb849b8548cf6288be1d5a2a059d9402b6b407a945124482901",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "success",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-success-success": {
+      "after_sha256": "37dcd58f9959ec5d4820427bdeb93872b96ab66f395bc683fb6407e0b985ef58",
+      "before_sha256": "37dcd58f9959ec5d4820427bdeb93872b96ab66f395bc683fb6407e0b985ef58",
+      "findings": [],
+      "reference_after_sha256": "37dcd58f9959ec5d4820427bdeb93872b96ab66f395bc683fb6407e0b985ef58",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "label-unknown-None": {
+      "after_sha256": "a5e81ccac980c8e5b29e806e5e1dc97b1762be8a4cb36dca95ed4cb581230cf0",
+      "before_sha256": "a5e81ccac980c8e5b29e806e5e1dc97b1762be8a4cb36dca95ed4cb581230cf0",
+      "findings": [],
+      "reference_after_sha256": "a5e81ccac980c8e5b29e806e5e1dc97b1762be8a4cb36dca95ed4cb581230cf0",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "label-unknown-failed": {
+      "after_sha256": "9463614e0f6ded65b89fea5b366ac57da45bff4bfbf920790ac04a0180f87048",
+      "before_sha256": "9463614e0f6ded65b89fea5b366ac57da45bff4bfbf920790ac04a0180f87048",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "pytest generated -q",
+          "detail": "pytest generated -q\nGenerated output\nproducer result label",
+          "detail_clipped": false,
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": null,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": "output",
+          "output_origin": "detail",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "producer result label",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "high",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation failed",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "9463614e0f6ded65b89fea5b366ac57da45bff4bfbf920790ac04a0180f87048",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "74d49142acc852581857518819edaf699a49fe40f7ab7f5b8406f72e118e371e",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "unknown",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        []
+      ]
+    },
+    "label-unknown-success": {
+      "after_sha256": "0993d805704b446171935a7609c3ad48ae1dc2bfe774e61ccf353b82ff27d4cc",
+      "before_sha256": "0993d805704b446171935a7609c3ad48ae1dc2bfe774e61ccf353b82ff27d4cc",
+      "findings": [],
+      "reference_after_sha256": "0993d805704b446171935a7609c3ad48ae1dc2bfe774e61ccf353b82ff27d4cc",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "local-control-not-instruction": {
+      "after_sha256": "ed0ec04b307fb8ae4f4973cba3c6bd01a6cfd171225298e5735019fb303c4b0b",
+      "before_sha256": "ed0ec04b307fb8ae4f4973cba3c6bd01a6cfd171225298e5735019fb303c4b0b",
+      "findings": [],
+      "reference_after_sha256": "ed0ec04b307fb8ae4f4973cba3c6bd01a6cfd171225298e5735019fb303c4b0b",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "printed-json-not-input": {
+      "after_sha256": "adaafdf0b03b556d68f3b9efbd79466f10fc9703f4f0e60c5d1545e08a387f72",
+      "before_sha256": "adaafdf0b03b556d68f3b9efbd79466f10fc9703f4f0e60c5d1545e08a387f72",
+      "findings": [],
+      "reference_after_sha256": "adaafdf0b03b556d68f3b9efbd79466f10fc9703f4f0e60c5d1545e08a387f72",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "raw-log-error": {
+      "after_sha256": "8e01850f612a10ab06174d86063502565649ef60fcae726d92e8c1f0aa691e86",
+      "before_sha256": "8e01850f612a10ab06174d86063502565649ef60fcae726d92e8c1f0aa691e86",
+      "findings": [
+        {
+          "agent_id": "ag1_b86f9b4e08425e51026491dd8280c9fa",
+          "detail": "Generated error log",
+          "evidence": [
+            {
+              "id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "type": "log"
+            }
+          ],
+          "group_key": "8b6742d42445edb9",
+          "id": "8b6742d42445edb9",
+          "kind": "error_log",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-b",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 3,
+          "title": "Error log recorded",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": ""
+        }
+      ],
+      "reference_after_sha256": "8e01850f612a10ab06174d86063502565649ef60fcae726d92e8c1f0aa691e86",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "raw-span-error": {
+      "after_sha256": "a97101379d8457a6b988ff43aab45c949927cef8828ec868007f217508672faa",
+      "before_sha256": "a97101379d8457a6b988ff43aab45c949927cef8828ec868007f217508672faa",
+      "findings": [],
+      "reference_after_sha256": "a97101379d8457a6b988ff43aab45c949927cef8828ec868007f217508672faa",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "stopped-span": {
+      "after_sha256": "5fc6bfa9a6690fe3c64613eefc965cc05c866cb16b7df1c1230336b47a262824",
+      "before_sha256": "5fc6bfa9a6690fe3c64613eefc965cc05c866cb16b7df1c1230336b47a262824",
+      "findings": [
+        {
+          "agent_id": "ag1_f34766cba3ed424e522e48be540653df",
+          "detail": "Recorded stop reason: interrupted",
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "group_key": "d07f92ab2aaf1cb7",
+          "id": "d07f92ab2aaf1cb7",
+          "kind": "incomplete_run",
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Run stopped before completion",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": ""
+        }
+      ],
+      "reference_after_sha256": "5fc6bfa9a6690fe3c64613eefc965cc05c866cb16b7df1c1230336b47a262824",
+      "references": [],
+      "terms": [
+        []
+      ]
+    },
+    "typed-failed-False": {
+      "after_sha256": "10acf1e853c11dd9e63849a28fae48c4929c7e0267d1a2c5de673f73ad3c327a",
+      "before_sha256": "10acf1e853c11dd9e63849a28fae48c4929c7e0267d1a2c5de673f73ad3c327a",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "grep x generated",
+          "detail": "grep x generated\nExit code: 1\nrecorded exit code",
+          "detail_clipped": false,
+          "error_fingerprint": null,
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": 1,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": true,
+          "operation_fingerprint": "ca58f75c7ba3fa42106ad12f327439870e16e89867059162948b463b7ba5e88d",
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": null,
+          "output_origin": null,
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "recorded exit code",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "info",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Non-zero search/comparison result",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "10acf1e853c11dd9e63849a28fae48c4929c7e0267d1a2c5de673f73ad3c327a",
+      "references": [],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "command",
+            "role": "command",
+            "text": "grep x generated"
+          }
+        ]
+      ]
+    },
+    "typed-failed-True": {
+      "after_sha256": "0a0db0666b61759a8adef2ab582efa24a2f3c8edf83f9f8d51a3c9a95c8ca7af",
+      "before_sha256": "0a0db0666b61759a8adef2ab582efa24a2f3c8edf83f9f8d51a3c9a95c8ca7af",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "grep x generated",
+          "detail": "grep x generated\nExit code: 1\nrecorded exit code",
+          "detail_clipped": true,
+          "error_fingerprint": null,
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": 1,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": true,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": null,
+          "output_origin": null,
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "recorded exit code",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "info",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Non-zero search/comparison result",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "0a0db0666b61759a8adef2ab582efa24a2f3c8edf83f9f8d51a3c9a95c8ca7af",
+      "references": [],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "command",
+            "role": "command",
+            "text": "grep x generated"
+          }
+        ]
+      ]
+    },
+    "typed-success-False": {
+      "after_sha256": "5f27a1dfad6acc7fe34d29ce31589307c924918d3491c6554c5e5d0726e04c51",
+      "before_sha256": "5f27a1dfad6acc7fe34d29ce31589307c924918d3491c6554c5e5d0726e04c51",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "grep x generated",
+          "detail": "grep x generated\nExit code: 1\nconflicting recorded results",
+          "detail_clipped": false,
+          "error_fingerprint": null,
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": 1,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": "ca58f75c7ba3fa42106ad12f327439870e16e89867059162948b463b7ba5e88d",
+          "operation_reference": true,
+          "operation_result": "unknown",
+          "operation_result_conflict": true,
+          "operation_version": 1,
+          "output_kind": null,
+          "output_origin": null,
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "conflicting recorded results",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation has conflicting results",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "5f27a1dfad6acc7fe34d29ce31589307c924918d3491c6554c5e5d0726e04c51",
+      "references": [],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "command",
+            "role": "command",
+            "text": "grep x generated"
+          }
+        ]
+      ]
+    },
+    "typed-success-True": {
+      "after_sha256": "70dedaf13f8c4b844a3a453d2acce08b18db8aa4d65fa7359df1b41bcbdf34e7",
+      "before_sha256": "70dedaf13f8c4b844a3a453d2acce08b18db8aa4d65fa7359df1b41bcbdf34e7",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "grep x generated",
+          "detail": "grep x generated\nExit code: 1\nconflicting recorded results",
+          "detail_clipped": true,
+          "error_fingerprint": null,
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": 1,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "unknown",
+          "operation_result_conflict": true,
+          "operation_version": 1,
+          "output_kind": null,
+          "output_origin": null,
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "conflicting recorded results",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "medium",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Recorded operation has conflicting results",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "70dedaf13f8c4b844a3a453d2acce08b18db8aa4d65fa7359df1b41bcbdf34e7",
+      "references": [],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "command",
+            "role": "command",
+            "text": "grep x generated"
+          }
+        ]
+      ]
+    },
+    "typed-unknown-False": {
+      "after_sha256": "4603506b378f4f6fbc5622c7e34819c7d99d93f164b28c63f68eebdf8032ce08",
+      "before_sha256": "4603506b378f4f6fbc5622c7e34819c7d99d93f164b28c63f68eebdf8032ce08",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "grep x generated",
+          "detail": "grep x generated\nExit code: 1\nrecorded exit code",
+          "detail_clipped": false,
+          "error_fingerprint": null,
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": 1,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": true,
+          "operation_fingerprint": "ca58f75c7ba3fa42106ad12f327439870e16e89867059162948b463b7ba5e88d",
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": null,
+          "output_origin": null,
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "recorded exit code",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "info",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Non-zero search/comparison result",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "4603506b378f4f6fbc5622c7e34819c7d99d93f164b28c63f68eebdf8032ce08",
+      "references": [],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "command",
+            "role": "command",
+            "text": "grep x generated"
+          }
+        ]
+      ]
+    },
+    "typed-unknown-True": {
+      "after_sha256": "dbce8ce2bf3c651127291fc0dfe0e33dfcb69337a12637b1dd83d0086b50bc28",
+      "before_sha256": "dbce8ce2bf3c651127291fc0dfe0e33dfcb69337a12637b1dd83d0086b50bc28",
+      "findings": [
+        {
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "command": "grep x generated",
+          "detail": "grep x generated\nExit code: 1\nrecorded exit code",
+          "detail_clipped": true,
+          "error_fingerprint": null,
+          "evidence": [
+            {
+              "id": "1111111111111111",
+              "span_id": "1111111111111111",
+              "type": "span"
+            }
+          ],
+          "exit_code": 1,
+          "group_key": "c1d0ce67b14e48d4",
+          "id": "c1d0ce67b14e48d4",
+          "kind": "span_error",
+          "operation_expected_nonzero": true,
+          "operation_fingerprint": null,
+          "operation_reference": true,
+          "operation_result": "failed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "output_kind": null,
+          "output_origin": null,
+          "ownership_version": 1,
+          "producer": "generated",
+          "receiver_id": "generated-receiver",
+          "result_basis": "recorded exit code",
+          "run_status": "UNKNOWN",
+          "service": "generated",
+          "session_id": "session-a",
+          "severity": "info",
+          "task": "",
+          "time_unix_nano": 2,
+          "title": "Non-zero search/comparison result",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "reference_after_sha256": "dbce8ce2bf3c651127291fc0dfe0e33dfcb69337a12637b1dd83d0086b50bc28",
+      "references": [],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "command",
+            "role": "command",
+            "text": "grep x generated"
+          }
+        ]
+      ]
+    },
+    "untyped-command-arguments": {
+      "after_sha256": "5760f8eae0f56dc0f9ac3a1d5389a42e2637b3fa61e3d4512f0c8017863fc304",
+      "before_sha256": "5760f8eae0f56dc0f9ac3a1d5389a42e2637b3fa61e3d4512f0c8017863fc304",
+      "findings": [],
+      "reference_after_sha256": "5760f8eae0f56dc0f9ac3a1d5389a42e2637b3fa61e3d4512f0c8017863fc304",
+      "references": [
+        {
+          "action": "execute",
+          "agent_id": "ag1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "domain": "shell",
+          "error_fingerprint": "69c52461ef74ab94fc4a0cf1ed330d47f881f5abaf692afad25b4409b1f20619",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1111111111111111",
+          "operation_expected_nonzero": false,
+          "operation_fingerprint": "01d5b38132b8e2d7921a9e2a1440e9f8b00f250e28f421b93457bc9047427d85",
+          "operation_reference": true,
+          "operation_result": "passed",
+          "operation_result_conflict": false,
+          "operation_version": 1,
+          "receiver_id": "generated-receiver",
+          "result": "success",
+          "service": "generated",
+          "session_id": "session-a",
+          "source": "span",
+          "source_id": "1111111111111111",
+          "span_id": "1111111111111111",
+          "subject": "Shell operation",
+          "time_unix_nano": 2,
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "turn_id": null
+        }
+      ],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "command",
+            "role": "command",
+            "text": "printf generated"
+          }
+        ]
+      ]
+    },
+    "user-instruction": {
+      "after_sha256": "7dec483357f54597099e8cebd773791dd4e9861c2bb5886353053574e83a38e9",
+      "before_sha256": "7dec483357f54597099e8cebd773791dd4e9861c2bb5886353053574e83a38e9",
+      "findings": [],
+      "reference_after_sha256": "7dec483357f54597099e8cebd773791dd4e9861c2bb5886353053574e83a38e9",
+      "references": [],
+      "terms": [
+        [
+          {
+            "complete": true,
+            "kind": "instruction",
+            "role": "user",
+            "text": "Implement generated change"
+          }
+        ]
+      ]
+    }
+  },
+  "source_sha256": {
+    "observatory/error_reminders.py": "0a8a965514e8a42ea9e3863dfde7f99a3030aebbf8071d09566505788169da07",
+    "observatory/findings.py": "c486c1a892f787b3bdf3be0866c3907111c7b4cc72bc2a402ae1651ecd9b9150",
+    "observatory/investigation.py": "940c68b2074b99a45a8d7ac4a0123317023da8f92053e6d8abec055130d03f09"
+  }
+}

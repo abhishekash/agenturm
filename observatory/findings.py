@@ -32,9 +32,32 @@ _TOKEN_PATTERNS = (
 )
 
 
+def _may_contain_credential(text):
+    """Conservative negative test for the credential grammar above.
+
+    Unicode always takes the original path: re.IGNORECASE has non-ASCII
+    equivalences that ASCII lowercasing cannot prove absent. Every existing
+    text pattern requires one of these literal markers. No text is retained.
+    """
+    if type(text)is not str or not text.isascii():return True
+    if ':' in text or '=' in text:return True
+    lower=text.lower()
+    return ('mysql' in text or 'private key' in lower or 'bearer' in lower or
+        any(prefix in text for prefix in ('sk_','rk_','sk-','gh','github_pat_','AKIA','AIza','xox')))
+
+
+def _sensitive_field(key):
+    if type(key)is str and key.isascii():
+        lower=key.lower()
+        if not any(word in lower for word in ('key','token','pass','secret','authorization','credential','bearer')):
+            return False
+    return bool(_SENSITIVE_FIELD.search(key) or _TOKEN_FIELD.search(key))
+
+
 def _safe_text(value):
     """Remove recognizable credential material before it enters a finding."""
     text = str(value)
+    if not _may_contain_credential(text):return text
     text = _DATABASE_CREDENTIAL.sub(r"\1[REDACTED]\2", text)
     text = _MYSQL_PASSWORD.sub(r"\1[REDACTED]", text)
     text = _PRIVATE_KEY.sub("[REDACTED PRIVATE KEY]", text)
@@ -52,13 +75,14 @@ def _credential_hits(value, field_path=""):
         for key, child in value.items():
             key = str(key)
             path = f"{field_path}.{key}" if field_path else key
-            if (_SENSITIVE_FIELD.search(key) or _TOKEN_FIELD.search(key)) and child not in (None, "", False):
+            if _sensitive_field(key) and child not in (None, "", False):
                 hits.add(("sensitive field", path[:160]))
             hits.update(_credential_hits(child, path))
     elif isinstance(value, (list, tuple)):
         for child in value[:100]:
             hits.update(_credential_hits(child, field_path))
     elif isinstance(value, str):
+        if not _may_contain_credential(value):return hits
         if _PRIVATE_KEY.search(value):
             hits.add(("private key material", field_path[:160] or "captured text"))
         if _ASSIGNED_SECRET.search(value):
@@ -126,7 +150,7 @@ def analyze(spans, logs, outcome=None, *, activity=None, receiver='', outcome_ow
     if not spans and not logs and not outcome:return []
     from .core import _activity_for,_activity_row,_event_activity_identity,_tool_activity
     from .operation_facts import operation_facts,operation_key,operation_metadata,digest
-    from .operation_preparation import canonical_terminal
+    from .operation_preparation import canonical_terminal,unstructured_terminal
     facts_for=operation_preparation.full if operation_preparation is not None else operation_facts
     trace_id = spans[0]['trace_id'] if spans else logs[0]['trace_id'] if logs else outcome['trace_id']
     if activity is None:activity=_activity_for(spans,logs)
@@ -159,11 +183,12 @@ def analyze(spans, logs, outcome=None, *, activity=None, receiver='', outcome_ow
         labels=', '.join(sorted({label for label,_ in hits}))
         fields=sorted({field for _,field in hits})
         severity='high' if any(label=='private key material' or label.endswith('token pattern') for label,_ in hits) else 'medium'
+        owner=owner() if callable(owner) else owner
         emit('credential_exposure','Possible credential material captured',severity,
             [{'type':source,'id':source_id}],
             f"Detected {labels} in {', '.join(fields[:8]) or 'captured content'}. Values are omitted; inspect the linked source.",owner)
     for event in activity:
-        terminal=canonical_terminal(event)
+        terminal=canonical_terminal(event)or unstructured_terminal(event)
         if (terminal is not None and str(event.get('result')or '').casefold()not in {'error','failed','blocked','denied','policy_denied','incomplete'}
                 and terminal['result']!='failed' and not terminal['result_conflict'] and not terminal['has_code_one']):
             continue
@@ -193,30 +218,30 @@ def analyze(spans, logs, outcome=None, *, activity=None, receiver='', outcome_ow
             [entry for item,_,_ in repeated for entry in item['evidence']],
             str(len(repeated))+' recorded matching failures. '+first['detail'],event,facts=facts)
     for span in spans:
-        attrs=span.get('attributes') or {};owner=source_owner(span,'span',span['span_id'])
+        attrs=span.get('attributes') or {};owner=lambda:source_owner(span,'span',span['span_id'])
         credentials(attrs,owner,'span',span['span_id'])
         for index,event in enumerate(span.get('events') or []):
             if not isinstance(event,dict) or not isinstance(event.get('attributes'),dict):continue
             event_attrs,resource=_event_activity_identity(span,event['attributes'])
             source_id=span['span_id']+':event:'+str(index)
-            event_owner=source_owner(span,'span',source_id,event_attrs,resource,event.get('time_unix_nano',0))
+            event_owner=lambda:source_owner(span,'span',source_id,event_attrs,resource,event.get('time_unix_nano',0))
             credentials(event['attributes'],event_owner,'span',source_id)
         # Non-tool SDK failures must survive even without an Activity mapping.
         if span.get('status')=='ERROR' and _tool_activity(span) is None and not any(event.get('source')=='span' and event.get('source_id')==span['span_id'] for event in activity):
             detail=attrs.get('exception.message') or attrs.get('error.type') or 'Span status is ERROR; operation details were not supplied.'
-            emit('span_error','Error span recorded','high',[{'type':'span','id':span['span_id']}],str(detail)[:1500],owner)
+            emit('span_error','Error span recorded','high',[{'type':'span','id':span['span_id']}],str(detail)[:1500],owner())
         stopped=attrs.get('agent.stopped_reason') if span.get('name')=='agent.run' else None
         if stopped and stopped!='completed':
             emit('incomplete_run','Run stopped before completion','medium',[{'type':'span','id':span['span_id']}],
-                'Recorded stop reason: '+str(stopped)[:500],owner)
+                'Recorded stop reason: '+str(stopped)[:500],owner())
     for log in logs:
-        source_id=log.get('id') or log.get('digest');owner=source_owner(log,'log',source_id)
+        source_id=log.get('id') or log.get('digest');owner=lambda:source_owner(log,'log',source_id)
         credentials([log.get('attributes') or {},log.get('body')],owner,'log',source_id)
         if log.get('severity_number',0)>=17 and ('log',source_id) not in represented:
             # A qualified informational operation must not return as a raw error.
             projected=next((event for event in activity if event.get('source')=='log' and event.get('source_id')==source_id),None)
             if projected and facts_for(projected)['expected_nonzero']:continue
-            emit('error_log','Error log recorded','medium',[{'type':'log','id':source_id}],str(log.get('body') or '')[:1500],owner)
+            emit('error_log','Error log recorded','medium',[{'type':'log','id':source_id}],str(log.get('body') or '')[:1500],owner())
     if outcome:
         owner={**(outcome_owner or {}),'service':(outcome_owner or {}).get('producer'),
             'time_unix_nano':outcome.get('time_unix_nano') or 0}

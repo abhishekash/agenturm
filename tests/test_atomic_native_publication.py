@@ -35,6 +35,27 @@ class AtomicNativePublicationTests(unittest.TestCase):
     def get(self,path='/api/metrics'):
         return http.McpInitialCertificateTests.get(self,path)
 
+    def test_initial_ingestion_bounds_unrelated_repair_and_keeps_history_unavailable(self):
+        from observatory.storage_activity import drain
+        log=dict(trace_id='e'*32,span_id=None,time_unix_nano=30,service='codex',severity_number=9,
+            severity_text='INFO',event_name='agent.activity',body='Generated native log',
+            attributes={},resource_attributes={},scope_name='observatory.local_agents')
+        for operation,records in ((self.store.ingest,[native()]),(self.store.ingest_logs,[log])):
+            with self.subTest(operation=operation.__name__),self.store._derived_lock,self.store._writer_gate:
+                with self.store._connect()as db:
+                    db.executemany('INSERT OR IGNORE INTO activity_dirty_v1 VALUES(?,?)',
+                        [('log',f'generated-missing-{i:04}')for i in range(350)])
+                with patch.object(self.store,'migration_status',dict(ready=False,stage='Indexing source records')):
+                    with patch('observatory.storage_activity.drain',wraps=drain)as repair:
+                        self.assertEqual(operation(records),1)
+                        self.assertEqual(repair.call_count,1)
+                        self.assertEqual(repair.call_args.kwargs['limit'],200)
+                    with self.store._read()as db:
+                        self.assertGreater(db.execute('SELECT COUNT(*) FROM activity_dirty_v1').fetchone()[0],0)
+                    self.assertEqual(self.get()[0],503)
+                with self.store._connect()as db:
+                    while drain(db):pass
+
     def test_accepted_spans_and_logs_are_current_while_other_thread_holds_derived_lock(self):
         log=dict(trace_id='e'*32,span_id=None,time_unix_nano=30,service='codex',severity_number=9,
             severity_text='INFO',event_name='agent.activity',body='Generated native log',
