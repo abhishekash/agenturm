@@ -129,6 +129,37 @@ class FixtureSession:
             return row if (row.get('pid')==self.roles[role]and row.get('at',0)>=after and row.get('screen')=='CommandPalette'
                 and row.get('focused_control_type')=='CommandInput')else None
         return until(ready,'Command palette input readiness')
+    def wait_agent_search(self,role,*,after):
+        def ready():
+            beats=self.beats(role)
+            if not beats:return None
+            row=beats[-1]
+            return row if (row.get('pid')==self.roles[role]and row.get('at',0)>=after
+                and row.get('screen')=='ObservatoryScreen'and row.get('modal_stack')==1
+                and row.get('focus')=='search-agents'and row.get('focused_control_type')=='Input')else None
+        return until(ready,'Agent search input readiness')
+    def wait_agent_selection(self,role,*,after,session_id,source_id):
+        def ready():
+            beats=self.beats(role)
+            if not beats:return None
+            row=beats[-1]
+            return row if (row.get('pid')==self.roles[role]and row.get('at',0)>=after
+                and row.get('screen')=='ObservatoryScreen'and row.get('modal_stack')==1
+                and row.get('focus')=='agent-table'and row.get('selected_session')==session_id
+                and row.get('selected_source')==source_id)else None
+        return until(ready,'Keyboard exact source selection')
+    def select_modal_source(self,role,selected):
+        session_id=f'validation-modal-{selected}'
+        matches=[row for row in self.health.get('local_agents',{}).get('sessions',())
+            if row.get('session_id')==session_id]
+        if len(matches)!=1 or not isinstance(matches[0].get('source_id'),str)or not matches[0]['source_id']:
+            raise RuntimeError('Generated modal source identity is unavailable or ambiguous')
+        source_id=matches[0]['source_id']
+        boundary=time.time();self.keys(role,'1');self.wait_cockpit(role,after=boundary)
+        boundary=time.time();self.keys(role,'/');self.wait_agent_search(role,after=boundary)
+        self.keys(role,'C-a');self.text(role,f'Modal validation {selected}')
+        boundary=time.time();self.keys(role,'Escape')
+        return self.wait_agent_selection(role,after=boundary,session_id=session_id,source_id=source_id)
     def wait_ui(self,role):
         def ready():
             beats=self.beats(role)
@@ -247,9 +278,7 @@ def modal_cycles(session):
     for cycle in range(total):
         disk_gate(session.base,reserve_bytes=session.args.minimum_free_mib*1024**2)
         selected=cycle%5
-        session.keys('cockpit','1','/','C-a');session.text('cockpit',f'Modal validation {selected}');session.keys('cockpit','Escape')
-        until(lambda:session.beats('cockpit') and session.beats('cockpit')[-1].get('selected_session')==f'validation-modal-{selected}',
-            'Keyboard exact source selection')
+        session.select_modal_source('cockpit',selected)
         session.keys('cockpit','C-r');session.wait_screen('cockpit','Review')
         beat=until(lambda:session.beats('cockpit') and session.beats('cockpit')[-1]
             if session.beats('cockpit') and session.beats('cockpit')[-1].get('screen')=='ReviewScreen' and session.beats('cockpit')[-1].get('review_scope') else None,'Frozen Review scope')
@@ -261,6 +290,7 @@ def modal_cycles(session):
         session.keys('cockpit','u');session.wait_screen('cockpit','SELECTED TASK USAGE')
         boundary=time.time();session.keys('cockpit','PageDown','Escape')
         session.wait_cockpit('cockpit',after=boundary)
+        return_boundary=boundary
         if session.args.investigate:
             boundary=time.time();session.keys('cockpit','C-p');session.wait_palette('cockpit',after=boundary)
             session.text('cockpit','Investigate');session.wait_screen('cockpit','Investigate retained history')
@@ -272,8 +302,9 @@ def modal_cycles(session):
             if investigation['investigation_rows']>250 or investigation['investigation_pages']>5 or investigation['investigation_bytes']>2*1024**2:
                 raise RuntimeError('Investigate result retention bound exceeded')
             session.keys('cockpit','Enter')
-            session.wait_screen('cockpit','Exact recorded source');session.keys('cockpit','c','x','PageDown','Escape','Escape')
-        until(lambda:session.beats('cockpit') and session.beats('cockpit')[-1]['screen']=='ObservatoryScreen','Modal return')
+            session.wait_screen('cockpit','Exact recorded source')
+            return_boundary=time.time();session.keys('cockpit','c','x','PageDown','Escape','Escape')
+        session.wait_cockpit('cockpit',after=return_boundary)
         beat=session.wait_ui('cockpit')
         if beat['review_cache_entries']>4 or beat['review_cache_bytes']>8*1024**2 or beat['modal_stack']!=1 or beat['native_snapshot_entries']>2:
             raise RuntimeError('Modal/cache retention bound exceeded')

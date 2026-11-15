@@ -77,6 +77,50 @@ class StorageClassificationTests(unittest.TestCase):
 
 
 class ModalInputReadinessTests(unittest.TestCase):
+    def test_search_and_exact_selection_require_fresh_foreground_focus(self):
+        with patch('scripts.validate_combined_monitor.until',side_effect=lambda predicate,*a,**k:predicate()):
+            row=dict(pid=42,at=100,screen='ObservatoryScreen',modal_stack=1,
+                focus='search-agents',focused_control_type='Input',
+                selected_session='validation-modal-2',selected_source='generated-source-2')
+            def session(changes):
+                value=FixtureSession.__new__(FixtureSession);value.roles={'cockpit':42}
+                value.beats=lambda role:[{**row,**changes}];return value
+            self.assertIsNotNone(session({}).wait_agent_search('cockpit',after=99))
+            for changes in (dict(at=98),dict(pid=41),dict(screen='ReviewScreen'),
+                    dict(modal_stack=2),dict(focus='agent-table'),dict(focused_control_type=None)):
+                self.assertIsNone(session(changes).wait_agent_search('cockpit',after=99))
+            def selection(changes):
+                return session({'focus':'agent-table',**changes}).wait_agent_selection('cockpit',after=99,
+                    session_id='validation-modal-2',source_id='generated-source-2')
+            self.assertIsNotNone(selection({}))
+            for changes in (dict(at=98),dict(pid=41),dict(screen='ReviewScreen'),
+                    dict(modal_stack=2),dict(focus='search-agents'),
+                    dict(selected_session='validation-modal-1'),dict(selected_source='other-source')):
+                self.assertIsNone(selection(changes))
+
+    def test_selection_driver_observes_each_transition_before_sending_more_keys(self):
+        value=FixtureSession.__new__(FixtureSession)
+        value.health={'local_agents':{'sessions':[dict(session_id='validation-modal-2',source_id='generated-source-2')]}}
+        actions=[]
+        value.keys=lambda role,*keys:actions.append(('keys',role,keys))
+        value.text=lambda role,text:actions.append(('text',role,text))
+        value.wait_cockpit=lambda role,**kw:actions.append(('main',role,kw))
+        value.wait_agent_search=lambda role,**kw:actions.append(('search',role,kw))
+        value.wait_agent_selection=lambda role,**kw:actions.append(('selection',role,kw))
+        with patch('scripts.validate_combined_monitor.time.time',side_effect=[10,20,30]):
+            value.select_modal_source('cockpit',2)
+        self.assertEqual(actions,[('keys','cockpit',('1',)),('main','cockpit',dict(after=10)),
+            ('keys','cockpit',('/',)),('search','cockpit',dict(after=20)),
+            ('keys','cockpit',('C-a',)),('text','cockpit','Modal validation 2'),
+            ('keys','cockpit',('Escape',)),('selection','cockpit',dict(after=30,
+                session_id='validation-modal-2',source_id='generated-source-2'))])
+        for rows in ([],[dict(session_id='validation-modal-2')],
+                [dict(session_id='validation-modal-2',source_id='one'),dict(session_id='validation-modal-2',source_id='two')]):
+            value.health={'local_agents':{'sessions':rows}};actions.clear()
+            with self.assertRaisesRegex(RuntimeError,'identity is unavailable or ambiguous'):
+                value.select_modal_source('cockpit',2)
+            self.assertEqual(actions,[])
+
     def test_modal_return_and_palette_input_are_observed_before_more_keys(self):
         with patch('scripts.validate_combined_monitor.until',side_effect=lambda predicate,*a,**k:predicate()):
             main=dict(pid=42,at=100,screen='ObservatoryScreen',modal_stack=1,focus='agent-table')
