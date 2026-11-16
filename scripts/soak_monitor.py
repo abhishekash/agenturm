@@ -263,6 +263,13 @@ def native(path, kind, **payload):
     append(path, event(kind, payload))
 
 
+def shutdown_observation(path, phase, **metadata):
+    # Private timing metadata only: keep the first slow phase actionable
+    # without recording source content or changing any shutdown deadline.
+    append(path,dict(kind='shutdown_phase',phase=phase,pid=os.getpid(),
+        at=time.time(),monotonic=time.monotonic(),**metadata))
+
+
 def child(mode, directory, port):
     base = Path(directory).resolve()
     # No HOME/CODEX_HOME override; only this isolated process sees the fixture
@@ -335,6 +342,23 @@ def child(mode, directory, port):
             from observatory import ui_workflow
             stack.enter_context(patch.object(ui_workflow,'desktop_notify',notification))
         original_mount = ObservatoryApp.on_mount
+        original_exit=ObservatoryApp.exit
+        original_workflow_close=WorkflowController.close
+        original_feed_close=Feed.close
+        def exiting(app,*args,**kwargs):
+            shutdown_observation(telemetry,'exit_requested')
+            return original_exit(app,*args,**kwargs)
+        def closing_workflow(controller,*args,**kwargs):
+            shutdown_observation(telemetry,'workflow_close_started')
+            try:return original_workflow_close(controller,*args,**kwargs)
+            finally:shutdown_observation(telemetry,'workflow_close_finished')
+        def closing_feed(feed,*args,**kwargs):
+            shutdown_observation(telemetry,'feed_close_started')
+            try:return original_feed_close(feed,*args,**kwargs)
+            finally:shutdown_observation(telemetry,'feed_close_finished')
+        stack.enter_context(patch.object(ObservatoryApp,'exit',exiting))
+        stack.enter_context(patch.object(WorkflowController,'close',closing_workflow))
+        stack.enter_context(patch.object(Feed,'close',closing_feed))
         original_enqueue = WorkflowController._enqueue
         def enqueue(controller, job):
             accepted = not controller._closed
@@ -364,8 +388,10 @@ def child(mode, directory, port):
             profiler=cProfile.Profile();profiler.enable()
         app=ObservatoryApp(feed)
         try:
-            code=_run_terminal_app(app)
-            append(telemetry,dict(kind='exit',pid=os.getpid(),code=code,warning=app.workflow_controller.warning))
+            try:code=_run_terminal_app(app)
+            finally:shutdown_observation(telemetry,'terminal_lifecycle_finished')
+            append(telemetry,dict(kind='exit',pid=os.getpid(),code=code,
+                at=time.time(),monotonic=time.monotonic(),warning=app.workflow_controller.warning))
             return code
         finally:
             if profiler:
@@ -554,18 +580,24 @@ def run(args):
     def ui_pid():
         return int(tmux('display-message','-p','-t','monitor','#{pane_pid}',capture=True).strip())
     def stop_ui():
+        cockpit_pid=ui_pid()
+        shutdown_observation(base/'ui-shutdown-observations.jsonl','quit_keys_started',cockpit_pid=cockpit_pid)
         keys('Escape','Escape','q')
         deadline=time.monotonic()+8
+        shutdown_observation(base/'ui-shutdown-observations.jsonl','quit_keys_sent',cockpit_pid=cockpit_pid)
         while time.monotonic()<deadline:
             dead,status,signum=tmux('display-message','-p','-t','monitor',
                 '#{pane_dead}:#{pane_dead_status}:#{pane_dead_signal}',capture=True).strip().split(':')
             # PTY closure can be visible before waitpid supplies exit status.
             # Require an actual status; a signal or unknown status is no pass.
             if dead=='1' and (status or signum):
+                shutdown_observation(base/'ui-shutdown-observations.jsonl','process_exit_observed',
+                    cockpit_pid=cockpit_pid,status=status,signal=signum)
                 exit_statuses.append(dict(role='cockpit',status=status,signal=signum))
                 if status!='0' or signum:errors.append(f'Cockpit exited unsuccessfully: status={status}, signal={signum}')
                 return
             time.sleep(.1)
+        shutdown_observation(base/'ui-shutdown-observations.jsonl','process_exit_deadline',cockpit_pid=cockpit_pid)
         errors.append('cockpit did not finish graceful exit within eight seconds')
     def stop_receiver():
         nonlocal receiver
