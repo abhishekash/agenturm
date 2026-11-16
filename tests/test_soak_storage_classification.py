@@ -77,6 +77,23 @@ class StorageClassificationTests(unittest.TestCase):
 
 
 class ModalInputReadinessTests(unittest.TestCase):
+    def test_fixed_modal_inputs_use_observed_history_not_the_today_window(self):
+        value=FixtureSession.__new__(FixtureSession);actions=[]
+        value.keys=lambda role,*keys:actions.append(('keys',keys))
+        value.text=lambda role,text:actions.append(('text',text))
+        value.wait_palette=lambda role,**kw:actions.append(('palette',kw))
+        value.wait_screen=lambda role,text:actions.append(('screen',text))
+        value.wait_cockpit=lambda role,**kw:{'agent_filter':'all'}
+        with patch('scripts.validate_combined_monitor.time.time',side_effect=[10,20]),\
+                patch('scripts.validate_combined_monitor.until',side_effect=lambda predicate,*a,**k:predicate()):
+            self.assertEqual(value.show_history('cockpit'),{'agent_filter':'all'})
+            value.wait_cockpit=lambda role,**kw:{'agent_filter':'today'}
+            with patch('scripts.validate_combined_monitor.time.time',side_effect=[30,40]):
+                self.assertIsNone(value.show_history('cockpit'))
+        self.assertEqual(actions[:5],[('keys',('C-p',)),('palette',dict(after=10)),
+            ('text','Show History'),('screen','All sessions, including earlier unreviewed completions'),
+            ('keys',('Enter',))])
+
     def test_search_and_exact_selection_require_fresh_foreground_focus(self):
         from observatory.terminal_ui import SearchInput
         with patch('scripts.validate_combined_monitor.until',side_effect=lambda predicate,*a,**k:predicate()):

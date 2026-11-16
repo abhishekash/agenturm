@@ -148,6 +148,15 @@ class FixtureSession:
                 and row.get('focus')=='agent-table'and row.get('selected_session')==session_id
                 and row.get('selected_source')==source_id)else None
         return until(ready,'Keyboard exact source selection')
+    def show_history(self,role):
+        boundary=time.time();self.keys(role,'C-p');self.wait_palette(role,after=boundary)
+        self.text(role,'Show History')
+        self.wait_screen(role,'All sessions, including earlier unreviewed completions')
+        boundary=time.time();self.keys(role,'Enter')
+        def ready():
+            row=self.wait_cockpit(role,after=boundary)
+            return row if row.get('agent_filter')=='all'else None
+        return until(ready,'History source visibility')
     def select_modal_source(self,role,selected):
         session_id=f'validation-modal-{selected}'
         matches=[row for row in self.health.get('local_agents',{}).get('sessions',())
@@ -274,6 +283,9 @@ def native_race(session):
 
 def modal_cycles(session):
     session.ui('cockpit')
+    # Fixed completed inputs must remain reachable across Today expiry or an
+    # overnight pause. Select the public History command and observe it.
+    session.show_history('cockpit')
     samples=[];scopes=set();total=session.args.warmup_cycles+session.args.cycles
     for cycle in range(total):
         disk_gate(session.base,reserve_bytes=session.args.minimum_free_mib*1024**2)

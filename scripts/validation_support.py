@@ -302,6 +302,7 @@ def published_heartbeat(app,*,at=None):
         published_sources_clipped=len(sources)>500,screen=type(screen).__name__ if screen else '',
         visible_agent_rows=len(getattr(app,'table_data',{}).get('agent-table',{})),
         selected_source=getattr(app,'selected_source',None),
+        agent_filter=getattr(app,'agent_filter',None),
         selected_session=getattr(app,'source_map',{}).get(getattr(app,'selected_source',None),{}).get('session_id'),
         review_scope={key:getattr(scope,key,None) for key in ('receiver','producer','agent_id','session_id','run_id','turn_id')} if scope is not None else None,
         review_cache_entries=len(getattr(getattr(app,'review_cache',None),'entries',{})),
