@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.2.5
 
 - Put the selected request's terminal and resume-copy actions in Workflow and the waiting-session inspector, with explicit labels and keyboard/palette routes. Fence terminal selection by the current receiver and preserve the distinction between selecting a verified tmux pane and attaching to it; no resume command is executed.
 - In Review, prioritize the latest strictly ordered comparable recorded check attempt without deleting earlier history, and label continuity-draft request text as the latest captured request rather than the original request.
-- Reframe quick-start guidance around recorded requests, clarify Seen versus source-backed resolution, document the existing receiver/watcher commands, and add an explicitly unqualified A0 capability record and five-engineer pilot protocol.
+- Reframe quick-start guidance around recorded requests, clarify Seen versus source-backed resolution, and document the existing receiver/watcher commands.
 
 ## 0.2.4
 
