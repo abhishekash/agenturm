@@ -46,6 +46,7 @@ Prompt history is bounded to 300 retained requests per selection. Earlier prompt
 | Agent layout and order | f tree / flat; o sort options |
 | Command palette | Ctrl+P |
 | Workflow inbox | w; ↑ / ↓ works immediately; Enter reads an incident; Tab reaches actions |
+| Workflow request | g attempts the verified terminal route; c copies a supported resume command without running it |
 | Workflow back | Esc leaves settings, then narrow detail, then the inbox |
 | Review | Starts on scrollable evidence; R refreshes; c copies; x previews export; Tab reaches earlier evidence, Save task and Excerpt |
 | Saved tasks | b; ↑ / ↓ and Enter selects and opens; n creates |

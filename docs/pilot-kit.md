@@ -4,6 +4,16 @@
 
 This kit contains generated scenarios, expected answers and blank observer sheets. It is not evidence of adoption, measured time savings, alert precision, or live Claude/Pi compatibility. Product tests and synthetic records cannot supply those outcomes. The [pilot protocol](rfcs/workflow-pilot.md) defines the proposed paired study; this kit makes that protocol runnable without personal transcripts or provider accounts.
 
+## Capability qualification record
+
+Versioned baseline: **A0 attention-loop qualification · v1 · 16 November 2026**. No live runtime/terminal combination has been observed for this implementation. Do not treat synthetic fixtures or mocked delivery as qualification.
+
+| Runtime/version + environment | Discovery | Request observed | Resolution basis | Exact terminal return | Actual desktop delivery | Evidence |
+| --- | --- | --- | --- | --- | --- | --- |
+| Not yet tested | Not assessed | Not assessed | Not assessed | Not assessed | Not assessed | No live result recorded |
+
+Record each tested combination separately using `Observed`, `Unavailable`, `Failed`, or `Not assessed`. Include the receiver build and evidence link. Keep personal source text, request contents and identifiers out of committed artifacts. A tested Linux/tmux route does not qualify other runtimes or terminal arrangements.
+
 ## Consent and data handling
 
 Read this before recruitment or timing: “We are evaluating whether recorded agent evidence helps you reconstruct and continue work. Participation is optional. You may stop, skip a task or withdraw your notes at any time. We will use synthetic tasks first. We will not install collection hooks, run an agent, approve a native request, record your screen or collect personal transcripts without separate explicit consent. We are measuring the interface, not your performance.”

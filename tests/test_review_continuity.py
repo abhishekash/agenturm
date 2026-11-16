@@ -71,6 +71,8 @@ class ReviewContinuityTests(unittest.TestCase):
         task=store.update_brief(task['id'],{'intent':'Human intent'})
         task=store.add_decision(task['id'],kind='rejected',text='Rejected approach',rationale='Human reason')
         before=deepcopy(task);draft=editable_draft(self.frozen(),task)
+        self.assertIn('LATEST CAPTURED REQUEST',draft['text'])
+        self.assertNotIn('ORIGINAL REQUEST',draft['text'])
         self.assertIn('REJECTED: Rejected approach',draft['text'])
         self.assertEqual(store.get(task['id']),before)
         with self.assertRaises(TaskError):store.approve_continuity(task['id'],draft,expected_revision=task['revision'])

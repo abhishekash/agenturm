@@ -3,11 +3,24 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 from observatory.ui_workflow import AttentionLedger, workflow_report, workflow_reasons, resume_command, desktop_notify, terminal_handoff, WorkflowScreen
+from observatory.ui_diagnostics import first_run_guidance
 from observatory.ui_preferences import safe_preferences
 from observatory.terminal_ui import ObservatoryApp, sources
 from tests.test_terminal_search import ManualFeed
 
 class WorkflowEvidenceTests(unittest.TestCase):
+    def test_empty_inbox_guidance_distinguishes_discovery_delay_coverage_and_limits(self):
+        self.assertIn('not a complete zero-request', first_run_guidance({})[0])
+        self.assertIn('disabled', first_run_guidance({'enabled':False})[0])
+        delayed=first_run_guidance({'sessions':[]},read_errors={'sessions':'unavailable'})
+        self.assertIn('may be incomplete',delayed[0])
+        covered=first_run_guidance({'sessions':[{'capture_content':True}]})
+        self.assertIn('available coverage',covered[0])
+        limited=first_run_guidance({'sessions':[{'capture_content':False}]})
+        self.assertIn('metadata-only',limited[0])
+        backlog=first_run_guidance({'sessions':[{'diagnostics':{'backlog_bytes':12}}]})
+        self.assertIn('delayed',backlog[0])
+
     def test_alert_transitions_baseline_resolution_and_tool_wait(self):
         feed=ManualFeed();ledger=AttentionLedger()
         item={'id':'a','state':'Waiting','waiting_for':'Approval','session_id':'s'}
@@ -86,6 +99,49 @@ class WorkflowEvidenceTests(unittest.TestCase):
         self.assertEqual(workflow_reasons({'active':True},usage,snapshot,{'minutes':1},now=100),['Task elapsed-time threshold reached'])
 
 class WorkflowJourney(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_inbox_shows_coverage_aware_first_run_guidance(self):
+        from textual.widgets import RichLog
+        app=ObservatoryApp(ManualFeed(),persist_preferences=False)
+        async with app.run_test(size=(80,24)) as pilot:
+            await pilot.pause();app.refresh_timer.stop();app.workflow_controller.close()
+            app.feed.snapshot=replace(app.feed.snapshot,local_status={'sessions':[]},read_errors={})
+            app.action_workflow();await pilot.pause()
+            text=' '.join(' '.join(line.text for line in app.screen.query_one(RichLog).lines).split())
+            self.assertIn('No recent supported source discovered',text)
+            self.assertIn('not a complete zero-request result',text)
+            self.assertIn('Diagnostics (d)',text)
+
+    async def test_request_terminal_action_is_primary_and_bound_to_selected_incident(self):
+        from textual.widgets import RichLog
+        from observatory.attention import AttentionLedger as PureLedger
+        from tests.test_attention import item,snapshot
+        app=ObservatoryApp(ManualFeed(),persist_preferences=False)
+        async with app.run_test(size=(80,24)) as pilot:
+            await pilot.pause();app.refresh_timer.stop();app.workflow_controller.close()
+            request=item(id='request',agent_id='request-owner',state='Waiting',waiting_for='Approval')
+            ledger=PureLedger();ledger.update([request],snapshot(time.time()),{},time.time())
+            app.action_workflow();await pilot.pause()
+            screen=app.screen
+            app.workflow_ledger.rows=ledger.rows
+            screen.selected_incident=ledger.rows[0][0]['_attention_id']
+            screen.render_report();await pilot.pause()
+            self.assertFalse(screen._settings)
+            self.assertIn('REQUEST NEEDS RESPONSE','\n'.join(line.text for line in screen.query_one(RichLog).lines))
+            self.assertIn('request-owner','\n'.join(line.text for line in screen.query_one(RichLog).lines))
+            button=screen.query_one('#workflow-terminal')
+            self.assertTrue(button.display)
+            self.assertFalse(button.disabled)
+            selected=screen.rows_by_id[screen.selected_incident][0]
+            with patch.object(app,'workflow_terminal') as route:
+                await pilot.click(button);await pilot.pause()
+                self.assertEqual(route.call_args.args[0]['id'],selected['id'])
+                self.assertEqual(route.call_args.args[0]['agent_id'],'request-owner')
+            await pilot.press('escape');await pilot.pause()
+            app.selected_source='request';app.source_map={'request':request}
+            with patch.object(app,'workflow_terminal') as route:
+                app.action_workflow_terminal()
+                self.assertEqual(route.call_args.args[0]['_attention_id'],ledger.rows[0][0]['_attention_id'])
+
     async def test_reopening_reuses_widgets_and_resets_history_settings_and_focus(self):
         from textual.widgets import DataTable,Input,RichLog
         app=ObservatoryApp(ManualFeed(),persist_preferences=False)

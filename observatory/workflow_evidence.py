@@ -204,6 +204,26 @@ class ReviewHistory:
             check['later_edit_count']=len(later)
             check['later_edits_clipped']=len(linked)<len(later)
             check['freshness'] = 'later recorded edits' if later else 'freshness unknown'
+        # A retry is comparable only when operation_facts supplied a complete,
+        # safe input fingerprint and the source owner and timestamps are exact.
+        # Keep every observation, but mark only a strictly latest attempt for
+        # prioritization. Equal/missing timestamps deliberately stay ambiguous.
+        comparable={}
+        for event in rows:
+            check=command_checks.get(event_key(event))
+            fingerprint=facts.get(event_key(event),{}).get('operation_fingerprint')
+            stamp=check.get('completed_ns') if check else None
+            if (not check or not fingerprint or type(stamp) is not int or stamp<=0
+                    or not all(isinstance(event.get(key),str) and event.get(key)
+                               for key in ('service','agent_id','session_id'))):
+                continue
+            owner=tuple(event[key] for key in ('service','agent_id','session_id'))
+            comparable.setdefault((owner,fingerprint),[]).append((stamp,check))
+        for attempts in comparable.values():
+            for stamp,check in attempts:
+                later=[other_stamp for other_stamp,_ in attempts if other_stamp>stamp]
+                check['latest_comparable']=not later
+                check['comparable_attempt_count']=len(attempts)
         errors=[e for e in rows if event_key(e) in facts and not facts[event_key(e)]['expected_nonzero']
                 and (facts[event_key(e)]['result']=='failed' or str(e.get('result') or '').lower() in
                     ('error','failed','failure','blocked','denied') or facts[event_key(e)]['result_conflict'])]
@@ -357,9 +377,10 @@ def review_guidance(projection):
     """A next inspection step, never a correctness or merge-readiness verdict."""
     checks=projection.get('checks') or []
     if projection.get('reported_outcome')=='Waiting':return 'Read the request and respond in the original agent terminal.'
-    if any(check['result']=='failed' for check in checks):return 'Inspect the failed validation commands and their source records.'
-    if any(check.get('later_edit_count',len(check.get('later_edits',()))) for check in checks):return 'Inspect the later edits and rerun the affected checks in your terminal.'
-    if any(check['result']=='unknown' for check in checks):return 'Find the missing command results before relying on these checks.'
+    latest=[check for check in checks if check.get('latest_comparable',True)]
+    if any(check['result']=='failed' for check in latest):return 'Inspect the latest comparable failed validation commands and their source records.'
+    if any(check.get('later_edit_count',len(check.get('later_edits',()))) for check in latest):return 'Inspect the later recorded edits; which checks are affected is unknown, so determine relevance and rerun the affected checks in your terminal.'
+    if any(check['result']=='unknown' for check in latest):return 'Find the missing command results before relying on these checks.'
     if not checks:return 'No validation was captured here; choose and run the checks this change needs.'
     if projection['window']['coverage']=='partial':return 'Inspect the coverage gaps before drawing conclusions from the captured checks.'
     return 'Review the changes and decide which checks the current worktree still needs.'

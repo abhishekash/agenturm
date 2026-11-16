@@ -8,8 +8,8 @@
   </a>
 </p>
 <p align="center">
-  <strong>Inspect the evidence behind your agents’ work.</strong><br>
-  Attribute each run, examine what supports “done,” and retain the context for review.
+  <strong>Find the agent request that needs you, then return to its recorded work.</strong><br>
+  See the owner and captured reason; answer in the agent’s own terminal.
 </p>
 <p align="center">
   <a href="https://www.agenturm.dev/#demo"><strong>Explore the workflow →</strong></a> &nbsp;·&nbsp;
@@ -22,8 +22,8 @@
   <a href="https://github.com/abhishekash/agenturm/blob/main/docs/privacy.md"><span class="badge">Local by default</span></a>
   <a href="https://github.com/abhishekash/agenturm/blob/main/LICENSE"><span class="badge">MIT license</span></a>
 </p>
-<h2>What it adds to an engineer's workflow</h2>
-<p>With concurrent agents, the expensive question becomes <strong>which run produced this result, and what supports it?</strong> A completion message does not tell you whether the selected worker ran the check, whether an edit followed it, or whether you are looking at a different execution's evidence.</p>
+<h2>Find the work that needs you</h2>
+<p>With concurrent agents, the immediate question is <strong>which recorded request needs a response, and which session owns it?</strong> Agenturm keeps request evidence scoped to its recorded owner and offers a Workflow inbox; native replies and approvals still happen in the agent's own terminal.</p>
 <p>Agenturm reads supported local agent records and configured OpenTelemetry signals into SQLite. Its practical value is in three jobs: <strong>attribute concurrent work</strong>, <strong>inspect recorded validation and its gaps</strong>, and <strong>carry evidence and engineering decisions across sessions</strong>. Exact identities keep workers separate; Review distinguishes agent claims from recorded results; saved tasks retain a brief, rationale and linked runs. It does not independently attest command execution or establish the current worktree's correctness.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -34,8 +34,16 @@
 </thead>
 <tbody>
 <tr>
-<td>Decide which terminal to return to</td>
-<td>Working sessions, explicit waits, an attention inbox, and reported completions awaiting review</td>
+<td>Find a recorded request</td>
+<td>An attention inbox with the exact recorded owner, request reason, pending/seen state and source freshness where available</td>
+</tr>
+<tr>
+<td>Return to the agent</td>
+<td>A terminal action only when the live target can be verified; otherwise inspect the evidence and use the native terminal manually</td>
+</tr>
+<tr>
+<td>Understand why it is waiting</td>
+<td>Scoped request evidence and collection limits, without treating Seen as a response or resolution</td>
 </tr>
 <tr>
 <td>Understand a team of agents</td>
@@ -59,7 +67,7 @@
 </tr>
 </tbody>
 </table></div>
-<p>Reply to agents and approve their requests in their own terminals. Agenturm monitors their work; it does not launch or control them.</p>
+<p>Reply to agents and approve their requests in their own terminals. Agenturm monitors their work; it does not launch or control them. Request capture and terminal routing depend on the runtime and environment, so an unavailable route is not a successful return.</p>
 <p><strong>In 0.2.4:</strong> <code>agenturm review</code> exposes the same scoped evidence without opening the cockpit, as text, JSON or a frozen Markdown/HTML receipt. It shows a check followed by an edit as a reason to inspect and rerun affected checks, and discloses missing ownership or capture. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/work-receipts.md">Engineering contracts, a concrete example, and CLI usage</a> · <a href="https://github.com/abhishekash/agenturm/blob/main/docs/work-receipts.html">Standalone HTML</a>.</p>
 <h2>See it in action</h2>
 <p align="center">
@@ -78,8 +86,9 @@
 <p>Agenturm starts or attaches to its local receiver. Recent supported <strong>Codex, Claude Code, OpenCode, and Pi</strong> records are discovered locally; those agents do not need a restart. No Agenturm account, subscription, or provider API key is needed for local monitoring.</p>
 <ol>
 <li>In <strong>Agents</strong>, select a session with <code>↑</code> / <code>↓</code>. Expand a recorded delegation with <code>→</code>.</li>
-<li>Press <code>Enter</code> to inspect. Use <strong>Overview</strong> to catch up, <strong>Prompts</strong> to read requests, and <strong>Details</strong> for source and usage information.</li>
-<li>Open <strong>Review</strong> for the selected session’s captured checks and edits. Press <code>w</code> for the attention inbox or <code>b</code> to save the task for later.</li>
+<li>Press <code>w</code> to open <strong>Workflow</strong> and inspect recorded requests. Select one to see its owner, reason and whether it remains pending or its observation is stale.</li>
+<li>Use <strong>Locate terminal</strong> to attempt the supported route; Agenturm selects a terminal only after exact identity is verified. Then respond in the native terminal. <strong>Seen</strong> only acknowledges locally; it does not resolve or approve a request.</li>
+<li>Use <strong>Review</strong> for captured checks and edits, or <code>b</code> to save a task for later.</li>
 </ol>
 <p>An empty screen means no supported recent records have been discovered yet. Run a supported agent and open collection diagnostics with <code>d</code>. Agenturm does not seed your workspace with example sessions. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/usage.md#local-agent-discovery">discovery, custom paths, and troubleshooting</a>.</p>
 <p>For a persistent command:</p>
@@ -192,6 +201,10 @@ agenturm task handoff TASK_ID --output ./refresh-handoff.md
 <tr>
 <td><code>w</code>, <code>b</code></td>
 <td>Attention inbox; saved tasks</td>
+</tr>
+<tr>
+<td>Workflow <code>g</code>, <code>c</code></td>
+<td>Locate the selected request's verified terminal; copy (never run) a native resume command</td>
 </tr>
 <tr>
 <td><code>t</code>, <code>x</code>, <code>c</code></td>

@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <strong>Inspect the evidence behind your agents’ work.</strong><br>
-  Attribute each run, examine what supports “done,” and retain the context for review.
+  <strong>Find the agent request that needs you, then return to its recorded work.</strong><br>
+  See the owner and captured reason; answer in the agent’s own terminal.
 </p>
 
 <p align="center">
@@ -22,22 +22,24 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-b9afc5?labelColor=191621" alt="MIT license"></a>
 </p>
 
-## What it adds to an engineer's workflow
+## Find the work that needs you
 
-With concurrent agents, the expensive question becomes **which run produced this result, and what supports it?** A completion message does not tell you whether the selected worker ran the check, whether an edit followed it, or whether you are looking at a different execution's evidence.
+With concurrent agents, the immediate question is **which recorded request needs a response, and which session owns it?** Agenturm keeps request evidence scoped to its recorded owner and offers a Workflow inbox; native replies and approvals still happen in the agent's own terminal.
 
 Agenturm reads supported local agent records and configured OpenTelemetry signals into SQLite. Its practical value is in three jobs: **attribute concurrent work**, **inspect recorded validation and its gaps**, and **carry evidence and engineering decisions across sessions**. Exact identities keep workers separate; Review distinguishes agent claims from recorded results; saved tasks retain a brief, rationale and linked runs. It does not independently attest command execution or establish the current worktree's correctness.
 
 | When you need to… | Agenturm gives you… |
 | --- | --- |
-| Decide which terminal to return to | Working sessions, explicit waits, an attention inbox, and reported completions awaiting review |
+| Find a recorded request | An attention inbox with the exact recorded owner, request reason, pending/seen state and source freshness where available |
+| Return to the agent | A terminal action only when the live target can be verified; otherwise inspect the evidence and use the native terminal manually |
+| Understand why it is waiting | Scoped request evidence and collection limits, without treating Seen as a response or resolution |
 | Understand a team of agents | Expandable parent/worker trees when the runtime records exact delegation; each worker has its own inspector |
 | Catch up without rereading a transcript | A human-readable task, recorded progress, and **Overview / Prompts / Details** |
 | Assess an agent’s “done” | Recorded checks, errors, later edits, and coverage limits in **Review** |
 | Investigate a broken tool call | Captured MCP arguments, responses, duration, and a linked trace when available |
 | Continue the task in another session | A saved brief, versioned decisions, linked runs, workspace capture, and a handoff you review before sharing |
 
-Reply to agents and approve their requests in their own terminals. Agenturm monitors their work; it does not launch or control them.
+Reply to agents and approve their requests in their own terminals. Agenturm monitors their work; it does not launch or control them. Request capture and terminal routing depend on the runtime and environment, so an unavailable route is not a successful return.
 
 **In 0.2.4:** `agenturm review` exposes the same scoped evidence without opening the cockpit, as text, JSON or a frozen Markdown/HTML receipt. It shows a check followed by an edit as a reason to inspect and rerun affected checks, and discloses missing ownership or capture. [Engineering contracts, a concrete example, and CLI usage](docs/work-receipts.md) · [Standalone HTML](docs/work-receipts.html).
 
@@ -68,8 +70,9 @@ uvx agenturm
 Agenturm starts or attaches to its local receiver. Recent supported **Codex, Claude Code, OpenCode, and Pi** records are discovered locally; those agents do not need a restart. No Agenturm account, subscription, or provider API key is needed for local monitoring.
 
 1. In **Agents**, select a session with `↑` / `↓`. Expand a recorded delegation with `→`.
-2. Press `Enter` to inspect. Use **Overview** to catch up, **Prompts** to read requests, and **Details** for source and usage information.
-3. Open **Review** for the selected session’s captured checks and edits. Press `w` for the attention inbox or `b` to save the task for later.
+2. Press `w` to open **Workflow** and inspect recorded requests. Select one to see its owner, reason and whether it remains pending or its observation is stale.
+3. Use **Locate terminal** to attempt the supported route; Agenturm selects a terminal only after exact identity is verified. Then respond in the native terminal. **Seen** only acknowledges locally; it does not resolve or approve a request.
+4. Use **Review** for captured checks and edits, or `b` to save a task for later.
 
 An empty screen means no supported recent records have been discovered yet. Run a supported agent and open collection diagnostics with `d`. Agenturm does not seed your workspace with example sessions. See [discovery, custom paths, and troubleshooting](docs/usage.md#local-agent-discovery).
 
@@ -167,6 +170,7 @@ Optional AI summaries send documented session evidence to your configured provid
 | `Ctrl+←` / `Ctrl+→`, `m` | Switch inspector sections |
 | `Tab` / `Shift+Tab` | Move between controls |
 | `w`, `b` | Attention inbox; saved tasks |
+| Workflow `g`, `c` | Locate the selected request's verified terminal; copy (never run) a native resume command |
 | `t`, `x`, `c` | Linked trace; evidence export; copy details |
 | `Esc` / `Alt+←` | Return / navigate back |
 | `F1`, `?`, `Ctrl+P` | Contextual help, help, command palette |

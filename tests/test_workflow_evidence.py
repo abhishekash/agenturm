@@ -5,7 +5,7 @@ import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
-from observatory.workflow_evidence import (ExecutionScope, ReviewHistory, ReviewCache, scope_for, check_kind, render_review, MAX_BYTES)
+from observatory.workflow_evidence import (ExecutionScope, ReviewHistory, ReviewCache, scope_for, check_kind, render_review, review_guidance, MAX_BYTES)
 from observatory.feed_requests import shared_get, RequestBatch
 
 
@@ -48,6 +48,24 @@ class EvidenceTests(unittest.TestCase):
         self.assertIsNone(check_kind('echo pytest'))
         self.assertIsNone(check_kind('pytest || true'))
         self.assertEqual(check_kind('.venv/bin/python -m unittest discover'),'unittest')
+
+    def test_latest_strictly_ordered_matching_retry_guides_without_erasing_history(self):
+        def checked(identity,stamp,code):
+            return {**event(identity),'time_unix_nano':stamp,'result':'success' if code==0 else 'error',
+                'operation_evidence':{'version':1,'inputs':[('event',{'command':'pytest tests -q','cwd':'/repo'})],
+                    'commands':[('event','pytest tests -q')],'exits':[('event',code)],'outputs':[],
+                    'tool':'shell','cwd':'/repo'}}
+        history=ReviewHistory(self.scope)
+        history.accept({'activity':[checked('failed',10,1),checked('passed',20,0)]})
+        projection=history.projection({'state':'Completed'})
+        self.assertEqual([row['result'] for row in projection['checks']],['failed','passed'])
+        self.assertFalse(projection['checks'][0]['latest_comparable'])
+        self.assertTrue(projection['checks'][1]['latest_comparable'])
+        self.assertNotIn('failed validation',review_guidance(projection))
+        # Equal timestamps cannot establish which observation superseded which.
+        tied=ReviewHistory(self.scope)
+        tied.accept({'activity':[checked('failed-tie',30,1),checked('passed-tie',30,0)]})
+        self.assertTrue(all(row['latest_comparable'] for row in tied.projection({})['checks']))
 
     def test_bounds_freeze_source_and_cache_selection_count(self):
         history=ReviewHistory(self.scope)
