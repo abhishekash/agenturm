@@ -2,73 +2,77 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.2.3</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/review-notes-completion-plan.md">Markdown source ↗</a></nav><h1>Complete review-notes implementation plan</h1>
-<p>Current checkpoint: <strong>2026-11-14T17:43:27.111051+00:00</strong>, verified merged main <strong><code>1ca4fafe71aed559d381b7e613efb748b9ae9878</code></strong>, after <a href="https://github.com/abhishekash/agenturm/pull/104">PR #104</a>. Startup writer admission, readiness diagnostics and the receiver/CI fixture corrections are merged. <strong>Full CI and final runtime/resource acceptance remain open.</strong> The active MCP correction is under independent review and is not delivered.</p>
+</style></head><body><main><nav><strong>Agenturm / 0.2.4</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/review-notes-completion-plan.md">Markdown source ↗</a></nav><h1>Complete review-notes implementation plan</h1>
+<p><strong>Current user scope:</strong> extended validation and the 100-run requirement were removed on 16 November. Delivery uses the passing CI, focused checks, six-cycle terminal smoke and installed-wheel verification. The longer modal attempt was stopped after 81 measured cycles; queued resource comparisons were cancelled. Earlier protocol descriptions below are historical.</p>
+<h2>Current recovery checkpoint</h2>
+<p>The frozen application <code>4beb84a</code> ran 3,622.110 active seconds and reconstructed all 297 turns, but <strong>failed the unchanged eight-second final cockpit shutdown limit</strong>. Its strict proof remains incomplete (26/27 checks); clean eventual exit codes and individual resource/storage observations do not override the failure. A native two-cockpit/watcher race passed. The History-scoped modal rerun and separate resource comparisons are pending. Application paths are unchanged; modal harness <code>46a89d0</code> is separately frozen. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/quality-completion.html">current quality report</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/quality-gate-followup.html">recovery protocol</a> for current results. Earlier stage checkpoints below are retained historical records.</p>
+<p>Current checkpoint: <strong>2026-11-15T19:19:39.972292+00:00</strong>. Merged baseline <strong><code>24ea0a9bab53c4f31fc450d04ed0cc2b00655626</code></strong> (<a href="https://github.com/abhishekash/agenturm/pull/108">PR #108</a>) passed all <strong>12 CI checks</strong> in <a href="https://github.com/abhishekash/agenturm/actions/runs/43639967120">run 43639967120</a>. Frozen runtime/harness <strong><code>4beb84aa93edf1922123686eb22894d1536b503b</code></strong> passed the revised retained functional prerequisite: <strong>9/9 turns and exact receipts, 27 strict checks, complete replacement cycle 2 and owned postconditions</strong>. Open <a href="https://github.com/abhishekash/agenturm/pull/109">PR #109</a> delivery <strong><code>3e91a4abd63e17b74b6caa8a393fa04cdb970069</code></strong> has identical runtime/harness bytes and a tested fixture/provenance-only correction. <strong>Delivery CI is pending; the hour is running with no verdict. Resource, live/human and release acceptance remain open.</strong></p>
 <h2>Ordered executable remainder</h2>
 <ol>
-<li><strong>Verify full CI for the merged startup repair.</strong> <a href="https://github.com/abhishekash/agenturm/pull/104">PR #104</a> is merged. The combined 60-case gate passed without warnings; the later targeted 22-case harness gate also passed. These overlap. Check the full matrix on the exact merged head; the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/startup-integration.html">integration report</a> retains the original warning, fixture correction and failed active smoke.</li>
-<li><strong>Prove and fix active MCP readiness.</strong> Use the <a href="https://github.com/abhishekash/agenturm/blob/eace36b6f824904e07fc80896749690e27142d07/docs/validation/full-corpus-startup-3fb.html">retained-corpus failure evidence</a> to identify the dependency behind the active 503. Preserve exact owner, capture, source and snapshot guarantees; accepting an unqualified payload is not a fix.</li>
-<li><strong>Complete functional lifecycle, then stability.</strong> Finish the retained-corpus workflow/restart/review/drain smoke with clean owned shutdowns. Only then run the actual one-hour workload. The failed configured 12-second attempt is not a passed smoke or abbreviated stability proof.</li>
-<li><strong>Run frozen resource acceptance.</strong> Register the exact combined source/harness/corpus and coordinated quiet windows. Execute cold, untouched idle, historical HTTP cadence, sustained/modal RSS and index/WAL/storage/drain gates. Retain every unavailable response and missed deadline; do not publish loaded p95 from post-abort reads.</li>
-<li><strong>Obtain external evidence.</strong> Run live producer qualification and the consented human reconstruction/resumption/repeat-use pilot when suitable sources and participants are available. Keep all denominators at zero until actual observations exist.</li>
+<li><strong>Finish and independently audit the running hour.</strong> Require at least 3,600 actual active seconds, complete post-both-replacements coverage, exact receipts, final native quiescence and normal warning-free exits/drains. Preserve any failure; do not infer success from elapsed time or partial counts.</li>
+<li><strong>Complete the revised modal and terminal gates.</strong> Observe fresh frames after triggering keys, finish the registered 100 measured modal cycles and native-race/real early-native-frame checks. Apply the registered memory, descriptor/thread and owned postcondition criteria.</li>
+<li><strong>Run the frozen resource comparisons.</strong> Cold and untouched idle use incremental baseline 24ea; the unchanged authenticated HTTP protocol uses historical 5e. Preserve every unavailable response and missed deadline, and retain the original thresholds and 4 GiB reserve. Active-functionality timings do not substitute for these gates.</li>
+<li><strong>Close release engineering.</strong> Review exact delivery CI, installed-wheel/CLI/privacy behavior, artifacts and documentation; reconcile all 38 ledger items with actual results before publication. Test-only delivery corrections do not alter the frozen runtime/harness evidence; any runtime change requires new exact-source qualification.</li>
+<li><strong>Obtain genuine external evidence.</strong> Qualify available live producers and conduct the consented reconstruction/resumption/repeat-use pilot when sources and participants are available. Denominators remain zero until observed.</li>
 </ol>
-<p>This orders acceptance work without widening features or relaxing budgets.</p>
+<p>The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/final-quality-gates.html">registered quality plan</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/quality-gate-followup.html">bounded follow-up</a> define these existing gates. The current <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/quality-completion.html">quality report</a> will record outcomes, including every failed attempt.</p>
 <h2>Current decision</h2>
 <ul>
-<li><strong>Merged:</strong> A–G increments, writer ownership #100, canonical success projection #101, metadata-only native bootstrap #102 README pip/uv instructions #103 and startup repair/diagnostics #104. Bootstrap keeps <code>updated=0</code>, history/usage unknown and content/workflow authority unavailable until ordinary coherent history is ready.</li>
-<li><strong>Current CI is pending:</strong> <a href="https://github.com/abhishekash/agenturm/actions/runs/43622391716">main104 run 43622391716</a> has eight successes and four Python jobs in progress at this fetch. PR102/main103 failures are retained separately; earlier green matrices do not certify this head.</li>
-<li><strong>Distinct startup outcomes:</strong> frozen 473 exceeded 600 seconds before timed work, with zero UI/heartbeat/turn samples. Candidate 3fb plus harness 883 reached retained-history readiness (<code>initial_readiness_seconds=221.505</code>, 52,002 Activity jobs / 5,752 summaries), then the configured 12-second functional smoke <strong>failed</strong> on <code>/api/mcp?limit=20</code> HTTP 503 after 7.305 active seconds, with zero completed turns and no restart. Neither is a one-hour pass or resource acceptance. The readiness observation retained 20 connection errors; eventual readiness is not uninterrupted HTTP availability.</li>
-<li><strong>Strict cadence remains invalid:</strong> 315/420 scheduled writes, with genuine 503, missed-slot and progress failures. Earlier 44/35, 5/114, 145/420 and 25/30 attempts remain preserved. There is no publishable historical loaded HTTP p95 or comparison.</li>
-<li><strong>Open:</strong> current full CI, active MCP availability, full one-hour stability, cold/useful-frame/idle/API/RSS/storage/WAL/drain targets and human pilot. Denominators remain <strong>0 participants / 0 sessions / 0 repeat-use observations</strong>. Live Claude/Pi remains unqualified.</li>
+<li><strong>Baseline and candidate evidence stay separate:</strong> main 108's all-green CI and original strict workflow are historical baseline evidence. Runtime 4beb's revised functional result passed 27 checks with 9/9 turns and exact receipts; its 69.350 active seconds are not an hour. Observed readiness was 117.572 seconds, descriptive only, not controlled cold acceptance.</li>
+<li><strong>Owned postconditions passed:</strong> one complete read-only snapshot, including retained WAL, had integrity <code>ok</code>, all four queues empty, unchanged DB/WAL hashes, no observed database descriptors and all registered owned lifetimes stopped. Post-close WAL was 6,373,672 bytes, below 2Q = 8,240,064 bytes. The original blanket process-scan rejection remains retained; unrelated protected processes are explicitly uninspected and outside benchmark ownership. No global host-descriptor claim follows.</li>
+<li><strong>Hour and modal checks are unfinished:</strong> the new hour is running without a verdict. Revised modal validation is planned after cycle 20. No stability, RSS/WAL plateau, cold, early-frame, idle or authenticated HTTP target has passed from this checkpoint. Overlapping active functional fixtures are not untouched idle or HTTP latency evidence.</li>
+<li><strong>Delivery CI is pending:</strong> the failed <code>b6f8eb6</code> remote 1,351-test job (two failures, two errors, 14 optional skips) remains failed. The fixture keyword/provenance correction is committed and pushed as <code>3e91a4a</code>; 37 local strict-warning tests passed in 12.302 seconds. No assertion, producer fixture, upstream schema or frozen runtime changed. Pending remote CI is not green.</li>
+<li><strong>Every prior failure remains:</strong> frozen473 startup timeout, 3fb MCP503, incomplete512 replacement coverage, 9bee Activity503, the failed 8e functional shutdown checks, failed 8e hour Metrics 503 at cycle14/phase0 and failed 8e modal palette deadline are retained. The 8e hour verified 42/42 turns but failed after 506.549 seconds including cleanup; ambiguous buffered counts do not reclassify the genuine Metrics 503. Invalid writer schedules still supply no accepted loaded p95.</li>
+<li><strong>External evidence remains absent:</strong> <strong>0 participants / 0 sessions / 0 repeat-use observations</strong>. Live Claude/Pi remains unqualified. Neither schemas nor generated fixtures constitute human or live-runtime outcomes.</li>
 </ul>
-<h2>Current implementation and next gates</h2>
-<p>A–G delivery remains qualified by exact ownership, capture and source contracts. Writer ownership #100, canonical success projection #101 and metadata-only bootstrap #102 are merged. README #103 adds pip installation alongside uv; it is not runtime evidence. The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/review-notes-acceptance.html">38-item audit</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/review-notes-acceptance-data.json">JSON ledger</a> retain historical snapshots and frozen links. The <a href="https://github.com/abhishekash/agenturm/blob/a241b149b7afa8661f99fb65871e4e45bcd1a7c0/docs/rfcs/review-notes-completion-plan.html">main97 plan</a> remains immutable.</p>
+<h2>Current stage delivery and acceptance</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
 <tr>
 <th>Stage</th>
-<th>Current delivery</th>
-<th>Remaining acceptance</th>
+<th>Delivered contract</th>
+<th>Remaining gate</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>A · scope/continuity</td>
-<td>Merged #71/#87 with qualified exact scope/current-layout proof.</td>
-<td>Unknown membership stays unavailable; no universal live-runtime promise.</td>
+<td>Merged exact execution and current-layout membership contracts.</td>
+<td>Unknown membership remains unavailable; live runtime coverage qualified.</td>
 </tr>
 <tr>
 <td>B · economics</td>
-<td>Read/source/Sessions/MCP/replay and #97/#100/#101 components merged. Startup writer repair, harness and fixture corrections merged #104.</td>
-<td>Failed attempts and all cold/idle/API/RSS/storage/soak gates remain open.</td>
+<td>Indexed/read/write improvements and certifications through #108. Unmerged 4beb/3e91 follow-up skips measured exact native replays and qualifies storage/fresh-frame observations.</td>
+<td>Revised functional prerequisite passed; hour running, modal planned, delivery CI/resource acceptance pending.</td>
 </tr>
 <tr>
 <td>C · facts/Findings/Overview</td>
-<td>Merged #75/#76/#78/#88 and partial native frame #102.</td>
-<td>Current CI pending; sustained privacy/ownership/resource acceptance open.</td>
+<td>Merged source-backed evidence and metadata-only native bootstrap.</td>
+<td>Sustained combined-source privacy/readiness and real early-frame timing pending.</td>
 </tr>
 <tr>
 <td>D · Git/continuity</td>
-<td>Merged #77 with frozen approval and egress guards.</td>
+<td>Merged frozen captures, approved drafts and egress guards.</td>
 <td>Human reconstruction/resumption/reuse unmeasured.</td>
 </tr>
 <tr>
 <td>E · explanations</td>
-<td>Merged #81; window/allocation limits retained.</td>
-<td>Current combined CI/resources not accepted.</td>
+<td>Merged qualified denominators and scope labels.</td>
+<td>Combined resources and external outcomes pending.</td>
 </tr>
 <tr>
 <td>F · attention/native</td>
-<td>Merged #82; bootstrap #102 has no ledger/finalization/acknowledgement authority.</td>
-<td>Live approvals, desktop precision and sustained acceptance open.</td>
+<td>Merged durable shared delivery; bootstrap remains display-only.</td>
+<td>Sustained restart/delivery validation and live request/desktop evidence qualified.</td>
 </tr>
 <tr>
-<td>G · investigations/pilot kit</td>
-<td>Merged #80 with typed retained-source contracts.</td>
-<td>Index/resource acceptance and participant outcomes open.</td>
+<td>G · investigation/pilot kit</td>
+<td>Merged bounded typed retained search and pilot materials.</td>
+<td>Final index/resource acceptance and actual participants remain open.</td>
 </tr>
 </tbody>
 </table></div>
+<p>The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/review-notes-acceptance.html">38-item audit</a> retains exact code/test links and historical failures. Candidate status is not a completed release.</p>
 <h2>Historical design and evidence boundaries</h2>
 <p>The implementation designs and at-time evidence below are preserved. Current delivery and acceptance above supersede historical pending labels. The original main97 JSON and Markdown snapshot remain retained rather than being rewritten as a pass.</p>
 <h2>Delivery and trust rules</h2>
@@ -88,8 +92,8 @@
 <tbody>
 <tr>
 <td>F1: CPU/RSS economics</td>
-<td>Open resource acceptance. Read/source increments and same-snapshot/catch-up through #90, normalized harness #93/#95, privacy #94 and bounded performance components #97 are merged. Historical CI failures remain retained; current main104 combined CI is pending. Writer ownership #100, canonical success projection #101 and metadata-only bootstrap #102 are merged. Startup repair, diagnostics and receiver/fixture tests merged #104; full CI remains pending.</td>
-<td>Cold readiness &lt;30 s, complete-monitor idle CPU &lt;5%, Sessions/MCP actual HTTP under-write p95 &lt;100 ms and final combined memory/WAL acceptance remain open. Direct Store/query-work results do not prove those HTTP or whole-monitor targets. Full common-corpus HTTP B 44 / C 35 and tiny e795/029719b 5/114 accepted batches are invalid. Most 200 reads occurred after writer abort; no loaded p95 may be published. Isolated sanitized-facts/scratch/terminal/context improvements preserve outputs but do not close whole-monitor budgets. Strict cadence 315/420 remains invalid. Frozen 473 failed its 600-second readiness deadline before timed work. The separate 3fb smoke reached readiness in a recorded 221.505 seconds, then failed active MCP HTTP 503 at 7.305 seconds, with zero turns; neither closes performance acceptance.</td>
+<td>Open resource acceptance. Read/source increments and same-snapshot/catch-up through #90, normalized harness #93/#95, privacy #94 and bounded performance components #97 are merged. Historical CI failures remain retained; merged main 108 has all 12 CI checks successful; the later quality candidate remains unmerged and pending acceptance. Writer ownership #100, canonical success projection #101 and metadata-only bootstrap #102 are merged. Startup writer repair, readiness diagnostics and receiver/fixture corrections merged #104; baseline main 108 CI passed; quality-candidate CI and sustained acceptance remain open. MCP certification #106, tail sampling #107 and small native publication/read certification #108 are merged. The measured OpenCode no-op and coherent storage/fresh-key-frame follow-up is in unmerged PR109; delivery 3e91 is runtime/harness-identical to frozen4beb.</td>
+<td>Cold readiness &lt;30 s, complete-monitor idle CPU &lt;5%, Sessions/MCP actual HTTP under-write p95 &lt;100 ms and final combined memory/WAL acceptance remain open. Direct Store/query-work results do not prove those HTTP or whole-monitor targets. Full common-corpus HTTP B 44 / C 35 and tiny e795/029719b 5/114 accepted batches are invalid. Most 200 reads occurred after writer abort; no loaded p95 may be published. Isolated sanitized-facts/scratch/terminal/context improvements preserve outputs but do not close whole-monitor budgets. Strict cadence 315/420 remains invalid. Frozen 473 failed its 600-second readiness deadline before timed work. The separate 3fb smoke reached readiness in a recorded 221.505 seconds, then failed active MCP HTTP 503 at 7.305 seconds, with zero turns; neither closes performance acceptance. Frozen runtime 4beb now passed the revised 9/9-turn, 27-check functional prerequisite, including exact receipts and owned postconditions. Its 117.572-second readiness is descriptive. The hour subsequently failed the eight-second final cockpit shutdown deadline after 3,622.110 active seconds and 297/297 reconstructed turns. History-scoped modal and independent resource qualification remain pending; the original failure is retained. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/quality-gate-followup.html">quality follow-up</a> and the current <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/quality-completion.html">quality report</a>.</td>
 </tr>
 <tr>
 <td>F2: No default retention</td>
@@ -124,7 +128,7 @@
 <tr>
 <td>F8: Low roster/Overview information density</td>
 <td>Implemented, qualified. Merged <a href="https://github.com/abhishekash/agenturm/pull/72">#72</a> / <a href="https://github.com/abhishekash/agenturm/pull/74">#74</a> / <a href="https://github.com/abhishekash/agenturm/pull/78">#78</a>. Metadata-only initial native observations merged #102 at abf1627; task/path/prompt content is withheld and the coherent snapshot clock stays zero.</td>
-<td>Compact/expanded inspectors show recorded paths/checks/issues before assistant claims; hierarchy/shading/keyboard behavior retained. Loaded bounded evidence is not a full-history summary. A useful first-native-frame target on retained history remains unproved. Frozen 473 Feed correctly refused fatal health. Partial metadata is not full history readiness. Metadata-only native bootstrap is merged in PR #102. The partial frame preserves unknown history/usage and withholds source content and lifecycle authority. A useful first-native frame and resource acceptance on the retained corpus remain open; the original frozen-473 fatal-health refusal is not relabelled as a successful first frame.</td>
+<td>Compact/expanded inspectors show recorded paths/checks/issues before assistant claims; hierarchy/shading/keyboard behavior retained. Loaded bounded evidence is not a full-history summary. A useful first-native-frame target on retained history remains unproved. Frozen 473 Feed correctly refused fatal health. Partial metadata is not full history readiness. Metadata-only native bootstrap is merged in PR #102. The partial frame preserves unknown history/usage and withholds source content and lifecycle authority. A useful first-native frame and resource acceptance on the retained corpus remain open; the original frozen-473 fatal-health refusal is not relabelled as a successful first frame. Frozen runtime 4beb now passed the revised 9/9-turn, 27-check functional prerequisite, including exact receipts and owned postconditions. Its 117.572-second readiness is descriptive. The hour subsequently failed the eight-second final cockpit shutdown deadline after 3,622.110 active seconds and 297/297 reconstructed turns. History-scoped modal and independent resource qualification remain pending; the original failure is retained. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/quality-gate-followup.html">quality follow-up</a> and the current <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/quality-completion.html">quality report</a>.</td>
 </tr>
 <tr>
 <td>F9: Old completion backlog</td>
@@ -148,7 +152,7 @@
 </tr>
 <tr>
 <td>F13: Strong MCP screen lacks qualified recommendations</td>
-<td>Implemented and merged; current combined CI pending/failed. Merged #81 at 093bf878; shared-query economics merged #83 at 728e0ba.</td>
+<td>Implemented and merged; baseline CI passed; final acceptance open. Merged #81 at 093bf878; shared-query economics merged #83 at 728e0ba.</td>
 <td>Selected-tool loaded-page outcome/duration denominators, small samples, actual configured-server unobserved context and keyboard flagged-call navigation are visible and tested. No response-correctness, all-history reliability or tool-deletion conclusion follows. Earlier corrected E head and previous main <code>55c6244</code> each passed all 12 checks; final resources/live outcomes remain separate.</td>
 </tr>
 <tr>
@@ -159,7 +163,7 @@
 <tr>
 <td>F15: Historical JSON expansion/read cost</td>
 <td>Partial resource acceptance. Indexed/scalar/source/Sessions/MCP/replay increments are merged through #86; same-source snapshot certification #88 and bounded incoming availability #90 are merged.</td>
-<td>Indexed Activity/scalar rollups and bounded source reads replace repeated full-history Activity expansion. Remaining retained MCP grouping, cold migration and combined monitor cost are material and not closed. Normalized short soak/modal preflights are functional only. No final combined one-hour RSS/WAL plateau or storage-growth acceptance; full HTTP writer-deadline failures remain invalid. Startup writer admission and readiness diagnostics merged #104 after focused validation; full CI and sustained acceptance remain open. The newer retained smoke reached initial readiness, then failed active MCP HTTP 503. The original 473 timeout and every failed cadence attempt remain retained.</td>
+<td>Indexed Activity/scalar rollups and bounded source reads replace repeated full-history Activity expansion. Remaining retained MCP grouping, cold migration and combined monitor cost are material and not closed. Normalized short soak/modal preflights are functional only. No final combined one-hour RSS/WAL plateau or storage-growth acceptance; full HTTP writer-deadline failures remain invalid. Startup writer admission and readiness diagnostics merged #104 after focused validation; baseline main 108 CI passed; quality-candidate sustained acceptance remains open. The historical 3fb retained smoke reached initial readiness, then failed active MCP HTTP 503; the later baseline main 108 workflow passed its distinct strict functional gate. The original 473 timeout and every failed cadence attempt remain retained. Frozen runtime 4beb now passed the revised 9/9-turn, 27-check functional prerequisite, including exact receipts and owned postconditions. Its 117.572-second readiness is descriptive. The hour subsequently failed the eight-second final cockpit shutdown deadline after 3,622.110 active seconds and 297/297 reconstructed turns. History-scoped modal and independent resource qualification remain pending; the original failure is retained. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/quality-gate-followup.html">quality follow-up</a> and the current <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/quality-completion.html">quality report</a>.</td>
 </tr>
 <tr>
 <td>F16: Local API/privacy/redaction defaults</td>
@@ -203,8 +207,8 @@
 </tr>
 <tr>
 <td>F24: Passing suite hid fixture mismatch</td>
-<td>Startup writer admission, actual MCP readiness fixture and deterministic native fixture connection closure merged #104. Its focused gates passed; main104 full CI is pending. PR102/main103 failures and earlier exact-head successes remain retained.</td>
-<td>ResourceWarning boundaries and owned soak connections corrected in #96 without suppression. New #96 wording/readiness failures have a local correction subsequently merged #98, whose exact head matrix later passed all 12 checks; exact original CLI HTTP cause is unknown. Source contracts, remote CI, invalid performance runs and live/pilot outcomes are separate. PR95/main95 and PR96/main96 run IDs and actual failure details are retained above and in JSON. Controlled pending-migration HTTP 503→ready200 proves a fixture readiness race, not a unique diagnosis of the earlier CI failure. Local passing tests are not remote all-green. Root reproduced four MCP null/empty inspector subtest errors on main103: the test double lacks native_page_pending. The fixture-only correction merged #104 after 28 UI/model cases and an overlapping seven-model Python 3.13 gate passed; a separate 60-case combined gate passed without warnings. Earlier failures and unknown wire causes remain retained.</td>
+<td>Baseline CI passed; corrected delivery CI pending; historical failures retained. Startup writer admission, actual MCP readiness fixture and deterministic native fixture connection closure merged #104. Its focused gates passed; merged main 108 full CI passed; quality-candidate CI and acceptance remain separate. PR102/main103 failures and earlier exact-head successes remain retained. The failed b6 full 1,351-test job is preserved. Its test keyword/provenance correction is committed and pushed as3e91; 37 local tests passed, remote CI is pending.</td>
+<td>ResourceWarning boundaries and owned soak connections corrected in #96 without suppression. New #96 wording/readiness failures have a local correction subsequently merged #98, whose exact head matrix later passed all 12 checks; exact original CLI HTTP cause is unknown. Source contracts, remote CI, invalid performance runs and live/pilot outcomes are separate. PR95/main95 and PR96/main96 run IDs and actual failure details are retained above and in JSON. Controlled pending-migration HTTP 503→ready200 proves a fixture readiness race, not a unique diagnosis of the earlier CI failure. Local passing tests are not remote all-green. Root reproduced four MCP null/empty inspector subtest errors on main103: the test double lacks native_page_pending. The fixture-only correction merged #104 after 28 UI/model cases and an overlapping seven-model Python 3.13 gate passed; a separate 60-case combined gate passed without warnings. Earlier failures and unknown wire causes remain retained. Frozen runtime 4beb now passed the revised 9/9-turn, 27-check functional prerequisite, including exact receipts and owned postconditions. Its 117.572-second readiness is descriptive. The hour subsequently failed the eight-second final cockpit shutdown deadline after 3,622.110 active seconds and 297/297 reconstructed turns. History-scoped modal and independent resource qualification remain pending; the original failure is retained. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/quality-gate-followup.html">quality follow-up</a> and the current <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/quality-completion.html">quality report</a>.</td>
 </tr>
 <tr>
 <td>F25: OpenCode prompts excluded by trace</td>
@@ -219,7 +223,7 @@
 <tr>
 <td>F27: Cockpit-bound delivery, native events and Git</td>
 <td>Implemented and merged; runtime/external gates open. Git/drafts merged #77; persistent/native delivery merged #82 at e434fcf.</td>
-<td>Headless watcher, shared claims, receiver-owned native inventory and shared Review parity are merged. Generated two-cockpit+watcher preflight passed with one fixture notification and 210 unrelated records per transition, ack/restart and exact resolution. Historical main <code>55c6244</code> CI passed; current main104 CI is pending; live request-contract/clock/capacity/desktop precision remain qualified; native approval stays manual.  Bootstrap #102 is display-only; it does not observe/finalize attention or acknowledge native work.</td>
+<td>Headless watcher, shared claims, receiver-owned native inventory and shared Review parity are merged. Generated two-cockpit+watcher preflight passed with one fixture notification and 210 unrelated records per transition, ack/restart and exact resolution. Historical main <code>55c6244</code> CI passed; merged main 108 CI passed; later quality-candidate acceptance is pending; live request-contract/clock/capacity/desktop precision remain qualified; native approval stays manual.  Bootstrap #102 is display-only; it does not observe/finalize attention or acknowledge native work.</td>
 </tr>
 </tbody>
 </table></div>
@@ -280,8 +284,8 @@
 </tr>
 <tr>
 <td>R10: safe collection</td>
-<td>PR67 defaults remain non-negotiable; new data/projections obey capture policy, retention, redaction and auth; all stages.</td>
-<td>Implemented safeguards; combined gates open. Merged defaults #67/#70 and merged E/F/G paths inherit invariants; combined-source acceptance remains separate. Shared Feed/source/UI/CLI generation fixes merged #94 with a 102-test local integration gate; latest remote CI remains pending/failed as recorded.</td>
+<td>PR67 defaults remain non-negotiable; capture policy, retention, redaction and authentication remain required.</td>
+<td>Implemented safeguards; combined gates open. Merged defaults #67/#70 and merged E/F/G paths inherit invariants; combined-source acceptance remains separate. Shared Feed/source/UI/CLI generation fixes merged #94 with a 102-test local integration gate; merged main 108 all 12 CI checks passed; earlier failed fetches remain historical.</td>
 </tr>
 <tr>
 <td>R11: optional native lifecycle</td>

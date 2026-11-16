@@ -1,5 +1,9 @@
 # Qualify native storage progress and exact replay
 
+## Superseded execution plan
+
+The user stopped extended validation on 16 November and explicitly removed the 100-run requirement. The final History-scoped attempt stopped on request after 81 measured cycles, with clean receiver/cockpit exits. Queued resource comparisons were cancelled before launch. The [bounded completion plan](final-quality-gates.html) is authoritative; the protocols below are retained historical records, not instructions to continue running.
+
 This follow-up keeps the existing quality targets and replaces the ambiguous storage-error metric before a new candidate is frozen. The earlier candidate `8e7193b7f89b1cc5ad12d9f56814d08a0ded6e3d` remains separate: its isolated retained workflow passed 22 checks and 9/9 exact receipts, while its subsequent hour attempt failed a genuine Metrics HTTP 503 with 42/42 reconstructed turns; its 506.549-second elapsed result includes cleanup. Its 100-cycle modal attempt stopped on an Investigate navigation deadline. Neither is accepted or reclassified.
 
 ## Measured changes
@@ -31,3 +35,17 @@ Finish with exact-head CI, installed-wheel/CLI/privacy checks, current acceptanc
 The application remains frozen at `4beb84aa93edf1922123686eb22894d1536b503b`, as does the running hour's harness. Its first revised modal attempt completed ten warmup and 92 measured cycles, then failed an exact source-selection deadline. The recorded selection never advanced to the next requested source; the evidence does not establish which blind key was lost. It remains a failed, incomplete run.
 
 A separately frozen modal harness now observes foreground Agents focus, search-input focus and exact source identity at each transition. It also requires a post-Escape main/table observation after returning from source inspection. It sends the same keys, exercises the same five sources and 100 measured cycles, and retains the existing deadlines and memory/cache/storage limits. Application, hour, first-frame, idle and HTTP implementation bytes are unchanged. Each run records its actual application/harness pair; the new driver does not retrospectively accept earlier artifacts.
+
+## Recovery checkpoint, 15 November
+
+The coordinating session ended on a usage limit; its registered hour continued. The frozen `4beb84a` hour recorded 3,622.110 active seconds and reconstructed all 297 turns, including exact accepted/persisted receipts and a complete cycle after both process replacements. It failed the unchanged eight-second final cockpit exit deadline. Both cockpits ultimately recorded code 0 without workflow warnings. The independent proof passes 26 of 27 checks and remains incomplete because the original run failed. Registered per-lifetime RSS, descriptor and thread bounds and read-only integrity/empty-queue/hash/WAL checks passed individually; neither those observations nor a short diagnostic can turn the failed soak into a pass.
+
+The first revised modal run remains failed after 92 measured cycles. Its separately frozen search-focus follow-up failed before measurement because the driver required `Input`, while the production widget is `SearchInput`. The corrected driver is frozen at `128c8ce`; its regression fixture derives the type name from the actual production widget and rejects an unrelated generic input. Ten focused tests and a six-cycle real terminal smoke passed. The full 10-warmup/100-measured run retains the original keys, five exact sources, deadlines and resource rules.
+
+The retained native notification race passed on `4beb84a`: two cockpits plus a headless watcher delivered one fixture notification, retained acknowledgement across observer restarts and resolved the exact request. Early-frame validation captured a real metadata-only partial frame but subsequently failed; its reason is under investigation, and no complete startup observation or performance acceptance is claimed. The first recovery attempt was denied disk admission before timing. Stopped generated working databases are preserved in byte-exact, hash-verified private archives, including retained WAL; failed results and registrations are unchanged.
+
+## Independent resource measurements after the failed soak
+
+The failed eight-second shutdown does not itself invalidate a subsequent isolated cold/idle or HTTP timing window. Before these new runs, the recovery protocol registers a separate admission policy: require the exact original shutdown failure, all other 26 strict checks, unchanged source/seed/evidence hashes, stopped owned lifetimes and clean independent integrity/queue/hash/descriptor observations. The original hour remains failed and its overall postcondition certificate remains false. The private recovery runner must keep combined acceptance false even if every independent resource target passes.
+
+The corpus, sequential BC/CB order, 60/300-second warm/untouched idle windows, CPU denominator, HTTP baselines, all 420 scheduled writes, read pairs, deadlines, disk reserve, storage rules and target values are unchanged. Every arm is retained once. This is a change to execution admission, not a relaxation of measurement or combined release criteria. No independent resource run begins while modal, native, frame, tracing or archive workers remain active.

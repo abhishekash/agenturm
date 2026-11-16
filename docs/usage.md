@@ -656,7 +656,7 @@ of loaded source records. Partial coverage is explicit. Exit 0 means inspection
 succeeded, including captured failures; it does not mean validation passed.
 `--output review.md` writes new Markdown and HTML companions; `.json` also retains
 the machine projection. Captured content is not redacted for sharing. These
-additions require the checkout and updated receiver; they are not in 0.2.3.
+additions are available in 0.2.4; restart any separately running receiver after upgrading.
 See [execution evidence contracts and limits](work-receipts.md).
 
 The Workflow inbox uses incident identities and local seen/reviewed state.
