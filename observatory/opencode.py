@@ -1036,11 +1036,11 @@ class OpenCodeReader:
             self.fingerprint=None;self.sessions=[];self.backlog_records=1
             return 0
         if accepted:
-            self.store.ingest(accepted)
+            self.store.ingest(accepted,skip_unchanged_native=True)
         if progress_logs:
-            self.store.ingest_logs(progress_logs)
+            self.store.ingest_logs(progress_logs,skip_unchanged_native=True)
         if prompt_logs:
-            self.store.ingest_logs(prompt_logs)
+            self.store.ingest_logs(prompt_logs,skip_unchanged_native=True)
         self.sessions = sorted(sessions, key=lambda item: (-item['last_update_ns'], item['session_id']))
         # Publish only after successful ingestion, so a failure can be retried.
         self._message_revisions = {key: value for key, value in message_revisions.items() if key in message_window}

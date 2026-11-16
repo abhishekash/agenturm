@@ -1,5 +1,6 @@
 """Recorded parent relationships join user turns without merging step traces."""
 
+from contextlib import closing
 import json
 import sqlite3
 import threading
@@ -16,7 +17,7 @@ class OpenCodeTurnTests(unittest.TestCase):
     setUp = fixture.OpenCodeReaderTests.setUp
 
     def test_user_prompt_two_steps_and_second_turn_remain_disjoint_through_http(self):
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             db.execute("DELETE FROM todo")
             original = json.loads(
                 db.execute("SELECT data FROM message WHERE id='msg_test'").fetchone()[0]
@@ -126,7 +127,7 @@ class OpenCodeTurnTests(unittest.TestCase):
         self.assertEqual(self.store.review_turn(trace)["input_tokens"], 17)
 
     def test_missing_foreign_or_contradictory_parents_never_widen_to_session(self):
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             db.execute("DELETE FROM todo")
             original = json.loads(
                 db.execute("SELECT data FROM message WHERE id='msg_test'").fetchone()[0]
@@ -140,7 +141,7 @@ class OpenCodeTurnTests(unittest.TestCase):
         reader.poll()
         trace = identity("opencode-trace", "ses_test", "msg_test")
         self.assertIsNone(self.store.review_turn(trace))
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             original.pop("parent_id")
             original["parentID"] = "late-user"
             db.execute(
@@ -149,7 +150,7 @@ class OpenCodeTurnTests(unittest.TestCase):
             )
         reader.poll()
         self.assertIsNone(self.store.review_turn(trace))
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             db.execute(
                 "INSERT INTO message VALUES(?,?,?,?,?)",
                 (
@@ -171,7 +172,7 @@ class OpenCodeTurnTests(unittest.TestCase):
         self.assertIsNotNone(self.store.review_turn(trace))
 
     def test_progress_does_not_hide_turn_membership_or_turn_evidence(self):
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             original = json.loads(
                 db.execute("SELECT data FROM message WHERE id='msg_test'").fetchone()[0]
             )
@@ -225,7 +226,7 @@ class OpenCodeTurnTests(unittest.TestCase):
     def test_part_only_streaming_updates_are_bounded_and_idempotent(self):
         from observatory.opencode import MAX_PAYLOAD_BYTES
 
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             db.execute("DELETE FROM todo")
             db.execute(
                 "INSERT INTO part VALUES(?,?,?,?,?)",
@@ -247,7 +248,7 @@ class OpenCodeTurnTests(unittest.TestCase):
                 for row in self.store.activity_page(trace_id=trace)["activity"]
             },
         )
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             db.execute(
                 "UPDATE part SET data=? WHERE id='text-reply'",
                 (json.dumps({"type": "text", "text": "Final complete reply"}),),
@@ -260,7 +261,7 @@ class OpenCodeTurnTests(unittest.TestCase):
         self.assertIn("Final complete reply", subjects)
         self.assertNotIn("First partial reply", subjects)
         self.assertEqual(reader.poll(), 0)
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             db.execute(
                 "UPDATE part SET data=? WHERE id='text-reply'",
                 (
@@ -279,7 +280,7 @@ class OpenCodeTurnTests(unittest.TestCase):
         )
 
     def test_missing_step_usage_is_not_summed_as_zero(self):
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             db.execute("DELETE FROM todo")
             original = json.loads(
                 db.execute("SELECT data FROM message WHERE id='msg_test'").fetchone()[0]

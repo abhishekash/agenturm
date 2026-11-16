@@ -319,6 +319,18 @@ class Session:
         self._redaction_pending = False
         self._pending_spans_done = False
         self._pending_retry = False
+        # State publication is constant-time and never holds this lock during
+        # source, policy or SQLite I/O. Diagnostics must not combine fields
+        # from two different batches while the collector is writing.
+        self._storage_lock = threading.Lock()
+        self._storage_epoch = identity(time.monotonic_ns(), id(self))
+        self._storage_counter = 0
+        self._storage_buffer = None
+        self._storage_batch_id = None
+        self._storage_started = self._storage_progress_at = None
+        self._storage_progress_sequence = 0
+        self._storage_attempt_in_flight = False
+        self._storage_stage = 'idle'
         self._current_record_offset = 0
 
     @property
@@ -407,7 +419,67 @@ class Session:
         else:
             self.tasks.clear()
 
+    def _new_storage_batch(self, spans, logs):
+        now = time.monotonic()
+        with self._storage_lock:
+            self._pending_ingest = (spans, logs)
+            self._pending_spans_done = False
+            self._pending_retry = False
+            self._storage_counter += 1
+            self._storage_batch_id = self._storage_epoch + ':' + str(self._storage_counter)
+            self._storage_buffer = self._pending_ingest
+            self._storage_started = self._storage_progress_at = now
+            self._storage_progress_sequence = 0
+            self._storage_attempt_in_flight = True
+            self._storage_stage = 'prepared'
+
+    def _storage_step(self, stage, *, progressed=False, spans_done=False):
+        now = time.monotonic()
+        with self._storage_lock:
+            self._storage_stage = stage
+            if progressed:
+                self._storage_progress_sequence += 1
+                self._storage_progress_at = now
+            if spans_done:
+                self._pending_spans_done = True
+
+    def storage_diagnostics(self):
+        """One coherent metadata snapshot; totals remain the buffered batch size.
+
+        A retry may include spans already committed before its logs failed.
+        Empty batches may also need a capture-policy retry, so the boolean
+        failure state is authoritative independently of the record count.
+        A retrying attempt stays ``retry`` while its in-flight flag is true.
+        Progress advances after successful steps, not merely another attempt;
+        batch age never resets on retry. Unknown state cannot certify delivery.
+        """
+        now = time.monotonic()
+        with self._storage_lock:
+            pending = self._pending_ingest
+            total = sum(map(len, pending)) if pending is not None else 0
+            known = pending is self._storage_buffer
+            retry = bool(self._pending_retry)
+            running = self._storage_attempt_in_flight
+            state = ('idle' if pending is None and not retry and not running else
+                     'retry' if known and pending is not None and retry else
+                     'writing' if known and pending is not None and running else 'unknown')
+            active = pending is not None
+            return dict(storage_diagnostics_version=1, storage_state=state,
+                pending_storage_records=total, storage_retry_pending=retry,
+                storage_attempt_in_flight=running,
+                storage_retry_records=total if state == 'retry' else 0,
+                storage_in_flight_records=total if state == 'writing' else 0,
+                storage_unknown_records=total if state == 'unknown' else 0,
+                storage_batch_id=self._storage_batch_id if active and known else None,
+                storage_batch_age_seconds=max(0, now-self._storage_started)
+                    if active and known and self._storage_started is not None else None if active else 0,
+                storage_progress_age_seconds=max(0, now-self._storage_progress_at)
+                    if active and known and self._storage_progress_at is not None else None if active else 0,
+                storage_progress_sequence=self._storage_progress_sequence if active and known else 0,
+                storage_stage=self._storage_stage if known else 'unknown')
+
     def diagnostics(self):
+        storage = self.storage_diagnostics()
         return {"source_path": str(self.path), "last_success_ns": self.last_success_ns,
                 "backlog_bytes": self.backlog_bytes, "skipped_records": self.skipped,
                 "source_size_bytes": self.source_size_bytes, "source_mtime_ns": self.source_mtime_ns,
@@ -418,7 +490,7 @@ class Session:
                 "bytes_read": self.offset,
                 "skipped_oversized_records": self.skipped_oversized,
                 "schema_errors": self.schema_errors,
-                "pending_storage_records": sum(map(len,self._pending_ingest)) if self._pending_ingest is not None else 0,
+                **storage,
                 "cache_evictions": sum(mapping.evictions for mapping in
                     (self.started, self.tasks, self.calls, self.tool_inputs, self.usage, self.pending_tools, self.pending_request_times)),
                 "cache_tracked_bytes": sum(mapping.tracked_bytes for mapping in
@@ -1135,8 +1207,7 @@ class Session:
                 log['service'] = self.service
                 log['body'] = ''
                 log['attributes']=internal_review_attrs(log['attributes'])
-        self._pending_ingest=(spans,logs)
-        self._pending_spans_done=False;self._pending_retry=False
+        self._new_storage_batch(spans, logs)
         self.flush_pending_ingest()
         state = "running" if time.time() - stat.st_mtime < 35 else "stopped"
         if time.monotonic() - self.last_heartbeat > 10 or state != self.last_state:
@@ -1147,39 +1218,75 @@ class Session:
         return len(spans)
 
     def flush_pending_ingest(self):
-        spans,logs=self._pending_ingest
+        with self._storage_lock:
+            spans,logs=self._pending_ingest
+            # Directly restored/legacy buffered batches have no current state
+            # publication until a real delivery attempt starts here.
+            if self._pending_ingest is not self._storage_buffer:
+                now = time.monotonic()
+                self._storage_counter += 1
+                self._storage_batch_id = self._storage_epoch + ':' + str(self._storage_counter)
+                self._storage_buffer = self._pending_ingest
+                self._storage_started = self._storage_progress_at = now
+                self._storage_progress_sequence = 0
+            self._storage_attempt_in_flight = True
+            self._storage_stage = 'capture_policy'
         try:
-            if spans or logs or self._redaction_pending:self.refresh_capture_policy()
-            if self.internal:
-                from .native_policy import scrub_record
-                spans=[scrub_record(row,'span') for row in spans]
-                logs=[scrub_record(row,'log') for row in logs]
-                self._pending_ingest=(spans,logs)
-            if self._redaction_pending:
-                self.store.redact_internal_source(self.source_id)
-                self._redaction_pending=False
-            if spans and not self._pending_spans_done:
-                self.store.ingest(spans,native_retry=self._pending_retry,native_source_path=self.path)
-                self._pending_spans_done=True
+            try:
+                if spans or logs or self._redaction_pending:
+                    self.refresh_capture_policy()
+                    self._storage_step('capture_policy', progressed=True)
+                if self.internal:
+                    from .native_policy import scrub_record
+                    spans=[scrub_record(row,'span') for row in spans]
+                    logs=[scrub_record(row,'log') for row in logs]
+                    with self._storage_lock:
+                        self._pending_ingest=(spans,logs)
+                        self._storage_buffer=self._pending_ingest
+                if self._redaction_pending:
+                    self._storage_step('redaction')
+                    self.store.redact_internal_source(self.source_id)
+                    self._redaction_pending=False
+                    self._storage_step('redaction', progressed=True)
+                if spans and not self._pending_spans_done:
+                    self._storage_step('spans')
+                    self.store.ingest(spans,native_retry=self._pending_retry,native_source_path=self.path)
+                    self._storage_step('spans', progressed=True, spans_done=True)
+                if logs:
+                    self._storage_step('logs')
+                    self.store.ingest_logs(logs,native_retry=self._pending_retry,native_source_path=self.path)
+                    self._storage_step('logs', progressed=True)
+                if spans or logs:
+                    self._storage_step('capture_policy')
+                    self.refresh_capture_policy()
+                    self._storage_step('capture_policy', progressed=True)
+            except Exception:
+                with self._storage_lock:self._pending_retry=True
+                raise
+            self._storage_step('collector_metadata')
             if logs:
-                self.store.ingest_logs(logs,native_retry=self._pending_retry,native_source_path=self.path)
-            if spans or logs:self.refresh_capture_policy()
-        except Exception:
-            self._pending_retry=True
-            raise
-        if logs:
-            last = logs[-1]
-            self.last_activity = {"time_unix_nano": last["time_unix_nano"],
-                                  "domain": last["attributes"].get("agent.activity.domain"),
-                                  "action": last["attributes"].get("agent.activity.action"),
-                                  "subject": last["attributes"].get("agent.activity.subject"),
-                                  "result": last["attributes"].get("agent.activity.result")}
-        self.spans_last_poll = len(spans)
-        self.logs_last_poll = len(logs)
-        self.spans_total += len(spans)
-        self.logs_total += len(logs)
-        self.last_success_ns = time.time_ns()
-        self._pending_ingest=None
+                last = logs[-1]
+                self.last_activity = {"time_unix_nano": last["time_unix_nano"],
+                                      "domain": last["attributes"].get("agent.activity.domain"),
+                                      "action": last["attributes"].get("agent.activity.action"),
+                                      "subject": last["attributes"].get("agent.activity.subject"),
+                                      "result": last["attributes"].get("agent.activity.result")}
+            self.spans_last_poll = len(spans)
+            self.logs_last_poll = len(logs)
+            self.spans_total += len(spans)
+            self.logs_total += len(logs)
+            self.last_success_ns = time.time_ns()
+            with self._storage_lock:
+                self._pending_ingest=None
+                self._pending_retry=False
+                self._storage_buffer=None
+                self._storage_batch_id=None
+                self._storage_started=self._storage_progress_at=None
+                self._storage_progress_sequence=0
+                self._storage_stage='idle'
+                self._storage_attempt_in_flight=False
+        finally:
+            with self._storage_lock:self._storage_attempt_in_flight=False
 
 
 CLAUDE_META_BYTES = 64 * 1024

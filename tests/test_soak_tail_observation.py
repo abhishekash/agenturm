@@ -37,6 +37,14 @@ class SoakTailObservationTests(unittest.TestCase):
         (base/'telemetry.db').write_bytes(b'generated-test-placeholder')
         rows=[dict(session_id='soak-'+name,agent_id=name,trace_id='trace-'+name)
             for name in ('parent','child','opencode')]
+        for row in rows:
+            row.update(runtime='OpenCode'if row['agent_id']=='opencode'else'Codex',source_id=row['agent_id'])
+            if row['runtime']=='Codex':
+                row['diagnostics']=dict(storage_diagnostics_version=1,storage_state='idle',
+                    pending_storage_records=0,storage_in_flight_records=0,storage_retry_records=0,
+                    storage_unknown_records=0,storage_retry_pending=False,storage_attempt_in_flight=False,
+                    storage_batch_id=None,storage_batch_age_seconds=0,storage_progress_age_seconds=0,
+                    storage_progress_sequence=0)
         health=dict(receiver_id='generated-receiver',indexing=dict(ready=True),
             local_agents=dict(sessions=rows,initial_poll_complete=True))
         def get(path):
@@ -66,7 +74,8 @@ class SoakTailObservationTests(unittest.TestCase):
             collect_review=projection,api=SimpleNamespace(get=get),ExecutionScope=lambda **kw:SimpleNamespace(**kw),
             classify=lambda row,scope,*args,**kw:[SimpleNamespace(id=scope.agent_id,kind='completion')],
             expected_reviews=set(),verified=[],identity=lambda *args:'generated-trace',disk_gate=lambda *args,**kw:None,
-            request=request,index_proof=lambda *args:dict(receiver_matches=True,health_matches=True,
+            request=request,storage_observation=soak_monitor.storage_observation,storage_tracking={},
+            index_proof=lambda *args:dict(receiver_matches=True,health_matches=True,
                 derived_marker_complete=True,file_unchanged=True),registered_receiver='generated-receiver',
             receiver=SimpleNamespace(pid=220),actor=SimpleNamespace(pid=330),ui_pid=lambda:440,
             os=SimpleNamespace(getpid=lambda:550),process_sample=sample,previous={},samples=[],append=append,
@@ -89,6 +98,7 @@ class SoakTailObservationTests(unittest.TestCase):
             self.assertEqual(row['elapsed'],1.6)
             self.assertEqual(row['index_observed_elapsed'],row['elapsed'])
             self.assertTrue(row['data_reads_complete']);self.assertTrue(all(row['index_proof'].values()))
+            self.assertEqual(row['storage_observation']['failures'],[])
             self.assertEqual({role:(p['pid'],p['start_ticks'])for role,p in row['processes'].items()},
                 dict(receiver=(220,1220),cockpit=(440,1440),synthetic_daemon=(330,1330),driver=(550,1550)))
             self.assertEqual(published,[('samples.jsonl',row)])

@@ -57,6 +57,23 @@ def error_reference(event,*,facts=None):
 
 
 def trace_error_references(activity, trace_id, *, receiver='', operation_preparation=None):
+    from .operation_preparation import terminal_without_input
+    # These observations cannot have an operation key, cannot suppress a
+    # failure and are not failures themselves. Keep all explicit/uncertain
+    # shapes on the original path, especially aliased mutable envelopes.
+    # Even an unmatchable success occupies its occurrence identity in the
+    # legacy de-duplicator. Preserve that behavior for repeated/uncertain IDs.
+    if (type(activity)in(list,tuple)and all(type(event)is dict and
+            type(event.get('source_id'))in(str,type(None))for event in activity)):
+        sources=[event['source_id']for event in activity if event.get('source_id')]
+        if len(sources)==len(set(sources)):
+            retained=[]
+            for event in activity:
+                terminal=terminal_without_input(event)
+                if (terminal is not None and not failure(event)and terminal['result']!='failed'
+                        and not terminal['result_conflict']and not terminal['has_code_one']):continue
+                retained.append(event)
+            activity=retained
     fast=_successful_references(activity,trace_id,receiver,operation_preparation)
     if fast is not None:return fast
     return _trace_error_references(activity,trace_id,receiver=receiver,operation_preparation=operation_preparation)

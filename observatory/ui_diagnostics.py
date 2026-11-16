@@ -1,4 +1,5 @@
 """Read-only local collection diagnostics and retention guidance."""
+import math
 from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
@@ -24,6 +25,40 @@ For SDK/OTLP agents, point the producer at your local receiver using the
 integration guide in docs/receiver.md. Agenturm observes; it does not run agents.'''
 
 
+def storage_status_lines(record):
+    """Do not infer a failed write from an older receiver's buffered count."""
+    total = record.get('pending_storage_records')
+    valid_total = type(total) is int and total >= 0
+    amount = str(total) if valid_total else 'not reported'
+    state = record.get('storage_state')
+    known = type(record.get('storage_diagnostics_version')) is int and record['storage_diagnostics_version'] == 1
+    retry = record.get('storage_retry_pending')
+    running = record.get('storage_attempt_in_flight')
+    if not known:
+        return ['Storage state: not reported · buffered batch: ' + amount + ' records']
+    if state == 'retry' and retry is True:
+        label = 'Retry needed'
+    elif state == 'writing' and retry is False and running is True and valid_total:
+        label = 'Writing native batch'
+    elif state == 'idle' and retry is False and running is False and valid_total and total == 0:
+        return ['Storage: Up to date · no buffered batch']
+    else:
+        label = 'State unknown'
+    lines = ['Storage: ' + label + ' · buffered batch: ' + amount + ' records']
+    stages = {'prepared': 'Preparing delivery', 'capture_policy': 'Checking capture policy',
+        'redaction': 'Applying capture policy', 'spans': 'Writing spans',
+        'logs': 'Writing activity', 'collector_metadata': 'Updating collector metadata'}
+    def age(key):
+        value = record.get(key)
+        return f'{value:.1f}s' if type(value) in (int, float) and math.isfinite(value) and value >= 0 else 'not reported'
+    lines.append('Stage: ' + stages.get(record.get('storage_stage'), 'not reported') +
+        ' · batch age: ' + age('storage_batch_age_seconds') +
+        ' · last progress: ' + age('storage_progress_age_seconds') + ' ago')
+    if state == 'retry' and retry is True:
+        lines.append('Agenturm retries this batch before reading more source records.')
+    return lines
+
+
 def diagnostics_text(local,*,native_bootstrap=False):
     if native_bootstrap:
         lines=['LOCAL COLLECTION DIAGNOSTICS · PARTIAL','History indexing · native observations only.',
@@ -34,7 +69,7 @@ def diagnostics_text(local,*,native_bootstrap=False):
             lines.extend(['',str(row.get('runtime')or 'Native')+' · '+str(row.get('agent_id')or '')[-8:],
                 'Last successful collector read (Unix ns): '+str(row.get('collector_updated_ns')or 'not reported'),
                 'Backlog bytes: '+str(diagnostics.get('backlog_bytes','not reported')),
-                'Pending storage records: '+str(diagnostics.get('pending_storage_records','not reported'))])
+                *storage_status_lines(diagnostics)])
         return '\n'.join(lines)
     lines = ['LOCAL COLLECTION DIAGNOSTICS',
              'Local paths may identify projects/users. No endpoint credentials or raw events are shown.',
@@ -66,7 +101,7 @@ def diagnostics_text(local,*,native_bootstrap=False):
                       f"Parsed since monitor start: {record.get('bytes_read_total', 'not reported')} bytes · {record.get('records_total', 'not reported')} records · {record.get('spans_total', 'not reported')} generated spans · {record.get('logs_total', 'not reported')} generated activity events",
                       f"OpenCode sessions: {record.get('sessions_last_poll', 'not reported')} · latest session update (Unix ns): {record.get('latest_session_update_ns', 'not reported')} · payload bytes last poll: {record.get('payload_bytes_last_poll', 'not reported')}",
                       f"Backlog bytes: {record.get('backlog_bytes', 'not reported')} · skipped oversized: {record.get('skipped_oversized_records', 'not reported')}",
-                      f"Records awaiting storage retry: {record.get('pending_storage_records', 'not reported')}",
+                      *storage_status_lines(record),
                       f"Schema errors: {record.get('schema_errors', 'not reported')} · skipped records: {record.get('skipped_records', 'not reported')}"])
     if not seen:
         lines.extend(['', 'Per-source read diagnostics not reported by this receiver.'])

@@ -1013,12 +1013,16 @@ class Feed:
             self.refresh()
             self.wake.wait(self.retry_delay() if self.snapshot.error else self.POLL_SECONDS)
 
-    def close(self):
+    def request_stop(self):
+        """Stop admitting reads without waiting on the terminal's event thread."""
         self.stop.set()
         self.wake.set()
         requests = self._requests
         if requests is not None:
             requests.cancel()
+
+    def close(self):
+        self.request_stop()
         if getattr(self.thread, 'ident', None) is not None:
             self.thread.join(timeout=4)
 

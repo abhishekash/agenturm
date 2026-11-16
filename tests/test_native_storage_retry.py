@@ -1,9 +1,11 @@
 """Storage backpressure must not consume native evidence without persisting it."""
 import json
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -31,9 +33,18 @@ class NativeStorageRetryTests(unittest.TestCase):
                     with self.assertRaises(sqlite3.OperationalError):session.poll()
                 self.assertIsNotNone(session._pending_ingest)
                 self.assertEqual(session.hierarchy()['coverage'],'partial')
+                diagnostic=session.storage_diagnostics()
+                self.assertEqual(diagnostic['storage_state'],'retry')
+                self.assertTrue(diagnostic['storage_retry_pending'])
+                self.assertFalse(diagnostic['storage_attempt_in_flight'])
+                self.assertGreater(diagnostic['pending_storage_records'],0)
+                self.assertEqual(diagnostic['storage_retry_records'],diagnostic['pending_storage_records'])
+                self.assertEqual(diagnostic['storage_in_flight_records'],0)
                 records=session.records_total
                 session.poll()
                 self.assertIsNone(session._pending_ingest)
+                self.assertEqual(session.storage_diagnostics()['storage_state'],'idle')
+                self.assertFalse(session.storage_diagnostics()['storage_retry_pending'])
                 self.assertEqual(session.records_total,records)
                 with self.store._connect() as db:
                     counts=tuple(db.execute('SELECT (SELECT COUNT(*) FROM spans),(SELECT COUNT(*) FROM logs)').fetchone())
@@ -266,3 +277,145 @@ class NativeStorageRetryTests(unittest.TestCase):
         with self.store._connect() as db:self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM trace_activity')],before_activity)
         self.assertEqual(self.store.sessions(),before_sessions)
         self.assertEqual(self.store.endpoints(),before_endpoints)
+
+
+class NativeStorageDiagnosticsTests(unittest.TestCase):
+    setUp=NativeStorageRetryTests.setUp
+
+    def assert_partition(self, diagnostic):
+        self.assertEqual(diagnostic['storage_diagnostics_version'],1)
+        self.assertEqual(diagnostic['pending_storage_records'],sum(diagnostic[key]for key in
+            ('storage_retry_records','storage_in_flight_records','storage_unknown_records')))
+
+    def test_healthy_write_is_in_flight_without_error_and_diagnostics_do_not_wait_for_io(self):
+        ids=set()
+        for stage in ('ingest','ingest_logs'):
+            with self.subTest(stage=stage):
+                session=Session(self.store,self.path,'Codex')
+                entered=threading.Event();release=threading.Event();original=getattr(self.store,stage)
+                def blocked(*args,**kwargs):
+                    entered.set()
+                    if not release.wait(3):raise RuntimeError('Generated storage barrier expired')
+                    return original(*args,**kwargs)
+                with patch.object(self.store,stage,side_effect=blocked),ThreadPoolExecutor(max_workers=2)as pool:
+                    future=pool.submit(session.poll)
+                    try:
+                        self.assertTrue(entered.wait(2))
+                        diagnostic=pool.submit(session.diagnostics).result(timeout=1)
+                        self.assert_partition(diagnostic)
+                        self.assertEqual(diagnostic['storage_state'],'writing')
+                        self.assertTrue(diagnostic['storage_attempt_in_flight'])
+                        self.assertFalse(diagnostic['storage_retry_pending'])
+                        self.assertGreater(diagnostic['pending_storage_records'],0)
+                        self.assertEqual(diagnostic['storage_in_flight_records'],diagnostic['pending_storage_records'])
+                        self.assertEqual(diagnostic['storage_retry_records'],0)
+                        self.assertEqual(diagnostic['storage_stage'],'spans'if stage=='ingest'else'logs')
+                        self.assertEqual(session.hierarchy()['coverage'],'partial')
+                        self.assertNotIn(diagnostic['storage_batch_id'],ids);ids.add(diagnostic['storage_batch_id'])
+                        again=pool.submit(session.storage_diagnostics).result(timeout=1)
+                        self.assertEqual(again['storage_batch_id'],diagnostic['storage_batch_id'])
+                        self.assertEqual(again['storage_progress_sequence'],diagnostic['storage_progress_sequence'])
+                        self.assertGreaterEqual(again['storage_batch_age_seconds'],diagnostic['storage_batch_age_seconds'])
+                        self.assertGreaterEqual(again['storage_progress_age_seconds'],diagnostic['storage_progress_age_seconds'])
+                    finally:release.set()
+                    future.result(timeout=3)
+                idle=session.storage_diagnostics();self.assert_partition(idle)
+                self.assertEqual(idle['storage_state'],'idle')
+                self.assertEqual(idle['pending_storage_records'],0)
+                self.assertIsNone(idle['storage_batch_id'])
+                self.assertEqual(idle['storage_batch_age_seconds'],0)
+                self.assertFalse(idle['storage_attempt_in_flight'])
+
+    def test_retry_attempt_stays_failed_until_both_storage_stages_succeed(self):
+        with patch.object(self.store,'ingest_logs',side_effect=sqlite3.OperationalError('Generated log failure')):
+            with self.assertRaises(sqlite3.OperationalError):self.session.poll()
+        failed=self.session.storage_diagnostics();self.assert_partition(failed)
+        self.assertTrue(self.session._pending_spans_done)
+        with self.store._read()as db:before_spans=db.execute('SELECT COUNT(*)FROM spans').fetchone()[0]
+        self.assertGreater(before_spans,0)
+        entered=threading.Event();release=threading.Event();original=self.store.ingest_logs
+        def blocked(*args,**kwargs):
+            entered.set()
+            if not release.wait(3):raise RuntimeError('Generated retry barrier expired')
+            return original(*args,**kwargs)
+        with patch.object(self.store,'ingest',side_effect=AssertionError('Committed spans replayed')),patch.object(self.store,'ingest_logs',side_effect=blocked),ThreadPoolExecutor(max_workers=2)as pool:
+            future=pool.submit(self.session.poll)
+            try:
+                self.assertTrue(entered.wait(2));retry=pool.submit(self.session.storage_diagnostics).result(timeout=1)
+                self.assert_partition(retry)
+                self.assertEqual(retry['storage_state'],'retry')
+                self.assertTrue(retry['storage_retry_pending']);self.assertTrue(retry['storage_attempt_in_flight'])
+                self.assertEqual(retry['storage_batch_id'],failed['storage_batch_id'])
+                self.assertEqual(retry['storage_retry_records'],retry['pending_storage_records'])
+                self.assertEqual(retry['storage_in_flight_records'],0)
+                self.assertGreaterEqual(retry['storage_batch_age_seconds'],failed['storage_batch_age_seconds'])
+            finally:release.set()
+            future.result(timeout=3)
+        idle=self.session.storage_diagnostics()
+        self.assertEqual(idle['storage_state'],'idle');self.assertFalse(idle['storage_retry_pending'])
+        with self.store._read()as db:self.assertEqual(db.execute('SELECT COUNT(*)FROM spans').fetchone()[0],before_spans)
+
+    def test_zero_record_capture_policy_failure_still_requires_retry(self):
+        self.session.poll()
+        # Queue policy-only cleanup, independently of whether a parser also
+        # emitted a metadata span for the event which discovered the policy.
+        self.session.adopt_internal_policy()
+        self.session._redaction_pending=True
+        self.session._new_storage_batch([],[])
+        with patch.object(self.store,'redact_internal_source',side_effect=sqlite3.OperationalError('Generated policy failure')):
+            with self.assertRaises(sqlite3.OperationalError):self.session.flush_pending_ingest()
+        diagnostic=self.session.storage_diagnostics();self.assert_partition(diagnostic)
+        self.assertEqual(diagnostic['pending_storage_records'],0)
+        self.assertEqual(diagnostic['storage_retry_records'],0)
+        self.assertEqual(diagnostic['storage_state'],'retry')
+        self.assertTrue(diagnostic['storage_retry_pending'])
+        self.assertEqual(diagnostic['storage_stage'],'redaction')
+        self.assertTrue(self.session._redaction_pending)
+        self.session.flush_pending_ingest()
+        self.assertEqual(self.session.storage_diagnostics()['storage_state'],'idle')
+        self.assertFalse(self.session._redaction_pending)
+        # Collector delivery completion does not certify the Activity index.
+        # A policy-only flush keeps the ordinary independent readiness fence.
+        with self.assertRaises(IndexNotReady):self.store.sessions()
+        with self.store._read()as db:
+            self.assertNotIn('Original request to preserve',str([tuple(row)for row in
+                db.execute('SELECT attributes,events FROM spans')]))
+        self.store._drain_external_activity()
+        self.assertNotIn('Original request to preserve',json.dumps(self.store.sessions()))
+
+    def test_legacy_buffer_and_post_storage_metadata_failure_are_unknown_not_healthy(self):
+        self.session._pending_ingest=([{}],[])
+        diagnostic=self.session.storage_diagnostics();self.assert_partition(diagnostic)
+        self.assertEqual(diagnostic['storage_state'],'unknown')
+        self.assertEqual(diagnostic['pending_storage_records'],1)
+        self.assertIsNone(diagnostic['storage_batch_id'])
+        self.assertIsNone(diagnostic['storage_batch_age_seconds'])
+        self.session._new_storage_batch([],[])
+        with patch('observatory.local_agents.time.time_ns',side_effect=RuntimeError('Generated metadata failure')):
+            with self.assertRaises(RuntimeError):self.session.flush_pending_ingest()
+        diagnostic=self.session.storage_diagnostics();self.assert_partition(diagnostic)
+        self.assertEqual(diagnostic['storage_state'],'unknown')
+        self.assertFalse(diagnostic['storage_attempt_in_flight'])
+        self.assertFalse(diagnostic['storage_retry_pending'])
+        self.assertEqual(diagnostic['pending_storage_records'],0)
+        self.assertEqual(diagnostic['storage_stage'],'collector_metadata')
+
+    def test_diagnostic_readout_distinguishes_writing_retry_and_older_receiver(self):
+        from observatory.ui_diagnostics import storage_status_lines,diagnostics_text
+        old={'source_path':'/generated/session.jsonl','pending_storage_records':4}
+        self.assertIn('Storage state: not reported','\n'.join(storage_status_lines(old)))
+        self.assertNotIn('Retry needed','\n'.join(storage_status_lines(old)))
+        self.session._new_storage_batch([],[])
+        writing=self.session.storage_diagnostics()
+        self.assertIn('Writing native batch','\n'.join(storage_status_lines(writing)))
+        self.session._redaction_pending=True
+        with patch.object(self.store,'redact_internal_source',side_effect=sqlite3.OperationalError('Generated policy failure')):
+            with self.assertRaises(sqlite3.OperationalError):self.session.flush_pending_ingest()
+        retry=self.session.storage_diagnostics()
+        self.assertIn('Retry needed','\n'.join(storage_status_lines(retry)))
+        self.assertIn('State unknown','\n'.join(storage_status_lines({**writing,'storage_attempt_in_flight':False})))
+        self.assertIn('State unknown','\n'.join(storage_status_lines({**writing,
+            'storage_state':'idle','storage_attempt_in_flight':False,'pending_storage_records':False})))
+        text=diagnostics_text({'sessions':[{'diagnostics':{**retry,'source_path':'/generated/session.jsonl'}}]})
+        self.assertIn('Retry needed',text)
+        self.assertNotIn('Records awaiting storage retry: 4',text)

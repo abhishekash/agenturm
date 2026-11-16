@@ -2066,22 +2066,86 @@ class Store:
         return current is None or versions!={current}
 
     @staticmethod
-    def _write_ingest_rows(db,sql,records,rows):
+    def _write_ingest_rows(db,sql,records,rows,*,skip_unchanged_native=False):
         # Native ordering fences may deliberately ignore stale replacements.
         # Only accepted writes may update activity/endpoints or derived facts.
-        if not any(row.get('scope_name')=='observatory.local_agents' for row in records):
+        if not skip_unchanged_native and not any(row.get('scope_name')=='observatory.local_agents' for row in records):
             db.executemany(sql,rows)
             return records
         return [record for record,row in zip(records,rows) if db.execute(sql,row).rowcount]
 
-    def ingest(self, spans, *, native_retry=False, native_source_path=None):
+    @staticmethod
+    def _native_noop_guard(table):
+        # Exact stored bytes/NULLs only: watermark, membership and capture
+        # metadata remain real changes. The final parameter is a same-writer
+        # repair flag, not permission to discard an invalidation.
+        columns=(('parent_span_id','name','start_ns','end_ns','status','service','attributes',
+                  'events','links','resource_attributes','scope_name','agent_id')if table=='spans'else
+                 ('trace_id','span_id','time_ns','service','severity_number','severity_text',
+                  'event_name','body','attributes','resource_attributes','scope_name','agent_id'))
+        changed=' OR '.join(f'{table}.{name} IS NOT excluded.{name}'for name in columns)
+        legacy=''
+        if table=='logs':
+            record_id="json_extract(excluded.attributes,'$.\"observatory.record_id\"')"
+            legacy=f""" OR (excluded.scope_name='observatory.local_agents'
+                AND json_type(excluded.attributes,'$."observatory.record_id"')='text'
+                AND length({record_id})=32 AND {record_id} NOT GLOB '*[^0-9a-f]*'
+                AND EXISTS(SELECT 1 FROM logs legacy WHERE legacy.scope_name='observatory.local_agents'
+                    AND json_extract(legacy.attributes,'$."observatory.record_id"')={record_id}
+                    AND legacy.digest<>excluded.digest))"""
+        return f" AND (excluded.scope_name IS NULL OR excluded.scope_name NOT IN ('observatory.local_agents','observatory.opencode') OR {changed} OR ?{legacy})"
+
+    @staticmethod
+    def _native_repair_flags(db,records,kind):
+        # Inspect only small cached/scalar state once per trace. Do not scan
+        # raw maxima for healthy replays; absent/stale caches still force work.
+        traces=set()
+        for row in records:
+            if row.get('scope_name')in {'observatory.local_agents','observatory.opencode'}and row.get('trace_id'):
+                traces.add(row['trace_id'])
+        states={}
+        for trace in traces:
+            row=db.execute("""SELECT a.last_ns,s.trace_id,
+                CASE WHEN json_valid(s.summary_json) THEN json_extract(s.summary_json,'$.end_unix_nano') END AS end_ns,
+                EXISTS(SELECT 1 FROM finding_dirty_v1 WHERE trace_id=?) AS dirty
+                FROM (SELECT ? AS trace_id) target
+                LEFT JOIN trace_activity a USING(trace_id) LEFT JOIN trace_summaries s USING(trace_id)""",
+                (trace,trace)).fetchone()
+            missing_or_dirty=(row['last_ns']is None or row['trace_id']is None or row['dirty']or
+                type(row['end_ns'])not in(int,float)or row['last_ns']<row['end_ns'])
+            states[trace]=(bool(missing_or_dirty),row['last_ns'])
+        flags=[]
+        for row in records:
+            state=states.get(row.get('trace_id'))if row.get('scope_name')in {'observatory.local_agents','observatory.opencode'}else None
+            stamp=row['end_unix_nano']if kind=='span'else row['time_unix_nano']
+            flags.append(bool(state and(state[0]or state[1]<stamp)))
+        return flags
+
+    @staticmethod
+    def _repair_native_activity(db,traces):
+        for trace in traces:
+            # A missing/stale clock must recover the entire accepted source
+            # maximum, not just the older record which happened to be replayed.
+            latest=db.execute("""SELECT MAX(stamp) FROM (
+                SELECT MAX(end_ns) AS stamp FROM spans WHERE trace_id=? UNION ALL
+                SELECT MAX(time_ns) FROM logs WHERE trace_id=? UNION ALL
+                SELECT MAX(time_ns) FROM progress WHERE trace_id=? UNION ALL
+                SELECT MAX(ingested_ns) FROM outcomes WHERE trace_id=?)""",(trace,)*4).fetchone()[0]
+            if latest is not None:
+                db.execute("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
+                    ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",(trace,latest))
+
+    def ingest(self, spans, *, native_retry=False, native_source_path=None,skip_unchanged_native=False):
         spans = list(spans)
+        skip_unchanged_native=skip_unchanged_native is True
         published=False
         from .native_policy import native_update_guard
         with self._source_write() as refresh:
             with self._connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 spans=self._policy_records(spans,'span',db)
+                flags=self._native_repair_flags(db,spans,'span')if skip_unchanged_native else []
+                repair={row['trace_id']for row,flag in zip(spans,flags)if flag}
                 stale_generation=self._stale_native_generation(spans,native_retry,native_source_path)
                 sql=f"""INSERT INTO spans
                     (trace_id,span_id,parent_span_id,name,start_ns,end_ns,status,service,
@@ -2100,13 +2164,22 @@ class Store:
                       json.dumps(s.get("links", [])), json.dumps(s.get("resource_attributes", {})),
                       s.get("scope_name", ""), _agent_id_from_attributes(s.get("attributes"),
                           s.get("resource_attributes"), s.get("service"))) for s in spans]
-                spans=self._write_ingest_rows(db,sql,spans,rows)
+                if skip_unchanged_native:
+                    sql+=self._native_noop_guard('spans')
+                    rows=[(*row,flag)for row,flag in zip(rows,flags)]
+                    spans=self._write_ingest_rows(db,sql,spans,rows,skip_unchanged_native=True)
+                else:spans=self._write_ingest_rows(db,sql,spans,rows)
                 db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
                     ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
                     [(s["trace_id"], s["end_unix_nano"]) for s in spans])
+                if repair:self._repair_native_activity(db,repair&{s['trace_id']for s in spans})
                 self._update_endpoints(db, spans)
                 from .storage_activity import drain
-                drain(db,limit=10000)
+                # Initial native discovery must not inherit an unrelated
+                # retained-history rebuild while holding the source writer.
+                # Durable dirty rows remain for the migration worker; readers
+                # still certify readiness rather than serving partial history.
+                drain(db,limit=200 if self._async_derived_refresh and not self.migration_status.get('ready') else 10000)
                 self._ingest_agent_nodes_from_spans(spans,_db=db)
                 published=self._publish_native_summaries(db,spans)
             if not published:refresh.update(s["trace_id"] for s in spans)
@@ -2204,8 +2277,9 @@ class Store:
         deleted["cutoff_unix_nano"] = cutoff_ns
         return deleted
 
-    def ingest_logs(self, records, *, native_retry=False, native_source_path=None, expected_receiver=None):
+    def ingest_logs(self, records, *, native_retry=False, native_source_path=None, expected_receiver=None,skip_unchanged_native=False):
         records = list(records)
+        skip_unchanged_native=skip_unchanged_native is True
         published=False
         from .native_policy import native_update_guard
         with self._source_write() as refresh:
@@ -2217,6 +2291,8 @@ class Store:
                     actual=db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()[0]
                     if actual!=expected_receiver:raise ValueError('Receiver namespace changed; no log records were written')
                 records=self._policy_records(records,'log',db)
+                flags=self._native_repair_flags(db,records,'log')if skip_unchanged_native else []
+                repair={row['trace_id']for row,flag in zip(records,flags)if flag}
                 stale_generation=self._stale_native_generation(records,native_retry,native_source_path)
                 rows = []
                 native_ids = []
@@ -2246,7 +2322,11 @@ class Store:
                     body=excluded.body,attributes=excluded.attributes,
                     resource_attributes=excluded.resource_attributes,scope_name=excluded.scope_name,
                     agent_id=excluded.agent_id WHERE {native_update_guard('logs',stale_generation)}"""
-                records=self._write_ingest_rows(db,sql,records,rows)
+                if skip_unchanged_native:
+                    sql+=self._native_noop_guard('logs')
+                    rows=[(*row,flag)for row,flag in zip(rows,flags)]
+                    records=self._write_ingest_rows(db,sql,records,rows,skip_unchanged_native=True)
+                else:records=self._write_ingest_rows(db,sql,records,rows)
                 accepted_ids={log['attributes'].get('observatory.record_id') for log in records
                               if log['scope_name']=='observatory.local_agents'
                               and isinstance(log['attributes'].get('observatory.record_id'),str)}
@@ -2256,9 +2336,10 @@ class Store:
                 db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
                     ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
                     [(log["trace_id"], log["time_unix_nano"]) for log in records if log["trace_id"]])
+                if repair:self._repair_native_activity(db,repair&{row['trace_id']for row in records if row['trace_id']})
                 self._update_endpoints(db, records)
                 from .storage_activity import drain
-                drain(db,limit=10000)
+                drain(db,limit=200 if self._async_derived_refresh and not self.migration_status.get('ready') else 10000)
                 published=self._publish_native_summaries(db,records)
             nodes = [_agent_node_from_attributes(log.get("attributes"), log.get("resource_attributes"),
                                                  log.get("service"), log.get("time_unix_nano"),

@@ -1,0 +1,715 @@
+{
+  "format": "agenturm-quality-completion-v1",
+  "snapshot_utc": "2026-11-16T07:01:09.529696+00:00",
+  "release": "0.2.4",
+  "application_commit": "4beb84aa93edf1922123686eb22894d1536b503b",
+  "source_baseline": "24ea0a9bab53c4f31fc450d04ed0cc2b00655626",
+  "http_historical_baseline": "5e0c39786066fb88c0e270418573e361aeb6cf9a",
+  "seed": {
+    "bytes": 188383232,
+    "sha256": "a88727a946d8ba0e1dd3b45ed100061d9365496e1dba9d15e9e4f17881df0357",
+    "raw_sha256": "a7834f8369c95c9160d16fe1d4d1c23b401e76a58c68507ce8b4bafa43948588",
+    "counts": {
+      "spans": 31000,
+      "logs": 41000,
+      "trace_activity": 5751
+    },
+    "reserve_mib": 4096
+  },
+  "protocol": "classified-native-storage-v1",
+  "human": {
+    "participants": 0,
+    "sessions": 0,
+    "repeat_use": 0
+  },
+  "live_qualification": "Not established by generated fixtures or installed CLI version checks",
+  "tests": {
+    "parent_90": {
+      "passed": 90,
+      "seconds": 19.837
+    },
+    "warning_clean_py313": {
+      "passed": 97,
+      "seconds": 51.744,
+      "log_sha256": "e7f5127906828b90e6e1e931a71596f60f997ae8080b8f1c8f555ba943f71e10"
+    },
+    "fixture_followup": {
+      "passed": 37,
+      "seconds": 12.302
+    }
+  },
+  "attempts": {
+    "agenturm-quality-final-functional-60s": {
+      "state": "failed",
+      "result_sha256": "b0e01249736ff31ae6d220a078e71e69775c53cf80dfabdac85a7347127ea33c",
+      "errors": [
+        "cockpit did not finish graceful exit within eight seconds",
+        "cockpit did not finish graceful exit within eight seconds",
+        "Insufficient receiver process samples",
+        "Insufficient cockpit process samples",
+        "Insufficient synthetic_daemon process samples",
+        "Insufficient driver process samples"
+      ],
+      "configured_seconds": 60.0,
+      "elapsed_seconds": 72.68688800605014,
+      "initial_readiness_seconds": 127.31959690304939,
+      "verified_turns": 6,
+      "completed_turns": 6,
+      "expected_review_ids": 6,
+      "accepted_review_ids": 6,
+      "persisted_review_ids": 6,
+      "exit_statuses": [
+        {
+          "role": "receiver",
+          "status": 0
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ]
+    },
+    "agenturm-quality-isolated-functional-60s": {
+      "state": "completed; qualified below",
+      "result_sha256": "aab48df5b1fe10deab4d4ad7ee0cb6a4ba432b2c3728d347467822103edd61b1",
+      "errors": [],
+      "configured_seconds": 60.0,
+      "elapsed_seconds": 72.11209157796111,
+      "initial_readiness_seconds": 126.62416125193704,
+      "verified_turns": 9,
+      "completed_turns": 9,
+      "expected_review_ids": 9,
+      "accepted_review_ids": 9,
+      "persisted_review_ids": 9,
+      "exit_statuses": [
+        {
+          "role": "receiver",
+          "status": 0
+        },
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ]
+    },
+    "agenturm-quality-final-hour": {
+      "state": "failed",
+      "result_sha256": "0d07bad569325d507b66f2e853ce8efee33e10018cf5a21a1be1404e50b13569",
+      "errors": [
+        "HTTPError: HTTP Error 503: Service Unavailable",
+        "Required receiver/cockpit restart did not occur",
+        "Insufficient heartbeat coverage",
+        "Insufficient receiver process samples",
+        "Insufficient cockpit process samples",
+        "Insufficient synthetic_daemon process samples",
+        "Insufficient driver process samples",
+        "Source/storage/index readiness failures occurred",
+        "Derived work was not confirmed drained at both receiver shutdowns",
+        "Two receiver exit statuses were not confirmed",
+        "Two successful warning-free cockpit shutdowns were not confirmed"
+      ],
+      "configured_seconds": 3600.0,
+      "elapsed_seconds": 506.5487191429129,
+      "initial_readiness_seconds": 124.07624796696473,
+      "verified_turns": 42,
+      "completed_turns": 42,
+      "expected_review_ids": 42,
+      "accepted_review_ids": 42,
+      "persisted_review_ids": 42,
+      "exit_statuses": [
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ]
+    },
+    "agenturm-quality-modals-100": {
+      "state": "failed",
+      "result_sha256": "e36260ac98ee5bdfc3b7b2e896cf05e86bcb893a359c0169be05fea23e5fcc55",
+      "mode": "modals",
+      "passed": false,
+      "errors": [
+        "RuntimeError: Investigate retained activity deadline exceeded"
+      ],
+      "exit_statuses": [
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ]
+    },
+    "agenturm-quality-v2-functional-60s": {
+      "state": "completed; qualified below",
+      "result_sha256": "650fcebdd82221d96b3be9e5ee2a51a864748b03dcfab300414bb2e4c24db384",
+      "errors": [],
+      "configured_seconds": 60.0,
+      "active_workload_seconds": 69.34982738899998,
+      "elapsed_seconds": 70.42671215697192,
+      "initial_readiness_seconds": 117.57189263496548,
+      "verified_turns": 9,
+      "completed_turns": 9,
+      "expected_review_ids": 9,
+      "accepted_review_ids": 9,
+      "persisted_review_ids": 9,
+      "exit_statuses": [
+        {
+          "role": "receiver",
+          "status": 0
+        },
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ]
+    },
+    "agenturm-quality-v2-hour": {
+      "state": "failed",
+      "result_sha256": "79d808114499b184af9e1315e1a3c31e98820f182e738392eba710e822ccda9c",
+      "errors": [
+        "cockpit did not finish graceful exit within eight seconds"
+      ],
+      "configured_seconds": 3600.0,
+      "active_workload_seconds": 3622.110369683942,
+      "elapsed_seconds": 3631.031644013943,
+      "initial_readiness_seconds": 118.22366058605257,
+      "verified_turns": 297,
+      "completed_turns": 297,
+      "expected_review_ids": 297,
+      "accepted_review_ids": 297,
+      "persisted_review_ids": 297,
+      "exit_statuses": [
+        {
+          "role": "receiver",
+          "status": 0
+        },
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ]
+    },
+    "agenturm-quality-v2-modals-100": {
+      "state": "failed",
+      "result_sha256": "4aa1abc835f27b4baeeff70111337076d2720d3adf900f7225c22ea3edc97e67",
+      "mode": "modals",
+      "passed": false,
+      "errors": [
+        "RuntimeError: Keyboard exact source selection deadline exceeded"
+      ],
+      "exit_statuses": [
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ]
+    },
+    "agenturm-quality-v3-modals-100": {
+      "state": "failed",
+      "result_sha256": "29e775a9a5a4e30a0a139267c18edab621b93f1d8d662ece0aeb123964a6bc71",
+      "mode": "modals",
+      "passed": false,
+      "errors": [
+        "RuntimeError: Agent search input readiness deadline exceeded"
+      ],
+      "exit_statuses": [
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ]
+    },
+    "agenturm-quality-v4-modals-100": {
+      "state": "failed",
+      "result_sha256": "cab31d19b17cace9f91dc7dcaa2206de4ca17dc26249ce5e0818b78111621d21",
+      "mode": "modals",
+      "passed": false,
+      "errors": [
+        "RuntimeError: Keyboard exact source selection deadline exceeded"
+      ],
+      "exit_statuses": [
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ]
+    },
+    "agenturm-quality-v5-modals-100": {
+      "state": "Stopped on user request; incomplete extended protocol",
+      "result_sha256": "f845d27368ed103f58c5307bb129427ecda2e46af3f59036f29f903c48fe830d",
+      "mode": "modals",
+      "passed": false,
+      "errors": [
+        "Validation interrupted before completion"
+      ],
+      "exit_statuses": [
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ]
+    },
+    "agenturm-quality-modal-v4-driver-smoke": {
+      "state": "completed; qualified below",
+      "result_sha256": "f1517d978410ee149fa08ddb2ee8cdd758bb287b40f5b23a1d623500ebbd59fa",
+      "mode": "modals",
+      "passed": true,
+      "errors": [],
+      "warmup_cycles": 1,
+      "measured_cycles": 5,
+      "distinct_review_scopes": 5,
+      "retained_rss_mib": {
+        "first": 69.0078125,
+        "last": 74.75390625,
+        "max": 74.75390625,
+        "median": 71.828125
+      },
+      "exit_statuses": [
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ]
+    },
+    "agenturm-quality-modal-v5-driver-smoke": {
+      "state": "completed; qualified below",
+      "result_sha256": "31d91fb14b5f17d88c19840f832e87e9ab2da4872bfd391adb0611b704980aa5",
+      "mode": "modals",
+      "passed": true,
+      "errors": [],
+      "warmup_cycles": 1,
+      "measured_cycles": 5,
+      "distinct_review_scopes": 5,
+      "retained_rss_mib": {
+        "first": 70.0625,
+        "last": 76.04296875,
+        "max": 76.04296875,
+        "median": 73.19921875
+      },
+      "exit_statuses": [
+        {
+          "role": "cockpit",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ]
+    },
+    "agenturm-quality-frame-diagnostic": {
+      "state": "completed; qualified below",
+      "result_sha256": "1ca734fcdc068dfc869f6814318c6c68ddf9dd67576dd9ba99c55e004112a43d",
+      "mode": "first-frame-only",
+      "observation_valid": true,
+      "errors": [],
+      "proof": {
+        "receiver_id": "7225b5ef7acb483c938b46688e19691e",
+        "first_native_partial": {
+          "observed_seconds": 8.222965687979013,
+          "heartbeat_seconds": 8.11363589996472,
+          "pid": 3397508,
+          "start_ticks": 119277569,
+          "receiver_id": "7225b5ef7acb483c938b46688e19691e",
+          "visible_agent_rows": 3
+        },
+        "partial_observation": "observed",
+        "full_readiness_seconds": 125.13833334494848,
+        "first_coherent": {
+          "observed_seconds": 126.99538927292451,
+          "heartbeat_seconds": 126.8503681429429,
+          "pid": 3397508,
+          "start_ticks": 119277569,
+          "receiver_id": "7225b5ef7acb483c938b46688e19691e",
+          "visible_agent_rows": 4
+        },
+        "timing": "Monotonic terminal capture upper bounds; one-second heartbeat observation granularity."
+      },
+      "publishable": false
+    },
+    "agenturm-quality-v2-native-race": {
+      "state": "completed; qualified below",
+      "result_sha256": "c67cba7979168c7e3c2a7c7e844113a95d931273c6efed454885320a84e3e1af",
+      "mode": "native-race",
+      "passed": true,
+      "errors": [],
+      "exit_statuses": [
+        {
+          "role": "cockpit-b",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "watcher-before-restart",
+          "status": 0
+        },
+        {
+          "role": "cockpit-a",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "cockpit-b",
+          "status": "0",
+          "signal": ""
+        },
+        {
+          "role": "watcher",
+          "status": 0
+        },
+        {
+          "role": "receiver",
+          "status": 0
+        }
+      ],
+      "notification_attempts": 1,
+      "acknowledgement_preserved": true,
+      "exact_resolution": true
+    },
+    "agenturm-quality-v2-first-frame-recovery": {
+      "state": "failed",
+      "result_sha256": "3b8e53c4e05258317d6362e0ba277cf880aa0b62524f51cc83e3f359b156ce75",
+      "mode": "first-frame-only",
+      "observation_valid": false,
+      "errors": [
+        "First-frame observation failed: ValueError",
+        "No clean cockpit receipt drain"
+      ],
+      "proof": null,
+      "publishable": false
+    }
+  },
+  "functional_proof": {
+    "coverage": "complete",
+    "checks": {
+      "source_certificate": true,
+      "original_run_has_no_errors": true,
+      "result_shape": true,
+      "receiver_two_unambiguous_lifetimes": true,
+      "cockpit_two_unambiguous_lifetimes": true,
+      "synthetic_daemon_known_single_lifetime": true,
+      "driver_known_single_lifetime": true,
+      "no_active_owned_process": true,
+      "workflow_read_only_proof": true,
+      "receiver_imports_match": true,
+      "cockpit_imports_match": true,
+      "three_fresh_replacement_ui_heartbeats": true,
+      "post_body_observation_clocks": true,
+      "phase0_to5_after_both_replacements": true,
+      "all_completed_turns_reconstructed": true,
+      "exact_all_role_cycle_incident_identities": true,
+      "exact_expected_accepted_persisted_receipts": true,
+      "post_restart_cycle_receipts_after_new_ui": true,
+      "two_clean_receiver_exits": true,
+      "two_clean_cockpit_exits": true,
+      "both_receiver_drains": true,
+      "final_coherent_receiver_ready": true,
+      "classified_storage_protocol": true,
+      "exact_classified_native_sources": true,
+      "all_storage_observations_replayed": true,
+      "final_native_storage_quiescent": true,
+      "actual_active_duration_covers_registration": true
+    },
+    "blocking_reasons": [],
+    "actual_active_seconds": 69.34982738899998,
+    "full_hour_observed": false,
+    "app_sha": "4beb84aa93edf1922123686eb22894d1536b503b",
+    "harness_sha": "4beb84aa93edf1922123686eb22894d1536b503b",
+    "registration_sha256": "9a4fe4b08d5678d00add330837af02070812caa60cd9ea457c8c91bd3e894a3f",
+    "analyzer_sha256": "0d69f3aab4c93b77381e6ca0ef99cea23b0bc004f88f105dd2ccac2f37f3a6d7",
+    "artifacts_unchanged": true,
+    "proof_sha256": "f7ed7fe4e5173995934105bee3dae5242a01de6125ee0934e06f28103a3963ca"
+  },
+  "modal_harness_commit": "46a89d0",
+  "hour_proof": {
+    "coverage": "incomplete",
+    "checks": {
+      "source_certificate": true,
+      "original_run_has_no_errors": false,
+      "result_shape": true,
+      "receiver_two_unambiguous_lifetimes": true,
+      "cockpit_two_unambiguous_lifetimes": true,
+      "synthetic_daemon_known_single_lifetime": true,
+      "driver_known_single_lifetime": true,
+      "no_active_owned_process": true,
+      "workflow_read_only_proof": true,
+      "receiver_imports_match": true,
+      "cockpit_imports_match": true,
+      "three_fresh_replacement_ui_heartbeats": true,
+      "post_body_observation_clocks": true,
+      "phase0_to5_after_both_replacements": true,
+      "all_completed_turns_reconstructed": true,
+      "exact_all_role_cycle_incident_identities": true,
+      "exact_expected_accepted_persisted_receipts": true,
+      "post_restart_cycle_receipts_after_new_ui": true,
+      "two_clean_receiver_exits": true,
+      "two_clean_cockpit_exits": true,
+      "both_receiver_drains": true,
+      "final_coherent_receiver_ready": true,
+      "classified_storage_protocol": true,
+      "exact_classified_native_sources": true,
+      "all_storage_observations_replayed": true,
+      "final_native_storage_quiescent": true,
+      "actual_active_duration_covers_registration": true
+    },
+    "blocking_reasons": [
+      "original_run_has_no_errors"
+    ],
+    "actual_active_seconds": 3622.110369683942,
+    "full_hour_observed": false,
+    "artifacts_unchanged": true,
+    "qualification": "Private generated functional proof only. Reconstruction is qualified by frozen harness exact-cycle assertions/noerrors plus stored exact incident/receipt scopes; no independent rehydration of full Review bodies, resource or universal-runtime claim.",
+    "artifact_sha256": "23cf0d79ccd8e8d7723b916d9b92c025bdd1d8fab4f4f2d7977df31e1e1cb467"
+  },
+  "hour_postconditions": {
+    "plateaus": {
+      "receiver": [
+        {
+          "duration": 1191.8052632400068,
+          "qualified": true,
+          "warm_rss_mib": 90.09375,
+          "tail_rss_mib": 98.416015625,
+          "rss_allowance_mib": 15,
+          "rss_pass": true,
+          "fds_pass": true,
+          "threads_pass": true,
+          "warm_fds": 18,
+          "tail_fds": 18.0,
+          "warm_threads": 4,
+          "tail_threads": 4.0
+        },
+        {
+          "duration": 2418.565409225994,
+          "qualified": true,
+          "warm_rss_mib": 81.7734375,
+          "tail_rss_mib": 94.1484375,
+          "rss_allowance_mib": 15,
+          "rss_pass": true,
+          "fds_pass": true,
+          "threads_pass": true,
+          "warm_fds": 18,
+          "tail_fds": 18.0,
+          "warm_threads": 4,
+          "tail_threads": 4.0
+        }
+      ],
+      "cockpit": [
+        {
+          "duration": 2373.7581930020824,
+          "qualified": true,
+          "warm_rss_mib": 74.12109375,
+          "tail_rss_mib": 79.2421875,
+          "rss_allowance_mib": 15,
+          "rss_pass": true,
+          "fds_pass": true,
+          "threads_pass": true,
+          "warm_fds": 6,
+          "tail_fds": 6,
+          "warm_threads": 5,
+          "tail_threads": 5
+        },
+        {
+          "duration": 1237.9265483260388,
+          "qualified": true,
+          "warm_rss_mib": 74.78125,
+          "tail_rss_mib": 76.29296875,
+          "rss_allowance_mib": 15,
+          "rss_pass": true,
+          "fds_pass": true,
+          "threads_pass": true,
+          "warm_fds": 6,
+          "tail_fds": 6.0,
+          "warm_threads": 5,
+          "tail_threads": 5.0
+        }
+      ]
+    },
+    "integrity": [
+      "ok"
+    ],
+    "dirty_queues": {
+      "activity_dirty_v1": 0,
+      "finding_dirty_v1": 0,
+      "native_lifecycle_dirty_v1": 0,
+      "investigation_dirty_v1": 0
+    },
+    "database_unchanged": true,
+    "wal_bytes_postclose": 5483752,
+    "postconditions_pass": false,
+    "registered_owned_lifetimes_proved_stopped": false,
+    "artifact_sha256": "1f184920733b79f6bd9c50b68e4d9f43710e064bbfbd14c3514667bf9f32b8b6"
+  },
+  "recovery": {
+    "cause": "Previous coordinating turn ended on usage_limit_exceeded",
+    "hour_acceptance": "FAILED: eight-second cockpit shutdown deadline; all 297 turns reconstructed; no retrospective acceptance",
+    "modal_driver_fix": "SearchInput class name now follows production widget; 10 focused tests and six actual PTY cycles passed",
+    "first_frame_admission": "First recovery attempt stopped before timing because the unchanged disk reserve could not be met; artifacts preserved",
+    "archive": "Stopped generated databases byte-preserved with SHA-256 roundtrip verification; private raw run artifacts retained; no verdict changes",
+    "release_qualification": "Resource and live/human targets remain open until directly observed; no whole-job acceptance claimed"
+  },
+  "code_ci": {
+    "head": "46a89d070353a7af568a75bcda584a68edb35d7a",
+    "pr": "https://github.com/abhishekash/agenturm/pull/109",
+    "checks": [
+      {
+        "name": "Python 3.11",
+        "conclusion": "SUCCESS",
+        "status": "COMPLETED",
+        "detailsUrl": "https://github.com/abhishekash/agenturm/actions/runs/43817759385/job/133133599282"
+      },
+      {
+        "name": "Python 3.12",
+        "conclusion": "SUCCESS",
+        "status": "COMPLETED",
+        "detailsUrl": "https://github.com/abhishekash/agenturm/actions/runs/43817759385/job/133133599238"
+      },
+      {
+        "name": "Python 3.13",
+        "conclusion": "SUCCESS",
+        "status": "COMPLETED",
+        "detailsUrl": "https://github.com/abhishekash/agenturm/actions/runs/43817759385/job/133133599341"
+      },
+      {
+        "name": "Python 3.14",
+        "conclusion": "SUCCESS",
+        "status": "COMPLETED",
+        "detailsUrl": "https://github.com/abhishekash/agenturm/actions/runs/43817759385/job/133133599258"
+      },
+      {
+        "name": "Node.js 22",
+        "conclusion": "SUCCESS",
+        "status": "COMPLETED",
+        "detailsUrl": "https://github.com/abhishekash/agenturm/actions/runs/43817759385/job/133133599340"
+      },
+      {
+        "name": "Node.js 24",
+        "conclusion": "SUCCESS",
+        "status": "COMPLETED",
+        "detailsUrl": "https://github.com/abhishekash/agenturm/actions/runs/43817759385/job/133133599188"
+      },
+      {
+        "name": "OpenTelemetry OTLP end-to-end",
+        "conclusion": "SUCCESS",
+        "status": "COMPLETED",
+        "detailsUrl": "https://github.com/abhishekash/agenturm/actions/runs/43817759385/job/133133599219"
+      },
+      {
+        "name": "Pydantic AI native instrumentation",
+        "conclusion": "SUCCESS",
+        "status": "COMPLETED",
+        "detailsUrl": "https://github.com/abhishekash/agenturm/actions/runs/43817759385/job/133133599215"
+      },
+      {
+        "name": "Google ADK OTLP interoperability",
+        "conclusion": "SUCCESS",
+        "status": "COMPLETED",
+        "detailsUrl": "https://github.com/abhishekash/agenturm/actions/runs/43817759385/job/133133599266"
+      },
+      {
+        "name": "OpenAI Agents SDK local tracing",
+        "conclusion": "SUCCESS",
+        "status": "COMPLETED",
+        "detailsUrl": "https://github.com/abhishekash/agenturm/actions/runs/43817759385/job/133133598912"
+      },
+      {
+        "name": "LangChain callback interoperability",
+        "conclusion": "SUCCESS",
+        "status": "COMPLETED",
+        "detailsUrl": "https://github.com/abhishekash/agenturm/actions/runs/43817759385/job/133133599364"
+      },
+      {
+        "name": "Automatic SDK capture through CLI",
+        "conclusion": "SUCCESS",
+        "status": "COMPLETED",
+        "detailsUrl": "https://github.com/abhishekash/agenturm/actions/runs/43817759385/job/133133599209"
+      }
+    ]
+  },
+  "user_plan_change": {
+    "modal_100_required": false,
+    "extended_resource_runs_required": false,
+    "modal_stopped_on_request_after_measured_cycles": 81,
+    "resource_comparisons": "Cancelled before launch",
+    "bounded_checks": "12CI,23focused,6-cyclePTY,fresh installedwheel"
+  },
+  "bounded_delivery": {
+    "code_commit": "d6a832036626bbfc54c74f2f96b8b0e0dea5640c",
+    "focused_tests_passed": 31,
+    "local_full_suite_repeated": false,
+    "manual_extended_runs_required": false,
+    "modal_stopped_on_request_after_measured_cycles": 81,
+    "queued_resource_comparisons_cancelled": true,
+    "wheel": {
+      "version": "0.2.4",
+      "runtime_modules_byte_identical": 86,
+      "code_commit": "d6a832036626bbfc54c74f2f96b8b0e0dea5640c",
+      "cli_entrypoint_pass": true,
+      "privacy_file_boundary_pass": true,
+      "files": {
+        "agenturm-0.2.4-py3-none-any.whl": "99956d42a1f19da2351c2d744e7e6754af87d7412aa098755e7d88483717b98a",
+        "agenturm-0.2.4.tar.gz": "423cf733d60f761a21a01c93139992f0093beaaf04806d9156c1a113edf0fec3"
+      }
+    },
+    "prior_code_ci": {
+      "head": "46a89d070353a7af568a75bcda584a68edb35d7a",
+      "passed": 12,
+      "total": 12
+    },
+    "current_remote_ci": "Automated CI/publishing will validate final delivery; no manual long loop"
+  }
+}

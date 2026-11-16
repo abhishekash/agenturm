@@ -194,7 +194,7 @@ class NativeBudgets(unittest.TestCase):
                                 db.execute('INSERT INTO part VALUES(?,?,?,?,?)', (mid + str(number), sid, mid, raw, revision_stamp))
                 reader = OpenCodeReader(self.store, path=path)
                 captured = []
-                with patch('observatory.opencode.MAX_POLL_PAYLOAD_BYTES', 1000), patch.object(self.store, 'ingest', side_effect=lambda spans: captured.extend(spans)):
+                with patch('observatory.opencode.MAX_POLL_PAYLOAD_BYTES', 1000), patch.object(self.store, 'ingest', side_effect=lambda spans, **kwargs: captured.extend(spans)):
                     for _ in range(40):
                         reader.fingerprint = None  # Also exercise forced refreshes.
                         reader.poll()

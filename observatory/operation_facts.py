@@ -32,7 +32,7 @@ _PLAIN_SCHEMA_WORDS=frozenset(('command','arguments','cwd','tool','server','doma
 
 
 def credential_key(key):
-    from .findings import _SENSITIVE_FIELD,_TOKEN_FIELD
+    from .findings import _sensitive_field
     if len(key)>MAX_TEXT:return True
     if type(key)is str and key in _PLAIN_SCHEMA_WORDS:return False
     if '\\' in key:
@@ -41,7 +41,7 @@ def credential_key(key):
         if '\\' in key:return True
     key=(_ASCII_KEY_CONTROLS.sub('',key) if key.isascii() else
         ''.join(char for char in key if unicodedata.category(char) not in {'Cc','Cf'}))
-    return bool(_SENSITIVE_FIELD.search(key) or _TOKEN_FIELD.search(key))
+    return _sensitive_field(key)
 
 
 def command_present(value):
@@ -68,13 +68,14 @@ def safe_value(value):
                 complete=False;return '[text omitted: projection byte limit]'
             bytes_left-=size
             if plain_word:return item
-            if any(credential_key(match.group(1)) for pattern in QUOTED_FIELDS for match in pattern.finditer(item)):
+            if (type(item)is not str or '"' in item or "'" in item)and any(credential_key(match.group(1)) for pattern in QUOTED_FIELDS for match in pattern.finditer(item)):
                 complete=False;return '[REDACTED credential-bearing text]'
             text=_safe_text(item)
-            text=re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',text)
-            text=(_ASCII_TEXT_CONTROLS.sub('',text) if text.isascii() else
-                ''.join(char for char in text if char in '\n\t' or unicodedata.category(char) not in {'Cc','Cf'}))
-            if text!=item or re.search(r'(?i)\[(?:redact|[^\]]*(?:omitted|truncated|clipped))',text):complete=False
+            if '\x1b' in text:text=re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',text)
+            if not(text.isascii()and text.isprintable()):
+                text=(_ASCII_TEXT_CONTROLS.sub('',text) if text.isascii() else
+                    ''.join(char for char in text if char in '\n\t' or unicodedata.category(char) not in {'Cc','Cf'}))
+            if text!=item or('[' in text and re.search(r'(?i)\[(?:redact|[^\]]*(?:omitted|truncated|clipped))',text)):complete=False
             return text
         if item is None or type(item) is bool:return item
         if type(item) is int and item.bit_length()<=4096:return item

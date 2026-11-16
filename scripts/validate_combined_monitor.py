@@ -113,6 +113,62 @@ class FixtureSession:
         self.roles[role]=int(self.tmux('display-message','-p','-t',role,'#{pane_pid}').strip())
         return self.wait_ui(role)
     def beats(self,role):return [row for row in rows(self.base/('ui-events-'+role+'.jsonl')) if row.get('kind')=='heartbeat']
+    def wait_cockpit(self,role,*,after):
+        def ready():
+            beats=self.beats(role)
+            if not beats:return None
+            row=beats[-1]
+            return row if (row.get('pid')==self.roles[role]and row.get('at',0)>=after and row.get('screen')=='ObservatoryScreen'
+                and row.get('modal_stack')==1 and row.get('focus')=='agent-table')else None
+        return until(ready,'Cockpit keyboard readiness')
+    def wait_palette(self,role,*,after):
+        def ready():
+            beats=self.beats(role)
+            if not beats:return None
+            row=beats[-1]
+            return row if (row.get('pid')==self.roles[role]and row.get('at',0)>=after and row.get('screen')=='CommandPalette'
+                and row.get('focused_control_type')=='CommandInput')else None
+        return until(ready,'Command palette input readiness')
+    def wait_agent_search(self,role,*,after):
+        def ready():
+            beats=self.beats(role)
+            if not beats:return None
+            row=beats[-1]
+            return row if (row.get('pid')==self.roles[role]and row.get('at',0)>=after
+                and row.get('screen')=='ObservatoryScreen'and row.get('modal_stack')==1
+                and row.get('focus')=='search-agents'and row.get('focused_control_type')=='SearchInput')else None
+        return until(ready,'Agent search input readiness')
+    def wait_agent_selection(self,role,*,after,session_id,source_id):
+        def ready():
+            beats=self.beats(role)
+            if not beats:return None
+            row=beats[-1]
+            return row if (row.get('pid')==self.roles[role]and row.get('at',0)>=after
+                and row.get('screen')=='ObservatoryScreen'and row.get('modal_stack')==1
+                and row.get('focus')=='agent-table'and row.get('selected_session')==session_id
+                and row.get('selected_source')==source_id)else None
+        return until(ready,'Keyboard exact source selection')
+    def show_history(self,role):
+        boundary=time.time();self.keys(role,'C-p');self.wait_palette(role,after=boundary)
+        self.text(role,'Show History')
+        self.wait_screen(role,'All sessions, including earlier unreviewed completions')
+        boundary=time.time();self.keys(role,'Enter')
+        def ready():
+            row=self.wait_cockpit(role,after=boundary)
+            return row if row.get('agent_filter')=='all'else None
+        return until(ready,'History source visibility')
+    def select_modal_source(self,role,selected):
+        session_id=f'validation-modal-{selected}'
+        matches=[row for row in self.health.get('local_agents',{}).get('sessions',())
+            if row.get('session_id')==session_id]
+        if len(matches)!=1 or not isinstance(matches[0].get('source_id'),str)or not matches[0]['source_id']:
+            raise RuntimeError('Generated modal source identity is unavailable or ambiguous')
+        source_id=matches[0]['source_id']
+        boundary=time.time();self.keys(role,'1');self.wait_cockpit(role,after=boundary)
+        boundary=time.time();self.keys(role,'/');self.wait_agent_search(role,after=boundary)
+        self.keys(role,'C-a');self.text(role,f'Modal validation {selected}')
+        boundary=time.time();self.keys(role,'Escape')
+        return self.wait_agent_selection(role,after=boundary,session_id=session_id,source_id=source_id)
     def wait_ui(self,role):
         def ready():
             beats=self.beats(role)
@@ -227,23 +283,30 @@ def native_race(session):
 
 def modal_cycles(session):
     session.ui('cockpit')
+    # Fixed completed inputs must remain reachable across Today expiry or an
+    # overnight pause. Select the public History command and observe it.
+    session.show_history('cockpit')
     samples=[];scopes=set();total=session.args.warmup_cycles+session.args.cycles
     for cycle in range(total):
         disk_gate(session.base,reserve_bytes=session.args.minimum_free_mib*1024**2)
         selected=cycle%5
-        session.keys('cockpit','1','/','C-a');session.text('cockpit',f'Modal validation {selected}');session.keys('cockpit','Escape')
-        until(lambda:session.beats('cockpit') and session.beats('cockpit')[-1].get('selected_session')==f'validation-modal-{selected}',
-            'Keyboard exact source selection')
+        session.select_modal_source('cockpit',selected)
         session.keys('cockpit','C-r');session.wait_screen('cockpit','Review')
         beat=until(lambda:session.beats('cockpit') and session.beats('cockpit')[-1]
             if session.beats('cockpit') and session.beats('cockpit')[-1].get('screen')=='ReviewScreen' and session.beats('cockpit')[-1].get('review_scope') else None,'Frozen Review scope')
         if beat['review_scope'].get('receiver')!=session.health['receiver_id'] or beat['review_scope'].get('session_id')!=f'validation-modal-{selected}':
             raise RuntimeError('Review scope differs from keyboard-selected source')
         scopes.add(json.dumps(beat['review_scope'],sort_keys=True))
-        session.keys('cockpit','PageDown','Escape','u');session.wait_screen('cockpit','SELECTED TASK USAGE')
-        session.keys('cockpit','PageDown','Escape')
+        boundary=time.time()
+        session.keys('cockpit','PageDown','Escape');session.wait_cockpit('cockpit',after=boundary)
+        session.keys('cockpit','u');session.wait_screen('cockpit','SELECTED TASK USAGE')
+        boundary=time.time();session.keys('cockpit','PageDown','Escape')
+        session.wait_cockpit('cockpit',after=boundary)
+        return_boundary=boundary
         if session.args.investigate:
-            session.keys('cockpit','C-p');session.text('cockpit','Investigate');session.keys('cockpit','Enter')
+            boundary=time.time();session.keys('cockpit','C-p');session.wait_palette('cockpit',after=boundary)
+            session.text('cockpit','Investigate');session.wait_screen('cockpit','Investigate retained history')
+            session.keys('cockpit','Enter')
             session.wait_screen('cockpit','Investigate retained activity')
             session.text('cockpit','src/parent_0.py');session.keys('cockpit','Enter')
             session.wait_screen('cockpit','retained observations')
@@ -251,8 +314,9 @@ def modal_cycles(session):
             if investigation['investigation_rows']>250 or investigation['investigation_pages']>5 or investigation['investigation_bytes']>2*1024**2:
                 raise RuntimeError('Investigate result retention bound exceeded')
             session.keys('cockpit','Enter')
-            session.wait_screen('cockpit','Exact recorded source');session.keys('cockpit','c','x','PageDown','Escape','Escape')
-        until(lambda:session.beats('cockpit') and session.beats('cockpit')[-1]['screen']=='ObservatoryScreen','Modal return')
+            session.wait_screen('cockpit','Exact recorded source')
+            return_boundary=time.time();session.keys('cockpit','c','x','PageDown','Escape','Escape')
+        session.wait_cockpit('cockpit',after=return_boundary)
         beat=session.wait_ui('cockpit')
         if beat['review_cache_entries']>4 or beat['review_cache_bytes']>8*1024**2 or beat['modal_stack']!=1 or beat['native_snapshot_entries']>2:
             raise RuntimeError('Modal/cache retention bound exceeded')
@@ -313,12 +377,15 @@ def main():
     if args.mode=='smoke':return smoke(args)
     if not shutil.which('tmux') or sys.platform!='linux':parser.error('Real tmux and Linux /proc required')
     session=FixtureSession(args)
+    interrupted=False
     try:
         session.start()
         (native_race if args.mode=='native-race' else modal_cycles)(session)
+    except KeyboardInterrupt:
+        interrupted=True;session.report['errors'].append('Validation interrupted before completion')
     except Exception as exc:session.report['errors'].append(type(exc).__name__+': '+str(exc))
     finally:session.close()
-    print(json.dumps(session.report,indent=2));return 0 if session.report['passed'] else 1
+    print(json.dumps(session.report,indent=2));return 130 if interrupted else 0 if session.report['passed'] else 1
 
 
 if __name__=='__main__':
