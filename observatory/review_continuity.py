@@ -112,7 +112,7 @@ def editable_draft(projection,task=None):
     scope=source_scope(projection);task=task or {}
     request=projection.get('request') or {};lines=['CONTINUITY DRAFT · review and edit before approving',
         'Captured observations are not independent verification. Your accepted/rejected decisions remain human-authored.', '',
-        'ORIGINAL REQUEST',request.get('text') or 'No initiating request was captured in this evidence window.','',
+        'LATEST CAPTURED REQUEST',request.get('text') or 'No request was captured in this evidence window.','',
         'RECORDED MODIFYING OPERATIONS']
     edits=projection.get('edits') or []
     lines.extend(str(row.get('action') or 'change')+' · '+str(row.get('path') or 'Path not reported')+

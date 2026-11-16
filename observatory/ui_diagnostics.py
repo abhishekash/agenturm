@@ -25,6 +25,37 @@ For SDK/OTLP agents, point the producer at your local receiver using the
 integration guide in docs/receiver.md. Agenturm observes; it does not run agents.'''
 
 
+def first_run_guidance(local, *, read_errors=None, sessions_error=''):
+    """Explain an empty attention view from receiver evidence, not assumptions."""
+    local = local or {}
+    sessions = local.get('sessions') or []
+    errors = read_errors or {}
+    diagnostics = [row.get('diagnostics') or {} for row in sessions]
+    if isinstance(local.get('opencode_diagnostics'), dict):
+        diagnostics.append(local['opencode_diagnostics'])
+    delayed = bool(errors or sessions_error or local.get('read_errors'))
+    delayed = delayed or any(record.get('backlog_bytes') for record in diagnostics)
+    limited = local.get('capture_content') is False or any(
+        row.get('capture_content') is False for row in sessions)
+
+    if not sessions and local.get('enabled') is False:
+        return ('Source discovery is disabled. Enable local source discovery, then check Diagnostics (d).',)
+    if not sessions:
+        if delayed:
+            return ('No recent supported source is available yet; collection is delayed, so request state may be incomplete.',
+                    'Check Diagnostics (d), then start or continue a supported agent in its native terminal.')
+        return ('No recent supported source discovered; this is not a complete zero-request result.',
+                'Start or continue a supported agent in its native terminal, then check Diagnostics (d).')
+    if delayed:
+        return ('Collection is delayed; the request view may be incomplete.',
+                'Check the collection error or backlog in Diagnostics (d) before treating this as empty.')
+    if limited:
+        return ('No recorded request is available in this coverage; capture is metadata-only for at least one source.',
+                'Check the source capture policy in Diagnostics (d).')
+    return ('No recorded approval/reply requests need response in the available coverage.',
+            'Continue work; new eligible requests appear here. Press d for collection diagnostics.')
+
+
 def storage_status_lines(record):
     """Do not infer a failed write from an older receiver's buffered count."""
     total = record.get('pending_storage_records')

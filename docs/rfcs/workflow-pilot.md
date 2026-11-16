@@ -1,24 +1,30 @@
-# Attention, review and continuity pilot protocol
+# Attention-first workflow pilot protocol
 
-Status: prepared, not conducted. No participants, measured savings or alert-precision results are claimed.
+**Status: prepared, not conducted. Participants observed: 0.** This protocol is not evidence of measured savings, alert precision, or adoption. The [capability record](../pilot-kit.md#capability-qualification-record) remains unqualified until a real request-to-terminal journey is observed.
 
-Recruit 10–15 consenting engineers using local agents, including single-session users and people using multiple runtime brands. Record each participant's current checking, review and handoff workflow before introducing the changes. Use participant notes or consented observation; introduce no automatic telemetry.
+## Qualification and cohort
 
-## Tasks and measures
+Recruit five engineers who regularly operate at least two local agent sessions and can show repeated checking or missed-request pain. Begin recruitment while qualifying the first environment. Record the exact runtime/version, OS, terminal, receiver build, discovery method and request-evidence source for each tested combination. A complete-loop result includes only environments that support the relevant recorded request and verified terminal return; report unsupported environments separately.
 
-1. Identify which agent needs a reply and why. Record elapsed time, incorrect selections and whether the participant reaches the verified native terminal. Distinguish native request age from first-observed wait.
-2. Review a reported completion containing a passing check followed by an edit, a command with no result, and an assistant claim. Record preparation time and any mistaken correctness/verification conclusion.
-3. Save intent, constraints, an accepted decision, a rejected approach and the next action. Prepare a handoff and resume the task in a fresh session. Count required corrections and repeated rejected approaches.
-4. Repeat after a week. Record voluntary reuse, missed requests, noisy alerts and retained personal scripts. Compare each participant with their own baseline; report individual results and denominators.
+Before presenting Agenturm, independently observe each participant's current checking and response workflow. Do not use Agenturm's own queue as the baseline for known native requests. Obtain consent; do not add automatic analytics or collect personal transcripts. Keep identifiable notes and recordings outside this repository.
 
-Exercise a 60-column split, a reconnect, two open cockpits and a request marked seen but unresolved. Verify that seen means acknowledged locally and that monitoring never approves a native request.
+## Attention exercise and measures
 
-## Diagnostic pilot
+Use comparable ordinary work before and after introducing Agenturm. For each eligible opportunity, record:
 
-Keep repeated-work diagnostics disabled for baseline tasks. In a separate explicit opt-in run, enable `AGENTURM_WORKFLOW_PATTERNS=1` on the receiver. Review each observation against its linked source and ask whether it was useful or intentional repetition. Keep heuristic findings out of desktop alerts. Disable the setting if false positives are high; raw evidence and saved decisions remain available.
+1. Whether the participant identified the correct request and owner, the reason they gave, help needed, and any wrong selection.
+2. Time/effort to reach the right terminal and respond when native request time is independently observable. Missing native timing is unavailable, not zero.
+3. Manual terminal-check frequency; known native requests surfaced / independently known native requests; actionable alerts / rated alerts; missed requests, false alerts and missing ratings.
+4. Understanding of **Seen**, pending, source-backed resolution, delivery and delayed collection.
+5. Voluntary reuse on separate workdays and eligible opportunities, plus which existing manual step, hook or script they could stop relying on.
 
-## Interpretation
+Synthetic comprehension exercises and mocked desktop notifications are reported separately from real participant use. Do not claim that a fixture with no verified target completed a terminal return. Record collection freshness and capability limits alongside every result.
 
-Target at least 90% participant-rated actionable explicit-request alerts, while separately recording missed known requests. Seek lower paired review-preparation and continuation effort with no increase in mistaken verification claims. These are proposed pilot signals, not release guarantees. A small self-selected sample cannot establish market prevalence, general savings or willingness to pay.
+## Exploratory decision rules
 
-Store consented notes privately, omit credentials and private transcripts from repository fixtures, and agree retention with each participant. Publish only anonymized counts with explicit denominators and limitations.
+- **Usable:** aim for 4 of 5 qualified participants to identify the correct request, explain why, and reach the correct terminal without coaching after introduction; target two minutes for the first-use task.
+- **Useful:** observed coordination effort decreases relative to baseline without false ownership or resolution conclusions. Report misses and noise alongside successes.
+- **Repeated:** aim for 3 of 5 participants with opportunities on at least three workdays to return voluntarily on three separate days. If fewer participants have sufficient opportunities, keep this gate inconclusive and report the smaller denominator.
+- **Continue** when usability, reduced effort and voluntary reuse are supported. **Revise** one specific blocking interaction/capability and repeat the affected observation. **Stop expansion** after two small iterations with no replaced workflow.
+
+These exploratory thresholds are not statistical market validation. Publish an anonymized Markdown and self-contained HTML result with build/environment, participant and opportunity denominators, baseline/product observations, unavailable data, corrections and the decision. Until observation occurs, participant count remains zero.

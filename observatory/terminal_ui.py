@@ -1531,6 +1531,7 @@ class ObservatoryApp(App):
                             yield Button('Retry evidence',id='agent-retry')
                             with Horizontal(classes='inspector-actions'):
                                 yield Button('Review · Ctrl+R',id='agent-review-work',tooltip='Ctrl+R · Read scoped recorded checks, edits and errors')
+                                yield Button('Locate terminal',id='agent-terminal',tooltip='Select only the uniquely verified terminal for this exact waiting request')
                                 yield Button(Text('Activity · s'),id='agent-open',tooltip='Read all recorded activity for this session')
                                 yield Button('Trace · t',id='agent-trace',tooltip='Inspect the latest linked trace for this session')
                                 yield Button('Mark reviewed · r',id='agent-reviewed',tooltip='Acknowledge this attention item for this run; does not change the recorded session status')
@@ -1636,6 +1637,7 @@ class ObservatoryApp(App):
             ('Pause or follow live','Freeze the view or catch up with incoming records; collection continues',self.action_pause),
             ('Show tokens and spend','Inspect the selected task’s cost, tokens, and cache usage',self.action_usage),
             ('Open local workflow','Attention inbox, completion review, workspace and task alerts',self.action_workflow),
+            ('Locate selected request terminal','Use only the selected Workflow request and verified live route',self.action_workflow_terminal),
             ('Open saved tasks','Continue a saved task or prepare a handoff · b',self.action_saved_tasks),
             ('Save selected session as a task','Save its intent, workspace, and exact recorded run',self.action_save_task),
             ('Open diagnostics','Inspect local collection health',self.action_diagnostics),
@@ -3294,6 +3296,11 @@ class ObservatoryApp(App):
         self.query_one('#agent-evidence-status').display=expanded and not prompts and bool(item)
         self.query_one('#agent-retry').display=False
         self.query_one('#agent-review-work').display=expanded and self.session_mode=='overview' and bool(item)
+        matching_requests=[row[0] for row in self.workflow_ledger.rows
+            if item and row[0].get('id')==item.get('id') and row[0].get('_attention_kind') in {'approval','reply'}]
+        request_button=self.query_one('#agent-terminal',Button)
+        request_button.display=bool(matching_requests) and len(matching_requests)==1 and expanded and not prompts
+        request_button.disabled=not request_button.display
         captured=bool(item) and item.get('capture_content') is not False
         scope=prompt_scope(item) if captured else None
         if item and not captured:
@@ -3318,6 +3325,7 @@ class ObservatoryApp(App):
             self.query_one('#agent-trace',Button).disabled=True
             self.query_one('#agent-reviewed',Button).display=False
             self.query_one('#agent-dismissed',Button).display=False
+            self.query_one('#agent-terminal',Button).display=False
             self.fill('agent-actions',[])
             if getattr(self.data,'native_bootstrap',False):
                 self.inspect('agent-detail','History indexing',[],[
@@ -3357,9 +3365,9 @@ class ObservatoryApp(App):
                 self.inspect('agent-detail','No agent sessions found',[],[('Next step',FIRST_RUN),('Diagnostics / retention','Press d for source paths, read health, and retention instructions.')])
             return
         if getattr(self.data,'native_bootstrap',False):
-            for name in ('agent-open','agent-trace','agent-summary','agent-review-work'):
+            for name in ('agent-open','agent-trace','agent-summary','agent-review-work','agent-terminal'):
                 self.query_one('#'+name,Button).disabled=True
-            for name in ('agent-reviewed','agent-dismissed','agent-prompt-bar','agent-prompt-picker','agent-prompts','agent-evidence-status'):
+            for name in ('agent-reviewed','agent-dismissed','agent-terminal','agent-prompt-bar','agent-prompt-picker','agent-prompts','agent-evidence-status'):
                 self.query_one('#'+name).display=False
             self.session_prompts=PromptHistory();self.session_evidence=SessionEvidence()
             self.ai_summaries.clear();self.fill('agent-actions',[])
@@ -4044,6 +4052,7 @@ class ObservatoryApp(App):
         elif event.button.id=='agent-trace':self.action_open_trace()
         elif event.button.id=='agent-reviewed':self.action_review_attention()
         elif event.button.id=='agent-dismissed':self.action_dismiss_attention()
+        elif event.button.id=='agent-terminal':self.action_workflow_terminal()
         elif event.button.id=='agent-summary':self.request_ai_summary()
         elif event.button.id=='activity-investigate':self.action_investigate()
         elif event.button.id=='mcp-flagged':self.action_mcp_flagged()
@@ -4190,6 +4199,17 @@ class ObservatoryApp(App):
         screen.call_after_refresh(screen.render_report)
         screen.call_after_refresh(screen.focus_initial)
 
+    def action_workflow_terminal(self):
+        if isinstance(self.screen,WorkflowScreen):self.screen.action_go_terminal();return
+        if not isinstance(self.screen,ObservatoryScreen):
+            self.notify('Open Agents or Workflow and select a recorded approval/reply request first.');return
+        source=self.source_map.get(self.selected_source) or self.agent_row_meta.get(self.selected_source)
+        matches=[row[0] for row in self.workflow_ledger.rows
+            if source and row[0].get('id')==source.get('id') and row[0].get('_attention_kind') in {'approval','reply'}]
+        if len(matches)!=1:
+            self.notify('Select the exact request in Workflow; this session has no unique pending request.');return
+        self.workflow_terminal(matches[0])
+
     def action_saved_tasks(self):
         from .ui_saved_tasks import SavedTasksScreen
         self.push_screen(SavedTasksScreen(self),self.resume_cockpit)
@@ -4207,7 +4227,14 @@ class ObservatoryApp(App):
     @work(thread=True,group='workflow-terminal',exclusive=True,exit_on_error=False)
     def workflow_terminal(self,item):
         item=dict(item)
-        result=terminal_handoff(item)
+        namespace=item.get('_attention_namespace')
+        current_namespace=self.feed.snapshot.receiver_id
+        if not namespace or not current_namespace or namespace!=current_namespace:
+            result='Receiver identity changed or is unavailable; no terminal was selected.'
+        else:result=terminal_handoff(item)
+        requested=str(item.get('agent_id') or item.get('session_id') or item.get('id') or 'selected request')
+        requested=''.join(char for char in requested if char.isprintable())[:64]
+        result+=' · '+requested
         self.call_from_thread(self.notify,result)
 
     def action_investigate(self):

@@ -1,4 +1,8 @@
-# Agenturm 0.2.0 product walkthrough
+# Agenturm product walkthrough
+
+> **Attention-first demo status:** The existing media below is the earlier synthetic evidence-and-continuity walkthrough, not a demonstration of a qualified request-to-terminal journey. The current fixture has no verified native terminal target; do not present its **Locate terminal** action as a successful jump. A live attention demo remains blocked on the A0 observation recorded in the [pilot kit](pilot-kit.md).
+
+For a truthful synthetic exercise today, use the explicit approval scenario in the [pilot kit](pilot-kit.md#generated-scenario-and-task-cards): identify the request owner and reason, explain that the target is unverified, and leave the native action unavailable. Once A0 is observed with consent, record the supported terminal return and source-backed state transition as a separate, version-qualified demonstration. Synthetic UI tests do not substitute for that observation.
 
 The README and agenturm.dev explain one developer workflow: find where you are needed, understand the recorded work, then continue with deliberate context.
 

@@ -43,6 +43,22 @@ To try it without installing, run `uvx agenturm`. If uv is not installed, use it
 
 The cockpit opens Agents, Activity, MCP Calls, and Traces as primary views; use **More** or **5–7** for Host, Metrics, and Findings. Agents opens to **Today**: current work, sessions that need you, and reported completions awaiting human review. The filter also offers **Running**, **History**, and **Errors**. History includes earlier work, including yesterday’s unreviewed completions. Task-first rows have an evidence inspector. Its website-aligned **Observation** palette is the default; change themes with **Ctrl+P**. Findings provides a searchable, paged review queue with occurrence counts, evidence links, and direct navigation to the source trace. Session counts and live process counts are separate; approval reviews are hidden by default. The cockpit attaches to a receiver on **127.0.0.1:14318**, or starts one there. Run `agenturm` for full-screen panels in your current terminal. From this checkout, `python3 -m observatory` also works without installation.
 
+### Find and answer a recorded request
+
+From Agents, press **w** to open Workflow. Select a recorded approval/reply request to inspect its owner, reason, age and pending/seen state. **Locate terminal** attempts the supported route and selects a live terminal only after a unique target is verified. If the route is unavailable, use the source details to locate the native terminal manually. Respond there—Agenturm does not approve or answer for you. **Seen** is a local acknowledgement only; a request stays pending until its source provides resolution evidence. Source discovery, request capture and terminal return are distinct capabilities, and incomplete collection is not an empty-success queue.
+
+For a separately managed, persistent receiver and watcher, use two terminals:
+
+```sh
+# Terminal 1: start the receiver on the documented local cockpit endpoint.
+agenturm serve --host 127.0.0.1 --port 14318
+
+# Terminal 2: watch that receiver; desktop delivery is an explicit opt-in.
+agenturm attention watch --endpoint http://127.0.0.1:14318 --desktop
+```
+
+If a receiver is already running on that port, attach to it instead of starting another. The watcher does not start a receiver. Initial inventory is intentionally quiet; only eligible new requests notify. Both processes remain active until stopped. See [persistent attention limits and capability qualification](validation/persistent-attention.md).
+
 ### Continue work across sessions
 
 Press **b** to open **Saved tasks**, then **n** to save the selected session as a task. Give it a title, workspace, and brief with your intent, decisions, and next step; **Ctrl+S** saves. A task keeps its ID and notes when you close Agenturm, change agents, or clear retained telemetry. You can also start a blank task without a connected receiver.
@@ -59,7 +75,7 @@ Local receivers automatically discover recent session files under `~/.codex/sess
 agenturm
 ```
 
-It reads actual logged activity as files update, including already running sessions. Agents need no restart or configuration change. Source logs stay untouched. Select an agent for its status and latest action; press `e` for the zero-setup recorded-progress summary or `s` for its activity. When a session explicitly asks for a user reply or approval, the monitor points you to that agent's own terminal; it cannot submit the answer or approve actions for the agent.
+It reads actual logged activity as files update, including already running sessions. Agents need no restart or configuration change. Source logs stay untouched. Select an agent for its status and latest action; press `e` for the zero-setup recorded-progress summary or `s` for its activity. When a session explicitly asks for a user reply or approval, Workflow retains the request; its terminal action is available only when the live target is verified. Otherwise locate the native terminal from the recorded owner. Agenturm cannot submit the answer or approve actions for the agent.
 
 | Observed data | What appears |
 | --- | --- |

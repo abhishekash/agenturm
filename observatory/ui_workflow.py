@@ -18,6 +18,7 @@ from .session_status import today_bucket
 
 
 from .attention import AttentionLedger as PureAttentionLedger, classify, fresh_observation
+from .ui_diagnostics import first_run_guidance
 from .workflow_evidence import ReviewHistory, event_key, scope_for, safe_text
 from .ui_workflow_controller import WorkflowController, prepared_item
 
@@ -158,7 +159,8 @@ class WorkflowScreen(ModalScreen):
     #workflow-retention { height: auto; width: 1fr; }
     #workflow-too-small { height: 1fr; width: 1fr; content-align: center middle; }
     """
-    BINDINGS=[('escape','back','Back'),('h','history','History'),('R','review_completions','Review visible completions')]
+    BINDINGS=[('escape','back','Back'),('h','history','History'),('R','review_completions','Review visible completions'),
+              ('g','go_terminal','Go to selected request terminal'),('c','copy_resume','Copy resume command')]
 
     def __init__(self,owner):
         super().__init__();self.visible_rows=[];self._history=False;self.owner=owner;self.selected_incident=None;self.rows_by_id={}
@@ -179,15 +181,15 @@ class WorkflowScreen(ModalScreen):
                     yield Button('Save',id='workflow-save')
                 with Horizontal(id='workflow-more'):
                     yield Button('Snooze',id='workflow-snooze',tooltip='Snooze desktop alerts for 10 minutes')
-                    yield Button('Terminal',id='workflow-terminal')
-                    yield Button('Resume',id='workflow-resume',tooltip='Copy native resume command')
                     yield Button('Cleanup',id='workflow-cleanup',tooltip='Apply retention; unresolved incidents stay')
+                    yield Button('Retry',id='workflow-retry',tooltip='Retry the selected failed desktop notification')
                 yield Label('Receipts and their minimal execution references expire after 90 days. Other resolved incidents and delivery claims expire after 30 days. '
                     'Unresolved requests remain visible after Seen. Notifications attempt once; Retry explicitly repeats a failed attempt.',id='workflow-retention')
             with Horizontal(id='workflow-controls'):
                 yield Button('Review',id='workflow-review')
                 yield Button('Seen',id='workflow-seen')
-                yield Button('Retry',id='workflow-retry',tooltip='Retry the selected failed desktop notification')
+                yield Button('Locate terminal',id='workflow-terminal',tooltip='Try the supported route; select a terminal only after exact identity is verified')
+                yield Button('Copy resume',id='workflow-resume',tooltip='Copy a native resume command; does not launch it')
                 yield Button('Refresh',id='workflow-refresh')
                 yield Button('Settings',id='workflow-settings')
 
@@ -200,7 +202,7 @@ class WorkflowScreen(ModalScreen):
                 self.query_one('#workflow-'+key,Input).value=str(self.owner.workflow_limits.get(key,0))
 
     def on_mount(self):
-        self.query_one('#workflow-dialog').border_subtitle='h History · Shift+R Review listed completions'
+        self.query_one('#workflow-dialog').border_subtitle='g Terminal · c Copy resume · h History · Shift+R Review listed completions'
         self.query_one('#workflow-too-small').display=False
         self.query_one('#workflow-settings-panel').display=False
         for key,title in (('tokens','Tokens'),('cost','USD'),('minutes','Minutes')):
@@ -222,6 +224,17 @@ class WorkflowScreen(ModalScreen):
         if self._settings or self.size.width<60 or self.size.height<18 or not self.query_one('#workflow-inbox',DataTable).display:return
         ids=tuple(item['_attention_id'] for item,_,_ in self.visible_rows if item.get('_attention_kind')=='completion' and item.get('_attention_persistent'))
         self.owner.workflow_controller.review_completions(ids)
+
+    def action_go_terminal(self):
+        item=self.selected_item() or {}
+        if item.get('_attention_kind') not in {'approval','reply'}:
+            self.owner.notify('Select a recorded approval/reply request first.');return
+        self.owner.workflow_terminal(item)
+
+    def action_copy_resume(self):
+        command=resume_command(self.selected_item() or {})
+        if command:self.owner.copy_to_clipboard(command);self.owner.notify('Resume command copied; check session ownership before running')
+        else:self.owner.notify('No supported native resume command for this session')
 
     def action_back(self):
         if self._settings:
@@ -302,11 +315,29 @@ class WorkflowScreen(ModalScreen):
         item=self.selected_item()
         items=owner.workflow_items()
         text=workflow_report(item,items,owner.feed.snapshot) if item else 'Select a session in Agents or an incident above to inspect its workflow.'
+        if not item and not rows:
+            snapshot=owner.feed.snapshot
+            guidance=first_run_guidance(getattr(snapshot,'local_status',{}),
+                read_errors=getattr(snapshot,'read_errors',{}),
+                sessions_error=getattr(snapshot,'sessions_error',''))
+            text='\n'.join(guidance)
         if item and item.get('_attention_id'):
             status='Seen; the recorded request remains pending.' if item.get('_attention_seen') else 'Not yet acknowledged.'
             if item.get('_attention_stale'):status+=' Capture is stale or this source is missing; resolution is unconfirmed.'
             if not item.get('_attention_persistent'):status+=' Durable acknowledgement unavailable: missing exact run/request identity or storage capacity.'
             text=status+'\n\n'+text
+            if item.get('_attention_kind') in {'approval','reply'}:
+                owner_identity=item.get('agent_id') or item.get('session_id') or 'identity incomplete'
+                runtime=item.get('service') or item.get('runtime') or 'runtime unknown'
+                stamp=item.get('_attention_source_time_ns')
+                age=max(0,int(time.time()-(stamp/1e9 if stamp else self.rows_by_id[item['_attention_id']][2])))
+                age_text=(f'{age//86400}d {age%86400//3600}h' if age>=86400 else f'{age//3600}h {age%3600//60}m' if age>=3600 else f'{age//60}m')
+                request_state='Seen · still pending' if item.get('_attention_seen') else 'Needs response'
+                text=('REQUEST NEEDS RESPONSE\n'+f'Owner: {safe_text(runtime)} · {safe_text(owner_identity)}\n'+
+                    f'Reason: {safe_text(item.get("waiting_for") or ("Approval" if item.get("_attention_kind")=="approval" else "Reply"))}\n'+
+                    f'Age: {age_text}'+(' · first observed' if not stamp else ' · source recorded')+'\n'+
+                    f'State: {request_state}'+(' · observation stale; resolution unconfirmed' if item.get('_attention_stale') else '')+
+                    '\nAction: Locate terminal; respond in the native session.\n\n'+text)
         text+='\n\nNotifications: '+owner.workflow_delivery+('\n'+warning if warning else '')
         log=self.query_one(RichLog)
         key=(self.selected_incident,owner.selected_source,text,log.content_size.width)
@@ -318,6 +349,14 @@ class WorkflowScreen(ModalScreen):
         seen=self.query_one('#workflow-seen',Button)
         seen.label='Undo' if item and item.get('_attention_seen') else 'Reviewed' if item and item.get('_attention_kind')=='completion' else 'Seen'
         seen.disabled=not item or not item.get('_attention_persistent')
+        terminal=self.query_one('#workflow-terminal',Button)
+        is_request=bool(item and (item.get('_attention_kind') in {'approval','reply'} or
+            item.get('state')=='Waiting' and item.get('waiting_for') and
+            str(item.get('waiting_for')).casefold() not in {'tool response','tool'}))
+        terminal.disabled=not is_request
+        terminal.label='Locate terminal' if self.size.width>=100 else 'Locate'
+        self.query_one('#workflow-resume',Button).label='Copy resume' if self.size.width>=100 else 'Resume'
+        self.query_one('#workflow-resume',Button).disabled=not bool(resume_command(item or {}))
         self.query_one('#workflow-retry',Button).disabled=not item or item.get('_attention_delivery') not in {'failed','unavailable'}
         self.query_one('#workflow-review',Button).disabled=item is None
         if not table.display and self.focused is table:log.focus()
@@ -359,7 +398,7 @@ class WorkflowScreen(ModalScreen):
                 if any(not math.isfinite(v) or v<0 for v in limits.values()):raise ValueError()
             except ValueError:owner.notify('Use finite, nonnegative thresholds; 0 disables',severity='error');return
             owner.workflow_limits=limits;owner.workflow_updated=None;owner.save_preferences();owner.update_workflow();owner.notify('Task alert thresholds saved')
-        elif key=='workflow-terminal':owner.workflow_terminal(item)
+        elif key=='workflow-terminal':self.action_go_terminal()
         elif key=='workflow-resume':
             command=resume_command(item)
             if command:owner.copy_to_clipboard(command);owner.notify('Resume command copied; check session ownership before running')
