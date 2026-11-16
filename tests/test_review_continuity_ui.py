@@ -77,7 +77,7 @@ class ReviewContinuityJourney(unittest.IsolatedAsyncioTestCase):
             root=Path(directory);owner,item=self.setup_owner(root/'tasks.db');app=Harness(owner,item)
             async with app.run_test(size=(60,20)) as pilot:
                 await pilot.pause();await pilot.press('d')
-                await self.ready(pilot,lambda:isinstance(app.screen,TaskEditor))
+                await self.ready(pilot,lambda:isinstance(app.screen,TaskEditor) and bool(app.screen.query(TextArea)))
                 editor=app.screen
                 self.assertIn('CONTINUITY DRAFT',editor.query_one(TextArea).text)
                 self.assertEqual(TaskStore(root/'tasks.db').count(),0)
