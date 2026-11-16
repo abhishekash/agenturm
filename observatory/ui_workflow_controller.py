@@ -31,6 +31,8 @@ class WorkflowController:
         self._drained = threading.Condition(self._lock)
         self._queue = []
         self._running = False
+        self._draining = False
+        self._shutdown_drainer_started = False
         self._closed = False
         self._store_attempted = False
         self._latest = None
@@ -39,11 +41,23 @@ class WorkflowController:
         self.native_observations=[]
         self.native_receiver='';self.native_warning=''
 
-    def close(self):
+    def begin_close(self):
         # Stop observations/delivery; preserve already accepted user receipts.
         with self._drained:
             self._closed = True
             self._queue = [job for job in self._queue if job[0] in {'ack', 'error_seen','review_completions'}]
+
+    def close(self):
+        self.begin_close()
+        with self._drained:
+            if self._running and not self._draining and not self._shutdown_drainer_started:
+                # Textual cancels its workers before Unmount. A scheduled thread
+                # worker may therefore never enter _drain, even though receipts
+                # have already been accepted. Give that queue an independent
+                # shutdown drainer; the claim in _drain prevents double writes
+                # if the original worker starts at the same time.
+                self._shutdown_drainer_started = True
+                threading.Thread(target=self._drain, name='agenturm-workflow-shutdown', daemon=True).start()
             deadline = time.monotonic()+3
             while self._running:
                 remaining = deadline-time.monotonic()
@@ -76,10 +90,15 @@ class WorkflowController:
         self.owner.run_worker(self._drain, thread=True, group='workflow-state', exit_on_error=False)
 
     def _drain(self):
+        with self._lock:
+            if self._draining:
+                return
+            self._draining = True
         while True:
             with self._lock:
                 if not self._queue:
                     self._running = False
+                    self._draining = False
                     self._drained.notify_all()
                     return
                 kind, args = self._queue.pop(0)

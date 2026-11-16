@@ -1812,8 +1812,20 @@ class ObservatoryApp(App):
         self.refresh_timer=self.set_interval(.5,self.refresh_data)
         self.action_page(self.preference_view)
 
+    def exit(self, result=None, return_code=0, message=None):
+        # Quiesce producers before Textual cancels workers and closes widgets.
+        # These admission changes do no network, filesystem, or join work.
+        feed_stop=getattr(getattr(self,'feed',None),'request_stop',None)
+        if callable(feed_stop):feed_stop()
+        controller=getattr(self,'workflow_controller',None)
+        if controller is not None:controller.begin_close()
+        return super().exit(result, return_code, message)
+
     async def on_unmount(self):
         import asyncio
+        feed_stop=getattr(self.feed,'request_stop',None)
+        if callable(feed_stop):feed_stop()
+        self.workflow_controller.begin_close()
         self.source_preparation.clear()
         await asyncio.to_thread(self.workflow_controller.close)
         self.save_preferences()
