@@ -146,7 +146,7 @@ class EvidenceRenderingTest(unittest.TestCase):
             def __init__(self):
                 self.blocks = []
             def write(self, block):
-                self.blocks.append(block)
+                self.blocks.append(getattr(block, 'renderable', block))
 
         output = Capture()
         app.write_evidence(output, 'Recorded Content', payload)
@@ -171,7 +171,7 @@ class EvidenceRenderingTest(unittest.TestCase):
         class Capture:
             blocks = []
             def write(self, block):
-                self.blocks.append(block)
+                self.blocks.append(getattr(block, 'renderable', block))
 
         output = Capture()
         app.write_evidence(output, 'Text', encoded_string, depth=1)
@@ -190,7 +190,7 @@ class EvidenceRenderingTest(unittest.TestCase):
             def __init__(self):
                 self.blocks = []
             def write(self, block):
-                self.blocks.append(block)
+                self.blocks.append(getattr(block, 'renderable', block))
 
         output = Capture()
         app.write_evidence(output, 'Recorded Content', recorded)
@@ -210,7 +210,7 @@ class EvidenceRenderingTest(unittest.TestCase):
             def __init__(self):
                 self.blocks = []
             def write(self, block):
-                self.blocks.append(block)
+                self.blocks.append(getattr(block, 'renderable', block))
 
         output = Capture()
         app.write_evidence(output, 'Command', captured)
@@ -234,7 +234,7 @@ class EvidenceRenderingTest(unittest.TestCase):
             def __init__(self):
                 self.blocks = []
             def write(self, block):
-                self.blocks.append(block)
+                self.blocks.append(getattr(block, 'renderable', block))
 
         output = Capture()
         app.write_evidence(output, 'Recorded Content', json.dumps(payload), depth=1)
@@ -253,7 +253,7 @@ class EvidenceRenderingTest(unittest.TestCase):
             def __init__(self):
                 self.blocks = []
             def write(self, block):
-                self.blocks.append(block)
+                self.blocks.append(getattr(block, 'renderable', block))
 
         output = Capture()
         app.write_evidence(output, 'Recorded Content', recorded)
@@ -525,7 +525,7 @@ class MetricDetailSemanticsTest(unittest.IsolatedAsyncioTestCase):
             detail = app.query_one('#metrics-detail').plain_text
             self.assertIn('"quantile": 0.5', detail)
             self.assertIn('"value": 2.5', detail)
-            self.assertIn('Temporality Assumed\ncumulative', detail)
+            self.assertIn('"temporality_assumed": "cumulative"', detail)
 
 
 class TokenPresenceRenderingTest(unittest.IsolatedAsyncioTestCase):

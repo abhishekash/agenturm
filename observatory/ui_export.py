@@ -11,6 +11,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, RichLog, Static
+from .ui_content import ContentLog
 
 FIELDS = {
     'agents': ('runtime', 'service', 'session_id', 'project', 'model', 'task', 'state', 'waiting_for',
@@ -85,7 +86,7 @@ class ExportScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id='export-dialog'):
             yield Static('PRIVACY PREVIEW · Nothing has been written.\nThis exact JSON may contain prompts, outputs, paths, session/trace IDs, or secrets recorded by your agent. It is NOT redacted. Review before sharing. Only the selected record is included; no receiver credentials or background history are added.', id='export-warning', markup=False)
-            yield RichLog(id='export-preview', min_width=1, wrap=True, markup=False, auto_scroll=False)
+            yield ContentLog(id='export-preview', min_width=1, wrap=True, markup=False, auto_scroll=False)
             yield Input(placeholder='Destination file (must not already exist)', id='export-path')
             with Horizontal(id='export-actions'):
                 yield Button('Cancel', id='export-cancel')

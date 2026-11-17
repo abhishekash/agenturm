@@ -132,10 +132,10 @@ class InspectorLayoutTests(unittest.IsolatedAsyncioTestCase):
             await self.open_inspector(app,pilot)
             detail=app.query_one('#agent-detail')
             text=detail.plain_text
-            self.assertIn('Agent Reported',text)
+            self.assertIn('Agent reported',text)
             self.assertIn('tests are still running',text)
             self.assertNotIn('Request 1:',text)
-            self.assertNotIn('Task Usage',text)
+            self.assertNotIn('Task usage',text)
             self.assertFalse(any('domain=message' in path for path in feed.api.requests))
             await pilot.press('m')
             await app.workers.wait_for_complete()
@@ -147,7 +147,7 @@ class InspectorLayoutTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press('m')
             await pilot.pause()
             self.assertIn('Session ID',detail.plain_text)
-            self.assertIn('Task Usage',detail.plain_text)
+            self.assertIn('Task usage',detail.plain_text)
             self.assertNotIn('Request 2:',detail.plain_text)
 
     async def test_selected_prompt_context_original_copy_export_and_responsive_reader(self):

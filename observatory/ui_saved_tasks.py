@@ -9,7 +9,6 @@ import re
 import time
 from urllib.parse import unquote, urlsplit
 
-from rich.markdown import Markdown
 from rich.cells import cell_len
 from rich.console import Console
 from rich.text import Text
@@ -22,6 +21,7 @@ from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widgets import Button, DataTable, Input, RichLog, Select, Static, TextArea
+from .ui_content import ContentLog, ReadingMarkdown, prose, report_document, write_section
 
 from .saved_tasks import BRIEF_FIELDS, TaskStore, export_handoff, render_handoff, review_scope_issue,continuity_view
 from .ui_monitoring import task_run_usage
@@ -553,7 +553,7 @@ class TaskDetailScreen(TaskScreen):
                 yield Button('Draft · g',id='task-draft')
                 yield Button('Brief', id='task-brief')
                 yield Button('Decisions', id='task-decisions')
-            yield RichLog(id='task-body', wrap=True, markup=False, min_width=1, auto_scroll=False)
+            yield ContentLog(id='task-body', wrap=True, markup=False, min_width=1, auto_scroll=False)
             yield Static('', id='task-status', markup=False)
             with Horizontal(classes='task-actions'):
                 for name, label in (('edit', 'Edit'), ('runs', 'Runs'), ('link', 'Link'),
@@ -586,9 +586,9 @@ class TaskDetailScreen(TaskScreen):
         body.clear()
         title = plain(self.record['title'])
         content = (title + '\n\n' if cell_len(title) > body.scrollable_content_region.width else '') + task_overview(self.record,task_source_policy(self.owner))
-        text = Text(content)
-        text.highlight_regex(r'(?m)^(STRUCTURED BRIEF|NOTES|WORKSPACE|USAGE DETAILS|CONTINUE)$', 'bold')
-        body.write(text)
+        body.write(report_document(content,('STRUCTURED BRIEF','NOTES','WORKSPACE','USAGE DETAILS',
+            'CONTINUE','LATEST APPROVED CONTINUITY DRAFT'),narrative=('NOTES','LATEST APPROVED CONTINUITY DRAFT'),
+            theme=self.owner.theme))
         self.query_one('#task-archive', Button).label = 'Restore' if self.record['archived'] else 'Archive'
         self.query_one('#task-link', Button).tooltip = 'Link the session currently selected in the monitor. Re-linking an exact run updates its evidence.'
 
@@ -973,7 +973,7 @@ class TaskDecisionsScreen(TaskScreen):
         with Vertical(id='saved-root'):
             yield Static('Decisions · immutable versions and source references', id='task-heading', markup=False)
             yield Select([], id='decision-version', prompt='No decisions saved')
-            yield RichLog(id='task-body', wrap=True, markup=False, min_width=1, auto_scroll=False)
+            yield ContentLog(id='task-body', wrap=True, markup=False, min_width=1, auto_scroll=False)
             yield Static('', id='task-status', markup=False)
             with Horizontal(classes='task-actions'):
                 yield Button('Add', id='decision-add')
@@ -1009,12 +1009,15 @@ class TaskDecisionsScreen(TaskScreen):
         selected = self.selected()
         if selected:
             import json
-            body.write(Text(selected['text'] + '\n\nRationale\n' + selected['rationale'] +
-                '\n\nScope\n' + (selected['scope'] or 'Not specified') +
-                '\n\nVersion ' + selected['id'] + ' · ' + stamp(selected['created_ns']) +
-                ('\nSupersedes ' + selected['supersedes_id'] if selected.get('supersedes_id') else '') +
-                ('\n\nSaved source · availability not revalidated\n' + json.dumps(selected['source'], ensure_ascii=False, indent=2)
-                 if selected.get('source') else '\n\nManual decision · no source reference')))
+            write_section(body,'Decision',prose(selected['text'],self.owner.theme),first=True)
+            write_section(body,'Rationale',prose(selected['rationale'],self.owner.theme))
+            write_section(body,'Scope',Text(selected['scope'] or 'Not specified'))
+            write_section(body,'Version',Text(selected['id']+' · '+stamp(selected['created_ns'])+
+                ('\nSupersedes '+selected['supersedes_id'] if selected.get('supersedes_id') else '')))
+            if selected.get('source'):
+                write_section(body,'Saved source · availability not revalidated',
+                              Text(json.dumps(selected['source'],ensure_ascii=False,indent=2)))
+            else:write_section(body,'Source',Text('Manual decision · no source reference'))
         else:
             body.write('No decisions saved. Add an accepted or rejected approach with its rationale.')
         replaced = {item.get('supersedes_id') for item in self.record.get('decisions', [])}
@@ -1120,11 +1123,11 @@ class TaskRunsScreen(TaskScreen):
             self.job(lambda store: store.unlink(task_id, key, expected_revision=revision), changed)
 
 
-def prepare_handoff_lines(markdown, width):
+def prepare_handoff_lines(markdown, width, theme='Current'):
     """Format once in a worker; painting a frame only reads visible lines."""
-    theme = Theme({key: 'bold' for key in ('markdown.h1', 'markdown.h2', 'markdown.h3')})
-    console = Console(file=StringIO(), width=width, theme=theme)
-    lines = console.render_lines(Markdown(markdown), console.options, pad=False)
+    styles = Theme({key: 'bold' for key in ('markdown.h1', 'markdown.h2', 'markdown.h3')})
+    console = Console(file=StringIO(), width=width, theme=styles)
+    lines = console.render_lines(ReadingMarkdown(markdown,theme), console.options, pad=False)
     return [Strip(line) for line in lines]
 
 
@@ -1222,7 +1225,8 @@ class HandoffScreen(TaskScreen):
             self.preview_width = width
             body.show_lines(lines, width)
             self.status('Review before sharing. This includes saved notes, paths, commands, and changes.')
-        self.job(lambda _: prepare_handoff_lines(self.markdown, width), ready,
+        theme=self.owner.theme
+        self.job(lambda _: prepare_handoff_lines(self.markdown, width, theme), ready,
                  'Formatting the saved preview… Esc returns to the task.', needs_store=False)
 
     def finish_job(self, result, error, callback):

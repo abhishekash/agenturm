@@ -46,6 +46,7 @@ from .ui_workflow import AttentionLedger, WorkflowScreen, WorkflowController, de
 from .ui_preferences import Preferences
 from .ui_export import ExportScreen
 from .ui_render import update_status_text
+from .ui_content import metadata_table, prose, write_body, write_section
 from .ui_coverage import analysis_coverage
 from .ui_monitoring import (UsageScreen, SortScreen, SessionScopeScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, changed_records, failed,
                             failure_groups, event_id, connection_feedback, session_history_feedback)
@@ -313,10 +314,9 @@ def format_json(value):
 def write_json(log,value,theme='Current'):
     """Render indented JSON and move multiline string values into readable blocks."""
     formatted,text_values=format_json(value)
-    log.write(evidence_syntax(formatted,'json',theme))
+    write_body(log,evidence_syntax(formatted,'json',theme))
     for path,content in text_values:
-        log.write(Text(f'\n{path} · {len(content.splitlines())} lines',style='bold #c5adff'))
-        log.write(Text(content))
+        write_section(log,f'{path} · {len(content.splitlines())} lines',Text(content))
 
 
 def copy_event_text(item):
@@ -1018,6 +1018,8 @@ def evidence_syntax(content, lexer, theme='Current'):
 
 class SelectableRichLog(RichLog):
     """Selectable evidence with visible highlighting and plain-text extraction."""
+    DEFAULT_CSS='SelectableRichLog { overflow-x: hidden; }'
+
     def on_show(self):
         # Hidden widgets have no content region, but keep their previous size
         # internally. Revealing one at the same width may not trigger reflow
@@ -1036,7 +1038,7 @@ class SelectableRichLog(RichLog):
             content = themed_text(self, content)
         # Rich's measurement can be capped at the console's startup width.
         # Expanded session reading must use this pane's current measured width.
-        if self.id in {'agent-detail','agent-stats'} and not args and self.scrollable_content_region.width:
+        if not args and self.scrollable_content_region.width:
             kwargs.setdefault('width',self.scrollable_content_region.width)
         return super().write(content, *args, **kwargs)
 
@@ -1296,7 +1298,7 @@ class ObservatoryApp(App):
     .expand-button { min-width: 12; }
     #trace-detail { width: 1fr; border: solid $agent-border-subtle; }
     #span-tree { height: 1fr; min-height: 4; background: $agent-surface; scrollbar-size: 1 1; }
-    #span-info { height: 10; border-top: solid $agent-border-subtle; }
+    #span-info { height: 10; border-top: solid $agent-border-subtle; padding: 0 1; }
     #health { height: 1; padding: 0 2; color: $agent-muted; text-wrap: nowrap; text-overflow: ellipsis; }
     #usage-summary, #stat-usage { display: none; }
     #connection-notice { height: 2; margin: 0 2; background: $agent-surface; }
@@ -2995,18 +2997,13 @@ class ObservatoryApp(App):
         else:
             log.write(Text(title,style='bold #f6f0e8'))
         if overview:log.write('')
-        table=Table.grid(padding=(0,2));table.add_column(style=themed_style(log,'#b9afc5'),no_wrap=True,
-            width=min(max((cell_len(str(label)) for label,_ in fields),default=0),max(8,width//3)))
-        table.add_column(no_wrap=overview,overflow='ellipsis')
-        for label,value in fields:
-            value=themed_text(log,value) if isinstance(value,Text) else Text(str('Not reported' if value is None or value=='' else value))
-            table.add_row(Text(label),value)
-        if fields:log.write(table)
+        if fields:
+            log.write(metadata_table([(label,themed_text(log,value) if isinstance(value,Text) else value)
+                                      for label,value in fields],width,themed_style(log,'#b9afc5')))
         for label,value in sections:
             if overview:
                 if not value:continue
-                log.write(Text('\n'+label.upper(),style='#b9afc5'))
-                log.write(Text(str(value),style='#f6f0e8'))
+                write_section(log,label,prose(value,self.theme))
             elif label=='Latest recorded event' and value:
                 for part,content in value.items():self.write_evidence(log,part,content)
             else:
@@ -3019,21 +3016,11 @@ class ObservatoryApp(App):
 
     def write_evidence(self,log,label,value,depth=0):
         if value is None or value=='':return
-        if label.casefold() in {'request','original captured text'}:
-            log.write(Text('\n'+label.title(),style='bold #c5adff') if label.casefold()!='request' else '')
-            log.write(Text(str(value)))
+        label=label.replace('_',' ')
+        if label.casefold()=='original captured text':
+            write_section(log,label,Text(str(value)))
             return
         value=decode_nested(value)
-        if isinstance(value,str) and label.casefold() in {'recorded content','text','output','response'}:
-            segments=embedded_json(value)
-            if any(kind=='json' for kind,_ in segments):
-                log.write(Text('\n'+label.title(),style='bold #c5adff'))
-                for kind,content in segments:
-                    if kind=='text':
-                        if content.strip():log.write(Text(content.strip('\n')))
-                    else:
-                        write_json(log,content,self.theme)
-                return
         # Native log adapters may wrap each piece of the same record in a
         # one-key `recorded_content` envelope. Unwrap that without consuming
         # the JSON nesting budget or repeating the label at every level.
@@ -3043,48 +3030,44 @@ class ObservatoryApp(App):
                 self.write_evidence(log,label,child,depth);return
             if key.lower()=='wrapper':
                 self.write_evidence(log,label,child,depth+1);return
-        if depth==0 and isinstance(value,(dict,list)) and value:
-            log.write(Text('\n'+label.upper(),style='bold #ffbd69'))
-            if label.lower()=='arguments':
-                write_json(log,value,self.theme)
-                return
-        if isinstance(value,(dict,list)) and not value:
-            log.write(Text('\n'+label.title(),style='bold #c5adff'))
-            log.write(Text('No entries' if isinstance(value,list) else 'Empty object'))
-            return
         if isinstance(value,dict) and value.get('type') in {'text','input_text','output_text'} and 'text' in value:
             self.write_evidence(log,label,value['text'],depth+1);return
-        # Any structured value nested in captured evidence is easier to scan
-        # as JSON than as a sequence of flattened label/value rows. This also
-        # handles JSON strings stored under fields such as `output` or `text`.
-        if depth and isinstance(value,(dict,list)):
-            write_json(log,value,self.theme)
-            return
-        if depth<64 and isinstance(value,dict):
-            for key,child in value.items():
-                self.write_evidence(log,str(key).replace('_',' '),child,depth+1)
-            return
-        if depth<64 and isinstance(value,list):
-            for child in value:self.write_evidence(log,label,child,depth+1)
-            return
+        # One section per structured value. Flattening keys into peer headings
+        # erased ownership and made nested evidence appear unrelated.
+        log.write(Text(''))
+        log.write(Text(label[:1].upper()+label[1:],style=f'bold {PALETTES[self.theme]["secondary"]}'))
         if isinstance(value,(dict,list)):
-            log.write(Text('\n'+label.title(),style='bold #c5adff'))
             write_json(log,value,self.theme)
             return
-        log.write(Text('\n'+label.title(),style='bold #c5adff'))
+        narrative=(label.casefold() in {'recorded content','content','text','response','request','message preview'}
+                   or label.casefold().startswith(('agent reported','ai summary','latest request')))
+        rendered=prose(value,self.theme) if narrative else Text(str(value))
+        if narrative and not isinstance(rendered,Text):
+            # JSON inside a Markdown code fence belongs to that document, not
+            # to the mixed raw-log JSON extractor below.
+            write_body(log,rendered)
+            return
+        if isinstance(value,str) and label.casefold() in {'recorded content','text','output','response'}:
+            segments=embedded_json(value)
+            if any(kind=='json' for kind,_ in segments):
+                for kind,content in segments:
+                    if kind=='text':
+                        if content.strip():write_body(log,Text(content.strip('\n')))
+                    else:write_json(log,content,self.theme)
+                return
         if label.lower()=='command':
             command=shell_command(value)
             script=heredoc_script(command)
             if script:
                 language,title,body=script
-                log.write(Text(title,style='bold #c5adff'))
-                log.write(evidence_syntax(body or '# Empty script',language,self.theme))
+                write_body(log,Text(title,style=f'bold {PALETTES[self.theme]["secondary"]}'))
+                write_body(log,evidence_syntax(body or '# Empty script',language,self.theme))
                 return
-            log.write(evidence_syntax(command,'bash',self.theme))
+            write_body(log,evidence_syntax(command,'bash',self.theme))
         elif label.lower() in {'diff','patch','unified diff','code'}:
             lexer='diff' if 'diff' in label.lower() or label.lower()=='patch' else 'python' if label.lower()=='code' else 'bash'
-            log.write(evidence_syntax(str(value),lexer,self.theme))
-        else:log.write(Text(str(value)))
+            write_body(log,evidence_syntax(str(value),lexer,self.theme))
+        else:write_body(log,rendered)
 
     def hierarchy_sections(self,item):
         graph=self.hierarchy_graph
@@ -3699,6 +3682,8 @@ class ObservatoryApp(App):
             self.inspect('activity-detail','No activity in this scope',[],[('Scope','Choose another agent session or clear the search to view recent activity.')]);return
         details=decode(item.get('detail') or '')
         sections=list(details.items()) if isinstance(details,dict) else [('Recorded content',details)]
+        if item.get('domain')=='message' and not details and item.get('subject'):
+            sections=[('Message preview',item['subject'])]
         if 'detail' not in item:
             sections.insert(0,('Error details','Only a reference is loaded. Waiting for retained details; this error stays unseen until its evidence loads.'))
         if failed(item):
@@ -3722,8 +3707,16 @@ class ObservatoryApp(App):
             or 'No surrounding events loaded. Use Older / Newer to browse retained history.'))
         if item.get('metadata'):
             sections.append(('Runtime metadata',item['metadata']))
-        self.inspect('activity-detail',headline(item),[('Agent',item.get('service')),('Type',item.get('domain')),('Result',str(status(item.get('result')))),
-            ('When',when(item.get('time_unix_nano'))),('Duration',timing(item.get('duration_ms')))],
+        title=({'user':'User message','assistant':'Agent message'}.get(item.get('action'),'Recorded message')
+               if item.get('domain')=='message' else headline(item))
+        fields=[('Agent',item.get('service'))]
+        if item.get('domain')!='message':fields.append(('Type',item.get('domain')))
+        fields.extend([('Result',str(status(item.get('result')))),('When',when(item.get('time_unix_nano')))])
+        # A message has no expected execution duration. Do not spend a reading
+        # row on that empty tool field, or repeat its type from the heading.
+        if item.get('domain')!='message' or item.get('duration_ms') is not None:
+            fields.append(('Duration',timing(item.get('duration_ms'))))
+        self.inspect('activity-detail',title,fields,
             sections+[('Source',item.get('source')),('Trace ID',item.get('trace_id')),('Span ID',item.get('span_id'))])
         if failed(item) and 'detail' in item:
             events=[event for event in (item.get('_failures') or [item]) if 'detail' in event]

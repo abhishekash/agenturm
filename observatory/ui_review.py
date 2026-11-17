@@ -12,9 +12,10 @@ from .feed_requests import shared_get
 from .workflow_evidence import ReviewHistory, scope_for, render_review
 from .review_facts import refreshed_review_item, review_capture_policy
 from .ui_export import ReceiptExportScreen
+from .ui_content import ContentLog, report_document
 
 
-class ReviewLog(RichLog):
+class ReviewLog(ContentLog):
     can_focus = True
 
 
@@ -139,7 +140,11 @@ class ReviewScreen(ModalScreen):
             if self.projection.get('parallel_path_observations'):
                 from .review_continuity import render_parallel
                 text+='\n\n'+render_parallel(self.projection['parallel_path_observations'])
-        log.clear();log.write(Text(text),width=max(1,log.scrollable_content_region.width))
+        log.clear();log.write(report_document(text,(
+            'LATEST CAPTURED REQUEST FOR THIS RUN','AGENT-REPORTED UPDATE','RECORDED CHECKS',
+            'RECORDED MODIFYING OPERATIONS','RECORDED ERRORS','RECORDED USAGE','CONTEXT EVENTS',
+            'EVIDENCE SCOPE'),narrative=('LATEST CAPTURED REQUEST FOR THIS RUN','AGENT-REPORTED UPDATE'),
+            theme=self.owner.theme))
         log.scroll_to(y=scroll,animate=False)
         self.query_one('#review-earlier',Button).disabled=not bool(self.history.cursor) or self.history.busy
         self.query_one('#review-refresh',Button).disabled=self.history.busy

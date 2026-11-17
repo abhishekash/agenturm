@@ -266,11 +266,11 @@ class SavedTaskJourney(unittest.IsolatedAsyncioTestCase):
         task = TaskStore(self.path).create('Readable large handoff', notes='Decision and next step.\n' * 100)
         started, release = threading.Event(), threading.Event()
         main_thread = threading.get_ident()
-        def prepare(markdown, width):
+        def prepare(markdown, width, theme='Current'):
             self.assertNotEqual(threading.get_ident(), main_thread)
             started.set()
             release.wait(5)
-            return prepare_handoff_lines(markdown, width)
+            return prepare_handoff_lines(markdown, width, theme)
         app = self.app()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()

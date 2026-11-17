@@ -243,7 +243,7 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertTrue(app.query_one("#agent-bottom").display)
             self.assertIn("Fix checkout regression", app.query_one("#agent-heading").render().plain)
-            self.assertIn('Direct Children',app.query_one('#agent-detail').plain_text)
+            self.assertIn('Direct children',app.query_one('#agent-detail').plain_text)
             await pilot.press("escape")
             await pilot.pause()
             await pilot.resize_terminal(60, 18)
@@ -253,7 +253,7 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertTrue(app.query_one("#agent-bottom").display)
             self.assertIn("Fix checkout regression", app.query_one("#agent-heading").render().plain)
-            self.assertIn('Direct Children',app.query_one('#agent-detail').plain_text)
+            self.assertIn('Direct children',app.query_one('#agent-detail').plain_text)
 
     async def test_search_reveals_ancestor_context_and_flat_mode_is_reversible(self):
         feed = HierarchyFeed()

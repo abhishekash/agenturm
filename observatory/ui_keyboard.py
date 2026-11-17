@@ -5,6 +5,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import RichLog, Static
+from .ui_content import ContentLog
 
 
 KEYBOARD_REFERENCE = '''MOVE AND READ
@@ -118,7 +119,7 @@ class KeyboardHelpScreen(ModalScreen):
     def compose(self):
         with Vertical():
             yield Static('Keyboard navigation · '+self.context,id='keyboard-heading',markup=False)
-            yield RichLog(id='keyboard-reference',wrap=True,min_width=1,markup=False,auto_scroll=False)
+            yield ContentLog(id='keyboard-reference',wrap=True,min_width=1,markup=False,auto_scroll=False)
             yield Static('↑↓ / PgUp/PgDn Read · F1 / Esc Return',id='keyboard-hints',markup=False)
 
     def on_mount(self):
