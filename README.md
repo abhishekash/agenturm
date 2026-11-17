@@ -16,10 +16,16 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/abhishekash/agenturm/actions/workflows/ci.yml"><img src="https://github.com/abhishekash/agenturm/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/abhishekash/agenturm/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/abhishekash/agenturm/ci.yml?branch=main&amp;label=CI&amp;labelColor=191621" alt="CI status on main"></a>
   <a href="https://pypi.org/project/agenturm/"><img src="https://img.shields.io/pypi/v/agenturm?color=ffbd69&amp;labelColor=191621" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/agenturm/"><img src="https://img.shields.io/pypi/pyversions/agenturm?logo=python&amp;logoColor=white&amp;color=c5adff&amp;labelColor=191621" alt="Supported Python versions"></a>
   <a href="docs/privacy.md"><img src="https://img.shields.io/badge/data-local_by_default-c5adff?labelColor=191621" alt="Local by default"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-b9afc5?labelColor=191621" alt="MIT license"></a>
+</p>
+
+<p align="center">
+  <a href="https://pypistats.org/packages/agenturm"><img src="https://img.shields.io/pypi/dm/agenturm?label=downloads%2Fmonth&amp;color=ffbd69&amp;labelColor=191621" alt="PyPI downloads per month"></a>
+  <a href="https://github.com/abhishekash/agenturm/stargazers"><img src="https://img.shields.io/github/stars/abhishekash/agenturm?style=flat&amp;logo=github&amp;color=c5adff&amp;labelColor=191621" alt="GitHub stars"></a>
 </p>
 
 ## Find the work that needs you
@@ -58,6 +64,11 @@ Reply to agents and approve their requests in their own terminals. Agenturm moni
 Follow a refresh-token fix: find a worker that needs input, read the requests, inspect a reported test result alongside a later edit, investigate a failed MCP call, and preview a handoff. The browser walkthrough is a simplified, interactive explanation. Screenshots are captured from the actual v0.2.0 terminal. All demo records are synthetic.
 
 ## Get your first useful view
+
+<p>
+  <a href="https://www.agenturm.dev/#demo"><img src="https://img.shields.io/badge/demo-interactive-ffbd69?labelColor=191621" alt="Try the interactive demo"></a>
+  <a href="docs/usage.md#install-and-launch-the-terminal-cockpit"><img src="https://img.shields.io/badge/launch-uvx_agenturm-c5adff?labelColor=191621" alt="Launch with uvx agenturm"></a>
+</p>
 
 Requires **Python 3.11+**. Use [uv](https://docs.astral.sh/uv/getting-started/installation/) or pip to install.
 
