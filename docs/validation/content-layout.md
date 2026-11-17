@@ -68,6 +68,11 @@ multi-agent, evidence, copy, theme and capture-policy regressions must still pas
   and core-flow follow-up passed, as did five consecutive executions of the
   hidden replacement/copy/export journey. Release is gated on the full CI matrix
   for the exact PR head, not on preparation-time local results.
+- The first full local run completed 1,386 tests with 14 skips and four failed
+  assertions: the two heading-case checks above and diagnostics text wrapping
+  at 80×24 and 60×18. Diagnostics now asserts normalized complete text plus
+  fitting line widths and no horizontal scrollbar. A 15-test follow-up covering
+  every full-run failure and all new content regressions passed.
 - Wheel and source distribution for 0.2.7 build and pass `twine check`. An isolated
   installed-wheel smoke check verifies the version, responsive Markdown rendering,
   original message copying and CLI import. Lockfile, compile and whitespace

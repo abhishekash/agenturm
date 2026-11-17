@@ -44,7 +44,13 @@ class StatusConfidenceJourney(unittest.IsolatedAsyncioTestCase):
                         sum(item.get('active',False) for item in app.source_map.values()))
                     app.action_diagnostics()
                     await pilot.pause()
-                    text = '\n'.join(line.text for line in app.screen.query_one('#diagnostics-log').lines)
+                    log = app.screen.query_one('#diagnostics-log')
+                    # Responsive rendering may wrap any word boundary; verify
+                    # complete diagnostic meaning, not its former fixed width.
+                    text = ' '.join(' '.join(line.text for line in log.lines).split())
+                    self.assertFalse(log.show_horizontal_scrollbar)
+                    self.assertLessEqual(max(line.cell_length for line in log.lines),
+                                         log.scrollable_content_region.width)
                     self.assertIn('Older session history: unavailable', text)
                     self.assertIn('/api/sessions', text)
                     self.assertRegex(text, r'last successful read\s+\d+s old')
