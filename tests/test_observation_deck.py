@@ -493,8 +493,8 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             detail=app.query_one('#agent-detail').plain_text
             self.assertIn('Implement a retry guard for the payment request',detail)
             self.assertEqual(detail.count('Implement a retry guard for the payment request'),1)
-            self.assertNotIn('LATEST REQUEST',detail)
-            self.assertIn('LATEST WORK',detail)
+            self.assertNotIn('Latest request',detail)
+            self.assertIn('Latest work',detail)
             self.assertIn('Activity · s',app.query_one('#agent-open').label.plain)
             await pilot.press('e')
             await pilot.pause()

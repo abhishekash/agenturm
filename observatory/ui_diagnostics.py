@@ -7,6 +7,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, RichLog
+from .ui_content import ContentLog
 
 from .terminal import clean
 
@@ -207,7 +208,7 @@ class DiagnosticsScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id='diagnostics-dialog'):
-            yield RichLog(id='diagnostics-log', wrap=True, markup=False)
+            yield ContentLog(id='diagnostics-log', wrap=True, markup=False, min_width=1, auto_scroll=False)
             with Horizontal(id='diagnostics-actions'):
                 yield Button('Refresh now · R',id='diagnostics-retry',
                              disabled=self.feed is None or self.feed.retry_requested)

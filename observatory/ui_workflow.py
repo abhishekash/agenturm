@@ -12,6 +12,7 @@ from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, DataTable, Input, Label, RichLog
+from .ui_content import ContentLog, report_document
 from rich.text import Text
 from .ui_monitoring import task_run_usage, task_usage_summary
 from .session_status import today_bucket
@@ -172,7 +173,7 @@ class WorkflowScreen(ModalScreen):
             yield Label('Workflow needs 60 × 18. Resize to continue; Esc returns.',id='workflow-too-small')
             with Horizontal(id='workflow-body'):
                 yield DataTable(id='workflow-inbox',cursor_type='row',zebra_stripes=True)
-                yield RichLog(id='workflow-log',wrap=True,markup=False,min_width=1,auto_scroll=False)
+                yield ContentLog(id='workflow-log',wrap=True,markup=False,min_width=1,auto_scroll=False)
             with VerticalScroll(id='workflow-settings-panel'):
                 yield Checkbox('Desktop alerts · project and reason only',value=self.owner.workflow_notify,id='workflow-notify')
                 with Horizontal(id='workflow-limits'):
@@ -343,7 +344,9 @@ class WorkflowScreen(ModalScreen):
         key=(self.selected_incident,owner.selected_source,text,log.content_size.width)
         if log.content_size.width and self._log_signature!=key:
             old_y=log.scroll_y if self._log_signature and self._log_signature[:2]==key[:2] else 0
-            log.clear();log.write(Text(safe_text(text)),width=max(1,log.content_size.width-1))
+            log.clear();log.write(report_document(safe_text(text),(
+                'REQUEST NEEDS RESPONSE','OBSERVATION HEALTH','WORKSPACE','TASK USAGE',
+                'CONFIRMED DIRECT CHILDREN','RECORDED WORK','CONTEXT DIAGNOSTICS','HANDOFF')))
             self.call_after_refresh(log.scroll_to,y=old_y,animate=False)
             self._log_signature=key
         seen=self.query_one('#workflow-seen',Button)

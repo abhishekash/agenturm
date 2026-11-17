@@ -12,6 +12,7 @@ from textual.widgets import Button,RichLog,Static
 
 from .review_facts import bind_capture_policy, review_capture_policy
 from .workflow_evidence import scope_for
+from .ui_content import ContentLog, write_section
 
 
 def source_fields(record,path=''):
@@ -58,7 +59,7 @@ class FindingSourceScreen(ModalScreen):
     def compose(self):
         with Vertical(id='finding-source-dialog'):
             yield Static('Exact recorded evidence',id='finding-source-status')
-            yield RichLog(id='finding-source-log',wrap=True,markup=False,auto_scroll=False,min_width=1)
+            yield ContentLog(id='finding-source-log',wrap=True,markup=False,auto_scroll=False,min_width=1)
             with Horizontal(id='finding-source-actions'):
                 yield Button('Refresh · r',id='finding-source-refresh')
                 yield Button('Back · Esc',id='finding-source-close')
@@ -108,11 +109,11 @@ class FindingSourceScreen(ModalScreen):
             for source in self.sources:
                 scope=source.get('scope') or {}
                 log.write(Text(source.get('type','Source')+' · '+str(source.get('id') or 'Unknown reference'),style='bold'))
-                log.write(Text('Producer / actor / session: '+ ' / '.join(str(scope.get(key) or 'Not reported') for key in ('service','agent_id','session_id'))))
+                write_section(log,'Producer / actor / session',Text(' / '.join(str(scope.get(key) or 'Not reported') for key in ('service','agent_id','session_id'))))
                 if source.get('record') is None:log.write('Source unavailable.')
                 else:
                     for label,text in source_fields(source['record']):
-                        log.write(Text(label,style='bold'));log.write(Text(text))
+                        write_section(log,label,Text(text))
                 if source.get('reason'):log.write(Text(source['reason']))
                 log.write('')
             status=('Source no longer retained, was revoked, or is unavailable.' if response.get('unavailable') else

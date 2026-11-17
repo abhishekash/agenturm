@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://www.agenturm.dev/#demo"><strong>Explore the workflow →</strong></a> &nbsp;·&nbsp;
   <a href="docs/usage.md">Documentation</a> &nbsp;·&nbsp;
-  <a href="https://github.com/abhishekash/agenturm/releases/tag/v0.2.6">What’s new in 0.2.6</a>
+  <a href="https://github.com/abhishekash/agenturm/releases/tag/v0.2.7">What’s new in 0.2.7</a>
 </p>
 
 <p align="center">
@@ -41,7 +41,7 @@ Agenturm reads supported local agent records and configured OpenTelemetry signal
 
 Reply to agents and approve their requests in their own terminals. Agenturm monitors their work; it does not launch or control them. Request capture and terminal routing depend on the runtime and environment, so an unavailable route is not a successful return.
 
-**In 0.2.6:** Click the attention count or press **!** to find the affected agents. Rows name the reason, and the inspector starts with **Why attention** and **Next step**. The cockpit opens before receiver setup finishes, keeping navigation available while history loads. [What’s new](docs/releases/0.2.6.md).
+**In 0.2.7:** Read recorded messages as formatted Markdown, with indented sections, aligned metadata, and tables that adapt to the reading pane. Inspectors and detail dialogs rewrap when resized; JSON, code, original capture, and copy/export keep their evidence intact. [What’s new](docs/releases/0.2.7.md).
 
 ## See it in action
 
@@ -180,7 +180,7 @@ Choose **Current (Alpine Ember), Bright, Dark, or Solarized** through `Ctrl+P �
 
 ## Status and contributing
 
-Agenturm is open source under the [MIT license](LICENSE). Version **0.2.6** includes the agent hierarchy, navigable attention list, readable inspector, request-focused Workflow, completion review, and saved-task continuity workflows. Signal coverage depends on the source. See the [current quality report](docs/validation/quality-completion.html) for measured performance, stability and remaining acceptance limits.
+Agenturm is open source under the [MIT license](LICENSE). Version **0.2.7** includes the agent hierarchy, navigable attention list, readable evidence panels, request-focused Workflow, completion review, and saved-task continuity workflows. Signal coverage depends on the source. See the [current quality report](docs/validation/quality-completion.html) for measured performance, stability and remaining acceptance limits.
 
 ```sh
 git clone https://github.com/abhishekash/agenturm.git

@@ -6,6 +6,7 @@ from textual import on, events
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, RichLog, Static
+from .ui_content import ContentLog
 from textual.widgets.option_list import Option
 from .review_facts import session_usage, task_run_usage
 from .terminal import clean
@@ -285,7 +286,7 @@ class UsageScreen(ModalScreen):
 
     def compose(self):
         with Vertical(id='usage-dialog'):
-            yield RichLog(id='usage-log', wrap=True, markup=False, min_width=1, auto_scroll=False)
+            yield ContentLog(id='usage-log', wrap=True, markup=False, min_width=1, auto_scroll=False)
             yield Button('Close · Esc', id='usage-close')
 
     def on_mount(self):

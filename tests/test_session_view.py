@@ -176,7 +176,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn('Needs reply', app.query_one('#agent-context').render().plain)
                     self.assertIn('answer in the Codex terminal', ' '.join(detail.split()))
                     self.assertIn('Agenturm is read-only', ' '.join(detail.split()))
-                    self.assertIn('Status Evidence',detail)
+                    self.assertIn('Status evidence',detail)
                     # Historical totals must not turn an explicit input wait
                     # into another error reminder.
                     self.assertNotIn('Recorded Failures',detail)
@@ -211,7 +211,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(app.query_one('#agent-summary').disabled)
                 self.assertIn('works without setup', app.query_one('#agent-summary').tooltip)
                 detail = app.query_one('#agent-detail').plain_text
-                self.assertIn('LATEST WORK', detail)
+                self.assertIn('Latest work', detail)
                 self.assertIn('git status --short', detail)
                 self.assertNotIn('AI summary ·', detail)
                 actions = app.query_one('#agent-actions', DataTable)
@@ -219,7 +219,7 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(actions.display)
                 await pilot.press('e')
                 await pilot.pause()
-                self.assertIn('Status Evidence',app.query_one('#agent-detail').plain_text)
+                self.assertIn('Status evidence',app.query_one('#agent-detail').plain_text)
                 self.assertEqual(len(app.query('#agent-output')), 0)
                 # The retired browser-output shortcut stays removed; b now
                 # opens local saved tasks rather than a blank output panel.

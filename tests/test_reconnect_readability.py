@@ -186,7 +186,7 @@ class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
             await pilot.pause();app.set_agent_filter('all');app.select_agent('source-1')
             await pilot.press('e');await pilot.pause()
             text=app.query_one('#agent-detail').plain_text
-            self.assertLess(text.index('Command'),text.index('Latest Request'))
+            self.assertLess(text.index('Command'),text.index('Latest request'))
             self.assertIn('Make the inspector readable',text)
             self.assertIn('latest 6 of 20 loaded actions',text.casefold())
             self.assertNotIn('task_0.py',text)
@@ -262,6 +262,6 @@ class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
                 content=log.plain_text
                 self.assertIn('Command',content);self.assertIn('Output',content)
                 self.assertNotIn('LATEST RECORDED EVENT',content)
-                self.assertIn('def check():\n    if ready:\n        return True',content)
+                self.assertIn('  def check():\n      if ready:\n          return True',content)
                 self.assertIsNone(log.tooltip)
                 self.assertEqual(content.count('def check():'),1)

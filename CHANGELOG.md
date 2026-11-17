@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.7
+
+- Give evidence panels consistent section indentation and wrapping. Activity messages use a short identity instead of repeating a clipped body; narrative Markdown renders lists, links, code and responsive tables. Structured payloads retain their nesting, while original text, command output and exports stay literal. Detail dialogs reflow when resized or revealed.
+
 ## 0.2.6
 
 - Make the attention count navigable by click or `!`, revealing affected agents across search, scope and collapsed branches. Name the reason in each row and lead the inspector with why attention is needed and the next action; unconfirmed waits do not become approval or reply requests.

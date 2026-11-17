@@ -18,6 +18,7 @@ from .investigation_cli import collect_investigation, collect_source
 from .review_facts import bind_capture_policy, review_capture_policy
 from .ui_findings import capture_reference_context, source_fields
 from .workflow_evidence import scope_for
+from .ui_content import ContentLog, write_section
 
 MAX_ROWS=250
 MAX_PAGES=5
@@ -143,7 +144,7 @@ class InvestigationsScreen(ModalScreen):
                 yield Checkbox('Failures only',self.initial[3],id='investigation-failed')
             yield Static('Search retained source observations. No match does not prove no activity.',id='investigation-status',markup=False)
             yield InvestigationTable(id='investigation-results',cursor_type='row',zebra_stripes=True)
-            yield RichLog(id='investigation-source',wrap=True,markup=False,auto_scroll=False,min_width=1)
+            yield ContentLog(id='investigation-source',wrap=True,markup=False,auto_scroll=False,min_width=1)
             with Horizontal(id='investigation-controls'):
                 yield Button('More',id='investigation-more',disabled=True)
                 yield Button('Filters',id='investigation-toggle-filters')
@@ -314,7 +315,7 @@ class InvestigationsScreen(ModalScreen):
             if not state[0]:self.invalidate();return
             self.sources=deepcopy(response['sources']);self.references=references;self.frozen_policy=state
             log=self.query_one('#investigation-source',RichLog);log.clear()
-            for label,text in lines:log.write(Text(label,style='bold'));log.write(Text(text));log.write('')
+            for index,(label,text) in enumerate(lines):write_section(log,label,Text(text),first=index==0)
             log.focus();log.scroll_home(animate=False)
             self.status('Exact recorded source · '+('unavailable / not retained' if response.get('unavailable') else str(len(self.sources))+' reference(s)')+'\n'+display_text(response.get('coverage') or 'Retained source evidence only.'))
         except asyncio.CancelledError:raise
