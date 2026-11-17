@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.6
+
+- Make the attention count navigable by click or `!`, revealing affected agents across search, scope and collapsed branches. Name the reason in each row and lead the inspector with why attention is needed and the next action; unconfirmed waits do not become approval or reply requests.
+- Open the interactive cockpit before receiver connection and database initialization, and avoid a redundant full-health startup read. Keep navigation and quit responsive while setup runs.
+- Separate monitor connection status from history availability. Keep available agents visible, label incomplete older history next to the list, and show source coverage and read-failure details with a refresh action in Diagnostics. Actual outages and authentication errors remain explicit; unavailable counts stay unknown.
+
 ## 0.2.5
 
 - Put the selected request's terminal and resume-copy actions in Workflow and the waiting-session inspector, with explicit labels and keyboard/palette routes. Fence terminal selection by the current receiver and preserve the distinction between selecting a verified tmux pane and attaching to it; no resume command is executed.

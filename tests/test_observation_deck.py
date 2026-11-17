@@ -283,8 +283,8 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent_status({'state':'Working','active':True}).plain,'In progress')
         self.assertEqual(agent_status({'state':'Working (quiet)','active':True}).plain,'In progress')
         self.assertEqual(agent_status({'state':'Completed'}).plain,'Ready for review')
-        self.assertEqual(agent_status({'state':'Waiting','waiting_for':'Approval'}).plain,'Needs attention')
-        self.assertEqual(agent_status({'state':'Failed'}).plain,'Needs attention')
+        self.assertEqual(agent_status({'state':'Waiting','waiting_for':'Approval'}).plain,'Needs approval')
+        self.assertEqual(agent_status({'state':'Failed'}).plain,'Run failed')
         self.assertEqual(agent_status({'state':'Unknown'}).plain,'Status unknown')
 
     async def test_long_commands_and_output_are_never_in_the_default_overview(self):

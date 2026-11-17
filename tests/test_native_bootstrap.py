@@ -139,7 +139,8 @@ class NativeBootstrapTests(unittest.TestCase):
         feed.refresh()
         self.assertTrue(feed.snapshot.native_bootstrap);self.assertEqual(feed.snapshot.bootstrap_updated,stamp)
         self.assertNotIn(PRIVATE,repr(feed.snapshot));self.assertIn('readiness is unavailable',feed.snapshot.error)
-        self.assertEqual(connection_feedback(feed)[0],'Native observations stale')
+        label,detail,_=connection_feedback(feed)
+        self.assertEqual(label,'Reconnecting');self.assertIn('current observations',detail)
         self.assertTrue(all(not row['active']for row in sources(feed.snapshot)))
 
     def test_authentication_error_is_not_masked_by_indexing_banner(self):
@@ -148,7 +149,7 @@ class NativeBootstrapTests(unittest.TestCase):
         api,feed=bootstrap()
         with patch.object(api,'get',side_effect=urllib.error.HTTPError('http://generated.invalid',401,'unauthorized',{},None)):
             feed.refresh()
-        self.assertEqual(connection_feedback(feed)[0],'Authentication')
+        self.assertEqual(connection_feedback(feed)[0],'Authentication required')
         self.assertTrue(all(not row['active']for row in sources(feed.snapshot)))
 
     def test_future_collector_and_inconsistent_outcome_clocks_never_claim_live_or_completed(self):
@@ -243,7 +244,7 @@ class NativeBootstrapUITests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(app.query_one('#agent-table',DataTable).row_count,0)
             self.assertGreaterEqual(app.query_one('#agent-table',DataTable).scrollable_content_region.height,3)
             self.assertEqual(app.data.updated,0);self.assertTrue(app.data.native_bootstrap)
-            self.assertIn('History indexing',str(app.query_one('#health',Static).content))
+            self.assertIn('older history is being prepared',str(app.query_one('#health',Static).content))
             self.assertEqual(app.summary_values['mcp-count'][0],'—');self.assertEqual(app.summary_values['usage'][0],'—')
             self.assertEqual(app.summary_values['sessions'][0],'—');self.assertEqual(app.summary_values['attention'][0],'—')
             self.assertEqual(str(app.query_one('#agent-errors',Button).label),'Errors —')

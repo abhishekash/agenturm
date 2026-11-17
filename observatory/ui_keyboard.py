@@ -17,6 +17,8 @@ F1               Open this reference from any screen; F1 or Esc returns
 ?                Open help in the monitor (text fields keep literal ?)
 
 AGENTS AND INSPECTOR
+!                Show agents needing attention; clear agent search/scope
+                 Click the attention count for the same list. Rows name why.
 ↑ / ↓            Choose an agent
 → / ←            Expand / collapse its recorded subagent branch
 Enter / e        Open the inspector

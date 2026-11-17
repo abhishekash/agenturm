@@ -158,7 +158,7 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app.selected_source, "s-c1")
             detail = app.query_one("#agent-detail").plain_text
-            self.assertIn("Needs attention", detail)
+            self.assertIn("Needs reply", detail)
             self.assertIn("Inspect API logs", detail)
             self.assertIn("request", " ".join(detail.split()).casefold())
 
