@@ -502,7 +502,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('Prompt Timeline',expanded)
             self.assertIn('preserve the original response',app.query_one('#agent-heading').tooltip)
             self.assertNotIn('preserve the original response',expanded)
-            self.assertIn('Recent Work',expanded)
+            self.assertIn('Recent work',expanded)
             self.assertIn('git status --short',expanded)
             app.set_session_mode('prompts');await app.workers.wait_for_complete();await pilot.pause()
             self.assertIn('preserve the original response',' '.join(app.query_one('#agent-detail').plain_text.split()))

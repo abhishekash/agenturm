@@ -164,10 +164,19 @@ class ContentLog(RichLog):
         return super().clear()
 
     def on_resize(self):
-        self.schedule_reflow()
+        self.reflow_when_ready()
 
     def on_show(self):
-        self.schedule_reflow()
+        self.reflow_when_ready()
+
+    def reflow_when_ready(self):
+        # These are the log's own layout events, not the app's earlier resize.
+        # Rebuild before its next paint when geometry is already valid. A
+        # deferred-only reveal can otherwise leave a blank first frame.
+        if self._size_known and self.scrollable_content_region.width:
+            self.reflow_content()
+        else:
+            self.schedule_reflow()
 
     def schedule_reflow(self):
         if not self._reflow_pending:

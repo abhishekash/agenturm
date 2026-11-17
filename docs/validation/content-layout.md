@@ -61,9 +61,13 @@ multi-agent, evidence, copy, theme and capture-policy regressions must still pas
 - Tested runtime: Python 3.13.5, Textual 8.2.8, Rich 15.0.0 on Linux.
 - The first full local run exposed two additional heading-case expectations
   (`Direct children` and `Latest work`); their content/navigation assertions
-  remain intact. Updated hierarchy, core-flow and content regressions are run
-  again before pushing. Release is gated on the full CI matrix for the exact PR
-  head, not on this document's preparation-time local results.
+  remain intact. A later 46-test focus also found the `Recent work` expectation
+  and a late first-paint race after hidden content replacement. The log now
+  rebuilds immediately on its own show/resize event when geometry is valid,
+  retaining deferred rendering only for unknown geometry. The 10-test content
+  and core-flow follow-up passed, as did five consecutive executions of the
+  hidden replacement/copy/export journey. Release is gated on the full CI matrix
+  for the exact PR head, not on preparation-time local results.
 - Wheel and source distribution for 0.2.7 build and pass `twine check`. An isolated
   installed-wheel smoke check verifies the version, responsive Markdown rendering,
   original message copying and CLI import. Lockfile, compile and whitespace
