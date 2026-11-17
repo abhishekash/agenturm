@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://www.agenturm.dev/#demo"><strong>Explore the workflow →</strong></a> &nbsp;·&nbsp;
   <a href="docs/usage.md">Documentation</a> &nbsp;·&nbsp;
-  <a href="https://github.com/abhishekash/agenturm/releases/tag/v0.2.5">What’s new in 0.2.5</a>
+  <a href="https://github.com/abhishekash/agenturm/releases/tag/v0.2.6">What’s new in 0.2.6</a>
 </p>
 
 <p align="center">
@@ -41,7 +41,7 @@ Agenturm reads supported local agent records and configured OpenTelemetry signal
 
 Reply to agents and approve their requests in their own terminals. Agenturm monitors their work; it does not launch or control them. Request capture and terminal routing depend on the runtime and environment, so an unavailable route is not a successful return.
 
-**In 0.2.5:** Workflow brings recorded approval/reply requests, their owner and reason, and the supported terminal action together. Seen remains distinct from source-backed resolution; copying a resume command never launches it. Review prioritizes the latest comparable recorded check while retaining earlier history. [What’s new](docs/releases/0.2.5.md).
+**In 0.2.6:** Click the attention count or press **!** to find the affected agents. Rows name the reason, and the inspector starts with **Why attention** and **Next step**. The cockpit opens before receiver setup finishes, keeping navigation available while history loads. [What’s new](docs/releases/0.2.6.md).
 
 ## See it in action
 
@@ -100,7 +100,7 @@ To upgrade, run `uv tool upgrade agenturm`, then restart Agenturm and any separa
 
 **Today** puts active work and work needing review within reach; **History** keeps earlier sessions available. Search by task or project. Switch between the tree and flat list with `f`.
 
-The roster uses **In progress**, **Needs attention**, and **Ready for review**, with precise status evidence in the inspector. Spaced task blocks and deeper tree guides keep workers readable.
+The roster names what needs you: **Needs approval**, **Needs reply**, **Run failed**, or **Check status**, alongside **In progress** and **Ready for review**. Click the attention count or press **!** to reveal the affected agents; the inspector leads with the reason and next step. Spaced task blocks and deeper tree guides keep workers readable.
 
 Task labels stay anchored to the **first substantive recorded request**. Model changes, acknowledgements, and later steering stay in Prompts without renaming the task. The source line stays short; recent activity and status evidence live in the inspector. [Task identity and capture limits](docs/session-task-labels.md).
 
@@ -180,7 +180,7 @@ Choose **Current (Alpine Ember), Bright, Dark, or Solarized** through `Ctrl+P �
 
 ## Status and contributing
 
-Agenturm is open source under the [MIT license](LICENSE). Version **0.2.5** includes the agent hierarchy, readable inspector, request-focused Workflow, completion review, and saved-task continuity workflows. Signal coverage depends on the source. See the [current quality report](docs/validation/quality-completion.html) for measured performance, stability and remaining acceptance limits.
+Agenturm is open source under the [MIT license](LICENSE). Version **0.2.6** includes the agent hierarchy, navigable attention list, readable inspector, request-focused Workflow, completion review, and saved-task continuity workflows. Signal coverage depends on the source. See the [current quality report](docs/validation/quality-completion.html) for measured performance, stability and remaining acceptance limits.
 
 ```sh
 git clone https://github.com/abhishekash/agenturm.git

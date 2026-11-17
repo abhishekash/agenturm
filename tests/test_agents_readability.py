@@ -62,7 +62,7 @@ class AgentsReadabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('parent not reported','\n'.join(str(c) for row in table.rows for c in table.get_row(row)))
             self.assertNotIn('Agent: ',child[1])
             self.assertEqual(table.get_row('s-root')[1].plain,'In progress')
-            self.assertEqual(table.get_row('s-c1')[1].plain,'Needs attention')
+            self.assertEqual(table.get_row('s-c1')[1].plain,'Needs reply')
             self.assertEqual(table.get_row('s-c3')[1].plain,'Ready for review')
             self.assertEqual(table.get_row('s-missing')[1].plain,'Status unknown')
             self.assertIn('1 needs attention',app.query_one('#stat-attention').render().plain)

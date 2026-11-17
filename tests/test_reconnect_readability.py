@@ -47,7 +47,8 @@ class RecoveryTests(unittest.TestCase):
             app.return_value.run_async=AsyncMock()
             app.return_value.return_code=0
             self.assertEqual(run_cockpit(endpoint='http://localhost:14319',local_agents=False),0)
-        get.assert_called_once_with('/api/health?probe=1')
+        # Mocking the app never mounts it, so receiver work must not begin.
+        get.assert_not_called()
         app.return_value.run_async.assert_awaited_once()
         receiver.assert_not_called()
         self.assertIn('Connecting to receiver',stderr.getvalue())
@@ -83,7 +84,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertIsNone(feed.extra_cache)
         label,text,visible=connection_feedback(feed)
         self.assertEqual(label,'Reconnecting');self.assertTrue(visible)
-        self.assertIn('retry in',text);self.assertIn('saved data',text)
+        self.assertIn('retry in',text);self.assertIn('saved observations',text)
         feed.refresh()
         self.assertFalse(feed.snapshot.error)
         self.assertEqual(feed.connection.phase,'live')
@@ -114,7 +115,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_initial_and_slow_loading_are_not_reported_live(self):
         feed=Feed(ExampleApi())
-        self.assertEqual(connection_feedback(feed)[0],'Connecting')
+        self.assertEqual(connection_feedback(feed)[0],'Preparing view')
         feed.refresh()
         feed.connection=ConnectionProgress(phase='loading',stage='Loading sessions',started=time.monotonic()-4)
         label,text,visible=connection_feedback(feed)
@@ -136,9 +137,9 @@ class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(80,24)) as pilot:
             await pilot.pause();app.refresh_timer.stop();app.set_agent_filter('all')
             self.assertTrue(app.visible_agent_rows)
-            self.assertIn('History delayed',app.query_one('#connection',Static).render().plain)
-            self.assertIn('stored history unavailable',app.query_one('#health',Static).render().plain)
-            self.assertIn('partial',app.query_one('#results-agents').border_title)
+            self.assertIn('Live',app.query_one('#connection',Static).render().plain)
+            self.assertIn('Older history unavailable',app.query_one('#health',Static).render().plain)
+            self.assertIn('older history unavailable',app.query_one('#results-agents').border_title)
             region=app.query_one('#results-agents').region
             feed.snapshot=replace(feed.snapshot,updated=time.time(),sessions_error='',sessions_updated=time.time())
             app.refresh_data();await pilot.pause()
@@ -147,9 +148,9 @@ class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
             feed.snapshot=replace(Snapshot(),updated=time.time(),sessions_error='Timed out')
             app.refresh_data();await pilot.pause()
             self.assertFalse(app.visible_agent_rows)
-            self.assertIn('history delayed',app.inspector_payloads['agent-detail'][0].lower())
+            self.assertIn('no matching agent',app.inspector_payloads['agent-detail'][0].lower())
             self.assertNotIn('Start an agent',app.query_one('#agent-detail').plain_text)
-            self.assertIn('R Retry now',app.query_one('#search-status-agents',Static).render().plain)
+            self.assertIn('d Details',app.query_one('#search-status-agents',Static).render().plain)
 
     async def test_startup_never_says_live_before_a_successful_snapshot(self):
         feed=ManualFeed();feed.snapshot=Snapshot()
@@ -158,7 +159,7 @@ class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(80,24)) as pilot:
             await pilot.pause()
             label=lambda:app.query_one('#connection',Static).render_line(0).text
-            self.assertIn('Connecting',label());self.assertNotIn('Live',label())
+            self.assertIn('Preparing view',label());self.assertNotIn('Live',label())
             self.assertEqual(app.inspector_payloads['agent-detail'][0],'Waiting for receiver data')
             self.assertNotIn('Start an agent',app.query_one('#search-status-agents',Static).render_line(0).text)
             feed.snapshot=replace(feed.snapshot,error='Connection refused')
@@ -214,11 +215,11 @@ class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
                     label=app.query_one('#connection',Static).render_line(0).text
                     self.assertIn({'loading':'Updating','waiting':'Reconnecting','live':'Live'}[phase],label)
                     if error:
-                        self.assertIn('R Retry now',app.query_one('#health',Static).render().plain)
+                        self.assertIn('R Refresh now',app.query_one('#health',Static).render().plain)
                         with patch.object(feed,'request_refresh',side_effect=lambda:Feed.request_refresh(feed)):
                             await pilot.press('R');await pilot.pause()
                             self.assertTrue(feed.retry_requested)
-                            self.assertIn('Retry requested',app.query_one('#health',Static).render().plain)
+                            self.assertIn('Refresh requested',app.query_one('#health',Static).render().plain)
                         feed.retry_requested=False
                 self.assertEqual(app.selected_source,original)
 

@@ -16,60 +16,57 @@ FAILURES = {'error', 'failed', 'denied', 'blocked', 'policy_denied', 'incomplete
 
 
 def session_history_feedback(snapshot):
-    if getattr(snapshot,'native_bootstrap',False):return 'History indexing · historical counts and evidence are unavailable; native observations only.'
+    """Describe the missing slice without relabelling useful current observations."""
+    if getattr(snapshot,'native_bootstrap',False):
+        return 'Older history is being prepared. Current observations are available; historical counts and evidence are not yet available.'
     notes=[]
     for kind,error in snapshot.read_errors.items():
         stamp=snapshot.read_updated.get(kind,0)
-        label={'connections':'SDK connections','activity':'Activity','traces':'Traces'}[kind]
+        label={'connections':'SDK connections','activity':'Activity','traces':'Traces'}.get(kind,kind)
         notes.append(label+(f' {max(0,int(time.time()-stamp))}s old' if stamp else ' unavailable'))
     if notes:
         notes.append('Counts cover available agents; missing evidence is unknown.')
     if not snapshot.sessions_error:return ' · '.join(notes)
     if not snapshot.sessions_updated:
-        notes.append('Stored history unavailable · showing available agents')
+        notes.append('Older session history unavailable · available agents remain visible')
     else:
-        notes.append(f'Stored history {max(0,int(time.time()-snapshot.sessions_updated))}s old · totals may be stale')
+        notes.append(f'Older session history {max(0,int(time.time()-snapshot.sessions_updated))}s old · totals may be incomplete')
     return ' · '.join(notes)
 
 
 def connection_feedback(feed):
+    """Connection state, not an agent failure or a warning about every refresh."""
     progress=feed.connection
     elapsed=max(0,int(time.monotonic()-progress.started))
     snapshot=feed.snapshot
     if getattr(snapshot,'native_bootstrap',False):
         age=max(0,int(time.time()-snapshot.bootstrap_updated))
         if snapshot.error:
-            label='Authentication'if progress.phase=='auth'else 'Native observations stale'
-            return label,f'{label} · {age}s since native observation\n'+snapshot.error,False
-        return 'History indexing',f'History indexing · native observations only · {age}s old\nHistorical counts, usage and recorded evidence are unavailable.'+(' '+snapshot.error if snapshot.error else ''),False
-    if snapshot.read_errors and snapshot.updated and not snapshot.error:
-        heading=('Retry requested · waiting for current request' if feed.retry_requested else
-                 'Partial data · showing available agents')
-        return 'Partial data',heading+'\n'+session_history_feedback(snapshot)+'\n'+\
-            '\n'.join(f'{kind}: {error}' for kind,error in snapshot.read_errors.items()),True
-    if snapshot.sessions_error and snapshot.updated and not snapshot.error:
-        heading=('Retry requested · waiting for current request' if feed.retry_requested else
-                 'History delayed · '+('stored history unavailable' if not snapshot.sessions_updated else
-                     f'stored history {max(0,int(time.time()-snapshot.sessions_updated))}s old'))
-        return 'History delayed',heading+'\n'+session_history_feedback(snapshot)+' · '+snapshot.sessions_error,True
-    slow=progress.phase=='loading' and elapsed>=1
-    visible=bool(snapshot.error or not snapshot.updated or slow)
-    label=('Authentication' if progress.phase=='auth' else 'Loading delayed' if snapshot.error.startswith('Loading delayed:') else 'Reconnecting' if snapshot.error
-           else 'Connecting' if not snapshot.updated else 'Updating' if slow else 'Live')
-    if not visible:return label,'',False
-    if feed.retry_requested:
-        heading='Retry requested · waiting for current request'
-    elif progress.phase=='waiting':
-        remaining=max(0,math.ceil(progress.retry_at-time.monotonic()))
-        heading=f'{label} · attempt {progress.attempt} · retry in {remaining}s'
-    elif progress.phase=='auth':
-        heading='Authentication required · check receiver credentials'
-    else:
-        heading=f'{label} · {progress.stage} · {elapsed}s'
-    stale=(f'Showing saved data · {max(0,int(time.time()-snapshot.updated))}s old'
-           if snapshot.updated else 'Waiting for the first snapshot')
-    detail=stale+(' · '+snapshot.error if snapshot.error else '')
-    return label,heading+'\n'+detail,True
+            label='Authentication required' if progress.phase=='auth' else 'Reconnecting'
+            return label,f'{label} · current observations {age}s old\n'+snapshot.error,True
+        return 'Preparing history',f'Current observations available · older history is being prepared · {age}s old\nHistorical counts, usage and recorded evidence are not yet available.',False
+    if not snapshot.updated:
+        if progress.phase=='auth':
+            return 'Authentication required','Authentication required · check receiver credentials\nNo observations have been published yet.',True
+        if snapshot.error:
+            return 'Reconnecting',f'Reconnecting · attempt {progress.attempt}\n{snapshot.error}',True
+        stage=progress.stage if progress.stage!='Connected' else 'Waiting for first observations'
+        heading=f'Preparing view · {stage}' + (f' · {elapsed}s' if elapsed>=1 else '')
+        return 'Preparing view',heading+'\nNo observations have been published yet. R refreshes now; d opens details.',True
+    if snapshot.error:
+        label='Authentication required' if progress.phase=='auth' else 'Reconnecting'
+        heading=f'{label} · attempt {progress.attempt}'
+        if progress.phase=='waiting':
+            heading+=f' · retry in {max(0,math.ceil(progress.retry_at-time.monotonic()))}s'
+        return label,heading+f'\nShowing saved observations · {max(0,int(time.time()-snapshot.updated))}s old · '+snapshot.error,True
+    notes=session_history_feedback(snapshot)
+    if notes:
+        label='History unavailable' if snapshot.sessions_error and not snapshot.sessions_updated and not snapshot.local_status.get('sessions') and not snapshot.sessions else 'Live'
+        heading=label+' · available observations remain visible' if label=='Live' else 'History unavailable · agent counts are not established'
+        return label,heading+'\n'+notes+'\nR refreshes now; d opens collection details.',False
+    if progress.phase=='loading' and elapsed>=1:
+        return 'Updating',f'Updating · {progress.stage} · {elapsed}s\nCurrent observations remain available.',True
+    return 'Live','',False
 
 
 def failed(event):

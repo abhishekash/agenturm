@@ -309,6 +309,7 @@ class Feed:
         self.connection = ConnectionProgress(started=time.monotonic())
         self.connection_failures = 0
         self.retry_requested = False
+        self.prepare = None
         self._capture_lock=threading.RLock()
         # A new Feed cannot accidentally reuse another lifetime's first
         # revocation token and revive a persisted frozen source.
@@ -595,6 +596,12 @@ class Feed:
         history_due = (retry or self.sessions_attempted is None or
                        time.monotonic()-self.sessions_attempted>self.EXTRA_POLL_SECONDS)
         try:
+            prepared = False
+            if self.prepare is not None:
+                prepared = self.prepare(self)
+                self.prepare = None
+            if self.stop.is_set():
+                raise InterruptedError('Receiver startup cancelled')
             activity_params = {"limit": 200, "service": service, "session_id": session_id,
                                "include_reviews":int(include_reviews)}
             params = {"limit": 100, "service": service, "session_id": session_id, "q": query,
@@ -611,7 +618,7 @@ class Feed:
             # During startup/outage, fail fast on one short health probe instead
             # of launching a whole batch and waiting for every timeout to drain.
             recovering=bool(self.snapshot.error) or not self.snapshot.updated
-            if recovering:get('/api/health?probe=1')
+            if recovering and not prepared:get('/api/health?probe=1')
             initial_paths=['/api/health', '/api/connections',
                            '/api/activity?' + urlencode(activity_params), trace_path]
             if requested_scope.include_global_totals:initial_paths.append('/api/metrics')
@@ -1208,11 +1215,18 @@ def run_cockpit(*, db_path=None, port=14318, endpoint=None,
         except ImportError as exc:
             raise CockpitError("The terminal UI needs Textual. Reinstall the CLI, or install this checkout with: python -m pip install .") from exc
     token = os.environ.get("OBSERVATORY_TOKEN") or None
-    receiver = feed = None
+    receiver = feed = startup = None
     api = Api(endpoint or f"http://127.0.0.1:{port}", token)
     try:
         if not once:
             print('Connecting to receiver '+api.endpoint+'…',file=sys.stderr,flush=True)
+            from .cockpit_startup import CockpitStartup
+            startup = CockpitStartup(api, db_path, port, endpoint=endpoint,
+                local_agents=local_agents, metadata_only=metadata_only,
+                managed_db=managed_db, retention_days=retention_days)
+            feed = Feed(api)
+            feed.prepare = startup
+            return _run_terminal_app(ObservatoryApp(feed))
         try:
             health = api.get("/api/health?probe=1")
             if not health.get("ok"):
@@ -1272,4 +1286,5 @@ def run_cockpit(*, db_path=None, port=14318, endpoint=None,
         return 130
     finally:
         complete_cleanup(*([feed.close] if feed is not None else []),
+                         *([startup.close] if startup is not None else []),
                          *([receiver.close] if receiver is not None else []))

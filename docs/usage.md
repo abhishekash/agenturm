@@ -166,7 +166,9 @@ invalidating an entire row. Stored session inventory has its own five-second
 budget, so changing views does not reload the same global history.
 
 When the receiver is reachable but stored reads time out, **Agents** keeps the
-available native roster and labels the view **Partial data** or **History delayed**.
+available native roster visible. Connection status stays separate from history
+availability: the list and footer identify unavailable or incomplete older
+history, while **d Details** shows the affected reads and their last success.
 Previous activity and traces are retained only for the identical filters and
 hierarchy scope. Missing evidence is unknown, and stale totals are disclosed in
 Details. Other evidence views retain their existing reconnect behavior. Reads
@@ -254,7 +256,11 @@ Filters stay with their view when switching tabs. A task search in Agents does n
 
 MCP shows reported servers, tools or methods, state, duration, arguments/results and trace/span IDs. It includes protocol methods such as `tools/call`, `tools/list`, `resources/read`, and `prompts/get` when telemetry records them. Calls without a reported server remain visible under **Not reported**; Goechala does not guess their server. Tool execution spans are joined to transport calls to fill in arguments or results when the transport span omits them. Explicit MCP `isError` results mark the run and call as failed, appear in error filters, and create an evidence-linked finding even when the producing span has no error status. The trace view shows a parent-linked span tree; unknown durations remain “not reported”. “Error” describes recorded errors within a trace; “Active · errors” means a logged active turn also contains an error. Live host process counts exclude zombie/exited states and do not imply that every open terminal is working on a turn.
 
-**Connection feedback.** The cockpit loads the visible view without requesting all-history totals or hidden MCP/metrics/findings views. The initial session read starts alongside the other required reads. Before the first snapshot, the session area says it is waiting for receiver data; it does not claim there are no sessions. Data timeouts name the affected request and show Loading delayed. Startup immediately prints the receiver address and shows Connecting until the first complete snapshot arrives. An explicitly selected receiver being offline opens the cockpit in reconnect mode. After the first snapshot, refresh/reconnect feedback stays in the fixed header and footer, keeping the list and inspector stationary. Slow refreshes show the current loading stage and elapsed time; disconnections retain the last good data, show its age, and display an attempt count and retry countdown. Click **Retry now** during startup or press **Shift+R** at any time to skip the next retry delay. A retry requested during an active read runs when that read finishes. Reconnect attempts use a one-second lightweight liveness probe before loading session data, with retry delays from half a second up to two seconds. Normal data reads retain their three-second socket timeout. Authentication failures name the missing configuration. The `/api/health?probe=1` endpoint checks liveness without performing process/session discovery; the full health response still carries collection diagnostics. Restart a separately running receiver after updating to enable the lightweight probe.
+**Startup and connection feedback.** The interactive cockpit opens before checking or starting its receiver. Receiver setup runs on the feed worker, so navigation, resize, Details and quit do not wait for database initialization or a network request. **Preparing view** means no observations have arrived yet; counts remain unknown, not zero. This removes receiver work from the shell's opening path, not a guarantee that a large history will be ready immediately. The cockpit loads only the visible view, without requesting all-history totals or hidden MCP/metrics/findings views. The initial session read starts alongside the other required reads after collection status is known.
+
+Available observations stay visible while older history loads. Incomplete history is labeled next to the list and in the footer; it does not become an agent error or a global “History delayed” warning. **Live** describes a successful monitor refresh, not complete history or proof that an agent is working. **Preparing history** means only qualified current native observations are available; historical counts, usage and evidence remain unavailable. **d Details** explains source limits, unconfirmed relationships, read failures and freshness, and provides **Refresh now**. No available agents plus unavailable history shows unknown counts rather than a false empty success.
+
+An actual outage or authentication problem stays explicit. Reconnects retain saved observations and show their age; the list and inspector do not shift after the first snapshot. Click **Refresh now** during startup or press **Shift+R** at any time to skip the next retry delay. A refresh requested during an active read runs when that read finishes. Reconnect attempts use a one-second lightweight liveness probe, with retry delays from half a second up to two seconds. Normal data reads retain their three-second socket timeout. The `/api/health?probe=1` endpoint checks liveness without performing process/session discovery; full health carries collection diagnostics. A slow live receiver is not mistaken for an absent receiver, and `--metadata-only` still checks capture policy before permitting data reads. `--once` retains its complete-snapshot readiness checks. Restart a separately running receiver after upgrading.
 
 **Today and task outcomes.** Today uses the local calendar day. Active work and explicit input/approval requests stay visible even if they began earlier. Today’s failed, interrupted, incomplete, and unknown outcomes appear under Needs attention. The inspector distinguishes a recorded failure or pending input from unavailable status. Earlier completed or failed tasks remain in **History**. The Agents **Errors** shortcut shows only unseen recent error evidence; old failures do not inflate the attention count or Workflow inbox. A quiet, stale running span without a linked live process needs a status check; it is never counted as confirmed live work. The collector’s discovery limits still apply. At 24 terminal rows or fewer, the header and navigation shrink to one row each. At 24 rows task blocks keep one separator line; shorter layouts use two content lines, leaving room for tasks and usage in a 60-column split. Help and quit remain in the bottom hint line.
 
@@ -544,6 +550,13 @@ The compact framed overview sits above a separate **Views** frame and scope
 controls. **Working agents** and **Needs attention** have separate summary
 areas; attention includes explicit input requests, possible stalls, recorded
 failures, and status that needs inspection. Ordinary active tool waits stay in progress.
+Click the **Needs attention** count or press **!** to show its agents. This clears
+the Agents search and individual session scope, reveals matching children in
+collapsed branches, and selects a recorded approval/reply request first when one
+is available. The same filter is available under **Show → Attention** and in the
+command palette. Parent context rows keep their own status; they are not extra
+attention items. **a Reset** returns to Today. Ordinary typing, including `!`,
+stays literal in search fields.
 Unknown or delayed status does not create an approval incident or desktop alert. Press **1** for Agents, **2** for Activity,
 **3** for MCP Calls, or **4** for Traces. MCP details, token usage, and process
 inventory remain in their dedicated views. Wide terminals show all seven view
@@ -557,10 +570,13 @@ for evidence.
 
 Square, single-line panel edges and aligned headers separate the workspace. A
 cursor background identifies the selected session and preserves status colors in
-all themes. The list uses three main labels:
+all themes. The list names the evidence rather than repeating a generic badge:
 
 - **In progress**: an unfinished turn supported by recent records, exact process progress, or the existing bounded quiet-work interval.
-- **Needs attention**: a recorded input wait, failure, possible stall, or unavailable status. The inspector explains which; this label alone does not imply that a reply is required.
+- **Needs approval / Needs reply**: an explicit recorded request; respond in the named agent terminal. **w Workflow** shows the request and any supported terminal route.
+- **Run failed / Interrupted / Incomplete**: a recorded lifecycle outcome. The inspector begins with **Why attention** and **Next step**, directing you to available Activity or a linked trace. It does not invent a failed command when none was captured.
+- **Check progress / Check status**: a possible stall or a wait whose reason is unconfirmed. Check the agent terminal or **d Details**; these labels do not claim that your reply or approval was requested.
+- **Status unknown**: insufficient lifecycle evidence; not proof of work, failure, or a pending request.
 - **Ready for review**: the agent explicitly reported completion. This is not proof that checks passed or that the current worktree is verified.
 
 Review acknowledgements and precise lifecycle evidence stay in the inspector. A
@@ -580,8 +596,8 @@ persist until resolved, with the recorded reason and native terminal named in th
 inspector.
 
 After at least five minutes without records or observed process progress, a
-matched live session may be stalled; without a process match, its unfinished
-status is unconfirmed. Both appear as **Needs attention**, with that distinction
+matched live session may be stalled (**Check progress**); without a process match,
+its unfinished status is unconfirmed (**Status unknown**). That distinction is
 explained in the inspector. Collector delay or unread data is a status check,
 not an agent failure. Missing lifecycle data or an SDK connection alone never
 establishes active work or completion. Completed turns stay completed even if
