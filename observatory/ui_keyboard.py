@@ -56,7 +56,7 @@ e / Esc          Expand an inspector / return to the list
 [ / ] / l        Newer page / older page / latest page
 c / x            Copy / preview export of selected evidence
 o                Agents sort options
-Session chooser  Tab to All agent sessions, then Enter; or use Ctrl+P → Choose agent session
+Session chooser  Tab to Session: All, then Enter; or use Ctrl+P → Choose agent session
                  / searches; ↑ / ↓ chooses; Enter applies; Esc cancels
 f                Agents tree / flat list
 p                Pause / resume display updates
