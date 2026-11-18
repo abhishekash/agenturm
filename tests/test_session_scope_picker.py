@@ -93,7 +93,7 @@ class SessionScopePickerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.scope_value,'s-c1')
             self.assertEqual(feed.refreshes,before)
             await pilot.click('#scope');await pilot.press('/');await pilot.pause()
-            app.screen.query_one(Input).value='All agent sessions';await pilot.pause()
+            app.screen.query_one(Input).value='All sessions';await pilot.pause()
             await pilot.press('down','enter');await pilot.pause()
             self.assertEqual(app.scope_value,'all')
             self.assertEqual((feed.session_id,feed.service,feed.scope_agent_id),('','',''))

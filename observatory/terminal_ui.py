@@ -1331,7 +1331,7 @@ class ObservatoryApp(App):
     .narrow #pause { width: 15; }
     .narrow #agent-sort { width: 11; margin-right: 1; }
     .small #agent-sort { width: 11; }
-    .menu-navigation #controls.agents-active { height: 2; }
+    .menu-navigation #controls { height: 2; }
     .menu-navigation #controls.agents-active #scope-label { display: none; }
     .menu-navigation #controls.agents-active #scope { dock: bottom; width: 100%; margin: 0; }
     .minimal #agent-sort { display: none; }
@@ -1352,10 +1352,7 @@ class ObservatoryApp(App):
     .compact #agent-bottom, .compact .detail, .compact #trace-detail, .compact #host-detail { display: none; }
     .compact.inspecting #usage-summary { display: none; }
     .compact.connecting #usage-summary { display: none; }
-    .compact.inspecting #masthead, .compact.inspecting #controls { display: none; }
-    .session-reading #masthead, .session-reading #controls { display: none; }
-    .session-reading #pages > Tabs { height: 1; border: none; }
-    .session-reading #more-views { margin-top: 0; }
+    /* View-local inspection must not hide or resize the global navigation. */
     .compact .list { width: 100%; height: 1fr; margin: 0; }
     .compact .inspector-heading { height: 1; border: none; margin-bottom: 0; }
     .compact .inspector-actions { margin: 0; }
@@ -1372,6 +1369,10 @@ class ObservatoryApp(App):
     .minimal #masthead { padding: 0 1; }
     .minimal #pages { margin: 0; }
     .short #masthead { border: none; }
+    .short #agents.expanded #agent-bottom { border: none; }
+    /* At the reader floor, spend rows on prompt text rather than a second
+       identity line; the task heading and Details keep session context. */
+    .short.menu-navigation #agents.reading-prompts #agent-context { display: none; }
     .short #summary { display: none; }
     .short #pages > Tabs { height: 1; border: none; }
     .short #more-views { margin-top: 0; }
@@ -1536,7 +1537,7 @@ class ObservatoryApp(App):
             Button('Reorder',id='refresh-order',tooltip='List changed; apply queued ordering without losing your selected session'),
             Button('Updated ↓',id='agent-sort',tooltip='Choose Working first, Updated, or Status sorting · o'),
             Static('Session',id='scope-label'),
-            Button('All agent sessions ▾',id='scope',tooltip='Choose agent session · Enter'),
+            Button('▾ Session: All',id='scope',tooltip='Filter by session · Enter'),
             Static('Evidence',id='evidence-scope-label'),
             Select([('This agent','exact'),('This agent + subagents','subtree')],
                    value='exact',allow_blank=False,id='evidence-scope'),
@@ -1788,18 +1789,17 @@ class ObservatoryApp(App):
     def update_scope_button(self):
         if not self.query('#scope'):return
         item=getattr(self,'source_map',{}).get(self.scope_value)
-        label=task_preview(item) or 'Untitled session' if item else (
-            'All sessions' if self.layout_size.width<96 else 'All agent sessions')
+        label=task_preview(item) or 'Untitled session' if item else 'All'
         button=self.query_one('#scope',Button)
-        caption=Text('▾ '+label,no_wrap=True,overflow='ellipsis')
+        caption=Text('▾ Session: '+label,no_wrap=True,overflow='ellipsis')
         if button.label.plain!=caption.plain:button.label=caption
         button.tooltip=(label+'\n'+self.scope_label()+'\nSession '+str(item.get('session_id') or item['id'])
-                        if item else 'Choose agent session · Enter')
+                        if item else 'Filter agents and related evidence by session · Enter\nAll clears this filter; Today/History and Errors still apply.')
 
     def action_session_scope(self):
         if not isinstance(self.screen,ObservatoryScreen):return
-        entries=[dict(id='all',task='All agent sessions',description='Clear the session filter',
-                      detail='Show all available sessions · clears the filter')]
+        entries=[dict(id='all',task='All sessions',description='Clear only the session filter',
+                      detail='Show all sessions allowed by Today/History and Errors. Clears the session filter only.')]
         for item in getattr(self,'source_map',{}).values():
             title=task_preview(item)
             runtime=item.get('runtime') or item.get('service') or 'Agent'
@@ -3387,6 +3387,7 @@ class ObservatoryApp(App):
         item=getattr(self,'source_map',{}).get(self.selected_source)
         expanded=self.query_one('#agents').has_class('expanded')
         prompts=expanded and self.session_mode=='prompts' and bool(item)
+        self.query_one('#agents').set_class(prompts,'reading-prompts')
         self.query_one('#agent-stats').display=False
         self.query_one('#agent-prompt-bar').display=prompts
         self.query_one('#agent-prompt-picker').display=prompts
