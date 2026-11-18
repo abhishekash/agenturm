@@ -82,9 +82,12 @@ class ExperienceTests(unittest.IsolatedAsyncioTestCase):
         app=ObservatoryApp(ManualFeed(),persist_preferences=False)
         async with app.run_test(size=(60,20)) as pilot:
             await pilot.pause()
-            for key in ('agent-filter','agent-errors','agent-sort','scope'):
+            for key in ('agent-filter','agent-sort','scope'):
                 widget=app.query_one('#'+key)
                 self.assertTrue(widget.display,key)
                 self.assertTrue(app.screen.region.contains_region(widget.region),key)
+            self.assertFalse(app.query_one('#agent-errors',Button).display)
+            app.set_agent_filter('errors');await pilot.pause()
+            self.assertTrue(app.query_one('#agent-errors',Button).display)
             sort=app.query_one('#agent-sort',Button)
             self.assertIn(str(sort.label),sort.render_line(0).text)

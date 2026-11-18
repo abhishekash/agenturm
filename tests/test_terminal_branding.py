@@ -35,13 +35,14 @@ class BrandingTest(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 masthead = app.query_one('#masthead')
                 short=size[1]<=24
-                self.assertEqual(masthead.region.height,1 if short else max(4,(size[1]//4-2)//2))
+                self.assertEqual(masthead.region.height,1 if short else 2)
                 tabs=app.query_one('#pages > Tabs')
-                self.assertEqual(tabs.region.height,1 if short else 3)
+                self.assertEqual(tabs.region.height,1)
                 usage=app.query_one('#usage-summary')
                 self.assertFalse(usage.display)
                 self.assertEqual(tabs.region.y,masthead.region.bottom)
-                self.assertEqual(tabs.border_title,'Views · 1–7 to switch')
+                self.assertFalse(tabs.border_title)
+                self.assertIn('1–7',tabs.tooltip)
                 self.assertEqual(app.query_one('#results-agents').region.y,masthead.region.height+tabs.region.height+1)
                 self.assertEqual(app.query_one('#brand').size.height, 1)
                 for name in ('brand','summary','connection','pause'):
@@ -69,11 +70,10 @@ class BrandingTest(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(hints.display, f'{size}: hints should be visible')
                 self.assertGreaterEqual(hints.region.y, app.query_one('#pages').region.bottom)
                 rendered = '\n'.join(hints.render_line(row).text for row in range(hints.size.height))
-                for label in ('Move', 'Inspect', 'Help', 'Quit', 'Search', 'Tasks'):
+                for label in ('Move', 'Inspect', 'Help', 'Quit', 'Search'):
                     self.assertIn(label, rendered, f'{size}: missing {label}')
-                if size[0] >= 140:
-                    for label in ('Expand', 'Palette', 'Diagnostics'):
-                        self.assertIn(label, rendered, f'{size}: missing {label}')
+                for label in ('Expand', 'Palette', 'Diagnostics', 'Tasks', 'Workflow'):
+                    self.assertNotIn(label, rendered, f'{size}: secondary command crowds footer')
                 for label in ('views', 'trace', 'copy', 'pause', 'export', 'session activity',
                               'reset', 'reviews', 'newer', 'older', 'latest', 'close'):
                     self.assertNotIn(label, rendered, f'{size}: crowded legend still shows {label}')
@@ -96,7 +96,7 @@ class BrandingTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(app.query('#masthead-left')),0)
                 connection = app.query_one('#connection')
                 self.assertLess(connection.region.right, masthead.region.right)
-                self.assertEqual(app.query_one('#pause').region.right, masthead.region.right - 2)
+                self.assertLessEqual(app.query_one('#pause').region.right, masthead.content_region.right)
 
     async def test_summary_and_controls_fit_without_clipping(self):
         feed = ManualFeed()

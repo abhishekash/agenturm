@@ -219,6 +219,8 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(actions.display)
                 await pilot.press('e')
                 await pilot.pause()
+                self.assertNotIn('Status evidence',app.query_one('#agent-detail').plain_text)
+                app.set_session_mode('details');await pilot.pause()
                 self.assertIn('Status evidence',app.query_one('#agent-detail').plain_text)
                 self.assertEqual(len(app.query('#agent-output')), 0)
                 # The retired browser-output shortcut stays removed; b now
