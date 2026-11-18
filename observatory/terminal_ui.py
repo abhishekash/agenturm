@@ -821,16 +821,9 @@ def agent_order_key(item, newest_first=True, mode='working'):
 
 
 def navigation_hints(width):
-    # The footer is a hint line, not the full key map: F1 carries the rest.
-    # Keep the attention route visible at every supported width without
-    # pushing Quit off the last row.
-    if width >= 140:
-        return '↑/↓ Move  Enter Inspect  ! Attention  / Search  e Expand  ? Help  Ctrl+P Palette  b Tasks  w Workflow  d Diagnostics  q Quit'
-    if width >= 120:
-        return '↑/↓ Move  Enter Inspect  ! Attention  / Search  e Expand  ? Help  b Tasks  w Workflow  q Quit'
-    if width >= 80:
-        return '↑/↓ Move  Enter Inspect  ! Attention  / Search  b Tasks  ? Help  q Quit'
-    return '↑↓ Move Enter Inspect !Attn / Search b Tasks ? Help q Quit'
+    # Five everyday actions; the full key map and command palette remain in Help.
+    return ('↑/↓ Move  Enter Inspect  / Search  ? Help  q Quit' if width >= 80
+            else '↑↓ Move  Enter Inspect  / Search  ? Help  q Quit')
 
 
 def session_navigation_hints(mode, focus=''):
@@ -1000,7 +993,7 @@ class CockpitTabs(TabbedContent):
     def compose(self)->ComposeResult:
         for widget in super().compose():
             if isinstance(widget,Tabs):
-                widget.border_title='Views · 1–7 to switch'
+                widget.tooltip='Switch views with 1–7; secondary views are in More'
                 yield widget
                 yield self.app.more_view_control()
                 yield self.app.scope_controls()
@@ -1130,7 +1123,7 @@ class ObservatoryApp(App):
     Screen { background: $agent-canvas; color: $agent-text; }
     Screen > .screen--selection { background: $agent-selection; color: $agent-on-selection; }
     * { scrollbar-color: $agent-scrollbar; scrollbar-color-hover: $agent-secondary; scrollbar-color-active: $agent-primary; scrollbar-background: $agent-surface; scrollbar-background-hover: $agent-surface; scrollbar-background-active: $agent-surface; }
-    #masthead { height: 5; padding: 0 1; margin: 0 2; border: round $agent-border; background: $agent-surface; }
+    #masthead { height: 2; padding: 0 1; margin: 0 2; border: none; background: $agent-surface; }
     #identity { height: 1; }
     #brand-lockup { width: auto; height: 1; align-vertical: middle; }
     #brand { width: auto; height: 1; color: $agent-text; text-wrap: nowrap; }
@@ -1184,20 +1177,20 @@ class ObservatoryApp(App):
     Button:disabled { color: $agent-disabled; border-bottom: solid $agent-border-disabled; background: $agent-surface; }
     #pause { width: 15; height: 1; padding: 0; border: none; background: $agent-surface; }
     #pages { height: 1fr; margin: 0 2; }
-    #more-views { display: none; dock: right; layer: above; width: 21; height: 1; margin: 1 2 0 1; }
+    #more-views { display: block; dock: right; layer: above; width: 21; height: 1; margin: 0 2 0 1; }
     Tabs { height: 1; padding-top: 0; margin-top: 0; }
-    #pages > Tabs { height: 3; border: round $agent-border; border-title-color: $agent-label; border-title-style: bold; padding: 0 1; background: $agent-surface; }
+    #pages > Tabs { height: 1; border: none; padding: 0 1; background: $agent-surface; }
     Tab { color: $agent-muted; padding: 0 1; background: $agent-canvas; }
     #more-views SelectCurrent { height: 1; border: none; background: $agent-panel; color: $agent-primary; text-style: bold; padding: 0 1; }
     #more-views:hover SelectCurrent { background: $agent-hover; }
     #more-views:focus SelectCurrent { background: $agent-focus; text-style: bold underline; }
     #more-views.secondary-active SelectCurrent { background: $agent-focus; }
     .narrow #more-views { display: block; }
-    .narrow #pages > Tabs #--content-tab-host,
-    .narrow #pages > Tabs #--content-tab-metrics,
-    .narrow #pages > Tabs #--content-tab-findings { display: none; }
+    #pages > Tabs #--content-tab-host,
+    #pages > Tabs #--content-tab-metrics,
+    #pages > Tabs #--content-tab-findings { display: none; }
     .menu-navigation #pages > Tabs Tab { visibility: hidden; }
-    .menu-navigation #more-views { width: 100%; margin: 1 2 0 2; }
+    .menu-navigation #more-views { width: 100%; margin: 0 2 0 2; }
     Tab.-active { color: $agent-primary; background: $agent-focus; text-style: bold; }
     Tabs:focus .-active { background: $agent-focus; color: $agent-primary; text-style: underline; }
     Underline > .underline--bar { color: $agent-primary; background: $agent-border-subtle; }
@@ -1220,6 +1213,8 @@ class ObservatoryApp(App):
     #controls.agents-active #agent-errors { display: block; }
     #agent-errors:hover, #agent-errors:focus { color: $agent-primary; background: $agent-error; }
     #agent-errors.-on { color: $agent-canvas; background: $agent-error; }
+    #controls.agents-active #agent-errors.-empty { display: none; }
+    #controls.agents-active #agent-errors.-empty.-on { display: block; }
     #agent-errors.-empty { color: $agent-muted; background: $agent-panel; text-style: none; }
     .error-filter.-on { color: $agent-error; border: none; background: $agent-error-surface; text-style: bold; }
     .prompt-filter { width: 12; margin-right: 1; }
@@ -1545,9 +1540,9 @@ class ObservatoryApp(App):
             id='controls')
 
     def more_view_control(self):
-        return Select([('Other views',''),('5 Host','host'),('6 Metrics','metrics'),('7 Findings','findings')],
+        return Select([('More',''),('5 Host','host'),('6 Metrics','metrics'),('7 Findings','findings')],
                       value='',allow_blank=False,id='more-views',
-                      tooltip='Other views: 5 Host · 6 Metrics · 7 Findings · Enter to choose')
+                      tooltip='More views: 5 Host · 6 Metrics · 7 Findings · Enter to choose')
 
     def compose(self)->ComposeResult:
         yield Static('Terminal too small\nResize to at least 60 columns × 18 rows.\nq Quit',id='terminal-floor',markup=False)
@@ -2007,9 +2002,8 @@ class ObservatoryApp(App):
         self.screen.set_class(size.height<=24,'short')
         self.screen.set_class(size.width<76,'menu-navigation')
         self.screen.set_class(size.width<60 or size.height<18,'too-small')
-        # Halve the old quarter-screen overview; navigation has its own frame.
-        # Keep enough room for identity and counts on short terminals.
-        self.overview_height=1 if size.height<=24 else max(4,(size.height//4-2)//2)
+        # Global context stays compact and independent of the selected view.
+        self.overview_height=1 if size.height<=24 else 2
         for header in self.query('#masthead'):
             header.styles.height=self.overview_height
         for brand in self.query('#brand'):
@@ -2504,12 +2498,9 @@ class ObservatoryApp(App):
         error_button.label='Errors —'if getattr(self.data,'native_bootstrap',False)else f"Errors {'● ' if self.agent_filter=='errors' else ''}{counts['errors']}"
         error_button.disabled=getattr(self.data,'native_bootstrap',False)
         error_button.set_class(self.agent_filter=='errors','-on')
-        error_button.set_class(not error_ids,'-empty')
-        filter_options=[(f'Today {counts["today"]}','today'),
-                        (f'Attention {counts["attention"]}','attention'),
-                        (f'Running {counts["active"]}','active'),
-                        (f'History {counts["all"]}','all'),
-                        (f'Errors {counts["errors"]}','errors')]
+        error_button.set_class(not error_ids and not getattr(self.data,'native_bootstrap',False),'-empty')
+        filter_options=[('Today','today'),('Needs attention','attention'),('Running','active'),
+                        ('History','all'),('Errors','errors')]
         if getattr(self.data,'native_bootstrap',False):filter_options=[(label if key in {'today','active'}else 'History —'if key=='all'else 'Attention —'if key=='attention'else 'Errors —',key)for label,key in filter_options]
         picker=self.query_one('#agent-filter',Select)
         with picker.prevent(Select.Changed):
@@ -2632,9 +2623,7 @@ class ObservatoryApp(App):
         if not tree_mode:self.agent_order_pending=False
         self.query_one('#refresh-order',Button).display=self.agent_order_pending
         self.visible_agent_rows=[shown['id'] for shown,_,_,_,_ in visible_agents]
-        self.query_one('#results-agents').border_subtitle=(
-            ('Working first · ' if self.agent_sort_mode=='working' else 'Status · ' if self.agent_sort_mode=='status' else '')
-            +('newest' if self.agent_sort_desc else 'oldest')+' updated · o Sort')
+        self.query_one('#results-agents').border_subtitle=''
         if self.selected_source not in self.visible_agent_rows:
             self.selected_source=self.visible_agent_rows[0] if self.visible_agent_rows else None
         rows=[]
@@ -2670,7 +2659,7 @@ class ObservatoryApp(App):
                 self.query_one('#search-status-agents',Static).update(
                     f'{len(match_ids)} attention items · select a reason · Enter inspect · a Reset' if matching else
                     'No attention items in available agents · a Reset')
-            if tree_mode:title+=f' · {len(visible_agents)} rows'
+            if tree_mode and len(visible_agents)!=len(match_ids):title+=f' · {len(visible_agents)} rows'
             if self.agent_filter=='today' and self.data.updated:
                 status_widget=self.query_one('#search-status-agents',Static)
                 compact=status_widget.size.width<80
@@ -2690,6 +2679,8 @@ class ObservatoryApp(App):
         if getattr(self.data,'native_bootstrap',False):
             title=f'Current observations · {len(visible_agents)} shown · older history preparing'
             self.query_one('#search-status-agents',Static).update('Current observations only · older history is being prepared')
+        self.query_one('#search-status-agents').display=bool(agent_query or not rows or
+            self.data.sessions_error or self.data.read_errors or getattr(self.data,'native_bootstrap',False))
         self.query_one('#results-agents').border_title=title if self.data.updated or getattr(self.data,'native_bootstrap',False)else 'Sessions · loading'
         self.show_agent()
 
@@ -3577,7 +3568,7 @@ class ObservatoryApp(App):
                          if label in {'Direct children','Subtree summary','Child telemetry','Parent relationship','Relationship'}]
         work_facts=None
         if not expanded or self.session_mode=='overview':
-            from .overview import overview_facts,overview_summary
+            from .overview import overview_facts,overview_summary,check_already_listed
             evidence=self.session_evidence
             work_facts=overview_facts(item,self.data,actions,loaded=evidence.loaded and evidence.scope==scope,
                 partial=evidence.partial,usage={} if item.get('state')=='Interrupted' else run_usage,endpoint=getattr(self.feed.api,'endpoint',''))
@@ -3600,7 +3591,7 @@ class ObservatoryApp(App):
             return sections
         if not expanded:
             sections=guidance()
-            observed=overview_summary(work_facts)
+            observed=overview_summary(work_facts) if (work_facts['edit_count'] or work_facts['checks'] or work_facts['issues']) else ''
             if observed:sections.append(('Recorded work · loaded evidence',observed+ ('\nThese records do not establish why the turn stopped.' if item.get('state')=='Interrupted' else '')))
             if assistant:
                 sections.append(('Agent reported',session_excerpt(recorded_message_text(assistant),lines=3)))
@@ -3637,7 +3628,7 @@ class ObservatoryApp(App):
         else:
             coverage=f'{len(actions)} records in the current snapshot · history coverage unknown'
         self.query_one('#agent-evidence-status',Static).update(coverage)
-        self.query_one('#agent-evidence-status').tooltip=evidence.error or coverage
+        self.query_one('#agent-evidence-status').tooltip=(evidence.error or coverage)+'\nLoaded records only; open Review for scoped evidence and checks.'
         self.query_one('#agent-retry').display=bool(evidence.error)
         self.query_one('#agent-review-work').display=self.session_mode=='overview'
         if self.session_mode=='details':
@@ -3647,13 +3638,13 @@ class ObservatoryApp(App):
                 ('Capture','Metadata only' if item.get('capture_content') is False else 'Recorded content when available')]
             self.inspect('agent-detail',title,fields+details+hierarchy_fields,
                 [('Status evidence',attention_guidance(item,lifecycle_event=lifecycle_event)[0][1] if item.get('state')=='Interrupted' else attention_evidence(item,summary)),('Waiting on',wait_summary(item)),
-                 ('Task usage',usage_text),('Analysis coverage',analysis_coverage(summary)),
+                 ('Task usage',usage_text),('Evidence coverage',coverage),('Analysis coverage',analysis_coverage(summary)),
                  ('History freshness',session_history_feedback(self.data)),
                  ('Working directory',item.get('working_directory'))]+hierarchy_sections+ai_sections,
                 identity=(item['id'],'details'),context_in_header=True)
             return
         sections=guidance()
-        observed=overview_summary(work_facts)
+        observed=overview_summary(work_facts) if (work_facts['edit_count'] or work_facts['checks'] or work_facts['issues']) else ''
         if observed:sections.append(('Recorded work · loaded evidence',observed))
         if work_facts['paths']:
             paths=work_facts['paths'];shown=paths[:5]
@@ -3674,25 +3665,18 @@ class ObservatoryApp(App):
             sections.append(('Unseen error','The run reported a failure · s Inspect evidence'))
         if recorded:
             preview=session_event_preview(recorded,expanded=False)
-            sections.append(('Latest recorded event',preview))
+            if not check_already_listed(recorded,work_facts['checks'][-3:]):
+                sections.append(('Latest recorded event',preview))
         if request_event and item.get('state')!='Interrupted':
             parsed=request_text(recorded_message_text(request_event))
             if parsed.body and parsed.body.strip()!=task_preview(item).strip():
                 sections.append(('Latest request · '+when(request_event.get('time_unix_nano')),
                                  session_excerpt(parsed.body,lines=4,width=None)))
-        work=[event for event in turn_actions if event.get('domain') in {'shell','file','tool','mcp','browser'}]
-        if work:
-            lines=[]
-            for event in reversed(work[:6]):
-                result=str(event.get('result') or 'observed')
-                lines.append(f"{when(event.get('time_unix_nano'))}  {result}  {brief_activity(event)}")
-            sections.append((f'Recent work · latest {min(6,len(work))} of {len(work)} loaded actions','\n'.join(lines)))
-        sections+=short_hierarchy
-        sections.append(('Evidence window',(str(work_facts['source_count'])+' owned records' if work_facts['source_count'] else 'No owned records loaded yet')+' · '+work_facts['coverage']+' Open Review work for scoped paging and exact source references.'))
+        sections += [(label,value) for label,value in short_hierarchy if label=='Subtree summary']
         if item['state']=='Completed':
             sections.append(('Review','Agent reported completion; changes and checks are not independently verified here.'+
                              (' Reviewed for this run.' if reviewed else ' r Mark reviewed.')))
-        if item.get('state')!='Interrupted':
+        if attention_required(item) and item.get('state')!='Interrupted':
             sections.append(('Status evidence',attention_evidence(item,summary)))
         sections+=ai_sections
         self.inspect('agent-detail',title,fields,sections,identity=(item['id'],'overview'),context_in_header=True)
@@ -4115,7 +4099,7 @@ class ObservatoryApp(App):
         picker=self.query_one('#more-views',Select)
         menu_navigation=getattr(self,'layout_size',self.size).width<76
         if getattr(self,'view_menu_mode',None)!=menu_navigation:
-            options=[('Other views',''),('5 Host','host'),('6 Metrics','metrics'),('7 Findings','findings')]
+            options=[('More',''),('5 Host','host'),('6 Metrics','metrics'),('7 Findings','findings')]
             if menu_navigation:
                 options=[('Views: 1 Agents','agents'),('Views: 2 Activity','activity'),
                          ('Views: 3 MCP Calls','mcp'),('Views: 4 Traces','traces')]+options[1:]
