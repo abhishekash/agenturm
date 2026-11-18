@@ -50,6 +50,7 @@ pending where noted.
 | Claude Code | `~/.claude/projects/<project>/<session>/subagents/agent-<agentId>.jsonl` | Transcript path parent session plus optional sidecar `agent-<agentId>.meta.json` (`parentAgentId`, `toolUseId`). A successful parent `Task`/`Agent` tool result carrying `toolUseResult.agentId` may announce the child. | Yes, each sidecar transcript has its own recorded request and tools. | Sidecars are optional on older versions. Without a sidecar `parentAgentId`, the session directory is the parent. Older inline sidechain records are not split into workers. |
 | OpenCode | `session` rows with `parent_id` set | `session.parent_id` | Yes, each child session has its own messages/parts. | Recent activity rows without a retained session row remain unlinked observations. |
 | Pi | Only explicit parent fields if a Pi version supplies them | `parentAgentId` / `parentSessionId` / `parent_id` when present | Not independently verified | No documented Pi subagent transcript format was confirmed. Unlinked sessions are labelled unknown rather than assumed roots. |
+| Kiro | `$KIRO_HOME/sessions/<workspace>/sess_<id>/sub-executions/<subSessionId>.jsonl` | `sub_agent_start.subSessionId` in the spawning session or worker transcript. Nested workers share the session's `sub-executions/` directory, so the directory alone does not name the direct parent. | Yes, each worker transcript has its own tools and messages. | Worker transcripts record no end; the outcome comes from the spawner's `sub_agent_complete`. A worker whose spawning transcript is not tracked stays unresolved. Separately dispatched sessions (for example Kiro Crew workers) record no parent and stay unlinked. |
 | SDK / OTLP | Only the explicit convention below | `agent.parent_id` with `agent.id` | Yes, if the producer emits child evidence | A nested span alone is not proof of a subagent. Producers that omit the attributes remain unlinked. |
 
 Codex, Claude Code, and OpenCode shapes above were checked against published
@@ -61,7 +62,9 @@ Claude Code `2.1.304` (`parentAgentId`, `toolUseResult`,
 `session_parent_idx`). A real model-backed parent/child capture on each runtime
 is still pending because the local CLIs require account/provider use. Pi `1.3.0`
 exposes subagent concepts in its bundled SDK, but its local JSONL parent fields
-were not verified; automatic Pi linking is not claimed.
+were not verified; automatic Pi linking is not claimed. Kiro linking was checked
+against real local Kiro CLI `3.4.0` sessions (2026-11-18), including workers spawned by
+other workers.
 
 Codex history forked from a parent is shown with `relationship_kind=forked`.
 OpenCode sessions are namespaced by database path, so equal native session IDs

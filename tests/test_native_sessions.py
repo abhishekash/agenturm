@@ -405,7 +405,8 @@ class NativeSessionTests(unittest.TestCase):
         agents = LocalAgents(self.store)
         with patch.dict(os.environ, {'CODEX_HOME': str(codex_home),
                                      'CLAUDE_CONFIG_DIR': str(self.root / 'claude-home'),
-                                     'PI_CODING_AGENT_DIR': str(self.root / 'pi-home')}):
+                                     'PI_CODING_AGENT_DIR': str(self.root / 'pi-home'),
+                                     'KIRO_HOME': str(self.root / 'kiro-home')}):
             agents.discover()
         self.assertEqual(agents.discovered_sources, 52)
         self.assertEqual(agents.omitted_sources, 2)
@@ -421,7 +422,8 @@ class NativeSessionTests(unittest.TestCase):
         agents = LocalAgents(self.store)
         with patch.dict(os.environ, {'CODEX_HOME': str(self.root / 'codex-home'),
                                      'CLAUDE_CONFIG_DIR': str(self.root / 'claude-home'),
-                                     'PI_CODING_AGENT_DIR': str(pi_home)}):
+                                     'PI_CODING_AGENT_DIR': str(pi_home),
+                                     'KIRO_HOME': str(self.root / 'kiro-home')}):
             agents.discover()
         self.assertEqual(agents.discovered_sources, 1)
         self.assertEqual([session.runtime for session in agents.sessions.values()], ['Pi'])

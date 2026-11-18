@@ -157,6 +157,7 @@ def discover_mcp_configurations(global_paths=None, project_directories=(), on_er
          "Gemini CLI", "System"),
         (Path(os.environ.get("COPILOT_HOME", home / ".copilot")) / "mcp-config.json",
          "GitHub Copilot CLI", "User"),
+        (kiro_home() / "settings" / "mcp.json", "Kiro", "User"),
     ]
     if global_paths is None:
         config_file = os.environ.get("OPENCODE_CONFIG")
@@ -181,6 +182,7 @@ def discover_mcp_configurations(global_paths=None, project_directories=(), on_er
             (root / "opencode.jsonc", "OpenCode", "Project"),
             (root / ".opencode" / "opencode.json", "OpenCode", "Project"),
             (root / ".opencode" / "opencode.jsonc", "OpenCode", "Project"),
+            (root / ".kiro" / "settings" / "mcp.json", "Kiro", "Project"),
         ])
 
     found, seen = [], set()
@@ -226,7 +228,7 @@ class Session:
         # A child discovered through a spawn result and later through its own
         # transcript resolves to this same canonical node.
         self.agent_namespace = {"Codex": "codex-rollout", "Claude Code": "claude-code-projects",
-                                "Pi": "pi-sessions"}.get(runtime, runtime.casefold())
+                                "Pi": "pi-sessions", "Kiro": "kiro-sessions"}.get(runtime, runtime.casefold())
         self.native_session_id = self.session_id
         self.native_worker_id = None
         self.native_root_session_id = None
@@ -332,6 +334,179 @@ class Session:
         self._storage_attempt_in_flight = False
         self._storage_stage = 'idle'
         self._current_record_offset = 0
+        if runtime == "Kiro":
+            self._kiro_setup()
+
+    def _kiro_setup(self):
+        """Identity comes from the session directory; a worker from sub-executions/."""
+        self.kiro_session_dir, worker = _kiro_layout(self.path)
+        self.kiro_metadata_mtime_ns = None
+        self.kiro_title = ""
+        self.kiro_turn_from_prompt = False
+        self.kiro_turn_open = False
+        self.kiro_queued_prompt = None
+        self.kiro_released_prompt = None
+        self.kiro_interactions = RecentMap(MAX_RECENT_CALLS)
+        self.kiro_child_outcomes = RecentMap(MAX_RECENT_CALLS)
+        self.kiro_parent_outcome = None
+        self.kiro_reset_permissions()
+        self.kiro_autopilot = None
+        self.kiro_agent = ""
+        self.kiro_workspace = ""
+        self.kiro_rules = []
+        self.kiro_rules_cache = {}
+        self.kiro_rules_checked = 0.0
+        native = _safe_identifier(self.kiro_session_dir.name) or self.session_id
+        self.native_session_id = native
+        if worker:
+            self.session_id = worker
+            self.native_worker_id = worker
+            self.agent_id = canonical_agent_id(self.runtime, self.agent_namespace, worker)
+            # Nested workers share this directory, so it names the session tree,
+            # not the direct parent. Only the spawning sub_agent_start does.
+            self.relationship_kind = "delegated"
+            self.relationship_state = "unresolved"
+            self.relationship_provenance = provenance(
+                "kiro-session", "sub-executions worker; spawning sub_agent_start not yet read")
+        else:
+            self.session_id = native
+            self.agent_id = canonical_agent_id(self.runtime, self.agent_namespace, native)
+            self.relationship_provenance = provenance(
+                "kiro-session", "top-level session directory; no parent metadata")
+        self.kiro_refresh_metadata()
+
+    def kiro_reset_permissions(self):
+        self.kiro_permissions = RecentMap(KIRO_PERMISSION_WINDOW)
+        self.kiro_permission_counts = {}
+        self.kiro_history_partial = False
+
+    def kiro_permission(self, row, payload, stamp):
+        """Record each tool-approval request and the answer Kiro wrote for it."""
+        event = payload.get("type")
+        key = _kiro_interaction_key(payload, row)
+        if event == "tool_call":
+            call_id = _safe_identifier(payload.get("toolCallId"))
+            for entry in self.kiro_permissions.values():
+                if entry["call_id"] == call_id and not entry["tool"]:
+                    entry["tool"] = str(payload.get("toolName") or "")[:128]
+            meta = (payload.get("_meta") or {}).get("kiro") if isinstance(payload.get("_meta"), dict) else None
+            denial = meta.get("policyDenial") if isinstance(meta, dict) else None
+            if isinstance(denial, dict) and call_id:
+                from .local_activity import safe
+                resource = denial.get("resource") if isinstance(denial.get("resource"), str) else ""
+                rule = denial.get("matchedRule") if isinstance(denial.get("matchedRule"), dict) else {}
+                self.kiro_permissions["policy:" + call_id] = {
+                    "call_id": call_id, "requested_ns": stamp, "resolved_ns": stamp, "kind": "policy",
+                    "tool": str(payload.get("toolName") or "")[:128],
+                    "capability": str(denial.get("capability") or rule.get("capability") or "")[:64],
+                    "subject": safe(resource, 300) if self.capture_details and not self.internal else "",
+                    "rule_source": str(denial.get("source") or denial.get("scope") or "")[:64],
+                    "options": {}, "decision": "policy_denied"}
+                self.kiro_permission_counts["policy_denied"] = self.kiro_permission_counts.get("policy_denied", 0) + 1
+            return
+        if not key:
+            return
+        if event == "pending_interaction":
+            meta = (payload.get("_meta") or {}).get("kiro") if isinstance(payload.get("_meta"), dict) else None
+            meta = meta if isinstance(meta, dict) else {}
+            consent = meta.get("consent") if isinstance(meta.get("consent"), dict) else {}
+            options = {str(option.get("optionId")): str(option.get("kind") or "")
+                       for option in payload.get("options") or [] if isinstance(option, dict)}
+            subject = payload.get("question") if isinstance(payload.get("question"), str) else ""
+            from .local_activity import safe
+            self.kiro_permissions[key] = {
+                "call_id": _safe_identifier(payload.get("toolCallId")),
+                "requested_ns": stamp, "resolved_ns": 0,
+                "kind": str(payload.get("interactionType") or "")[:64],
+                "tool": str(meta.get("toolId") or "")[:128],
+                "capability": str(consent.get("capability") or "")[:64],
+                "subject": safe(subject, 300) if self.capture_details and not self.internal else "",
+                "options": options, "decision": "pending"}
+            self.kiro_permission_counts["requested"] = self.kiro_permission_counts.get("requested", 0) + 1
+        elif event == "interaction_resolved":
+            entry = self.kiro_permissions.get(key)
+            if payload.get("outcome") == "cancelled":
+                decision = "cancelled"
+            else:
+                option = str(payload.get("selectedOption") or "")
+                decision = ((entry or {}).get("options") or {}).get(option) or KIRO_OPTION_KINDS.get(option, "answered")
+            if entry is not None:
+                if entry["decision"] != "pending":
+                    return
+                entry.update(decision=decision, resolved_ns=stamp)
+            self.kiro_permission_counts[decision] = self.kiro_permission_counts.get(decision, 0) + 1
+
+    def kiro_permission_summary(self):
+        recent = sorted(self.kiro_permissions.values(), key=lambda item: item["requested_ns"], reverse=True)
+        return {"autopilot": self.kiro_autopilot, "counts": dict(self.kiro_permission_counts),
+                "complete": not self.kiro_history_partial and not self.kiro_permissions.evictions,
+                "recent": [{key: item[key] for key in ("requested_ns", "resolved_ns", "kind", "tool",
+                                                         "capability", "subject", "decision", "rule_source")
+                            if key in item}
+                           for item in recent[:KIRO_PERMISSION_RECENT]],
+                "agent": self.kiro_agent, "rules": self.kiro_rules}
+
+    def kiro_refresh_metadata(self):
+        """Read bounded session.json fields: title, workspace and model only."""
+        path = self.kiro_session_dir / "session.json"
+        try:
+            stat = path.stat()
+            if stat.st_mtime_ns == self.kiro_metadata_mtime_ns:
+                return
+            self.kiro_metadata_mtime_ns = stat.st_mtime_ns
+            if stat.st_size > KIRO_METADATA_BYTES:
+                self.schema_errors += 1
+                return
+            data = loads(path.read_bytes())
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+            self.schema_errors += 1
+            return
+        if not isinstance(data, dict):
+            self.schema_errors += 1
+            return
+        if isinstance(data.get("title"), str):
+            self.kiro_title = data["title"].strip()[:500]
+        paths = data.get("workspacePaths") or data.get("rootPaths")
+        cwd = next((item for item in paths if isinstance(item, str) and item.strip()), None) \
+            if isinstance(paths, list) else None
+        if cwd:
+            self.project = Path(cwd).name
+            self.working_directory = str(cwd) if self.capture_details else ""
+        if isinstance(data.get("modelId"), str) and data["modelId"].strip():
+            self.model = data["modelId"].strip()[:200]
+        if isinstance(data.get("autopilot"), bool):
+            self.kiro_autopilot = data["autopilot"]
+        if isinstance(data.get("agentMode"), str):
+            self.kiro_agent = data["agentMode"].strip()[:128]
+        if cwd:
+            self.kiro_workspace = str(cwd)
+
+    def kiro_refresh_rules(self, force=False):
+        """Re-read standing rule files at most every 10 s, and only when they change."""
+        if not force and time.monotonic() - self.kiro_rules_checked < KIRO_RULES_REFRESH_SECONDS:
+            return
+        self.kiro_rules_checked = time.monotonic()
+        from .kiro_permissions import display_path, read_rules, standing_sources
+        home = kiro_home()
+        workspace_key = self.kiro_session_dir.parent.name if self.kiro_session_dir.parent.parent.name == "sessions" else ""
+        result = []
+        for label, path in standing_sources(home, workspace_key, self.kiro_agent, self.kiro_workspace or None):
+            try:
+                stat = path.stat()
+                signature = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                signature = None
+            cached = self.kiro_rules_cache.get(path)
+            if cached is None or cached[0] != signature:
+                cached = (signature, read_rules(path))
+                self.kiro_rules_cache[path] = cached
+            entry = {"source": label, "path": display_path(path, Path.home()), **cached[1]}
+            if label == "Workspace":
+                entry["folder"] = self.kiro_workspace if self.capture_details else Path(self.kiro_workspace).name
+            result.append(entry)
+        self.kiro_rules = result
 
     @property
     def last_activity(self):
@@ -547,6 +722,39 @@ class Session:
                     self.pending_tools.pop(key, None)
                     state = "running"
                     self.waiting_for = ""
+        elif self.runtime == "Kiro":
+            payload = row.get("payload") or {}
+            if not isinstance(payload, dict):
+                return
+            event = payload.get("type")
+            if event == "turn_start" or (event == "user" and payload.get("source") != "steer"
+                                         and self.kiro_queued_prompt is not row):
+                state = "running"
+                self.waiting_for = ""
+                self.kiro_interactions.clear()
+            elif event == "pending_interaction":
+                key = _kiro_interaction_key(payload, row)
+                if key:
+                    label = "Approval" if payload.get("interactionType") == "tool_approval" else "User input"
+                    self.kiro_interactions[key] = (label, stamp)
+            elif event == "interaction_resolved":
+                key = _kiro_interaction_key(payload, row)
+                if key:
+                    self.kiro_interactions.pop(key, None)
+                if state == "waiting" and not self.kiro_interactions:
+                    state = "running"
+                    self.waiting_for = ""
+            elif event == "turn_end":
+                state = KIRO_STOP_STATES.get(str(payload.get("stopReason") or ""), "incomplete")
+                self.waiting_for = ""
+                self.kiro_interactions.clear()
+            elif event in {"assistant", "tool_call", "tool_result", "sub_agent_start"} and state == "unknown":
+                # A bounded tail or a worker transcript can begin mid-turn.
+                state = "running"
+            if self.kiro_interactions and state not in {"completed", "interrupted", "failed", "incomplete"}:
+                key, (label, since) = next(iter(self.kiro_interactions.items()))
+                state, self.waiting_for, request_key = "waiting", label, key
+                self.pending_request_times[key] = since
         elif self.runtime == "Pi":
             message = row.get("message") or {}
             if not isinstance(message, dict):
@@ -786,6 +994,123 @@ class Session:
             self.turn = previous
             return [span] if span else []
         return []
+
+    def kiro(self, row, stamp):
+        payload = row.get("payload") or {}
+        if not isinstance(payload, dict):
+            return []
+        event = payload.get("type")
+        result = []
+        if event in {"pending_interaction", "interaction_resolved", "tool_call"}:
+            self.kiro_permission(row, payload, stamp)
+        if self.native_worker_id and self.turn == "session" and stamp:
+            # Worker transcripts have no prompt or turn records; the file is one run.
+            self.turn = self.native_worker_id
+            self.started[self.turn] = stamp
+            result.append(self.root(stamp, "running"))
+        if event == "user" and payload.get("source") != "steer":
+            if self.kiro_turn_open:
+                # Kiro queues a prompt sent mid-turn; the current turn keeps
+                # writing its tools, usage and turn_end until it finishes.
+                self.kiro_queued_prompt = row
+                return result
+            # The prompt opens the turn so its text belongs to the new trace;
+            # Kiro writes the matching turn_start immediately afterwards.
+            self.turn = str(row.get("id") or stamp or self.turn)
+            self.started[self.turn] = stamp
+            self.kiro_turn_from_prompt = True
+            self.kiro_turn_open = True
+            if isinstance(payload.get("content"), str):
+                from .session_text import remember_task
+                remember_task(self, payload["content"])
+            return [self.root(stamp, "running")]
+        if event == "turn_start":
+            if not self.kiro_turn_from_prompt:
+                queued, self.kiro_queued_prompt = self.kiro_queued_prompt, None
+                if queued is not None:
+                    self.turn = str(queued.get("id") or stamp)
+                    self.kiro_released_prompt = queued
+                    content = (queued.get("payload") or {}).get("content")
+                    if isinstance(content, str):
+                        from .session_text import remember_task
+                        remember_task(self, content)
+                else:
+                    self.turn = str(payload.get("turnId") or payload.get("executionId") or row.get("id") or stamp or self.turn)
+                self.started[self.turn] = stamp
+                result.append(self.root(stamp, "running"))
+            self.kiro_turn_from_prompt = False
+            self.kiro_turn_open = True
+            return result
+        self.kiro_turn_from_prompt = False
+        if event == "turn_end":
+            self.kiro_turn_open = False
+            state = KIRO_STOP_STATES.get(str(payload.get("stopReason") or ""), "incomplete")
+            result.append(self.root(stamp, state))
+        elif event == "tool_call":
+            call_id = _safe_identifier(payload.get("toolCallId"))
+            if call_id:
+                self.calls[call_id] = (str(payload.get("toolName") or "Tool")[:256], stamp, self.turn,
+                                       _kiro_mcp_attributes(payload), str(payload.get("status") or ""))
+        elif event == "tool_result":
+            call_id = _safe_identifier(payload.get("toolCallId"))
+            pending = self.calls.pop(call_id, None) if call_id else None
+            name, start, turn, mcp, status = pending or ("Tool", stamp, self.turn, {}, "")
+            attrs = {"gen_ai.operation.name": "execute_tool", "tool.name": name, **mcp}
+            elapsed = payload.get("durationMs")
+            if type(elapsed) in {int, float} and math.isfinite(elapsed) and elapsed >= 0:
+                start = max(0, stamp - int(elapsed * 1e6))
+            else:
+                # Kiro writes the call and its result together after execution.
+                attrs["observatory.duration_unknown"] = True
+            previous, self.turn = self.turn, turn
+            span = self.span(("tool", call_id or row.get("id") or stamp),
+                             (mcp["mcp.server.name"] + " / " + mcp["mcp.tool.name"]) if mcp else name,
+                             stamp, attrs, start=start,
+                             error=payload.get("success") is False or status in {"failed", "denied"})
+            self.turn = previous
+            if span:
+                result.append(span)
+        elif event == "sub_agent_start":
+            self.announce(payload.get("subSessionId"), stamp, "sub_agent_start.subSessionId")
+        elif event == "usage_summary":
+            span = self.kiro_usage_span(row, payload, stamp)
+            if span:
+                result.append(span)
+        elif event == "sub_agent_complete":
+            child = _safe_identifier(payload.get("subSessionId"))
+            if child and stamp:
+                self.kiro_child_outcomes[child] = ("end_turn" if payload.get("status") == "success" else "error", stamp)
+        return result
+
+    def kiro_usage_span(self, row, payload, stamp):
+        """One model-usage span per turn: Kiro reports credits, never tokens."""
+        credits = kiro_credits(payload)
+        if credits is None:
+            return None
+        attrs = {"gen_ai.operation.name": "chat", KIRO_CREDITS_KEY: credits,
+                 "kiro.usage.status": str(payload.get("status") or "")[:32]}
+        if self.model:
+            attrs["gen_ai.request.model"] = str(self.model)[:200]
+        elapsed = payload.get("elapsedTime")
+        if type(elapsed) in {int, float} and math.isfinite(elapsed) and elapsed >= 0:
+            start = max(0, stamp - int(elapsed * 1e6))
+        else:
+            start, attrs["observatory.duration_unknown"] = stamp, True
+        return self.span(("kiro-usage", row.get("id") or self.turn), "Kiro · " + str(self.model or "model call")[:200],
+                         stamp, attrs, start=start)
+
+    def kiro_apply_parent_outcome(self):
+        """A worker transcript has no end record; its parent records the outcome."""
+        outcome, self.kiro_parent_outcome = self.kiro_parent_outcome, None
+        if not outcome or self.run_state in {"completed", "interrupted", "failed", "incomplete"}:
+            return []
+        stop_reason, stamp = outcome
+        if stamp < self.last_record_ns:
+            return []
+        row = {"payload": {"type": "turn_end", "stopReason": stop_reason}}
+        spans = self.kiro(row, stamp)
+        self.observe_state(row, stamp)
+        return spans
 
     def codex(self, row, stamp):
         kind, payload = row.get("type"), row.get("payload") or {}
@@ -1050,6 +1375,10 @@ class Session:
                     message = row.get('message') or {}
                     if isinstance(message, dict) and message.get('role') == 'user':
                         content = message.get('content')
+                elif self.runtime == 'Kiro':
+                    payload = row.get('payload') or {}
+                    if isinstance(payload, dict) and payload.get('type') == 'user' and payload.get('source') != 'steer':
+                        content = payload.get('content')
                 if isinstance(content, list):
                     content = [block for block in content if isinstance(block, dict)
                                and block.get('type') in {'text','input_text','output_text'}]
@@ -1066,6 +1395,9 @@ class Session:
         # batch before reading more bytes if either storage transaction failed.
         if self._pending_ingest is not None:
             self.flush_pending_ingest()
+        if self.runtime == "Kiro":
+            self.kiro_refresh_metadata()
+            self.kiro_refresh_rules()
         stat = self.path.stat()
         self.source_size_bytes = stat.st_size
         self.source_mtime_ns = stat.st_mtime_ns
@@ -1092,6 +1424,11 @@ class Session:
             self.request_id, self.request_time_ns = '', 0
             self.outcome_id, self.outcome_time_ns = '', 0
             self.last_record_ns = 0
+            if self.runtime == "Kiro":
+                self.kiro_interactions.clear()
+                self.kiro_turn_from_prompt = self.kiro_turn_open = False
+                self.kiro_queued_prompt = self.kiro_released_prompt = None
+                self.kiro_reset_permissions()
         with self.path.open("rb") as stream:
             if self.offset == 0 and stat.st_size > MAX_READ:
                 # Recover session identity from the header, then import a bounded tail.
@@ -1105,6 +1442,9 @@ class Session:
                     self.schema_errors += 1
                 stream.seek(0)
                 self.read_initial_task(stream)
+                if self.runtime == "Kiro":
+                    # Records before the bounded tail (including approvals) are not read.
+                    self.kiro_history_partial = True
                 stream.seek(stat.st_size - MAX_READ)
                 # Skip only the partial first record, without allocating an
                 # arbitrarily large line from a malformed session file.
@@ -1166,6 +1506,8 @@ class Session:
                     new_spans = self.codex(row, stamp)
                 elif self.runtime == "Pi":
                     new_spans = self.pi(row, stamp)
+                elif self.runtime == "Kiro":
+                    new_spans = self.kiro(row, stamp)
                 else:
                     new_spans = self.claude(row, stamp, prior_models)
                 for span in new_spans:
@@ -1178,6 +1520,9 @@ class Session:
                 elif self.runtime == "Pi":
                     from .local_activity import pi_activity
                     activity=pi_activity(self, row, stamp)
+                elif self.runtime == "Kiro":
+                    from .local_activity import kiro_activity
+                    activity=kiro_activity(self, row, stamp)
                 else:
                     activity=claude_activity(self, row, stamp)
                 for event in activity:event['attributes'].update(self.native_position())
@@ -1192,6 +1537,13 @@ class Session:
             except (ValueError, TypeError, KeyError, AttributeError, OverflowError, RecursionError):
                 self.skipped += 1
                 self.schema_errors += 1
+        if self.runtime == "Kiro" and self.native_worker_id and self.kiro_parent_outcome:
+            spans.extend(span for span in self.kiro_apply_parent_outcome() if span)
+        if (self.runtime == "Kiro" and self.kiro_title and not self.task_description
+                and not self.native_worker_id and self.capture_details and not self.internal):
+            # A bounded tail can skip the prompt; Kiro's own session title is the fallback label.
+            from .local_activity import safe
+            self.task_description = safe(self.kiro_title, 500)
         if self.internal:
             from .native_policy import internal_review_attrs, internal_review_events
             for span in spans:
@@ -1291,6 +1643,78 @@ class Session:
 
 CLAUDE_META_BYTES = 64 * 1024
 SPAWN_TOOLS = {"spawn_agent", "Task", "Agent"}
+KIRO_METADATA_BYTES = 64 * 1024
+KIRO_STOP_STATES = {"end_turn": "completed", "cancelled": "interrupted", "error": "failed"}
+KIRO_CREDITS_KEY = "kiro.usage.credits"
+KIRO_PERMISSION_WINDOW = 256
+KIRO_PERMISSION_RECENT = 10
+KIRO_RULES_REFRESH_SECONDS = 10
+# Older records omit the option list; these are Kiro's built-in option IDs.
+KIRO_OPTION_KINDS = {"accept": "allow_once", "always-accept": "allow_always",
+                     "reject": "reject_once", "always-reject": "reject_always",
+                     # Some records store the option kind itself as the selection.
+                     **{kind: kind for kind in ("allow_once", "allow_always", "reject_once", "reject_always")}}
+
+
+def kiro_credits(payload):
+    """Sum a usage_summary's credit entries; None when none is reported."""
+    values = [item.get("usage") for item in payload.get("promptTurnSummaries") or []
+              if isinstance(item, dict) and item.get("unit") == "credit"]
+    values = [float(value) for value in values
+              if type(value) in {int, float} and math.isfinite(value) and value >= 0]
+    return round(sum(values), 8) if values else None
+# cli/ holds the legacy v1/v2 format; snapshots/ are file checkpoints, not records.
+KIRO_SKIPPED_DIRECTORIES = {"cli", "snapshots", ".index"}
+
+
+def kiro_home():
+    """Kiro honours an absolute KIRO_HOME and otherwise uses ~/.kiro."""
+    configured = os.environ.get("KIRO_HOME", "").strip()
+    if configured and Path(configured).is_absolute() and Path(configured).resolve() != Path(configured).resolve().parent:
+        return Path(configured)
+    return Path.home() / ".kiro"
+
+
+def _kiro_layout(path):
+    """Return (session directory, worker id) for a Kiro messages or sub-execution file.
+
+    <KIRO_HOME>/sessions/<workspace>/sess_<id>/messages.jsonl is a session;
+    <session>/sub-executions/<subSessionId>.jsonl is a worker it delegated to.
+    """
+    path = Path(path)
+    if path.parent.name == "sub-executions":
+        return path.parent.parent, _safe_identifier(path.stem)
+    return path.parent, None
+
+
+def _kiro_source(path):
+    """Accept only the current Kiro session layout, never legacy cli/ histories."""
+    path = Path(path)
+    if path.name == "messages.jsonl":
+        return path.parent.name.startswith("sess_")
+    return path.parent.name == "sub-executions" and path.parent.parent.name.startswith("sess_")
+
+
+def _kiro_interaction_key(payload, row):
+    call_id = _safe_identifier(payload.get("toolCallId"))
+    if not call_id:
+        return None
+    round_ = payload.get("consentRound")
+    return call_id + ":" + str(round_ if type(round_) is int else 0)
+
+
+def _kiro_mcp_attributes(payload):
+    """Kiro records the configured MCP server beside its flattened tool name."""
+    name = str(payload.get("toolName") or "")
+    meta = ((payload.get("_meta") or {}).get("kiro") or {}) if isinstance(payload.get("_meta"), dict) else {}
+    server = meta.get("serverName") if isinstance(meta, dict) else None
+    if not isinstance(server, str) or not server.strip() or not name:
+        return mcp_attributes(name)
+    server = server.strip()[:128]
+    prefix = "mcp_" + "_".join(filter(None, "".join(
+        char if char.isalnum() else " " for char in server.casefold()).split())) + "_"
+    tool = name[len(prefix):] if name.casefold().startswith(prefix) and len(name) > len(prefix) else name
+    return {"mcp.server.name": server, "mcp.tool.name": tool[:128], "mcp.method.name": "tools/call"}
 
 
 def _claude_subagent_identity(path):
@@ -1376,6 +1800,9 @@ class LocalAgents:
         self.hierarchy_revision = ""
         self.hierarchy_facts_revision = ""
         self.hierarchy_write_errors = 0
+        self.kiro_folders = []
+        self.kiro_folders_cache = {}
+        self.kiro_folders_checked = 0.0
         from .opencode import OpenCodeReader
         self.opencode = OpenCodeReader(store, capture_details=capture_details)
         self.initial_poll_complete = False
@@ -1390,7 +1817,8 @@ class LocalAgents:
     def discover(self):
         roots = [(Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))/"sessions", "Codex"),
                  (Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home()/".claude")))/"projects", "Claude Code"),
-                 (Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home()/".pi"/"agent")))/"sessions", "Pi")]
+                 (Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home()/".pi"/"agent")))/"sessions", "Pi"),
+                 (kiro_home()/"sessions", "Kiro")]
         cutoff = time.time() - 86400
         self.discovered_sources = 0
         pending_sources={path for path,session in self.sessions.items() if session._pending_ingest is not None}
@@ -1413,8 +1841,12 @@ class LocalAgents:
                                     return
                                 try:
                                     if entry.is_dir(follow_symlinks=False):
+                                        if runtime == "Kiro" and entry.name in KIRO_SKIPPED_DIRECTORIES:
+                                            continue
                                         pending.append(entry.path)
                                     elif entry.name.endswith('.jsonl') and entry.is_file():
+                                        if runtime == "Kiro" and not _kiro_source(entry.path):
+                                            continue
                                         modified = entry.stat().st_mtime
                                         if modified >= cutoff:
                                             self.discovered_sources += 1
@@ -1435,6 +1867,7 @@ class LocalAgents:
 
     def poll(self):
         accepted = 0
+        self.link_kiro_workers()
         for session in list(self.sessions.values()):
             if self.stop.is_set():
                 break
@@ -1442,7 +1875,34 @@ class LocalAgents:
                 accepted += session.poll()
             except OSError as exc:
                 self.record_error(exc,'Reading native source')
+        self.link_kiro_workers()
         return accepted
+
+    def link_kiro_workers(self):
+        """Resolve each Kiro worker's exact parent and outcome from the spawning transcript."""
+        spawners = {}
+        for session in list(self.sessions.values()):
+            if session.runtime != "Kiro":
+                continue
+            for item in list(session.announced_agents.values()):
+                child = item.get("native_worker_id")
+                if child:
+                    spawners[(session.kiro_session_dir, child)] = session
+        for session in list(self.sessions.values()):
+            if session.runtime != "Kiro" or not session.native_worker_id:
+                continue
+            spawner = spawners.get((session.kiro_session_dir, session.native_worker_id))
+            if spawner is None or spawner is session:
+                continue
+            if session.parent_agent_id != spawner.agent_id:
+                session.parent_agent_id = spawner.agent_id
+                session.relationship_state = "confirmed"
+                session.relationship_provenance = provenance(
+                    "kiro-session", "sub_agent_start.subSessionId in the "
+                    + ("worker" if spawner.native_worker_id else "session") + " transcript")
+            outcome = spawner.kiro_child_outcomes.get(session.native_worker_id)
+            if outcome and session.run_state not in {"completed", "interrupted", "failed", "incomplete"}:
+                session.kiro_parent_outcome = outcome
 
     def loop(self):
         discovered = 0
@@ -1490,6 +1950,22 @@ class LocalAgents:
         nodes = [*observed.values(), *announced.values()]
         return nodes, announced
 
+    def kiro_folder_status(self):
+        """Trusted folders and per-folder rules, re-read at most every 10 s."""
+        if not any(session.runtime == "Kiro" for session in self.sessions.values()):
+            return []
+        if time.monotonic() - self.kiro_folders_checked >= KIRO_RULES_REFRESH_SECONDS:
+            self.kiro_folders_checked = time.monotonic()
+            from .kiro_permissions import workspace_permissions
+            try:
+                self.kiro_folders = workspace_permissions(kiro_home(), self.kiro_folders_cache)
+            except OSError as exc:
+                self.record_error(exc, 'Reading Kiro workspace permissions')
+        if self.capture_details:
+            return list(self.kiro_folders)
+        return [{**item, "folder": Path(item["folder"]).name if item.get("folder") else None}
+                for item in self.kiro_folders]
+
     def status(self):
         sessions = list(self.sessions.values())
         internal=(self.store.internal_source_ids([session.source_id for session in sessions])
@@ -1529,6 +2005,7 @@ class LocalAgents:
                      "last_record_ns": session.last_record_ns,
                      "process": self.process_samples.get(session.source_id, {}),
                      "diagnostics": session.diagnostics(),
+                     **({"permissions": session.kiro_permission_summary()} if session.runtime == "Kiro" else {}),
                      **session.hierarchy(),
                      "bytes_read": session.offset} for session in sessions]
         opencode_observed = self.opencode.status_sessions()
@@ -1600,6 +2077,7 @@ class LocalAgents:
                 "opencode_discovered_sessions": self.opencode.discovered_sessions,
                 "opencode_omitted_sessions": self.opencode.omitted_sessions,
                 "opencode_diagnostics": self.opencode.diagnostics(),
+                "kiro_folders": self.kiro_folder_status(),
                 "runtime": self.runtime_snapshot,
                 "mcp_configurations": list(self.mcp_configurations),
                 "mcp_config_errors": self.mcp_config_errors,

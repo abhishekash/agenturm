@@ -98,7 +98,8 @@ class LocalIngestionLimitTests(unittest.TestCase):
             os.utime(path, (now - index, now - index))
         observer = LocalAgents(self.store)
         with patch.dict(os.environ, {"CODEX_HOME": str(codex), "CLAUDE_CONFIG_DIR": str(self.root / "missing"),
-                                     "PI_CODING_AGENT_DIR": str(self.root / "missing-pi")}), patch.object(local_agents, "MAX_SOURCES", 2):
+                                     "PI_CODING_AGENT_DIR": str(self.root / "missing-pi"),
+                                     "KIRO_HOME": str(self.root / "missing-kiro")}), patch.object(local_agents, "MAX_SOURCES", 2):
             observer.discover()
         self.assertEqual(observer.discovered_sources, 6)
         self.assertEqual(observer.omitted_sources, 4)

@@ -1,13 +1,13 @@
 {
   "format": "agenturm-native-fixture-provenance-v1",
-  "verified_on": "2026-11-15",
+  "verified_on": "2026-11-18",
   "reader": {
     "legacy_verified_baseline": "1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8",
     "adapter_commit": "cc63b7d0209df1c71126f3447122a271f32c607b",
     "files": {
       "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
       "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
-      "observatory/local_agents.py": "353ac34be641ecb653677a9024a85a4b2d04d3c072cf65b5c00c3e1ddb4310b1"
+      "observatory/local_agents.py": "a3e50c4e9f0a9ebda6126105fe350ef72c3eaaf4598ae66a70cd2202a49cbfa0"
     },
     "core_membership_commits": [
       "d955cbbc5f87a04a1055ee0bf07ed52ef85e8fc9",
@@ -21,10 +21,17 @@
           "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec"
         },
         "qualification": "Historical selected-format adapter hashes before transaction-publication opt-in; not discarded or relabelled as current."
+      },
+      {
+        "commit": "9aba1d6209873d2d299478ee7c20eb866d6acc6e",
+        "files": {
+          "observatory/local_agents.py": "353ac34be641ecb653677a9024a85a4b2d04d3c072cf65b5c00c3e1ddb4310b1"
+        },
+        "qualification": "local_agents hash before Kiro session decoding was added. Codex, Claude Code and Pi decoding and the selected fixtures' formats are unchanged; not discarded or relabelled as current."
       }
     ],
     "verified_reader_commit": "4beb84aa93edf1922123686eb22894d1536b503b",
-    "verification_scope": "Same selected-format decoding and unchanged upstream schemas. OpenCode only adds the explicit Store native no-op opt-in; local_agents adds coherent storage diagnostics/delivery bookkeeping, not producer field decoding. These current hashes do not establish live-agent or universal compatibility."
+    "verification_scope": "Same selected-format decoding and unchanged upstream schemas. OpenCode only adds the explicit Store native no-op opt-in; local_agents adds coherent storage diagnostics/delivery bookkeeping, not producer field decoding. These current hashes do not establish live-agent or universal compatibility. local_agents additionally decodes Kiro sessions; that branch is selected only for the Kiro runtime and does not change the fixtures' decoding."
   },
   "fixtures": [
     {

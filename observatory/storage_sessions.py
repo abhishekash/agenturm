@@ -43,6 +43,8 @@ def session_projection(db, limit):
         "SUM(COALESCE(s.known_cost_usd,0)) AS known_cost_usd",
         "SUM(NOT s.cost_complete) AS unknown_cost_runs",
         "MIN(s.cost_complete) AS cost_complete",
+        "ROUND(COALESCE(SUM(s.credits),0),8) AS credits",
+        "COALESCE(MAX(s.credits_reported),0) AS credits_reported",
     ]
     for field in FIELDS:
         values.extend(
@@ -96,6 +98,9 @@ def session_projection(db, limit):
         for name in tuple(item):
             if name.endswith(("_complete", "_reported")):
                 item[name] = bool(item[name])
+        if not item["credits_reported"]:
+            item.pop("credits")
+            item.pop("credits_reported")
         result[(item.pop("session_id"), item.pop("agent_id"))] = item
     # Keep original-task lookup in this same ownership/content snapshot. One
     # indexed batch also avoids opening a connection for every displayed actor.
