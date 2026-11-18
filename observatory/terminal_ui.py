@@ -27,6 +27,7 @@ from textual.strip import Strip
 from textual.widgets import Button, Checkbox, DataTable, Input, OptionList, RichLog, Select, Static, Tab, TabbedContent, TabPane, Tabs, Tree
 
 from .terminal import clean, clipped, number, trace_name
+from .session_outcome import current_turn_events, interruption_event, interruption_reason, linked_trace
 from .agent_hierarchy import (AGENT_ID, HierarchyGraph, branch_marker, canonical_agent_id,
                               node_active, node_attention, tree_prefix)
 from .session_status import session_health, session_phase, today_bucket
@@ -554,10 +555,22 @@ def attention_evidence(item,summary=None,error_event=None):
     return 'Status comes from recorded lifecycle events.'
 
 
-def attention_guidance(item, error_event=None):
+def attention_guidance(item, error_event=None, lifecycle_event=None):
     """One cause and one next step; uncertainty is never a reply request."""
     state=item.get('state')
     runtime=clean(item.get('runtime') or 'agent')
+    if state == 'Interrupted':
+        stamp = item.get('outcome_time_ns') or item.get('task_outcome_ns') or item.get('state_since_ns')
+        native, reason = interruption_reason(lifecycle_event)
+        evidence = (f'{runtime} recorded {native} at {when(lifecycle_event.get("time_unix_nano"))}.'
+                    if lifecycle_event else f'The recorded lifecycle marks this turn interrupted'+
+                    (f' at {when(stamp)}.' if stamp else '.'))
+        explanation = ('Reason: '+reason+'.' if reason else 'No detailed interruption reason is available in the loaded evidence.')
+        if reason.casefold() in {'interrupted', 'aborted', 'cancelled', 'canceled'}:
+            explanation += ' The record does not identify who stopped it or why.'
+        return [('Latest turn interrupted', evidence+' '+explanation),
+                ('Next step', 's Open session Activity with surrounding events; t opens this turn’s trace when linked. '
+                 'Earlier completed turns and PRs do not establish completion of this turn.')]
     if input_required(item):
         approval=any(word in str(item.get('waiting_for') or '').casefold() for word in ('approval','permission'))
         return [('Why attention','The agent recorded an approval request.' if approval else 'The agent recorded a request for your reply.'),
@@ -3498,23 +3511,29 @@ class ObservatoryApp(App):
             stamp,text=generated
             label='AI summary · earlier snapshot' if stamp!=item.get('stamp') else 'AI summary · provider generated'
             ai_sections=[(label,text)]
-        actions=[] if not captured else (self.sync_session_evidence(item) if expanded and self.session_mode!='prompts'
+        actions=[] if not captured else (self.sync_session_evidence(item) if (expanded and self.session_mode!='prompts') or item.get('state')=='Interrupted'
                  else sorted(scoped_events([*self.session_evidence.events,*self.data.activity],scope),
                              key=lambda event:event.get('time_unix_nano') or 0,reverse=True))
-        meaningful=[event for event in actions if event.get('domain') not in {'model','context','agent'}]
+        lifecycle_event = interruption_event(item, actions, self.data)
+        turn_actions = current_turn_events(item, actions, self.data) if item.get('state') == 'Interrupted' else actions
+        meaningful=[event for event in turn_actions if event.get('domain') not in {'model','context','agent'}]
         recorded=next((event for event in meaningful if event.get('domain')!='message'),None)
-        assistant=next((event for event in actions if event.get('domain')=='message'
+        assistant=next((event for event in turn_actions if event.get('domain')=='message'
                         and event.get('action')=='assistant'),None)
         pending_ids={event.get('id') or event.get('source_id') for event in pending_errors}
         error_event=next((event for event in actions if failed(event) and
                           (event.get('id') or event.get('source_id')) in pending_ids),None)
         if not error_event:
             error_event=next((event for event in pending_errors if not str(event.get('id','')).startswith('outcome:')),None)
+        if item.get('state') == 'Interrupted':
+            # Tool errors do not explain a lifecycle interruption. They remain
+            # inspectable in Activity and Review without a causal claim here.
+            error_event = None
         failure_detail=failure_evidence(error_event)
-        request_event=next((event for event in actions if event.get('domain')=='message'
+        request_event=next((event for event in turn_actions if event.get('domain')=='message'
                             and event.get('action')=='user'),None)
-        self.agent_primary_event_id=((error_event or request_event or recorded or {}).get('id')
-                                     or (error_event or request_event or recorded or {}).get('source_id'))
+        self.agent_primary_event_id=((lifecycle_event or error_event or request_event or recorded or {}).get('id')
+                                     or (lifecycle_event or error_event or request_event or recorded or {}).get('source_id'))
         primary_label=('Failed call · s' if error_event else
                        'Failures · s' if self.agent_has_failures else
                        'Request · s' if input_required(item) and request_event else
@@ -3523,12 +3542,17 @@ class ObservatoryApp(App):
                      'Inspect the unseen recent failure; opening its details stops this reminder' if self.agent_has_failures else
                      'Open the recorded user request; reply in the agent terminal' if request_event and input_required(item) else
                      'Read all recorded activity for this session')
+        if item.get('state') == 'Interrupted':
+            primary_label = 'Interruption · s' if lifecycle_event else 'Activity · s'
+            primary_tip = 'Inspect the interrupted turn and surrounding session activity'
         self.query_one('#agent-open',Button).label=Text(primary_label)
         self.query_one('#agent-open',Button).tooltip=primary_tip
         # Retain trace links without rendering a duplicate activity table.
         self.table_data['agent-actions']={event.get('id') or event['source_id']:event for event in actions[:30]}
         if error_event:
             self.table_data['agent-actions'][event_id(error_event)]=error_event
+        if lifecycle_event:
+            self.table_data['agent-actions'][event_id(lifecycle_event)]=lifecycle_event
         hierarchy_fields,hierarchy_sections=self.hierarchy_sections(item)
         title=task_preview(item)
         if not title:
@@ -3539,7 +3563,9 @@ class ObservatoryApp(App):
         title=clipped(title,160)+('…' if cell_len(title)>160 else '')
         identity=item['runtime']+(' / '+str(item['project']) if item.get('project') else '')
         state=agent_status(item)
-        state.append(' · '+age(item.get('stamp')),style='#b9afc5')
+        status_stamp = ((item.get('outcome_time_ns') or item.get('task_outcome_ns') or item.get('state_since_ns'))
+                        if item.get('state')=='Interrupted' else item.get('stamp'))
+        state.append(' · '+age(status_stamp),style='#b9afc5')
         fields=[('Agent',identity),('Status',state)]
         heading=self.query_one('#agent-heading',Static)
         update_status_text(heading,Text(title if expanded else 'Session inspector'))
@@ -3553,14 +3579,31 @@ class ObservatoryApp(App):
             from .overview import overview_facts,overview_summary
             evidence=self.session_evidence
             work_facts=overview_facts(item,self.data,actions,loaded=evidence.loaded and evidence.scope==scope,
-                partial=evidence.partial,usage=run_usage,endpoint=getattr(self.feed.api,'endpoint',''))
+                partial=evidence.partial,usage={} if item.get('state')=='Interrupted' else run_usage,endpoint=getattr(self.feed.api,'endpoint',''))
+        turn_request = next((event for event in reversed(turn_actions) if event.get('domain')=='message'
+                             and event.get('action')=='user'), None) if item.get('state')=='Interrupted' else None
+        def guidance():
+            sections = attention_guidance(item,error_event,lifecycle_event)
+            if item.get('state')=='Interrupted':
+                if self.feed.paused:sections.insert(0,('Paused view','p Follow live to check for later activity or completion.'))
+                evidence = self.session_evidence
+                if not lifecycle_event:
+                    if not captured:feedback = 'Content capture is disabled for this source.'
+                    elif evidence.busy:feedback = 'Loading the interruption details from session Activity…'
+                    elif evidence.error:feedback = 'Session Activity could not be loaded: '+evidence.error
+                    elif evidence.partial:feedback = 'Only recent session Activity is loaded; the interruption may be outside this window.'
+                    else:feedback = 'The interruption event is not present in the loaded session Activity.'
+                    sections.append(('Evidence availability',feedback))
+                sections.append(('Turn request', session_excerpt(recorded_message_text(turn_request),lines=3)
+                                 if turn_request else 'The request for this turn is not loaded. Open Activity or Prompts to inspect session history.'))
+            return sections
         if not expanded:
-            sections=attention_guidance(item,error_event)
+            sections=guidance()
             observed=overview_summary(work_facts)
-            if observed:sections.append(('Recorded work · loaded evidence',observed))
+            if observed:sections.append(('Recorded work · loaded evidence',observed+ ('\nThese records do not establish why the turn stopped.' if item.get('state')=='Interrupted' else '')))
             if assistant:
                 sections.append(('Agent reported',session_excerpt(recorded_message_text(assistant),lines=3)))
-            elif recorded or latest:
+            elif (recorded or latest) and item.get('state')!='Interrupted':
                 sections.append(('Latest work',brief_activity(recorded or latest)))
             if failure_detail and attention_required(item):
                 sections.append(('Recorded error',session_excerpt(failure_detail,lines=3)))
@@ -3602,13 +3645,13 @@ class ObservatoryApp(App):
                 ('Model',item.get('model')),('Updated',when(item.get('stamp'))),
                 ('Capture','Metadata only' if item.get('capture_content') is False else 'Recorded content when available')]
             self.inspect('agent-detail',title,fields+details+hierarchy_fields,
-                [('Status evidence',attention_evidence(item,summary)),('Waiting on',wait_summary(item)),
+                [('Status evidence',attention_guidance(item,lifecycle_event=lifecycle_event)[0][1] if item.get('state')=='Interrupted' else attention_evidence(item,summary)),('Waiting on',wait_summary(item)),
                  ('Task usage',usage_text),('Analysis coverage',analysis_coverage(summary)),
                  ('History freshness',session_history_feedback(self.data)),
                  ('Working directory',item.get('working_directory'))]+hierarchy_sections+ai_sections,
                 identity=(item['id'],'details'),context_in_header=True)
             return
-        sections=attention_guidance(item,error_event)
+        sections=guidance()
         observed=overview_summary(work_facts)
         if observed:sections.append(('Recorded work · loaded evidence',observed))
         if work_facts['paths']:
@@ -3626,17 +3669,17 @@ class ObservatoryApp(App):
             sections.append(('Progress','Content capture is disabled for this source.' if item.get('capture_content') is False else
                              'No work records are available yet. Missing evidence does not establish what the agent has done.'))
         if failure_detail:sections.append(('Recorded failure',session_excerpt(failure_detail,lines=5,width=None)))
-        elif self.agent_has_failures:
+        elif self.agent_has_failures and item.get('state')!='Interrupted':
             sections.append(('Unseen error','The run reported a failure · s Inspect evidence'))
         if recorded:
             preview=session_event_preview(recorded,expanded=False)
             sections.append(('Latest recorded event',preview))
-        if request_event:
+        if request_event and item.get('state')!='Interrupted':
             parsed=request_text(recorded_message_text(request_event))
             if parsed.body and parsed.body.strip()!=task_preview(item).strip():
                 sections.append(('Latest request · '+when(request_event.get('time_unix_nano')),
                                  session_excerpt(parsed.body,lines=4,width=None)))
-        work=[event for event in actions if event.get('domain') in {'shell','file','tool','mcp','browser'}]
+        work=[event for event in turn_actions if event.get('domain') in {'shell','file','tool','mcp','browser'}]
         if work:
             lines=[]
             for event in reversed(work[:6]):
@@ -3648,7 +3691,8 @@ class ObservatoryApp(App):
         if item['state']=='Completed':
             sections.append(('Review','Agent reported completion; changes and checks are not independently verified here.'+
                              (' Reviewed for this run.' if reviewed else ' r Mark reviewed.')))
-        sections.append(('Status evidence',attention_evidence(item,summary)))
+        if item.get('state')!='Interrupted':
+            sections.append(('Status evidence',attention_evidence(item,summary)))
         sections+=ai_sections
         self.inspect('agent-detail',title,fields,sections,identity=(item['id'],'overview'),context_in_header=True)
 
@@ -4673,7 +4717,8 @@ class ObservatoryApp(App):
             self.sync_evidence_scope()
             self.activity_fallback_scope=self.current_evidence_scope()
             self.prompts_only=False
-            if not prompt_view and (self.agent_filter=='errors' or self.agent_has_failures or (record and failed(record))):
+            interrupted = self.source_map.get(self.selected_source,{}).get('state')=='Interrupted'
+            if not prompt_view and not interrupted and (self.agent_filter=='errors' or self.agent_has_failures or (record and failed(record))):
                 self.errors_only.add('activity')
             else:self.errors_only.discard('activity')
             # A clipped reader record needs a fresh query, even when it is
@@ -4878,37 +4923,11 @@ class ObservatoryApp(App):
         self.last_update=-1
         self.refresh_data()
     def linked_agent_trace(self):
-        """The trace recorded for the selected session, when one is linked.
-
-        Recent work first, then the session's own last event, then a recorded
-        trace for the same session, then one whose task names the same work.
-        """
+        """Resolve only evidence owned by the selected session/execution."""
         session=getattr(self,'source_map',{}).get(self.selected_source)
         if not session:return None
-        traces=list(self.data.traces) if self.data else []
-        known={item.get('trace_id') for item in traces}
         events=[*self.table_data.get('agent-actions',{}).values(),session.get('last_activity') or {}]
-        for event in events:
-            trace_id=event.get('trace_id')
-            if trace_id and trace_id in known:
-                return {'trace_id':trace_id,'span_id':event.get('span_id')}
-        trace_id=session.get('latest_trace_id')
-        agent_id=session.get('agent_id')
-        if agent_id:
-            match=next((item for item in traces if item.get('agent_id')==agent_id),None)
-            if match:return {'trace_id':match['trace_id']}
-        if trace_id:
-            return {'trace_id':trace_id}
-        session_id=session.get('session_id')
-        if session_id:
-            match=next((item for item in traces if item.get('session_id')==session_id
-                        and (not agent_id or not item.get('agent_id'))),None)
-            if match:return {'trace_id':match['trace_id']}
-        task=str(session.get('task') or '').strip().casefold()
-        if task:
-            match=next((item for item in traces if task and task in str(item.get('task') or '').casefold()),None)
-            if match:return {'trace_id':match['trace_id']}
-        return None
+        return linked_trace(session,events,self.data.traces if self.data else [])
 
     def metric_exemplar(self):
         """Resolve exemplars only within the selected instrument and its history."""

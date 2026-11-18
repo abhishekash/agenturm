@@ -170,8 +170,13 @@ def codex_activity(session, row, stamp):
                         result='waiting'))
     elif kind == "event_msg" and event in {"task_started", "task_complete", "task_aborted", "turn_aborted"}:
         action = "started" if event == "task_started" else "completed" if event == "task_complete" else "interrupted"
-        out.append(emit(session, row, stamp, "agent", action, session.project or session.runtime,
-                        {key: payload[key] for key in ("duration_ms", "time_to_first_token_ms") if key in payload}, action))
+        detail = {"event": event, **{key: payload[key] for key in
+                  ("duration_ms", "time_to_first_token_ms") if key in payload}}
+        if isinstance(payload.get("reason"), str):
+            # Bound the field before encoding so a long reason cannot clip the
+            # surrounding JSON and make otherwise valid evidence unreadable.
+            detail["reason"] = safe(payload["reason"], 1000)
+        out.append(emit(session, row, stamp, "agent", action, session.project or session.runtime, detail, action))
     elif kind == "turn_context":
         # Only selected settings, never the system instructions or environment.
         settings = {key: payload[key] for key in ("model", "effort", "approval_policy", "sandbox_policy") if key in payload}
