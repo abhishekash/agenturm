@@ -545,8 +545,9 @@ class Session:
                     state = "running"
                 elif event in {"function_call_output", "custom_tool_call_output"}:
                     self.pending_tools.pop(key, None)
-                    state = "running"
-                    self.waiting_for = ""
+                    if state not in {'completed', 'interrupted', 'failed', 'error', 'incomplete'}:
+                        state = "running"
+                        self.waiting_for = ""
         elif self.runtime == "Pi":
             message = row.get("message") or {}
             if not isinstance(message, dict):
@@ -1159,7 +1160,16 @@ class Session:
         from .local_activity import codex_activity, claude_activity
         for row,source_offset in zip(records,record_offsets):
             self._current_record_offset=source_offset
+            current_turn = self.turn
+            historical_outcome = False
             try:
+                payload = row.get('payload') or {}
+                terminal_event = (isinstance(payload, dict) and (payload.get('type') in {'task_complete','task_aborted','turn_aborted'}
+                    or (payload.get('type') == 'item_completed' and isinstance(payload.get('item'), dict)
+                        and payload['item'].get('type') == 'AgentMessage' and payload['item'].get('phase') == 'final_answer')))
+                historical_outcome = (self.runtime == 'Codex' and row.get('type') == 'event_msg'
+                    and terminal_event and payload.get('turn_id') and current_turn != 'session'
+                    and str(payload['turn_id']) != current_turn)
                 stamp = timestamp(row.get("timestamp"))
                 self.last_record_ns = max(self.last_record_ns, stamp)
                 if self.runtime == "Codex":
@@ -1182,6 +1192,10 @@ class Session:
                     activity=claude_activity(self, row, stamp)
                 for event in activity:event['attributes'].update(self.native_position())
                 logs.extend(activity)
+                if historical_outcome:
+                    # Keep the historical event and trace, without closing a
+                    # newer turn or clearing its pending requests and tools.
+                    continue
                 self.observe_state(row, stamp)
                 if self.capture_details and self.turn in self.tasks and self.turn in self.started:
                     payload = row.get("payload") or {}
@@ -1192,6 +1206,9 @@ class Session:
             except (ValueError, TypeError, KeyError, AttributeError, OverflowError, RecursionError):
                 self.skipped += 1
                 self.schema_errors += 1
+            finally:
+                if historical_outcome:
+                    self.turn = current_turn
         if self.internal:
             from .native_policy import internal_review_attrs, internal_review_events
             for span in spans:

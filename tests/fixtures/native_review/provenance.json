@@ -7,7 +7,7 @@
     "files": {
       "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
       "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
-      "observatory/local_agents.py": "353ac34be641ecb653677a9024a85a4b2d04d3c072cf65b5c00c3e1ddb4310b1"
+      "observatory/local_agents.py": "7c0b2c3ca465e9ca90ae7c60f1ed9a73f94d10f0430f2c28b57776e116258428"
     },
     "core_membership_commits": [
       "d955cbbc5f87a04a1055ee0bf07ed52ef85e8fc9",
@@ -21,10 +21,19 @@
           "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec"
         },
         "qualification": "Historical selected-format adapter hashes before transaction-publication opt-in; not discarded or relabelled as current."
+      },
+      {
+        "commit": "9aba1d6",
+        "files": {
+          "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
+          "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
+          "observatory/local_agents.py": "353ac34be641ecb653677a9024a85a4b2d04d3c072cf65b5c00c3e1ddb4310b1"
+        },
+        "qualification": "Baseline before interruption evidence fixes; historical verification retained."
       }
     ],
     "verified_reader_commit": "4beb84aa93edf1922123686eb22894d1536b503b",
-    "verification_scope": "Same selected-format decoding and unchanged upstream schemas. OpenCode only adds the explicit Store native no-op opt-in; local_agents adds coherent storage diagnostics/delivery bookkeeping, not producer field decoding. These current hashes do not establish live-agent or universal compatibility."
+    "verification_scope": "Same selected-format decoding and unchanged upstream schemas. OpenCode only adds the explicit Store native no-op opt-in; local_agents adds coherent storage diagnostics/delivery bookkeeping, not producer field decoding. These current hashes do not establish live-agent or universal compatibility. Interruption follow-up: late terminal events for older turns retain history without closing the current turn; late tool output preserves terminal state. Current hash binds this revision; validation is recorded in docs/validation/interruption-evidence.md."
   },
   "fixtures": [
     {
