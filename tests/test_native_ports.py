@@ -24,6 +24,36 @@ class NativePortTests(unittest.TestCase):
         collector.link_adapter_sessions()
         self.assertEqual(linked, [['first', 'second']])
 
+    def test_failed_optional_hooks_leave_other_adapters_visible(self):
+        errors = []
+        linked = []
+        class Broken:
+            def link_sessions(self, _peers):
+                raise ValueError('broken peer hook')
+            def status_metadata(self, _session):
+                raise ValueError('broken status hook')
+        class Healthy:
+            def link_sessions(self, peers):
+                linked.extend(peer.name for peer in peers)
+            def status_metadata(self, _session):
+                return {'fixture_health': 'ok'}
+        collector = object.__new__(LocalAgents)
+        collector.record_error = lambda exc, operation: errors.append((type(exc).__name__, operation))
+        broken = SimpleNamespace(name='broken', adapter=Broken())
+        healthy = SimpleNamespace(name='healthy', adapter=Healthy(),
+                                  adapter_status_metadata=lambda: {'fixture_health': 'ok'})
+        broken.adapter_status_metadata = lambda: broken.adapter.status_metadata(broken)
+        collector.sessions = {'broken': broken, 'healthy': healthy}
+        collector.link_adapter_sessions()
+        self.assertEqual(linked, ['healthy'])
+        self.assertEqual(collector.adapter_status_metadata(broken), {})
+        self.assertEqual(collector.adapter_status_metadata(healthy), {'fixture_health': 'ok'})
+        self.assertEqual([kind for kind, _ in errors], ['ValueError', 'ValueError'])
+
+        healthy.adapter_status_metadata = lambda: {'source_id': 'spoofed'}
+        self.assertEqual(collector.adapter_status_metadata(healthy), {})
+        self.assertEqual(errors[-1][0], 'ValueError')
+
     def test_collector_injects_narrow_host_facade_into_both_reader_types(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
