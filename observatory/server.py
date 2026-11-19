@@ -499,7 +499,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
 
 def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
           watch_jsonl=(), watch_service="agent-harness", retention_days=None, local_agents=True, metadata_only=False,
-          managed_db=False, no_auth=False, allowed_hosts=()):
+          managed_db=False, no_auth=False, allowed_hosts=(), collector_registry=None):
     if db_path is None:
         from .receiver_state import telemetry_path,prepare_state_directory
         prepare_state_directory();db_path=str(telemetry_path());managed_db=True
@@ -516,8 +516,9 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
     server = ThreadingHTTPServer((host, port), handler_for(store, token,allowed_hosts=allowed_hosts))
     local = None
     if local_agents and host in {"127.0.0.1", "localhost", "::1"}:
-        from .local_agents import LocalAgents
-        local = LocalAgents(store, capture_details=not metadata_only).start()
+        from .collector_runtime import start_local_collector
+        local = start_local_collector(store, capture_details=not metadata_only,
+                                      registry=collector_registry)
     store.local_agent_monitor = local
     watch = start_watchers(store, watch_jsonl, watch_service) if watch_jsonl else None
     maintenance = _start_retention(store, retention_days) if retention_days is not None else None

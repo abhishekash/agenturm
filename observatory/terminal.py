@@ -106,7 +106,8 @@ class Api:
 
 
 class LocalReceiver:
-    def __init__(self, db_path, port, token, local_agents=True, metadata_only=False, managed_db=False, retention_days=None):
+    def __init__(self, db_path, port, token, local_agents=True, metadata_only=False, managed_db=False,
+                 retention_days=None, collector_registry=None):
         from .core import Store
         from .server import BoundedHTTPServer, handler_for
         self.store = Store(db_path, async_derived_refresh=True)
@@ -123,8 +124,9 @@ class LocalReceiver:
         self.thread = threading.Thread(target=self.server.serve_forever, name="observatory-receiver", daemon=True)
         self.local = None
         if local_agents:
-            from .local_agents import LocalAgents
-            self.local = LocalAgents(self.store, capture_details=not metadata_only).start()
+            from .collector_runtime import start_local_collector
+            self.local = start_local_collector(self.store, capture_details=not metadata_only,
+                                               registry=collector_registry)
         self.store.local_agent_monitor = self.local
         self.thread.start()
 
