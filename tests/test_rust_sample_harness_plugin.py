@@ -1,0 +1,125 @@
+"""Installed Rust sample adapter through the real process, Store and health paths."""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+from observatory.core import Store
+from observatory.plugin_admission import set_source_capture
+from observatory.plugin_config import read_plugin_config
+from observatory.plugin_projection import project_source
+from observatory.plugin_runtime import PluginSession
+from observatory.plugin_wire import ProtocolError
+
+
+PACKAGE = Path(__file__).resolve().parents[1] / "examples" / "rust_sample_harness_plugin"
+
+
+class RustSampleHarnessTests(unittest.TestCase):
+    def setUp(self):
+        executable = os.environ.get("AGENTURM_RUST_SAMPLE_BIN")
+        if not executable:
+            self.skipTest("Rust sample binary is built in the Rust CI job")
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source_file = self.root / "events.jsonl"
+        self.binary = Path(executable).resolve()
+        result = subprocess.run(
+            [sys.executable, str(PACKAGE / "install.py"), "--binary", str(self.binary),
+             "--destination", str(self.root / "installed"), "--source", str(self.source_file)],
+            capture_output=True, text=True, check=True)
+        self.config = Path(result.stdout.strip())
+        self.source = read_plugin_config(self.config)[0]
+        self.store = Store(str(self.root / "store.db"))
+        self.addCleanup(self.store.close)
+
+    def append(self, *rows):
+        with self.source_file.open("ab") as stream:
+            for row in rows:
+                stream.write((json.dumps(row, separators=(",", ":")) + "\n").encode())
+
+    def session(self):
+        return PluginSession(self.store, self.source.manifest,
+                             source_id=self.source.source_id,
+                             allowed_grants=self.source.allowed_grants,
+                             timeout=self.source.timeout, source_root=self.source.source_root)
+
+    def projected(self):
+        project_source(self.store, self.source.source_id)
+        return {row["native_session_id"]: row
+                for row in self.store.plugin_sessions()["sessions"]}
+
+    def test_installed_rust_adapter_replays_corrections_and_relationship(self):
+        self.append(
+            {"id": "parent-start", "session": "parent", "at_ns": "100",
+             "kind": "lifecycle", "state": "running"},
+            {"id": "child-start", "session": "child", "at_ns": "110",
+             "kind": "lifecycle", "state": "started"},
+            {"id": "parent-link", "session": "child", "at_ns": "120",
+             "kind": "relationship", "parent_session_id": "parent",
+             "relationship_kind": "delegated"},
+            {"id": "usage", "session": "child", "at_ns": "130",
+             "kind": "usage", "usage": {"input_tokens": 4, "output_tokens": 0}},
+            {"id": "child-end", "session": "child", "at_ns": "140",
+             "kind": "lifecycle", "state": "completed", "reason_code": "normal"})
+        with self.session() as worker:
+            first = worker.poll_once()
+            self.assertEqual(len(first.records), 5)
+            self.assertEqual(worker.poll_once().records, ())
+            projected = self.projected()
+            self.assertEqual(projected["child"]["run_state"], "completed")
+            self.assertEqual(projected["child"]["metadata_usage"],
+                             {"input_tokens": 4, "output_tokens": 0})
+            self.assertEqual(projected["child"]["relationship_state"], "confirmed")
+            self.assertEqual(projected["child"]["relationship_kind"], "delegated")
+        with self.session() as resumed:
+            self.assertEqual(resumed.cursor, first.cursor)
+            self.assertEqual(resumed.poll_once().records, ())
+            self.append({"id": "usage", "session": "child", "at_ns": "130",
+                         "kind": "usage", "revision": 1,
+                         "usage": {"input_tokens": 7, "output_tokens": 1}})
+            corrected = resumed.poll_once()
+            self.assertEqual(len(corrected.records), 1)
+            self.assertEqual(self.projected()["child"]["metadata_usage"],
+                             {"input_tokens": 7, "output_tokens": 1})
+        with self.store._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 5)
+
+    def test_source_replacement_reports_gap_and_revocation_erases_evidence(self):
+        self.append({"id": "first", "session": "a", "at_ns": "10",
+                     "kind": "lifecycle", "state": "started"})
+        with self.session() as worker:
+            first = worker.poll_once()
+            replacement = self.root / "replacement.jsonl"
+            replacement.write_text(json.dumps({"id": "second", "session": "b",
+                                               "at_ns": "20", "kind": "lifecycle",
+                                               "state": "completed"}) + "\n")
+            os.replace(replacement, self.source_file)
+            changed = worker.poll_once()
+            self.assertNotEqual(first.cursor, changed.cursor)
+            self.assertEqual(changed.records[0]["payload"],
+                             {"code": "possible_source_gap", "severity": "warning"})
+            self.assertEqual(changed.records[1]["event_id"], "rust-sample:second")
+            self.assertEqual(set(self.projected()), {"a", "b"})
+            set_source_capture(self.store, source_id=self.source.source_id, enabled=False)
+            self.assertEqual(self.store.plugin_sessions()["sessions"], [])
+            with self.assertRaisesRegex(ProtocolError, "stale plugin source lease"):
+                worker.poll_once()
+
+    def test_bad_content_line_never_advances_cursor(self):
+        self.append({"id": "bad", "session": "a", "at_ns": "10",
+                     "kind": "lifecycle", "state": "running", "prompt": "private"})
+        with self.session() as worker:
+            with self.assertRaises(ProtocolError):
+                worker.poll_once()
+        with self.store._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT cursor FROM plugin_source_cursor_v1").fetchone()[0], "")
+
+
+if __name__ == "__main__":
+    unittest.main()
