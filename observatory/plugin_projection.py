@@ -123,10 +123,27 @@ def project_source(store: Store, source_id: str) -> int:
                           (source_id, MAX_PROJECTION_EVIDENCE + 1)).fetchall()
         if len(rows) > MAX_PROJECTION_EVIDENCE:
             raise ProtocolError("plugin evidence projection capacity reached")
+        invalidated = {row[0]: row[1] for row in db.execute(
+            "SELECT native_session_id,last_record_ns FROM plugin_retention_invalidated_v1 "
+            "WHERE source_id=?", (source_id,))}
         policy_epoch, dirty_seq = source["policy_epoch"], source["dirty_seq"]
         revision = (source["lease_epoch"], policy_epoch, dirty_seq)
     # Release the read snapshot before CPU work so a large source cannot pin WAL.
     projected = _reduce(rows, receiver_id, source_id, policy_epoch, dirty_seq)
+    projected = [((*row[:3], "unknown", "retention_gap", *row[5:9], "{}",
+                   "", "unknown", "unresolved")
+                  if row[1] in invalidated else row) for row in projected]
+    present = {row[1] for row in projected}
+    for native_id, last_record_ns in invalidated.items():
+        if native_id in present:
+            continue
+        session_key = "plugin:" + hashlib.sha256(
+            (receiver_id + "\0" + source_id + "\0" + native_id).encode()).hexdigest()
+        projected.append((source_id, native_id, session_key, "unknown", "retention_gap",
+                          0, last_record_ns, policy_epoch, dirty_seq, "{}",
+                          "", "unknown", "unresolved"))
+    if len(projected) > MAX_PROJECTION_SESSIONS:
+        raise ProtocolError("plugin session projection capacity reached")
     with store._source_write(), store._connect() as db:
         db.execute("BEGIN IMMEDIATE")
         current = db.execute("SELECT receiver_id,lease_epoch,policy_epoch,dirty_seq,"
@@ -158,7 +175,16 @@ def sessions(store: Store, *, limit: int = 200) -> dict:
     with store._connect() as db:
         db.execute("BEGIN")
         if db.execute("SELECT 1 FROM plugin_source_cursor_v1 LIMIT 1").fetchone() is None:
-            return {"sessions": [], "pending_sources": 0, "omitted_sessions": False}
+            return {"sessions": [], "pending_sources": 0, "omitted_sessions": False,
+                    "retention_gaps": []}
+        gaps = [{"source_id": row["source_id"], "watermark_ns": str(row["watermark_ns"]),
+                 "dropped_events": (row["dropped_events"] if row["dropped_events"]
+                                    <= MAX_JSON_SAFE_INTEGER else str(row["dropped_events"]))}
+                for row in db.execute(
+            "SELECT r.source_id,r.watermark_ns,r.dropped_events "
+            "FROM plugin_retention_v1 r JOIN plugin_source_cursor_v1 c USING(source_id) "
+            "WHERE c.receiver_id=? AND c.capture_enabled=1 AND r.policy_epoch=c.policy_epoch "
+            "ORDER BY r.source_id LIMIT 32", (receiver_id,))]
         pending = db.execute("SELECT COUNT(*) FROM plugin_source_cursor_v1 c "
                              "LEFT JOIN plugin_projection_cursor_v1 p USING(source_id) "
                              "WHERE c.receiver_id=? AND c.capture_enabled=1 AND c.dirty_seq>0 "
@@ -202,4 +228,4 @@ def sessions(store: Store, *, limit: int = 200) -> dict:
                        "relationship_provenance": "plugin explicit relationship" if parent else
                        "No parent relationship was reported"})
     return {"sessions": result, "pending_sources": pending,
-            "omitted_sessions": len(rows) > limit}
+            "omitted_sessions": len(rows) > limit, "retention_gaps": gaps}

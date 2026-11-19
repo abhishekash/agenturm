@@ -194,7 +194,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                         local_status["enabled"] = True
                     local_status["plugin_projection"] = {
                         "pending_sources": plugin_status["pending_sources"],
-                        "omitted_sessions": plugin_status["omitted_sessions"]}
+                        "omitted_sessions": plugin_status["omitted_sessions"],
+                        "retention_gaps": plugin_status["retention_gaps"]}
                     supervisor = getattr(store, "plugin_supervisor", None)
                     if supervisor is not None:
                         local_status["plugin_workers"] = supervisor.snapshot()
