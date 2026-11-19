@@ -65,6 +65,10 @@ try:
         if MODE == 'stderr':
             sys.stderr.buffer.write(b'x' * 65536)
             sys.stderr.buffer.flush()
+        if MODE == 'idle':
+            send({'type':'batch','protocol':1,'source_id':request['source_id'],
+                  'cursor':request['cursor'],'records':[]})
+            continue
         record = {'event_id':'fixture-1','revision':0,'kind':'lifecycle',
                   'time_ns':'9007199254740993','payload':{'state':'completed'}}
         send({'type':'batch','protocol':1,

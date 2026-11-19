@@ -180,6 +180,10 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                 or (row["receiver_id"], row["plugin_id"], row["generation"], row["lease_epoch"]) !=
                 (lease.receiver_id, lease.plugin_id, lease.generation, lease.epoch)):
             raise ProtocolError("stale plugin source lease")
+        if not rows and batch.cursor == row["cursor"] and expected_cursor == row["cursor"]:
+            # An idle poll has no durable effect. It still follows lease and
+            # source checks before the host may acknowledge it.
+            return row["cursor"]
         if batch.cursor == row["cursor"] and digest == row["last_batch_digest"] and expected_cursor in (
                 row["prior_cursor"], row["cursor"]):
             return row["cursor"]
