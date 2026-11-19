@@ -157,7 +157,10 @@ fn source_record(raw: &[u8]) -> Result<Value> {
             .map_or(true, |value| value > i64::MAX as u64)
         || row.revision.is_some_and(|value| value > i32::MAX as u32)
         || row.turn_id.as_deref().is_some_and(|value| !identity(value))
-        || row.operation_id.as_deref().is_some_and(|value| !identity(value))
+        || row
+            .operation_id
+            .as_deref()
+            .is_some_and(|value| !identity(value))
         || (row.operation_id.is_some() && row.kind != "tool")
     {
         return Err(invalid("invalid source identity, timestamp or revision"));
