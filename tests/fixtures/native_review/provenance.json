@@ -7,7 +7,7 @@
     "files": {
       "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
       "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
-      "observatory/local_agents.py": "88ce3b2adb60d2eeebb189f3c4bbcf6a337437482b6c71adf0516941711bfbd5",
+      "observatory/local_agents.py": "8601bb30ee0546ca5d562024ad31fa745f0a27a18c9d76965999f3d89abb33e8",
       "observatory/local_activity.py": "661040c4ebbea90161b3094ff2e4f7169e80d47309ddfea0565c4656b15a2012",
       "observatory/native_sources.py": "a4d5f772cc285fbcbca0ae532509bd95a570e32b7324f282bfb9c1e172f2d298",
       "observatory/native_adapter.py": "7314fee49795d8b966d30dd9c07343aff34d9814f0c4a4eac5a358bc22950246",
@@ -50,8 +50,8 @@
         "qualification": "Registered discovery and reader composition before Pi's per-session format extraction."
       }
     ],
-    "verified_reader_commit": "35841e4ef20c7706042afad171e1d8dddd83f368",
-    "verification_scope": "Current hashes bind registered discovery, native activity and adapter composition. Pi parsing, lifecycle, initial-task extraction and activity now live in observatory/adapters/pi.py; an injected synthetic adapter exercises the same host path. OpenCode/upstream schema and fixture bytes are unchanged. This does not establish an observed Pi producer version, live-agent coverage, process isolation, or universal compatibility. Current-format and provenance tests remain separate from live producer proof; see docs/validation/interruption-evidence.md and docs/validation/native-fixture-provenance.md."
+    "verified_reader_commit": "84c838eea3738401275f63a6a238f55042310a74",
+    "verification_scope": "Current hashes bind registered discovery, conflict-safe source ownership, native activity and adapter composition. Pi parsing, lifecycle, initial-task extraction and activity now live in observatory/adapters/pi.py; an injected synthetic adapter exercises the same host path. OpenCode/upstream schema and fixture bytes are unchanged. This does not establish an observed Pi producer version, live-agent coverage, process isolation, or universal compatibility. Current-format and provenance tests remain separate from live producer proof; see docs/validation/interruption-evidence.md and docs/validation/native-fixture-provenance.md."
   },
   "fixtures": [
     {
