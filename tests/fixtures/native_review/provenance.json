@@ -1,13 +1,13 @@
 {
   "format": "agenturm-native-fixture-provenance-v1",
-  "verified_on": "2026-11-18",
+  "verified_on": "2026-11-19",
   "reader": {
     "legacy_verified_baseline": "1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8",
     "adapter_commit": "cc63b7d0209df1c71126f3447122a271f32c607b",
     "files": {
       "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
       "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
-      "observatory/local_agents.py": "e41ad5d3c17f82e93f3ff201f5aee9889406106df0123417564c22da98ee48ce"
+      "observatory/local_agents.py": "63f9ed90103352448b0fcca42377fbde621f63c5db6fff8c8c49a15d4c3ccec7"
     },
     "core_membership_commits": [
       "d955cbbc5f87a04a1055ee0bf07ed52ef85e8fc9",
@@ -30,10 +30,17 @@
           "observatory/local_agents.py": "353ac34be641ecb653677a9024a85a4b2d04d3c072cf65b5c00c3e1ddb4310b1"
         },
         "qualification": "Baseline before interruption evidence fixes and Kiro session decoding; historical verification retained."
+      },
+      {
+        "commit": "ca202c75a57740546b21d5ccba29e2d49bf7f2b6",
+        "files": {
+          "observatory/local_agents.py": "e41ad5d3c17f82e93f3ff201f5aee9889406106df0123417564c22da98ee48ce"
+        },
+        "qualification": "Pre-kernel source reader. Later composition changes do not establish new producer format coverage."
       }
     ],
-    "verified_reader_commit": "4beb84aa93edf1922123686eb22894d1536b503b",
-    "verification_scope": "Same selected-format decoding and unchanged upstream schemas. OpenCode only adds the explicit Store native no-op opt-in; local_agents adds coherent storage diagnostics/delivery bookkeeping, not producer field decoding. These current hashes do not establish live-agent or universal compatibility. Interruption follow-up: late terminal events for older turns retain history without closing the current turn; late tool output preserves terminal state. Kiro decoding is selected only for Kiro and does not change the selected fixtures' decoding. Current hash binds this revision; validation is recorded in docs/validation/interruption-evidence.md."
+    "verified_reader_commit": "1cc8b04353833aaffdca1b3acc62dd5b0ef166fc",
+    "verification_scope": "The current local_agents hash binds the native source registry, reader registry and host evidence facade on top of the selected-format decoders. OpenCode and upstream schema hashes are unchanged. These composition changes do not establish live-agent or universal format compatibility. Interruption follow-up retains late terminal events without closing the current turn; late tool output preserves terminal state. Kiro decoding remains selected only for Kiro. Current-format and provenance tests are separate from live producer proof; see docs/validation/interruption-evidence.md and docs/validation/native-fixture-provenance.md."
   },
   "fixtures": [
     {
