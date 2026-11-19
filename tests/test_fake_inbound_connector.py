@@ -13,6 +13,7 @@ from urllib.request import urlopen
 from unittest.mock import patch
 
 from observatory.core import Store
+from observatory.plugin_admission import commit_batch, set_source_capture
 from observatory.plugin_config import read_plugin_config
 from observatory.plugin_projection import project_source
 from observatory.plugin_runtime import PluginSession
@@ -115,7 +116,8 @@ class FakeInboundConnectorTests(unittest.TestCase):
         source = read_plugin_config(self.config)[0]
         return PluginSession(self.store, source.manifest, source_id=source.source_id,
                              allowed_grants=source.allowed_grants,
-                             source_root=source.source_root, timeout=source.timeout)
+                             source_root=source.source_root, timeout=source.timeout,
+                             required_features=source.required_features)
 
     def projected(self):
         project_source(self.store, "fake-inbound-source")
@@ -161,6 +163,33 @@ class FakeInboundConnectorTests(unittest.TestCase):
         with self.store._connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 3)
 
+    def test_commit_before_ack_restart_uses_durable_cursor_without_duplicate(self):
+        with self.state.lock:
+            self.state.pages = [[lifecycle("replay", "session", 100, "running")]]
+        with self.session() as connector:
+            expected = connector.cursor
+            batch = connector.process.poll(expected)
+            self.assertEqual(len(batch.records), 1)
+            commit_batch(self.store, connector.lease, expected, batch)
+            self.assertIsNone(connector.process.last_ack)
+            connector.process.close(force=True)
+        with self.session() as restarted:
+            self.assertEqual(restarted.cursor, batch.cursor)
+            self.assertEqual(restarted.poll_once().records, ())
+        with self.store._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 1)
+
+    def test_capture_revocation_fences_connector_and_erases_projection(self):
+        with self.state.lock:
+            self.state.pages = [[lifecycle("start", "session", 100, "started")]]
+        with self.session() as connector:
+            connector.poll_once()
+            self.assertEqual(len(self.projected()), 1)
+            set_source_capture(self.store, source_id="fake-inbound-source", enabled=False)
+            with self.assertRaisesRegex(ProtocolError, "stale plugin source lease"):
+                connector.poll_once()
+        self.assertEqual(self.store.plugin_sessions()["sessions"], [])
+
     def test_expired_cursor_emits_durable_gap_then_resumes_new_revision(self):
         with self.state.lock:
             self.state.pages = [[lifecycle("before", "old", 100, "running")]]
@@ -204,6 +233,8 @@ class FakeInboundConnectorTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT cursor FROM plugin_source_cursor_v1").fetchone()[0], "")
 
     def test_installed_connector_reaches_receiver_without_kernel_registration(self):
+        self.assertEqual(read_plugin_config(self.config)[0].required_features,
+                         ("connector-adapter/1",))
         with self.state.lock:
             self.state.pages = [[lifecycle("served", "external", 100, "completed")]]
         import socket
@@ -260,6 +291,27 @@ class FakeInboundConnectorTests(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0, url)
             self.assertFalse(target.exists())
+
+    def test_installer_refuses_linked_paths_and_dangling_entries(self):
+        victim = self.root / "victim"
+        victim.mkdir()
+        linked = self.root / "linked-parent"
+        linked.symlink_to(victim, target_is_directory=True)
+        result = subprocess.run([sys.executable, str(PACKAGE / "install.py"),
+                                 "--destination", str(linked / "plugin"),
+                                 "--endpoint", self.endpoint], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(list(victim.iterdir()), [])
+        target = self.root / "entry-link"
+        target.mkdir()
+        missing = self.root / "missing"
+        (target / "source.json").symlink_to(missing)
+        result = subprocess.run([sys.executable, str(PACKAGE / "install.py"),
+                                 "--destination", str(target),
+                                 "--endpoint", self.endpoint], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(missing.exists())
+        self.assertEqual([p.name for p in target.iterdir()], ["source.json"])
 
     def test_empty_cursor_marker_does_not_alias_a_real_service_token(self):
         self.assertEqual(cursor_parts("v1:~:0"), ("", "0"))

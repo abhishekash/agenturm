@@ -25,6 +25,13 @@ class PluginSource:
     timeout: float = 5.0
     replaces: tuple[str, ...] = ()
     source_root: str | None = None
+    required_features: tuple[str, ...] = ()
+
+    @property
+    def runtime_features(self) -> tuple[str, ...]:
+        """Manifest/handshake features required by this explicit source."""
+        return tuple(sorted({*self.required_features,
+                             *(f"harness.{name}/1" for name in self.replaces)}))
 
 
 _REASONS = {
@@ -95,7 +102,7 @@ class PluginSupervisor:
             PluginSession(store, source.manifest, source_id=source.source_id,
                           allowed_grants=source.allowed_grants, timeout=source.timeout,
                           source_root=source.source_root,
-                          required_features=tuple(f"harness.{name}/1" for name in source.replaces),
+                          required_features=source.runtime_features,
                           rust_host_executable=rust_host_executable,
                           rust_host_sha256=rust_host_sha256)
         self.store = store
@@ -146,7 +153,7 @@ class PluginSupervisor:
             session = PluginSession(self.store, source.manifest, source_id=source_id,
                                     allowed_grants=source.allowed_grants,
                                     timeout=source.timeout, source_root=source.source_root,
-                                    required_features=tuple(f"harness.{name}/1" for name in source.replaces),
+                                    required_features=source.runtime_features,
                                     rust_host_executable=self.rust_host_executable,
                                     rust_host_sha256=self.rust_host_sha256)
             try:
