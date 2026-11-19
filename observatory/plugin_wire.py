@@ -156,10 +156,14 @@ def validate_batch(message: dict, *, source_id: str) -> PollBatch:
     if (message["type"] != "batch" or type(message["protocol"]) is not int
             or message["protocol"] != PROTOCOL_MAJOR or message["source_id"] != source_id):
         raise ProtocolError("batch source or protocol mismatch")
-    cursor = _text(message["cursor"], "cursor", MAX_CURSOR_CHARS)
     records = message["records"]
     if not isinstance(records, list) or len(records) > MAX_BATCH_RECORDS:
         raise ProtocolError("invalid batch record count")
+    # The initial durable cursor is empty. An idle source may acknowledge no
+    # changes without inventing a new cursor, including on its first poll.
+    cursor = message["cursor"]
+    if cursor != "" or records:
+        cursor = _text(cursor, "cursor", MAX_CURSOR_CHARS)
     seen = set()
     for record in records:
         if not isinstance(record, dict) or set(record) != {
