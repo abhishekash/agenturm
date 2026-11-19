@@ -46,8 +46,12 @@
 <td>Same-commit generated whole-app baseline: 6.10–6.26% 60-second idle CPU, 14.807 seconds for 20,000-span ingest/derivation, and 163–173 ms first refresh. An instrumented tiny write fixture points to SQL/transaction cost, not a proven Rust parser payoff. See <a href="../validation/rust-kernel-baseline-2026-11-19.md">measurements and limits</a>.</td>
 </tr>
 <tr>
-<td>Opt-in runtime session checkpoint</td>
+<td><a href="https://github.com/abhishekash/agenturm/pull/139">#139</a></td>
 <td>Process host and Store admission composed across repeated polls. Empty idle batches at the unchanged cursor are acknowledged without a write; progress, replay and stale-lease behavior use the same durable path. See <a href="../validation/plugin-runtime-session.md">checkpoint report</a>. Default production collection remains separate.</td>
+</tr>
+<tr>
+<td>Real-terminal idle diagnostic</td>
+<td>An isolated unprofiled 60-second tmux run measured 7.95% whole-monitor idle CPU: 5.72% cockpit, 2.23% receiver. It is below the plan's 300-second publishable gate and excludes retained history. See <a href="../validation/real-terminal-idle-2026-11-19.md">process split and limits</a>.</td>
 </tr>
 </tbody>
 </table></div>
