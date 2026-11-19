@@ -10,7 +10,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
-from .plugin_admission import SourceLease, activate_source, commit_batch
+from .plugin_admission import SourceLease, activate_source, commit_batch, last_source_diagnostic
 from .plugin_manifest import PluginManifest
 from .plugin_process import PluginProcess
 from .plugin_projection import project_source
@@ -34,6 +34,7 @@ class PluginSession:
         self.lease: SourceLease | None = None
         self.cursor: str | None = None
         self.projection_error: str | None = None
+        self.last_diagnostic: dict = {}
         self._projection_event = threading.Event()
         self._projection_stop = threading.Event()
         self._projection_thread: threading.Thread | None = None
@@ -65,6 +66,7 @@ class PluginSession:
         self.cursor = self.lease.cursor
         try:
             self.process.start()
+            self.last_diagnostic = last_source_diagnostic(self.store, self.lease)
         except BaseException:
             self.lease = None
             self.cursor = None
@@ -83,6 +85,10 @@ class PluginSession:
         batch = self.process.poll_commit(expected, lambda received: commit_batch(
             self.store, self.lease, expected, received))
         self.cursor = batch.cursor
+        for record in batch.records:
+            if record["kind"] == "diagnostic":
+                self.last_diagnostic = {**record["payload"],
+                                        "time_ns": record["time_ns"]}
         if batch.records:
             # Coalesce rebuilds off the acknowledgment path. Dirty sequence
             # hides prior rows until the current revision is published.

@@ -108,7 +108,7 @@ class PluginSupervisor:
             "last_failure_code": "", "last_failure_reason": "", "last_failure_ns": 0,
             "restart_count": 0, "consecutive_failures": 0,
             "last_success_ns": 0, "last_commit_ns": 0, "last_cursor": "",
-            "projection_error_code": ""} for item in sources}
+            "projection_error_code": "", "last_source_diagnostic": {}} for item in sources}
 
     def _update(self, source_id: str, **values) -> None:
         with self.lock:
@@ -147,7 +147,8 @@ class PluginSupervisor:
                 with session:
                     with self.lock:
                         self.current[source_id] = session
-                    self._update(source_id, state="running", last_cursor=session.cursor or "")
+                    self._update(source_id, state="running", last_cursor=session.cursor or "",
+                                 last_source_diagnostic=dict(session.last_diagnostic))
                     while not self.stop.is_set():
                         batch = session.poll_once()
                         failures = 0
@@ -157,6 +158,7 @@ class PluginSupervisor:
                                      last_error_code="", reason="",
                                      last_success_ns=time.time_ns(), last_cursor=batch.cursor,
                                      last_commit_ns=last_commit_ns,
+                                     last_source_diagnostic=dict(session.last_diagnostic),
                                      projection_error_code=(session.projection_error or "").split(":", 1)[0])
                         if self.stop.wait(source.poll_interval):
                             break
@@ -165,11 +167,12 @@ class PluginSupervisor:
                     break
                 code, permanent = _failure(exc, self.store, source_id)
                 failures += 1
+                diagnostic_reset = {"last_source_diagnostic": {}} if code == "capture_revoked" else {}
                 self._update(source_id, state="failed" if permanent else "degraded",
                              last_error_code=code, reason=_REASONS[code],
                              last_failure_code=code, last_failure_reason=_REASONS[code],
                              last_failure_ns=time.time_ns(),
-                             consecutive_failures=failures)
+                             consecutive_failures=failures, **diagnostic_reset)
                 if permanent or failures >= self.max_failures:
                     self._update(source_id, state="revoked" if code == "capture_revoked"
                                  else "fenced" if code == "source_fenced"

@@ -141,6 +141,8 @@ def poll(root, source_id, cursor, max_records, max_bytes):
     try:
         stream = root.open("rb")
     except FileNotFoundError:
+        if cursor:
+            raise ValueError("previously observed source file is unavailable")
         return {"type": "batch", "protocol": 1, "source_id": source_id,
                 "cursor": cursor, "records": []}
     with stream:
@@ -148,9 +150,15 @@ def poll(root, source_id, cursor, max_records, max_bytes):
         if not stat.S_ISREG(info.st_mode):
             raise ValueError("configured source is not a regular file")
         file_id = (info.st_dev, info.st_ino)
-        if (prior_file != file_id or offset > info.st_size
-                or prior_digest != tail_digest(stream, offset)):
+        changed = (prior_file is not None and
+                   (prior_file != file_id or offset > info.st_size
+                    or prior_digest != tail_digest(stream, offset)))
+        if changed:
             offset = 0
+            gap_id = hashlib.sha256((cursor + "|" + str(file_id)).encode()).hexdigest()
+            records.append({"event_id": "sample-gap:" + gap_id, "revision": 0,
+                            "kind": "diagnostic", "time_ns": str(min(max(0, info.st_mtime_ns), 2**63 - 1)),
+                            "payload": {"code": "possible_source_gap", "severity": "warning"}})
         position = offset
         stream.seek(offset)
         while len(records) < max_records and stream.tell() - offset < MAX_SCAN:
@@ -176,8 +184,11 @@ def poll(root, source_id, cursor, max_records, max_bytes):
             position = stream.tell()
         digest = tail_digest(stream, position)
     next_cursor = f"{file_id[0]}:{file_id[1]}:{position}:{digest}"
-    return {"type": "batch", "protocol": 1, "source_id": source_id,
-            "cursor": next_cursor, "records": records}
+    response = {"type": "batch", "protocol": 1, "source_id": source_id,
+                "cursor": next_cursor, "records": records}
+    if len(encode(response)) > max_bytes:
+        raise ValueError("source diagnostic exceeds host byte budget")
+    return response
 
 
 def run():
