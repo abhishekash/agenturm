@@ -109,6 +109,7 @@ impl Session {
                 let records = if cursor.is_empty() {
                     vec![json!({"event_id":"rust-fixture-1","revision":0,
                                 "kind":"lifecycle","time_ns":"9007199254740993",
+                                "identity":{"session_id":"rust-native-session"},
                                 "payload":{"state":"completed"}})]
                 } else {
                     vec![]
