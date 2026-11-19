@@ -195,6 +195,9 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     local_status["plugin_projection"] = {
                         "pending_sources": plugin_status["pending_sources"],
                         "omitted_sessions": plugin_status["omitted_sessions"]}
+                    supervisor = getattr(store, "plugin_supervisor", None)
+                    if supervisor is not None:
+                        local_status["plugin_workers"] = supervisor.snapshot()
                 except (sqlite3.Error, ValueError) as exc:
                     local_status["plugin_projection"] = {"error": type(exc).__name__}
                 self._json(200, {"ok": True,"observed_time_unix_nano":time.time_ns(), "receiver_id": store.receiver_namespace() if hasattr(store,"receiver_namespace") else None, "review_trace_filter": True, "review_turn_filter": True, "review_run_summary": True,
