@@ -3,18 +3,18 @@
   "verified_on": "2026-11-19",
   "reader": {
     "legacy_verified_baseline": "1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8",
-    "adapter_commit": "cc63b7d0209df1c71126f3447122a271f32c607b",
+    "adapter_commit": "d2ac01cf76be80499df9abe89bd06a0c02edea4a",
     "files": {
       "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
       "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
-      "observatory/local_agents.py": "2c7173ca5295508dd8d3f480378cf3003b71e22b95ab07d07f8e06c149f04ca6",
+      "observatory/local_agents.py": "cfa7cfc4ec0f3f51e946316fe8481bdabf94ef1a67c1570ce981cdbbbb189280",
       "observatory/local_activity.py": "9bf2c058ef9ac7c43fa2bfb8f21db80545016d2b18cacde3db97d85bb8a56aea",
       "observatory/native_sources.py": "bddcbcd2f5dd322cfd47df963a6ca983826bc24b8335ad6d22b023cea32502de",
-      "observatory/native_adapter.py": "94dd4a9173ac40a252b591be5083dff349b3e3e4904a38271d054c291590ccd6",
-      "observatory/adapters/pi.py": "bd142778fb6f85a564e7d270ba3ba10cc2db262f071701c4dd031de0bb81933d",
-      "observatory/adapters/claude.py": "9472e3bad472c5f26849bc81033890641de82930cde2dfce7099a2ee814f6f85",
-      "observatory/adapters/codex.py": "a9e115237265fd8be1e567ddb6e4018a4cc220ed1f67a942423cc7c5918a755f",
-      "observatory/adapters/kiro.py": "f0a071edfa89f5ecaa2a272cb66a94e4d5703406208cd0f084f457350da7ea77"
+      "observatory/native_adapter.py": "9143baba1b1979fc8f5491d4d46f45f5b52d7997ceecb65ef2ed0e03a9f2d7c8",
+      "observatory/adapters/pi.py": "413c7583cec9f8c9e53ad64cf1152a5404b1fe5c340dd2a1759b388bef8bb04f",
+      "observatory/adapters/claude.py": "c1cd024db7c7ee248e3c3aff15c63939adfe2671ef0367dc403e1ee55cf969d0",
+      "observatory/adapters/codex.py": "cb0a479060a7eee84004ab9c9cb4becb675e7c1dd935623357a3c3b5ec9f25b7",
+      "observatory/adapters/kiro.py": "b0a593aa1ba11993f6e17709194b22731098ff786ca627068c4f56712884e43d"
     },
     "core_membership_commits": [
       "d955cbbc5f87a04a1055ee0bf07ed52ef85e8fc9",
@@ -89,10 +89,22 @@
           "observatory/native_sources.py": "2e8f428970320d222603113922bcb0eb986efe1fd567a71c89bf63aea2f76e38"
         },
         "qualification": "Before enforcing an adapter for every registered native JSONL source; legacy runtime fallback was removed."
+      },
+      {
+        "commit": "438f30d0899ed2be0f2fb2257bc58830f0624e2b",
+        "files": {
+          "observatory/local_agents.py": "2c7173ca5295508dd8d3f480378cf3003b71e22b95ab07d07f8e06c149f04ca6",
+          "observatory/native_adapter.py": "94dd4a9173ac40a252b591be5083dff349b3e3e4904a38271d054c291590ccd6",
+          "observatory/adapters/pi.py": "bd142778fb6f85a564e7d270ba3ba10cc2db262f071701c4dd031de0bb81933d",
+          "observatory/adapters/claude.py": "9472e3bad472c5f26849bc81033890641de82930cde2dfce7099a2ee814f6f85",
+          "observatory/adapters/codex.py": "a9e115237265fd8be1e567ddb6e4018a4cc220ed1f67a942423cc7c5918a755f",
+          "observatory/adapters/kiro.py": "f0a071edfa89f5ecaa2a272cb66a94e4d5703406208cd0f084f457350da7ea77"
+        },
+        "qualification": "Before native session poll hooks moved from the generic collector to adapters; producer schema coverage is unchanged."
       }
     ],
-    "verified_reader_commit": "84c838eea3738401275f63a6a238f55042310a74",
-    "verification_scope": "Current hashes bind registered discovery, conflict-safe source ownership, native activity and adapter composition. Pi parsing, lifecycle, initial-task extraction and activity now live in observatory/adapters/pi.py; an injected synthetic adapter exercises the same host path. OpenCode/upstream schema and fixture bytes are unchanged. This does not establish an observed Pi producer version, live-agent coverage, process isolation, or universal compatibility. Current-format and provenance tests remain separate from live producer proof; see docs/validation/interruption-evidence.md and docs/validation/native-fixture-provenance.md."
+    "verified_reader_commit": "d2ac01cf76be80499df9abe89bd06a0c02edea4a",
+    "verification_scope": "Current hashes bind registered discovery, conflict-safe source ownership, native activity and adapter composition after the poll-hook extraction. The same synthetic fixture tests passed locally for Codex, Claude Code, Pi and Kiro. OpenCode/upstream schema and fixture bytes are unchanged. This does not establish a new observed producer version, process isolation, or universal compatibility; see docs/validation/native-fixture-provenance.md."
   },
   "fixtures": [
     {

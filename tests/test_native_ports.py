@@ -59,3 +59,26 @@ class NativePortTests(unittest.TestCase):
                 self.assertEqual(store.native_model_usage('owned-source', 'c' * 32, 'b' * 16), {})
             finally:
                 store.close()
+
+    def test_injected_adapter_owns_namespace_and_optional_status_metadata(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            source = root / 'session.jsonl'
+            source.touch()
+            store = Store(root / 'port.sqlite')
+            class FixtureAdapter(PiAdapter):
+                agent_namespace = 'external-fixture'
+                def status_metadata(self, session):
+                    return {'fixture_source': session.session_id}
+            try:
+                spec = NativeSourceSpec('fixture', 'Fixture', lambda: root,
+                    accepts_file=lambda path: Path(path) == source,
+                    adapter_factory=FixtureAdapter)
+                collector = LocalAgents(store, source_specs=(spec,), reader_specs=())
+                collector.discover()
+                session = next(iter(collector.sessions.values()))
+                self.assertEqual(session.agent_namespace, 'external-fixture')
+                self.assertEqual(session.adapter_status_metadata(),
+                                 {'fixture_source': 'session'})
+            finally:
+                store.close()
