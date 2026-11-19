@@ -63,7 +63,7 @@ class PluginProcess:
         with self._stderr_lock:
             return self._stderr_bytes
 
-    def _artifact(self) -> Path:
+    def _artifact_bytes(self) -> bytes:
         if len(self.manifest.entrypoint) != 1:
             raise ProtocolError("process host requires a single executable artifact")
         path = Path(self.manifest.entrypoint[0])
@@ -78,6 +78,14 @@ class PluginProcess:
             raise ProtocolError("cannot read plugin artifact") from exc
         if len(raw) > MAX_ARTIFACT_BYTES or hashlib.sha256(raw).hexdigest() != self.manifest.artifact_sha256:
             raise ProtocolError("plugin artifact hash mismatch")
+        return raw
+
+    def verify_artifact(self) -> None:
+        """Inert preflight; start rechecks immediately before execution."""
+        self._artifact_bytes()
+
+    def _artifact(self) -> Path:
+        raw = self._artifact_bytes()
         self._temporary = tempfile.TemporaryDirectory(prefix="agenturm-plugin-")
         copied = Path(self._temporary.name) / "plugin"
         copied.write_bytes(raw)

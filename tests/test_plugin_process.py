@@ -2,6 +2,7 @@
 import hashlib
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -156,6 +157,9 @@ class ProcessHostTests(unittest.TestCase):
     def test_stderr_is_drained_without_exposing_child_output(self):
         with self.host("stderr") as host:
             host.poll_commit("", lambda batch: batch.cursor)
+            deadline = time.monotonic() + 1
+            while host.stderr_bytes < 16384 and time.monotonic() < deadline:
+                time.sleep(0.01)
             self.assertEqual(host.stderr_bytes, 16384)
 
 

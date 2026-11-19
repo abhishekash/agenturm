@@ -40,9 +40,10 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
         raise ValueError("plugin configuration needs 1 to 4 sources")
     sources = []
     seen = set()
+    replaced = set()
     for row in rows:
-        if not isinstance(row, dict) or set(row) != {
-                "manifest", "source_id", "grants", "capture", "poll_interval", "timeout"}:
+        required = {"manifest", "source_id", "grants", "capture", "poll_interval", "timeout"}
+        if not isinstance(row, dict) or not required <= set(row) or set(row) - required - {"replaces"}:
             raise ValueError("invalid plugin source configuration fields")
         source_id = row["source_id"]
         if not isinstance(source_id, str) or not source_id or source_id in seen:
@@ -66,6 +67,13 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
         if not location.is_absolute():
             location = path.parent / location
         manifest = PluginManifest.read(location)
+        replaces = row.get("replaces", [])
+        if (not isinstance(replaces, list) or len(replaces) > 1
+                or any(not isinstance(value, str) or not PLUGIN_ID.fullmatch(value)
+                       or f"harness.{value}/1" not in manifest.provides for value in replaces)
+                or len(set(replaces)) != len(replaces) or replaced.intersection(replaces)):
+            raise ValueError("invalid or unclaimed built-in source replacement")
+        replaced.update(replaces)
         sources.append(PluginSource(manifest, source_id, tuple(grants),
-                                    float(row["poll_interval"]), float(row["timeout"])))
+                                    float(row["poll_interval"]), float(row["timeout"]), tuple(replaces)))
     return tuple(sources)

@@ -60,6 +60,76 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(self.fixture.marker.exists())
         self.assertFalse((self.root / "external.db").exists())
 
+    def test_replacement_requires_manifest_claim_and_filters_trusted_reader(self):
+        text = self.config.read_text() + 'replaces = ["pi"]\n'
+        self.config.write_text(text)
+        with self.assertRaisesRegex(ValueError, "unclaimed"):
+            read_plugin_config(self.config)
+        manifest = self.fixture.root / "plugin.toml"
+        manifest.write_text(manifest.read_text().replace(
+            'provides = ["source-adapter/1"]',
+            'provides = ["source-adapter/1", "harness.pi/1"]'))
+        self.assertEqual(read_plugin_config(self.config)[0].replaces, ("pi",))
+        self.config.write_text(text.replace('replaces = ["pi"]',
+                                            'replaces = ["pi", "pi"]'))
+        with self.assertRaisesRegex(ValueError, "unclaimed"):
+            read_plugin_config(self.config)
+        self.config.write_text(text)
+        with patch("observatory.server.ThreadingHTTPServer") as server, \
+             patch("observatory.collector_runtime.start_local_collector") as collector, \
+             patch("observatory.plugin_supervisor.PluginSupervisor") as supervisor:
+            supervisor.return_value.start.return_value = supervisor.return_value
+            serve(str(self.root / "replacement.db"), no_auth=True, port=14321,
+                  plugin_config=self.config)
+        selected = collector.call_args.kwargs["registry"]
+        self.assertNotIn("pi", {spec.id for spec in selected.sources})
+        self.assertIn("codex", {spec.id for spec in selected.sources})
+        self.assertTrue(server.return_value.serve_forever.called)
+        self.assertFalse(self.fixture.marker.exists())
+
+    def test_replacement_rejects_unknown_source_before_store_creation(self):
+        manifest = self.fixture.root / "plugin.toml"
+        manifest.write_text(manifest.read_text().replace(
+            'provides = ["source-adapter/1"]',
+            'provides = ["source-adapter/1", "harness.unknown/1"]'))
+        self.config.write_text(self.config.read_text() + 'replaces = ["unknown"]\n')
+        target = self.root / "unknown.db"
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            serve(str(target), no_auth=True, port=14322, plugin_config=self.config)
+        self.assertFalse(target.exists())
+
+    def test_invalid_plugin_grant_fails_before_store_creation(self):
+        self.config.write_text(self.config.read_text().replace(
+            'grants = ["configured-source-read"]', 'grants = []'))
+        target = self.root / "bad-grant.db"
+        with self.assertRaises(ValueError):
+            serve(str(target), no_auth=True, port=14323, plugin_config=self.config)
+        self.assertFalse(target.exists())
+
+    def test_replacement_artifact_mismatch_fails_before_disabling_reader(self):
+        manifest = self.fixture.root / "plugin.toml"
+        manifest.write_text(manifest.read_text().replace(
+            'provides = ["source-adapter/1"]',
+            'provides = ["source-adapter/1", "harness.pi/1"]'))
+        self.config.write_text(self.config.read_text() + 'replaces = ["pi"]\n')
+        (self.fixture.root / "plugin.py").write_text("#!/bin/sh\nexit 0\n")
+        target = self.root / "bad-artifact.db"
+        with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            serve(str(target), no_auth=True, port=14324, plugin_config=self.config)
+        self.assertFalse(target.exists())
+
+    def test_replacement_requires_local_collector_before_store_creation(self):
+        manifest = self.fixture.root / "plugin.toml"
+        manifest.write_text(manifest.read_text().replace(
+            'provides = ["source-adapter/1"]',
+            'provides = ["source-adapter/1", "harness.pi/1"]'))
+        self.config.write_text(self.config.read_text() + 'replaces = ["pi"]\n')
+        target = self.root / "no-local.db"
+        with self.assertRaisesRegex(ValueError, "local collection"):
+            serve(str(target), no_auth=True, port=14325,
+                  local_agents=False, plugin_config=self.config)
+        self.assertFalse(target.exists())
+
     def test_serve_activates_only_the_named_config_and_exposes_session(self):
         running = []
 
