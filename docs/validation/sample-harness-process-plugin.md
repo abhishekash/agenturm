@@ -1,0 +1,7 @@
+# Standalone sample harness process checkpoint
+
+19 November 2026. A self-contained Python executable in `examples/sample_harness_plugin` uses only the standard library, accepts a configured source file, and speaks the provisional framed source protocol. Its installer creates a separate executable artifact, SHA-256-pinned manifest and explicit TOML receiver config. No kernel dispatch or central UI code changed to recognize this sample source. The host remains the only Store writer and reports the admitted native session through `/api/health`.
+
+Six focused tests passed. They install the artifact in an isolated directory, read lifecycle and typed usage from synthetic JSONL, verify cursor replay after process restart, correct one usage event without double counting, wait for a partial line, resume after file rotation and same-inode rewrite, and reject oversized lines and unapproved prompt fields without committing a cursor. A receiver test starts the installed plugin through `serve --plugin-config` and observes its completed session and running worker over HTTP. `compileall`, HTML parsing and `git diff --check` passed.
+
+This is a metadata-only sixth-harness example, not a Pi adapter or a production migration. It does not admit messages, tools, checks or relationships, does not handle arbitrary in-place historical edits, and still reaches the existing 50,000-distinct-event cap. The platform-specific wheel, Rust production performance slice, retention contract and full native parity remain open gates.

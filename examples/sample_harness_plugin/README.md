@@ -1,0 +1,26 @@
+# Standalone sample harness plugin
+
+This example is an independent, single-file Python executable using only the standard library. It reads one explicitly configured append-only JSONL file and sends metadata-only lifecycle and usage evidence over Agenturm's provisional `source-adapter/1` process protocol. It imports no Agenturm package modules. Linux and macOS are the tested execution shape; this example does not establish Windows plugin support.
+
+To install it into an empty directory and generate a pinned manifest plus receiver configuration:
+
+```sh
+python examples/sample_harness_plugin/install.py \
+  --destination /absolute/path/to/sample-plugin \
+  --source /absolute/path/to/sample-events.jsonl
+agenturm serve --plugin-config /absolute/path/to/sample-plugin/plugins.toml
+```
+
+The installer copies the script, hashes that copy, writes the manifest and TOML config, and prints the config path. It does not start the adapter or alter an Agenturm database. Agenturm starts it only when that named config is supplied. The config does not replace a built-in harness.
+
+Example input:
+
+```jsonl
+{"id":"start-1","session":"demo-1","at_ns":"100","kind":"lifecycle","state":"started"}
+{"id":"usage-1","session":"demo-1","at_ns":"150","kind":"usage","usage":{"input_tokens":12,"output_tokens":3}}
+{"id":"end-1","session":"demo-1","at_ns":"200","kind":"lifecycle","state":"completed","reason_code":"normal"}
+```
+
+`id` and `session` are stable source identities. A correction appends the same `id` with a higher integer `revision`; the host replaces that occurrence in its durable inbox. Usage values for distinct IDs are additive; do not repeat cumulative totals under new IDs. The adapter waits for a newline before accepting a record, reads at most 256 records and approximately 1 MiB of source data per poll, and rejects any line over 16 KiB. Its cursor includes the file identity, byte offset and a digest of the preceding 256 bytes. It resets after replacement, truncation or a nearby same-inode rewrite. Older in-place edits outside that window violate this example's append-only source contract.
+
+The file may be absent initially. A malformed complete line or oversized line stops that worker without advancing the durable cursor; health shows the failure and the source file must be fixed before restarting the receiver. The executable runs with the user's OS permissions and is not a filesystem sandbox. The plugin can produce only lifecycle and usage metadata. It cannot replace Pi, Codex or another built-in harness with equivalent message, tool, check, relationship and review evidence. The current 50,000-distinct-event source cap still applies.
