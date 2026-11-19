@@ -170,6 +170,9 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("1 in progress", detail.casefold())
             await pilot.press("e");await pilot.pause()
             detail = app.query_one("#agent-detail").plain_text
+            self.assertIn("Subtree summary", detail)
+            app.set_session_mode("details");await pilot.pause()
+            detail = app.query_one("#agent-detail").plain_text
             self.assertIn("direct children", detail.casefold())
             self.assertIn("Check retry cases", detail)
             health = next(item for item in sources(feed.snapshot) if item["source_id"] == "s-g1")
@@ -243,6 +246,9 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertTrue(app.query_one("#agent-bottom").display)
             self.assertIn("Fix checkout regression", app.query_one("#agent-heading").render().plain)
+            app.set_session_mode('overview');await pilot.pause()
+            self.assertIn('Subtree summary',app.query_one('#agent-detail').plain_text)
+            app.set_session_mode('details');await pilot.pause()
             self.assertIn('Direct children',app.query_one('#agent-detail').plain_text)
             await pilot.press("escape")
             await pilot.pause()
@@ -253,6 +259,9 @@ class HierarchyPresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertTrue(app.query_one("#agent-bottom").display)
             self.assertIn("Fix checkout regression", app.query_one("#agent-heading").render().plain)
+            app.set_session_mode('overview');await pilot.pause()
+            self.assertIn('Subtree summary',app.query_one('#agent-detail').plain_text)
+            app.set_session_mode('details');await pilot.pause()
             self.assertIn('Direct children',app.query_one('#agent-detail').plain_text)
 
     async def test_search_reveals_ancestor_context_and_flat_mode_is_reversible(self):

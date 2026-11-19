@@ -1,6 +1,6 @@
 """Source-backed work summaries; counts never certify a whole execution."""
 from itertools import islice
-from .workflow_evidence import ReviewHistory,event_key,scope_for
+from .workflow_evidence import ReviewHistory,event_key,scope_for,reference
 
 EVENT_LIMIT=200
 CANDIDATE_LIMIT=1000
@@ -53,3 +53,11 @@ def overview_summary(facts):
     if facts['issues']:lines.append(str(len(facts['issues']))+' recorded issue'+('s' if len(facts['issues'])!=1 else ''))
     if not lines and facts['work_records']:lines.append(str(facts['work_records'])+' recorded work events · no file/check evidence in this preview')
     return '\n'.join(lines)
+
+
+def check_already_listed(event, checks):
+    """Deduplicate one recorded event, never two runs with the same command."""
+    source = reference(event)
+    if not (source.get('id') or source.get('source_id')):
+        return False
+    return any(check.get('source') == source for check in checks)

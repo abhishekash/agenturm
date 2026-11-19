@@ -188,7 +188,8 @@ class ReadableJourneys(unittest.IsolatedAsyncioTestCase):
             text=app.query_one('#agent-detail').plain_text
             self.assertLess(text.index('Command'),text.index('Latest request'))
             self.assertIn('Make the inspector readable',text)
-            self.assertIn('latest 6 of 20 loaded actions',text.casefold())
+            self.assertNotIn('Recent work',text)
+            self.assertEqual(text.count('python task_19.py'),1)
             self.assertNotIn('task_0.py',text)
             self.assertNotIn('output line 199',text)
             self.assertNotIn('Progress Summary',text)

@@ -26,7 +26,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(controls.region.y, tabs.region.bottom)
             self.assertGreaterEqual(results.region.y, controls.region.bottom)
             self.assertFalse(app.query_one('#usage-summary').display)
-            self.assertEqual(results.region.y,9)
+            self.assertEqual(results.region.y,4)
             self.assertEqual(app.query_one('#search-agents').size.height,1)
             self.assertEqual(controls.size.height,1)
             self.assertEqual([str(c.label) for c in app.query_one('#agent-table', DataTable).columns.values()],
@@ -145,12 +145,12 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(160,48)) as pilot:
             await pilot.pause()
             picker=app.query_one('#more-views',Select)
-            self.assertFalse(picker.display)
+            self.assertTrue(picker.display)
             for page in ('host','metrics','findings'):
                 tab=app.query_one('#--content-tab-'+page)
-                self.assertTrue(tab.display)
-                self.assertTrue(app.screen.region.contains_region(tab.region))
-                await pilot.click('#--content-tab-'+page)
+                self.assertFalse(tab.display)
+                await pilot.click('#more-views')
+                await pilot.press('home', *(['down']*({'host':1,'metrics':2,'findings':3}[page])), 'enter')
                 await pilot.pause()
                 self.assertEqual(app.query_one('#pages',TabbedContent).active,page)
 
@@ -158,7 +158,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.resize_terminal(80,24)
             await pilot.pause()
             self.assertTrue(picker.display)
-            self.assertIn('Other views',picker.query_one('SelectCurrent #label').render_line(0).text)
+            self.assertIn('More',picker.query_one('SelectCurrent #label').render_line(0).text)
             self.assertTrue(app.screen.region.contains_region(picker.region))
             self.assertGreaterEqual(picker.region.x,app.query_one('#--content-tab-traces').region.right)
             await pilot.click('#more-views')
@@ -179,7 +179,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('Views: 3 MCP Calls',picker.query_one('SelectCurrent #label').render_line(0).text)
             await pilot.resize_terminal(160,48)
             await pilot.pause()
-            self.assertFalse(picker.display)
+            self.assertTrue(picker.display)
             self.assertEqual(app.query_one('#pages',TabbedContent).active,'mcp')
 
     async def test_enter_and_e_both_expand_the_selected_agent_inspector(self):
@@ -502,7 +502,8 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('Prompt Timeline',expanded)
             self.assertIn('preserve the original response',app.query_one('#agent-heading').tooltip)
             self.assertNotIn('preserve the original response',expanded)
-            self.assertIn('Recent work',expanded)
+            self.assertNotIn('Recent work',expanded)
+            self.assertEqual(expanded.count('git status --short'),1)
             self.assertIn('git status --short',expanded)
             app.set_session_mode('prompts');await app.workers.wait_for_complete();await pilot.pause()
             self.assertIn('preserve the original response',' '.join(app.query_one('#agent-detail').plain_text.split()))
@@ -620,7 +621,7 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             results=app.query_one('#results-agents')
             self.assertEqual(table.row_count,12,'The view retains all agents in its scrollable list')
             inspector=app.query_one('#agent-bottom')
-            self.assertEqual(results.region.y,10)
+            self.assertEqual(results.region.y,4)
             self.assertEqual(results.region.y,inspector.region.y)
             self.assertEqual(results.region.bottom,inspector.region.bottom)
             self.assertEqual(results.region.bottom,app.query_one('#shortcuts').region.y)
@@ -632,11 +633,11 @@ class ObservationDeckTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(table.cursor_row,11)
 
-            # Resizing trades header space against the whole workspace, not
-            # just the agent list. All 12 sessions remain in the table.
+            # The compact shell keeps the same height on both wide layouts.
+            # All 12 sessions remain in the table.
             await pilot.resize_terminal(180,40)
             await pilot.pause()
-            self.assertEqual(results.region.y,8)
+            self.assertEqual(results.region.y,4)
             self.assertEqual(results.region.bottom,inspector.region.bottom)
             self.assertEqual(table.row_count,12)
 

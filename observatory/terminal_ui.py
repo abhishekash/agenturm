@@ -27,6 +27,7 @@ from textual.strip import Strip
 from textual.widgets import Button, Checkbox, DataTable, Input, OptionList, RichLog, Select, Static, Tab, TabbedContent, TabPane, Tabs, Tree
 
 from .terminal import clean, clipped, number, trace_name
+from .session_outcome import current_turn_events, interruption_event, interruption_reason, linked_trace
 from .agent_hierarchy import (AGENT_ID, HierarchyGraph, branch_marker, canonical_agent_id,
                               node_active, node_attention, tree_prefix)
 from .session_status import session_health, session_phase, today_bucket
@@ -554,10 +555,22 @@ def attention_evidence(item,summary=None,error_event=None):
     return 'Status comes from recorded lifecycle events.'
 
 
-def attention_guidance(item, error_event=None):
+def attention_guidance(item, error_event=None, lifecycle_event=None):
     """One cause and one next step; uncertainty is never a reply request."""
     state=item.get('state')
     runtime=clean(item.get('runtime') or 'agent')
+    if state == 'Interrupted':
+        stamp = item.get('outcome_time_ns') or item.get('task_outcome_ns') or item.get('state_since_ns')
+        native, reason = interruption_reason(lifecycle_event)
+        evidence = (f'{runtime} recorded {native} at {when(lifecycle_event.get("time_unix_nano"))}.'
+                    if lifecycle_event else f'The recorded lifecycle marks this turn interrupted'+
+                    (f' at {when(stamp)}.' if stamp else '.'))
+        explanation = ('Reason: '+reason+'.' if reason else 'No detailed interruption reason is available in the loaded evidence.')
+        if reason.casefold() in {'interrupted', 'aborted', 'cancelled', 'canceled'}:
+            explanation += ' The record does not identify who stopped it or why.'
+        return [('Latest turn interrupted', evidence+' '+explanation),
+                ('Next step', 's Open session Activity with surrounding events; t opens this turn’s trace when linked. '
+                 'Earlier completed turns and PRs do not establish completion of this turn.')]
     if input_required(item):
         approval=any(word in str(item.get('waiting_for') or '').casefold() for word in ('approval','permission'))
         return [('Why attention','The agent recorded an approval request.' if approval else 'The agent recorded a request for your reply.'),
@@ -808,16 +821,9 @@ def agent_order_key(item, newest_first=True, mode='working'):
 
 
 def navigation_hints(width):
-    # The footer is a hint line, not the full key map: F1 carries the rest.
-    # Keep the attention route visible at every supported width without
-    # pushing Quit off the last row.
-    if width >= 140:
-        return '↑/↓ Move  Enter Inspect  ! Attention  / Search  e Expand  ? Help  Ctrl+P Palette  b Tasks  w Workflow  d Diagnostics  q Quit'
-    if width >= 120:
-        return '↑/↓ Move  Enter Inspect  ! Attention  / Search  e Expand  ? Help  b Tasks  w Workflow  q Quit'
-    if width >= 80:
-        return '↑/↓ Move  Enter Inspect  ! Attention  / Search  b Tasks  ? Help  q Quit'
-    return '↑↓ Move Enter Inspect !Attn / Search b Tasks ? Help q Quit'
+    # Five everyday actions; the full key map and command palette remain in Help.
+    return ('↑/↓ Move  Enter Inspect  / Search  ? Help  q Quit' if width >= 80
+            else '↑↓ Move  Enter Inspect  / Search  ? Help  q Quit')
 
 
 def session_navigation_hints(mode, focus=''):
@@ -987,7 +993,7 @@ class CockpitTabs(TabbedContent):
     def compose(self)->ComposeResult:
         for widget in super().compose():
             if isinstance(widget,Tabs):
-                widget.border_title='Views · 1–7 to switch'
+                widget.tooltip='Switch views with 1–7; secondary views are in More'
                 yield widget
                 yield self.app.more_view_control()
                 yield self.app.scope_controls()
@@ -1117,7 +1123,7 @@ class ObservatoryApp(App):
     Screen { background: $agent-canvas; color: $agent-text; }
     Screen > .screen--selection { background: $agent-selection; color: $agent-on-selection; }
     * { scrollbar-color: $agent-scrollbar; scrollbar-color-hover: $agent-secondary; scrollbar-color-active: $agent-primary; scrollbar-background: $agent-surface; scrollbar-background-hover: $agent-surface; scrollbar-background-active: $agent-surface; }
-    #masthead { height: 5; padding: 0 1; margin: 0 2; border: round $agent-border; background: $agent-surface; }
+    #masthead { height: 2; padding: 0 1; margin: 0 2; border: none; background: $agent-surface; }
     #identity { height: 1; }
     #brand-lockup { width: auto; height: 1; align-vertical: middle; }
     #brand { width: auto; height: 1; color: $agent-text; text-wrap: nowrap; }
@@ -1171,20 +1177,20 @@ class ObservatoryApp(App):
     Button:disabled { color: $agent-disabled; border-bottom: solid $agent-border-disabled; background: $agent-surface; }
     #pause { width: 15; height: 1; padding: 0; border: none; background: $agent-surface; }
     #pages { height: 1fr; margin: 0 2; }
-    #more-views { display: none; dock: right; layer: above; width: 21; height: 1; margin: 1 2 0 1; }
+    #more-views { display: block; dock: right; layer: above; width: 21; height: 1; margin: 0 2 0 1; }
     Tabs { height: 1; padding-top: 0; margin-top: 0; }
-    #pages > Tabs { height: 3; border: round $agent-border; border-title-color: $agent-label; border-title-style: bold; padding: 0 1; background: $agent-surface; }
+    #pages > Tabs { height: 1; border: none; padding: 0 1; background: $agent-surface; }
     Tab { color: $agent-muted; padding: 0 1; background: $agent-canvas; }
     #more-views SelectCurrent { height: 1; border: none; background: $agent-panel; color: $agent-primary; text-style: bold; padding: 0 1; }
     #more-views:hover SelectCurrent { background: $agent-hover; }
     #more-views:focus SelectCurrent { background: $agent-focus; text-style: bold underline; }
     #more-views.secondary-active SelectCurrent { background: $agent-focus; }
     .narrow #more-views { display: block; }
-    .narrow #pages > Tabs #--content-tab-host,
-    .narrow #pages > Tabs #--content-tab-metrics,
-    .narrow #pages > Tabs #--content-tab-findings { display: none; }
+    #pages > Tabs #--content-tab-host,
+    #pages > Tabs #--content-tab-metrics,
+    #pages > Tabs #--content-tab-findings { display: none; }
     .menu-navigation #pages > Tabs Tab { visibility: hidden; }
-    .menu-navigation #more-views { width: 100%; margin: 1 2 0 2; }
+    .menu-navigation #more-views { width: 100%; margin: 0 2 0 2; }
     Tab.-active { color: $agent-primary; background: $agent-focus; text-style: bold; }
     Tabs:focus .-active { background: $agent-focus; color: $agent-primary; text-style: underline; }
     Underline > .underline--bar { color: $agent-primary; background: $agent-border-subtle; }
@@ -1207,6 +1213,8 @@ class ObservatoryApp(App):
     #controls.agents-active #agent-errors { display: block; }
     #agent-errors:hover, #agent-errors:focus { color: $agent-primary; background: $agent-error; }
     #agent-errors.-on { color: $agent-canvas; background: $agent-error; }
+    #controls.agents-active #agent-errors.-empty { display: none; }
+    #controls.agents-active #agent-errors.-empty.-on { display: block; }
     #agent-errors.-empty { color: $agent-muted; background: $agent-panel; text-style: none; }
     .error-filter.-on { color: $agent-error; border: none; background: $agent-error-surface; text-style: bold; }
     .prompt-filter { width: 12; margin-right: 1; }
@@ -1318,7 +1326,7 @@ class ObservatoryApp(App):
     .narrow #pause { width: 15; }
     .narrow #agent-sort { width: 11; margin-right: 1; }
     .small #agent-sort { width: 11; }
-    .menu-navigation #controls.agents-active { height: 2; }
+    .menu-navigation #controls { height: 2; }
     .menu-navigation #controls.agents-active #scope-label { display: none; }
     .menu-navigation #controls.agents-active #scope { dock: bottom; width: 100%; margin: 0; }
     .minimal #agent-sort { display: none; }
@@ -1339,10 +1347,7 @@ class ObservatoryApp(App):
     .compact #agent-bottom, .compact .detail, .compact #trace-detail, .compact #host-detail { display: none; }
     .compact.inspecting #usage-summary { display: none; }
     .compact.connecting #usage-summary { display: none; }
-    .compact.inspecting #masthead, .compact.inspecting #controls { display: none; }
-    .session-reading #masthead, .session-reading #controls { display: none; }
-    .session-reading #pages > Tabs { height: 1; border: none; }
-    .session-reading #more-views { margin-top: 0; }
+    /* View-local inspection must not hide or resize the global navigation. */
     .compact .list { width: 100%; height: 1fr; margin: 0; }
     .compact .inspector-heading { height: 1; border: none; margin-bottom: 0; }
     .compact .inspector-actions { margin: 0; }
@@ -1359,6 +1364,10 @@ class ObservatoryApp(App):
     .minimal #masthead { padding: 0 1; }
     .minimal #pages { margin: 0; }
     .short #masthead { border: none; }
+    .short #agents.expanded #agent-bottom { border: none; }
+    /* At the reader floor, spend rows on prompt text rather than a second
+       identity line; the task heading and Details keep session context. */
+    .short.menu-navigation #agents.reading-prompts #agent-context { display: none; }
     .short #summary { display: none; }
     .short #pages > Tabs { height: 1; border: none; }
     .short #more-views { margin-top: 0; }
@@ -1523,7 +1532,7 @@ class ObservatoryApp(App):
             Button('Reorder',id='refresh-order',tooltip='List changed; apply queued ordering without losing your selected session'),
             Button('Updated ↓',id='agent-sort',tooltip='Choose Working first, Updated, or Status sorting · o'),
             Static('Session',id='scope-label'),
-            Button('All agent sessions ▾',id='scope',tooltip='Choose agent session · Enter'),
+            Button('▾ Session: All',id='scope',tooltip='Filter by session · Enter'),
             Static('Evidence',id='evidence-scope-label'),
             Select([('This agent','exact'),('This agent + subagents','subtree')],
                    value='exact',allow_blank=False,id='evidence-scope'),
@@ -1531,9 +1540,9 @@ class ObservatoryApp(App):
             id='controls')
 
     def more_view_control(self):
-        return Select([('Other views',''),('5 Host','host'),('6 Metrics','metrics'),('7 Findings','findings')],
+        return Select([('More',''),('5 Host','host'),('6 Metrics','metrics'),('7 Findings','findings')],
                       value='',allow_blank=False,id='more-views',
-                      tooltip='Other views: 5 Host · 6 Metrics · 7 Findings · Enter to choose')
+                      tooltip='More views: 5 Host · 6 Metrics · 7 Findings · Enter to choose')
 
     def compose(self)->ComposeResult:
         yield Static('Terminal too small\nResize to at least 60 columns × 18 rows.\nq Quit',id='terminal-floor',markup=False)
@@ -1775,18 +1784,17 @@ class ObservatoryApp(App):
     def update_scope_button(self):
         if not self.query('#scope'):return
         item=getattr(self,'source_map',{}).get(self.scope_value)
-        label=task_preview(item) or 'Untitled session' if item else (
-            'All sessions' if self.layout_size.width<96 else 'All agent sessions')
+        label=task_preview(item) or 'Untitled session' if item else 'All'
         button=self.query_one('#scope',Button)
-        caption=Text('▾ '+label,no_wrap=True,overflow='ellipsis')
+        caption=Text('▾ Session: '+label,no_wrap=True,overflow='ellipsis')
         if button.label.plain!=caption.plain:button.label=caption
         button.tooltip=(label+'\n'+self.scope_label()+'\nSession '+str(item.get('session_id') or item['id'])
-                        if item else 'Choose agent session · Enter')
+                        if item else 'Filter agents and related evidence by session · Enter\nAll clears this filter; Today/History and Errors still apply.')
 
     def action_session_scope(self):
         if not isinstance(self.screen,ObservatoryScreen):return
-        entries=[dict(id='all',task='All agent sessions',description='Clear the session filter',
-                      detail='Show all available sessions · clears the filter')]
+        entries=[dict(id='all',task='All sessions',description='Clear only the session filter',
+                      detail='Show all sessions allowed by Today/History and Errors. Clears the session filter only.')]
         for item in getattr(self,'source_map',{}).values():
             title=task_preview(item)
             runtime=item.get('runtime') or item.get('service') or 'Agent'
@@ -1994,9 +2002,8 @@ class ObservatoryApp(App):
         self.screen.set_class(size.height<=24,'short')
         self.screen.set_class(size.width<76,'menu-navigation')
         self.screen.set_class(size.width<60 or size.height<18,'too-small')
-        # Halve the old quarter-screen overview; navigation has its own frame.
-        # Keep enough room for identity and counts on short terminals.
-        self.overview_height=1 if size.height<=24 else max(4,(size.height//4-2)//2)
+        # Global context stays compact and independent of the selected view.
+        self.overview_height=1 if size.height<=24 else 2
         for header in self.query('#masthead'):
             header.styles.height=self.overview_height
         for brand in self.query('#brand'):
@@ -2497,12 +2504,9 @@ class ObservatoryApp(App):
         error_button.label='Errors —'if getattr(self.data,'native_bootstrap',False)else f"Errors {'● ' if self.agent_filter=='errors' else ''}{counts['errors']}"
         error_button.disabled=getattr(self.data,'native_bootstrap',False)
         error_button.set_class(self.agent_filter=='errors','-on')
-        error_button.set_class(not error_ids,'-empty')
-        filter_options=[(f'Today {counts["today"]}','today'),
-                        (f'Attention {counts["attention"]}','attention'),
-                        (f'Running {counts["active"]}','active'),
-                        (f'History {counts["all"]}','all'),
-                        (f'Errors {counts["errors"]}','errors')]
+        error_button.set_class(not error_ids and not getattr(self.data,'native_bootstrap',False),'-empty')
+        filter_options=[('Today','today'),('Needs attention','attention'),('Running','active'),
+                        ('History','all'),('Errors','errors')]
         if getattr(self.data,'native_bootstrap',False):filter_options=[(label if key in {'today','active'}else 'History —'if key=='all'else 'Attention —'if key=='attention'else 'Errors —',key)for label,key in filter_options]
         picker=self.query_one('#agent-filter',Select)
         with picker.prevent(Select.Changed):
@@ -2625,9 +2629,7 @@ class ObservatoryApp(App):
         if not tree_mode:self.agent_order_pending=False
         self.query_one('#refresh-order',Button).display=self.agent_order_pending
         self.visible_agent_rows=[shown['id'] for shown,_,_,_,_ in visible_agents]
-        self.query_one('#results-agents').border_subtitle=(
-            ('Working first · ' if self.agent_sort_mode=='working' else 'Status · ' if self.agent_sort_mode=='status' else '')
-            +('newest' if self.agent_sort_desc else 'oldest')+' updated · o Sort')
+        self.query_one('#results-agents').border_subtitle=''
         if self.selected_source not in self.visible_agent_rows:
             self.selected_source=self.visible_agent_rows[0] if self.visible_agent_rows else None
         rows=[]
@@ -2663,7 +2665,7 @@ class ObservatoryApp(App):
                 self.query_one('#search-status-agents',Static).update(
                     f'{len(match_ids)} attention items · select a reason · Enter inspect · a Reset' if matching else
                     'No attention items in available agents · a Reset')
-            if tree_mode:title+=f' · {len(visible_agents)} rows'
+            if tree_mode and len(visible_agents)!=len(match_ids):title+=f' · {len(visible_agents)} rows'
             if self.agent_filter=='today' and self.data.updated:
                 status_widget=self.query_one('#search-status-agents',Static)
                 compact=status_widget.size.width<80
@@ -2683,6 +2685,8 @@ class ObservatoryApp(App):
         if getattr(self.data,'native_bootstrap',False):
             title=f'Current observations · {len(visible_agents)} shown · older history preparing'
             self.query_one('#search-status-agents',Static).update('Current observations only · older history is being prepared')
+        self.query_one('#search-status-agents').display=bool(agent_query or not rows or
+            self.data.sessions_error or self.data.read_errors or getattr(self.data,'native_bootstrap',False))
         self.query_one('#results-agents').border_title=title if self.data.updated or getattr(self.data,'native_bootstrap',False)else 'Sessions · loading'
         self.show_agent()
 
@@ -3380,6 +3384,7 @@ class ObservatoryApp(App):
         item=getattr(self,'source_map',{}).get(self.selected_source)
         expanded=self.query_one('#agents').has_class('expanded')
         prompts=expanded and self.session_mode=='prompts' and bool(item)
+        self.query_one('#agents').set_class(prompts,'reading-prompts')
         self.query_one('#agent-stats').display=False
         self.query_one('#agent-prompt-bar').display=prompts
         self.query_one('#agent-prompt-picker').display=prompts
@@ -3509,23 +3514,29 @@ class ObservatoryApp(App):
             stamp,text=generated
             label='AI summary · earlier snapshot' if stamp!=item.get('stamp') else 'AI summary · provider generated'
             ai_sections=[(label,text)]
-        actions=[] if not captured else (self.sync_session_evidence(item) if expanded and self.session_mode!='prompts'
+        actions=[] if not captured else (self.sync_session_evidence(item) if (expanded and self.session_mode!='prompts') or item.get('state')=='Interrupted'
                  else sorted(scoped_events([*self.session_evidence.events,*self.data.activity],scope),
                              key=lambda event:event.get('time_unix_nano') or 0,reverse=True))
-        meaningful=[event for event in actions if event.get('domain') not in {'model','context','agent'}]
+        lifecycle_event = interruption_event(item, actions, self.data)
+        turn_actions = current_turn_events(item, actions, self.data) if item.get('state') == 'Interrupted' else actions
+        meaningful=[event for event in turn_actions if event.get('domain') not in {'model','context','agent'}]
         recorded=next((event for event in meaningful if event.get('domain')!='message'),None)
-        assistant=next((event for event in actions if event.get('domain')=='message'
+        assistant=next((event for event in turn_actions if event.get('domain')=='message'
                         and event.get('action')=='assistant'),None)
         pending_ids={event.get('id') or event.get('source_id') for event in pending_errors}
         error_event=next((event for event in actions if failed(event) and
                           (event.get('id') or event.get('source_id')) in pending_ids),None)
         if not error_event:
             error_event=next((event for event in pending_errors if not str(event.get('id','')).startswith('outcome:')),None)
+        if item.get('state') == 'Interrupted':
+            # Tool errors do not explain a lifecycle interruption. They remain
+            # inspectable in Activity and Review without a causal claim here.
+            error_event = None
         failure_detail=failure_evidence(error_event)
-        request_event=next((event for event in actions if event.get('domain')=='message'
+        request_event=next((event for event in turn_actions if event.get('domain')=='message'
                             and event.get('action')=='user'),None)
-        self.agent_primary_event_id=((error_event or request_event or recorded or {}).get('id')
-                                     or (error_event or request_event or recorded or {}).get('source_id'))
+        self.agent_primary_event_id=((lifecycle_event or error_event or request_event or recorded or {}).get('id')
+                                     or (lifecycle_event or error_event or request_event or recorded or {}).get('source_id'))
         primary_label=('Failed call · s' if error_event else
                        'Failures · s' if self.agent_has_failures else
                        'Request · s' if input_required(item) and request_event else
@@ -3534,12 +3545,17 @@ class ObservatoryApp(App):
                      'Inspect the unseen recent failure; opening its details stops this reminder' if self.agent_has_failures else
                      'Open the recorded user request; reply in the agent terminal' if request_event and input_required(item) else
                      'Read all recorded activity for this session')
+        if item.get('state') == 'Interrupted':
+            primary_label = 'Interruption · s' if lifecycle_event else 'Activity · s'
+            primary_tip = 'Inspect the interrupted turn and surrounding session activity'
         self.query_one('#agent-open',Button).label=Text(primary_label)
         self.query_one('#agent-open',Button).tooltip=primary_tip
         # Retain trace links without rendering a duplicate activity table.
         self.table_data['agent-actions']={event.get('id') or event['source_id']:event for event in actions[:30]}
         if error_event:
             self.table_data['agent-actions'][event_id(error_event)]=error_event
+        if lifecycle_event:
+            self.table_data['agent-actions'][event_id(lifecycle_event)]=lifecycle_event
         hierarchy_fields,hierarchy_sections=self.hierarchy_sections(item)
         title=task_preview(item)
         if not title:
@@ -3550,7 +3566,9 @@ class ObservatoryApp(App):
         title=clipped(title,160)+('…' if cell_len(title)>160 else '')
         identity=item['runtime']+(' / '+str(item['project']) if item.get('project') else '')
         state=agent_status(item)
-        state.append(' · '+age(item.get('stamp')),style='#b9afc5')
+        status_stamp = ((item.get('outcome_time_ns') or item.get('task_outcome_ns') or item.get('state_since_ns'))
+                        if item.get('state')=='Interrupted' else item.get('stamp'))
+        state.append(' · '+age(status_stamp),style='#b9afc5')
         fields=[('Agent',identity),('Status',state)]
         heading=self.query_one('#agent-heading',Static)
         update_status_text(heading,Text(title if expanded else 'Session inspector'))
@@ -3561,17 +3579,34 @@ class ObservatoryApp(App):
                          if label in {'Direct children','Subtree summary','Child telemetry','Parent relationship','Relationship'}]
         work_facts=None
         if not expanded or self.session_mode=='overview':
-            from .overview import overview_facts,overview_summary
+            from .overview import overview_facts,overview_summary,check_already_listed
             evidence=self.session_evidence
             work_facts=overview_facts(item,self.data,actions,loaded=evidence.loaded and evidence.scope==scope,
-                partial=evidence.partial,usage=run_usage,endpoint=getattr(self.feed.api,'endpoint',''))
+                partial=evidence.partial,usage={} if item.get('state')=='Interrupted' else run_usage,endpoint=getattr(self.feed.api,'endpoint',''))
+        turn_request = next((event for event in reversed(turn_actions) if event.get('domain')=='message'
+                             and event.get('action')=='user'), None) if item.get('state')=='Interrupted' else None
+        def guidance():
+            sections = attention_guidance(item,error_event,lifecycle_event)
+            if item.get('state')=='Interrupted':
+                if self.feed.paused:sections.insert(0,('Paused view','p Follow live to check for later activity or completion.'))
+                evidence = self.session_evidence
+                if not lifecycle_event:
+                    if not captured:feedback = 'Content capture is disabled for this source.'
+                    elif evidence.busy:feedback = 'Loading the interruption details from session Activity…'
+                    elif evidence.error:feedback = 'Session Activity could not be loaded: '+evidence.error
+                    elif evidence.partial:feedback = 'Only recent session Activity is loaded; the interruption may be outside this window.'
+                    else:feedback = 'The interruption event is not present in the loaded session Activity.'
+                    sections.append(('Evidence availability',feedback))
+                sections.append(('Turn request', session_excerpt(recorded_message_text(turn_request),lines=3)
+                                 if turn_request else 'The request for this turn is not loaded. Open Activity or Prompts to inspect session history.'))
+            return sections
         if not expanded:
-            sections=attention_guidance(item,error_event)
-            observed=overview_summary(work_facts)
-            if observed:sections.append(('Recorded work · loaded evidence',observed))
+            sections=guidance()
+            observed=overview_summary(work_facts) if (work_facts['edit_count'] or work_facts['checks'] or work_facts['issues']) else ''
+            if observed:sections.append(('Recorded work · loaded evidence',observed+ ('\nThese records do not establish why the turn stopped.' if item.get('state')=='Interrupted' else '')))
             if assistant:
                 sections.append(('Agent reported',session_excerpt(recorded_message_text(assistant),lines=3)))
-            elif recorded or latest:
+            elif (recorded or latest) and item.get('state')!='Interrupted':
                 sections.append(('Latest work',brief_activity(recorded or latest)))
             if failure_detail and attention_required(item):
                 sections.append(('Recorded error',session_excerpt(failure_detail,lines=3)))
@@ -3606,7 +3641,7 @@ class ObservatoryApp(App):
         else:
             coverage=f'{len(actions)} records in the current snapshot · history coverage unknown'
         self.query_one('#agent-evidence-status',Static).update(coverage)
-        self.query_one('#agent-evidence-status').tooltip=evidence.error or coverage
+        self.query_one('#agent-evidence-status').tooltip=(evidence.error or coverage)+'\nLoaded records only; open Review for scoped evidence and checks.'
         self.query_one('#agent-retry').display=bool(evidence.error)
         self.query_one('#agent-review-work').display=self.session_mode=='overview'
         if self.session_mode=='details':
@@ -3615,16 +3650,16 @@ class ObservatoryApp(App):
                 ('Model',item.get('model')),('Updated',when(item.get('stamp'))),
                 ('Capture','Metadata only' if item.get('capture_content') is False else 'Recorded content when available')]
             self.inspect('agent-detail',title,fields+details+hierarchy_fields,
-                [('Status evidence',attention_evidence(item,summary)),('Waiting on',wait_summary(item)),
+                [('Status evidence',attention_guidance(item,lifecycle_event=lifecycle_event)[0][1] if item.get('state')=='Interrupted' else attention_evidence(item,summary)),('Waiting on',wait_summary(item)),
                  ('Task usage',usage_text),*([('Credits',credits_text)] if credits_text else []),
                  *([('Permissions',permissions_text)] if permissions_text else []),
-                 ('Analysis coverage',analysis_coverage(summary)),
+                 ('Evidence coverage',coverage),('Analysis coverage',analysis_coverage(summary)),
                  ('History freshness',session_history_feedback(self.data)),
                  ('Working directory',item.get('working_directory'))]+hierarchy_sections+ai_sections,
                 identity=(item['id'],'details'),context_in_header=True)
             return
-        sections=attention_guidance(item,error_event)
-        observed=overview_summary(work_facts)
+        sections=guidance()
+        observed=overview_summary(work_facts) if (work_facts['edit_count'] or work_facts['checks'] or work_facts['issues']) else ''
         if observed:sections.append(('Recorded work · loaded evidence',observed))
         if work_facts['paths']:
             paths=work_facts['paths'];shown=paths[:5]
@@ -3641,29 +3676,23 @@ class ObservatoryApp(App):
             sections.append(('Progress','Content capture is disabled for this source.' if item.get('capture_content') is False else
                              'No work records are available yet. Missing evidence does not establish what the agent has done.'))
         if failure_detail:sections.append(('Recorded failure',session_excerpt(failure_detail,lines=5,width=None)))
-        elif self.agent_has_failures:
+        elif self.agent_has_failures and item.get('state')!='Interrupted':
             sections.append(('Unseen error','The run reported a failure · s Inspect evidence'))
         if recorded:
             preview=session_event_preview(recorded,expanded=False)
-            sections.append(('Latest recorded event',preview))
-        if request_event:
+            if not check_already_listed(recorded,work_facts['checks'][-3:]):
+                sections.append(('Latest recorded event',preview))
+        if request_event and item.get('state')!='Interrupted':
             parsed=request_text(recorded_message_text(request_event))
             if parsed.body and parsed.body.strip()!=task_preview(item).strip():
                 sections.append(('Latest request · '+when(request_event.get('time_unix_nano')),
                                  session_excerpt(parsed.body,lines=4,width=None)))
-        work=[event for event in actions if event.get('domain') in {'shell','file','tool','mcp','browser'}]
-        if work:
-            lines=[]
-            for event in reversed(work[:6]):
-                result=str(event.get('result') or 'observed')
-                lines.append(f"{when(event.get('time_unix_nano'))}  {result}  {brief_activity(event)}")
-            sections.append((f'Recent work · latest {min(6,len(work))} of {len(work)} loaded actions','\n'.join(lines)))
-        sections+=short_hierarchy
-        sections.append(('Evidence window',(str(work_facts['source_count'])+' owned records' if work_facts['source_count'] else 'No owned records loaded yet')+' · '+work_facts['coverage']+' Open Review work for scoped paging and exact source references.'))
+        sections += [(label,value) for label,value in short_hierarchy if label=='Subtree summary']
         if item['state']=='Completed':
             sections.append(('Review','Agent reported completion; changes and checks are not independently verified here.'+
                              (' Reviewed for this run.' if reviewed else ' r Mark reviewed.')))
-        sections.append(('Status evidence',attention_evidence(item,summary)))
+        if attention_required(item) and item.get('state')!='Interrupted':
+            sections.append(('Status evidence',attention_evidence(item,summary)))
         sections+=ai_sections
         self.inspect('agent-detail',title,fields,sections,identity=(item['id'],'overview'),context_in_header=True)
 
@@ -4085,7 +4114,7 @@ class ObservatoryApp(App):
         picker=self.query_one('#more-views',Select)
         menu_navigation=getattr(self,'layout_size',self.size).width<76
         if getattr(self,'view_menu_mode',None)!=menu_navigation:
-            options=[('Other views',''),('5 Host','host'),('6 Metrics','metrics'),('7 Findings','findings')]
+            options=[('More',''),('5 Host','host'),('6 Metrics','metrics'),('7 Findings','findings')]
             if menu_navigation:
                 options=[('Views: 1 Agents','agents'),('Views: 2 Activity','activity'),
                          ('Views: 3 MCP Calls','mcp'),('Views: 4 Traces','traces')]+options[1:]
@@ -4688,7 +4717,8 @@ class ObservatoryApp(App):
             self.sync_evidence_scope()
             self.activity_fallback_scope=self.current_evidence_scope()
             self.prompts_only=False
-            if not prompt_view and (self.agent_filter=='errors' or self.agent_has_failures or (record and failed(record))):
+            interrupted = self.source_map.get(self.selected_source,{}).get('state')=='Interrupted'
+            if not prompt_view and not interrupted and (self.agent_filter=='errors' or self.agent_has_failures or (record and failed(record))):
                 self.errors_only.add('activity')
             else:self.errors_only.discard('activity')
             # A clipped reader record needs a fresh query, even when it is
@@ -4893,37 +4923,11 @@ class ObservatoryApp(App):
         self.last_update=-1
         self.refresh_data()
     def linked_agent_trace(self):
-        """The trace recorded for the selected session, when one is linked.
-
-        Recent work first, then the session's own last event, then a recorded
-        trace for the same session, then one whose task names the same work.
-        """
+        """Resolve only evidence owned by the selected session/execution."""
         session=getattr(self,'source_map',{}).get(self.selected_source)
         if not session:return None
-        traces=list(self.data.traces) if self.data else []
-        known={item.get('trace_id') for item in traces}
         events=[*self.table_data.get('agent-actions',{}).values(),session.get('last_activity') or {}]
-        for event in events:
-            trace_id=event.get('trace_id')
-            if trace_id and trace_id in known:
-                return {'trace_id':trace_id,'span_id':event.get('span_id')}
-        trace_id=session.get('latest_trace_id')
-        agent_id=session.get('agent_id')
-        if agent_id:
-            match=next((item for item in traces if item.get('agent_id')==agent_id),None)
-            if match:return {'trace_id':match['trace_id']}
-        if trace_id:
-            return {'trace_id':trace_id}
-        session_id=session.get('session_id')
-        if session_id:
-            match=next((item for item in traces if item.get('session_id')==session_id
-                        and (not agent_id or not item.get('agent_id'))),None)
-            if match:return {'trace_id':match['trace_id']}
-        task=str(session.get('task') or '').strip().casefold()
-        if task:
-            match=next((item for item in traces if task and task in str(item.get('task') or '').casefold()),None)
-            if match:return {'trace_id':match['trace_id']}
-        return None
+        return linked_trace(session,events,self.data.traces if self.data else [])
 
     def metric_exemplar(self):
         """Resolve exemplars only within the selected instrument and its history."""

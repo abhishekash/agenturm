@@ -173,6 +173,9 @@ class PointerCopyTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_trace_key_follows_the_selected_session_from_the_agents_page(self):
         feed=ManualFeed()
+        # Navigation requires a recorded link, not coincidentally matching task text.
+        feed.api.sessions[0]['latest_trace_id']='trace-1'
+        feed.refresh()
         app=ObservatoryApp(feed)
         async with app.run_test(size=(160,48)) as pilot:
             await pilot.pause()
