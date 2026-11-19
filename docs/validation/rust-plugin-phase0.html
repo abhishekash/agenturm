@@ -1,0 +1,62 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Plugin Phase0</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-plugin-phase0.md">Markdown source ↗</a></nav><h1>Rust/plugin migration: first implementation checkpoint</h1>
+<p>Branch <code>architecture/rust-plugin-kernel</code>; baseline <code>ca202c7</code>; collection date 19 November 2026. This checkpoint starts the reviewed plan. It is not the completed microkernel or a Rust performance result.</p>
+<h2>Implemented</h2>
+<ul>
+<li>Extracted native file discovery specifications for Codex, Claude Code, Pi and Kiro into <code>observatory/native_sources.py</code>. The scanner accepts an injected specification list. Kiro directory and file rules now come from its specification instead of runtime branches in the scanner. Existing session parsing, policy and Store ownership remain intact. OpenCode discovery is separate and still needs its own adapter extraction.</li>
+<li>Added a synthetic registered-source test that filters directories/files without editing scanner dispatch, plus duplicate/invalid ID checks.</li>
+<li>Repaired <code>benchmark_app.py</code>: it had closed its Store before trying to read through the live receiver. It now waits for derivation and history readiness while the receiver stays open, with bounded failure.</li>
+</ul>
+<h2>Synthetic diagnostic baseline</h2>
+<p>Command: <code>python scripts/benchmark_app.py --idle-seconds 10</code> using the project Python 3.12.3 environment. Each scenario starts a fresh process/private temporary database; all seven views are warmed. The benchmark excludes native discovery and real terminal rendering. Twelve HTTP refreshes and ten idle seconds are descriptive samples, not a reliable p95 or a pass/fail performance gate. The source-discovery extraction does not run in this benchmark (<code>local_agents=False</code>), so these numbers describe the unchanged receiver/feed/UI path plus the benchmark setup repair.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th style="text-align:right">Spans</th>
+<th style="text-align:right">Ingest + derivation</th>
+<th style="text-align:right">First refresh</th>
+<th style="text-align:right">Warm median refresh</th>
+<th style="text-align:right">Idle CPU</th>
+<th style="text-align:right">Current RSS</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>small</td>
+<td style="text-align:right">200</td>
+<td style="text-align:right">0.387 s</td>
+<td style="text-align:right">135.0 ms</td>
+<td style="text-align:right">26.3 ms</td>
+<td style="text-align:right">5.90%</td>
+<td style="text-align:right">86.4 MiB</td>
+</tr>
+<tr>
+<td>large</td>
+<td style="text-align:right">20,000</td>
+<td style="text-align:right">14.448 s</td>
+<td style="text-align:right">142.0 ms</td>
+<td style="text-align:right">25.8 ms</td>
+<td style="text-align:right">7.98%</td>
+<td style="text-align:right">93.3 MiB</td>
+</tr>
+<tr>
+<td>payloads</td>
+<td style="text-align:right">2,000</td>
+<td style="text-align:right">3.367 s</td>
+<td style="text-align:right">148.8 ms</td>
+<td style="text-align:right">28.4 ms</td>
+<td style="text-align:right">6.88%</td>
+<td style="text-align:right">103.7 MiB</td>
+</tr>
+</tbody>
+</table></div>
+<p>The initial diagnostic attempt failed because the script closed read connections before feed refresh. A later payload run exposed a second setup issue: an empty derived queue did not yet mean history indexing was ready. Both failures were reproduced and the script was fixed before collecting the table above. Raw measurements are in <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-plugin-phase0.json">rust-plugin-phase0.json</a>.</p>
+<h2>Validation and next gate</h2>
+<p>The final discovery, benchmark-statistics, Kiro and native-session suites passed 54 tests. <code>git diff --check</code> passed. These runs do not prove a new external harness can complete a source-to-export journey.</p>
+<p>Before choosing the Rust accelerator, register a representative native-history workload and measure source scan/parse CPU, ingest/derivation queue wait, SQL/write time, WAL stalls, feed serialization and UI event latency separately. Run the predeclared request-count and duration gates from the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-plugin-kernel-plan.html">execution plan</a>. A parser speedup alone cannot decide the migration.</p>
+<p>The next implementation increment is the canonical ingestion/query/policy ports and one complete adapter including cursors, lifecycle and source-to-Review/Activity/export proof. Only after those contracts and the plugin host are sound should a production Rust worker enter the path.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

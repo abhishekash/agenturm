@@ -7,9 +7,32 @@ import unittest
 from unittest.mock import patch
 
 from observatory.local_agents import LocalAgents
+from observatory.native_sources import NativeSourceSpec
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_registered_source_controls_discovery_without_core_runtime_branch(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            (root / 'skip').mkdir()
+            (root / 'keep').mkdir()
+            (root / 'skip' / 'ignored.jsonl').touch()
+            accepted = root / 'keep' / 'accepted.jsonl'
+            accepted.touch()
+            (root / 'keep' / 'rejected.jsonl').touch()
+            spec = NativeSourceSpec('fixture', 'Fixture', lambda: root,
+                accepts_file=lambda path: Path(path).name == 'accepted.jsonl',
+                accepts_directory=lambda name: name != 'skip')
+            monitor = LocalAgents(None, source_specs=(spec,))
+            monitor.discover()
+            self.assertEqual(list(monitor.sessions), [accepted])
+            self.assertEqual(monitor.sessions[accepted].runtime, 'Fixture')
+            self.assertEqual(monitor.discovered_sources, 1)
+            with self.assertRaisesRegex(ValueError, 'duplicate native source ID'):
+                LocalAgents(None, source_specs=(spec, spec))
+            with self.assertRaisesRegex(ValueError, 'invalid native source ID'):
+                NativeSourceSpec('', 'Fixture', lambda: root)
+
     def test_bounded_selection_finds_new_files_and_revived_old_sessions(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)

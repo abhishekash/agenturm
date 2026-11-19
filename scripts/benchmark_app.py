@@ -78,8 +78,27 @@ async def scenario(name, idle_seconds):
                         batch.clear()
             if batch:
                 receiver.store.ingest(batch)
-            # Drain the derived worker before measuring feed/UI steady state.
-            receiver.store.close()
+            # Wait for derivation without closing the Store still serving HTTP.
+            # Store.close() also closes its read pool, making every feed read fail.
+            with receiver.store._derived_condition:
+                drained = receiver.store._derived_condition.wait_for(
+                    lambda: (not receiver.store._derived_pending and
+                             not receiver.store._derived_inflight) or
+                    bool(receiver.store.last_derived_error), timeout=30)
+            if not drained or receiver.store.last_derived_error:
+                raise RuntimeError(receiver.store.last_derived_error or 'derived work did not drain')
+            # The fresh database can still be indexing source history after
+            # the immediate derived queue empties. Only time a ready snapshot.
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                indexing = receiver.store.index_status()
+                if indexing.get('error'):
+                    raise RuntimeError(indexing['error'])
+                if indexing.get('ready'):
+                    break
+                time.sleep(.05)
+            else:
+                raise RuntimeError('history indexing did not finish before the benchmark deadline')
             ingestion_seconds = time.perf_counter() - start
             latencies = []
             for _ in range(12):
