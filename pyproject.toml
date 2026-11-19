@@ -53,3 +53,6 @@ observatory = ["*.html", "*.js", "*.css"]
 
 [tool.setuptools.packages.find]
 include = ["observatory*"]
+
+[tool.setuptools.package-data]
+"observatory._native" = ["agenturm-plugin-host", "host.json"]

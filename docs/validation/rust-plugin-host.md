@@ -32,3 +32,5 @@ On POSIX, Python starts each host in its own process group and kills the group o
 | Existing plugin process/runtime/supervisor/config and sample-adapter Python tests | Passed locally (41 tests, four Rust sample tests skipped when its binary environment variable was absent). |
 
 This is an optional transport for POSIX hosts. The new no-orphan tests use Linux `/proc`; macOS process cleanup and installed-wheel delivery remain unqualified. The Rust process does not replace the Python Store, plugin supervisor policy or all native harness readers. It adds a process per source and no controlled whole-monitor performance result is available.
+
+The later [Linux wheel checkpoint](rust-host-linux-wheel.md) packages this host as an opt-in installed artifact and records the remaining platform gates.
