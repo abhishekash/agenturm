@@ -141,11 +141,11 @@ def source_record(row):
 def cursor_parts(cursor):
     if cursor == "" or re.fullmatch(r"gap:[0-9a-f]{64}", cursor):
         return "", "0"
-    match = re.fullmatch(r"v1:([A-Za-z0-9._:-]{1,200}):((?:0|[1-9][0-9]{0,18}))", cursor)
+    match = re.fullmatch(r"v1:([A-Za-z0-9._:-]{1,200}|~):((?:0|[1-9][0-9]{0,18}))", cursor)
     if match is None:
         raise ValueError("invalid resume cursor")
     token = match[1]
-    if token == "-":
+    if token == "~":
         token = ""
     if not TOKEN.fullmatch(token) or int(match[2]) > 2**63 - 1:
         raise ValueError("invalid resume cursor")
@@ -212,7 +212,7 @@ def poll(opener, url, source_id, cursor, max_records, max_bytes, retry_at):
     projected = [source_record(item) for item in records]
     if projected:
         last_ns = max((last_ns, *(item["time_ns"] for item in projected)), key=int)
-    next_cursor = "v1:" + (next_token or "-") + ":" + last_ns
+    next_cursor = "v1:" + (next_token or "~") + ":" + last_ns
     if not projected and next_token == token:
         next_cursor = cursor
     batch = {"type": "batch", "protocol": 1, "source_id": source_id,
