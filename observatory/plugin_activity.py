@@ -72,8 +72,8 @@ def index_rows(rows: list, *, receiver_id: str, source_id: str, plugin_id: str,
         session_key = "plugin:" + _opaque(receiver_id, source_id, native_session)
         event_key = "plugin-event:" + _opaque(receiver_id, source_id, row["event_id_hash"])
         agent_id = canonical_agent_id(plugin_id, "plugin:" + source_id, native_session)
-        turn_id = ("plugin-turn:" + _opaque(receiver_id, source_id,
-                                            row["native_turn_id"])
+        turn_id = (_opaque("plugin-turn", receiver_id, source_id, native_session,
+                           row["native_turn_id"])[:32]
                    if row["native_turn_id"] else "")
         if kind == "message":
             action, result_name = payload["role"], "observed"
@@ -100,7 +100,8 @@ def index_rows(rows: list, *, receiver_id: str, source_id: str, plugin_id: str,
                              "native_turn_observed": bool(row["native_turn_id"]),
                              "native_operation_observed": bool(operation_id),
                              "capture": "content-free", "coverage": "partial"},
-                "detail_present": False, "operation_present": False}
+                "capture_content": False, "detail_present": False,
+                "operation_present": False}
         result.append((event_key, "plugin", source_id, row["time_ns"], None,
                        session_key, agent_id, plugin_id, kind, action, result_name,
                        turn_id or None, json.dumps(fact, sort_keys=True,

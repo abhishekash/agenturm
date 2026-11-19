@@ -55,7 +55,7 @@ class PluginActivityTests(unittest.TestCase):
         self.assertTrue(all(r["detail"] == "" and r["source"] == "plugin" for r in rows))
         self.assertTrue(all(r["session_id"] == sessions(self.store)["sessions"][0]["session_id"]
                             for r in rows))
-        self.assertTrue(all(r["agent_id"] and r["turn_id"].startswith("plugin-turn:")
+        self.assertTrue(all(r["agent_id"] and len(r["turn_id"]) == 32
                             for r in rows))
         self.assertEqual(sessions(self.store)["sessions"][0]["run_state"], "running")
         from observatory.source_projection import prepare_sources
@@ -68,6 +68,7 @@ class PluginActivityTests(unittest.TestCase):
         self.assertEqual(exact["agent_scope"]["coverage"], "partial")
         self.assertEqual(len(self.store.activity_page(agent_id=prepared[0]["agent_id"],
                                                       subtree=True)["activity"]), 3)
+        self.assertEqual(len(self.store.activity_page(turn_id=rows[0]["turn_id"])["activity"]), 3)
         self.assertEqual(len(self.activity(domain="check", errors_only=True)), 1)
         self.assertEqual({r["domain"] for r in self.activity(review=True)},
                          {"message", "tool", "check"})
@@ -159,13 +160,22 @@ class PluginActivityTests(unittest.TestCase):
         project_source(self.store, "fixture-source")
         self.assertEqual(len(self.activity()), 1)
         with self.store._connect() as db:
+            row = db.execute("SELECT event_key,payload FROM activity_index_v1 "
+                             "WHERE kind='plugin'").fetchone()
+            old = json.loads(row["payload"])
+            old["turn_id"] = "plugin-turn:legacy"
+            db.execute("UPDATE activity_index_v1 SET turn_id=?,payload=? WHERE event_key=?",
+                       (old["turn_id"], json.dumps(old), row["event_key"]))
             db.execute("DELETE FROM schema_meta WHERE key='plugin_activity_projection_v2'")
         reopened = Store(self.path)
         self.addCleanup(reopened.close)
         self.assertEqual(reopened.activity_page()["activity"], [])
         self.assertEqual(sessions(reopened)["pending_sources"], 1)
         project_source(reopened, "fixture-source")
-        self.assertEqual(len(reopened.activity_page()["activity"]), 1)
+        activity = reopened.activity_page()["activity"]
+        self.assertEqual(len(activity), 1)
+        self.assertEqual(len(activity[0]["turn_id"]), 32)
+        self.assertEqual(len(reopened.activity_page(turn_id=activity[0]["turn_id"])["activity"]), 1)
 
     def test_http_activity_cache_cannot_replay_stale_policy_or_revision(self):
         from observatory.server import BoundedHTTPServer, handler_for
@@ -177,8 +187,9 @@ class PluginActivityTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
 
-        def page():
-            with urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/activity",
+        def page(turn_id=""):
+            suffix = "?turn_id=" + turn_id if turn_id else ""
+            with urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/activity{suffix}",
                          timeout=3) as response:
                 return json.load(response)["activity"]
 
@@ -186,19 +197,26 @@ class PluginActivityTests(unittest.TestCase):
         project_source(self.store, "fixture-source")
         self.assertEqual(page()[0]["result"], "failed")
         self.assertEqual(page()[0]["result"], "failed")  # warm HTTP cache
+        turn_id = page()[0]["turn_id"]
+        self.assertEqual(len(page(turn_id)), 1)
         self.commit("one", "two", [fact("c", "check", {"category": "test", "result": "passed"},
                                         revision=1)])
         self.assertEqual(page(), [])
+        self.assertEqual(page(turn_id), [])
         project_source(self.store, "fixture-source")
         self.assertEqual(page()[0]["result"], "passed")
+        self.assertEqual(page(turn_id)[0]["result"], "passed")
         set_source_capture(self.store, source_id="fixture-source", enabled=False)
         self.assertEqual(page(), [])
+        self.assertEqual(page(turn_id), [])
 
     def test_retention_invalidation_removes_affected_activity(self):
         with patch("observatory.plugin_admission.MAX_SOURCE_RECORDS", 4):
-            self.commit("", "one", [fact(f"m{n}", "message", {"role": "user"},
-                                          session=f"session-{n}", stamp=str(n))
-                                    for n in range(1, 5)])
+            self.commit("", "one", [
+                fact("m1", "tool", {"category": "file", "result": "failed"},
+                     session="session-1", stamp="1", operation="call-1"),
+                *(fact(f"m{n}", "message", {"role": "user"},
+                       session=f"session-{n}", stamp=str(n)) for n in range(2, 5))])
             project_source(self.store, "fixture-source")
             self.assertEqual(len(self.activity()), 4)
             self.commit("one", "two", [fact("m5", "message", {"role": "user"},
@@ -244,6 +262,10 @@ class PluginActivityTests(unittest.TestCase):
         project_source(self.store, "other-source")
         operations = {row["operation_id"] for row in self.activity()}
         self.assertEqual(len(operations), 3)
+        turns = {row["turn_id"] for row in self.activity()}
+        self.assertEqual(len(turns), 3)
+        for turn_id in turns:
+            self.assertEqual(len(self.store.activity_page(turn_id=turn_id)["activity"]), 1)
 
     def test_rejects_raw_content_and_wrong_payload_before_any_write(self):
         bad = [

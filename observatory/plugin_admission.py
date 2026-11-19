@@ -220,6 +220,8 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
             db.execute("DELETE FROM plugin_session_projection_v1 WHERE source_id=?", (source_id,))
             db.execute("DELETE FROM activity_index_v1 WHERE kind='plugin' AND owner_key=?",
                        (source_id,))
+            db.execute("DELETE FROM investigation_dirty_v1 WHERE kind='plugin' AND owner_key=?",
+                       (source_id,))
             plugin_retention.revoke(db, source_id)
         dirty_seq = row["dirty_seq"] + 1
         db.execute("UPDATE plugin_source_cursor_v1 SET capture_enabled=?,policy_epoch=?,"

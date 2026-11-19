@@ -170,6 +170,12 @@ def project_source(store: Store, source_id: str) -> int:
         db.executemany("INSERT INTO activity_index_v1(event_key,kind,owner_key,stamp,trace_id,"
                        "session_id,agent_id,service,domain,action,result,turn_id,payload) "
                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", activity_rows)
+        # Plugin facts carry no captured input roles. Activity triggers mark
+        # investigation dirty, but there are deliberately no terms to index.
+        # Clear only this owner after the same transaction has published the
+        # policy-current rows; deletion triggers already removed old terms.
+        db.execute("DELETE FROM investigation_dirty_v1 WHERE kind='plugin' AND owner_key=?",
+                   (source_id,))
         db.execute("INSERT INTO plugin_projection_cursor_v1(source_id,projected_seq,policy_epoch) "
                    "VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
                    "projected_seq=excluded.projected_seq,policy_epoch=excluded.policy_epoch",

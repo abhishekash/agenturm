@@ -2,6 +2,7 @@
 import json
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 
 from observatory.core import Store
@@ -76,10 +77,11 @@ class PiProcessBoundaryTests(unittest.TestCase):
                              {"input_tokens": 8, "output_tokens": 3})
             self.assertEqual(projected[0]["coverage"], "partial")
             activity = process.activity_page()["activity"]
-            self.assertEqual([(row["domain"], row["result"]) for row in activity],
-                             [("tool", "failed"), ("tool", "started"),
-                              ("message", "observed"), ("message", "observed")])
-            self.assertEqual(activity[0]["operation_id"], activity[1]["operation_id"])
+            self.assertEqual(Counter((row["domain"], row["result"]) for row in activity),
+                             Counter({("tool", "failed"): 1, ("tool", "started"): 1,
+                                      ("message", "observed"): 2}))
+            tool_rows = [row for row in activity if row["domain"] == "tool"]
+            self.assertEqual(tool_rows[0]["operation_id"], tool_rows[1]["operation_id"])
             self.assertEqual({row["turn_id"] for row in activity},
                              {activity[0]["turn_id"]})
             self.assertEqual(len(process.activity_page(review=True)["activity"]), 3)
