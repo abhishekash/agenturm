@@ -37,7 +37,8 @@ def send(value):
 try:
     hello = receive()
     send({'type':'hello_ack','protocol':1,'plugin_id':hello['plugin_id'],
-          'features':['source-adapter/1']})
+          'features':['source-adapter/1', 'configured-root/1'] if MODE == 'root'
+          else ['source-adapter/1']})
     while True:
         request = receive()
         if request['type'] == 'stop':
@@ -153,6 +154,30 @@ class ProcessHostTests(unittest.TestCase):
         host = PluginProcess(manifest, source_id="fixture-source",
                              allowed_grants=("configured-source-read",))
         with self.assertRaisesRegex(ProtocolError, "hash mismatch"):
+            host.start()
+        self.assertIsNone(host.process)
+
+    def test_manifest_and_running_child_must_agree_on_features(self):
+        self.manifest("ok")
+        path = self.root / "plugin.toml"
+        path.write_text(path.read_text().replace(
+            'provides = ["source-adapter/1"]',
+            'provides = ["source-adapter/1", "harness.pi/1", "configured-root/1"]'))
+        manifest = PluginManifest.read(path)
+        for feature_args in ({"required_features": ("harness.pi/1",)},
+                             {"source_root": str(self.root)}):
+            with self.subTest(feature_args=feature_args):
+                host = PluginProcess(manifest, source_id="fixture-source",
+                                     allowed_grants=("configured-source-read",),
+                                     **feature_args)
+                with self.assertRaisesRegex(ProtocolError, "handshake features"):
+                    host.start()
+                self.assertIsNone(host.process)
+        self.manifest("root")
+        host = PluginProcess(PluginManifest.read(self.root / "plugin.toml"),
+                             source_id="fixture-source",
+                             allowed_grants=("configured-source-read",))
+        with self.assertRaisesRegex(ProtocolError, "handshake features"):
             host.start()
         self.assertIsNone(host.process)
 

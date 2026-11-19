@@ -92,7 +92,8 @@ class PluginSupervisor:
                 raise ValueError("invalid plugin poll interval")
             PluginSession(store, source.manifest, source_id=source.source_id,
                           allowed_grants=source.allowed_grants, timeout=source.timeout,
-                          source_root=source.source_root)
+                          source_root=source.source_root,
+                          required_features=tuple(f"harness.{name}/1" for name in source.replaces))
         self.store = store
         self.sources = sources
         self.max_failures = max_failures
@@ -138,7 +139,8 @@ class PluginSupervisor:
         while not self.stop.is_set():
             session = PluginSession(self.store, source.manifest, source_id=source_id,
                                     allowed_grants=source.allowed_grants,
-                                    timeout=source.timeout, source_root=source.source_root)
+                                    timeout=source.timeout, source_root=source.source_root,
+                                    required_features=tuple(f"harness.{name}/1" for name in source.replaces))
             try:
                 self._update(source_id, state="starting", restart_count=max(0, attempts))
                 attempts += 1

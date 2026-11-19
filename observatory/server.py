@@ -538,7 +538,8 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
         for source in plugin_sources:
             child = PluginProcess(source.manifest, source_id=source.source_id,
                                   allowed_grants=source.allowed_grants, timeout=source.timeout,
-                                  source_root=source.source_root)
+                                  source_root=source.source_root,
+                                  required_features=tuple(f"harness.{name}/1" for name in source.replaces))
             if source.replaces:
                 child.verify_artifact()
     replacements = tuple(name for source in plugin_sources for name in source.replaces)
