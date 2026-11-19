@@ -23,6 +23,7 @@ from .core import normalize_native
 from .local_activity import mcp_attributes, mcp_failed, plaintext
 from .local_state import RecentMap
 from .native_json import loads
+from .native_sources import NativeSourceSpec, builtin_sources, kiro_home
 
 MAX_READ = 8 * 1024 * 1024
 MAX_LINE = 2 * 1024 * 1024
@@ -1680,18 +1681,6 @@ def kiro_credits(payload):
     values = [float(value) for value in values
               if type(value) in {int, float} and math.isfinite(value) and value >= 0]
     return round(sum(values), 8) if values else None
-# cli/ holds the legacy v1/v2 format; snapshots/ are file checkpoints, not records.
-KIRO_SKIPPED_DIRECTORIES = {"cli", "snapshots", ".index"}
-
-
-def kiro_home():
-    """Kiro honours an absolute KIRO_HOME and otherwise uses ~/.kiro."""
-    configured = os.environ.get("KIRO_HOME", "").strip()
-    if configured and Path(configured).is_absolute() and Path(configured).resolve() != Path(configured).resolve().parent:
-        return Path(configured)
-    return Path.home() / ".kiro"
-
-
 def _kiro_layout(path):
     """Return (session directory, worker id) for a Kiro messages or sub-execution file.
 
@@ -1702,14 +1691,6 @@ def _kiro_layout(path):
     if path.parent.name == "sub-executions":
         return path.parent.parent, _safe_identifier(path.stem)
     return path.parent, None
-
-
-def _kiro_source(path):
-    """Accept only the current Kiro session layout, never legacy cli/ histories."""
-    path = Path(path)
-    if path.name == "messages.jsonl":
-        return path.parent.name.startswith("sess_")
-    return path.parent.name == "sub-executions" and path.parent.parent.name.startswith("sess_")
 
 
 def _kiro_interaction_key(payload, row):
@@ -1799,9 +1780,12 @@ def plaintext_task(row):
 
 
 class LocalAgents:
-    def __init__(self, store, capture_details=True):
+    def __init__(self, store, capture_details=True, source_specs: tuple[NativeSourceSpec, ...] | None = None):
         self.store = store
         self.capture_details = capture_details
+        self.source_specs = builtin_sources() if source_specs is None else tuple(source_specs)
+        if len({spec.id for spec in self.source_specs}) != len(self.source_specs):
+            raise ValueError("duplicate native source ID")
         self.stop = threading.Event()
         self.sessions = {}
         self.discovered_sources = 0
@@ -1832,16 +1816,13 @@ class LocalAgents:
             'message':_safe_text(str(error))[:300],'at_ns':time.time_ns()}
 
     def discover(self):
-        roots = [(Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))/"sessions", "Codex"),
-                 (Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home()/".claude")))/"projects", "Claude Code"),
-                 (Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home()/".pi"/"agent")))/"sessions", "Pi"),
-                 (kiro_home()/"sessions", "Kiro")]
         cutoff = time.time() - 86400
         self.discovered_sources = 0
         pending_sources={path for path,session in self.sessions.items() if session._pending_ingest is not None}
         discovered_pending=set()
         def recent():
-            for root, runtime in roots:
+            for spec in self.source_specs:
+                root, runtime = spec.root(), spec.runtime
                 if not root.is_dir():
                     continue
                 # One directory pass; DirEntry reuses directory type metadata.
@@ -1858,11 +1839,11 @@ class LocalAgents:
                                     return
                                 try:
                                     if entry.is_dir(follow_symlinks=False):
-                                        if runtime == "Kiro" and entry.name in KIRO_SKIPPED_DIRECTORIES:
+                                        if not spec.accepts_directory(entry.name):
                                             continue
                                         pending.append(entry.path)
                                     elif entry.name.endswith('.jsonl') and entry.is_file():
-                                        if runtime == "Kiro" and not _kiro_source(entry.path):
+                                        if not spec.accepts_file(entry.path):
                                             continue
                                         modified = entry.stat().st_mtime
                                         if modified >= cutoff:
