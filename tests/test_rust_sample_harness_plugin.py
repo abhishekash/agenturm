@@ -17,7 +17,7 @@ from observatory.plugin_config import read_plugin_config
 from observatory.plugin_projection import project_source
 from observatory.plugin_runtime import PluginSession
 from observatory.plugin_wire import ProtocolError
-from observatory.server import BoundedHTTPServer, serve
+from observatory.server import BoundedHTTPServer, handler_for, serve
 
 
 PACKAGE = Path(__file__).resolve().parents[1] / "examples" / "rust_sample_harness_plugin"
@@ -93,6 +93,73 @@ class RustSampleHarnessTests(unittest.TestCase):
                              {"input_tokens": 7, "output_tokens": 1})
         with self.store._connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 5)
+
+    def test_installed_rust_adapter_projects_content_free_activity(self):
+        self.append(
+            {"id": "start", "session": "native-1", "at_ns": "100",
+             "kind": "lifecycle", "state": "started"},
+            {"id": "usage", "session": "native-1", "at_ns": "110",
+             "kind": "usage", "usage": {"input_tokens": 4, "output_tokens": 1}},
+            {"id": "request", "session": "native-1", "at_ns": "120",
+             "kind": "message", "role": "user"},
+            {"id": "call", "session": "native-1", "at_ns": "130",
+             "kind": "tool", "category": "shell", "result": "succeeded"},
+            {"id": "check", "session": "native-1", "at_ns": "140",
+             "kind": "check", "category": "test", "result": "failed"})
+        handler = handler_for(self.store, quiet=True)
+        server = BoundedHTTPServer(("127.0.0.1", 0), handler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        self.addCleanup(handler.response_cache.close)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server_thread.join, 3)
+        self.addCleanup(server.shutdown)
+
+        def http_activity():
+            with urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/activity",
+                         timeout=3) as response:
+                return json.load(response)["activity"]
+
+        with self.session() as worker:
+            first = worker.poll_once()
+            self.assertEqual(len(first.records), 5)
+            self.assertEqual(worker.poll_once().records, ())
+            projected = self.projected()["native-1"]
+            self.assertEqual(projected["run_state"], "running")
+            self.assertEqual(projected["metadata_usage"],
+                             {"input_tokens": 4, "output_tokens": 1})
+            activity = self.store.activity_page()["activity"]
+            self.assertEqual([(row["domain"], row["result"]) for row in activity],
+                             [("check", "failed"), ("tool", "succeeded"),
+                              ("message", "observed")])
+            self.assertTrue(all(row["detail"] == "" for row in activity))
+            self.assertEqual({row["session_id"] for row in activity},
+                             {projected["session_id"]})
+            self.assertEqual(len(http_activity()), 3)
+            self.append(
+                {"id": "check", "session": "native-1", "at_ns": "140",
+                 "kind": "check", "revision": 1,
+                 "category": "test", "result": "passed"},
+                {"id": "usage", "session": "native-1", "at_ns": "110",
+                 "kind": "usage", "revision": 1,
+                 "usage": {"input_tokens": 6, "output_tokens": 1}})
+            correction = worker.poll_once()
+            self.assertEqual(len(correction.records), 2)
+            self.assertEqual(self.store.activity_page()["activity"], [])
+            self.assertEqual(http_activity(), [])
+            projected = self.projected()["native-1"]
+            self.assertEqual(projected["metadata_usage"],
+                             {"input_tokens": 6, "output_tokens": 1})
+            self.assertEqual(projected["run_state"], "running")
+            self.assertEqual(self.store.activity_page(domain="check")["activity"][0]["result"],
+                             "passed")
+            self.assertEqual(http_activity()[0]["result"], "passed")
+            set_source_capture(self.store, source_id=self.source.source_id, enabled=False)
+            self.assertEqual(self.store.activity_page()["activity"], [])
+            self.assertEqual(http_activity(), [])
+            self.assertEqual(self.store.plugin_sessions()["sessions"], [])
+            with self.assertRaisesRegex(ProtocolError, "stale plugin source lease"):
+                worker.poll_once()
 
     def test_source_replacement_reports_gap_and_revocation_erases_evidence(self):
         self.append({"id": "first", "session": "a", "at_ns": "10",
