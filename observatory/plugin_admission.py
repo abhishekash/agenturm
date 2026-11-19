@@ -69,18 +69,39 @@ def initialize(db: Connection) -> None:
             native_worker_id TEXT NOT NULL DEFAULT '',
             native_turn_id TEXT NOT NULL DEFAULT '',
             policy_epoch INTEGER NOT NULL DEFAULT 1,
+            admitted_ns INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(source_id,event_id_hash,revision),
             FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
         CREATE TABLE IF NOT EXISTS plugin_evidence_dirty_v1 (
             source_id TEXT PRIMARY KEY,
             dirty_seq INTEGER NOT NULL,
             FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
+        CREATE TABLE IF NOT EXISTS plugin_session_projection_v1 (
+            source_id TEXT NOT NULL,
+            native_session_id TEXT NOT NULL,
+            session_key TEXT NOT NULL,
+            state TEXT NOT NULL,
+            reason_code TEXT NOT NULL,
+            state_time_ns INTEGER NOT NULL,
+            last_record_ns INTEGER NOT NULL,
+            policy_epoch INTEGER NOT NULL,
+            source_dirty_seq INTEGER NOT NULL,
+            PRIMARY KEY(source_id,native_session_id),
+            FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
+        CREATE INDEX IF NOT EXISTS plugin_session_projection_recent_v1
+            ON plugin_session_projection_v1(last_record_ns DESC,session_key);
+        CREATE TABLE IF NOT EXISTS plugin_projection_cursor_v1 (
+            source_id TEXT PRIMARY KEY,
+            projected_seq INTEGER NOT NULL,
+            policy_epoch INTEGER NOT NULL,
+            FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
     """)
     columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_evidence_v1)")}
     for name, declaration in (("native_session_id", "TEXT NOT NULL DEFAULT ''"),
                               ("native_worker_id", "TEXT NOT NULL DEFAULT ''"),
                               ("native_turn_id", "TEXT NOT NULL DEFAULT ''"),
-                              ("policy_epoch", "INTEGER NOT NULL DEFAULT 1")):
+                              ("policy_epoch", "INTEGER NOT NULL DEFAULT 1"),
+                              ("admitted_ns", "INTEGER NOT NULL DEFAULT 0")):
         if name not in columns:
             db.execute(f"ALTER TABLE plugin_evidence_v1 ADD COLUMN {name} {declaration}")
     cursor_columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_source_cursor_v1)")}
@@ -160,6 +181,7 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
         lease_epoch = secrets.randbelow(2**63 - 1) + 1
         if not enabled:
             db.execute("DELETE FROM plugin_evidence_v1 WHERE source_id=?", (source_id,))
+            db.execute("DELETE FROM plugin_session_projection_v1 WHERE source_id=?", (source_id,))
         dirty_seq = row["dirty_seq"] + 1
         db.execute("UPDATE plugin_source_cursor_v1 SET capture_enabled=?,policy_epoch=?,"
                    "lease_epoch=?,dirty_seq=?,updated_ns=? WHERE source_id=?",
@@ -167,6 +189,10 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
         db.execute("INSERT INTO plugin_evidence_dirty_v1(source_id,dirty_seq) VALUES(?,?) "
                    "ON CONFLICT(source_id) DO UPDATE SET dirty_seq=excluded.dirty_seq",
                    (source_id, dirty_seq))
+        db.execute("INSERT INTO plugin_projection_cursor_v1(source_id,projected_seq,policy_epoch) "
+                   "VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
+                   "projected_seq=excluded.projected_seq,policy_epoch=excluded.policy_epoch",
+                   (source_id, dirty_seq, epoch))
     return epoch
 
 
@@ -260,6 +286,8 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
             raise ProtocolError("plugin cursor did not advance")
         count = db.execute("SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
                            (lease.source_id,)).fetchone()[0]
+        admitted_ns = time.time_ns()
+        inserted = False
         for item in rows:
             latest = db.execute("SELECT revision,record_digest,kind,native_session_id,"
                                 "native_worker_id,native_turn_id FROM plugin_evidence_v1 "
@@ -278,14 +306,15 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                 raise ProtocolError("plugin source evidence capacity reached")
             db.execute("INSERT INTO plugin_evidence_v1 "
                        "(source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest,"
-                       "native_session_id,native_worker_id,native_turn_id,policy_epoch) "
-                       "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (*item, lease.policy_epoch))
+                       "native_session_id,native_worker_id,native_turn_id,policy_epoch,admitted_ns) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (*item, lease.policy_epoch, admitted_ns))
             count += 1
-        seq = row["dirty_seq"] + (1 if rows else 0)
+            inserted = True
+        seq = row["dirty_seq"] + int(inserted)
         db.execute("UPDATE plugin_source_cursor_v1 SET cursor=?,prior_cursor=?,last_batch_digest=?,"
                    "dirty_seq=?,updated_ns=? WHERE source_id=?",
                    (batch.cursor, expected_cursor, digest, seq, time.time_ns(), lease.source_id))
-        if rows:
+        if inserted:
             db.execute("INSERT INTO plugin_evidence_dirty_v1(source_id,dirty_seq) VALUES(?,?) "
                        "ON CONFLICT(source_id) DO UPDATE SET dirty_seq=excluded.dirty_seq",
                        (lease.source_id, seq))

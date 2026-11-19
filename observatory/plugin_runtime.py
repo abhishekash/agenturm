@@ -6,11 +6,14 @@ No default collector instantiates this class yet.
 """
 from __future__ import annotations
 
+import threading
+import time
 from typing import TYPE_CHECKING
 
 from .plugin_admission import SourceLease, activate_source, commit_batch
 from .plugin_manifest import PluginManifest
 from .plugin_process import PluginProcess
+from .plugin_projection import project_source
 from .plugin_wire import PollBatch, ProtocolError
 
 if TYPE_CHECKING:
@@ -27,6 +30,27 @@ class PluginSession:
                                      allowed_grants=allowed_grants, timeout=timeout)
         self.lease: SourceLease | None = None
         self.cursor: str | None = None
+        self.projection_error: str | None = None
+        self._projection_event = threading.Event()
+        self._projection_stop = threading.Event()
+        self._projection_thread: threading.Thread | None = None
+
+    def _projection_loop(self) -> None:
+        while not self._projection_stop.is_set():
+            self._projection_event.wait(0.5)
+            if self._projection_stop.is_set():
+                break
+            if not self._projection_event.is_set():
+                continue
+            self._projection_event.clear()
+            try:
+                project_source(self.store, self.process.source_id)
+                self.projection_error = None
+            except Exception as exc:
+                self.projection_error = type(exc).__name__ + ": " + str(exc)
+                if isinstance(exc, ProtocolError) and "source changed; retry" in str(exc):
+                    time.sleep(0.1)
+                    self._projection_event.set()
 
     def start(self) -> PluginSession:
         if self.lease is not None:
@@ -42,6 +66,11 @@ class PluginSession:
             self.lease = None
             self.cursor = None
             raise
+        self._projection_stop.clear()
+        self._projection_thread = threading.Thread(target=self._projection_loop,
+                                                   name="agenturm-plugin-projection", daemon=True)
+        self._projection_thread.start()
+        self._projection_event.set()  # Resume a dirty projection after a crash.
         return self
 
     def poll_once(self) -> PollBatch:
@@ -51,9 +80,18 @@ class PluginSession:
         batch = self.process.poll_commit(expected, lambda received: commit_batch(
             self.store, self.lease, expected, received))
         self.cursor = batch.cursor
+        if batch.records:
+            # Coalesce rebuilds off the acknowledgment path. Dirty sequence
+            # hides prior rows until the current revision is published.
+            self._projection_event.set()
         return batch
 
     def close(self) -> None:
+        self._projection_stop.set()
+        self._projection_event.set()
+        if self._projection_thread is not None:
+            self._projection_thread.join(timeout=2.0)
+            self._projection_thread = None
         self.process.close()
         self.lease = None
         self.cursor = None

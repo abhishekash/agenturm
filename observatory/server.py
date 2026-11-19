@@ -184,13 +184,26 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 if not indexing.get('ready') and callable(getattr(store,'catch_up_incoming',None)):
                     indexing=store.catch_up_incoming(indexing)
                 local = getattr(store, "local_agent_monitor", None)
+                local_status = local.status() if local else {"enabled": False}
+                try:
+                    plugin_status = store.plugin_sessions()
+                    if plugin_status["sessions"]:
+                        local_status = dict(local_status)
+                        local_status["sessions"] = [*(local_status.get("sessions") or ()),
+                                                    *plugin_status["sessions"]]
+                        local_status["enabled"] = True
+                    local_status["plugin_projection"] = {
+                        "pending_sources": plugin_status["pending_sources"],
+                        "omitted_sessions": plugin_status["omitted_sessions"]}
+                except (sqlite3.Error, ValueError) as exc:
+                    local_status["plugin_projection"] = {"error": type(exc).__name__}
                 self._json(200, {"ok": True,"observed_time_unix_nano":time.time_ns(), "receiver_id": store.receiver_namespace() if hasattr(store,"receiver_namespace") else None, "review_trace_filter": True, "review_turn_filter": True, "review_run_summary": True,
                     "investigation_index_v1":getattr(store,'investigation_index_v1',False),
                     "native_lifecycle_v1":callable(getattr(store,'native_lifecycle_inventory',None)),
                     "security":{"authentication_required":bool(token),"host_validation":True},
                     "storage":{"retention_days":getattr(store,"retention_days",None)},
                     "indexing":indexing,
-                    "local_agents": local.status() if local else {"enabled": False}})
+                    "local_agents": local_status})
             elif path == "/api/connections":
                 self._json(200, {"connections": store.connections()})
             elif path == "/api/hierarchy":

@@ -1,5 +1,6 @@
 """Opt-in process and Store composition across idle polls, replay and fencing."""
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -60,6 +61,11 @@ class PluginRuntimeTests(unittest.TestCase):
             first = session.poll_once()
             self.assertEqual(first.cursor, "next")
             self.assertEqual(self.state(), (("next", 1), 1))
+            deadline = time.monotonic() + 3
+            while self.store.plugin_sessions()["pending_sources"] and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(self.store.plugin_sessions()["pending_sources"], 0)
+            self.assertIsNone(session.projection_error)
             self.assertEqual(session.poll_once(), first)
             self.assertEqual(self.state(), (("next", 1), 1))
         self.assertEqual(self.fixture.marker.read_text().splitlines(), ["next", "next"])
