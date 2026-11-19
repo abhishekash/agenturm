@@ -49,6 +49,7 @@ from .ui_export import ExportScreen
 from .ui_render import update_status_text
 from .ui_content import metadata_table, prose, write_body, write_section
 from .ui_coverage import analysis_coverage
+from .ui_contributions import PaneRegistry, PaneScope, validate_model
 from .ui_monitoring import (UsageScreen, SortScreen, SessionScopeScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, credit_summary, permission_summary, changed_records, failed,
                             failure_groups, event_id, connection_feedback, session_history_feedback)
 
@@ -1404,8 +1405,11 @@ class ObservatoryApp(App):
               Binding('4','page("traces")','Traces',show=False),Binding('5','page("host")','Host',show=False),
               Binding('6','page("metrics")','Metrics',show=False),Binding('7','page("findings")','Findings',show=False)]
 
-    def __init__(self,feed,*,preferences_path=None,persist_preferences=None,task_store_path=None):
+    def __init__(self,feed,*,preferences_path=None,persist_preferences=None,task_store_path=None,
+                 ui_panes=()):
         super().__init__()
+        self.pane_registry=PaneRegistry(tuple(ui_panes))
+        self.extension_models={}
         for name in list(self.available_themes):
             self.unregister_theme(name)
         for theme in supported_themes():
@@ -1540,9 +1544,10 @@ class ObservatoryApp(App):
             id='controls')
 
     def more_view_control(self):
-        return Select([('More',''),('5 Host','host'),('6 Metrics','metrics'),('7 Findings','findings')],
+        return Select([('More',''),('5 Host','host'),('6 Metrics','metrics'),('7 Findings','findings')]
+                      +[(pane.title,'contrib-'+pane.id) for pane in self.pane_registry.all()],
                       value='',allow_blank=False,id='more-views',
-                      tooltip='More views: 5 Host · 6 Metrics · 7 Findings · Enter to choose')
+                      tooltip='More views: Host · Metrics · Findings · contributed panes · Enter to choose')
 
     def compose(self)->ComposeResult:
         yield Static('Terminal too small\nResize to at least 60 columns × 18 rows.\nq Quit',id='terminal-floor',markup=False)
@@ -1655,6 +1660,10 @@ class ObservatoryApp(App):
                             yield Button(Text('Trace · t'),id='finding-trace',tooltip='Open the finding’s source trace')
                             yield Button(Text('Copy · c'),id='finding-copy')
                             yield Button(Text('Expand · e'),id='expand-findings',classes='expand-button')
+            for pane in self.pane_registry.all():
+                with TabPane(pane.title,id='contrib-'+pane.id):
+                    yield ResultsTable(id='contrib-'+pane.id+'-table',classes='box',cursor_type='row',zebra_stripes=True)
+                    yield Static('Capability unavailable',id='contrib-'+pane.id+'-status',markup=False)
         yield Static(navigation_hints(self.size.width or 160),id='shortcuts',markup=False)
         yield Static('Connecting to receiver…',id='health',markup=False)
 
@@ -1851,6 +1860,9 @@ class ObservatoryApp(App):
         self.cost_estimate_rates=preferences.get('cost_estimate_rates',{})
         self.theme=preferences.get('theme','Observation')
         self.preference_view=preferences.get('view','agents')
+        if self.preference_view not in {'agents','activity','mcp','traces','host','metrics','findings'} | {
+                'contrib-'+pane.id for pane in self.pane_registry.all()}:
+            self.preference_view='agents'
         self.feed.detail_enabled=self.preference_view=='traces'
         self.feed.include_global_totals=False
         self.feed.active_page=self.preference_view
@@ -1884,6 +1896,11 @@ class ObservatoryApp(App):
             'finding-table':[('Severity',9,0),('Kind',18,1),('Finding',32,2),('Occurrences',12,0),('Last seen',10,0)]}
         for name,cols in columns.items():
             self.query_one('#'+name,ResultsTable).configure(cols)
+        for pane in self.pane_registry.all():
+            page='contrib-'+pane.id
+            self.query_one('#'+page+'-table',ResultsTable).configure(list(pane.columns))
+            self.query_one('#'+page+'-table').styles.height='1fr'
+            self.query_one('#--content-tab-'+page,Tab).display=False
         for name,title in [('results-agents','Agent sessions'),('agent-detail','Session overview'),('agent-actions','Recent work'),('results-activity','Activity stream'),('activity-inspector','Event detail'),('mcp-servers','Configured servers and servers with observed calls'),('results-mcp','MCP operations'),('mcp-inspector','Operation detail'),('results-traces','Traces'),('trace-detail','Execution tree'),('results-host','Agent processes'),('host-detail','Collection status'),('results-metrics','OTLP metric instruments'),('metrics-inspector','Metric detail'),('results-findings','Finding review'),('finding-inspector','Evidence and source')]:
             widget=self.query_one('#'+name)
             if not widget.has_class('detail'):widget.border_title=title
@@ -2340,8 +2357,30 @@ class ObservatoryApp(App):
         page=self.query_one('#pages',TabbedContent).active
         render=getattr(self,'render_'+page,None)
         if render:render()
+        elif page.startswith('contrib-'):self.render_contributed_pane(page)
         if page in {'activity','mcp','traces','findings'}:self.render_paging(page)
         self.refresh_task_usage()
+
+    def render_contributed_pane(self,page):
+        pane=self.pane_registry.get(page.removeprefix('contrib-'))
+        if pane is None:return
+        scope=PaneScope(agent_id=self.feed.scope_agent_id or '',service=self.feed.service or '',
+                        session_id=self.feed.session_id or '')
+        table_name=page+'-table'
+        status=self.query_one('#'+page+'-status',Static)
+        try:
+            model=validate_model(pane,pane.query(scope))
+        except Exception:
+            self.extension_models.pop(page,None)
+            self.fill(table_name,[])
+            status.update('Capability unavailable · provider query failed')
+            return
+        self.extension_models[page]=model
+        self.fill(table_name,[(row.key,list(row.cells),row) for row in model.rows])
+        table=self.query_one('#'+table_name,ResultsTable)
+        selected=model.rows[table.cursor_row] if model.rows and 0 <= table.cursor_row < len(model.rows) else None
+        status.update((model.summary or model.state.title())+
+                      ('\n'+selected.detail if selected and selected.detail else ''))
 
     def selected_task_usage(self):
         page=self.query_one('#pages',TabbedContent).active
@@ -3936,6 +3975,8 @@ class ObservatoryApp(App):
         page={'agent-table':'agents','agent-actions':'agents','activity-table':'activity',
             'mcp-table':'mcp','mcp-servers':'mcp','trace-table':'traces',
             'finding-table':'findings','metrics-table':'metrics','host-table':'host'}.get(event.data_table.id)
+        if page is None and event.data_table.id.startswith('contrib-') and event.data_table.id.endswith('-table'):
+            page=event.data_table.id.removesuffix('-table')
         if page!=self.query_one('#pages',TabbedContent).active:return
         item=self.valid_row(event)
         if not item:return
@@ -3945,6 +3986,12 @@ class ObservatoryApp(App):
         elif name=='mcp-table':self.selected_mcp=item['id'];self.show_mcp()
         elif name=='finding-table':self.selected_finding=item['id'];self.show_finding()
         elif name=='metrics-table':self.selected_metric=event.row_key.value;self.last_update=-1;self.refresh_data()
+        elif name.startswith('contrib-') and name.endswith('-table'):
+            model=self.extension_models.get(page)
+            if model:
+                self.query_one('#'+page+'-status',Static).update(
+                    (model.summary or model.state.title())+
+                    ('\n'+item.detail if item.detail else ''))
         elif name=='trace-table':
             if self.feed.pinned_trace and self.data.detail.get('trace_id')!=self.feed.selected_trace:return
             if self.feed.selected_trace!=item['trace_id']:
@@ -4113,21 +4160,23 @@ class ObservatoryApp(App):
     def sync_more_view(self,page):
         picker=self.query_one('#more-views',Select)
         menu_navigation=getattr(self,'layout_size',self.size).width<76
+        extra=[(pane.title,'contrib-'+pane.id) for pane in self.pane_registry.all()]
+        secondary={'host','metrics','findings'} | {value for _,value in extra}
         if getattr(self,'view_menu_mode',None)!=menu_navigation:
-            options=[('More',''),('5 Host','host'),('6 Metrics','metrics'),('7 Findings','findings')]
+            options=[('More',''),('5 Host','host'),('6 Metrics','metrics'),('7 Findings','findings')]+extra
             if menu_navigation:
                 options=[('Views: 1 Agents','agents'),('Views: 2 Activity','activity'),
                          ('Views: 3 MCP Calls','mcp'),('Views: 4 Traces','traces')]+options[1:]
             with picker.prevent(Select.Changed):
                 picker.set_options(options)
-                picker.value=page if menu_navigation or page in {'host','metrics','findings'} else ''
+                picker.value=page if menu_navigation or page in secondary else ''
             self.view_menu_mode=menu_navigation
         else:
             # Synchronization must not enqueue another navigation command.
             # Stale Changed messages can otherwise bounce between tabs forever.
             with picker.prevent(Select.Changed):
-                picker.value=page if menu_navigation or page in {'host','metrics','findings'} else ''
-        picker.set_class(page in {'host','metrics','findings'},'secondary-active')
+                picker.value=page if menu_navigation or page in secondary else ''
+        picker.set_class(page in secondary,'secondary-active')
 
     @on(Button.Pressed)
     def button_pressed(self,event):
@@ -4772,7 +4821,10 @@ class ObservatoryApp(App):
         self.screen.clear_selection()
         self.collapse(page)
         self.query_one('#pages',TabbedContent).active=page
-        target={'agents':'agent-table','activity':'activity-table','mcp':'mcp-table','traces':'trace-table','host':'host-table','metrics':'metrics-table','findings':'finding-table'}[page]
+        target={'agents':'agent-table','activity':'activity-table','mcp':'mcp-table','traces':'trace-table','host':'host-table','metrics':'metrics-table','findings':'finding-table'}.get(page)
+        if target is None and page.startswith('contrib-') and self.pane_registry.get(page.removeprefix('contrib-')):
+            target=page+'-table'
+        if target is None:raise ValueError('unknown view')
         self.query_one('#'+target).focus()
 
     def _selected_agent_node(self):
