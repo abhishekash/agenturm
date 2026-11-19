@@ -1109,6 +1109,11 @@ class Store:
             self._receiver_file_identity = identity
         return self.receiver_id
 
+    def plugin_sessions(self, limit=200):
+        """Policy-current session metadata from explicitly activated plugins."""
+        from .plugin_projection import sessions
+        return sessions(self, limit=limit)
+
     @contextmanager
     def _connect(self):
         """Yield a SQLite connection and always release its file handle.
