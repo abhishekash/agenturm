@@ -40,24 +40,52 @@ where
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Usage {
-    #[serde(default, deserialize_with = "no_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "no_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     input_tokens: Option<u64>,
-    #[serde(default, deserialize_with = "no_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "no_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     output_tokens: Option<u64>,
-    #[serde(default, deserialize_with = "no_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "no_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     cache_read_tokens: Option<u64>,
-    #[serde(default, deserialize_with = "no_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "no_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     cache_write_tokens: Option<u64>,
-    #[serde(default, deserialize_with = "no_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "no_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     total_tokens: Option<u64>,
 }
 
 impl Usage {
     fn valid(&self) -> bool {
-        let values = [self.input_tokens, self.output_tokens, self.cache_read_tokens,
-                      self.cache_write_tokens, self.total_tokens];
+        let values = [
+            self.input_tokens,
+            self.output_tokens,
+            self.cache_read_tokens,
+            self.cache_write_tokens,
+            self.total_tokens,
+        ];
         values.iter().any(Option::is_some)
-            && values.into_iter().flatten().all(|value| value <= i64::MAX as u64)
+            && values
+                .into_iter()
+                .flatten()
+                .all(|value| value <= i64::MAX as u64)
     }
 }
 
@@ -83,51 +111,82 @@ struct SourceRow {
 }
 
 fn identity(value: &str) -> bool {
-    !value.is_empty() && value.len() <= MAX_ID + 1
+    !value.is_empty()
+        && value.len() <= MAX_ID + 1
         && value.as_bytes()[0].is_ascii_alphanumeric()
-        && value.as_bytes().iter().all(|byte| byte.is_ascii_alphanumeric()
-            || matches!(byte, b'.' | b'_' | b':' | b'-'))
+        && value
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
 fn code(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 64
+    !value.is_empty()
+        && value.len() <= 64
         && value.as_bytes()[0].is_ascii_lowercase()
-        && value.as_bytes().iter().all(|byte| byte.is_ascii_lowercase()
-            || byte.is_ascii_digit() || matches!(byte, b'_' | b'.' | b'/' | b'-'))
+        && value.as_bytes().iter().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'_' | b'.' | b'/' | b'-')
+        })
 }
 
 fn source_record(raw: &[u8]) -> Result<Value> {
     let row: SourceRow = serde_json::from_slice(raw)?;
-    if !identity(&row.id) || !identity(&row.session)
-        || row.at_ns.is_empty() || !row.at_ns.bytes().all(|byte| byte.is_ascii_digit())
+    if !identity(&row.id)
+        || !identity(&row.session)
+        || row.at_ns.is_empty()
+        || !row.at_ns.bytes().all(|byte| byte.is_ascii_digit())
         || (row.at_ns.starts_with('0') && row.at_ns != "0")
-        || row.at_ns.parse::<u64>().map_or(true, |value| value > i64::MAX as u64)
+        || row
+            .at_ns
+            .parse::<u64>()
+            .map_or(true, |value| value > i64::MAX as u64)
         || row.revision.is_some_and(|value| value > i32::MAX as u32)
     {
         return Err(invalid("invalid source identity, timestamp or revision"));
     }
     let payload = match row.kind.as_str() {
-        "lifecycle" if row.usage.is_none() && row.parent_session_id.is_none()
-            && row.relationship_kind.is_none() => {
+        "lifecycle"
+            if row.usage.is_none()
+                && row.parent_session_id.is_none()
+                && row.relationship_kind.is_none() =>
+        {
             let state = row.state.as_deref().ok_or("missing lifecycle state")?;
-            if !matches!(state, "started" | "running" | "paused" | "completed"
-                | "failed" | "interrupted" | "cancelled")
-                || row.reason_code.as_deref().is_some_and(|value| !code(value))
+            if !matches!(
+                state,
+                "started"
+                    | "running"
+                    | "paused"
+                    | "completed"
+                    | "failed"
+                    | "interrupted"
+                    | "cancelled"
+            ) || row.reason_code.as_deref().is_some_and(|value| !code(value))
             {
                 return Err(invalid("invalid lifecycle metadata"));
             }
             let mut payload = json!({"state": state});
-            if let Some(reason) = row.reason_code { payload["reason_code"] = json!(reason); }
+            if let Some(reason) = row.reason_code {
+                payload["reason_code"] = json!(reason);
+            }
             payload
         }
-        "usage" if row.state.is_none() && row.reason_code.is_none()
-            && row.parent_session_id.is_none() && row.relationship_kind.is_none() => {
+        "usage"
+            if row.state.is_none()
+                && row.reason_code.is_none()
+                && row.parent_session_id.is_none()
+                && row.relationship_kind.is_none() =>
+        {
             let usage = row.usage.ok_or("missing usage")?;
-            if !usage.valid() { return Err(invalid("invalid usage metadata")); }
+            if !usage.valid() {
+                return Err(invalid("invalid usage metadata"));
+            }
             serde_json::to_value(usage)?
         }
-        "relationship" if row.state.is_none() && row.reason_code.is_none()
-            && row.usage.is_none() => {
+        "relationship"
+            if row.state.is_none() && row.reason_code.is_none() && row.usage.is_none() =>
+        {
             let parent = row.parent_session_id.ok_or("missing parent session")?;
             let kind = row.relationship_kind.ok_or("missing relationship kind")?;
             if !identity(&parent) || !matches!(kind.as_str(), "delegated" | "review") {
@@ -153,22 +212,37 @@ struct Cursor {
 
 impl Cursor {
     fn parse(raw: &str) -> Result<Option<Self>> {
-        if raw.is_empty() { return Ok(None); }
-        if raw.len() > MAX_CURSOR { return Err(invalid("invalid cursor length")); }
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        if raw.len() > MAX_CURSOR {
+            return Err(invalid("invalid cursor length"));
+        }
         let fields: Vec<_> = raw.split(':').collect();
-        if fields.len() != 4 || fields[..3].iter().any(|field| field.is_empty()
-            || !field.bytes().all(|byte| byte.is_ascii_digit()))
-            || fields[3].len() != 64 || !fields[3].bytes().all(|byte| byte.is_ascii_hexdigit()
-                && !byte.is_ascii_uppercase())
+        if fields.len() != 4
+            || fields[..3]
+                .iter()
+                .any(|field| field.is_empty() || !field.bytes().all(|byte| byte.is_ascii_digit()))
+            || fields[3].len() != 64
+            || !fields[3]
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         {
             return Err(invalid("invalid cursor format"));
         }
-        Ok(Some(Self { device: fields[0].parse()?, inode: fields[1].parse()?,
-                       offset: fields[2].parse()?, digest: fields[3].to_owned() }))
+        Ok(Some(Self {
+            device: fields[0].parse()?,
+            inode: fields[1].parse()?,
+            offset: fields[2].parse()?,
+            digest: fields[3].to_owned(),
+        }))
     }
 
     fn encode(&self) -> String {
-        format!("{}:{}:{}:{}", self.device, self.inode, self.offset, self.digest)
+        format!(
+            "{}:{}:{}:{}",
+            self.device, self.inode, self.offset, self.digest
+        )
     }
 }
 
@@ -194,14 +268,22 @@ fn read_line(file: &mut File, offset: u64) -> Result<Option<Vec<u8>>> {
     let mut line = Vec::new();
     let mut reader = BufReader::new(file.take(MAX_LINE + 1));
     reader.read_until(b'\n', &mut line)?;
-    if line.is_empty() { return Ok(None); }
-    if line.len() as u64 > MAX_LINE { return Err(invalid("source line exceeds limit")); }
-    if line.last() != Some(&b'\n') { return Ok(None); }
+    if line.is_empty() {
+        return Ok(None);
+    }
+    if line.len() as u64 > MAX_LINE {
+        return Err(invalid("source line exceeds limit"));
+    }
+    if line.last() != Some(&b'\n') {
+        return Ok(None);
+    }
     Ok(Some(line))
 }
 
 fn file_time_ns(metadata: &Metadata) -> String {
-    metadata.modified().ok()
+    metadata
+        .modified()
+        .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |time| time.as_nanos().min(i64::MAX as u128))
         .to_string()
@@ -212,17 +294,25 @@ fn batch(source_id: &str, cursor: &str, records: &[Value]) -> Value {
            "cursor":cursor,"records":records})
 }
 
-fn poll(path: &Path, source_id: &str, raw_cursor: &str,
-        max_records: usize, max_bytes: usize) -> Result<Value> {
+fn poll(
+    path: &Path,
+    source_id: &str,
+    raw_cursor: &str,
+    max_records: usize,
+    max_bytes: usize,
+) -> Result<Value> {
     let previous = Cursor::parse(raw_cursor)?;
     let mut file = match File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound && previous.is_none() =>
-            return Ok(batch(source_id, raw_cursor, &[])),
+        Err(error) if error.kind() == io::ErrorKind::NotFound && previous.is_none() => {
+            return Ok(batch(source_id, raw_cursor, &[]));
+        }
         Err(_) => return Err(invalid("source file unavailable")),
     };
     let metadata = file.metadata()?;
-    if !metadata.is_file() { return Err(invalid("source is not a regular file")); }
+    if !metadata.is_file() {
+        return Err(invalid("source is not a regular file"));
+    }
     let (device, inode) = file_identity(&metadata);
     let changed = previous.as_ref().is_some_and(|prior| {
         (prior.device, prior.inode) != (device, inode) || prior.offset > metadata.len()
@@ -231,7 +321,11 @@ fn poll(path: &Path, source_id: &str, raw_cursor: &str,
             && tail_digest(&mut file, prior.offset).map_or(true, |digest| digest != prior.digest)
     });
     let mut records = Vec::new();
-    let offset = if changed { 0 } else { previous.as_ref().map_or(0, |cursor| cursor.offset) };
+    let offset = if changed {
+        0
+    } else {
+        previous.as_ref().map_or(0, |cursor| cursor.offset)
+    };
     if changed {
         let evidence = format!("{}|({}, {})", raw_cursor, device, inode);
         let id = format!("rust-sample-gap:{:x}", Sha256::digest(evidence));
@@ -241,21 +335,35 @@ fn poll(path: &Path, source_id: &str, raw_cursor: &str,
     }
     let mut position = offset;
     while records.len() < max_records && position - offset < MAX_SCAN {
-        let Some(line) = read_line(&mut file, position)? else { break; };
+        let Some(line) = read_line(&mut file, position)? else {
+            break;
+        };
         let candidate = source_record(&line)?;
         let next_position = position + u64::try_from(line.len())?;
-        let next = Cursor { device, inode, offset: next_position,
-                            digest: tail_digest(&mut file, next_position)? }.encode();
+        let next = Cursor {
+            device,
+            inode,
+            offset: next_position,
+            digest: tail_digest(&mut file, next_position)?,
+        }
+        .encode();
         records.push(candidate);
         if serde_json::to_vec(&batch(source_id, &next, &records))?.len() > max_bytes {
             records.pop();
-            if records.is_empty() { return Err(invalid("source record exceeds byte budget")); }
+            if records.is_empty() {
+                return Err(invalid("source record exceeds byte budget"));
+            }
             break;
         }
         position = next_position;
     }
-    let next = Cursor { device, inode, offset: position,
-                        digest: tail_digest(&mut file, position)? }.encode();
+    let next = Cursor {
+        device,
+        inode,
+        offset: position,
+        digest: tail_digest(&mut file, position)?,
+    }
+    .encode();
     let response = batch(source_id, &next, &records);
     if serde_json::to_vec(&response)?.len() > max_bytes {
         return Err(invalid("source diagnostic exceeds byte budget"));
@@ -273,26 +381,42 @@ struct Session {
 
 impl Session {
     fn handle(&mut self, request: Value, path: &Path) -> Result<Option<(Value, usize)>> {
-        let object = request.as_object().ok_or("control frame must be an object")?;
+        let object = request
+            .as_object()
+            .ok_or("control frame must be an object")?;
         if object.get("protocol").and_then(Value::as_u64) != Some(1) {
             return Err(invalid("protocol mismatch"));
         }
-        let kind = object.get("type").and_then(Value::as_str).ok_or("missing control type")?;
+        let kind = object
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or("missing control type")?;
         if self.source_id.is_empty() {
-            if kind != "hello" || object.len() != 5
+            if kind != "hello"
+                || object.len() != 5
                 || object.get("plugin_id").and_then(Value::as_str) != Some(PLUGIN_ID)
-            { return Err(invalid("hello identity mismatch")); }
-            let source = object.get("source_id").and_then(Value::as_str).ok_or("missing source")?;
-            let limit = object.get("max_frame_bytes").and_then(Value::as_u64)
+            {
+                return Err(invalid("hello identity mismatch"));
+            }
+            let source = object
+                .get("source_id")
+                .and_then(Value::as_str)
+                .ok_or("missing source")?;
+            let limit = object
+                .get("max_frame_bytes")
+                .and_then(Value::as_u64)
                 .ok_or("missing frame budget")?;
             if !identity(source) || limit == 0 || limit > MAX_FRAME_BYTES as u64 {
                 return Err(invalid("invalid hello source or budget"));
             }
             self.source_id = source.to_owned();
             self.max_frame = limit as usize;
-            return Ok(Some((json!({"type":"hello_ack","protocol":1,
+            return Ok(Some((
+                json!({"type":"hello_ack","protocol":1,
                 "plugin_id":PLUGIN_ID,
-                "features":["source-adapter/1","configured-root/1"]}), self.max_frame)));
+                "features":["source-adapter/1","configured-root/1"]}),
+                self.max_frame,
+            )));
         }
         if kind == "stop" && object.len() == 2 {
             self.stopped = true;
@@ -303,22 +427,48 @@ impl Session {
         }
         match kind {
             "poll" if object.len() == 6 => {
-                if self.pending.is_some() { return Err(invalid("prior poll not acknowledged")); }
-                let cursor = object.get("cursor").and_then(Value::as_str).ok_or("missing cursor")?;
-                let count = object.get("max_records").and_then(Value::as_u64)
+                if self.pending.is_some() {
+                    return Err(invalid("prior poll not acknowledged"));
+                }
+                let cursor = object
+                    .get("cursor")
+                    .and_then(Value::as_str)
+                    .ok_or("missing cursor")?;
+                let count = object
+                    .get("max_records")
+                    .and_then(Value::as_u64)
                     .ok_or("missing record budget")?;
-                let bytes = object.get("max_bytes").and_then(Value::as_u64)
+                let bytes = object
+                    .get("max_bytes")
+                    .and_then(Value::as_u64)
                     .ok_or("missing byte budget")?;
-                if count == 0 || count > MAX_RECORDS || bytes == 0
-                    || bytes > self.max_frame as u64 { return Err(invalid("invalid poll budget")); }
-                let response = poll(path, &self.source_id, cursor, count as usize, bytes as usize)?;
-                self.pending = Some(response["cursor"].as_str().ok_or("missing response cursor")?.to_owned());
+                if count == 0 || count > MAX_RECORDS || bytes == 0 || bytes > self.max_frame as u64
+                {
+                    return Err(invalid("invalid poll budget"));
+                }
+                let response = poll(
+                    path,
+                    &self.source_id,
+                    cursor,
+                    count as usize,
+                    bytes as usize,
+                )?;
+                self.pending = Some(
+                    response["cursor"]
+                        .as_str()
+                        .ok_or("missing response cursor")?
+                        .to_owned(),
+                );
                 Ok(Some((response, bytes as usize)))
             }
             "ack" if object.len() == 4 => {
-                let cursor = object.get("cursor").and_then(Value::as_str)
+                let cursor = object
+                    .get("cursor")
+                    .and_then(Value::as_str)
                     .ok_or("missing ack cursor")?;
-                if self.pending.as_deref() != Some(cursor) { return Err(invalid("ack mismatch")); }
+                if self.pending.as_deref() != Some(cursor) {
+                    return Err(invalid("ack mismatch"));
+                }
                 self.pending = None;
                 Ok(None)
             }
@@ -328,29 +478,37 @@ impl Session {
 }
 
 fn run() -> Result<()> {
-    let configured = std::env::var_os("AGENTURM_PLUGIN_SOURCE_ROOT")
-        .ok_or("configured source root required")?;
+    let configured =
+        std::env::var_os("AGENTURM_PLUGIN_SOURCE_ROOT").ok_or("configured source root required")?;
     let path = PathBuf::from(configured);
-    if !path.is_absolute() { return Err(invalid("configured source path must be absolute")); }
+    if !path.is_absolute() {
+        return Err(invalid("configured source path must be absolute"));
+    }
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = BufReader::new(stdin.lock());
     let mut writer = BufWriter::new(stdout.lock());
     let mut session = Session::default();
     loop {
-        let Some(raw) = read_frame(&mut reader, CONTROL_LIMIT)? else { return Ok(()); };
+        let Some(raw) = read_frame(&mut reader, CONTROL_LIMIT)? else {
+            return Ok(());
+        };
         let request: Value = serde_json::from_str(&raw)?;
         if let Some((response, limit)) = session.handle(request, &path)? {
             write_frame(&mut writer, &serde_json::to_string(&response)?, limit)?;
         }
-        if session.stopped { return Ok(()); }
+        if session.stopped {
+            return Ok(());
+        }
     }
 }
 
 fn main() {
     // The host receives only a nonzero exit and its own coarse worker state;
     // never leak configured paths or source payloads through stderr.
-    if run().is_err() { std::process::exit(2); }
+    if run().is_err() {
+        std::process::exit(2);
+    }
 }
 
 #[cfg(test)]
@@ -366,21 +524,35 @@ mod tests {
 
     impl Scratch {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("agenturm-rust-sample-{}-{}",
-                std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            let path = std::env::temp_dir().join(format!(
+                "agenturm-rust-sample-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
-        fn source(&self) -> PathBuf { self.0.join("source.jsonl") }
+        fn source(&self) -> PathBuf {
+            self.0.join("source.jsonl")
+        }
     }
 
     impl Drop for Scratch {
-        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 
     fn append(path: &Path, line: &str) {
-        writeln!(OpenOptions::new().create(true).append(true).open(path).unwrap(),
-                 "{line}").unwrap();
+        writeln!(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap(),
+            "{line}"
+        )
+        .unwrap();
     }
 
     #[test]
@@ -388,9 +560,15 @@ mod tests {
         let lifecycle = source_record(br#"{"id":"start","session":"child","at_ns":"9007199254740993","kind":"lifecycle","state":"started"}"#).unwrap();
         assert_eq!(lifecycle["time_ns"], "9007199254740993");
         let usage = source_record(br#"{"id":"tokens","session":"child","at_ns":"2","kind":"usage","usage":{"input_tokens":0,"output_tokens":9223372036854775807}}"#).unwrap();
-        assert_eq!(usage["payload"]["output_tokens"].as_u64(), Some(i64::MAX as u64));
+        assert_eq!(
+            usage["payload"]["output_tokens"].as_u64(),
+            Some(i64::MAX as u64)
+        );
         let relationship = source_record(br#"{"id":"parent","session":"child","at_ns":"3","kind":"relationship","parent_session_id":"root","relationship_kind":"delegated"}"#).unwrap();
-        assert_eq!(relationship["payload"], json!({"parent_session_id":"root","kind":"delegated"}));
+        assert_eq!(
+            relationship["payload"],
+            json!({"parent_session_id":"root","kind":"delegated"})
+        );
         for bad in [
             r#"{"id":"x","session":"child","at_ns":"1","kind":"lifecycle","state":"started","prompt":"secret"}"#,
             r#"{"id":"x","session":"child","at_ns":"1","kind":"lifecycle","state":"started","state":"failed"}"#,
@@ -407,14 +585,20 @@ mod tests {
     fn append_cursor_and_correction_are_stable() {
         let scratch = Scratch::new();
         let path = scratch.source();
-        append(&path, r#"{"id":"start","session":"one","at_ns":"1","kind":"lifecycle","state":"started"}"#);
+        append(
+            &path,
+            r#"{"id":"start","session":"one","at_ns":"1","kind":"lifecycle","state":"started"}"#,
+        );
         let first = poll(&path, "fixture", "", 256, MAX_FRAME_BYTES).unwrap();
         assert_eq!(first["records"].as_array().unwrap().len(), 1);
         let cursor = first["cursor"].as_str().unwrap();
         let idle = poll(&path, "fixture", cursor, 256, MAX_FRAME_BYTES).unwrap();
         assert_eq!(idle["cursor"], cursor);
         assert_eq!(idle["records"], json!([]));
-        append(&path, r#"{"id":"start","session":"one","at_ns":"1","kind":"lifecycle","revision":1,"state":"completed"}"#);
+        append(
+            &path,
+            r#"{"id":"start","session":"one","at_ns":"1","kind":"lifecycle","revision":1,"state":"completed"}"#,
+        );
         let corrected = poll(&path, "fixture", cursor, 256, MAX_FRAME_BYTES).unwrap();
         assert_eq!(corrected["records"][0]["revision"], 1);
         assert_eq!(corrected["records"][0]["event_id"], "rust-sample:start");
@@ -430,7 +614,10 @@ mod tests {
         let cursor = first["cursor"].as_str().unwrap();
         let pending = poll(&path, "fixture", cursor, 256, MAX_FRAME_BYTES).unwrap();
         assert_eq!(pending["records"], json!([]));
-        append(&path, r#", "session":"one","at_ns":"1","kind":"lifecycle","state":"running"}"#);
+        append(
+            &path,
+            r#", "session":"one","at_ns":"1","kind":"lifecycle","state":"running"}"#,
+        );
         let ready = poll(&path, "fixture", cursor, 256, MAX_FRAME_BYTES).unwrap();
         assert_eq!(ready["records"][0]["event_id"], "rust-sample:pending");
         let before = ready["cursor"].as_str().unwrap();
@@ -439,7 +626,10 @@ mod tests {
         fs::write(&path, existing.replace("pending", "changed")).unwrap();
         assert_eq!(fs::metadata(&path).unwrap().len(), old_size);
         let changed = poll(&path, "fixture", before, 256, MAX_FRAME_BYTES).unwrap();
-        assert_eq!(changed["records"][0]["payload"]["code"], "possible_source_gap");
+        assert_eq!(
+            changed["records"][0]["payload"]["code"],
+            "possible_source_gap"
+        );
         assert_eq!(changed["records"][1]["event_id"], "rust-sample:changed");
     }
 
@@ -447,19 +637,48 @@ mod tests {
     fn control_ack_and_limits() {
         let scratch = Scratch::new();
         let mut session = Session::default();
-        let hello = session.handle(json!({"type":"hello","protocol":1,
+        let hello = session
+            .handle(
+                json!({"type":"hello","protocol":1,
             "plugin_id":PLUGIN_ID,"source_id":"sample","max_frame_bytes":MAX_FRAME_BYTES}),
-            &scratch.source()).unwrap().unwrap().0;
-        assert_eq!(hello["features"], json!(["source-adapter/1","configured-root/1"]));
+                &scratch.source(),
+            )
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(
+            hello["features"],
+            json!(["source-adapter/1", "configured-root/1"])
+        );
         let poll_request = json!({"type":"poll","protocol":1,"source_id":"sample",
                                   "cursor":"","max_records":256,"max_bytes":MAX_FRAME_BYTES});
-        let idle = session.handle(poll_request.clone(), &scratch.source()).unwrap().unwrap().0;
+        let idle = session
+            .handle(poll_request.clone(), &scratch.source())
+            .unwrap()
+            .unwrap()
+            .0;
         assert_eq!(idle["cursor"], "");
-        assert!(session.handle(poll_request.clone(), &scratch.source()).is_err());
-        assert!(session.handle(json!({"type":"ack","protocol":1,
-            "source_id":"sample","cursor":"wrong"}), &scratch.source()).is_err());
-        session.handle(json!({"type":"ack","protocol":1,
-            "source_id":"sample","cursor":""}), &scratch.source()).unwrap();
+        assert!(
+            session
+                .handle(poll_request.clone(), &scratch.source())
+                .is_err()
+        );
+        assert!(
+            session
+                .handle(
+                    json!({"type":"ack","protocol":1,
+            "source_id":"sample","cursor":"wrong"}),
+                    &scratch.source()
+                )
+                .is_err()
+        );
+        session
+            .handle(
+                json!({"type":"ack","protocol":1,
+            "source_id":"sample","cursor":""}),
+                &scratch.source(),
+            )
+            .unwrap();
         assert!(session.handle(poll_request, &scratch.source()).is_ok());
     }
 }

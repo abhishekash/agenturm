@@ -4,8 +4,12 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from urllib.request import urlopen
 
 from observatory.core import Store
 from observatory.plugin_admission import set_source_capture
@@ -13,6 +17,7 @@ from observatory.plugin_config import read_plugin_config
 from observatory.plugin_projection import project_source
 from observatory.plugin_runtime import PluginSession
 from observatory.plugin_wire import ProtocolError
+from observatory.server import BoundedHTTPServer, serve
 
 
 PACKAGE = Path(__file__).resolve().parents[1] / "examples" / "rust_sample_harness_plugin"
@@ -119,6 +124,54 @@ class RustSampleHarnessTests(unittest.TestCase):
         with self.store._connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT cursor FROM plugin_source_cursor_v1").fetchone()[0], "")
+
+    def test_installed_config_projects_through_receiver_health(self):
+        self.append({"id": "observed", "session": "external-1", "at_ns": "30",
+                     "kind": "lifecycle", "state": "completed"})
+        import socket
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        servers = []
+        failures = []
+
+        def make_server(address, handler):
+            server = BoundedHTTPServer(address, handler)
+            servers.append(server)
+            return server
+
+        def run_server():
+            try:
+                serve(str(self.root / "receiver.db"), no_auth=True, port=port,
+                      local_agents=False, plugin_config=self.config)
+            except Exception as exc:
+                failures.append(exc)
+
+        with patch("observatory.server.ThreadingHTTPServer", side_effect=make_server):
+            thread = threading.Thread(target=run_server, daemon=True)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    try:
+                        with urlopen(f"http://127.0.0.1:{port}/api/health", timeout=1) as response:
+                            local = json.load(response)["local_agents"]
+                        if local.get("sessions") and local.get("plugin_workers"):
+                            break
+                    except OSError:
+                        pass
+                    time.sleep(0.05)
+                else:
+                    self.fail(f"Rust sample did not reach receiver health: {failures}")
+                self.assertEqual(local["sessions"][0]["native_session_id"], "external-1")
+                self.assertEqual(local["sessions"][0]["run_state"], "completed")
+                self.assertEqual(local["plugin_workers"][0]["state"], "running")
+            finally:
+                if servers:
+                    servers[0].shutdown()
+                thread.join(timeout=8)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(failures, [])
 
 
 if __name__ == "__main__":
