@@ -176,7 +176,8 @@ def validate_batch(message: dict, *, source_id: str) -> PollBatch:
         if "identity" in record:
             identity = record["identity"]
             if (not isinstance(identity, dict)
-                    or not {"session_id"} <= set(identity) <= {"session_id", "worker_id", "turn_id"}):
+                    or not {"session_id"} <= set(identity) <=
+                    {"session_id", "worker_id", "turn_id", "operation_id"}):
                 raise ProtocolError("invalid record identity fields")
             for field, value in identity.items():
                 _text(value, "record " + field, MAX_ID_CHARS)

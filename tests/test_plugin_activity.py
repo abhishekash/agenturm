@@ -15,11 +15,13 @@ from observatory.plugin_wire import PollBatch, ProtocolError
 
 
 def fact(event, kind, payload, *, session="native-1", revision=0, stamp="100",
-         worker="worker-1", turn="turn-1"):
+         worker="worker-1", turn="turn-1", operation=None):
+    identity = {"session_id": session, "worker_id": worker, "turn_id": turn}
+    if operation is not None:
+        identity["operation_id"] = operation
     return {"event_id": event, "revision": revision, "kind": kind,
             "time_ns": stamp, "payload": payload,
-            "identity": {"session_id": session, "worker_id": worker,
-                         "turn_id": turn}}
+            "identity": identity}
 
 
 class PluginActivityTests(unittest.TestCase):
@@ -90,6 +92,43 @@ class PluginActivityTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM activity_index_v1 "
                                          "WHERE kind='plugin'").fetchone()[0], 1)
 
+    def test_pi_tool_phases_share_opaque_operation_without_trace_claim(self):
+        self.commit("", "one", [
+            fact("pi:call", "tool", {"category": "file", "result": "started"},
+                 operation="native-call-1", stamp="10"),
+            fact("pi:result", "tool", {"category": "file", "result": "failed"},
+                 operation="native-call-1", stamp="20")])
+        project_source(self.store, "fixture-source")
+        rows = self.activity()
+        self.assertEqual([row["result"] for row in rows], ["failed", "started"])
+        operation = rows[0]["operation_id"]
+        self.assertEqual(rows[1]["operation_id"], operation)
+        self.assertTrue(operation.startswith("plugin-operation:"))
+        self.assertTrue(all(row["trace_id"] is None and row["span_id"] is None
+                            and row["metadata"]["coverage"] == "partial" for row in rows))
+        self.assertNotIn("native-call-1", json.dumps(rows))
+        from observatory.terminal_ui import copy_event_text
+        exported = copy_event_text(rows[0])
+        self.assertIn("Operation ID: " + operation, exported)
+        self.assertIn("Coverage: partial", exported)
+        self.assertNotIn("native-call-1", exported)
+        self.assertEqual([row["id"] for row in self.activity(review=True)],
+                         [rows[0]["id"]])  # Failed phase is reviewable; start is not.
+        self.commit("one", "two", [
+            fact("pi:result", "tool", {"category": "file", "result": "succeeded"},
+                 operation="native-call-1", stamp="20", revision=1)])
+        self.assertEqual(self.activity(), [])
+        project_source(self.store, "fixture-source")
+        corrected = self.activity()
+        self.assertEqual({row["operation_id"] for row in corrected}, {operation})
+        self.assertEqual(self.activity(review=True), [])
+        with self.assertRaisesRegex(ProtocolError, "identity or kind changed"):
+            self.commit("two", "three", [
+                fact("pi:result", "tool", {"category": "file", "result": "failed"},
+                     operation="other-call", stamp="20", revision=2)])
+        set_source_capture(self.store, source_id="fixture-source", enabled=False)
+        self.assertEqual(self.activity(), [])
+
     def test_revocation_removes_activity_and_fences_old_worker(self):
         self.commit("", "one", [fact("m", "message", {"role": "assistant"})])
         project_source(self.store, "fixture-source")
@@ -108,6 +147,19 @@ class PluginActivityTests(unittest.TestCase):
         self.assertEqual(len(self.activity()), 1)
         with self.store._connect() as db:
             db.execute("DELETE FROM schema_meta WHERE key='plugin_activity_projection_v1'")
+        reopened = Store(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.activity_page()["activity"], [])
+        self.assertEqual(sessions(reopened)["pending_sources"], 1)
+        project_source(reopened, "fixture-source")
+        self.assertEqual(len(reopened.activity_page()["activity"]), 1)
+
+    def test_operation_upgrade_invalidates_prior_activity_projection(self):
+        self.commit("", "one", [fact("m", "message", {"role": "user"})])
+        project_source(self.store, "fixture-source")
+        self.assertEqual(len(self.activity()), 1)
+        with self.store._connect() as db:
+            db.execute("DELETE FROM schema_meta WHERE key='plugin_activity_projection_v2'")
         reopened = Store(self.path)
         self.addCleanup(reopened.close)
         self.assertEqual(reopened.activity_page()["activity"], [])
@@ -177,6 +229,22 @@ class PluginActivityTests(unittest.TestCase):
         for row in rows:
             self.assertEqual(len(self.store.activity_page(agent_id=row["agent_id"])["activity"]), 1)
 
+    def test_operation_identity_is_scoped_to_session_and_source(self):
+        self.commit("", "one", [
+            fact("a", "tool", {"category": "other", "result": "started"},
+                 session="first", operation="shared"),
+            fact("b", "tool", {"category": "other", "result": "started"},
+                 session="second", operation="shared")])
+        project_source(self.store, "fixture-source")
+        other = activate_source(self.store, plugin_id="fixture.plugin",
+                                source_id="other-source", generation="a" * 64)
+        commit_batch(self.store, other, "", PollBatch("other-source", "one", (
+            fact("a", "tool", {"category": "other", "result": "started"},
+                 session="first", operation="shared"),)))
+        project_source(self.store, "other-source")
+        operations = {row["operation_id"] for row in self.activity()}
+        self.assertEqual(len(operations), 3)
+
     def test_rejects_raw_content_and_wrong_payload_before_any_write(self):
         bad = [
             fact("a", "message", {"role": "user", "text": "private prompt"}),
@@ -188,6 +256,8 @@ class PluginActivityTests(unittest.TestCase):
                                 "output": "secret"}),
             fact("a", "check", {"category": "unknown", "result": "failed"}),
             fact("a", "check", {"category": "test"}),
+            fact("a", "message", {"role": "user"}, operation="call-1"),
+            fact("a", "lifecycle", {"state": "running"}, operation="call-1"),
             {k: v for k, v in fact("a", "message", {"role": "user"}).items()
              if k != "identity"},
         ]

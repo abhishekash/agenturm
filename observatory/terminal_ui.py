@@ -332,6 +332,8 @@ def copy_event_text(item):
            f"Duration: {timing(item.get('duration_ms'))}"]
     if item.get('trace_id'):lines.append(f"Trace ID: {item['trace_id']}")
     if item.get('span_id'):lines.append(f"Span ID: {item['span_id']}")
+    if item.get('operation_id'):lines.append(f"Operation ID: {item['operation_id']}")
+    if item.get('source')=='plugin':lines.append('Coverage: partial (content-free plugin facts)')
     lines.append('\nRecorded content')
     def append_json(value):
         formatted,text_values=format_json(value)

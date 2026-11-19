@@ -119,7 +119,7 @@ def project_source(store: Store, source_id: str) -> int:
                 (source["dirty_seq"], source["policy_epoch"])):
             return 0
         rows = db.execute("SELECT event_id_hash,revision,kind,time_ns,payload_json,"
-                          "native_session_id,native_worker_id,native_turn_id,admitted_ns "
+                          "native_session_id,native_worker_id,native_turn_id,native_operation_id,admitted_ns "
                           "FROM plugin_evidence_v1 "
                           "WHERE source_id=? ORDER BY event_id_hash,revision DESC LIMIT ?",
                           (source_id, MAX_PROJECTION_EVIDENCE + 1)).fetchall()
