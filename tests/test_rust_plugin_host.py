@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import struct
 import subprocess
 import sys
 import tempfile
@@ -294,6 +295,36 @@ class RustPluginHostTests(unittest.TestCase):
             # pipe must make Rust stop it before Python calls close().
             host.process.stdin.close()
             self.assertEqual(host.process.wait(timeout=2), 2)
+            self.assertFalse(_running(child_pid), "Rust host did not reap blocked child")
+        finally:
+            host.close(force=True)
+
+    def test_saturated_control_queue_reaps_blocked_child_without_python_cleanup(self):
+        source = self.root / "saturated.fifo"
+        os.mkfifo(source)
+        host = PluginProcess(
+            self.source.manifest, source_id=self.source.source_id,
+            allowed_grants=self.source.allowed_grants,
+            source_root=str(source),
+            rust_host_executable=self.host, rust_host_sha256=self.host_hash)
+        try:
+            host.start()
+            group_id = host.process.pid
+            children = Path(f"/proc/{group_id}/task/{group_id}/children").read_text().split()
+            self.assertEqual(len(children), 1)
+            child_pid = int(children[0])
+            host._send({"type": "poll", "protocol": 1,
+                        "source_id": self.source.source_id, "cursor": "",
+                        "max_records": 256, "max_bytes": 4 * 1024 * 1024})
+            # The child blocks opening the FIFO. A burst larger than the
+            # control queue must fail closed while Python still holds stdin.
+            time.sleep(0.05)
+            frame = json.dumps({"type": "ack", "protocol": 1,
+                                "cursor": "unused"}).encode()
+            payload = (struct.pack(">I", len(frame)) + frame) * 3
+            self.assertEqual(os.write(host.process.stdin.fileno(), payload), len(payload))
+            self.assertEqual(host.process.wait(timeout=2), 2)
+            self.assertFalse(host.process.stdin.closed)
             self.assertFalse(_running(child_pid), "Rust host did not reap blocked child")
         finally:
             host.close(force=True)
