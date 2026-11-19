@@ -60,6 +60,7 @@ class NativeSourceSpec:
 
 
 def builtin_sources() -> tuple[NativeSourceSpec, ...]:
+    from .adapters.kiro import KiroAdapter
     from .adapters.codex import CodexAdapter
     from .adapters.claude import ClaudeAdapter
     from .adapters.pi import PiAdapter
@@ -71,5 +72,6 @@ def builtin_sources() -> tuple[NativeSourceSpec, ...]:
         NativeSourceSpec("pi", "Pi", lambda: Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home() / ".pi" / "agent"))) / "sessions",
                          adapter_factory=PiAdapter),
         NativeSourceSpec("kiro", "Kiro", lambda: kiro_home() / "sessions", kiro_source,
-                         lambda name: name not in KIRO_SKIPPED_DIRECTORIES),
+                         lambda name: name not in KIRO_SKIPPED_DIRECTORIES,
+                         adapter_factory=KiroAdapter),
     )

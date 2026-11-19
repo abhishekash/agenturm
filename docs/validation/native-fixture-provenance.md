@@ -51,3 +51,7 @@ Claude Code's selected format parser, lifecycle observation, initial task and ac
 ## Codex adapter extraction, 19 November 2026
 
 Codex's rollout parser, lifecycle observation, activity, initial task, prefix privacy classification, bounded-history header handling, modern usage detection and historical-outcome check now route through `observatory/adapters/codex.py`. The collector retains its generic read, policy and persistence responsibilities. Legacy `Session.codex` and `local_activity.codex_activity` delegate to the adapter. The manifest records the changed file hashes and the previous merged hashes. This remains a trusted in-process adapter using the legacy Session context. The focused native/session/schema/interruption/hierarchy tests passed 115 cases locally on Python 3.12. Producer version certification and full CI remain separate.
+
+## Kiro adapter extraction, 19 November 2026
+
+Kiro session setup, bounded metadata and rule refresh, permission records, initial task, parsing, usage, parent outcome, lifecycle and activity now route through `observatory/adapters/kiro.py`. The source registry constructs one adapter per Kiro session. Legacy Session and activity names delegate to it. The manifest pins the new reader bytes and preserves previous hashes. Kiro-specific hierarchy linking and UI status presentation still live outside the adapter, and the adapter still uses the legacy Session context. The focused Kiro/native/schema/ingestion tests passed 104 cases locally on Python 3.12. No live Kiro capture or full CI claim is added.

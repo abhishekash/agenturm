@@ -7,13 +7,14 @@
     "files": {
       "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
       "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
-      "observatory/local_agents.py": "fa7ffbf8f874034360d3dfcd2b3e04b7032fff8739f0d45603e6fde93452d00c",
-      "observatory/local_activity.py": "33a3a9ed78592b95493adee46939b0daa31631e8b85ed30863f2787df9855d38",
-      "observatory/native_sources.py": "9ef1945288e6eba89cacfbb347adc5b23088725647b41211a46428a5d271c68a",
-      "observatory/native_adapter.py": "88b86d0dadbe8ed53f8d43d870c8866cd6608df39ff24bf937e3007f6aed9398",
+      "observatory/local_agents.py": "a63456dc88386775c4e30db168c53a9b93244a629cfa0a5740f2154da1c99a48",
+      "observatory/local_activity.py": "9bf2c058ef9ac7c43fa2bfb8f21db80545016d2b18cacde3db97d85bb8a56aea",
+      "observatory/native_sources.py": "2e8f428970320d222603113922bcb0eb986efe1fd567a71c89bf63aea2f76e38",
+      "observatory/native_adapter.py": "94dd4a9173ac40a252b591be5083dff349b3e3e4904a38271d054c291590ccd6",
       "observatory/adapters/pi.py": "bd142778fb6f85a564e7d270ba3ba10cc2db262f071701c4dd031de0bb81933d",
       "observatory/adapters/claude.py": "9472e3bad472c5f26849bc81033890641de82930cde2dfce7099a2ee814f6f85",
-      "observatory/adapters/codex.py": "a9e115237265fd8be1e567ddb6e4018a4cc220ed1f67a942423cc7c5918a755f"
+      "observatory/adapters/codex.py": "a9e115237265fd8be1e567ddb6e4018a4cc220ed1f67a942423cc7c5918a755f",
+      "observatory/adapters/kiro.py": "f0a071edfa89f5ecaa2a272cb66a94e4d5703406208cd0f084f457350da7ea77"
     },
     "core_membership_commits": [
       "d955cbbc5f87a04a1055ee0bf07ed52ef85e8fc9",
@@ -70,6 +71,16 @@
           "observatory/native_adapter.py": "abca829196d89381579cf7b4cb10e4bdbdbf6192b0ce3d86bd23d3890c34e849"
         },
         "qualification": "Before Codex rollout callbacks moved into a registered adapter; prior format coverage is unchanged."
+      },
+      {
+        "commit": "a048958b0863a7bfad2409212f77a1d225b85a68",
+        "files": {
+          "observatory/local_agents.py": "fa7ffbf8f874034360d3dfcd2b3e04b7032fff8739f0d45603e6fde93452d00c",
+          "observatory/local_activity.py": "33a3a9ed78592b95493adee46939b0daa31631e8b85ed30863f2787df9855d38",
+          "observatory/native_sources.py": "9ef1945288e6eba89cacfbb347adc5b23088725647b41211a46428a5d271c68a",
+          "observatory/native_adapter.py": "88b86d0dadbe8ed53f8d43d870c8866cd6608df39ff24bf937e3007f6aed9398"
+        },
+        "qualification": "Before Kiro callbacks and session-specific setup moved into a registered adapter; no new producer format certification."
       }
     ],
     "verified_reader_commit": "84c838eea3738401275f63a6a238f55042310a74",

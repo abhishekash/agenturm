@@ -17,6 +17,9 @@ class NativeSessionAdapter(Protocol):
 
 
 def builtin_adapter(runtime: str) -> NativeSessionAdapter | None:
+    if runtime == "Kiro":
+        from .adapters.kiro import KiroAdapter
+        return KiroAdapter()
     if runtime == "Codex":
         from .adapters.codex import CodexAdapter
         return CodexAdapter()
