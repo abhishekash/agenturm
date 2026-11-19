@@ -24,7 +24,7 @@ from .local_activity import mcp_attributes, mcp_failed, plaintext
 from .local_state import RecentMap
 from .native_json import loads
 from .native_sources import NativeSourceSpec, builtin_sources, kiro_home
-from .native_ports import NativeEvidencePort
+from .native_ports import NativeEvidenceFacade, NativeEvidencePort
 
 MAX_READ = 8 * 1024 * 1024
 MAX_LINE = 2 * 1024 * 1024
@@ -1781,6 +1781,7 @@ class LocalAgents:
     def __init__(self, store, capture_details=True, source_specs: tuple[NativeSourceSpec, ...] | None = None,
                  reader_specs=None):
         self.store = store
+        self.evidence = NativeEvidenceFacade(store)
         self.capture_details = capture_details
         self.source_specs = builtin_sources() if source_specs is None else tuple(source_specs)
         if len({spec.id for spec in self.source_specs}) != len(self.source_specs):
@@ -1809,7 +1810,7 @@ class LocalAgents:
             raise ValueError("duplicate native reader ID")
         if {spec.id for spec in self.reader_specs} & {spec.id for spec in self.source_specs}:
             raise ValueError("native reader and source IDs must be unique")
-        self.reader_plugins = {spec.id: spec.build(store, capture_details) for spec in self.reader_specs}
+        self.reader_plugins = {spec.id: spec.build(self.evidence, capture_details) for spec in self.reader_specs}
         # Preserve the existing OpenCode diagnostic surface during migration.
         self.opencode = self.reader_plugins.get("opencode")
         self.initial_poll_complete = False
@@ -1867,7 +1868,7 @@ class LocalAgents:
         self.sessions = {path: session for path, session in self.sessions.items() if path in keys}
         for _, path, runtime in selected:
             if path not in self.sessions:
-                self.sessions[path] = Session(self.store, path, runtime, capture_details=self.capture_details)
+                self.sessions[path] = Session(self.evidence, path, runtime, capture_details=self.capture_details)
 
     def poll(self):
         accepted = 0
