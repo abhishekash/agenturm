@@ -94,6 +94,60 @@ class RustSampleHarnessTests(unittest.TestCase):
         with self.store._connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 5)
 
+    def test_corrections_already_in_source_are_committed_across_restart(self):
+        self.append(
+            {"id": "state", "session": "one", "at_ns": "100",
+             "kind": "lifecycle", "state": "started"},
+            {"id": "state", "session": "one", "at_ns": "100",
+             "kind": "lifecycle", "revision": 1, "state": "running"},
+            {"id": "state", "session": "one", "at_ns": "100",
+             "kind": "lifecycle", "revision": 2, "state": "completed"},
+            {"id": "tokens", "session": "one", "at_ns": "110",
+             "kind": "usage", "usage": {"input_tokens": 3}})
+        with self.session() as worker:
+            first = worker.poll_once()
+            self.assertEqual([(row["event_id"], row["revision"])
+                              for row in first.records], [("rust-sample:state", 0)])
+        with self.session() as resumed:
+            self.assertEqual(resumed.cursor, first.cursor)
+            second = resumed.poll_once()
+            self.assertEqual([(row["event_id"], row["revision"])
+                              for row in second.records], [("rust-sample:state", 1)])
+            third = resumed.poll_once()
+            self.assertEqual([(row["event_id"], row["revision"])
+                              for row in third.records],
+                             [("rust-sample:state", 2), ("rust-sample:tokens", 0)])
+            self.assertEqual(resumed.poll_once().records, ())
+            project_source(self.store, self.source.source_id)
+            self.assertEqual(self.projected()["one"]["run_state"], "completed")
+            self.assertEqual(self.projected()["one"]["metadata_usage"],
+                             {"input_tokens": 3})
+        with self.store._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 2)
+
+    def test_full_usage_backlog_drains_within_wire_structure_limit(self):
+        self.append(*(
+            {"id": f"usage-{index}", "session": "one", "at_ns": str(index),
+             "kind": "usage", "usage": {"input_tokens": 1, "output_tokens": 2,
+                                        "cache_read_tokens": 3, "cache_write_tokens": 4,
+                                        "total_tokens": 5}}
+            for index in range(256)))
+        with self.session() as worker:
+            counts = []
+            for _ in range(5):
+                prior = worker.cursor
+                received = worker.poll_once()
+                if not received.records:
+                    break
+                self.assertNotEqual(received.cursor, prior)
+                counts.append(len(received.records))
+            else:
+                self.fail("Rust adapter did not drain 256 rows within five polls")
+            self.assertGreater(len(counts), 1)
+            self.assertEqual(sum(counts), 256)
+        with self.store._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 256)
+
     def test_installed_rust_adapter_projects_content_free_activity(self):
         self.append(
             {"id": "start", "session": "native-1", "at_ns": "100",

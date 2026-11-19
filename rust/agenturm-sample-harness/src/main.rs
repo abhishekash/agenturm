@@ -9,6 +9,7 @@ use agenturm_protocol::{MAX_FRAME_BYTES, read_frame, write_frame};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::error::Error;
 use std::fs::{File, Metadata};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom};
@@ -20,6 +21,8 @@ const CONTROL_LIMIT: usize = 64 * 1024;
 const MAX_LINE: u64 = 16 * 1024;
 const MAX_SCAN: u64 = 1024 * 1024;
 const MAX_RECORDS: u64 = 256;
+// Match observatory.plugin_wire.MAX_STRUCTURAL_TOKENS for the serialized batch.
+const MAX_STRUCTURAL_TOKENS: usize = 8192;
 const MAX_CURSOR: usize = 512;
 const MAX_ID: usize = 199;
 
@@ -343,6 +346,27 @@ fn batch(source_id: &str, cursor: &str, records: &[Value]) -> Value {
            "cursor":cursor,"records":records})
 }
 
+fn structural_tokens(raw: &[u8]) -> usize {
+    let (mut quoted, mut escaped, mut count) = (false, false, 0);
+    for byte in raw {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                quoted = false;
+            }
+        } else if *byte == b'"' {
+            quoted = true;
+            count += 1;
+        } else if matches!(byte, b'{' | b'}' | b'[' | b']' | b',' | b':') {
+            count += 1;
+        }
+    }
+    count
+}
+
 fn poll(
     path: &Path,
     source_id: &str,
@@ -370,6 +394,7 @@ fn poll(
             && tail_digest(&mut file, prior.offset).map_or(true, |digest| digest != prior.digest)
     });
     let mut records = Vec::new();
+    let mut event_ids = HashSet::new();
     let offset = if changed {
         0
     } else {
@@ -378,6 +403,7 @@ fn poll(
     if changed {
         let evidence = format!("{}|({}, {})", raw_cursor, device, inode);
         let id = format!("rust-sample-gap:{:x}", Sha256::digest(evidence));
+        event_ids.insert(id.clone());
         records.push(json!({"event_id":id,"revision":0,"kind":"diagnostic",
                             "time_ns":file_time_ns(&metadata),
                             "payload":{"code":"possible_source_gap","severity":"warning"}}));
@@ -388,6 +414,15 @@ fn poll(
             break;
         };
         let candidate = source_record(&line)?;
+        let event_id = candidate["event_id"]
+            .as_str()
+            .ok_or("missing source event ID")?
+            .to_owned();
+        if event_ids.contains(&event_id) {
+            // A batch may contain only one revision of each event. Leave the
+            // repeated line unread so it is emitted after this batch is acked.
+            break;
+        }
         let next_position = position + u64::try_from(line.len())?;
         let next = Cursor {
             device,
@@ -397,13 +432,15 @@ fn poll(
         }
         .encode();
         records.push(candidate);
-        if serde_json::to_vec(&batch(source_id, &next, &records))?.len() > max_bytes {
+        let encoded = serde_json::to_vec(&batch(source_id, &next, &records))?;
+        if encoded.len() > max_bytes || structural_tokens(&encoded) > MAX_STRUCTURAL_TOKENS {
             records.pop();
             if records.is_empty() {
-                return Err(invalid("source record exceeds byte budget"));
+                return Err(invalid("source record exceeds batch budget"));
             }
             break;
         }
+        event_ids.insert(event_id);
         position = next_position;
     }
     let next = Cursor {
@@ -414,8 +451,9 @@ fn poll(
     }
     .encode();
     let response = batch(source_id, &next, &records);
-    if serde_json::to_vec(&response)?.len() > max_bytes {
-        return Err(invalid("source diagnostic exceeds byte budget"));
+    let encoded = serde_json::to_vec(&response)?;
+    if encoded.len() > max_bytes || structural_tokens(&encoded) > MAX_STRUCTURAL_TOKENS {
+        return Err(invalid("source diagnostic exceeds batch budget"));
     }
     Ok(response)
 }
@@ -673,6 +711,74 @@ mod tests {
         let corrected = poll(&path, "fixture", cursor, 256, MAX_FRAME_BYTES).unwrap();
         assert_eq!(corrected["records"][0]["revision"], 1);
         assert_eq!(corrected["records"][0]["event_id"], "rust-sample:start");
+    }
+
+    #[test]
+    fn corrections_present_before_first_poll_are_paged_without_skipping() {
+        let scratch = Scratch::new();
+        let path = scratch.source();
+        for line in [
+            r#"{"id":"start","session":"one","at_ns":"1","kind":"lifecycle","state":"started"}"#,
+            r#"{"id":"start","session":"one","at_ns":"1","kind":"lifecycle","revision":1,"state":"running"}"#,
+            r#"{"id":"start","session":"one","at_ns":"1","kind":"lifecycle","revision":2,"state":"completed"}"#,
+            r#"{"id":"tail","session":"one","at_ns":"2","kind":"usage","usage":{"input_tokens":3}}"#,
+        ] {
+            append(&path, line);
+        }
+        let first = poll(&path, "fixture", "", 256, MAX_FRAME_BYTES).unwrap();
+        assert_eq!(first["records"].as_array().unwrap().len(), 1);
+        assert_eq!(first["records"][0]["revision"], 0);
+        let first_cursor = first["cursor"].as_str().unwrap();
+        let exact_bytes = serde_json::to_vec(&first).unwrap().len();
+        assert_eq!(poll(&path, "fixture", "", 256, exact_bytes).unwrap(), first);
+        assert!(poll(&path, "fixture", "", 256, exact_bytes - 1).is_err());
+
+        let second = poll(&path, "fixture", first_cursor, 1, MAX_FRAME_BYTES).unwrap();
+        assert_eq!(second["records"].as_array().unwrap().len(), 1);
+        assert_eq!(second["records"][0]["revision"], 1);
+        let second_cursor = second["cursor"].as_str().unwrap();
+        assert_ne!(second_cursor, first_cursor);
+        let third = poll(&path, "fixture", second_cursor, 256, MAX_FRAME_BYTES).unwrap();
+        assert_eq!(third["records"].as_array().unwrap().len(), 2);
+        assert_eq!(third["records"][0]["revision"], 2);
+        assert_eq!(third["records"][1]["event_id"], "rust-sample:tail");
+        let end_cursor = third["cursor"].as_str().unwrap();
+        assert_eq!(
+            poll(&path, "fixture", end_cursor, 256, MAX_FRAME_BYTES).unwrap()["records"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn full_usage_backlog_respects_receiver_structure_budget() {
+        let scratch = Scratch::new();
+        let path = scratch.source();
+        for index in 0..256 {
+            append(
+                &path,
+                &format!(
+                    r#"{{"id":"usage-{index}","session":"one","at_ns":"{index}","kind":"usage","usage":{{"input_tokens":1,"output_tokens":2,"cache_read_tokens":3,"cache_write_tokens":4,"total_tokens":5}}}}"#
+                ),
+            );
+        }
+        let mut cursor = String::new();
+        let (mut batches, mut received) = (0, 0);
+        loop {
+            let response = poll(&path, "fixture", &cursor, 256, MAX_FRAME_BYTES).unwrap();
+            let encoded = serde_json::to_vec(&response).unwrap();
+            assert!(structural_tokens(&encoded) <= MAX_STRUCTURAL_TOKENS);
+            let records = response["records"].as_array().unwrap();
+            if records.is_empty() {
+                break;
+            }
+            let next = response["cursor"].as_str().unwrap();
+            assert_ne!(next, cursor);
+            cursor = next.to_owned();
+            batches += 1;
+            received += records.len();
+        }
+        assert!(batches > 1);
+        assert_eq!(received, 256);
     }
 
     #[test]
