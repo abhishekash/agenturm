@@ -17,6 +17,9 @@ class NativeSessionAdapter(Protocol):
 
 
 def builtin_adapter(runtime: str) -> NativeSessionAdapter | None:
+    if runtime == "Codex":
+        from .adapters.codex import CodexAdapter
+        return CodexAdapter()
     if runtime == "Pi":
         from .adapters.pi import PiAdapter
         return PiAdapter()

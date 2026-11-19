@@ -47,7 +47,7 @@ class LocalIngestionLimitTests(unittest.TestCase):
 
     def test_session_discards_oversized_suffix_until_newline(self):
         reader = Session(self.store, self.path, "Codex")
-        with patch.object(local_agents, "MAX_LINE", 16), patch.object(reader, "codex", return_value=[]) as parse:
+        with patch.object(local_agents, "MAX_LINE", 16), patch.object(reader.adapter, "parse", return_value=[]) as parse:
             self.append(b"x" * 17)
             reader.poll()
             self.append(b"x" * 17)
@@ -55,7 +55,7 @@ class LocalIngestionLimitTests(unittest.TestCase):
             self.append(b'{}\n{"ok":true}\n')
             reader.poll()
         self.assertEqual(reader.skipped, 1)
-        parse.assert_called_once_with({"ok": True}, 0)
+        parse.assert_called_once_with(reader, {"ok": True}, 0, {})
         self.assertFalse(reader.discarding_line)
 
     def test_truncation_clears_discard_state_for_both_readers(self):
@@ -110,10 +110,10 @@ class LocalIngestionLimitTests(unittest.TestCase):
             self.assertEqual(timestamp(value), 0)
         self.path.write_bytes(b'{"timestamp":NaN}\n{"timestamp":1}\n')
         reader = Session(self.store, self.path, "Codex")
-        with patch.object(reader, "codex", return_value=[]) as parse:
+        with patch.object(reader.adapter, "parse", return_value=[]) as parse:
             reader.poll()
         self.assertEqual(parse.call_count, 2)
-        self.assertEqual(parse.call_args.args[1], 1_000_000_000)
+        self.assertEqual(parse.call_args.args[2], 1_000_000_000)
 
     def test_truncated_session_resets_modern_usage_detection(self):
         self.path.write_bytes(b'{"type":"token_usage_record","payload":{"usage":{}}}\n')

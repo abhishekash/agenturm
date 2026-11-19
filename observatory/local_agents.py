@@ -701,38 +701,6 @@ class Session:
             if result is None:
                 return
             state, request_key = result
-        elif self.runtime == "Codex":
-            if row.get("type") == "event_msg":
-                if event in {"task_started", "task_complete", "task_aborted", "turn_aborted"}:
-                    state = {"task_started": "running", "task_complete": "completed",
-                             "task_aborted": "interrupted", "turn_aborted": "interrupted"}[event]
-                    self.pending_tools.clear()
-                elif event in {"approval_request", "request_user_input"}:
-                    state = "waiting"
-                    self.waiting_for = "Approval" if event == "approval_request" else "User input"
-                    request_key = payload.get('request_id') or payload.get('call_id') or payload.get('id') or row.get('ordinal') or row.get('uuid') or row.get('timestamp')
-                elif event == "item_completed":
-                    item = payload.get("item") or {}
-                    if isinstance(item, dict):
-                        if item.get("type") == "UserMessage":
-                            state = "running"
-                            self.pending_tools.clear()
-                        elif item.get("type") == "AgentMessage" and item.get("phase") == "final_answer":
-                            state = "completed"
-                            self.pending_tools.clear()
-            if row.get("type") == "response_item":
-                key = str(payload.get("call_id") or payload.get("id"))
-                if event in {"function_call", "custom_tool_call"}:
-                    name = str(payload.get("name") or "Tool")
-                    self.pending_tools[key] = name
-                    if name.rsplit('.',1)[-1] in {'request_user_input','AskUserQuestion'}:
-                        self.pending_request_times[key] = stamp
-                    state = "running"
-                elif event in {"function_call_output", "custom_tool_call_output"}:
-                    self.pending_tools.pop(key, None)
-                    if state not in {'completed', 'interrupted', 'failed', 'error', 'incomplete'}:
-                        state = "running"
-                        self.waiting_for = ""
         elif self.runtime == "Kiro":
             payload = row.get("payload") or {}
             if not isinstance(payload, dict):
@@ -986,143 +954,8 @@ class Session:
         return spans
 
     def codex(self, row, stamp):
-        kind, payload = row.get("type"), row.get("payload") or {}
-        if not isinstance(payload, dict):
-            return []
-        if kind == "session_meta":
-            thread_id = _safe_identifier(payload.get("id")) or self.session_id
-            self.session_id = thread_id
-            self.native_session_id = _safe_identifier(payload.get("session_id")) or thread_id
-            self.native_root_session_id = self.native_session_id
-            self.native_worker_id = thread_id if thread_id != self.native_session_id else None
-            self.agent_id = canonical_agent_id(self.runtime, self.agent_namespace, thread_id)
-            source = payload.get("source")
-            spawn = {}
-            if isinstance(source, dict):
-                nested = source.get("subagent")
-                if isinstance(nested, dict):
-                    spawn = nested.get("thread_spawn") if isinstance(nested.get("thread_spawn"), dict) else {}
-            parent_native = (_safe_identifier(payload.get("parent_thread_id")) or
-                             _safe_identifier(spawn.get("parent_thread_id")))
-            if parent_native:
-                self.parent_agent_id = canonical_agent_id(
-                    self.runtime, self.agent_namespace, parent_native)
-                self.relationship_kind = "delegated"
-                self.relationship_state = "confirmed"
-                self.relationship_provenance = provenance(
-                    "codex-session-meta", "payload.parent_thread_id/source.subagent.thread_spawn",
-                    timestamp(payload.get("timestamp")))
-            elif _safe_identifier(payload.get("forked_from_id")):
-                fork = _safe_identifier(payload.get("forked_from_id"))
-                self.parent_agent_id = canonical_agent_id(
-                    self.runtime, self.agent_namespace, fork)
-                self.relationship_kind = "forked"
-                self.relationship_state = "confirmed"
-                self.relationship_provenance = provenance(
-                    "codex-session-meta", "payload.forked_from_id is a fork, not delegation",
-                    timestamp(payload.get("timestamp")))
-            elif (isinstance(source, dict) and "subagent" in source) or \
-                    str(payload.get("thread_source") or "").casefold() == "subagent":
-                self.relationship_kind = "delegated"
-                self.relationship_state = "unresolved"
-                self.relationship_provenance = provenance(
-                    "codex-session-meta", "subagent source without parent_thread_id",
-                    timestamp(payload.get("timestamp")))
-            elif isinstance(source, str) and source.casefold() in {"cli", "vscode", "exec", "mcp"}:
-                self.relationship_kind = "unknown"
-                self.relationship_state = "confirmed"
-                self.relationship_provenance = provenance(
-                    "codex-session-meta", "top-level source=" + source.casefold(),
-                    timestamp(payload.get("timestamp")))
-            else:
-                self.relationship_kind = "unknown"
-                self.relationship_state = "unresolved"
-                self.relationship_provenance = provenance(
-                    "codex-session-meta", "no parent or root marker",
-                    timestamp(payload.get("timestamp")))
-            self.project = Path(payload["cwd"]).name if payload.get("cwd") else self.project
-        elif kind == "turn_context":
-            self.turn = str(payload.get("turn_id") or self.turn)
-            self.model = payload.get("model") or self.model
-            if self.model == "codex-auto-review" and not self.internal:
-                self.adopt_internal_policy()
-                self._redaction_pending = True
-            self.project = Path(payload["cwd"]).name if payload.get("cwd") else self.project
-        elif kind == "token_usage_record":
-            self.modern_usage = True
-            self.turn = str(payload.get("turn_id") or self.turn)
-            key = payload.get("response_id") or row.get("ordinal") or row.get("timestamp")
-            return [self.model_span(("model", key), payload.get("usage"), stamp)]
-        elif kind == "response_item":
-            event = payload.get("type")
-            key = str(payload.get("call_id") or payload.get("id"))
-            if event in {"function_call", "custom_tool_call"}:
-                name = str(payload.get("name") or "Tool")
-                if name == "spawn_agent":
-                    self.spawn_calls[key] = (name, stamp, self.turn)
-                if mcp_attributes(name):
-                    self.calls[key] = (name, stamp, self.turn)
-            elif event in {"function_call_output", "custom_tool_call_output"} and key in self.spawn_calls:
-                self.spawn_calls.pop(key, None)
-                child = _spawned_agent_id(payload.get("output"))
-                if child:
-                    self.announce(child, stamp, "function_call_output spawn_agent agent_id")
-                if key not in self.calls:
-                    return []
-            if event in {"function_call_output", "custom_tool_call_output"} and key in self.calls:
-                name, start, turn = self.calls[key]
-                previous, self.turn = self.turn, turn
-                span = self.span(("tool", key), name, stamp,
-                    {"gen_ai.operation.name": "execute_tool", "tool.name": name, **mcp_attributes(name)},
-                    start=start, error=mcp_failed(payload.get("output")))
-                self.turn = previous
-                return [span]
-        elif kind == "event_msg":
-            event = payload.get("type")
-            self.turn = str(payload.get("turn_id") or self.turn)
-            if event == "task_started":
-                self.started[self.turn] = timestamp(payload.get("started_at")) or stamp
-                return [self.root(stamp, "running")]
-            if event in {"task_complete", "task_aborted", "turn_aborted"}:
-                return [self.root(stamp, "completed" if event == "task_complete" else "interrupted")]
-            if event == "token_count" and not self.modern_usage:
-                info = payload.get("info") or {}
-                total = info.get("total_token_usage")
-                if not isinstance(total, dict) or total == self.last_total:
-                    return []
-                usage = info.get("last_token_usage")
-                self.last_total = total
-                return [self.model_span(("usage", self.turn, json.dumps(total, sort_keys=True)), usage, stamp)]
-            if event == "item_completed":
-                item = payload.get("item") or {}
-                tool_type = item.get("type")
-                if tool_type == "AgentMessage" and item.get("phase") == "final_answer":
-                    return [self.root(stamp, "completed")]
-                names = {"CommandExecution": "Shell command", "FileChange": "File changes",
-                         "McpToolCall": "MCP tool", "Extension": "Extension tool"}
-                if tool_type in names:
-                    attrs = {"gen_ai.operation.name": "execute_tool", "tool.name": names[tool_type]}
-                    if tool_type == "McpToolCall":
-                        attrs["tool.name"] = str(item.get("tool") or "MCP tool")[:128]
-                        attrs["mcp.tool.name"] = attrs["tool.name"]
-                        attrs["mcp.server.name"] = str(item.get("server") or "")[:128]
-                        attrs["mcp.method.name"] = "tools/call"
-                    code = item.get("exit_code")
-                    if isinstance(code, int):
-                        attrs["process.exit.code"] = code
-                    error = item.get("status") in {"failed", "error"} or isinstance(code, int) and code != 0 or (tool_type == "McpToolCall" and mcp_failed(item.get("result")))
-                    end = timestamp(payload.get("completed_at_ms")) or stamp
-                    start = timestamp(payload.get("started_at_ms"))
-                    from .local_activity import duration
-                    elapsed = duration(item)
-                    if not start and elapsed is not None:
-                        start = max(0, end-int(elapsed*1e6))
-                    if not start:
-                        attrs["observatory.duration_unknown"] = True
-                    name = (attrs["mcp.server.name"] + " / " + attrs["tool.name"]) if tool_type == "McpToolCall" else str(attrs["tool.name"])
-                    return [self.span(("tool", item.get("id") or row.get("ordinal") or stamp),
-                        name, end, attrs, start=start, error=error)]
-        return []
+        """Compatibility entry point; Codex format logic lives in its adapter."""
+        return self.adapter.parse(self, row, stamp, {})
 
     def claude(self, row, stamp, prior_models=None):
         """Compatibility entry point; Claude format logic lives in its adapter."""
@@ -1144,23 +977,10 @@ class Session:
                     continue
                 content = None
                 if self.adapter is not None:
-                    content = self.adapter.initial_task(row)
-                elif self.runtime == 'Codex':
-                    payload = row.get('payload') or {}
-                    if not isinstance(payload, dict):
-                        continue
-                    if row.get('type') == 'turn_context' and payload.get('model') == 'codex-auto-review':
-                        # Privacy classification is the only prefix state we
-                        # replay. It must survive a jump over the old context.
-                        self.codex(row, timestamp(row.get('timestamp')))
+                    inspect_prefix = getattr(self.adapter, "inspect_prefix", None)
+                    if inspect_prefix is not None and inspect_prefix(self, row, timestamp(row.get("timestamp"))):
                         return
-                    item = payload.get('item') or {}
-                    if row.get('type') == 'event_msg' and isinstance(item, dict) and item.get('type') == 'UserMessage':
-                        content = item.get('content')
-                    elif row.get('type') == 'event_msg' and payload.get('type') == 'user_message':
-                        content = payload.get('message')
-                    elif row.get('type') == 'response_item' and payload.get('type') == 'message' and payload.get('role') == 'user':
-                        content = payload.get('content')
+                    content = self.adapter.initial_task(row)
                 elif self.runtime == 'Kiro':
                     payload = row.get('payload') or {}
                     if isinstance(payload, dict) and payload.get('type') == 'user' and payload.get('source') != 'steer':
@@ -1171,7 +991,7 @@ class Session:
                 title = task_description(content)
                 if title and not self.task_description:
                     self.task_description = safe(title, 500)
-                    if self.runtime != 'Codex':
+                    if not getattr(self.adapter, "continue_prefix_after_task", False):
                         return
             except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
                 continue
@@ -1221,8 +1041,9 @@ class Session:
                 header = stream.readline(MAX_LINE)
                 try:
                     row = loads(header)
-                    if self.runtime == "Codex":
-                        self.codex(row, timestamp(row.get("timestamp")))
+                    bootstrap = getattr(self.adapter, "bootstrap_header", None)
+                    if bootstrap is not None:
+                        bootstrap(self, row, timestamp(row.get("timestamp")))
                 except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
                     self.skipped += 1
                     self.schema_errors += 1
@@ -1273,8 +1094,9 @@ class Session:
             except (ValueError, UnicodeDecodeError, OverflowError, RecursionError):
                 self.skipped += 1
                 self.schema_errors += 1
-        if self.runtime == "Codex" and any(row.get("type") == "token_usage_record" for row in records):
-            self.modern_usage = True
+        if self.adapter is not None and getattr(self.adapter, "modern_usage_records", False):
+            if any(row.get("type") == "token_usage_record" for row in records):
+                self.modern_usage = True
         self.records_last_poll = len(records)
         self.records_total += len(records)
         spans = []
@@ -1289,12 +1111,8 @@ class Session:
             historical_outcome = False
             try:
                 payload = row.get('payload') or {}
-                terminal_event = (isinstance(payload, dict) and (payload.get('type') in {'task_complete','task_aborted','turn_aborted'}
-                    or (payload.get('type') == 'item_completed' and isinstance(payload.get('item'), dict)
-                        and payload['item'].get('type') == 'AgentMessage' and payload['item'].get('phase') == 'final_answer')))
-                historical_outcome = (self.runtime == 'Codex' and row.get('type') == 'event_msg'
-                    and terminal_event and payload.get('turn_id') and current_turn != 'session'
-                    and str(payload['turn_id']) != current_turn)
+                historical_check = getattr(self.adapter, "historical_outcome", None)
+                historical_outcome = bool(historical_check(row, current_turn)) if historical_check else False
                 stamp = timestamp(row.get("timestamp"))
                 self.last_record_ns = max(self.last_record_ns, stamp)
                 if self.adapter is not None:

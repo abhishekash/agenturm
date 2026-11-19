@@ -7,12 +7,13 @@
     "files": {
       "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
       "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
-      "observatory/local_agents.py": "48ae1a67cb3d90e416bed73c55b01fc5d7b26dc6417e38572bc999368fcc40d5",
-      "observatory/local_activity.py": "ef3803abad348510c19a328af93f1b39430f0e9e12ff8b2c64080c721756d59f",
-      "observatory/native_sources.py": "a0849e592f951d22ef3f2fa9f19dbce0e9e97390c9825d831bdcdf3d1221e2f1",
-      "observatory/native_adapter.py": "abca829196d89381579cf7b4cb10e4bdbdbf6192b0ce3d86bd23d3890c34e849",
+      "observatory/local_agents.py": "fa7ffbf8f874034360d3dfcd2b3e04b7032fff8739f0d45603e6fde93452d00c",
+      "observatory/local_activity.py": "33a3a9ed78592b95493adee46939b0daa31631e8b85ed30863f2787df9855d38",
+      "observatory/native_sources.py": "9ef1945288e6eba89cacfbb347adc5b23088725647b41211a46428a5d271c68a",
+      "observatory/native_adapter.py": "88b86d0dadbe8ed53f8d43d870c8866cd6608df39ff24bf937e3007f6aed9398",
       "observatory/adapters/pi.py": "bd142778fb6f85a564e7d270ba3ba10cc2db262f071701c4dd031de0bb81933d",
-      "observatory/adapters/claude.py": "9472e3bad472c5f26849bc81033890641de82930cde2dfce7099a2ee814f6f85"
+      "observatory/adapters/claude.py": "9472e3bad472c5f26849bc81033890641de82930cde2dfce7099a2ee814f6f85",
+      "observatory/adapters/codex.py": "a9e115237265fd8be1e567ddb6e4018a4cc220ed1f67a942423cc7c5918a755f"
     },
     "core_membership_commits": [
       "d955cbbc5f87a04a1055ee0bf07ed52ef85e8fc9",
@@ -59,6 +60,16 @@
           "observatory/native_adapter.py": "7314fee49795d8b966d30dd9c07343aff34d9814f0c4a4eac5a358bc22950246"
         },
         "qualification": "Before Claude Code format callbacks moved into a registered adapter; no new producer format certification."
+      },
+      {
+        "commit": "41163500f5f46e40c0fb20b28c604ad187b97dcb",
+        "files": {
+          "observatory/local_agents.py": "48ae1a67cb3d90e416bed73c55b01fc5d7b26dc6417e38572bc999368fcc40d5",
+          "observatory/local_activity.py": "ef3803abad348510c19a328af93f1b39430f0e9e12ff8b2c64080c721756d59f",
+          "observatory/native_sources.py": "a0849e592f951d22ef3f2fa9f19dbce0e9e97390c9825d831bdcdf3d1221e2f1",
+          "observatory/native_adapter.py": "abca829196d89381579cf7b4cb10e4bdbdbf6192b0ce3d86bd23d3890c34e849"
+        },
+        "qualification": "Before Codex rollout callbacks moved into a registered adapter; prior format coverage is unchanged."
       }
     ],
     "verified_reader_commit": "84c838eea3738401275f63a6a238f55042310a74",

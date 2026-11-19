@@ -60,10 +60,12 @@ class NativeSourceSpec:
 
 
 def builtin_sources() -> tuple[NativeSourceSpec, ...]:
+    from .adapters.codex import CodexAdapter
     from .adapters.claude import ClaudeAdapter
     from .adapters.pi import PiAdapter
     return (
-        NativeSourceSpec("codex", "Codex", lambda: Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions"),
+        NativeSourceSpec("codex", "Codex", lambda: Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions",
+                         adapter_factory=CodexAdapter),
         NativeSourceSpec("claude", "Claude Code", lambda: Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects",
                          adapter_factory=ClaudeAdapter),
         NativeSourceSpec("pi", "Pi", lambda: Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home() / ".pi" / "agent"))) / "sessions",
