@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .plugin_wire import PollBatch, ProtocolError, encode_message, validate_batch
+from . import plugin_retention
 
 if TYPE_CHECKING:
     from sqlite3 import Connection
@@ -126,6 +127,7 @@ def initialize(db: Connection) -> None:
                               ("relationship_state", "TEXT NOT NULL DEFAULT 'unresolved'")):
         if name not in projection_columns:
             db.execute(f"ALTER TABLE plugin_session_projection_v1 ADD COLUMN {name} {declaration}")
+    plugin_retention.initialize(db)
 
 
 def _identity(value: str, name: str) -> str:
@@ -199,6 +201,7 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
         if not enabled:
             db.execute("DELETE FROM plugin_evidence_v1 WHERE source_id=?", (source_id,))
             db.execute("DELETE FROM plugin_session_projection_v1 WHERE source_id=?", (source_id,))
+            plugin_retention.revoke(db, source_id)
         dirty_seq = row["dirty_seq"] + 1
         db.execute("UPDATE plugin_source_cursor_v1 SET capture_enabled=?,policy_epoch=?,"
                    "lease_epoch=?,dirty_seq=?,updated_ns=? WHERE source_id=?",
@@ -301,6 +304,8 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
     if not isinstance(expected_cursor, str):
         raise ValueError("expected cursor must be text")
     digest, rows = _validated(batch, lease.source_id)
+    protected_hashes = {item[1] for item in rows}
+    incoming_session_ids = {item[7] for item in rows if item[7]}
     with store._source_write(), store._connect() as db:
         db.execute("BEGIN IMMEDIATE")
         receiver = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
@@ -350,8 +355,19 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                                      "AND event_id_hash=? AND revision<?",
                                      (*item[:2], item[2])).rowcount
                 count -= deleted
+            else:
+                plugin_retention.reject_unseen(db, lease.source_id,
+                                               revision=item[2], time_ns=item[4])
             if count >= MAX_SOURCE_RECORDS:
-                raise ProtocolError("plugin source evidence capacity reached")
+                count -= plugin_retention.prune(db, lease.source_id,
+                                                policy_epoch=lease.policy_epoch,
+                                                protected_hashes=protected_hashes,
+                                                incoming_session_ids=incoming_session_ids,
+                                                max_records=MAX_SOURCE_RECORDS)
+                # A newly established watermark may fence this very batch.
+                if latest is None:
+                    plugin_retention.reject_unseen(db, lease.source_id,
+                                                   revision=item[2], time_ns=item[4])
             db.execute("INSERT INTO plugin_evidence_v1 "
                        "(source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest,"
                        "native_session_id,native_worker_id,native_turn_id,policy_epoch,admitted_ns) "

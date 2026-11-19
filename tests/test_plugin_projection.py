@@ -245,7 +245,8 @@ class PluginProjectionTests(unittest.TestCase):
         self.commit("", "one", [row])
         self.assertEqual(project_source(self.store, "source-a"), 0)
         self.assertEqual(sessions(self.store), {"sessions": [], "pending_sources": 0,
-                                               "omitted_sessions": False})
+                                               "omitted_sessions": False,
+                                               "retention_gaps": []})
 
     def test_revocation_erases_projection_and_reenabled_source_is_empty(self):
         self.commit("", "one", [lifecycle("a", "completed")])
