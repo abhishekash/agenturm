@@ -88,6 +88,26 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(server.return_value.serve_forever.called)
         self.assertFalse(self.fixture.marker.exists())
 
+    def test_replacement_can_claim_registered_non_jsonl_reader(self):
+        manifest = self.fixture.root / "plugin.toml"
+        manifest.write_text(manifest.read_text().replace(
+            'provides = ["source-adapter/1"]',
+            'provides = ["source-adapter/1", "harness.opencode/1"]'))
+        self.config.write_text(self.config.read_text() + 'replaces = ["opencode"]\n')
+        source = read_plugin_config(self.config)[0]
+        self.assertEqual(source.replaces, ("opencode",))
+        with patch("observatory.server.ThreadingHTTPServer") as server, \
+             patch("observatory.collector_runtime.start_local_collector") as collector, \
+             patch("observatory.plugin_supervisor.PluginSupervisor") as supervisor:
+            supervisor.return_value.start.return_value = supervisor.return_value
+            serve(str(self.root / "reader-replacement.db"), no_auth=True, port=14330,
+                  plugin_config=self.config)
+        selected = collector.call_args.kwargs["registry"]
+        self.assertNotIn("opencode", {spec.id for spec in selected.readers})
+        self.assertIn("pi", {spec.id for spec in selected.sources})
+        self.assertTrue(server.return_value.serve_forever.called)
+        self.assertFalse(self.fixture.marker.exists())
+
     def test_replacement_rejects_unknown_source_before_store_creation(self):
         manifest = self.fixture.root / "plugin.toml"
         manifest.write_text(manifest.read_text().replace(

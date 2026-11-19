@@ -72,7 +72,7 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
                 or any(not isinstance(value, str) or not PLUGIN_ID.fullmatch(value)
                        or f"harness.{value}/1" not in manifest.provides for value in replaces)
                 or len(set(replaces)) != len(replaces) or replaced.intersection(replaces)):
-            raise ValueError("invalid or unclaimed built-in source replacement")
+            raise ValueError("invalid or unclaimed built-in harness replacement")
         replaced.update(replaces)
         source_root = row.get("root")
         if source_root is not None and (not isinstance(source_root, str)
