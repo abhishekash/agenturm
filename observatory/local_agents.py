@@ -1778,7 +1778,8 @@ def plaintext_task(row):
 
 
 class LocalAgents:
-    def __init__(self, store, capture_details=True, source_specs: tuple[NativeSourceSpec, ...] | None = None):
+    def __init__(self, store, capture_details=True, source_specs: tuple[NativeSourceSpec, ...] | None = None,
+                 reader_specs=None):
         self.store = store
         self.capture_details = capture_details
         self.source_specs = builtin_sources() if source_specs is None else tuple(source_specs)
@@ -1802,8 +1803,15 @@ class LocalAgents:
         self.kiro_folders = []
         self.kiro_folders_cache = {}
         self.kiro_folders_checked = 0.0
-        from .opencode import OpenCodeReader
-        self.opencode = OpenCodeReader(store, capture_details=capture_details)
+        from .native_readers import builtin_readers
+        self.reader_specs = builtin_readers() if reader_specs is None else tuple(reader_specs)
+        if len({spec.id for spec in self.reader_specs}) != len(self.reader_specs):
+            raise ValueError("duplicate native reader ID")
+        if {spec.id for spec in self.reader_specs} & {spec.id for spec in self.source_specs}:
+            raise ValueError("native reader and source IDs must be unique")
+        self.reader_plugins = {spec.id: spec.build(store, capture_details) for spec in self.reader_specs}
+        # Preserve the existing OpenCode diagnostic surface during migration.
+        self.opencode = self.reader_plugins.get("opencode")
         self.initial_poll_complete = False
         self.thread = threading.Thread(target=self.loop, name="observatory-local-agents", daemon=True)
 
@@ -1916,15 +1924,22 @@ class LocalAgents:
                     self.mcp_configurations = discover_mcp_configurations(
                         project_directories=project_directories,
                         on_error=note_config_error)
-                    self.opencode.set_mcp_servers(
-                        item["server"] for item in self.mcp_configurations
-                        if item["client"] == "OpenCode")
+                    for spec in self.reader_specs:
+                        if spec.mcp_client:
+                            self.reader_plugins[spec.id].set_mcp_servers(
+                                item["server"] for item in self.mcp_configurations
+                                if item["client"] == spec.mcp_client)
                     self.mcp_config_errors = config_errors[0]
                     self.mcp_config_updated = time.monotonic()
                     discovered = time.monotonic()
                 self.poll()
-                if not self.stop.is_set():
-                    self.opencode.poll()
+                for spec in self.reader_specs:
+                    if self.stop.is_set():
+                        break
+                    try:
+                        self.reader_plugins[spec.id].poll()
+                    except Exception as exc:
+                        self.record_error(exc, f"Polling native reader {spec.id}")
                     self.initial_poll_complete = True
             except Exception as exc:
                 self.record_error(exc,'Polling native sources')
@@ -2004,11 +2019,22 @@ class LocalAgents:
                      **({"permissions": session.kiro_permission_summary()} if session.runtime == "Kiro" else {}),
                      **session.hierarchy(),
                      "bytes_read": session.offset} for session in sessions]
-        opencode_observed = self.opencode.status_sessions()
-        observed.extend(opencode_observed)
+        reader_observed = []
+        reader_diagnostics = {}
+        for spec in self.reader_specs:
+            reader = self.reader_plugins[spec.id]
+            try:
+                rows = reader.status_sessions()
+                if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+                    raise TypeError("reader status_sessions must return a list of records")
+                reader_observed.extend(rows)
+                reader_diagnostics[spec.id] = reader.diagnostics()
+            except Exception as exc:
+                self.record_error(exc, f"Inspecting native reader {spec.id}")
+        observed.extend(reader_observed)
         nodes, announced = self.hierarchy_nodes(sessions)
         observed_ids = {item.get("agent_id") for item in observed}
-        nodes.extend(item for item in opencode_observed
+        nodes.extend(item for item in reader_observed
                      if item.get("agent_id") and item.get("agent_id") not in
                      {node.get("agent_id") for node in nodes})
         facts = tuple(sorted(
@@ -2070,9 +2096,10 @@ class LocalAgents:
                 "schema_errors": sum(session.schema_errors for session in sessions),
                 "skipped_oversized_records": sum(session.skipped_oversized for session in sessions),
                 "capture_content": self.capture_details, "lookback_hours": 24, "max_sources": MAX_SOURCES,
-                "opencode_discovered_sessions": self.opencode.discovered_sessions,
-                "opencode_omitted_sessions": self.opencode.omitted_sessions,
-                "opencode_diagnostics": self.opencode.diagnostics(),
+                "opencode_discovered_sessions": getattr(self.opencode, "discovered_sessions", 0),
+                "opencode_omitted_sessions": getattr(self.opencode, "omitted_sessions", 0),
+                "opencode_diagnostics": reader_diagnostics.get("opencode", {}),
+                "reader_plugins": reader_diagnostics,
                 "kiro_folders": self.kiro_folder_status(),
                 "runtime": self.runtime_snapshot,
                 "mcp_configurations": list(self.mcp_configurations),
@@ -2086,7 +2113,7 @@ class LocalAgents:
                                   for node in nodes) else "complete"),
                               "write_errors": self.hierarchy_write_errors},
                 "sessions": observed,
-                "opencode_read_errors": self.opencode.errors}
+                "opencode_read_errors": getattr(self.opencode, "errors", 0)}
 
     def close(self):
         self.stop.set()
