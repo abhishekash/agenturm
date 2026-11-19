@@ -24,6 +24,7 @@ class PluginSource:
     poll_interval: float = 0.5
     timeout: float = 5.0
     replaces: tuple[str, ...] = ()
+    source_root: str | None = None
 
 
 _REASONS = {
@@ -90,7 +91,8 @@ class PluginSupervisor:
                     or not 0.05 <= source.poll_interval <= 60):
                 raise ValueError("invalid plugin poll interval")
             PluginSession(store, source.manifest, source_id=source.source_id,
-                          allowed_grants=source.allowed_grants, timeout=source.timeout)
+                          allowed_grants=source.allowed_grants, timeout=source.timeout,
+                          source_root=source.source_root)
         self.store = store
         self.sources = sources
         self.max_failures = max_failures
@@ -136,7 +138,7 @@ class PluginSupervisor:
         while not self.stop.is_set():
             session = PluginSession(self.store, source.manifest, source_id=source_id,
                                     allowed_grants=source.allowed_grants,
-                                    timeout=source.timeout)
+                                    timeout=source.timeout, source_root=source.source_root)
             try:
                 self._update(source_id, state="starting", restart_count=max(0, attempts))
                 attempts += 1

@@ -43,7 +43,7 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
     replaced = set()
     for row in rows:
         required = {"manifest", "source_id", "grants", "capture", "poll_interval", "timeout"}
-        if not isinstance(row, dict) or not required <= set(row) or set(row) - required - {"replaces"}:
+        if not isinstance(row, dict) or not required <= set(row) or set(row) - required - {"replaces", "root"}:
             raise ValueError("invalid plugin source configuration fields")
         source_id = row["source_id"]
         if not isinstance(source_id, str) or not source_id or source_id in seen:
@@ -74,6 +74,14 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
                 or len(set(replaces)) != len(replaces) or replaced.intersection(replaces)):
             raise ValueError("invalid or unclaimed built-in source replacement")
         replaced.update(replaces)
+        source_root = row.get("root")
+        if source_root is not None and (not isinstance(source_root, str)
+                                        or not Path(source_root).is_absolute()
+                                        or len(source_root) > 1024
+                                        or any(ord(char) < 32 or ord(char) == 127
+                                               for char in source_root)):
+            raise ValueError("plugin source root must be an absolute path")
         sources.append(PluginSource(manifest, source_id, tuple(grants),
-                                    float(row["poll_interval"]), float(row["timeout"]), tuple(replaces)))
+                                    float(row["poll_interval"]), float(row["timeout"]),
+                                    tuple(replaces), source_root))
     return tuple(sources)

@@ -53,6 +53,8 @@ try:
             continue
         if MODE == 'crash':
             os._exit(3)
+        if MODE == 'root' and os.environ.get('AGENTURM_PLUGIN_SOURCE_ROOT') != os.path.dirname(MARKER):
+            os._exit(4)
         if MODE == 'crash_once' and not os.path.exists(MARKER):
             open(MARKER, 'w', encoding='utf-8').close()
             os._exit(3)

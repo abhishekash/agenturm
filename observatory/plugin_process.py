@@ -31,7 +31,8 @@ _process_slots = threading.BoundedSemaphore(MAX_PROCESSES)
 
 class PluginProcess:
     def __init__(self, manifest: PluginManifest, *, source_id: str,
-                 allowed_grants: tuple[str, ...] = (), timeout: float = 5.0):
+                 allowed_grants: tuple[str, ...] = (), timeout: float = 5.0,
+                 source_root: str | None = None):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         plan_activation({manifest.id: manifest}, (manifest.id,),
@@ -45,9 +46,18 @@ class PluginProcess:
             raise ValueError("invalid host-owned source ID")
         if type(timeout) not in (int, float) or not 0 < timeout <= 60:
             raise ValueError("plugin timeout must be between 0 and 60 seconds")
+        if source_root is not None:
+            if (not isinstance(source_root, str) or not Path(source_root).is_absolute()
+                    or len(source_root) > 1024 or any(ord(char) < 32 or ord(char) == 127
+                                                        for char in source_root)):
+                raise ValueError("plugin source root must be an absolute path")
+            if ("configured-root/1" not in manifest.provides
+                    or "configured-source-read" not in manifest.grants):
+                raise ValueError("plugin source root requires a declared feature and grant")
         self.manifest = manifest
         self.source_id = source_id
         self.timeout = float(timeout)
+        self.source_root = source_root
         self.process: subprocess.Popen | None = None
         self._temporary: tempfile.TemporaryDirectory | None = None
         self._frames: queue.Queue[object] = queue.Queue(maxsize=2)
@@ -171,10 +181,14 @@ class PluginProcess:
         self._slot_held = True
         try:
             copied = self._artifact()
+            child_env = {"PATH": os.defpath, "LANG": "C.UTF-8",
+                         "AGENTURM_PLUGIN_PROTOCOL": "1"}
+            if self.source_root is not None:
+                child_env["AGENTURM_PLUGIN_SOURCE_ROOT"] = self.source_root
             self.process = subprocess.Popen(
                 [str(copied)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, cwd=self._temporary.name,
-                env={"PATH": os.defpath, "LANG": "C.UTF-8", "AGENTURM_PLUGIN_PROTOCOL": "1"},
+                env=child_env,
                 bufsize=0, close_fds=True)
             threading.Thread(target=self._reader, args=(self.process.stdout,),
                              name="agenturm-plugin-data", daemon=True).start()

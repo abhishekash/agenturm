@@ -10,6 +10,7 @@ from unittest.mock import patch
 from urllib.request import urlopen
 
 from observatory.plugin_config import read_plugin_config
+from observatory.plugin_process import PluginProcess
 from observatory.server import BoundedHTTPServer, serve
 from tests import test_plugin_process
 
@@ -129,6 +130,32 @@ class ConfigTests(unittest.TestCase):
             serve(str(target), no_auth=True, port=14325,
                   local_agents=False, plugin_config=self.config)
         self.assertFalse(target.exists())
+
+    def test_configured_root_reaches_child_only_with_declared_feature(self):
+        self.fixture.manifest("root")
+        manifest = self.fixture.root / "plugin.toml"
+        self.config.write_text(self.config.read_text() + f'root = "{self.fixture.root}"\n')
+        with self.assertRaisesRegex(ValueError, "declared feature"):
+            serve(str(self.root / "unclaimed-root.db"), no_auth=True, port=14326,
+                  local_agents=False, plugin_config=self.config)
+        self.assertFalse((self.root / "unclaimed-root.db").exists())
+        manifest.write_text(manifest.read_text().replace(
+            'provides = ["source-adapter/1"]',
+            'provides = ["source-adapter/1", "configured-root/1"]'))
+        source = read_plugin_config(self.config)[0]
+        self.assertEqual(source.source_root, str(self.fixture.root))
+        with PluginProcess(source.manifest, source_id=source.source_id,
+                           allowed_grants=source.allowed_grants,
+                           source_root=source.source_root) as child:
+            self.assertEqual(child.poll("").records[0]["event_id"], "fixture-1")
+
+    def test_configured_root_must_be_absolute_and_bounded(self):
+        base = self.config.read_text()
+        for root in ('relative/path', 'x' * 1025, '/tmp\\nother'):
+            with self.subTest(root=root[:30]):
+                self.config.write_text(base + f'root = "{root}"\n')
+                with self.assertRaises(ValueError):
+                    read_plugin_config(self.config)
 
     def test_serve_activates_only_the_named_config_and_exposes_session(self):
         running = []
