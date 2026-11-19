@@ -20,10 +20,10 @@ class CountingStore:
         self.spans = 0
         self.logs = 0
 
-    def ingest(self, spans):
+    def ingest(self, spans, **_options):
         self.spans += len(spans)
 
-    def ingest_logs(self, logs):
+    def ingest_logs(self, logs, **_options):
         self.logs += len(logs)
 
 
