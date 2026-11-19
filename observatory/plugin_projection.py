@@ -10,6 +10,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING
 
+from .agent_hierarchy import canonical_agent_id
 from .plugin_wire import ProtocolError
 
 if TYPE_CHECKING:
@@ -32,7 +33,8 @@ def _reduce(rows: list, receiver_id: str, source_id: str, policy_epoch: int,
         native_id = row["native_session_id"]
         if not native_id:
             continue
-        entry = sessions.setdefault(native_id, {"last_record_ns": 0, "lifecycle": [], "usage": {}})
+        entry = sessions.setdefault(native_id, {"last_record_ns": 0, "lifecycle": [],
+                                                "usage": {}, "relationships": []})
         entry["last_record_ns"] = max(entry["last_record_ns"], row["admitted_ns"])
         if row["kind"] == "lifecycle":
             payload = json.loads(row["payload_json"])
@@ -44,8 +46,38 @@ def _reduce(rows: list, receiver_id: str, source_id: str, policy_epoch: int,
             # counters as unknown rather than manufacturing zeroes.
             for field, value in json.loads(row["payload_json"]).items():
                 entry["usage"][field] = entry["usage"].get(field, 0) + value
+        elif row["kind"] == "relationship":
+            payload = json.loads(row["payload_json"])
+            entry["relationships"].append((row["time_ns"], payload["parent_session_id"],
+                                           payload["kind"]))
     if len(sessions) > MAX_PROJECTION_SESSIONS:
         raise ProtocolError("plugin session projection capacity reached")
+    # A relationship is confirmed only when the referenced parent is present
+    # in this policy-current source snapshot. Cycles and self-links are invalid.
+    chosen: dict[str, tuple[str, str, str]] = {}
+    for native_id, entry in sessions.items():
+        relations = entry["relationships"]
+        if not relations:
+            chosen[native_id] = ("", "unknown", "unresolved")
+            continue
+        latest_time = max(item[0] for item in relations)
+        latest = {(parent, kind) for stamp, parent, kind in relations if stamp == latest_time}
+        if len(latest) != 1:
+            chosen[native_id] = ("", "unknown", "conflicted")
+        else:
+            parent, kind = next(iter(latest))
+            chosen[native_id] = (parent, kind, "unresolved")
+    for native_id, (parent, kind, state) in tuple(chosen.items()):
+        if not parent or state == "conflicted":
+            continue
+        seen = {native_id}
+        cursor = parent
+        while cursor in sessions and cursor not in seen:
+            seen.add(cursor)
+            cursor = chosen[cursor][0]
+        state = ("invalid" if cursor in seen else
+                 "confirmed" if parent in sessions else "unresolved")
+        chosen[native_id] = (parent, kind, state)
     result = []
     for native_id, entry in sessions.items():
         lifecycle = entry["lifecycle"]
@@ -60,9 +92,11 @@ def _reduce(rows: list, receiver_id: str, source_id: str, policy_epoch: int,
             state_time, state, reason = 0, "unknown", ""
         session_key = "plugin:" + hashlib.sha256(
             (receiver_id + "\0" + source_id + "\0" + native_id).encode()).hexdigest()
+        parent, kind, relation_state = chosen[native_id]
         result.append((source_id, native_id, session_key, state, reason, state_time,
                        entry["last_record_ns"], policy_epoch, dirty_seq,
-                       json.dumps(entry["usage"], sort_keys=True, separators=(",", ":"))))
+                       json.dumps(entry["usage"], sort_keys=True, separators=(",", ":")),
+                       parent, kind, relation_state))
     return result
 
 
@@ -106,7 +140,8 @@ def project_source(store: Store, source_id: str) -> int:
         db.execute("DELETE FROM plugin_session_projection_v1 WHERE source_id=?", (source_id,))
         db.executemany("INSERT INTO plugin_session_projection_v1(source_id,native_session_id,session_key,"
                        "state,reason_code,state_time_ns,last_record_ns,policy_epoch,source_dirty_seq,"
-                       "usage_json) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                       "usage_json,parent_native_session_id,relationship_kind,relationship_state) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                        projected)
         db.execute("INSERT INTO plugin_projection_cursor_v1(source_id,projected_seq,policy_epoch) "
                    "VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
@@ -143,9 +178,14 @@ def sessions(store: Store, *, limit: int = 200) -> dict:
                     "cancelled": "interrupted"}.get(row["state"], row["state"])
         usage = {key: value if value <= MAX_JSON_SAFE_INTEGER else str(value)
                  for key, value in json.loads(row["usage_json"]).items()}
+        parent = row["parent_native_session_id"]
+        parent_agent_id = (canonical_agent_id(row["plugin_id"],
+                            "plugin:" + row["source_id"], parent)
+                           if parent and row["relationship_state"] != "invalid" else None)
         result.append({"id": row["session_key"], "source_id": row["session_key"],
                        "plugin_source_id": row["source_id"],
                        "session_id": row["session_key"], "native_session_id": row["native_session_id"],
+                       "agent_native_id": row["native_session_id"],
                        "runtime": row["plugin_id"], "service": row["plugin_id"],
                        "source_namespace": "plugin:" + row["source_id"],
                        "run_state": reported, "reported_state": row["state"], "task": "",
@@ -155,7 +195,11 @@ def sessions(store: Store, *, limit: int = 200) -> dict:
                        {"completed", "failed", "interrupted", "cancelled"} else 0,
                        "reason_code": row["reason_code"], "coverage": "partial",
                        "metadata_usage": usage,
-                       "discovery_state": "observed", "relationship_kind": "unknown",
-                       "relationship_state": "unresolved"})
+                       "discovery_state": "observed", "relationship_kind": row["relationship_kind"],
+                       "relationship_state": row["relationship_state"],
+                       "parent_agent_id": parent_agent_id,
+                       "parent_agent_native_id": parent or None,
+                       "relationship_provenance": "plugin explicit relationship" if parent else
+                       "No parent relationship was reported"})
     return {"sessions": result, "pending_sources": pending,
             "omitted_sessions": len(rows) > limit}

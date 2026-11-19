@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from observatory.core import Store
+from observatory.agent_hierarchy import canonical_agent_id
 from observatory.plugin_admission import activate_source, commit_batch, initialize, set_source_capture
 from observatory.plugin_projection import project_source, sessions
 from observatory.plugin_wire import PollBatch, ProtocolError
@@ -34,6 +35,12 @@ def usage(event, payload, revision=0, session="native-1"):
             "identity": {"session_id": session}}
 
 
+def relationship(event, child, parent, stamp="150", revision=0, kind="delegated"):
+    return {"event_id": event, "revision": revision, "kind": "relationship",
+            "time_ns": stamp, "payload": {"parent_session_id": parent, "kind": kind},
+            "identity": {"session_id": child}}
+
+
 class PluginProjectionTests(unittest.TestCase):
     def test_existing_projection_table_migrates_without_losing_rows(self):
         with sqlite3.connect(":memory:") as db:
@@ -48,6 +55,9 @@ class PluginProjectionTests(unittest.TestCase):
             initialize(db)
             self.assertEqual(db.execute("SELECT usage_json FROM plugin_session_projection_v1").fetchone()[0],
                              "{}")
+            self.assertEqual(tuple(db.execute("SELECT parent_native_session_id,relationship_kind,"
+                                              "relationship_state FROM plugin_session_projection_v1").fetchone()),
+                             ("", "unknown", "unresolved"))
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -157,6 +167,54 @@ class PluginProjectionTests(unittest.TestCase):
         self.assertEqual(len(projected), 2)
         self.assertEqual(len({row["source_id"] for row in projected}), 2)
         self.assertEqual({row["plugin_source_id"] for row in projected}, {"source-a"})
+
+    def test_relationship_requires_observed_parent_and_resolves_after_arrival(self):
+        from observatory.source_projection import prepare_sources
+        self.commit("", "one", [lifecycle("child", "running", session="child"),
+                                relationship("relation", "child", "parent")])
+        project_source(self.store, "source-a")
+        child = sessions(self.store)["sessions"][0]
+        self.assertEqual((child["relationship_kind"], child["relationship_state"]),
+                         ("delegated", "unresolved"))
+        self.commit("one", "two", [lifecycle("parent", "running", session="parent")])
+        self.assertEqual(sessions(self.store)["sessions"], [])
+        project_source(self.store, "source-a")
+        projected = {row["native_session_id"]: row for row in sessions(self.store)["sessions"]}
+        self.assertEqual(projected["child"]["relationship_state"], "confirmed")
+        self.assertEqual(projected["child"]["parent_agent_id"],
+                         canonical_agent_id("fixture.plugin", "plugin:source-a", "parent"))
+        snapshot = SimpleNamespace(agents=[], activity=[], sessions=[],
+                                   local_status={"sessions": list(projected.values())})
+        prepared, _, _ = prepare_sources(snapshot)
+        linked = {row["native_session_id"]: row for row in prepared}
+        self.assertEqual(linked["child"]["parent_agent_id"], linked["parent"]["agent_id"])
+
+    def test_corrected_relationship_and_cycle_are_policy_coherent(self):
+        self.commit("", "one", [lifecycle("a", "running", session="a"),
+                                lifecycle("b", "running", session="b"),
+                                relationship("a-parent", "a", "b")])
+        project_source(self.store, "source-a")
+        self.assertEqual({r["native_session_id"]: r for r in sessions(self.store)["sessions"]}
+                         ["a"]["relationship_state"], "confirmed")
+        self.commit("one", "two", [relationship("b-parent", "b", "a")])
+        project_source(self.store, "source-a")
+        self.assertEqual({r["relationship_state"] for r in sessions(self.store)["sessions"]},
+                         {"invalid"})
+        self.commit("two", "three", [relationship("b-parent", "b", "other", revision=1)])
+        project_source(self.store, "source-a")
+        projected = {r["native_session_id"]: r for r in sessions(self.store)["sessions"]}
+        self.assertEqual(projected["a"]["relationship_state"], "confirmed")
+        self.assertEqual(projected["b"]["relationship_state"], "unresolved")
+        set_source_capture(self.store, source_id="source-a", enabled=False)
+        self.assertEqual(sessions(self.store)["sessions"], [])
+
+    def test_same_time_relationship_conflict_never_chooses_parent(self):
+        self.commit("", "one", [relationship("one", "child", "a"),
+                                relationship("two", "child", "b")])
+        project_source(self.store, "source-a")
+        row = sessions(self.store)["sessions"][0]
+        self.assertEqual((row["relationship_kind"], row["relationship_state"],
+                          row["parent_agent_id"]), ("unknown", "conflicted", None))
 
     def test_health_exposes_projected_sessions_and_pending_coverage(self):
         from observatory.server import BoundedHTTPServer, handler_for

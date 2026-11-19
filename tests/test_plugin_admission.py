@@ -210,6 +210,13 @@ class AdmissionTests(unittest.TestCase):
             {**record(), "kind": "usage", "payload": {"input_tokens": -1}},
             {**record(), "kind": "diagnostic", "payload": {"code": "free text", "severity": "error"}},
             {**record(), "kind": "message", "payload": {"text": "prompt"}},
+            {**record(), "kind": "relationship", "payload": {"parent_session_id": "parent", "kind": "delegated"}},
+            {**record(), "kind": "relationship", "identity": {"session_id": "child"},
+             "payload": {"parent_session_id": "../secret", "kind": "delegated"}},
+            {**record(), "kind": "relationship", "identity": {"session_id": "child"},
+             "payload": {"parent_session_id": "parent", "kind": "delegated", "text": "secret"}},
+            {**record(), "kind": "relationship", "identity": {"session_id": "child"},
+             "payload": {"parent_session_id": "parent", "kind": ["delegated"]}},
         ]
         for item in invalid:
             with self.subTest(item=item), self.assertRaises(ProtocolError):
