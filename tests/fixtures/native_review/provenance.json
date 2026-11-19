@@ -3,18 +3,18 @@
   "verified_on": "2026-11-19",
   "reader": {
     "legacy_verified_baseline": "1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8",
-    "adapter_commit": "d2ac01cf76be80499df9abe89bd06a0c02edea4a",
+    "adapter_commit": "204b4713fa72ab20ae291b69abdb991aa658b850",
     "files": {
       "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
       "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
-      "observatory/local_agents.py": "cfa7cfc4ec0f3f51e946316fe8481bdabf94ef1a67c1570ce981cdbbbb189280",
+      "observatory/local_agents.py": "16dbed5421d4fec68cf290946c6fa98bd1c442a44b97f9837a78cb0663ccb02b",
       "observatory/local_activity.py": "9bf2c058ef9ac7c43fa2bfb8f21db80545016d2b18cacde3db97d85bb8a56aea",
       "observatory/native_sources.py": "bddcbcd2f5dd322cfd47df963a6ca983826bc24b8335ad6d22b023cea32502de",
-      "observatory/native_adapter.py": "9143baba1b1979fc8f5491d4d46f45f5b52d7997ceecb65ef2ed0e03a9f2d7c8",
+      "observatory/native_adapter.py": "6939f213debdf3573f7892444ffda6d341e815d6e4e4e1ae0a8bb0111f88628f",
       "observatory/adapters/pi.py": "413c7583cec9f8c9e53ad64cf1152a5404b1fe5c340dd2a1759b388bef8bb04f",
       "observatory/adapters/claude.py": "c1cd024db7c7ee248e3c3aff15c63939adfe2671ef0367dc403e1ee55cf969d0",
       "observatory/adapters/codex.py": "cb0a479060a7eee84004ab9c9cb4becb675e7c1dd935623357a3c3b5ec9f25b7",
-      "observatory/adapters/kiro.py": "b0a593aa1ba11993f6e17709194b22731098ff786ca627068c4f56712884e43d"
+      "observatory/adapters/kiro.py": "d5655388f971e86243e07155bde4fece2281c1e7de0c62b59ac465429b81b1b9"
     },
     "core_membership_commits": [
       "d955cbbc5f87a04a1055ee0bf07ed52ef85e8fc9",
@@ -101,10 +101,19 @@
           "observatory/adapters/kiro.py": "f0a071edfa89f5ecaa2a272cb66a94e4d5703406208cd0f084f457350da7ea77"
         },
         "qualification": "Before native session poll hooks moved from the generic collector to adapters; producer schema coverage is unchanged."
+      },
+      {
+        "commit": "108c03d1b9c2e825eb91acafccfcfe427913610f",
+        "files": {
+          "observatory/local_agents.py": "cfa7cfc4ec0f3f51e946316fe8481bdabf94ef1a67c1570ce981cdbbbb189280",
+          "observatory/native_adapter.py": "9143baba1b1979fc8f5491d4d46f45f5b52d7997ceecb65ef2ed0e03a9f2d7c8",
+          "observatory/adapters/kiro.py": "b0a593aa1ba11993f6e17709194b22731098ff786ca627068c4f56712884e43d"
+        },
+        "qualification": "Before Kiro peer linking moved behind the registered adapter hook; source fixture and producer schema coverage are unchanged."
       }
     ],
-    "verified_reader_commit": "d2ac01cf76be80499df9abe89bd06a0c02edea4a",
-    "verification_scope": "Current hashes bind registered discovery, conflict-safe source ownership, native activity and adapter composition after the poll-hook extraction. The same synthetic fixture tests passed locally for Codex, Claude Code, Pi and Kiro. OpenCode/upstream schema and fixture bytes are unchanged. This does not establish a new observed producer version, process isolation, or universal compatibility; see docs/validation/native-fixture-provenance.md."
+    "verified_reader_commit": "204b4713fa72ab20ae291b69abdb991aa658b850",
+    "verification_scope": "Current hashes bind registered discovery, conflict-safe source ownership, native activity, adapter composition and peer linking. Synthetic fixture tests passed locally for Codex, Claude Code, Pi and Kiro. OpenCode/upstream schema and fixture bytes are unchanged. This does not establish a new observed producer version, process isolation, or universal compatibility; see docs/validation/native-fixture-provenance.md."
   },
   "fixtures": [
     {

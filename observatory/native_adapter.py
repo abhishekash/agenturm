@@ -12,7 +12,7 @@ from typing import Protocol
 class NativeSessionAdapter(Protocol):
     # Format adapters may additionally implement initialize,
     # reset_after_rotation, bounded_tail, continuation_root, finish_poll and
-    # status_metadata. The generic collector calls only hooks present on the
+    # status_metadata and link_sessions. The generic collector calls only hooks present on the
     # registered adapter; new formats need no runtime-name branch here.
     def initial_task(self, row: dict) -> object: ...
     def parse(self, session: object, row: dict, stamp: int, prior_models: dict) -> list[dict]: ...

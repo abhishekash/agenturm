@@ -2,6 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from observatory.core import Store, normalize_native
 from observatory.local_agents import LocalAgents
@@ -12,6 +13,17 @@ from observatory.adapters.pi import PiAdapter
 
 
 class NativePortTests(unittest.TestCase):
+    def test_peer_link_hook_runs_once_for_registered_adapter_group(self):
+        linked = []
+        class Adapter:
+            def link_sessions(self, peers):
+                linked.append([peer.name for peer in peers])
+        collector = object.__new__(LocalAgents)
+        collector.sessions = {name: SimpleNamespace(name=name, adapter=Adapter())
+                              for name in ('first', 'second')}
+        collector.link_adapter_sessions()
+        self.assertEqual(linked, [['first', 'second']])
+
     def test_collector_injects_narrow_host_facade_into_both_reader_types(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
