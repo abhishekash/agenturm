@@ -1,7 +1,8 @@
 """Strict v1 messages for an isolated, opt-in source adapter process.
 
 The wire contract is deliberately smaller than Agenturm's canonical evidence
-schema. The process host does not persist or project these records yet.
+schema. An opt-in Store inbox can admit a narrow metadata subset; neither the
+process host nor the inbox projects these records into live views yet.
 """
 from __future__ import annotations
 

@@ -804,6 +804,8 @@ class Store:
                         BEGIN {statements} END""")
             from .storage_derived import initialize
             initialize(db)
+            from .plugin_admission import initialize as initialize_plugin_admission
+            initialize_plugin_admission(db)
             session_expr = _session_sql_expression()
             db.execute(f"CREATE INDEX IF NOT EXISTS logs_session_time "
                        f"ON logs ({session_expr},time_ns DESC,digest DESC) "

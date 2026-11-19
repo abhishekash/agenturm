@@ -1,0 +1,207 @@
+"""Atomic, metadata-only admission for an opt-in source plugin.
+
+This is a durable inbox, not a projection into Agenturm's live views. The
+receiver owns the source, cursor, lease and dirty sequence. A worker supplies
+only bounded records and never writes the database itself.
+"""
+from __future__ import annotations
+
+import hashlib
+import re
+import secrets
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from .plugin_wire import PollBatch, ProtocolError, encode_message, validate_batch
+
+if TYPE_CHECKING:
+    from sqlite3 import Connection
+    from .core import Store
+
+
+_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}\Z")
+_HASH = re.compile(r"[0-9a-f]{64}\Z")
+_CODE = re.compile(r"[a-z][a-z0-9_./-]{0,63}\Z")
+_USAGE = frozenset({"input_tokens", "output_tokens", "cache_read_tokens",
+                    "cache_write_tokens", "total_tokens"})
+_STATES = frozenset({"started", "running", "paused", "completed", "failed",
+                     "interrupted", "cancelled"})
+_SEVERITIES = frozenset({"info", "warning", "error"})
+
+
+@dataclass(frozen=True)
+class SourceLease:
+    receiver_id: str
+    plugin_id: str
+    source_id: str
+    generation: str
+    epoch: int
+    cursor: str
+
+
+def initialize(db: Connection) -> None:
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS plugin_source_cursor_v1 (
+            source_id TEXT PRIMARY KEY,
+            receiver_id TEXT NOT NULL,
+            plugin_id TEXT NOT NULL,
+            generation TEXT NOT NULL,
+            lease_epoch INTEGER NOT NULL,
+            cursor TEXT NOT NULL DEFAULT '',
+            prior_cursor TEXT NOT NULL DEFAULT '',
+            last_batch_digest TEXT NOT NULL DEFAULT '',
+            dirty_seq INTEGER NOT NULL DEFAULT 0,
+            updated_ns INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS plugin_evidence_v1 (
+            source_id TEXT NOT NULL,
+            event_id_hash TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            time_ns INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            record_digest TEXT NOT NULL,
+            PRIMARY KEY(source_id,event_id_hash,revision),
+            FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
+        CREATE TABLE IF NOT EXISTS plugin_evidence_dirty_v1 (
+            source_id TEXT PRIMARY KEY,
+            dirty_seq INTEGER NOT NULL,
+            FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
+    """)
+
+
+def _identity(value: str, name: str) -> str:
+    if not isinstance(value, str) or not _ID.fullmatch(value):
+        raise ValueError(f"invalid {name}")
+    return value
+
+
+def activate_source(store: Store, *, plugin_id: str, source_id: str,
+                    generation: str) -> SourceLease:
+    """Issue a new fence for this exact artifact and return its durable cursor."""
+    _identity(plugin_id, "plugin ID")
+    _identity(source_id, "source ID")
+    if not isinstance(generation, str) or not _HASH.fullmatch(generation):
+        raise ValueError("generation must be the artifact SHA-256")
+    epoch = secrets.randbelow(2**63 - 1) + 1
+    receiver_id = store.receiver_namespace()
+    with store._source_write(), store._connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        actual = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
+        if actual is None or actual[0] != receiver_id:
+            raise ProtocolError("receiver identity changed during activation")
+        row = db.execute("SELECT * FROM plugin_source_cursor_v1 WHERE source_id=?",
+                         (source_id,)).fetchone()
+        if row is not None and (row["receiver_id"], row["plugin_id"], row["generation"]) != (
+                receiver_id, plugin_id, generation):
+            raise ProtocolError("source ownership or artifact generation changed")
+        now = time.time_ns()
+        if row is None:
+            db.execute("INSERT INTO plugin_source_cursor_v1 "
+                       "(source_id,receiver_id,plugin_id,generation,lease_epoch,updated_ns) "
+                       "VALUES(?,?,?,?,?,?)",
+                       (source_id, receiver_id, plugin_id, generation, epoch, now))
+            cursor = ""
+        else:
+            db.execute("UPDATE plugin_source_cursor_v1 SET lease_epoch=?,updated_ns=? "
+                       "WHERE source_id=?", (epoch, now, source_id))
+            cursor = row["cursor"]
+    return SourceLease(receiver_id, plugin_id, source_id, generation, epoch, cursor)
+
+
+def _metadata(record: dict) -> dict:
+    """Allow only typed, coarse facts; no prompts, output, paths or free text."""
+    kind = record["kind"]
+    payload = record["payload"]
+    if kind == "lifecycle":
+        if (set(payload) not in ({"state"}, {"state", "reason_code"})
+                or not isinstance(payload.get("state"), str)
+                or payload["state"] not in _STATES):
+            raise ProtocolError("invalid lifecycle metadata")
+        if "reason_code" in payload and (not isinstance(payload["reason_code"], str)
+                                         or not _CODE.fullmatch(payload["reason_code"])):
+            raise ProtocolError("invalid lifecycle reason code")
+    elif kind == "usage":
+        if not payload or not set(payload) <= _USAGE or any(
+                type(value) is not int or not 0 <= value <= 2**63 - 1
+                for value in payload.values()):
+            raise ProtocolError("invalid usage metadata")
+    elif kind == "diagnostic":
+        if (set(payload) != {"code", "severity"}
+                or not isinstance(payload.get("code"), str)
+                or not _CODE.fullmatch(payload["code"])
+                or not isinstance(payload.get("severity"), str)
+                or payload["severity"] not in _SEVERITIES):
+            raise ProtocolError("invalid diagnostic metadata")
+    else:
+        raise ProtocolError("record kind has no metadata admission policy")
+    return payload
+
+
+def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]]:
+    if not isinstance(batch, PollBatch):
+        raise TypeError("validated plugin batch required")
+    # Revalidate because PollBatch contains mutable dictionaries and callers can
+    # construct it directly. This also bounds the whole batch before SQL writes.
+    validated = validate_batch({"type": "batch", "protocol": 1,
+                                "source_id": batch.source_id, "cursor": batch.cursor,
+                                "records": list(batch.records)}, source_id=source_id)
+    rows = []
+    for record in validated.records:
+        payload = _metadata(record)
+        canonical = encode_message(record)
+        rows.append((source_id,
+                     hashlib.sha256((source_id + "\0" + record["event_id"]).encode()).hexdigest(),
+                     record["revision"], record["kind"], int(record["time_ns"]),
+                     encode_message(payload), hashlib.sha256(canonical.encode()).hexdigest()))
+    batch_digest = hashlib.sha256(encode_message({"cursor": validated.cursor,
+                                                  "records": list(validated.records)}).encode()).hexdigest()
+    return batch_digest, tuple(rows)
+
+
+def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
+                 batch: PollBatch) -> str:
+    """Commit evidence, cursor and dirty marker together, then permit ack.
+
+    Exact replay after a crash is accepted. Any different batch at the same
+    cursor, stale lease, source conflict or changed event revision is rejected.
+    """
+    if not isinstance(lease, SourceLease):
+        raise TypeError("source lease required")
+    if not isinstance(expected_cursor, str):
+        raise ValueError("expected cursor must be text")
+    digest, rows = _validated(batch, lease.source_id)
+    with store._source_write(), store._connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        receiver = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
+        row = db.execute("SELECT * FROM plugin_source_cursor_v1 WHERE source_id=?",
+                         (lease.source_id,)).fetchone()
+        if (receiver is None or receiver[0] != lease.receiver_id or row is None
+                or (row["receiver_id"], row["plugin_id"], row["generation"], row["lease_epoch"]) !=
+                (lease.receiver_id, lease.plugin_id, lease.generation, lease.epoch)):
+            raise ProtocolError("stale plugin source lease")
+        if batch.cursor == row["cursor"] and digest == row["last_batch_digest"] and expected_cursor in (
+                row["prior_cursor"], row["cursor"]):
+            return row["cursor"]
+        if expected_cursor != row["cursor"]:
+            raise ProtocolError("stale plugin cursor")
+        if batch.cursor == expected_cursor:
+            raise ProtocolError("plugin cursor did not advance")
+        for item in rows:
+            existing = db.execute("SELECT record_digest FROM plugin_evidence_v1 "
+                                  "WHERE source_id=? AND event_id_hash=? AND revision=?",
+                                  item[:3]).fetchone()
+            if existing is not None and existing[0] != item[6]:
+                raise ProtocolError("conflicting plugin event revision")
+            db.execute("INSERT OR IGNORE INTO plugin_evidence_v1 "
+                       "(source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest) "
+                       "VALUES(?,?,?,?,?,?,?)", item)
+        seq = row["dirty_seq"] + (1 if rows else 0)
+        db.execute("UPDATE plugin_source_cursor_v1 SET cursor=?,prior_cursor=?,last_batch_digest=?,"
+                   "dirty_seq=?,updated_ns=? WHERE source_id=?",
+                   (batch.cursor, expected_cursor, digest, seq, time.time_ns(), lease.source_id))
+        if rows:
+            db.execute("INSERT INTO plugin_evidence_dirty_v1(source_id,dirty_seq) VALUES(?,?) "
+                       "ON CONFLICT(source_id) DO UPDATE SET dirty_seq=excluded.dirty_seq",
+                       (lease.source_id, seq))
+    return batch.cursor
