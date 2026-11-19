@@ -92,7 +92,7 @@
 <p>Keep your coding agents open. In another terminal, run:</p>
 <pre><code class="language-sh">uvx agenturm
 </code></pre>
-<p>Agenturm starts or attaches to its local receiver. Recent supported <strong>Codex, Claude Code, OpenCode, and Pi</strong> records are discovered locally; those agents do not need a restart. No Agenturm account, subscription, or provider API key is needed for local monitoring.</p>
+<p>Agenturm starts or attaches to its local receiver. Recent supported <strong>Codex, Claude Code, OpenCode, Pi, and Kiro</strong> records are discovered locally; those agents do not need a restart. No Agenturm account, subscription, or provider API key is needed for local monitoring.</p>
 <ol>
 <li>In <strong>Agents</strong>, select a session with <code>↑</code> / <code>↓</code>. Expand a recorded delegation with <code>→</code>.</li>
 <li>Press <code>w</code> to open <strong>Workflow</strong> and inspect recorded requests. Select one to see its owner, reason and whether it remains pending or its observation is stale.</li>
@@ -148,7 +148,7 @@ agenturm task handoff TASK_ID --output ./refresh-handoff.md
 </thead>
 <tbody>
 <tr>
-<td>Codex, Claude Code, OpenCode, Pi</td>
+<td>Codex, Claude Code, OpenCode, Pi, Kiro</td>
 <td>Automatic discovery of supported local records</td>
 <td>Recent sessions and recorded activity; available signals depend on runtime and record format</td>
 </tr>
@@ -169,7 +169,7 @@ agenturm task handoff TASK_ID --output ./refresh-handoff.md
 </tr>
 </tbody>
 </table></div>
-<p>Exact delegation is supported for documented Codex, Claude Code, and OpenCode shapes. Automatic Pi subagent linking is not independently verified. A nested telemetry span alone is not treated as an agent. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/frameworks.md">integration guide</a>, <a href="https://github.com/abhishekash/agenturm/blob/main/docs/python.md">Python capture</a>, <a href="https://github.com/abhishekash/agenturm/blob/main/docs/javascript.md">JavaScript client</a>, and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/receiver.md">receiver configuration</a>.</p>
+<p>Exact delegation is supported for documented Codex, Claude Code, OpenCode, and Kiro shapes. Automatic Pi subagent linking is not independently verified. A nested telemetry span alone is not treated as an agent. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/frameworks.md">integration guide</a>, <a href="https://github.com/abhishekash/agenturm/blob/main/docs/python.md">Python capture</a>, <a href="https://github.com/abhishekash/agenturm/blob/main/docs/javascript.md">JavaScript client</a>, and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/receiver.md">receiver configuration</a>.</p>
 <h2>Local storage, explicit sharing</h2>
 <p>The built-in receiver defaults to <strong><code>127.0.0.1:14318</code></strong>. Local monitoring and recorded-progress summaries work without a cloud service. Telemetry now defaults to the private Agenturm state directory, with a local bearer token and 14-day retention for genuinely new managed stores. Existing explicit databases keep their retention policy. Saved tasks use a separate database, so telemetry retention does not delete your brief or decisions. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/receiver.md">Storage, authentication and migration</a>.</p>
 <p>Captured messages, commands, and tool results can contain project secrets. Credential redaction is best effort. <code>--metadata-only</code> omits native session content from future ingestion; it does not erase existing records. Saved workspace captures and handoffs need your own review before sharing. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/privacy.md">Capture and privacy boundaries</a>.</p>

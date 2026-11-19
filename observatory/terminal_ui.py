@@ -49,7 +49,7 @@ from .ui_export import ExportScreen
 from .ui_render import update_status_text
 from .ui_content import metadata_table, prose, write_body, write_section
 from .ui_coverage import analysis_coverage
-from .ui_monitoring import (UsageScreen, SortScreen, SessionScopeScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, changed_records, failed,
+from .ui_monitoring import (UsageScreen, SortScreen, SessionScopeScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, credit_summary, permission_summary, changed_records, failed,
                             failure_groups, event_id, connection_feedback, session_history_feedback)
 
 
@@ -2434,8 +2434,14 @@ class ObservatoryApp(App):
         lines=summary.splitlines();lines[0]+=' · u Details'
         self.query_one('#usage-summary',Static).update('\n'.join(lines))
         self.query_one('#usage-summary').tooltip=details
-        self.stat('usage',observed_count(usage,'input_tokens')+' / '+observed_count(usage,'output_tokens'),
-                  'Task tokens in / out','Cache included · u Details')
+        from .ui_monitoring import credit_text
+        credits=credit_text(usage)
+        if credits and usage.get('input_tokens_reported') is not True and usage.get('output_tokens_reported') is not True:
+            # Kiro reports credits instead of tokens.
+            self.stat('usage',credits+' credits','Task credits','Kiro-reported · u Details')
+        else:
+            self.stat('usage',observed_count(usage,'input_tokens')+' / '+observed_count(usage,'output_tokens'),
+                      'Task tokens in / out','Cache included · u Details')
         self.query_one('#stat-usage').tooltip=details
 
     def hierarchy_for(self,agents):
@@ -3480,6 +3486,11 @@ class ObservatoryApp(App):
         run_usage=task_run_usage(self.data.sessions,item,self.data.traces)
         usage_text,_=task_usage_summary(run_usage,run_usage.get('task') or task_preview(item),scope='turn' if run_usage.get('turn_id') else 'trace',
                                       identity=run_usage.get('turn_id') or run_usage.get('trace_id') or '',compact=self.size.width<100)
+        credits_text=credit_summary(run_usage,summary,running=item.get('run_state') in {'running','waiting'})
+        permissions_short,permissions_text=permission_summary(item,self.data.local_status.get('kiro_folders') or ())
+        if credits_text:
+            # The Credits field carries the run and session figures; do not repeat the run line.
+            usage_text='\n'.join(line for line in usage_text.splitlines() if not line.startswith('Credits '))
         pending_errors=getattr(self,'agent_error_reminders',{}).get(item['id'],[]) if captured else []
         self.agent_has_failures=bool(pending_errors)
         trace_button=self.query_one('#agent-trace',Button)
@@ -3607,6 +3618,8 @@ class ObservatoryApp(App):
             if reviewed:fields.append(('Review','Reviewed for this run'))
             if dismissed:fields.append(('Attention','Dismissed'))
             if self.agent_has_failures and not attention_required(item):fields.append(('Errors','Unseen recent error · s Inspect'))
+            if credits_text:fields.append(('Credits',credits_text.splitlines()[0]))
+            if permissions_short:fields.append(('Permissions',permissions_short))
             if request_event and input_required(item):
                 sections.append(('Latest request',session_excerpt(request_text(recorded_message_text(request_event)).body,lines=3)))
             sections += [(label,value) for label,value in short_hierarchy if label=='Subtree summary']
@@ -3638,7 +3651,9 @@ class ObservatoryApp(App):
                 ('Capture','Metadata only' if item.get('capture_content') is False else 'Recorded content when available')]
             self.inspect('agent-detail',title,fields+details+hierarchy_fields,
                 [('Status evidence',attention_guidance(item,lifecycle_event=lifecycle_event)[0][1] if item.get('state')=='Interrupted' else attention_evidence(item,summary)),('Waiting on',wait_summary(item)),
-                 ('Task usage',usage_text),('Evidence coverage',coverage),('Analysis coverage',analysis_coverage(summary)),
+                 ('Task usage',usage_text),*([('Credits',credits_text)] if credits_text else []),
+                 *([('Permissions',permissions_text)] if permissions_text else []),
+                 ('Evidence coverage',coverage),('Analysis coverage',analysis_coverage(summary)),
                  ('History freshness',session_history_feedback(self.data)),
                  ('Working directory',item.get('working_directory'))]+hierarchy_sections+ai_sections,
                 identity=(item['id'],'details'),context_in_header=True)

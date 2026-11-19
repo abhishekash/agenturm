@@ -65,7 +65,9 @@ def resume_command(item):
     session=str(item.get('session_id') or '')
     if not session or len(session)>200 or any(ord(c)<32 for c in session):return ''
     runtime=str(item.get('runtime') or '').lower()
-    command=['codex','resume',session] if runtime=='codex' else ['claude','--resume',session] if runtime=='claude' or runtime=='claude code' else []
+    command=(['codex','resume',session] if runtime=='codex' else ['claude','--resume',session] if runtime=='claude' or runtime=='claude code'
+        # Only top-level Kiro sessions are resumable; sub-execution workers are not.
+        else ['kiro-cli','chat','--resume-id',session] if runtime=='kiro' and session.startswith('sess_') else [])
     if not command:return ''
     cwd=item.get('working_directory')
     return ('cd -- '+shlex.quote(str(cwd))+' && ' if cwd else '')+shlex.join(command)

@@ -3563,7 +3563,7 @@ class Store:
                               "cache_read_input_tokens","cache_write_input_tokens","reasoning_output_tokens",
                               "input_tokens_reported","output_tokens_reported","cache_read_input_tokens_reported",
                               "cache_write_input_tokens_reported","reasoning_output_tokens_reported",
-                              "known_cost_usd","cost_complete","usage_complete","task_outcome","task_outcome_ns",
+                              "known_cost_usd","cost_complete","credits","credits_reported","usage_complete","task_outcome","task_outcome_ns",
                               "agent_id","agent_count","agent_count_complete","review_owner","waiting_for","turn_id")
                 item["latest_run"]={key:summary[key] for key in usage_fields if key in summary}
                 item["latest_run"]["trace_id"]=row["trace_id"]
@@ -3964,10 +3964,11 @@ class Store:
                   "completed_tasks": 0, "costed_tasks": 0, "completed_task_cost_usd": 0.0,
                   "usage_complete": True, "status_complete": True}
         fields=('input_tokens','output_tokens','cache_read_input_tokens','cache_write_input_tokens','reasoning_output_tokens')
-        selected=["COUNT(*) AS runs","COALESCE(SUM(status='ERROR'),0) AS errors","COALESCE(SUM(status='INCOMPLETE'),0) AS incomplete","COALESCE(SUM(status='RUNNING'),0) AS running","COALESCE(SUM(span_count),0) AS spans","COALESCE(MIN(usage_complete),1) AS usage_complete","COALESCE(MIN(status_complete),1) AS status_complete","SUM(known_cost_usd) AS known_cost_usd","COALESCE(SUM(NOT cost_complete),0) AS unknown_cost_runs","COALESCE(SUM(NOT active AND status NOT IN ('RUNNING','UNKNOWN')),0) AS completed_tasks","COALESCE(SUM(NOT active AND status NOT IN ('RUNNING','UNKNOWN') AND cost_complete AND known_cost_usd IS NOT NULL),0) AS costed_tasks","COALESCE(SUM(CASE WHEN NOT active AND status NOT IN ('RUNNING','UNKNOWN') AND cost_complete THEN known_cost_usd ELSE 0 END),0) AS completed_task_cost_usd"]
+        selected=["COUNT(*) AS runs","COALESCE(SUM(status='ERROR'),0) AS errors","COALESCE(SUM(status='INCOMPLETE'),0) AS incomplete","COALESCE(SUM(status='RUNNING'),0) AS running","COALESCE(SUM(span_count),0) AS spans","COALESCE(MIN(usage_complete),1) AS usage_complete","COALESCE(MIN(status_complete),1) AS status_complete","SUM(known_cost_usd) AS known_cost_usd","COALESCE(SUM(NOT cost_complete),0) AS unknown_cost_runs","COALESCE(SUM(NOT active AND status NOT IN ('RUNNING','UNKNOWN')),0) AS completed_tasks","COALESCE(SUM(NOT active AND status NOT IN ('RUNNING','UNKNOWN') AND cost_complete AND known_cost_usd IS NOT NULL),0) AS costed_tasks","COALESCE(SUM(CASE WHEN NOT active AND status NOT IN ('RUNNING','UNKNOWN') AND cost_complete THEN known_cost_usd ELSE 0 END),0) AS completed_task_cost_usd","ROUND(COALESCE(SUM(credits),0),8) AS credits","COALESCE(MAX(credits_reported),0) AS credits_reported"]
         for field in fields:selected.extend([f'COALESCE(SUM({field}),0) AS {field}',f'COALESCE(MAX({field}_reported),0) AS {field}_reported'])
         with self._read_db(db) as db:totals.update(dict(db.execute('SELECT '+','.join(selected)+' FROM live_run_stats_v1').fetchone()))
-        for field in (*[name+'_reported' for name in fields],'usage_complete','status_complete'):totals[field]=bool(totals[field])
+        for field in (*[name+'_reported' for name in fields],'credits_reported','usage_complete','status_complete'):totals[field]=bool(totals[field])
+        if not totals['credits_reported']:totals.pop('credits');totals.pop('credits_reported')
         if totals['known_cost_usd'] is not None:totals['known_cost_usd']=round(totals['known_cost_usd'],8)
         totals["completed_task_cost_usd"] = round(totals["completed_task_cost_usd"], 8)
         totals["average_task_cost_usd"] = (round(totals["completed_task_cost_usd"] / totals["costed_tasks"], 8)

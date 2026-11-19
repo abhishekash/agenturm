@@ -20,7 +20,7 @@ Deleted content can remain in SQLite free pages and backups. Native source
 logs are separate and are not deleted by pruning telemetry.'''
 
 FIRST_RUN = '''FIND YOUR FIRST SESSION
-Start or continue Codex, Claude Code, OpenCode, or Pi in its own terminal, then
+Start or continue Codex, Claude Code, OpenCode, Pi, or Kiro in its own terminal, then
 return here. Discovery normally looks back 24 hours; Reviews are hidden.
 If no session appears, check Diagnostics for read errors and source coverage.
 For SDK/OTLP agents, point the producer at your local receiver using the

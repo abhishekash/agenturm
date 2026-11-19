@@ -540,7 +540,8 @@ class HierarchyIntegrationTests(unittest.TestCase):
             agents = LocalAgents(store)
             environment = {"CODEX_HOME": str(root / "codex"),
                            "CLAUDE_CONFIG_DIR": str(root / "missing-claude"),
-                           "PI_CODING_AGENT_DIR": str(root / "missing-pi")}
+                           "PI_CODING_AGENT_DIR": str(root / "missing-pi"),
+                           "KIRO_HOME": str(root / "missing-kiro")}
             with patch.dict(os.environ, environment):
                 agents.discover()
                 agents.poll()
@@ -583,7 +584,8 @@ class HierarchyIntegrationTests(unittest.TestCase):
             agents = LocalAgents(store)
             environment = {"CODEX_HOME": str(root / "missing-codex"),
                            "CLAUDE_CONFIG_DIR": str(root / "claude"),
-                           "PI_CODING_AGENT_DIR": str(root / "missing-pi")}
+                           "PI_CODING_AGENT_DIR": str(root / "missing-pi"),
+                           "KIRO_HOME": str(root / "missing-kiro")}
             with patch.dict(os.environ, environment):
                 agents.discover()
                 agents.poll()

@@ -78,7 +78,7 @@ Keep your coding agents open. In another terminal, run:
 uvx agenturm
 ```
 
-Agenturm starts or attaches to its local receiver. Recent supported **Codex, Claude Code, OpenCode, and Pi** records are discovered locally; those agents do not need a restart. No Agenturm account, subscription, or provider API key is needed for local monitoring.
+Agenturm starts or attaches to its local receiver. Recent supported **Codex, Claude Code, OpenCode, Pi, and Kiro** records are discovered locally; those agents do not need a restart. No Agenturm account, subscription, or provider API key is needed for local monitoring.
 
 1. In **Agents**, select a session with `↑` / `↓`. Expand a recorded delegation with `→`.
 2. Press `w` to open **Workflow** and inspect recorded requests. Select one to see its owner, reason and whether it remains pending or its observation is stale.
@@ -155,12 +155,12 @@ The export creates `.md` and `.html` files and refuses to overwrite existing des
 
 | Source | How it connects | What to expect |
 | --- | --- | --- |
-| Codex, Claude Code, OpenCode, Pi | Automatic discovery of supported local records | Recent sessions and recorded activity; available signals depend on runtime and record format |
+| Codex, Claude Code, OpenCode, Pi, Kiro | Automatic discovery of supported local records | Recent sessions and recorded activity; available signals depend on runtime and record format |
 | Pydantic AI, Google ADK, Gemini CLI, and other supported OTLP producers | Configure OpenTelemetry export to the local receiver | Emitted traces, logs, metrics, and correlation identifiers |
 | Supported Python SDKs | Explicit automatic-capture launcher or documented integration | Captures supported SDK calls; existing processes may need a restart through the launcher |
 | Your own Python or JavaScript agent | Instrument with the clients or OTLP | Only the evidence and identifiers your producer emits |
 
-Exact delegation is supported for documented Codex, Claude Code, and OpenCode shapes. Automatic Pi subagent linking is not independently verified. A nested telemetry span alone is not treated as an agent. See the [integration guide](docs/frameworks.md), [Python capture](docs/python.md), [JavaScript client](docs/javascript.md), and [receiver configuration](docs/receiver.md).
+Exact delegation is supported for documented Codex, Claude Code, OpenCode, and Kiro shapes. Automatic Pi subagent linking is not independently verified. A nested telemetry span alone is not treated as an agent. See the [integration guide](docs/frameworks.md), [Python capture](docs/python.md), [JavaScript client](docs/javascript.md), and [receiver configuration](docs/receiver.md).
 
 ## Local storage, explicit sharing
 

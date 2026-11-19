@@ -59,7 +59,7 @@ def comparable_source_clock(item):
     # SDK/user timestamps and time of this client's HTTP receipt are not proof.
     if 'request_clock' in item:return item['request_clock']=='receiver'
     return (
-        item.get('service') in {'codex','claude','claude-code','opencode','pi'}
+        item.get('service') in {'codex','claude','claude-code','opencode','pi','kiro'}
         and 'run_state' in item and bool(item.get('diagnostics')))
 
 

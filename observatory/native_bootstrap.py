@@ -15,7 +15,7 @@ _TIMES=('state_since_ns','last_record_ns','last_update_ns','run_start_ns','reque
     'outcome_time_ns','observed_ns')
 _STATES={'running','waiting','completed','interrupted','error','failed','incomplete','idle','unknown','announced'}
 _ID=re.compile(r'[A-Za-z0-9_.:@-]{1,512}')
-_RUNTIMES={'Codex','Claude','Claude Code','OpenCode','Pi','Gemini CLI','Cursor'}
+_RUNTIMES={'Codex','Claude','Claude Code','OpenCode','Pi','Kiro','Gemini CLI','Cursor'}
 _ENUMS={'relationship_kind':{'delegated','review','unknown'},
     'relationship_state':{'confirmed','unresolved','conflicted','invalid'},
     'discovery_state':{'observed','announced'},'coverage':{'complete','partial','unknown'}}

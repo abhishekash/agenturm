@@ -12,6 +12,8 @@ RECORD_BYTES = 64 * 1024
 WINDOW_BYTES = 2 * 1024 * 1024
 GROUP_LIMIT = 128
 LABEL_CHARS = 128
+# Runtime-reported usage credits (Kiro). Fractional, so kept apart from tokens.
+CREDIT_KEYS = ("kiro.usage.credits",)
 
 
 def finalize_usage(item):
@@ -23,6 +25,9 @@ def finalize_usage(item):
             item[field + "_reported"] = None
         item["known_cost_usd"] = None
         item["cost_complete"] = False
+        if "credits" in item:
+            item["credits"] = None
+            item["credits_reported"] = None
 
 
 def merge_labels(item, field, labels, complete=True):
@@ -155,6 +160,7 @@ def _statistics_callback():
     fields = {"input_tokens": INPUT_TOKEN_KEYS, "output_tokens": OUTPUT_TOKEN_KEYS,
               **TOKEN_BREAKDOWN_KEYS}
     cost_bit = 1 << len(fields)
+    credit_bit = cost_bit << 1
 
     def statistics(raw, name, status):
         if raw is None:
@@ -183,11 +189,17 @@ def _statistics_callback():
         if name != "agent.run" and (any(key.startswith("llm.cost.") for key in attrs)
                                    or "llm.cost_usd" in attrs or "gen_ai.usage.cost" in attrs):
             mask |= cost_bit
+        credit_key = next((key for key in CREDIT_KEYS if key in attrs), None)
+        credits = _number(attrs, credit_key) if credit_key else None
+        if credits is not None and credits < 0:
+            credits = None
+        if name != "agent.run" and credits is not None:
+            mask |= credit_bit
         model = next((attrs[key] for key in (
             "gen_ai.request.model", "llm.response.model_name", "llm.request.model_name",
             "llm.model_name", "embedding.model_name", "llm.model") if attrs.get(key)), None)
         model = str(model) if model is not None else None
-        values.update(mask=mask, cost=cost, complete=complete, unsupported=False,
+        values.update(mask=mask, cost=cost, complete=complete, unsupported=False, credits=credits,
                       model=model[:LABEL_CHARS] if model is not None else None,
                       model_truncated=model is not None and len(model) > LABEL_CHARS,
                       error=bool(status == "ERROR" or attrs.get("tool.result_status") == "error"
@@ -219,6 +231,7 @@ def aggregate_spans(db, trace_id, summary):
     fields = {"input_tokens": INPUT_TOKEN_KEYS, "output_tokens": OUTPUT_TOKEN_KEYS,
               **TOKEN_BREAKDOWN_KEYS}
     cost_bit = 1 << len(fields)
+    credit_bit = cost_bit << 1
     _prepare_connection(db)
     # Clear before every trace, including after an interrupted/rolled-back
     # caller; shared span IDs from a previous trace must never join this one.
@@ -237,7 +250,7 @@ def aggregate_spans(db, trace_id, summary):
             WHERE s.trace_id=?""", (trace_id,))
         db.execute("UPDATE derived_usage SET leaves=json_extract(stats,'$.mask')")
         # UNION (not UNION ALL) terminates malformed cyclic parent graphs as well.
-        for index in range(len(fields) + 1):
+        for index in range(len(fields) + 2):
             bit = 1 << index
             db.execute("""WITH RECURSIVE ancestors(ancestor) AS (
                 SELECT parent_span_id FROM derived_usage WHERE leaves & ? != 0
@@ -267,6 +280,12 @@ def aggregate_spans(db, trace_id, summary):
             MAX(json_extract(stats,'$.model_truncated')) AS model_truncated FROM derived_usage""",
                          (cost_bit, cost_bit, cost_bit)).fetchone()
         summary["known_cost_usd"] = round(row["cost"] or 0, 8)
+        credits = db.execute("""SELECT COUNT(*) AS count,SUM(json_extract(stats,'$.credits')) AS total
+            FROM derived_usage WHERE leaves & ? != 0""", (credit_bit,)).fetchone()
+        if credits["count"]:
+            # Present only when a runtime reported credits; other summaries are unchanged.
+            summary["credits"] = round(credits["total"] or 0, 8)
+            summary["credits_reported"] = True
         summary["cost_complete"] = bool(row["usage_count"] and
                                         row["usage_count"] == row["cost_count"] and not row["unknown"])
         summary["active"] = bool(row["active"])
@@ -281,6 +300,8 @@ def aggregate_spans(db, trace_id, summary):
                 summary[field + "_reported"] = None
             summary["known_cost_usd"] = None
             summary["cost_complete"] = False
+            summary.pop("credits", None)
+            summary.pop("credits_reported", None)
             summary["active"] = None
         services = db.execute("""SELECT substr(service,1,128),length(service)<=128
             FROM spans WHERE trace_id=? GROUP BY service ORDER BY service LIMIT ?""",

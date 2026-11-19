@@ -27,7 +27,8 @@ def benchmark():
                     os.utime(path, (old, old))
         env = {'CODEX_HOME': str(root / 'codex'),
                'CLAUDE_CONFIG_DIR': str(root / 'claude'),
-               'PI_CODING_AGENT_DIR': str(root / 'pi')}
+               'PI_CODING_AGENT_DIR': str(root / 'pi'),
+               'KIRO_HOME': str(root / 'kiro')}
         with patch.dict(os.environ, env):
             monitor = LocalAgents(None)
             monitor.discover()

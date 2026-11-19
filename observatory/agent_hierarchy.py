@@ -50,6 +50,12 @@ CAPABILITIES = {
         "independent_child_evidence": False,
         "limitations": "No documented subagent transcript format was verified; unlinked sessions are labelled unknown.",
     },
+    "Kiro": {
+        "child_discovery": "worker transcripts under <session>/sub-executions/<subSessionId>.jsonl",
+        "delegation_linking": "exact: sub_agent_start.subSessionId in the spawning session or worker transcript",
+        "independent_child_evidence": True,
+        "limitations": "Workers record no completion; their outcome comes from the spawner's sub_agent_complete. A worker whose spawning transcript is not tracked stays unresolved. Separately dispatched sessions (for example Kiro Crew workers) record no parent and remain unlinked.",
+    },
     "SDK / OTLP": {
         "child_discovery": "explicit producer attributes only",
         "delegation_linking": "conditional: agent.id / agent.parent_id / agent.relationship.kind",

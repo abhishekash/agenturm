@@ -101,6 +101,8 @@ def initialize(db):
     )
     for field in usage_fields:
         declarations.extend([field + " INTEGER", field + "_reported INTEGER"])
+    # Runtime-reported credits (Kiro); NULL on rows summarized before they existed.
+    declarations.extend(["credits REAL", "credits_reported INTEGER"])
     db.execute(
         "CREATE TABLE IF NOT EXISTS live_run_stats_v1(" + ",".join(declarations) + ")"
     )
@@ -140,6 +142,12 @@ def initialize(db):
                 f"COALESCE(json_extract(NEW.summary_json,'$.{field}_reported'),0)",
             ]
         )
+    values.extend(
+        [
+            "json_extract(NEW.summary_json,'$.credits')",
+            "COALESCE(json_extract(NEW.summary_json,'$.credits_reported'),0)",
+        ]
+    )
     columns = [declaration.split()[0] for declaration in declarations]
     upsert = " ON CONFLICT(trace_id) DO UPDATE SET " + ",".join(
         column + "=excluded." + column for column in columns[1:]
@@ -149,8 +157,9 @@ def initialize(db):
     for operation in ("INSERT", "UPDATE"):
         db.execute(f"DROP TRIGGER IF EXISTS run_stats_{operation.lower()}_v1")
         db.execute(f"DROP TRIGGER IF EXISTS run_stats_{operation.lower()}_v2")
+        db.execute(f"DROP TRIGGER IF EXISTS run_stats_{operation.lower()}_v3")
         db.execute(
-            f"CREATE TRIGGER IF NOT EXISTS run_stats_{operation.lower()}_v3 AFTER {operation} ON trace_summaries BEGIN INSERT INTO live_run_stats_v1("
+            f"CREATE TRIGGER IF NOT EXISTS run_stats_{operation.lower()}_v4 AFTER {operation} ON trace_summaries BEGIN INSERT INTO live_run_stats_v1("
             + ",".join(columns)
             + ") VALUES("
             + ",".join(values)
