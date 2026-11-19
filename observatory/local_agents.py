@@ -25,6 +25,7 @@ from .local_state import RecentMap
 from .native_json import loads
 from .native_sources import NativeSourceSpec, builtin_sources, kiro_home
 from .native_ports import NativeEvidenceFacade, NativeEvidencePort
+from .native_adapter import NativeSessionAdapter, builtin_adapter
 
 MAX_READ = 8 * 1024 * 1024
 MAX_LINE = 2 * 1024 * 1024
@@ -219,8 +220,10 @@ def discover_mcp_configurations(global_paths=None, project_directories=(), on_er
 
 
 class Session:
-    def __init__(self, store: NativeEvidencePort, path, runtime, capture_details=True):
+    def __init__(self, store: NativeEvidencePort, path, runtime, capture_details=True,
+                 adapter: NativeSessionAdapter | None = None):
         self.store, self.path, self.runtime = store, Path(path), runtime
+        self.adapter = adapter if adapter is not None else builtin_adapter(runtime)
         self.service = runtime.lower().replace(" ", "-")
         self.source_id = identity(runtime, self.path.resolve())
         self.capture_details = capture_details
@@ -693,7 +696,12 @@ class Session:
         state = self.run_state
         event = payload.get("type")
         request_key = None
-        if self.runtime == "Codex":
+        if self.adapter is not None:
+            result = self.adapter.observe_state(self, row, stamp)
+            if result is None:
+                return
+            state, request_key = result
+        elif self.runtime == "Codex":
             if row.get("type") == "event_msg":
                 if event in {"task_started", "task_complete", "task_aborted", "turn_aborted"}:
                     state = {"task_started": "running", "task_complete": "completed",
@@ -758,30 +766,6 @@ class Session:
                 key, (label, since) = next(iter(self.kiro_interactions.items()))
                 state, self.waiting_for, request_key = "waiting", label, key
                 self.pending_request_times[key] = since
-        elif self.runtime == "Pi":
-            message = row.get("message") or {}
-            if not isinstance(message, dict):
-                return
-            role = message.get("role")
-            if role == "user":
-                state = "running"
-                self.pending_tools.clear()
-            elif role == "assistant":
-                for block in message.get("content") or []:
-                    if isinstance(block, dict) and block.get("type") == "toolCall":
-                        key = str(block.get('id') or '')
-                        name = str(block.get('name') or 'Tool')
-                        self.pending_tools[key] = name
-                        if name.rsplit('.',1)[-1] in {'request_user_input','AskUserQuestion'}:
-                            self.pending_request_times[key] = stamp
-                if message.get("stopReason") == "stop":
-                    state = "completed"
-                    self.pending_tools.clear()
-                else:
-                    state = "running"
-            elif role == "toolResult":
-                self.pending_tools.pop(str(message.get("toolCallId") or ""), None)
-                state = "running"
         else:
             message = row.get("message") or {}
             if not isinstance(message, dict):
@@ -909,94 +893,8 @@ class Session:
         return self.span(key, self.runtime + " · " + str(self.model or "model call")[:200], stamp, attrs)
 
     def pi(self, row, stamp):
-        kind = row.get("type")
-        if kind == "session":
-            native_id = (_safe_identifier(row.get("agentId")) or
-                         _safe_identifier(row.get("id")) or self.session_id)
-            self.session_id = native_id
-            self.native_session_id = _safe_identifier(row.get("sessionId")) or native_id
-            self.native_worker_id = native_id if native_id != self.native_session_id else None
-            self.agent_id = canonical_agent_id(self.runtime, self.agent_namespace, native_id)
-            parent = (_safe_identifier(row.get("parentAgentId")) or
-                      _safe_identifier(row.get("parentSessionId")) or
-                      _safe_identifier(row.get("parent_id")))
-            if parent:
-                self.parent_agent_id = canonical_agent_id(
-                    self.runtime, self.agent_namespace, parent)
-                self.relationship_kind = "delegated"
-                self.relationship_state = "confirmed"
-                self.relationship_provenance = provenance(
-                    "pi-session", "explicit parentAgentId/parentSessionId", timestamp(row.get("timestamp")))
-            else:
-                self.relationship_kind = "unknown"
-                self.relationship_state = "unresolved"
-                self.relationship_provenance = provenance(
-                    "pi-session", "no verified parent metadata", timestamp(row.get("timestamp")))
-            cwd = row.get("cwd")
-            if cwd:
-                self.project = Path(cwd).name
-                self.working_directory = str(cwd) if self.capture_details else ""
-            return []
-        if kind == "model_change":
-            self.model = row.get("modelId") or self.model
-            self.provider = row.get("provider") or self.provider
-            return []
-        if kind != "message":
-            return []
-        message = row.get("message") or {}
-        if not isinstance(message, dict):
-            return []
-        role = message.get("role")
-        if role == "user":
-            self.turn = str(row.get("id") or stamp or self.turn)
-            self.started[self.turn] = stamp
-            text = plaintext(message.get("content")) if self.capture_details else ""
-            if text:
-                from .session_text import remember_task
-                remember_task(self, message.get("content"))
-            return [self.root(stamp, "running")]
-        if role == "assistant":
-            self.model = message.get("model") or self.model
-            self.provider = message.get("provider") or self.provider
-            result = []
-            usage = message.get("usage")
-            if isinstance(usage, dict):
-                usage_fields = {
-                    "input": "input_tokens", "output": "output_tokens",
-                    "cacheRead": "cache_read_input_tokens", "cacheWrite": "cache_write_input_tokens",
-                    "reasoning": "reasoning_tokens",
-                }
-                normalized = {target: usage[source] for source, target in usage_fields.items()
-                              if source in usage}
-                span = self.model_span(("pi-model", row.get("id") or stamp), normalized, stamp)
-                if span:
-                    span["attributes"]["gen_ai.provider.name"] = str(self.provider or "unknown")[:128]
-                    result.append(span)
-            for block in message.get("content") or []:
-                if not isinstance(block, dict) or block.get("type") != "toolCall":
-                    continue
-                call_id = str(block.get("id") or "")
-                name = str(block.get("name") or "Tool")
-                if call_id:
-                    self.calls[call_id] = (name, stamp, self.turn)
-            if message.get("stopReason") == "stop":
-                result.append(self.root(stamp, "completed"))
-            elif message.get("stopReason") == "error":
-                result.append(self.root(stamp, "interrupted"))
-            return result
-        if role == "toolResult":
-            call_id = str(message.get("toolCallId") or "")
-            pending = self.calls.pop(call_id, None)
-            name = str(message.get("toolName") or (pending[0] if pending else "Tool"))
-            start = pending[1] if pending else stamp
-            turn = pending[2] if pending else self.turn
-            previous, self.turn = self.turn, turn
-            span = self.span(("tool", call_id), name, stamp,
-                {"gen_ai.operation.name": "execute_tool", "tool.name": name},
-                start=start, error=bool(message.get("isError")))
-            self.turn = previous
-            return [span] if span else []
-        return []
+        """Compatibility entry point; Pi format logic lives in its adapter."""
+        return self.adapter.parse(self, row, stamp, {})
 
     def kiro(self, row, stamp):
         payload = row.get("payload") or {}
@@ -1351,7 +1249,9 @@ class Session:
                 if not isinstance(row, dict):
                     continue
                 content = None
-                if self.runtime == 'Codex':
+                if self.adapter is not None:
+                    content = self.adapter.initial_task(row)
+                elif self.runtime == 'Codex':
                     payload = row.get('payload') or {}
                     if not isinstance(payload, dict):
                         continue
@@ -1370,10 +1270,6 @@ class Session:
                 elif self.runtime == 'Claude Code' and row.get('type') == 'user':
                     message = row.get('message') or {}
                     if isinstance(message, dict):
-                        content = message.get('content')
-                elif self.runtime == 'Pi' and row.get('type') == 'message':
-                    message = row.get('message') or {}
-                    if isinstance(message, dict) and message.get('role') == 'user':
                         content = message.get('content')
                 elif self.runtime == 'Kiro':
                     payload = row.get('payload') or {}
@@ -1511,10 +1407,10 @@ class Session:
                     and str(payload['turn_id']) != current_turn)
                 stamp = timestamp(row.get("timestamp"))
                 self.last_record_ns = max(self.last_record_ns, stamp)
-                if self.runtime == "Codex":
+                if self.adapter is not None:
+                    new_spans = self.adapter.parse(self, row, stamp, prior_models)
+                elif self.runtime == "Codex":
                     new_spans = self.codex(row, stamp)
-                elif self.runtime == "Pi":
-                    new_spans = self.pi(row, stamp)
                 elif self.runtime == "Kiro":
                     new_spans = self.kiro(row, stamp)
                 else:
@@ -1524,11 +1420,10 @@ class Session:
                         spans.append(span)
                         if "observatory.native_usage" in span["attributes"]:
                             prior_models[(span["trace_id"], span["span_id"])] = span
-                if self.runtime == "Codex":
+                if self.adapter is not None:
+                    activity = self.adapter.activity(self, row, stamp)
+                elif self.runtime == "Codex":
                     activity=codex_activity(self, row, stamp)
-                elif self.runtime == "Pi":
-                    from .local_activity import pi_activity
-                    activity=pi_activity(self, row, stamp)
                 elif self.runtime == "Kiro":
                     from .local_activity import kiro_activity
                     activity=kiro_activity(self, row, stamp)
@@ -1790,6 +1685,7 @@ class LocalAgents:
         self.sessions = {}
         self.discovered_sources = 0
         self.omitted_sources = 0
+        self.ambiguous_sources = 0
         self.errors = 0
         self.last_error = None
         self.runtime_snapshot = {}
@@ -1825,11 +1721,17 @@ class LocalAgents:
     def discover(self):
         cutoff = time.time() - 86400
         self.discovered_sources = 0
+        owners = {}
+        ambiguous = set()
         pending_sources={path for path,session in self.sessions.items() if session._pending_ingest is not None}
         discovered_pending=set()
         def recent():
             for spec in self.source_specs:
-                root, runtime = spec.root(), spec.runtime
+                try:
+                    root = Path(spec.root()).resolve()
+                except (OSError, TypeError, ValueError) as exc:
+                    self.record_error(exc, f"Resolving native source {spec.id}")
+                    continue
                 if not root.is_dir():
                     continue
                 # One directory pass; DirEntry reuses directory type metadata.
@@ -1855,20 +1757,36 @@ class LocalAgents:
                                         modified = entry.stat().st_mtime
                                         if modified >= cutoff:
                                             self.discovered_sources += 1
-                                            if Path(entry.path) in pending_sources:discovered_pending.add(Path(entry.path))
-                                            yield modified, Path(entry.path), runtime
+                                            path = Path(entry.path)
+                                            previous = owners.get(path)
+                                            if previous is not None and previous != spec.id:
+                                                if path not in ambiguous:
+                                                    self.record_error(ValueError("multiple adapters claim one source"),
+                                                                      "Resolving native source ownership")
+                                                ambiguous.add(path)
+                                                continue
+                                            owners[path] = spec.id
+                                            if path in pending_sources:discovered_pending.add(path)
+                                            yield modified, path, spec
                                 except OSError as exc:
                                     self.record_error(exc,'Inspecting native source entry')
                     except OSError as exc:
                         self.record_error(exc,'Discovering native source directory')
         selected = heapq.nlargest(MAX_SOURCES, recent(), key=lambda row: row[0])
-        selected=[row for row in selected if row[1] not in pending_sources][:max(0,MAX_SOURCES-len(pending_sources))]
+        self.ambiguous_sources = len(ambiguous)
+        selected=[row for row in selected if row[1] not in pending_sources and row[1] not in ambiguous][:max(0,MAX_SOURCES-len(pending_sources))]
         keys={path for _,path,_ in selected}|pending_sources
+        keys.difference_update(ambiguous - pending_sources)
         self.omitted_sources=max(0,self.discovered_sources-len(selected)-len(discovered_pending))
         self.sessions = {path: session for path, session in self.sessions.items() if path in keys}
-        for _, path, runtime in selected:
+        for _, path, spec in selected:
             if path not in self.sessions:
-                self.sessions[path] = Session(self.evidence, path, runtime, capture_details=self.capture_details)
+                try:
+                    adapter = spec.build_adapter()
+                    self.sessions[path] = Session(self.evidence, path, spec.runtime,
+                                                  capture_details=self.capture_details, adapter=adapter)
+                except (TypeError, ValueError) as exc:
+                    self.record_error(exc, f"Starting native source {spec.id}")
 
     def poll(self):
         accepted = 0
@@ -2091,6 +2009,7 @@ class LocalAgents:
                     item["parent_context"] = context
         return {"enabled": True, "initial_poll_complete": self.initial_poll_complete, "sources": len(sessions), "discovered_sources": self.discovered_sources,
                 "omitted_sources": self.omitted_sources, "read_errors": self.errors,
+                "ambiguous_sources": self.ambiguous_sources,
                 "last_read_error": self.last_error,
                 "skipped_records": sum(session.skipped for session in sessions),
                 "backlog_bytes": sum(session.backlog_bytes for session in sessions),
