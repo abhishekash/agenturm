@@ -1,8 +1,8 @@
 """Strict v1 messages for an isolated, opt-in source adapter process.
 
 The wire contract is deliberately smaller than Agenturm's canonical evidence
-schema. An opt-in Store inbox can admit a narrow metadata subset; neither the
-process host nor the inbox projects these records into live views yet.
+schema. The opt-in Store inbox admits a narrow metadata subset; identity-bearing
+lifecycle records can be projected into live session health by the host.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ PROTOCOL_MAJOR = 1
 MAX_NESTING = 20
 MAX_STRUCTURAL_TOKENS = 8192
 MAX_BATCH_RECORDS = 256
+MAX_CONTROL_FRAME_BYTES = 64 * 1024
 MAX_RECORD_BYTES = 16 * 1024
 MAX_CURSOR_CHARS = 512
 MAX_ID_CHARS = 256
