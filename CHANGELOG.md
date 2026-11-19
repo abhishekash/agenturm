@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.8
+
+- Simplify the default UI with compact global controls, four primary tabs plus More, five footer actions and fewer repeated counts and evidence previews. Retain detailed history/provenance routes and explicit error, empty and loading states.
+- Keep header and navigation geometry stable across view changes and expanded inspection; clarify the Session: All filter.
+- Preserve exact-turn interruption evidence and recorded causes, prefer later resume/completion events over old interruptions, and keep inspection linked to the selected execution.
+- Add live adoption and compatibility badges to the repository.
+
 ## 0.2.7
 
 - Give evidence panels consistent section indentation and wrapping. Activity messages use a short identity instead of repeating a clipped body; narrative Markdown renders lists, links, code and responsive tables. Structured payloads retain their nesting, while original text, command output and exports stay literal. Detail dialogs reflow when resized or revealed.
