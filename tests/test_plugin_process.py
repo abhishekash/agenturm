@@ -52,6 +52,9 @@ try:
             continue
         if MODE == 'crash':
             os._exit(3)
+        if MODE == 'crash_once' and not os.path.exists(MARKER):
+            open(MARKER, 'w', encoding='utf-8').close()
+            os._exit(3)
         if MODE == 'bad_json':
             raw = b'{"type":"batch","type":"batch"}'
             sys.stdout.buffer.write(len(raw).to_bytes(4, 'big') + raw)
