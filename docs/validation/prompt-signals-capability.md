@@ -1,0 +1,7 @@
+# Scoped Prompt signals capability checkpoint
+
+Recorded 20 November 2026. An independently defined trusted provider adds a Prompt signals pane through the existing generic pane registry. The host-owned `prompt_signal_facts` query requires exact service, session and canonical agent identity plus an affirmative capture decision. It reads a bounded indexed Activity page and gives the provider only typed counts and a coarse elapsed time. Denial, missing scope, provider failure and pagination are explicit unavailable or degraded states. The resulting view model contains no source text.
+
+Validation: `/home/abhishekash/abhi-codes/agentic/agenturm/.venv/bin/python -m unittest tests.test_prompt_signals_capability tests.test_ui_contributions` — 7 passed, including real stored Activity with sibling and other-session events, capture denial before querying, a bounded partial page, and generic 60×18 shell rendering. `python3` in this isolated worktree lacks Textual; the existing project virtual environment was used for UI checks. `git diff --check` passed.
+
+These signals count recorded events; they do not establish prompt quality, causality or comprehensive workflow coverage. This remains a trusted constructor hook, not a separately installed capability process. The capture decision must be policy-current at integration time; the proof does not add a production authorization service or a CLI activation route.
