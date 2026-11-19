@@ -1,0 +1,85 @@
+{
+  "kind": "agenturm-real-terminal-idle-diagnostic-v1",
+  "date": "2026-11-19",
+  "baseline": {
+    "requested_idle_seconds": 60.0,
+    "warmup_seconds": 30.0,
+    "initial_readiness_seconds": 1.1027400009334087,
+    "first_useful_agents_seconds": 3.936268565012142,
+    "processes": {
+      "receiver": {
+        "cpu_one_core_percent": 2.2333317533235846,
+        "sampled_seconds": 60.00004244805314,
+        "peak_sampled_rss_mib": 52.89453125,
+        "last_rss_mib": 52.89453125
+      },
+      "cockpit": {
+        "cpu_one_core_percent": 5.716694016075932,
+        "sampled_seconds": 59.999712952179834,
+        "peak_sampled_rss_mib": 63.57421875,
+        "last_rss_mib": 63.57421875
+      },
+      "driver": {
+        "cpu_one_core_percent": 0.1500012589834827,
+        "sampled_seconds": 59.99949641083367,
+        "peak_sampled_rss_mib": 31.34765625,
+        "last_rss_mib": 31.34765625
+      }
+    },
+    "whole_monitor": {
+      "cpu_one_core_percent": 7.950025769399517,
+      "peak_sampled_rss_mib": 116.46875,
+      "median_sampled_rss_mib": 114.95703125,
+      "last_rss_mib": 116.46875
+    },
+    "whole_monitor_idle_cpu_one_core_percent": 7.950025769399517,
+    "first_useful_visible_agent_rows": 3,
+    "native_read_errors": 0,
+    "errors": [],
+    "no_timed_api_or_keyboard_work": true,
+    "no_provider_calls": true,
+    "profiling": false,
+    "publishable": false
+  },
+  "profile": {
+    "requested_idle_seconds": 20.0,
+    "warmup_seconds": 10.0,
+    "processes": {
+      "receiver": {
+        "cpu_one_core_percent": 3.5500118415906683,
+        "sampled_seconds": 19.999933287035674,
+        "peak_sampled_rss_mib": 62.4765625,
+        "last_rss_mib": 62.4765625
+      },
+      "cockpit": {
+        "cpu_one_core_percent": 14.050240119450619,
+        "sampled_seconds": 19.99965819879435,
+        "peak_sampled_rss_mib": 71.32421875,
+        "last_rss_mib": 71.32421875
+      },
+      "driver": {
+        "cpu_one_core_percent": 0.1500035676096865,
+        "sampled_seconds": 19.999524330021814,
+        "peak_sampled_rss_mib": 36.35546875,
+        "last_rss_mib": 36.35546875
+      }
+    },
+    "whole_monitor": {
+      "cpu_one_core_percent": 17.600251961041288,
+      "peak_sampled_rss_mib": 133.80078125,
+      "median_sampled_rss_mib": 133.671875,
+      "last_rss_mib": 133.80078125
+    },
+    "whole_monitor_idle_cpu_one_core_percent": 17.600251961041288,
+    "native_read_errors": 0,
+    "errors": [],
+    "profiling": true,
+    "publishable": false
+  },
+  "source_commit": "12ce67fe47caec263beecbc10d39430bae09b1db",
+  "limits": [
+    "Baseline is 60 seconds after 30-second warmup, below the registered 300-second publishable idle gate.",
+    "Profile includes startup and shutdown and distorts CPU; only its call hotspots are diagnostic.",
+    "Generated four-session fixture excludes retained history."
+  ]
+}
