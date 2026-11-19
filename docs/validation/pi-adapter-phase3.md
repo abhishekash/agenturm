@@ -1,0 +1,9 @@
+# Pi format adapter extraction
+
+Pi's session identity, message/tool/model parsing, task prefix, lifecycle and activity translation now live in `observatory/adapters/pi.py`. The JSONL host constructs a per-session adapter from `NativeSourceSpec.adapter_factory`; a direct `Session(..., "Pi")` gets the same built-in adapter for existing callers. A small internal callback protocol defines parse, activity, lifecycle and initial-task operations. It is **not** a stable external SDK: the adapter still receives legacy Session state, runs in-process and uses the host evidence facade for persistence.
+
+A separately injected synthetic adapter contributes a turn, check activity, model usage and completion to the existing Store and status projection without a runtime-specific parser branch. Disabling its source spec prevents discovery. The host resolves source roots and rejects a file claimed by two adapter specs, including through a symlink alias, reporting `ambiguous_sources` instead of guessing an owner. Adapter factories create distinct instances for distinct sessions.
+
+The Pi activity entry point in `local_activity.py` and `Session.pi` remain small compatibility shims. Other built-in formats still use the legacy collector methods. OpenCode continues through the reader registry. The Python Store remains the sole write authority; no Rust worker or process plugin is enabled.
+
+Validation: **99 focused tests passed** for adapter injection, Pi/native sessions, hierarchy, discovery, lifecycle, current schemas and reader registry. `git diff --check` passed. The synthetic 10,000-file discovery run measured 55.531 ms median CPU per scan on this host, versus the earlier 61.979 ms baseline; these unpaired short runs do not establish a performance improvement. The [provenance manifest](../../tests/fixtures/native_review/provenance.json) pins the changed reader and adapter bytes without claiming a live Pi producer version.

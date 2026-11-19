@@ -7,7 +7,11 @@
     "files": {
       "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
       "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
-      "observatory/local_agents.py": "63f9ed90103352448b0fcca42377fbde621f63c5db6fff8c8c49a15d4c3ccec7"
+      "observatory/local_agents.py": "88ce3b2adb60d2eeebb189f3c4bbcf6a337437482b6c71adf0516941711bfbd5",
+      "observatory/local_activity.py": "661040c4ebbea90161b3094ff2e4f7169e80d47309ddfea0565c4656b15a2012",
+      "observatory/native_sources.py": "a4d5f772cc285fbcbca0ae532509bd95a570e32b7324f282bfb9c1e172f2d298",
+      "observatory/native_adapter.py": "7314fee49795d8b966d30dd9c07343aff34d9814f0c4a4eac5a358bc22950246",
+      "observatory/adapters/pi.py": "bd142778fb6f85a564e7d270ba3ba10cc2db262f071701c4dd031de0bb81933d"
     },
     "core_membership_commits": [
       "d955cbbc5f87a04a1055ee0bf07ed52ef85e8fc9",
@@ -37,10 +41,17 @@
           "observatory/local_agents.py": "e41ad5d3c17f82e93f3ff201f5aee9889406106df0123417564c22da98ee48ce"
         },
         "qualification": "Pre-kernel source reader. Later composition changes do not establish new producer format coverage."
+      },
+      {
+        "commit": "1cc8b04353833aaffdca1b3acc62dd5b0ef166fc",
+        "files": {
+          "observatory/local_agents.py": "63f9ed90103352448b0fcca42377fbde621f63c5db6fff8c8c49a15d4c3ccec7"
+        },
+        "qualification": "Registered discovery and reader composition before Pi's per-session format extraction."
       }
     ],
-    "verified_reader_commit": "1cc8b04353833aaffdca1b3acc62dd5b0ef166fc",
-    "verification_scope": "The current local_agents hash binds the native source registry, reader registry and host evidence facade on top of the selected-format decoders. OpenCode and upstream schema hashes are unchanged. These composition changes do not establish live-agent or universal format compatibility. Interruption follow-up retains late terminal events without closing the current turn; late tool output preserves terminal state. Kiro decoding remains selected only for Kiro. Current-format and provenance tests are separate from live producer proof; see docs/validation/interruption-evidence.md and docs/validation/native-fixture-provenance.md."
+    "verified_reader_commit": "35841e4ef20c7706042afad171e1d8dddd83f368",
+    "verification_scope": "Current hashes bind registered discovery, native activity and adapter composition. Pi parsing, lifecycle, initial-task extraction and activity now live in observatory/adapters/pi.py; an injected synthetic adapter exercises the same host path. OpenCode/upstream schema and fixture bytes are unchanged. This does not establish an observed Pi producer version, live-agent coverage, process isolation, or universal compatibility. Current-format and provenance tests remain separate from live producer proof; see docs/validation/interruption-evidence.md and docs/validation/native-fixture-provenance.md."
   },
   "fixtures": [
     {
