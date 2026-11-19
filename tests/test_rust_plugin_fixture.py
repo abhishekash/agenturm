@@ -2,6 +2,7 @@
 import hashlib
 import os
 import tempfile
+import time
 import unittest
 from contextlib import ExitStack, closing
 from pathlib import Path
@@ -42,8 +43,19 @@ class RustFixtureIntegrationTests(unittest.TestCase):
                 first = worker.poll_once()
                 self.assertEqual(first.cursor, "rust-fixture-next")
                 self.assertEqual(first.records[0]["time_ns"], "9007199254740993")
+                self.assertEqual(first.records[0]["identity"]["session_id"],
+                                 "rust-native-session")
                 self.assertEqual(worker.poll_once().records, ())
                 self.assertEqual(worker.cursor, "rust-fixture-next")
+                deadline = time.monotonic() + 5
+                while store.plugin_sessions()["pending_sources"] and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                projection = store.plugin_sessions()
+                self.assertEqual(projection["pending_sources"], 0)
+                self.assertEqual(len(projection["sessions"]), 1)
+                self.assertEqual(projection["sessions"][0]["run_state"], "completed")
+                self.assertEqual(projection["sessions"][0]["native_session_id"],
+                                 "rust-native-session")
             with store._connect() as db:
                 row = db.execute("SELECT cursor,dirty_seq FROM plugin_source_cursor_v1 "
                                  "WHERE source_id='rust-source'").fetchone()
