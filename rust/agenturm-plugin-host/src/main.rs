@@ -15,7 +15,7 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -143,7 +143,8 @@ fn wait_child_stop(child: &mut OwnedChild) {
 fn frame_reader<R: Read + Send + 'static>(
     reader: R,
     limit: usize,
-    alive: Option<Arc<AtomicBool>>,
+    healthy: Arc<AtomicBool>,
+    response_budget: Option<Arc<AtomicUsize>>,
 ) -> Receiver<Option<String>> {
     let (sender, receiver) = sync_channel(2);
     thread::spawn(move || {
@@ -151,15 +152,25 @@ fn frame_reader<R: Read + Send + 'static>(
         loop {
             match read_frame(&mut reader, limit) {
                 Ok(Some(frame)) => {
-                    if sender.send(Some(frame)).is_err() {
+                    // The parent control queue may fill while a child blocks.
+                    // Never block this reader: it must observe EOF and let
+                    // the relay reap that child. Child frames are permitted
+                    // only when a hello/poll response is actually expected.
+                    if response_budget.as_ref().is_some_and(|budget| {
+                        budget
+                            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                                remaining.checked_sub(1)
+                            })
+                            .is_err()
+                    }) || sender.try_send(Some(frame)).is_err()
+                    {
+                        healthy.store(false, Ordering::Release);
                         return;
                     }
                 }
                 Ok(None) | Err(_) => {
-                    if let Some(alive) = alive {
-                        alive.store(false, Ordering::Release);
-                    }
-                    let _ = sender.send(None);
+                    healthy.store(false, Ordering::Release);
+                    let _ = sender.try_send(None);
                     return;
                 }
             }
@@ -168,20 +179,55 @@ fn frame_reader<R: Read + Send + 'static>(
     receiver
 }
 
-fn relay(
+fn control_frame(
     parent_input: &Receiver<Option<String>>,
     parent_alive: &AtomicBool,
+) -> Result<Option<String>> {
+    loop {
+        if !parent_alive.load(Ordering::Acquire) {
+            return Err(invalid("parent control pipe closed or exceeded its queue"));
+        }
+        match parent_input.recv_timeout(Duration::from_millis(100)) {
+            Ok(frame) => {
+                if !parent_alive.load(Ordering::Acquire) {
+                    return Err(invalid("parent control pipe closed or exceeded its queue"));
+                }
+                return Ok(frame);
+            }
+            Err(RecvTimeoutError::Disconnected) => return Ok(None),
+            Err(RecvTimeoutError::Timeout) => continue,
+        }
+    }
+}
+
+struct RelayChannels<'a> {
+    parent_input: &'a Receiver<Option<String>>,
+    parent_alive: &'a AtomicBool,
+    child_output: &'a Receiver<Option<String>>,
+    child_alive: &'a AtomicBool,
+    response_budget: &'a AtomicUsize,
+}
+
+fn relay(
+    channels: RelayChannels<'_>,
     parent_output: &mut impl Write,
     child_input: &mut impl Write,
-    child_output: &Receiver<Option<String>>,
     child: &mut OwnedChild,
 ) -> Result<()> {
     let mut state = RelayState::default();
     loop {
-        let Some(raw) = parent_input.recv()? else {
+        let Some(raw) = control_frame(channels.parent_input, channels.parent_alive)? else {
             return Ok(());
         };
         let kind = state.request(&raw)?;
+        if !channels.child_alive.load(Ordering::Acquire) {
+            return Err(invalid(
+                "child data pipe closed or sent an unsolicited frame",
+            ));
+        }
+        if matches!(kind, "hello" | "poll") {
+            channels.response_budget.store(1, Ordering::Release);
+        }
         write_frame(child_input, &raw, CONTROL_LIMIT)?;
         if kind == "stop" {
             wait_child_stop(child);
@@ -191,10 +237,18 @@ fn relay(
             continue;
         }
         let response = loop {
-            if !parent_alive.load(Ordering::Acquire) {
+            if !channels.parent_alive.load(Ordering::Acquire) {
                 return Err(invalid("parent control pipe closed while child was busy"));
             }
-            match child_output.recv_timeout(Duration::from_millis(100)) {
+            if !channels.child_alive.load(Ordering::Acquire) {
+                return Err(invalid(
+                    "child data pipe closed or sent an unsolicited frame",
+                ));
+            }
+            match channels
+                .child_output
+                .recv_timeout(Duration::from_millis(100))
+            {
                 Ok(Some(frame)) => break frame,
                 Ok(None) => return Err(invalid("child closed its data pipe")),
                 Err(RecvTimeoutError::Disconnected) => {
@@ -220,16 +274,27 @@ fn run() -> Result<()> {
     let (mut child, input, output) = spawn_child(&path)?;
     let mut child_input = BufWriter::new(input);
     let parent_alive = Arc::new(AtomicBool::new(true));
-    let parent_input = frame_reader(io::stdin(), CONTROL_LIMIT, Some(Arc::clone(&parent_alive)));
-    let child_output = frame_reader(output, MAX_FRAME_BYTES, None);
+    let child_alive = Arc::new(AtomicBool::new(true));
+    let response_budget = Arc::new(AtomicUsize::new(0));
+    let parent_input = frame_reader(io::stdin(), CONTROL_LIMIT, Arc::clone(&parent_alive), None);
+    let child_output = frame_reader(
+        output,
+        MAX_FRAME_BYTES,
+        Arc::clone(&child_alive),
+        Some(Arc::clone(&response_budget)),
+    );
     let stdout = io::stdout();
     let mut parent_output = BufWriter::new(stdout.lock());
     relay(
-        &parent_input,
-        &parent_alive,
+        RelayChannels {
+            parent_input: &parent_input,
+            parent_alive: &parent_alive,
+            child_output: &child_output,
+            child_alive: &child_alive,
+            response_budget: &response_budget,
+        },
         &mut parent_output,
         &mut child_input,
-        &child_output,
         &mut child,
     )
 }
@@ -245,6 +310,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn hello_poll_ack_sequence() {
@@ -274,5 +340,49 @@ mod tests {
         assert!(state.response("hello", r#"{"type":"batch"}"#).is_err());
         assert!(state.response("poll", r#"{"type":"batch"}"#).is_err());
         assert!(state.pending.is_none());
+    }
+
+    #[test]
+    fn saturated_parent_queue_fails_closed_without_blocking_reader() {
+        let mut input = Vec::new();
+        for _ in 0..3 {
+            write_frame(&mut input, "{}", CONTROL_LIMIT).unwrap();
+        }
+        let healthy = Arc::new(AtomicBool::new(true));
+        let receiver = frame_reader(
+            Cursor::new(input),
+            CONTROL_LIMIT,
+            Arc::clone(&healthy),
+            None,
+        );
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while healthy.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!healthy.load(Ordering::Acquire));
+        assert_eq!(receiver.try_iter().count(), 2);
+    }
+
+    #[test]
+    fn unsolicited_child_frame_exhausts_one_response_budget() {
+        let mut input = Vec::new();
+        for _ in 0..2 {
+            write_frame(&mut input, "{}", MAX_FRAME_BYTES).unwrap();
+        }
+        let healthy = Arc::new(AtomicBool::new(true));
+        let budget = Arc::new(AtomicUsize::new(1));
+        let receiver = frame_reader(
+            Cursor::new(input),
+            MAX_FRAME_BYTES,
+            Arc::clone(&healthy),
+            Some(Arc::clone(&budget)),
+        );
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while healthy.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!healthy.load(Ordering::Acquire));
+        assert_eq!(budget.load(Ordering::Acquire), 0);
+        assert_eq!(receiver.try_iter().count(), 1);
     }
 }
