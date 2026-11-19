@@ -11,6 +11,7 @@ import json
 from typing import TYPE_CHECKING
 
 from .agent_hierarchy import canonical_agent_id
+from .plugin_activity import index_rows as activity_index_rows
 from .plugin_wire import ProtocolError
 
 if TYPE_CHECKING:
@@ -118,7 +119,8 @@ def project_source(store: Store, source_id: str) -> int:
                 (source["dirty_seq"], source["policy_epoch"])):
             return 0
         rows = db.execute("SELECT event_id_hash,revision,kind,time_ns,payload_json,"
-                          "native_session_id,admitted_ns FROM plugin_evidence_v1 "
+                          "native_session_id,native_worker_id,native_turn_id,admitted_ns "
+                          "FROM plugin_evidence_v1 "
                           "WHERE source_id=? ORDER BY event_id_hash,revision DESC LIMIT ?",
                           (source_id, MAX_PROJECTION_EVIDENCE + 1)).fetchall()
         if len(rows) > MAX_PROJECTION_EVIDENCE:
@@ -144,6 +146,9 @@ def project_source(store: Store, source_id: str) -> int:
                           "", "unknown", "unresolved"))
     if len(projected) > MAX_PROJECTION_SESSIONS:
         raise ProtocolError("plugin session projection capacity reached")
+    activity_rows = activity_index_rows(rows, receiver_id=receiver_id,
+                                        source_id=source_id, plugin_id=source["plugin_id"],
+                                        invalidated=set(invalidated))
     with store._source_write(), store._connect() as db:
         db.execute("BEGIN IMMEDIATE")
         current = db.execute("SELECT receiver_id,lease_epoch,policy_epoch,dirty_seq,"
@@ -155,11 +160,16 @@ def project_source(store: Store, source_id: str) -> int:
                 != revision):
             raise ProtocolError("plugin projection source changed; retry")
         db.execute("DELETE FROM plugin_session_projection_v1 WHERE source_id=?", (source_id,))
+        db.execute("DELETE FROM activity_index_v1 WHERE kind='plugin' AND owner_key=?",
+                   (source_id,))
         db.executemany("INSERT INTO plugin_session_projection_v1(source_id,native_session_id,session_key,"
                        "state,reason_code,state_time_ns,last_record_ns,policy_epoch,source_dirty_seq,"
                        "usage_json,parent_native_session_id,relationship_kind,relationship_state) "
                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                        projected)
+        db.executemany("INSERT INTO activity_index_v1(event_key,kind,owner_key,stamp,trace_id,"
+                       "session_id,agent_id,service,domain,action,result,turn_id,payload) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", activity_rows)
         db.execute("INSERT INTO plugin_projection_cursor_v1(source_id,projected_seq,policy_epoch) "
                    "VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
                    "projected_seq=excluded.projected_seq,policy_epoch=excluded.policy_epoch",

@@ -27,6 +27,11 @@ CODE = re.compile(r"[a-z][a-z0-9_./-]{0,63}\Z")
 STATES = {"started", "running", "paused", "completed", "failed", "interrupted", "cancelled"}
 USAGE = {"input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens"}
 RELATIONSHIPS = {"delegated", "review"}
+MESSAGE_ROLES = {"user", "assistant"}
+TOOL_CATEGORIES = {"shell", "file", "mcp", "other"}
+TOOL_RESULTS = {"started", "succeeded", "failed", "denied"}
+CHECK_CATEGORIES = {"test", "lint", "build", "review", "other"}
+CHECK_RESULTS = {"passed", "failed", "skipped", "unknown"}
 
 
 def pairs(items):
@@ -80,7 +85,7 @@ def record(row):
     if not isinstance(row, dict) or not {"id", "session", "at_ns", "kind"} <= row.keys():
         raise ValueError("invalid source record")
     if set(row) - {"id", "session", "at_ns", "kind", "revision", "state", "reason_code", "usage",
-                   "parent_session", "relation_kind"}:
+                   "parent_session", "relation_kind", "role", "category", "result"}:
         raise ValueError("unknown source record field")
     event_id = identity(row["id"])
     session_id = identity(row["session"])
@@ -116,6 +121,26 @@ def record(row):
         if not isinstance(relation_kind, str) or relation_kind not in RELATIONSHIPS:
             raise ValueError("invalid source relationship kind")
         payload = {"parent_session_id": parent, "kind": relation_kind}
+    elif row["kind"] == "message" and set(row) <= {
+            "id", "session", "at_ns", "kind", "revision", "role"}:
+        role = row.get("role")
+        if type(role) is not str or role not in MESSAGE_ROLES:
+            raise ValueError("invalid source message role")
+        payload = {"role": role}
+    elif row["kind"] == "tool" and set(row) <= {
+            "id", "session", "at_ns", "kind", "revision", "category", "result"}:
+        category, result = row.get("category"), row.get("result")
+        if (type(category) is not str or category not in TOOL_CATEGORIES
+                or type(result) is not str or result not in TOOL_RESULTS):
+            raise ValueError("invalid source tool metadata")
+        payload = {"category": category, "result": result}
+    elif row["kind"] == "check" and set(row) <= {
+            "id", "session", "at_ns", "kind", "revision", "category", "result"}:
+        category, result = row.get("category"), row.get("result")
+        if (type(category) is not str or category not in CHECK_CATEGORIES
+                or type(result) is not str or result not in CHECK_RESULTS):
+            raise ValueError("invalid source check metadata")
+        payload = {"category": category, "result": result}
     else:
         raise ValueError("unsupported source record kind")
     return {"event_id": "sample:" + event_id, "revision": revision,
