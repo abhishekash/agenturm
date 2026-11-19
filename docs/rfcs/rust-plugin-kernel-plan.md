@@ -1,6 +1,6 @@
 # Rust kernel and pluggable Agenturm: execution plan
 
-Status: proposed execution plan; implementation is not authorized by this document. Prepared 19 November 2026 against `ca202c7` (main including Kiro support). Worktree: `/tmp/agenturm-rust-plugin-kernel`; branch: `architecture/rust-plugin-kernel`. The user requested an independent Rust review and a stop before development. This session changes documents only. The previously stopped branch cleanup and UI revert are not resumed.
+Status: independently reviewed execution plan, prepared 19 November 2026 against `ca202c7` (main including Kiro support). The user authorized implementation in the following turn; the first bounded checkpoint is PR #120. The plan records gates for later milestones rather than claiming they are complete. The previously stopped branch cleanup and UI revert are not resumed.
 
 ## Recommendation and intended outcome
 
@@ -237,7 +237,7 @@ Before defaulting to Rust: full supported Python/client CI, Rust target CI, whee
 
 ## 9. Decision gates and stop conditions
 
-- **Now:** review this plan; user chooses whether to begin development. No runtime changes or new benchmarking campaigns in this planning session.
+- **Now:** implementation is authorized. Complete each phase’s evidence and review gates before advancing, starting with the current baseline and adapter boundary. This document alone does not certify later cutover or performance.
 - **After Phase 0:** agree on the primary slowdown, concrete baseline, absolute resource ceilings and first Rust target. If SQL/polling dominates, fix algorithm/scheduling in the new boundaries before expecting Rust to help.
 - **After adapter/process proofs:** freeze the minimum supported contract; do not stabilize speculative APIs before real adapters exercise them.
 - **Before storage cutover:** review exact writer exclusion, schema/downgrade, replay retention and policy equivalence. Any ambiguity blocks cutover.
