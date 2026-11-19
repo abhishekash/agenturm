@@ -18,6 +18,7 @@ from observatory.plugin_projection import project_source
 from observatory.plugin_runtime import PluginSession
 from observatory.plugin_wire import ProtocolError
 from observatory.server import BoundedHTTPServer, serve
+from examples.fake_inbound_connector.agenturm_fake_inbound import cursor_parts
 
 
 PACKAGE = Path(__file__).resolve().parents[1] / "examples" / "fake_inbound_connector"
@@ -259,6 +260,10 @@ class FakeInboundConnectorTests(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0, url)
             self.assertFalse(target.exists())
+
+    def test_empty_cursor_marker_does_not_alias_a_real_service_token(self):
+        self.assertEqual(cursor_parts("v1:~:0"), ("", "0"))
+        self.assertEqual(cursor_parts("v1:-:10"), ("-", "10"))
 
 
 if __name__ == "__main__":
