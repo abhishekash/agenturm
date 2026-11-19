@@ -16,6 +16,30 @@ from ..session_text import remember_task
 
 class KiroAdapter:
     agent_namespace = "kiro-sessions"
+
+    def link_sessions(self, sessions):
+        """Resolve workers from exact spawn evidence in this adapter's peers."""
+        spawners = {}
+        for session in sessions:
+            for item in list(session.announced_agents.values()):
+                child = item.get("native_worker_id")
+                if child:
+                    spawners[(session.kiro_session_dir, child)] = session
+        for session in sessions:
+            if not session.native_worker_id:
+                continue
+            spawner = spawners.get((session.kiro_session_dir, session.native_worker_id))
+            if spawner is None or spawner is session:
+                continue
+            if session.parent_agent_id != spawner.agent_id:
+                session.parent_agent_id = spawner.agent_id
+                session.relationship_state = "confirmed"
+                session.relationship_provenance = provenance(
+                    "kiro-session", "sub_agent_start.subSessionId in the "
+                    + ("worker" if spawner.native_worker_id else "session") + " transcript")
+            outcome = spawner.kiro_child_outcomes.get(session.native_worker_id)
+            if outcome and session.run_state not in {"completed", "interrupted", "failed", "incomplete"}:
+                session.kiro_parent_outcome = outcome
     def reset_after_rotation(self, session):
         session.kiro_interactions.clear()
         session.kiro_turn_from_prompt = session.kiro_turn_open = False

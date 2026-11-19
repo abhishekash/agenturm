@@ -1121,7 +1121,7 @@ class LocalAgents:
 
     def poll(self):
         accepted = 0
-        self.link_kiro_workers()
+        self.link_adapter_sessions()
         for session in list(self.sessions.values()):
             if self.stop.is_set():
                 break
@@ -1129,34 +1129,18 @@ class LocalAgents:
                 accepted += session.poll()
             except OSError as exc:
                 self.record_error(exc,'Reading native source')
-        self.link_kiro_workers()
+        self.link_adapter_sessions()
         return accepted
 
-    def link_kiro_workers(self):
-        """Resolve each Kiro worker's exact parent and outcome from the spawning transcript."""
-        spawners = {}
-        for session in list(self.sessions.values()):
-            if session.runtime != "Kiro":
-                continue
-            for item in list(session.announced_agents.values()):
-                child = item.get("native_worker_id")
-                if child:
-                    spawners[(session.kiro_session_dir, child)] = session
-        for session in list(self.sessions.values()):
-            if session.runtime != "Kiro" or not session.native_worker_id:
-                continue
-            spawner = spawners.get((session.kiro_session_dir, session.native_worker_id))
-            if spawner is None or spawner is session:
-                continue
-            if session.parent_agent_id != spawner.agent_id:
-                session.parent_agent_id = spawner.agent_id
-                session.relationship_state = "confirmed"
-                session.relationship_provenance = provenance(
-                    "kiro-session", "sub_agent_start.subSessionId in the "
-                    + ("worker" if spawner.native_worker_id else "session") + " transcript")
-            outcome = spawner.kiro_child_outcomes.get(session.native_worker_id)
-            if outcome and session.run_state not in {"completed", "interrupted", "failed", "incomplete"}:
-                session.kiro_parent_outcome = outcome
+    def link_adapter_sessions(self):
+        """Run each registered adapter's peer reducer once per poll."""
+        groups = {}
+        for session in self.sessions.values():
+            groups.setdefault(type(session.adapter), []).append(session)
+        for peers in groups.values():
+            link = getattr(peers[0].adapter, "link_sessions", None)
+            if link is not None:
+                link(peers)
 
     def loop(self):
         discovered = 0
