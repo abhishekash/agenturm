@@ -17,6 +17,26 @@ from ..session_text import remember_task
 class KiroAdapter:
     agent_namespace = "kiro-sessions"
 
+    def __init__(self):
+        self._workspace_folders = []
+        self._workspace_cache = {}
+        self._workspace_checked = 0.0
+
+    def status_extension(self, capture_details, on_error):
+        """Publish bounded workspace permission metadata for active Kiro sources."""
+        from ..local_agents import KIRO_RULES_REFRESH_SECONDS
+        if time.monotonic() - self._workspace_checked >= KIRO_RULES_REFRESH_SECONDS:
+            self._workspace_checked = time.monotonic()
+            from ..kiro_permissions import workspace_permissions
+            try:
+                self._workspace_folders = workspace_permissions(kiro_home(), self._workspace_cache)
+            except OSError as exc:
+                on_error(exc, "Reading Kiro workspace permissions")
+        folders = (list(self._workspace_folders) if capture_details else
+                   [{**item, "folder": Path(item["folder"]).name if item.get("folder") else None}
+                    for item in self._workspace_folders])
+        return {"kiro_folders": folders}
+
     def link_sessions(self, sessions):
         """Resolve workers from exact spawn evidence in this adapter's peers."""
         spawners = {}
