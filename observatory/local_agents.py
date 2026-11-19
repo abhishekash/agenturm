@@ -993,6 +993,19 @@ def _safe_identifier(value, limit=256):
     return value if value and len(value) <= limit else None
 
 
+_HOST_STATUS_FIELDS = frozenset({
+    'source_id', 'runtime', 'service', 'session_id', 'project', 'model',
+    'working_directory', 'branch', 'run_state', 'state_since_ns', 'trace_id',
+    'run_start_ns', 'request_id', 'request_time_ns', 'outcome_id',
+    'outcome_time_ns', 'waiting_for', 'task', 'initial_task', 'capture_content',
+    'last_activity', 'last_record_ns', 'process', 'diagnostics', 'bytes_read',
+    'agent_id', 'source_namespace', 'native_session_id', 'native_worker_id',
+    'parent_agent_id', 'relationship_kind', 'relationship_state',
+    'relationship_provenance', 'discovery_state', 'coverage', 'observed_ns',
+    'review',
+})
+
+
 class LocalAgents:
     def __init__(self, store, capture_details=True, source_specs: tuple[NativeSourceSpec, ...] | None = None,
                  reader_specs=None):
@@ -1138,9 +1151,26 @@ class LocalAgents:
         for session in self.sessions.values():
             groups.setdefault(type(session.adapter), []).append(session)
         for peers in groups.values():
-            link = getattr(peers[0].adapter, "link_sessions", None)
-            if link is not None:
-                link(peers)
+            try:
+                link = getattr(peers[0].adapter, "link_sessions", None)
+                if link is not None:
+                    link(peers)
+            except Exception as exc:
+                self.record_error(exc, f"Linking native adapter {type(peers[0].adapter).__name__}")
+
+    def adapter_status_metadata(self, session):
+        """A broken adapter's optional status fields cannot hide other sessions."""
+        try:
+            fields = session.adapter_status_metadata()
+            if not isinstance(fields, dict):
+                raise TypeError("native adapter status metadata must be a mapping")
+            if (fields.keys() & _HOST_STATUS_FIELDS or any(
+                    type(key) is not str or not key or len(key) > 64 for key in fields)):
+                raise ValueError("native adapter status metadata conflicts with host fields")
+            return fields
+        except Exception as exc:
+            self.record_error(exc, f"Inspecting native adapter {type(session.adapter).__name__}")
+            return {}
 
     def loop(self):
         discovered = 0
@@ -1250,7 +1280,7 @@ class LocalAgents:
                      "last_record_ns": session.last_record_ns,
                      "process": self.process_samples.get(session.source_id, {}),
                      "diagnostics": session.diagnostics(),
-                     **session.adapter_status_metadata(),
+                     **self.adapter_status_metadata(session),
                      **session.hierarchy(),
                      "bytes_read": session.offset} for session in sessions]
         reader_observed = []

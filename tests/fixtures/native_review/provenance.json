@@ -3,11 +3,11 @@
   "verified_on": "2026-11-19",
   "reader": {
     "legacy_verified_baseline": "1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8",
-    "adapter_commit": "204b4713fa72ab20ae291b69abdb991aa658b850",
+    "adapter_commit": "26d0ac82aaa8b6680dd15d34698b2b267d3631ba",
     "files": {
       "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
       "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
-      "observatory/local_agents.py": "16dbed5421d4fec68cf290946c6fa98bd1c442a44b97f9837a78cb0663ccb02b",
+      "observatory/local_agents.py": "e98877ad1e4f94ff773b4ba249bffa31a97bc672f6c57e01bb0cd19511b7c16a",
       "observatory/local_activity.py": "9bf2c058ef9ac7c43fa2bfb8f21db80545016d2b18cacde3db97d85bb8a56aea",
       "observatory/native_sources.py": "bddcbcd2f5dd322cfd47df963a6ca983826bc24b8335ad6d22b023cea32502de",
       "observatory/native_adapter.py": "6939f213debdf3573f7892444ffda6d341e815d6e4e4e1ae0a8bb0111f88628f",
@@ -110,10 +110,17 @@
           "observatory/adapters/kiro.py": "b0a593aa1ba11993f6e17709194b22731098ff786ca627068c4f56712884e43d"
         },
         "qualification": "Before Kiro peer linking moved behind the registered adapter hook; source fixture and producer schema coverage are unchanged."
+      },
+      {
+        "commit": "8fe04ca743fa456f2770ffade37e584c037843f9",
+        "files": {
+          "observatory/local_agents.py": "16dbed5421d4fec68cf290946c6fa98bd1c442a44b97f9837a78cb0663ccb02b"
+        },
+        "qualification": "Before optional adapter peer/status hook failures were isolated and host-owned status fields were protected; producer schema coverage is unchanged."
       }
     ],
-    "verified_reader_commit": "204b4713fa72ab20ae291b69abdb991aa658b850",
-    "verification_scope": "Current hashes bind registered discovery, conflict-safe source ownership, native activity, adapter composition and peer linking. Synthetic fixture tests passed locally for Codex, Claude Code, Pi and Kiro. OpenCode/upstream schema and fixture bytes are unchanged. This does not establish a new observed producer version, process isolation, or universal compatibility; see docs/validation/native-fixture-provenance.md."
+    "verified_reader_commit": "26d0ac82aaa8b6680dd15d34698b2b267d3631ba",
+    "verification_scope": "Current hashes bind registered discovery, conflict-safe source ownership, native activity, adapter composition, peer linking and optional hook failure isolation. Synthetic fixture tests passed locally for Codex, Claude Code, Pi and Kiro. OpenCode/upstream schema and fixture bytes are unchanged. This does not establish a new observed producer version, process isolation, or universal compatibility; see docs/validation/native-fixture-provenance.md."
   },
   "fixtures": [
     {
