@@ -1,0 +1,253 @@
+{
+  "kind": "agenturm-rust-kernel-baseline-v1",
+  "date": "2026-11-19",
+  "commit": "c19596656c090df24d1f3969de0b7dc874df3030",
+  "environment": {
+    "os": "Linux x86_64",
+    "cpu": "Intel Core i7-1165G7, 4 cores / 8 threads",
+    "ram_gib": 15,
+    "python": "3.12.3",
+    "filesystem_free_gib_at_start": 2.1
+  },
+  "whole_app": {
+    "python": "3.12.3",
+    "platform": "linux",
+    "results": [
+      {
+        "scenario": "small",
+        "traces": 10,
+        "spans": 200,
+        "payload_bytes_per_span": 0,
+        "ingestion_and_derived_seconds": 0.364,
+        "refresh_samples": 12,
+        "refresh_first_ms": 172.947,
+        "refresh_warm_median_ms": 27.29,
+        "refresh_median_ms": 27.29,
+        "refresh_p95_ms": 172.947,
+        "headless_idle_cpu_percent": 6.1,
+        "all_views_warmed": true,
+        "idle_seconds": 60.0,
+        "current_rss_mib": 92.72,
+        "peak_observed_rss_mib": 92.72,
+        "database_mib": 0.856
+      },
+      {
+        "scenario": "large",
+        "traces": 2,
+        "spans": 20000,
+        "payload_bytes_per_span": 0,
+        "ingestion_and_derived_seconds": 14.807,
+        "refresh_samples": 12,
+        "refresh_first_ms": 163.262,
+        "refresh_warm_median_ms": 29.286,
+        "refresh_median_ms": 29.286,
+        "refresh_p95_ms": 163.262,
+        "headless_idle_cpu_percent": 6.12,
+        "all_views_warmed": true,
+        "idle_seconds": 60.0,
+        "current_rss_mib": 95.99,
+        "peak_observed_rss_mib": 96.85,
+        "database_mib": 16.975
+      },
+      {
+        "scenario": "payloads",
+        "traces": 2,
+        "spans": 2000,
+        "payload_bytes_per_span": 8192,
+        "ingestion_and_derived_seconds": 3.385,
+        "refresh_samples": 12,
+        "refresh_first_ms": 168.402,
+        "refresh_warm_median_ms": 33.632,
+        "refresh_median_ms": 33.632,
+        "refresh_p95_ms": 168.402,
+        "headless_idle_cpu_percent": 6.26,
+        "all_views_warmed": true,
+        "idle_seconds": 60.0,
+        "current_rss_mib": 103.66,
+        "peak_observed_rss_mib": 103.66,
+        "database_mib": 18.792
+      }
+    ]
+  },
+  "source_preparation": {
+    "kind": "source-projection-microbenchmark",
+    "python": "3.12.3",
+    "source": "c19596656c090df24d1f3969de0b7dc874df3030",
+    "source_dirty": false,
+    "script_sha256": "c209d12f21d0a6ea1904c955e59db0189180cb3d0f8a17a8236bd3f5214b3be1",
+    "samples": 3,
+    "generations": 10,
+    "consumers": 3,
+    "cases": {
+      "canonical_title": {
+        "source_rows": 50,
+        "activity_rows": 200,
+        "equivalent": true,
+        "retained": true,
+        "uncached_ms": [
+          161.134,
+          161.999,
+          143.647
+        ],
+        "prepared_ms": [
+          121.734,
+          117.006,
+          114.8
+        ],
+        "uncached_median_ms": 161.134,
+        "prepared_median_ms": 117.006
+      },
+      "prompt_fallback": {
+        "source_rows": 50,
+        "activity_rows": 200,
+        "equivalent": true,
+        "retained": true,
+        "uncached_ms": [
+          233.404,
+          218.151,
+          212.283
+        ],
+        "prepared_ms": [
+          139.894,
+          144.832,
+          132.479
+        ],
+        "uncached_median_ms": 218.151,
+        "prepared_median_ms": 139.894
+      },
+      "metadata_only": {
+        "source_rows": 50,
+        "activity_rows": 200,
+        "equivalent": true,
+        "retained": false,
+        "uncached_ms": [
+          60.083,
+          60.975,
+          62.321
+        ],
+        "prepared_ms": [
+          62.099,
+          62.051,
+          66.937
+        ],
+        "uncached_median_ms": 60.975,
+        "prepared_median_ms": 62.099
+      },
+      "oversized": {
+        "source_rows": 50,
+        "activity_rows": 201,
+        "equivalent": true,
+        "retained": false,
+        "uncached_ms": [
+          155.291,
+          152.71,
+          149.389
+        ],
+        "prepared_ms": [
+          155.574,
+          162.576,
+          176.204
+        ],
+        "uncached_median_ms": 152.71,
+        "prepared_median_ms": 162.576
+      }
+    }
+  },
+  "discovery": {
+    "files": 10000,
+    "directories": 100,
+    "recent_sources": 100,
+    "selected_sources": 50,
+    "median_cpu_ms": 58.891
+  },
+  "instrumented_write_diagnostic": {
+    "synthetic": true,
+    "publishable_latency_gate": false,
+    "batches": 60,
+    "readers": true,
+    "elapsed_s": 6.421133038122207,
+    "counts": {
+      "spans": 61,
+      "trace_activity": 1,
+      "agent_nodes": 1
+    },
+    "deadline_failures": 0,
+    "derived_error": null,
+    "write_p50_ms": 16.984455,
+    "write_p95_ms": 45.694446,
+    "write_max_ms": 51.957201,
+    "read_attempts": 12,
+    "top": [
+      {
+        "kind": "connection",
+        "calls": 60,
+        "wall_ms": 1127.97,
+        "cpu_ms": 1028.864,
+        "sql_or_operation": ""
+      },
+      {
+        "kind": "many",
+        "calls": 60,
+        "wall_ms": 643.014,
+        "cpu_ms": 633.66,
+        "sql_or_operation": "INSERT INTO spans (trace_id,span_id,parent_span_id,name,start_ns,end_ns,status,service, attributes,events,links,resource_attributes,scope_name,agent_id) VALUES (?,?,?,?,?,?,?,?,?,?"
+      },
+      {
+        "kind": "connection",
+        "calls": 6,
+        "wall_ms": 312.863,
+        "cpu_ms": 298.678,
+        "sql_or_operation": ""
+      },
+      {
+        "kind": "drain",
+        "calls": 60,
+        "wall_ms": 187.16,
+        "cpu_ms": 181.694,
+        "sql_or_operation": "(){'limit': 10000}"
+      },
+      {
+        "kind": "connection",
+        "calls": 22,
+        "wall_ms": 147.892,
+        "cpu_ms": 144.451,
+        "sql_or_operation": ""
+      },
+      {
+        "kind": "drain",
+        "calls": 22,
+        "wall_ms": 111.784,
+        "cpu_ms": 110.893,
+        "sql_or_operation": "(){'limit': 200}"
+      },
+      {
+        "kind": "commit",
+        "calls": 60,
+        "wall_ms": 110.128,
+        "cpu_ms": 31.69,
+        "sql_or_operation": ""
+      },
+      {
+        "kind": "sql",
+        "calls": 22,
+        "wall_ms": 104.678,
+        "cpu_ms": 103.825,
+        "sql_or_operation": "SELECT value FROM schema_meta WHERE key='investigation_available_v1'"
+      },
+      {
+        "kind": "sql",
+        "calls": 12,
+        "wall_ms": 58.603,
+        "cpu_ms": 57.945,
+        "sql_or_operation": "SELECT value FROM schema_meta WHERE key='receiver_id'"
+      },
+      {
+        "kind": "derive_trace",
+        "calls": 1,
+        "wall_ms": 41.863,
+        "cpu_ms": 41.778,
+        "sql_or_operation": "('52349924f50f8353d3ddf1f101972042',){'operation_preparation': <observatory.operation_preparation.OperationPreparation object at 0x7f665dfa9b50>}"
+      }
+    ]
+  }
+}
