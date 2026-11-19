@@ -1,0 +1,32 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Target Recheck 2026 11 19</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-target-recheck-2026-11-19.md">Markdown source ↗</a></nav><h1>Rust target recheck: active and idle diagnostics</h1>
+<p>Recorded 19 November 2026 against clean <code>f739683ba5b8c3e372f0d9a71a26aa7693c48592</code> on Linux x86_64, Python 3.12.3. These runs use generated data and are <strong>diagnostics, not acceptance</strong>. The raw local results were written to <code>/tmp/agenturm-idle-profile-20261119-b</code>, <code>/tmp/agenturm-active-profile-20261119-a</code>, and <code>/tmp/agenturm-active-unprofiled-20261119-a</code>.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Run</th>
+<th>Command and outcome</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Idle, cProfile</td>
+<td><code>python3 scripts/benchmark_monitor_idle.py --output /tmp/agenturm-idle-profile-20261119-b --seconds 60 --warmup 30 --minimum-free-mib 1024 --profile --smoke</code>; exit 0, no recorded errors. Whole-monitor CPU 14.10% of one core (receiver 4.17%, cockpit 9.93%). Profiling overhead makes this unsuitable for the idle CPU target.</td>
+</tr>
+<tr>
+<td>Active, cProfile</td>
+<td><code>python3 scripts/soak_monitor.py --output /tmp/agenturm-active-profile-20261119-a --duration 60 --phase-seconds 5 --profile-ui --minimum-free-mib 1024</code>; exit 1. Six completed and verified turns, two observed approval requests, no request failure, recovery after restarts. It failed the eight-second graceful cockpit-exit gate; it cannot be counted as a passing soak.</td>
+</tr>
+<tr>
+<td>Active, unprofiled</td>
+<td><code>python3 scripts/soak_monitor.py --output /tmp/agenturm-active-unprofiled-20261119-a --duration 60 --phase-seconds 5 --minimum-free-mib 1024</code>; exit 0, 82.85 seconds of active workload, 14 resource samples, no recorded errors. Six completed and verified turns, two observed approval requests, no request failures, recovery after receiver/cockpit restarts, and all reported exits zero. Weighted CPU: receiver 6.40%, cockpit 7.05% of one core.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The unprofiled active run sampled <code>/api/sessions</code> p95 at 11.4 ms, <code>/api/activity?limit=50</code> at 12.7 ms, <code>/api/mcp?limit=20</code> at 33.4 ms, and <code>/api/health</code> at 40.7 ms. The sample count is small and does not establish the plan's 120-second or 200-request latency gates. The active profiler's SQLite execute self-time was about 0.91–1.10 seconds per receiver segment, while JSON <code>raw_decode</code> was about 0.02–0.05 seconds; this is directional attribution only, not a controlled end-to-end Rust speedup estimate. Cockpit selector/style work was also prominent. The profiling exit failure disappeared in the unprofiled comparison, but one comparison does not prove its root cause.</p>
+<p><strong>Decision:</strong> A Rust JSON parser is not justified as the first production performance slice by this evidence. Keep Python as the only storage authority. Inspect native SQL/transaction behavior and cockpit refresh/styling with representative retained history, then select a bounded Rust component only if a measured compute hotspot and whole-monitor gain are demonstrated.</p>
+<p>The host had about 1.6 GiB free during the idle run. The retained-history acceptance fixture requires a 4 GiB reserve plus headroom, so that gate was not run here. The generated runs used a 1 GiB reserve. The previously measured clean unprofiled 300-second generated idle run was 7.10% of one core, above the plan's under-5% retained-history target; it cannot be relabeled as a pass.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
