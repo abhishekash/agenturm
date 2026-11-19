@@ -1136,6 +1136,19 @@ class Store:
     def _read(self):
         return self._read_connections.read()
 
+    def native_model_usage(self, source_id: str, trace_id: str, span_id: str) -> dict:
+        """Return a persisted native model's usage only to its exact source."""
+        with self._read() as db:
+            row = db.execute(
+                "SELECT attributes FROM spans WHERE trace_id=? AND span_id=? "
+                "AND json_extract(resource_attributes, '$.\"observatory.source_id\"')=?",
+                (trace_id, span_id, source_id)).fetchone()
+        if row is None:
+            return {}
+        attributes = json.loads(row['attributes'])
+        usage = attributes.get('observatory.native_usage') if isinstance(attributes, dict) else None
+        return dict(usage) if isinstance(usage, dict) else {}
+
     @contextmanager
     def _read_db(self, db=None):
         if db is not None:
