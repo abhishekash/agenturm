@@ -1,0 +1,30 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Sample Batch Pagination</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-sample-batch-pagination.md">Markdown source ↗</a></nav><h1>Rust sample adapter batch pagination</h1>
+<p>Recorded 20 November 2026. The separately installed Rust JSONL sample adapter now stops a batch before a repeated event ID or the receiver's JSON structure limit. Python remains the authority for validation, Store commits, and acknowledgments. This change makes no performance claim.</p>
+<h2>Failure and fix</h2>
+<p>When an original event and its same-ID correction were already in the source file before the first poll, the adapter put both in one batch. <code>plugin_wire.validate_batch</code> rejects duplicate <code>event_id</code> values in a batch, so the worker could not commit or acknowledge any part of that file.</p>
+<p>The scan now tracks event IDs in the current batch. On a repeat it returns the records already collected and leaves the repeated line at the next cursor offset. A later poll, following the Store commit and acknowledgment, emits the correction. Repeated revisions page the same way. The scan also checks the serialized batch against the receiver's 8,192 structural-token ceiling as well as its byte and record ceilings. A record that cannot fit by itself still fails without cursor advancement.</p>
+<h2>Validation</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rust 1.100.0 <code>cargo fmt --all --check</code>, <code>cargo clippy -p agenturm-sample-harness --all-targets --locked -- -D warnings</code>, <code>cargo test -p agenturm-sample-harness --locked</code></td>
+<td>Passed. Unit coverage includes three revisions already present before first poll, a one-record limit, an exact byte limit, rejected undersized byte limit, and a 256-row full-usage backlog.</td>
+</tr>
+<tr>
+<td>Rebuilt <code>agenturm-sample-harness</code> binary; <code>AGENTURM_RUST_SAMPLE_BIN=... python3 -m unittest tests.test_rust_sample_harness_plugin -v</code></td>
+<td>Seven passed through the installer, process protocol, durable Store, correction replay, projection and receiver. The new tests commit revisions across a worker restart and drain 256 valid usage rows over multiple acknowledgments.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The sample adapter remains an opt-in JSONL example, not a native Pi or Eclipse reader. A malformed source line still stops polling at that line; source repair is required before the cursor can advance. This checkpoint does not change Python admission or storage authority.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
