@@ -1,0 +1,3 @@
+[workspace]
+members = ["rust/agenturm-protocol"]
+resolver = "2"
