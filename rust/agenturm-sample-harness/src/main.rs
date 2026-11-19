@@ -108,6 +108,12 @@ struct SourceRow {
     parent_session_id: Option<String>,
     #[serde(default, deserialize_with = "no_null")]
     relationship_kind: Option<String>,
+    #[serde(default, deserialize_with = "no_null")]
+    role: Option<String>,
+    #[serde(default, deserialize_with = "no_null")]
+    category: Option<String>,
+    #[serde(default, deserialize_with = "no_null")]
+    result: Option<String>,
 }
 
 fn identity(value: &str) -> bool {
@@ -146,11 +152,18 @@ fn source_record(raw: &[u8]) -> Result<Value> {
     {
         return Err(invalid("invalid source identity, timestamp or revision"));
     }
+    let no_activity_fields = row.role.is_none() && row.category.is_none() && row.result.is_none();
+    let no_other_fields = row.state.is_none()
+        && row.reason_code.is_none()
+        && row.usage.is_none()
+        && row.parent_session_id.is_none()
+        && row.relationship_kind.is_none();
     let payload = match row.kind.as_str() {
         "lifecycle"
             if row.usage.is_none()
                 && row.parent_session_id.is_none()
-                && row.relationship_kind.is_none() =>
+                && row.relationship_kind.is_none()
+                && no_activity_fields =>
         {
             let state = row.state.as_deref().ok_or("missing lifecycle state")?;
             if !matches!(
@@ -176,7 +189,8 @@ fn source_record(raw: &[u8]) -> Result<Value> {
             if row.state.is_none()
                 && row.reason_code.is_none()
                 && row.parent_session_id.is_none()
-                && row.relationship_kind.is_none() =>
+                && row.relationship_kind.is_none()
+                && no_activity_fields =>
         {
             let usage = row.usage.ok_or("missing usage")?;
             if !usage.valid() {
@@ -185,7 +199,10 @@ fn source_record(raw: &[u8]) -> Result<Value> {
             serde_json::to_value(usage)?
         }
         "relationship"
-            if row.state.is_none() && row.reason_code.is_none() && row.usage.is_none() =>
+            if row.state.is_none()
+                && row.reason_code.is_none()
+                && row.usage.is_none()
+                && no_activity_fields =>
         {
             let parent = row.parent_session_id.ok_or("missing parent session")?;
             let kind = row.relationship_kind.ok_or("missing relationship kind")?;
@@ -193,6 +210,38 @@ fn source_record(raw: &[u8]) -> Result<Value> {
                 return Err(invalid("invalid relationship metadata"));
             }
             json!({"parent_session_id": parent, "kind": kind})
+        }
+        "message" if no_other_fields && row.category.is_none() && row.result.is_none() => {
+            let role = row.role.ok_or("missing message role")?;
+            if !matches!(role.as_str(), "user" | "assistant") {
+                return Err(invalid("invalid message role"));
+            }
+            json!({"role": role})
+        }
+        "tool" if no_other_fields && row.role.is_none() => {
+            let category = row.category.ok_or("missing tool category")?;
+            let result = row.result.ok_or("missing tool result")?;
+            if !matches!(category.as_str(), "shell" | "file" | "mcp" | "other")
+                || !matches!(
+                    result.as_str(),
+                    "started" | "succeeded" | "failed" | "denied"
+                )
+            {
+                return Err(invalid("invalid tool metadata"));
+            }
+            json!({"category": category, "result": result})
+        }
+        "check" if no_other_fields && row.role.is_none() => {
+            let category = row.category.ok_or("missing check category")?;
+            let result = row.result.ok_or("missing check result")?;
+            if !matches!(
+                category.as_str(),
+                "test" | "lint" | "build" | "review" | "other"
+            ) || !matches!(result.as_str(), "passed" | "failed" | "skipped" | "unknown")
+            {
+                return Err(invalid("invalid check metadata"));
+            }
+            json!({"category": category, "result": result})
         }
         _ => return Err(invalid("unsupported source record kind or fields")),
     };
@@ -569,6 +618,21 @@ mod tests {
             relationship["payload"],
             json!({"parent_session_id":"root","kind":"delegated"})
         );
+        let message = source_record(
+            br#"{"id":"request","session":"child","at_ns":"4","kind":"message","role":"user"}"#,
+        )
+        .unwrap();
+        assert_eq!(message["payload"], json!({"role":"user"}));
+        let tool = source_record(br#"{"id":"call","session":"child","at_ns":"5","kind":"tool","category":"shell","result":"failed"}"#).unwrap();
+        assert_eq!(
+            tool["payload"],
+            json!({"category":"shell","result":"failed"})
+        );
+        let check = source_record(br#"{"id":"test","session":"child","at_ns":"6","kind":"check","category":"test","result":"passed"}"#).unwrap();
+        assert_eq!(
+            check["payload"],
+            json!({"category":"test","result":"passed"})
+        );
         for bad in [
             r#"{"id":"x","session":"child","at_ns":"1","kind":"lifecycle","state":"started","prompt":"secret"}"#,
             r#"{"id":"x","session":"child","at_ns":"1","kind":"lifecycle","state":"started","state":"failed"}"#,
@@ -576,6 +640,13 @@ mod tests {
             r#"{"id":"x","session":"child","at_ns":"1","kind":"usage","usage":{"input_tokens":-1}}"#,
             r#"{"id":"x","session":"child","at_ns":"1","kind":"relationship","parent_session_id":"../secret","relationship_kind":"delegated"}"#,
             r#"{"id":"x","session":"child","at_ns":"1","kind":"usage","usage":{"input_tokens":1,"input_tokens":2}}"#,
+            r#"{"id":"x","session":"child","at_ns":"1","kind":"message","role":"user","text":"secret"}"#,
+            r#"{"id":"x","session":"child","at_ns":"1","kind":"message","role":"user","state":"completed"}"#,
+            r#"{"id":"x","session":"child","at_ns":"1","kind":"message","role":null}"#,
+            r#"{"id":"x","session":"child","at_ns":"1","kind":"tool","category":"shell","result":"succeeded","command":"cat secret"}"#,
+            r#"{"id":"x","session":"child","at_ns":"1","kind":"tool","category":"shell","result":"passed"}"#,
+            r#"{"id":"x","session":"child","at_ns":"1","kind":"check","category":"test"}"#,
+            r#"{"id":"x","session":"child","at_ns":"1","kind":"check","category":"test","result":"failed","output":"secret"}"#,
         ] {
             assert!(source_record(bad.as_bytes()).is_err(), "accepted {bad}");
         }
