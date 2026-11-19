@@ -53,6 +53,52 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 read_plugin_config(self.config)
 
+    def test_required_features_are_claimed_and_checked_against_child_handshake(self):
+        original = self.config.read_text()
+        self.config.write_text(original + 'requires_features = ["connector-adapter/1"]\n')
+        with self.assertRaisesRegex(ValueError, "unclaimed required"):
+            read_plugin_config(self.config)
+        manifest = self.fixture.root / "plugin.toml"
+        manifest.write_text(manifest.read_text().replace(
+            'provides = ["source-adapter/1"]',
+            'provides = ["source-adapter/1", "connector-adapter/1"]'))
+        source = read_plugin_config(self.config)[0]
+        self.assertEqual(source.required_features, ("connector-adapter/1",))
+        self.assertEqual(source.runtime_features, ("connector-adapter/1",))
+        host = PluginProcess(source.manifest, source_id=source.source_id,
+                             allowed_grants=source.allowed_grants,
+                             required_features=source.required_features)
+        with self.assertRaisesRegex(ValueError, "handshake features"):
+            host.start()
+        self.assertIsNone(host.process)
+        for features in ('["connector-adapter/1", "connector-adapter/1"]',
+                         '["bad feature"]', '"connector-adapter/1"'):
+            with self.subTest(features=features):
+                self.config.write_text(original + f'requires_features = {features}\n')
+                with self.assertRaises(ValueError):
+                    read_plugin_config(self.config)
+
+    def test_serve_preflight_receives_required_features_before_store_creation(self):
+        original = self.config.read_text()
+        manifest = self.fixture.root / "plugin.toml"
+        manifest.write_text(manifest.read_text().replace(
+            'provides = ["source-adapter/1"]',
+            'provides = ["source-adapter/1", "connector-adapter/1"]'))
+        self.config.write_text(original + 'requires_features = ["connector-adapter/1"]\n')
+        target = self.root / "feature-preflight.db"
+        observed = []
+
+        def inspect(_manifest, **kwargs):
+            observed.append(kwargs["required_features"])
+            raise RuntimeError("stopped after inert preflight")
+
+        with patch("observatory.plugin_process.PluginProcess", side_effect=inspect):
+            with self.assertRaisesRegex(RuntimeError, "stopped after inert preflight"):
+                serve(str(target), no_auth=True, port=14331,
+                      local_agents=False, plugin_config=self.config)
+        self.assertEqual(observed, [("connector-adapter/1",)])
+        self.assertFalse(target.exists())
+
     def test_non_loopback_activation_is_rejected_before_launch(self):
         with self.assertRaisesRegex(ValueError, "loopback"):
             serve(str(self.root / "external.db"), host="0.0.0.0", port=14319,

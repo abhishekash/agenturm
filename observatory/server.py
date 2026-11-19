@@ -546,7 +546,7 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
             child = PluginProcess(source.manifest, source_id=source.source_id,
                                   allowed_grants=source.allowed_grants, timeout=source.timeout,
                                   source_root=source.source_root,
-                                  required_features=tuple(f"harness.{name}/1" for name in source.replaces),
+                                  required_features=source.runtime_features,
                                   rust_host_executable=str(rust_plugin_host) if rust_plugin_host else None,
                                   rust_host_sha256=rust_plugin_host_sha256)
             if source.replaces:

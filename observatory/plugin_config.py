@@ -6,7 +6,7 @@ import stat
 import tomllib
 from pathlib import Path
 
-from .plugin_manifest import PLUGIN_ID, PluginManifest
+from .plugin_manifest import FEATURE, PLUGIN_ID, PluginManifest
 from .plugin_process import MAX_PROCESSES
 from .plugin_supervisor import PluginSource
 
@@ -43,7 +43,8 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
     replaced = set()
     for row in rows:
         required = {"manifest", "source_id", "grants", "capture", "poll_interval", "timeout"}
-        if not isinstance(row, dict) or not required <= set(row) or set(row) - required - {"replaces", "root"}:
+        if not isinstance(row, dict) or not required <= set(row) or set(row) - required - {
+                "replaces", "root", "requires_features"}:
             raise ValueError("invalid plugin source configuration fields")
         source_id = row["source_id"]
         if not isinstance(source_id, str) or not source_id or source_id in seen:
@@ -67,6 +68,13 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
         if not location.is_absolute():
             location = path.parent / location
         manifest = PluginManifest.read(location)
+        required_features = row.get("requires_features", [])
+        if (not isinstance(required_features, list) or len(required_features) > 16
+                or any(not isinstance(value, str) or not FEATURE.fullmatch(value)
+                       for value in required_features)
+                or len(set(required_features)) != len(required_features)
+                or not set(required_features) <= set(manifest.provides)):
+            raise ValueError("invalid or unclaimed required plugin features")
         replaces = row.get("replaces", [])
         if (not isinstance(replaces, list) or len(replaces) > 1
                 or any(not isinstance(value, str) or not PLUGIN_ID.fullmatch(value)
@@ -83,5 +91,5 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
             raise ValueError("plugin source root must be an absolute path")
         sources.append(PluginSource(manifest, source_id, tuple(grants),
                                     float(row["poll_interval"]), float(row["timeout"]),
-                                    tuple(replaces), source_root))
+                                    tuple(replaces), source_root, tuple(required_features)))
     return tuple(sources)

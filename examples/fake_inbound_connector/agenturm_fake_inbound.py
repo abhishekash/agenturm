@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read a bounded, local HTTP fixture through Agenturm's source-adapter/1 pipe."""
+"""Read a bounded local HTTP fixture through connector-adapter/1 source frames."""
 from __future__ import annotations
 
 import hashlib
@@ -17,7 +17,8 @@ from pathlib import Path
 
 
 PLUGIN_ID = "example.fake-inbound"
-FEATURES = ["source-adapter/1", "configured-root/1", "connector.inbound/1"]
+FEATURES = ["source-adapter/1", "configured-root/1", "connector.inbound/1",
+            "connector-adapter/1"]
 MAX_CONTROL = 64 * 1024
 MAX_HTTP = 1024 * 1024
 MAX_FRAME = 4 * 1024 * 1024
