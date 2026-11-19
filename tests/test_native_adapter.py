@@ -1,5 +1,6 @@
 """An injected JSONL format contributes evidence without a collector edit."""
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -113,6 +114,35 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(len(collector.sessions), 2)
             left, right = (session.adapter for session in collector.sessions.values())
             self.assertIsNot(left, right)
+
+    def test_conflicts_cannot_starve_older_valid_sources(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            overlap = root / "overlap"
+            valid = root / "valid"
+            overlap.mkdir()
+            valid.mkdir()
+            now = time.time()
+            for index in range(60):
+                path = overlap / f"ambiguous-{index}.jsonl"
+                path.touch()
+                os.utime(path, (now, now))
+            for index in range(50):
+                path = valid / f"valid-{index}.jsonl"
+                path.touch()
+                os.utime(path, (now - 100, now - 100))
+            alias = root / "alias"
+            alias.symlink_to(overlap, target_is_directory=True)
+            specs = (
+                NativeSourceSpec("one", "One", lambda: overlap),
+                NativeSourceSpec("two", "Two", lambda: alias),
+                NativeSourceSpec("valid", "Valid", lambda: valid),
+            )
+            collector = LocalAgents(None, source_specs=specs, reader_specs=())
+            collector.discover()
+            self.assertEqual(collector.ambiguous_sources, 60)
+            self.assertEqual(len(collector.sessions), 50)
+            self.assertTrue(all(path.parent == valid for path in collector.sessions))
 
 
 if __name__ == "__main__":

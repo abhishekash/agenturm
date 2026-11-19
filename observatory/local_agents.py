@@ -1725,12 +1725,13 @@ class LocalAgents:
         ambiguous = set()
         pending_sources={path for path,session in self.sessions.items() if session._pending_ingest is not None}
         discovered_pending=set()
-        def recent():
+        def recent(*, known_owners_only=False):
             for spec in self.source_specs:
                 try:
                     root = Path(spec.root()).resolve()
                 except (OSError, TypeError, ValueError) as exc:
-                    self.record_error(exc, f"Resolving native source {spec.id}")
+                    if not known_owners_only:
+                        self.record_error(exc, f"Resolving native source {spec.id}")
                     continue
                 if not root.is_dir():
                     continue
@@ -1756,16 +1757,20 @@ class LocalAgents:
                                             continue
                                         modified = entry.stat().st_mtime
                                         if modified >= cutoff:
-                                            self.discovered_sources += 1
                                             path = Path(entry.path)
-                                            previous = owners.get(path)
-                                            if previous is not None and previous != spec.id:
-                                                if path not in ambiguous:
-                                                    self.record_error(ValueError("multiple adapters claim one source"),
-                                                                      "Resolving native source ownership")
-                                                ambiguous.add(path)
-                                                continue
-                                            owners[path] = spec.id
+                                            if known_owners_only:
+                                                if path in ambiguous or owners.get(path) != spec.id:
+                                                    continue
+                                            else:
+                                                self.discovered_sources += 1
+                                                previous = owners.get(path)
+                                                if previous is not None and previous != spec.id:
+                                                    if path not in ambiguous:
+                                                        self.record_error(ValueError("multiple adapters claim one source"),
+                                                                          "Resolving native source ownership")
+                                                    ambiguous.add(path)
+                                                    continue
+                                                owners[path] = spec.id
                                             if path in pending_sources:discovered_pending.add(path)
                                             yield modified, path, spec
                                 except OSError as exc:
@@ -1773,6 +1778,11 @@ class LocalAgents:
                     except OSError as exc:
                         self.record_error(exc,'Discovering native source directory')
         selected = heapq.nlargest(MAX_SOURCES, recent(), key=lambda row: row[0])
+        if ambiguous:
+            # Filtering after a fixed-size heap can hide older valid sources.
+            # Pay for a second scan only when ownership conflicts actually exist.
+            selected = heapq.nlargest(MAX_SOURCES, recent(known_owners_only=True),
+                                      key=lambda row: row[0])
         self.ambiguous_sources = len(ambiguous)
         selected=[row for row in selected if row[1] not in pending_sources and row[1] not in ambiguous][:max(0,MAX_SOURCES-len(pending_sources))]
         keys={path for _,path,_ in selected}|pending_sources
