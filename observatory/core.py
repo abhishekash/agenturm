@@ -2418,6 +2418,13 @@ class Store:
         if not include_reviews:clauses.append("COALESCE(service,'')!='codex-review'")
         if errors_only:clauses.append("lower(result) IN ('error','failed','denied','blocked','policy_denied','incomplete')")
         if review:clauses.append("(domain IN ('message','file','shell','context') OR lower(result) IN ('error','failed','denied','blocked','policy_denied','incomplete'))")
+        # A committed plugin batch hides its prior Activity revision until the
+        # same policy-current projection publishes session and Activity rows.
+        plugin_current = ("(kind!='plugin' OR EXISTS(SELECT 1 FROM plugin_source_cursor_v1 c "
+                          "JOIN plugin_projection_cursor_v1 p USING(source_id) "
+                          "WHERE c.source_id=activity_index_v1.owner_key AND c.capture_enabled=1 "
+                          "AND c.dirty_seq=p.projected_seq AND c.policy_epoch=p.policy_epoch))")
+        clauses.append(plugin_current)
         if query:
             clauses.append("(instr(lower(payload),lower(?))>0 OR EXISTS(SELECT 1 FROM logs raw WHERE kind='log' AND raw.digest=owner_key AND instr(lower(raw.body),lower(?))>0) OR EXISTS(SELECT 1 FROM spans raw WHERE kind='span' AND raw.trace_id=activity_index_v1.trace_id AND raw.trace_id||':'||raw.span_id=owner_key AND instr(lower(raw.attributes||raw.events),lower(?))>0))")
             params.extend((query,query,query))
@@ -2449,6 +2456,18 @@ class Store:
                 raise ValueError('Activity index is catching up; retry after receiver migration completes')
             if agent_id:
                 scope=self.resolve_agent_scope(agent_id,include_subagents=bool(subtree),_db=db)
+                if not scope['known']:
+                    # Process-plugin sessions have a projected, source-scoped
+                    # agent identity but are not part of the native graph.
+                    # Exact Activity remains inspectable; subtree coverage is
+                    # explicitly partial until plugin graph integration exists.
+                    plugin_owner=db.execute('SELECT session_id FROM activity_index_v1 '
+                        'WHERE kind=\'plugin\' AND agent_id=? AND '+plugin_current+' LIMIT 1',
+                        (agent_id,)).fetchone()
+                    if plugin_owner is not None:
+                        scope={**scope,'agent_ids':[agent_id],
+                               'session_ids':[plugin_owner[0]],'nodes':1,
+                               'known':True,'coverage':'partial'}
                 if scope_revision and scope_revision!=scope['revision']:raise ValueError('hierarchy scope changed')
                 agents=scope['agent_ids'] if subtree else [agent_id]
                 if not agents:clauses.append('0')

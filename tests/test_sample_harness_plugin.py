@@ -97,6 +97,32 @@ class SampleHarnessPluginTests(unittest.TestCase):
         with self.store._connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 3)
 
+    def test_external_artifact_projects_content_free_activity_and_check_correction(self):
+        self.append(
+            {"id": "started", "session": "native-1", "at_ns": "100",
+             "kind": "lifecycle", "state": "started"},
+            {"id": "request", "session": "native-1", "at_ns": "110",
+             "kind": "message", "role": "user"},
+            {"id": "call", "session": "native-1", "at_ns": "120",
+             "kind": "tool", "category": "shell", "result": "succeeded"},
+            {"id": "check", "session": "native-1", "at_ns": "130",
+             "kind": "check", "category": "test", "result": "failed"})
+        with self.session() as session:
+            self.assertEqual(len(session.poll_once().records), 4)
+            self.projected()
+            rows = self.store.activity_page()["activity"]
+            self.assertEqual({row["domain"] for row in rows}, {"message", "tool", "check"})
+            self.assertTrue(all(row["detail"] == "" for row in rows))
+            self.assertEqual(self.projected()[0]["run_state"], "running")
+            self.append({"id": "check", "session": "native-1", "at_ns": "130",
+                         "kind": "check", "revision": 1,
+                         "category": "test", "result": "passed"})
+            self.assertEqual(len(session.poll_once().records), 1)
+            self.assertEqual(self.store.activity_page()["activity"], [])
+            self.projected()
+            self.assertEqual(self.store.activity_page(domain="check")["activity"][0]["result"],
+                             "passed")
+
     def test_partial_line_waits_and_rotation_resumes_without_stale_bytes(self):
         self.source_file.write_bytes(b'{"id":"pending"')
         with self.session() as session:

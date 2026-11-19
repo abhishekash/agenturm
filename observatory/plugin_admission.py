@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from .plugin_wire import PollBatch, ProtocolError, encode_message, validate_batch
 from . import plugin_retention
+from .plugin_activity import validate_metadata as validate_activity_metadata
 
 if TYPE_CHECKING:
     from sqlite3 import Connection
@@ -128,6 +129,13 @@ def initialize(db: Connection) -> None:
         if name not in projection_columns:
             db.execute(f"ALTER TABLE plugin_session_projection_v1 ADD COLUMN {name} {declaration}")
     plugin_retention.initialize(db)
+    # A pre-activity plugin projection cannot certify the new Activity rows.
+    # The worker's startup projection pass republishes both from one snapshot.
+    if (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'").fetchone()
+            and db.execute("SELECT 1 FROM schema_meta WHERE key='plugin_activity_projection_v1'")
+            .fetchone() is None):
+        db.execute("DELETE FROM plugin_projection_cursor_v1")
+        db.execute("INSERT INTO schema_meta(key,value) VALUES('plugin_activity_projection_v1','1')")
 
 
 def _identity(value: str, name: str) -> str:
@@ -201,6 +209,8 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
         if not enabled:
             db.execute("DELETE FROM plugin_evidence_v1 WHERE source_id=?", (source_id,))
             db.execute("DELETE FROM plugin_session_projection_v1 WHERE source_id=?", (source_id,))
+            db.execute("DELETE FROM activity_index_v1 WHERE kind='plugin' AND owner_key=?",
+                       (source_id,))
             plugin_retention.revoke(db, source_id)
         dirty_seq = row["dirty_seq"] + 1
         db.execute("UPDATE plugin_source_cursor_v1 SET capture_enabled=?,policy_epoch=?,"
@@ -263,6 +273,8 @@ def _metadata(record: dict) -> dict:
                 or payload["kind"] not in _RELATIONSHIPS
                 or not record.get("identity", {}).get("session_id")):
             raise ProtocolError("invalid relationship metadata")
+    elif kind in {"message", "tool", "check"}:
+        return validate_activity_metadata(record)
     else:
         raise ProtocolError("record kind has no metadata admission policy")
     return payload

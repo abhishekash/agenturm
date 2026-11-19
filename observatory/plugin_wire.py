@@ -24,7 +24,7 @@ MAX_CURSOR_CHARS = 512
 MAX_ID_CHARS = 256
 INT64_MAX = 2**63 - 1
 DECIMAL_NS = re.compile(r"(?:0|[1-9][0-9]{0,18})\Z")
-KINDS = frozenset({"message", "tool", "lifecycle", "usage", "relationship", "diagnostic"})
+KINDS = frozenset({"message", "tool", "check", "lifecycle", "usage", "relationship", "diagnostic"})
 
 
 class ProtocolError(ValueError):
