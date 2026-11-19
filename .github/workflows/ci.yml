@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   rust-protocol:
-    name: Rust protocol and plugin fixture
+    name: Rust protocol and plugin adapters
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -19,6 +19,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo build --locked --bin agenturm-fixture-plugin
+      - run: cargo build --locked --bin agenturm-sample-harness
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
@@ -26,6 +27,9 @@ jobs:
       - run: python -m unittest tests.test_rust_plugin_fixture -v
         env:
           AGENTURM_RUST_FIXTURE_BIN: ${{ github.workspace }}/target/debug/agenturm-fixture-plugin
+      - run: python -m unittest tests.test_rust_sample_harness_plugin -v
+        env:
+          AGENTURM_RUST_SAMPLE_BIN: ${{ github.workspace }}/target/debug/agenturm-sample-harness
 
   python:
     name: Python ${{ matrix.python-version }}
