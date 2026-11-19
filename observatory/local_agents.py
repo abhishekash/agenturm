@@ -24,6 +24,7 @@ from .local_activity import mcp_attributes, mcp_failed, plaintext
 from .local_state import RecentMap
 from .native_json import loads
 from .native_sources import NativeSourceSpec, builtin_sources, kiro_home
+from .native_ports import NativeEvidencePort
 
 MAX_READ = 8 * 1024 * 1024
 MAX_LINE = 2 * 1024 * 1024
@@ -218,7 +219,7 @@ def discover_mcp_configurations(global_paths=None, project_directories=(), on_er
 
 
 class Session:
-    def __init__(self, store, path, runtime, capture_details=True):
+    def __init__(self, store: NativeEvidencePort, path, runtime, capture_details=True):
         self.store, self.path, self.runtime = store, Path(path), runtime
         self.service = runtime.lower().replace(" ", "-")
         self.source_id = identity(runtime, self.path.resolve())
@@ -1318,12 +1319,9 @@ class Session:
                         span = (prior_models or {}).get((identity(self.source_id, self.turn), span_id))
                         if span:
                             previous = span["attributes"].get("observatory.native_usage", previous)
-                        elif hasattr(self.store, "_connect"):
-                            with self.store._connect() as db:
-                                saved = db.execute("SELECT attributes FROM spans WHERE trace_id=? AND span_id=?",
-                                    (identity(self.source_id, self.turn), span_id)).fetchone()
-                            if saved:
-                                previous = json.loads(saved[0]).get("observatory.native_usage", {})
+                        elif hasattr(self.store, "native_model_usage"):
+                            previous = self.store.native_model_usage(
+                                self.source_id, identity(self.source_id, self.turn), span_id)
                 for field in CLAUDE_USAGE_FIELDS:
                     previous[field] = max(count(previous.get(field)), count(usage.get(field)))
                 self.usage[key] = previous
