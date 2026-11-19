@@ -1,0 +1,72 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Host Linux Wheel</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-host-linux-wheel.md">Markdown source ↗</a></nav><h1>Linux Rust host wheel checkpoint</h1>
+<p>Recorded 20 November 2026. This checkpoint packages the opt-in <code>agenturm-plugin-host</code> executable inside a Linux x86_64 platform wheel, while keeping the ordinary Agenturm source build and <code>uv tool install agenturm</code> path pure Python. It does not enable the Rust host by default or claim a performance gain.</p>
+<h2>Build and use</h2>
+<p>Build the pinned Rust 1.100.0 host and create the native wheel on a Linux x86_64 glibc build machine:</p>
+<pre><code class="language-sh">cargo build --release --locked -p agenturm-plugin-host
+AGENTURM_BUNDLE_RUST_HOST=/absolute/path/to/target/release/agenturm-plugin-host \
+  uv build --wheel --out-dir dist/native
+uv tool install /absolute/path/to/dist/native/agenturm-0.2.8-py3-none-linux_x86_64.whl
+agenturm serve --plugin-config /absolute/path/to/plugins.toml \
+  --use-bundled-rust-plugin-host
+</code></pre>
+<p>The last command explicitly selects the installed Rust host. <code>plugins.toml</code> still explicitly selects each child adapter; see the <a href="https://github.com/abhishekash/agenturm/blob/main/examples/rust_sample_harness_plugin/README.md">Rust sample adapter guide</a>. The existing explicit <code>--rust-plugin-host PATH --rust-plugin-host-sha256 DIGEST</code> option also remains available. No executable code is downloaded or compiled at first launch. The wheel build copies a prebuilt ELF, writes its SHA-256 and conservative build-host glibc floor into package metadata, and tags the wheel <code>py3-none-linux_x86_64</code>. Before Store creation, Agenturm checks the installed platform and glibc, then verifies the host hash; each worker start rechecks and copies the host and the separately pinned adapter. The wheel uses no Python ABI-specific extension.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Platform</th>
+<th>Install and host status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Linux x86_64, glibc at least 2.39</td>
+<td>Native wheel built and tested on Ubuntu 24.04 with a clean <code>uv tool</code> installation and real receiver. The CLI still uses Python transport unless the bundled-host flag is supplied.</td>
+</tr>
+<tr>
+<td>Linux x86_64 with older glibc, other Linux architectures or musl</td>
+<td>Python package and default transport remain available; the bundled Rust host is not qualified. The explicit glibc check refuses an incompatible bundled host before starting a receiver.</td>
+</tr>
+<tr>
+<td>macOS, Windows</td>
+<td>The pure Python distribution remains available. This checkpoint does not qualify a bundled Rust host or its process cleanup on these platforms.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The CI workflow produces the Linux native wheel as a reviewable artifact. The tag-triggered PyPI publish workflow still builds the pure source distribution and <code>py3-none-any</code> wheel; the native wheel is <strong>not published to PyPI</strong> by this checkpoint. A normal <code>uv tool install agenturm</code> therefore continues to use the published Python package. Publishing native wheels requires separate portability and release review.</p>
+<h2>Verification</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cargo build --release --locked -p agenturm-plugin-host</code></td>
+<td>Passed with Rust 1.100.0.</td>
+</tr>
+<tr>
+<td><code>AGENTURM_BUNDLE_RUST_HOST=/tmp/agenturm-rust-process-host/target/release/agenturm-plugin-host uv build --wheel --out-dir /tmp/agenturm-rust-host-wheel/native-dist3</code></td>
+<td>Passed. Native wheel tagged <code>py3-none-linux_x86_64</code>, <code>Root-Is-Purelib: false</code>; the embedded executable matched <code>host.json</code> SHA-256.</td>
+</tr>
+<tr>
+<td><code>uv build --wheel --out-dir /tmp/agenturm-rust-host-wheel/pure-dist2</code> after a native build in the same tree</td>
+<td>Passed. Pure wheel tagged <code>py3-none-any</code>, <code>Root-Is-Purelib: true</code>; no Rust host or metadata was included. This checks stale build-tree cleanup.</td>
+</tr>
+<tr>
+<td><code>uv build --out-dir /tmp/agenturm-rust-host-wheel/default-dist</code> with no bundle environment variable</td>
+<td>Passed. Produced a source distribution and <code>py3-none-any</code> wheel with no host artifact, matching the release workflow's Python-compatible build path.</td>
+</tr>
+<tr>
+<td><code>python3 scripts/validate_linux_rust_host_wheel.py --native-wheel /tmp/agenturm-rust-host-wheel/native-dist3/agenturm-0.2.8-py3-none-linux_x86_64.whl --pure-wheel /tmp/agenturm-rust-host-wheel/pure-dist2/agenturm-0.2.8-py3-none-any.whl --adapter-bin /tmp/agenturm-rust-process-host/target/release/agenturm-sample-harness</code></td>
+<td>Passed. Both wheels were installed into separate, isolated <code>uv tool</code> directories from a directory outside the checkout. The native installed CLI reached a real <code>/api/health</code> Completed session through the bundled host with <code>UV_OFFLINE=1</code>; the pure CLI worked and reported no bundled host.</td>
+</tr>
+</tbody>
+</table></div>
+<p>This is a Linux qualification slice, not a multi-platform wheel release. The <code>linux_x86_64</code> tag itself does not encode the glibc floor; Agenturm refuses explicit bundled-host activation on older glibc, while its Python paths remain usable. The minimum glibc version for a broader portable native wheel has not been established by <code>auditwheel</code>. macOS and Windows build, process cleanup, installer and installed-client gates remain open.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

@@ -58,6 +58,8 @@ def main():
                         help="opt-in absolute path to a locally built Rust process host (POSIX only)")
     server.add_argument("--rust-plugin-host-sha256",
                         help="expected SHA-256 of the Rust process host executable")
+    server.add_argument("--use-bundled-rust-plugin-host", action="store_true",
+                        help="use the opt-in Rust host included in a qualified platform wheel")
     launcher = sub.add_parser("run", help="automatically capture model calls from a Python agent")
     launcher.add_argument("--endpoint", default=os.environ.get("OBSERVATORY_ENDPOINT", "http://127.0.0.1:4318"),
                           help="receiver address (or OBSERVATORY_ENDPOINT)")
@@ -125,12 +127,19 @@ def main():
             parser.exit(2, f"Agenturm: {exc}\n")
     elif args.command == "serve":
         try:
+            if args.use_bundled_rust_plugin_host:
+                if args.rust_plugin_host is not None or args.rust_plugin_host_sha256 is not None:
+                    raise ValueError("choose either the bundled Rust host or explicit host path and SHA-256")
+                from .rust_host_bundle import bundled_rust_host
+                rust_host, rust_host_sha256 = bundled_rust_host()
+            else:
+                rust_host, rust_host_sha256 = args.rust_plugin_host, args.rust_plugin_host_sha256
             serve(args.db, args.host, args.port, args.token, args.watch_jsonl,
                   args.watch_service, args.retention_days, args.local_agents, args.metadata_only,
                   managed_db=managed_db, no_auth=args.no_auth, allowed_hosts=args.allowed_host,
                   plugin_config=args.plugin_config,
-                  rust_plugin_host=args.rust_plugin_host,
-                  rust_plugin_host_sha256=args.rust_plugin_host_sha256)
+                  rust_plugin_host=rust_host,
+                  rust_plugin_host_sha256=rust_host_sha256)
         except (OSError, ValueError) as exc:
             parser.exit(2, f"Agenturm: {exc}\n")
     elif args.command == "run":
