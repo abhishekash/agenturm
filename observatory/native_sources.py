@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import importlib
+import pkgutil
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,18 +60,31 @@ class NativeSourceSpec:
 
 
 def builtin_sources() -> tuple[NativeSourceSpec, ...]:
-    from .adapters.kiro import KiroAdapter
-    from .adapters.codex import CodexAdapter
-    from .adapters.claude import ClaudeAdapter
-    from .adapters.pi import PiAdapter
-    return (
-        NativeSourceSpec("codex", "Codex", lambda: Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions",
-                         adapter_factory=CodexAdapter),
-        NativeSourceSpec("claude", "Claude Code", lambda: Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects",
-                         adapter_factory=ClaudeAdapter),
-        NativeSourceSpec("pi", "Pi", lambda: Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home() / ".pi" / "agent"))) / "sessions",
-                         adapter_factory=PiAdapter),
-        NativeSourceSpec("kiro", "Kiro", lambda: kiro_home() / "sessions", kiro_source,
-                         lambda name: name not in KIRO_SKIPPED_DIRECTORIES,
-                         adapter_factory=KiroAdapter),
-    )
+    """Load trusted bundled source factories without a runtime dispatch table.
+
+    Only modules inside Agenturm's installed adapters package are scanned.
+    Independently installed adapters use the explicit process-plugin config;
+    project-local Python files are never imported by this discovery path.
+    """
+    from . import adapters
+
+    declared = []
+    for module_info in pkgutil.iter_modules(adapters.__path__):
+        module = importlib.import_module(f"{adapters.__name__}.{module_info.name}")
+        factory = getattr(module, "source_spec", None)
+        if factory is None:
+            continue
+        if not callable(factory):
+            raise ValueError(f"invalid bundled source factory in {module_info.name}")
+        spec = factory()
+        if not isinstance(spec, NativeSourceSpec):
+            raise ValueError(f"invalid bundled source declaration in {module_info.name}")
+        priority = getattr(module, "SOURCE_PRIORITY", 100)
+        if type(priority) is not int or not 0 <= priority <= 1000:
+            raise ValueError(f"invalid bundled source priority in {module_info.name}")
+        declared.append((priority, spec.id, spec))
+    declared.sort(key=lambda item: (item[0], item[1]))
+    specs = tuple(item[2] for item in declared)
+    if len({spec.id for spec in specs}) != len(specs):
+        raise ValueError("duplicate bundled source ID")
+    return specs

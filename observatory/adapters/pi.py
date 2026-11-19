@@ -1,11 +1,24 @@
 """Pi session format: identity, evidence, lifecycle and activity callbacks."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from ..agent_hierarchy import canonical_agent_id, provenance
 from ..local_activity import emit, plaintext
 from ..session_text import remember_task
+
+
+SOURCE_PRIORITY = 2
+
+
+def source_spec():
+    from ..native_sources import NativeSourceSpec
+
+    return NativeSourceSpec(
+        "pi", "Pi",
+        lambda: Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home() / ".pi" / "agent"))) / "sessions",
+        adapter_factory=PiAdapter)
 
 
 class PiAdapter:

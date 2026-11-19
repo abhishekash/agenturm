@@ -14,6 +14,19 @@ from ..native_sources import kiro_home
 from ..session_text import remember_task
 
 
+SOURCE_PRIORITY = 3
+
+
+def source_spec():
+    from ..native_sources import (KIRO_SKIPPED_DIRECTORIES, NativeSourceSpec,
+                                  kiro_source)
+
+    return NativeSourceSpec(
+        "kiro", "Kiro", lambda: kiro_home() / "sessions", kiro_source,
+        lambda name: name not in KIRO_SKIPPED_DIRECTORIES,
+        adapter_factory=KiroAdapter)
+
+
 class KiroAdapter:
     agent_namespace = "kiro-sessions"
 
