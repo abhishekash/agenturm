@@ -307,9 +307,9 @@ def _progress_from_log(log):
             "status": "RUNNING" if lifecycle_started else "OK" if gemini_lifecycle else None}
 
 
-def _tool_activity(span):
+def _tool_activity(span, *, contributors=None):
     attrs = span.get("attributes") if isinstance(span.get("attributes"), dict) else {}
-    from .operation_facts import attribute_evidence,decode,evidence_detail
+    from .operation_facts import attribute_evidence,evidence_detail
     evidence=attribute_evidence(attrs)
     operation = str(attrs.get("gen_ai.operation.name") or "").lower()
     openinference_tool = attrs.get("openinference.span.kind") == "TOOL"
@@ -340,17 +340,11 @@ def _tool_activity(span):
         "agent.activity.result": result,
         "agent.activity.actor": str(attrs.get("gen_ai.agent.name") or attrs.get("agent.name") or ""),
     }
-    native_opencode=(span.get('scope_name')=='observatory.opencode' and
-                     span.get('service')=='opencode' and attrs.get('agent.runtime')=='OpenCode')
-    current_native=(type(attrs.get('observatory.operation.capture_version')) is int and
-                    attrs['observatory.operation.capture_version']==1)
-    if native_opencode and not current_native:
-        legacy=decode(attrs.get('agent.activity.detail'))
-        if isinstance(legacy,dict) and str(domain).casefold()=='shell':
-            if isinstance(legacy.get('command'),str):evidence['commands'].append(('opencode.command',legacy['command']))
-            if 'exit_code' in legacy:evidence['exits'].append(('opencode.metadata.exit',legacy['exit_code']))
-        evidence.update(input_clipped=True,output_clipped=True)
-    if 'agent.activity.detail' in attrs and not (native_opencode and current_native):
+    if contributors is None:
+        from .operation_contributors import BUNDLED_OPERATION_CONTRIBUTORS
+        contributors = BUNDLED_OPERATION_CONTRIBUTORS
+    suppress_detail = contributors.apply(span, attrs, str(domain), evidence)
+    if 'agent.activity.detail' in attrs and not suppress_detail:
         evidence['outputs'].append(('activity.detail','output',attrs['agent.activity.detail']))
     normalized.update({key:attrs[key] for key in attrs if key.startswith("agent.activity.")})
     row=_activity_row({**_span_activity_identity(span), **normalized}, span.get("end_unix_nano") or span.get("start_unix_nano"),
