@@ -5,10 +5,88 @@ from pathlib import Path
 
 from ..agent_hierarchy import canonical_agent_id, provenance
 from ..local_activity import emit, mcp_attributes, plaintext, safe
-from ..session_text import remember_task
+from ..native_json import loads
+from ..session_text import local_command_only, remember_task
+
+CLAUDE_META_BYTES = 64 * 1024
+
+
+def _subagent_identity(path):
+    """Return the bounded sidecar identity for a subagent transcript."""
+    parts = path.parts
+    if "subagents" not in parts:
+        return None, None, {}
+    index = parts.index("subagents")
+    name = path.name
+    if not name.startswith("agent-") or path.suffix != ".jsonl":
+        return None, None, {}
+    agent_id = name[len("agent-"):-len(".jsonl")]
+    if not agent_id or len(agent_id) > 256:
+        return None, None, {}
+    parent_session = parts[index - 1] if index else None
+    metadata = {}
+    meta_path = path.with_name(name[:-len(".jsonl")] + ".meta.json")
+    try:
+        if meta_path.is_file() and meta_path.stat().st_size <= CLAUDE_META_BYTES:
+            value = loads(meta_path.read_bytes())
+            if isinstance(value, dict):
+                metadata = value
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        pass
+    return agent_id, parent_session, metadata
+
+
+def _local_command(row):
+    message = row.get("message") or {}
+    return isinstance(message, dict) and local_command_only(message.get("content"))
 
 
 class ClaudeAdapter:
+    agent_namespace = "claude-code-projects"
+    def initialize(self, session):
+        from ..local_agents import _safe_identifier
+        session.claude_agent_id = None
+        session.claude_parent_session_id = None
+        session.claude_meta = {}
+        agent_id, parent_session, metadata = _subagent_identity(session.path)
+        if not agent_id:
+            session.relationship_provenance = provenance(
+                "claude-code", "main transcript path; no parent metadata")
+            return
+        session.claude_agent_id = agent_id
+        session.claude_parent_session_id = parent_session
+        session.claude_meta = metadata
+        session.session_id = agent_id
+        session.native_session_id = parent_session or agent_id
+        session.native_worker_id = agent_id
+        session.agent_id = canonical_agent_id(session.runtime, session.agent_namespace, agent_id)
+        parent_agent = _safe_identifier(metadata.get("parentAgentId"))
+        if parent_agent:
+            parent_id = canonical_agent_id(session.runtime, session.agent_namespace, parent_agent)
+            reference = "subagents/agent-" + agent_id[:80] + ".meta.json parentAgentId"
+        elif parent_session:
+            parent_id = canonical_agent_id(session.runtime, session.agent_namespace, parent_session)
+            reference = "subagents transcript path parent session"
+        else:
+            parent_id = None
+            reference = "subagent transcript without a parent session directory"
+        session.parent_agent_id = parent_id
+        session.relationship_kind = "delegated"
+        session.relationship_state = "confirmed" if parent_id else "unresolved"
+        session.relationship_provenance = provenance(
+            "claude-code", reference, metadata.get("toolUseId") or None)
+
+    def continuation_root(self, row):
+        if row.get("type") != "user":
+            return False
+        message = row.get("message") or {}
+        if not isinstance(message, dict):
+            return False
+        content = message.get("content")
+        has_text = isinstance(content, str) or isinstance(content, list) and any(
+            isinstance(block, dict) and block.get("type") == "text" for block in content)
+        return bool(has_text and not local_command_only(content))
+
     def initial_task(self, row: dict) -> object:
         if row.get("type") != "user":
             return None
@@ -60,11 +138,10 @@ class ClaudeAdapter:
         return [entry for entry in out if entry]
 
     def observe_state(self, session, row: dict, stamp: int) -> tuple[str, object] | None:
-        from ..local_agents import claude_local_command
         message = row.get("message") or {}
         if not isinstance(message, dict):
             return None
-        if row.get("type") == "user" and claude_local_command(row):
+        if row.get("type") == "user" and _local_command(row):
             return None
         state = session.run_state
         blocks = message.get("content")
@@ -94,7 +171,7 @@ class ClaudeAdapter:
 
     def parse(self, session, row, stamp, prior_models):
         from ..local_agents import (CLAUDE_USAGE_FIELDS, SPAWN_TOOLS, _safe_identifier,
-                                    claude_local_command, _spawned_agent_id, identity, count)
+                                    _spawned_agent_id, identity, count)
         row_session = _safe_identifier(row.get("sessionId"))
         row_agent = _safe_identifier(row.get("agentId"))
         if session.claude_agent_id:
@@ -118,7 +195,7 @@ class ClaudeAdapter:
         message = row.get("message") or {}
         if not isinstance(message, dict):
             return []
-        if row.get('type')=='user' and claude_local_command(row):
+        if row.get('type')=='user' and _local_command(row):
             return []
         content = message.get("content") or []
         blocks = content if isinstance(content, list) else []

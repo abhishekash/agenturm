@@ -1,6 +1,6 @@
 # Rust kernel and pluggable Agenturm: execution plan
 
-Status: independently reviewed execution plan, prepared 19 November 2026 against `ca202c7` (main including Kiro support). Implementation progress is recorded below through atomic correction compaction and a measured idle UI improvement. The remaining gates are still binding; this is not a completed Rust migration. The previously stopped branch cleanup and UI revert are not resumed.
+Status: independently reviewed execution plan, prepared 19 November 2026 against `ca202c7` (main including Kiro support). Implementation progress is recorded below through the native poll adapter hooks and a measured idle UI improvement. The remaining gates are still binding; this is not a completed Rust migration. The previously stopped branch cleanup and UI revert are not resumed.
 
 ## Implementation ledger · 19 November 2026
 
@@ -23,6 +23,7 @@ Status: independently reviewed execution plan, prepared 19 November 2026 against
 | [#149](https://github.com/abhishekash/agenturm/pull/149) | Coalesces unchanged live cockpit refreshes. A same-fixture 60-second diagnostic fell from 9.20% to 7.38% of one core; a clean 300-second generated run measured 7.10%. The retained-history under-5% gate remains open. See [measurements](../validation/idle-refresh-2026-11-19.md). |
 | [#150](https://github.com/abhishekash/agenturm/pull/150) | Projects corrected, additive typed plugin usage into policy-current health sessions and the generic details view, preserving missing counters and exact large totals. See [usage projection](../validation/plugin-usage-projection.md). Retention and a bundled harness remain open. |
 | [#151](https://github.com/abhishekash/agenturm/pull/151) | Atomically replaces obsolete event revisions, admitting corrections at capacity without changing projection or cursor semantics. Distinct-event retention remains open. See [compaction checkpoint](../validation/plugin-revision-compaction.md). |
+| [#152](https://github.com/abhishekash/agenturm/pull/152) | Moves Claude identity, Kiro poll state and Codex/Claude continuation behavior behind registered native adapter hooks; generic bounded reads and persistence stay host-owned. See [hook parity](../validation/native-poll-adapter-hooks.md). Remaining Kiro collector wiring is not extracted. |
 
 The existing OpenCode reader is registered and its legacy operation facts now use a contributor, but more source-specific interpretation remains. The synthetic sixth adapter proves collector injection. Explicit process-adapter activation is available by configuration, but remains a provisional metadata-only path without a bundled production harness. The UI pane registry is a trusted constructor hook, not a production plugin host. No Rust production ingestion, external UI discovery, storage cutover, external connector, wheel packaging, or retained-history performance-gate pass has been delivered. The Python Store remains the only database writer.
 

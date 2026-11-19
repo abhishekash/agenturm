@@ -234,14 +234,10 @@ class Session:
         # Hierarchy identity is deliberately separate from the file source ID.
         # A child discovered through a spawn result and later through its own
         # transcript resolves to this same canonical node.
-        self.agent_namespace = {"Codex": "codex-rollout", "Claude Code": "claude-code-projects",
-                                "Pi": "pi-sessions", "Kiro": "kiro-sessions"}.get(runtime, runtime.casefold())
+        self.agent_namespace = getattr(self.adapter, "agent_namespace", runtime.casefold())
         self.native_session_id = self.session_id
         self.native_worker_id = None
         self.native_root_session_id = None
-        self.claude_agent_id = None
-        self.claude_parent_session_id = None
-        self.claude_meta = {}
         self.agent_id = canonical_agent_id(runtime, self.agent_namespace, self.session_id)
         self.parent_agent_id = None
         self.relationship_kind = "unknown"
@@ -250,35 +246,6 @@ class Session:
         self.discovery_state = "observed"
         self.announced_agents = RecentMap(MAX_RECENT_CALLS)
         self.spawn_calls = RecentMap(MAX_RECENT_CALLS)
-        if runtime == "Claude Code":
-            agent_id, parent_session, metadata = _claude_subagent_identity(self.path)
-            if agent_id:
-                self.claude_agent_id = agent_id
-                self.claude_parent_session_id = parent_session
-                self.claude_meta = metadata
-                self.session_id = agent_id
-                self.native_session_id = parent_session or agent_id
-                self.native_worker_id = agent_id
-                self.agent_id = canonical_agent_id(runtime, self.agent_namespace, agent_id)
-                parent_agent = _safe_identifier(metadata.get("parentAgentId"))
-                if parent_agent:
-                    parent_id = canonical_agent_id(runtime, self.agent_namespace, parent_agent)
-                    reference = "subagents/agent-" + agent_id[:80] + ".meta.json parentAgentId"
-                elif parent_session:
-                    parent_id = canonical_agent_id(runtime, self.agent_namespace, parent_session)
-                    reference = "subagents transcript path parent session"
-                else:
-                    parent_id = None
-                    reference = "subagent transcript without a parent session directory"
-                self.parent_agent_id = parent_id
-                self.relationship_kind = "delegated"
-                self.relationship_state = "confirmed" if parent_id else "unresolved"
-                self.relationship_provenance = provenance(
-                    "claude-code", reference, metadata.get("toolUseId") or None)
-            else:
-                self.native_worker_id = None
-                self.relationship_provenance = provenance(
-                    "claude-code", "main transcript path; no parent metadata")
         self.offset = 0
         self.file_id = None
         self.pending = b""
@@ -662,6 +629,10 @@ class Session:
     def kiro_apply_parent_outcome(self):
         return self.adapter.apply_parent_outcome(self)
 
+    def adapter_status_metadata(self):
+        hook = getattr(self.adapter, "status_metadata", None)
+        return hook(self) if hook is not None else {}
+
     def codex(self, row, stamp):
         """Compatibility entry point; Codex format logic lives in its adapter."""
         return self.adapter.parse(self, row, stamp, {})
@@ -734,11 +705,9 @@ class Session:
             self.request_id, self.request_time_ns = '', 0
             self.outcome_id, self.outcome_time_ns = '', 0
             self.last_record_ns = 0
-            if self.runtime == "Kiro":
-                self.kiro_interactions.clear()
-                self.kiro_turn_from_prompt = self.kiro_turn_open = False
-                self.kiro_queued_prompt = self.kiro_released_prompt = None
-                self.kiro_reset_permissions()
+            reset = getattr(self.adapter, "reset_after_rotation", None)
+            if reset is not None:
+                reset(self)
         with self.path.open("rb") as stream:
             if self.offset == 0 and stat.st_size > MAX_READ:
                 # Recover session identity from the header, then import a bounded tail.
@@ -753,9 +722,9 @@ class Session:
                     self.schema_errors += 1
                 stream.seek(0)
                 self.read_initial_task(stream)
-                if self.runtime == "Kiro":
-                    # Records before the bounded tail (including approvals) are not read.
-                    self.kiro_history_partial = True
+                bounded_tail = getattr(self.adapter, "bounded_tail", None)
+                if bounded_tail is not None:
+                    bounded_tail(self)
                 stream.seek(stat.st_size - MAX_READ)
                 # Skip only the partial first record, without allocating an
                 # arbitrarily large line from a malformed session file.
@@ -833,8 +802,8 @@ class Session:
                     continue
                 self.observe_state(row, stamp)
                 if self.capture_details and self.turn in self.tasks and self.turn in self.started:
-                    payload = row.get("payload") or {}
-                    if (self.runtime == "Codex" and isinstance(payload, dict) and (payload.get("item") or {}).get("type") == "UserMessage") or (self.runtime == "Claude Code" and row.get("type") == "user" and plaintext_task(row) and not claude_local_command(row)):
+                    continuation = getattr(self.adapter, "continuation_root", None)
+                    if continuation is not None and continuation(row):
                         spans.append(self.root(stamp, "running"))
                 if self.run_state in {"completed", "interrupted"}:
                     self.finish_turn()
@@ -844,13 +813,9 @@ class Session:
             finally:
                 if historical_outcome:
                     self.turn = current_turn
-        if self.runtime == "Kiro" and self.native_worker_id and self.kiro_parent_outcome:
-            spans.extend(span for span in self.kiro_apply_parent_outcome() if span)
-        if (self.runtime == "Kiro" and self.kiro_title and not self.task_description
-                and not self.native_worker_id and self.capture_details and not self.internal):
-            # A bounded tail can skip the prompt; Kiro's own session title is the fallback label.
-            from .local_activity import safe
-            self.task_description = safe(self.kiro_title, 500)
+        finish = getattr(self.adapter, "finish_poll", None)
+        if finish is not None:
+            spans.extend(span for span in finish(self) if span)
         if self.internal:
             from .native_policy import internal_review_attrs, internal_review_events
             for span in spans:
@@ -948,7 +913,6 @@ class Session:
             with self._storage_lock:self._storage_attempt_in_flight=False
 
 
-CLAUDE_META_BYTES = 64 * 1024
 SPAWN_TOOLS = {"spawn_agent", "Task", "Agent"}
 KIRO_METADATA_BYTES = 64 * 1024
 KIRO_STOP_STATES = {"end_turn": "completed", "cancelled": "interrupted", "error": "failed"}
@@ -1004,31 +968,6 @@ def _kiro_mcp_attributes(payload):
     return {"mcp.server.name": server, "mcp.tool.name": tool[:128], "mcp.method.name": "tools/call"}
 
 
-def _claude_subagent_identity(path):
-    """Return (agent_id, parent_session_id, sidecar) for a subagent transcript."""
-    parts = path.parts
-    if "subagents" not in parts:
-        return None, None, {}
-    index = parts.index("subagents")
-    name = path.name
-    if not name.startswith("agent-") or path.suffix != ".jsonl":
-        return None, None, {}
-    agent_id = name[len("agent-"):-len(".jsonl")]
-    if not agent_id or len(agent_id) > 256:
-        return None, None, {}
-    parent_session = parts[index - 1] if index else None
-    metadata = {}
-    meta_path = path.with_name(name[:-len(".jsonl")] + ".meta.json")
-    try:
-        if meta_path.is_file() and meta_path.stat().st_size <= CLAUDE_META_BYTES:
-            value = loads(meta_path.read_bytes())
-            if isinstance(value, dict):
-                metadata = value
-    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
-        metadata = {}
-    return agent_id, parent_session, metadata
-
-
 def _spawned_agent_id(value):
     """Extract only an exact child identity from a successful spawn result."""
     if isinstance(value, str):
@@ -1052,20 +991,6 @@ def _safe_identifier(value, limit=256):
         return None
     value = value.strip()
     return value if value and len(value) <= limit else None
-
-
-def claude_local_command(row):
-    from .session_text import local_command_only
-    message=row.get('message') or {}
-    return isinstance(message,dict) and local_command_only(message.get('content'))
-
-
-def plaintext_task(row):
-    message = row.get("message") or {}
-    if not isinstance(message, dict):
-        return False
-    content = message.get("content")
-    return isinstance(content, str) or isinstance(content, list) and any(isinstance(block, dict) and block.get("type") == "text" for block in content)
 
 
 class LocalAgents:
@@ -1341,7 +1266,7 @@ class LocalAgents:
                      "last_record_ns": session.last_record_ns,
                      "process": self.process_samples.get(session.source_id, {}),
                      "diagnostics": session.diagnostics(),
-                     **({"permissions": session.kiro_permission_summary()} if session.runtime == "Kiro" else {}),
+                     **session.adapter_status_metadata(),
                      **session.hierarchy(),
                      "bytes_read": session.offset} for session in sessions]
         reader_observed = []

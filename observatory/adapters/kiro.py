@@ -15,6 +15,28 @@ from ..session_text import remember_task
 
 
 class KiroAdapter:
+    agent_namespace = "kiro-sessions"
+    def reset_after_rotation(self, session):
+        session.kiro_interactions.clear()
+        session.kiro_turn_from_prompt = session.kiro_turn_open = False
+        session.kiro_queued_prompt = session.kiro_released_prompt = None
+        self.reset_permissions(session)
+
+    def bounded_tail(self, session):
+        # Earlier approval records were not read from the bounded tail.
+        session.kiro_history_partial = True
+
+    def finish_poll(self, session):
+        spans = self.apply_parent_outcome(session) if session.native_worker_id and session.kiro_parent_outcome else []
+        if (session.kiro_title and not session.task_description and not session.native_worker_id
+                and session.capture_details and not session.internal):
+            # A bounded tail can skip the prompt; the session title is a fallback.
+            session.task_description = safe(session.kiro_title, 500)
+        return spans
+
+    def status_metadata(self, session):
+        return {"permissions": self.permission_summary(session)}
+
     def initialize(self, session):
         """Identity comes from the session directory; a worker from sub-executions/."""
         from ..local_agents import _kiro_layout, MAX_RECENT_CALLS, _safe_identifier
