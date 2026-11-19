@@ -55,3 +55,7 @@ Codex's rollout parser, lifecycle observation, activity, initial task, prefix pr
 ## Kiro adapter extraction, 19 November 2026
 
 Kiro session setup, bounded metadata and rule refresh, permission records, initial task, parsing, usage, parent outcome, lifecycle and activity now route through `observatory/adapters/kiro.py`. The source registry constructs one adapter per Kiro session. Legacy Session and activity names delegate to it. The manifest pins the new reader bytes and preserves previous hashes. Kiro-specific hierarchy linking and UI status presentation still live outside the adapter, and the adapter still uses the legacy Session context. The focused Kiro/native/schema/ingestion tests passed 104 cases locally on Python 3.12. No live Kiro capture or full CI claim is added.
+
+## Required native adapters, 19 November 2026
+
+Every registered JSONL source now requires a factory that yields the four format callbacks. Direct sessions without a known built-in adapter fail before polling. The collector calls the adapter for parsing and activity rather than falling through to a legacy runtime branch. This prevents an unregistered format from being interpreted as Claude Code. The manifest pins the changed collector and source registry; the previous merged hashes remain in history. The focused registry/discovery/source/session suite passed 78 tests locally on Python 3.12. This contract applies to the trusted in-process path and does not yet enable external process plugins.

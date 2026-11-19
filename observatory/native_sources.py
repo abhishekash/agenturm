@@ -31,7 +31,7 @@ def kiro_source(path: str | Path) -> bool:
 
 @dataclass(frozen=True)
 class NativeSourceSpec:
-    """One source format's discovery rules, evaluated on every discovery pass."""
+    """One source format's discovery rules and required format adapter."""
 
     id: str
     runtime: str
@@ -46,12 +46,10 @@ class NativeSourceSpec:
         if (not isinstance(self.runtime, str) or not self.runtime.strip() or
                 not all(map(callable, (self.root, self.accepts_file, self.accepts_directory)))):
             raise ValueError("invalid native source specification")
-        if self.adapter_factory is not None and not callable(self.adapter_factory):
-            raise ValueError("invalid native source adapter")
+        if not callable(self.adapter_factory):
+            raise ValueError("native source requires an adapter factory")
 
-    def build_adapter(self) -> NativeSessionAdapter | None:
-        if self.adapter_factory is None:
-            return None
+    def build_adapter(self) -> NativeSessionAdapter:
         adapter = self.adapter_factory()
         if not all(callable(getattr(adapter, name, None)) for name in
                    ("initial_task", "parse", "activity", "observe_state")):

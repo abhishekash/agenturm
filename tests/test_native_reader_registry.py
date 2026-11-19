@@ -8,6 +8,7 @@ from observatory.core import Store
 from observatory.local_agents import LocalAgents
 from observatory.native_readers import NativeReaderSpec
 from observatory.native_sources import NativeSourceSpec
+from observatory.adapters.pi import PiAdapter
 
 
 class FixtureReader:
@@ -66,7 +67,7 @@ class RegistryTests(unittest.TestCase):
             LocalAgents(None, source_specs=(), reader_specs=(spec, spec))
         with self.assertRaisesRegex(ValueError, "must be unique"):
             LocalAgents(None, source_specs=(NativeSourceSpec("fixture", "Fixture",
-                       lambda: Path("/absent")),), reader_specs=(spec,))
+                       lambda: Path("/absent"), adapter_factory=PiAdapter),), reader_specs=(spec,))
         with self.assertRaisesRegex(TypeError, "lacks required methods"):
             LocalAgents(None, source_specs=(), reader_specs=(
                 NativeReaderSpec("invalid", lambda _store, _capture: object()),))

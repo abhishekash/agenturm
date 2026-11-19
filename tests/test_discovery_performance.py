@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from observatory.local_agents import LocalAgents
 from observatory.native_sources import NativeSourceSpec
+from observatory.adapters.pi import PiAdapter
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -22,7 +23,7 @@ class DiscoveryTests(unittest.TestCase):
             (root / 'keep' / 'rejected.jsonl').touch()
             spec = NativeSourceSpec('fixture', 'Fixture', lambda: root,
                 accepts_file=lambda path: Path(path).name == 'accepted.jsonl',
-                accepts_directory=lambda name: name != 'skip')
+                accepts_directory=lambda name: name != 'skip', adapter_factory=PiAdapter)
             monitor = LocalAgents(None, source_specs=(spec,))
             monitor.discover()
             self.assertEqual(list(monitor.sessions), [accepted])

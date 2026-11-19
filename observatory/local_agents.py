@@ -224,6 +224,8 @@ class Session:
                  adapter: NativeSessionAdapter | None = None):
         self.store, self.path, self.runtime = store, Path(path), runtime
         self.adapter = adapter if adapter is not None else builtin_adapter(runtime)
+        if self.adapter is None:
+            raise ValueError(f"no native adapter for {runtime}")
         self.service = runtime.lower().replace(" ", "-")
         self.source_id = identity(runtime, self.path.resolve())
         self.capture_details = capture_details
@@ -544,11 +546,10 @@ class Session:
         state = self.run_state
         event = payload.get("type")
         request_key = None
-        if self.adapter is not None:
-            result = self.adapter.observe_state(self, row, stamp)
-            if result is None:
-                return
-            state, request_key = result
+        result = self.adapter.observe_state(self, row, stamp)
+        if result is None:
+            return
+        state, request_key = result
         if self.pending_tools:
             names = list(self.pending_tools.values())
             if any(name.rsplit(".", 1)[-1] in {"request_user_input", "AskUserQuestion"} for name in names):
@@ -684,11 +685,10 @@ class Session:
                 if not isinstance(row, dict):
                     continue
                 content = None
-                if self.adapter is not None:
-                    inspect_prefix = getattr(self.adapter, "inspect_prefix", None)
-                    if inspect_prefix is not None and inspect_prefix(self, row, timestamp(row.get("timestamp"))):
-                        return
-                    content = self.adapter.initial_task(row)
+                inspect_prefix = getattr(self.adapter, "inspect_prefix", None)
+                if inspect_prefix is not None and inspect_prefix(self, row, timestamp(row.get("timestamp"))):
+                    return
+                content = self.adapter.initial_task(row)
                 if isinstance(content, list):
                     content = [block for block in content if isinstance(block, dict)
                                and block.get('type') in {'text','input_text','output_text'}]
@@ -798,7 +798,7 @@ class Session:
             except (ValueError, UnicodeDecodeError, OverflowError, RecursionError):
                 self.skipped += 1
                 self.schema_errors += 1
-        if self.adapter is not None and getattr(self.adapter, "modern_usage_records", False):
+        if getattr(self.adapter, "modern_usage_records", False):
             if any(row.get("type") == "token_usage_record" for row in records):
                 self.modern_usage = True
         self.records_last_poll = len(records)
@@ -808,7 +808,6 @@ class Session:
         # Avoid scanning the entire batch for late streaming usage updates.
         prior_models = {}
         logs = []
-        from .local_activity import codex_activity, claude_activity
         for row,source_offset in zip(records,record_offsets):
             self._current_record_offset=source_offset
             current_turn = self.turn
@@ -819,28 +818,13 @@ class Session:
                 historical_outcome = bool(historical_check(row, current_turn)) if historical_check else False
                 stamp = timestamp(row.get("timestamp"))
                 self.last_record_ns = max(self.last_record_ns, stamp)
-                if self.adapter is not None:
-                    new_spans = self.adapter.parse(self, row, stamp, prior_models)
-                elif self.runtime == "Codex":
-                    new_spans = self.codex(row, stamp)
-                elif self.runtime == "Kiro":
-                    new_spans = self.kiro(row, stamp)
-                else:
-                    new_spans = self.claude(row, stamp, prior_models)
+                new_spans = self.adapter.parse(self, row, stamp, prior_models)
                 for span in new_spans:
                     if span:
                         spans.append(span)
                         if "observatory.native_usage" in span["attributes"]:
                             prior_models[(span["trace_id"], span["span_id"])] = span
-                if self.adapter is not None:
-                    activity = self.adapter.activity(self, row, stamp)
-                elif self.runtime == "Codex":
-                    activity=codex_activity(self, row, stamp)
-                elif self.runtime == "Kiro":
-                    from .local_activity import kiro_activity
-                    activity=kiro_activity(self, row, stamp)
-                else:
-                    activity=claude_activity(self, row, stamp)
+                activity = self.adapter.activity(self, row, stamp)
                 for event in activity:event['attributes'].update(self.native_position())
                 logs.extend(activity)
                 if historical_outcome:

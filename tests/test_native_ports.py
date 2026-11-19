@@ -8,6 +8,7 @@ from observatory.local_agents import LocalAgents
 from observatory.native_ports import NativeEvidenceFacade
 from observatory.native_readers import NativeReaderSpec
 from observatory.native_sources import NativeSourceSpec
+from observatory.adapters.pi import PiAdapter
 
 
 class NativePortTests(unittest.TestCase):
@@ -28,7 +29,7 @@ class NativePortTests(unittest.TestCase):
             try:
                 reader_spec = NativeReaderSpec('fixture-reader', make_reader)
                 source_spec = NativeSourceSpec('fixture-source', 'Fixture', lambda: root,
-                    accepts_file=lambda path: Path(path) == source)
+                    accepts_file=lambda path: Path(path) == source, adapter_factory=PiAdapter)
                 collector = LocalAgents(store, source_specs=(source_spec,),
                                         reader_specs=(reader_spec,))
                 collector.discover()
