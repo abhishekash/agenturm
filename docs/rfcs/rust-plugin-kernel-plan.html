@@ -3,7 +3,7 @@
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
 </style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-plugin-kernel-plan.md">Markdown source ↗</a></nav><h1>Rust kernel and pluggable Agenturm: execution plan</h1>
-<p>Status: independently reviewed execution plan, prepared 19 November 2026 against <code>ca202c7</code> (main including Kiro support). Implementation progress is recorded below through a standalone process source example with explicit gap diagnostics, alongside a measured idle UI improvement. The remaining gates are still binding; this is not a completed Rust migration. The previously stopped branch cleanup and UI revert are not resumed.</p>
+<p>Status: independently reviewed execution plan, prepared 19 November 2026 against <code>ca202c7</code> (main including Kiro support). Implementation progress below includes separate Python and Rust sample source adapters, a loopback inbound connector proof, a trusted Prompt signals pane and a measured idle UI improvement. The remaining gates are still binding; this is not a completed Rust migration. The previously stopped branch cleanup and UI revert are not resumed.</p>
 <h2>Implementation ledger · 19 November 2026</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -125,10 +125,26 @@
 <td><a href="https://github.com/abhishekash/agenturm/pull/162">#162</a></td>
 <td>Adds typed metadata-only plugin parent relationships, coherent resolution/conflict/cycle projection, and actual sample-child coverage. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-relationship-projection.md">relationship checkpoint</a>. Message/tool/check/review evidence and general retention remain open.</td>
 </tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/163">#163</a>–<a href="https://github.com/abhishekash/agenturm/pull/164">#164</a></td>
+<td>Proves a separately installed, read-only loopback connector using pagination, rate-limit handling, durable cursor and expiry diagnostic, then fixes empty-cursor sentinel collision. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/fake-inbound-connector.md">connector checkpoint</a>. Credentials, external destination policy and outbound delivery remain open.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/165">#165</a></td>
+<td>Adds an idiomatic, separately installed Rust process source adapter with lifecycle, usage, relationship and gap metadata, real receiver integration, and Rust CI. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-sample-harness-plugin.md">Rust adapter checkpoint</a>. It is a sample, not a production harness or Rust storage authority; no speed gain is claimed.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/166">#166</a></td>
+<td>Adds a trusted Prompt signals capability over host-owned exact-scope Activity aggregates and generic UI pane rendering. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/prompt-signals-capability.md">capability checkpoint</a>. It does not score prompt efficacy or provide external capability discovery/supervision.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/167">#167</a></td>
+<td>Adds a bounded source-local evidence horizon with atomic rollover, late-correction fencing, visible retention gaps and invalidated derived session state. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-retention-horizon.md">retention checkpoint</a>. Affected history remains incomplete; full retained-history acceptance is still open.</td>
+</tr>
 </tbody>
 </table></div>
-<p>The existing OpenCode reader is registered and its legacy operation facts now use a contributor, but more source-specific interpretation remains. The synthetic sixth adapter proves collector injection. Explicit process-adapter activation is available by configuration, but remains a provisional metadata-only path without a bundled production harness. The UI pane registry is a trusted constructor hook, not a production plugin host. No Rust production ingestion, external UI discovery, storage cutover, external connector, wheel packaging, or retained-history performance-gate pass has been delivered. The Python Store remains the only database writer.</p>
-<p>A local full Python run on the Pi checkpoint executed 1,436 tests with 14 skips and one failure in the HTTP-tail smoke: the host had about 2.57 GiB free while the test required a 4 GiB disk reserve plus fixture headroom. The same checkpoint passed remote full CI; the local failure is an environment limit, not evidence that the performance gate passed. The fresh generated baseline is a single diagnostic with 12 refresh samples, not the plan's sustained-write latency acceptance run. Continue with a bundled harness migration, finite retention, a capability proof using real scoped data, active-native attribution, a measured Rust slice, storage-authority review and packaging. The process host, inbox, trusted UI registry and opt-in lifecycle projection alone do not satisfy these gates.</p>
+<p>The existing OpenCode reader is registered and its legacy operation facts now use a contributor, but more source-specific interpretation remains. The synthetic sixth adapter proves collector injection. Explicit process-adapter activation is available by configuration, but remains a provisional metadata-only path without a bundled production harness. The Rust sample executes through this real receiver path, while the loopback connector and Prompt signals pane prove narrower boundaries. The UI pane registry is a trusted constructor hook, not a production plugin host. No Rust production harness parity, external UI discovery, storage cutover, general external connector, wheel packaging, or retained-history performance-gate pass has been delivered. The Python Store remains the only database writer.</p>
+<p>A local full Python run on the Pi checkpoint executed 1,436 tests with 14 skips and one failure in the HTTP-tail smoke: the host had about 2.57 GiB free while the test required a 4 GiB disk reserve plus fixture headroom. The same checkpoint passed remote full CI; the local failure is an environment limit, not evidence that the performance gate passed. The fresh generated baseline is a single diagnostic with 12 refresh samples, not the plan's sustained-write latency acceptance run. Continue with bundled production harness migration, retention under representative history, external capability supervision, active-native attribution, Rust host/storage parity review and packaging. The process host, inbox, trusted UI registry and opt-in metadata projection alone do not satisfy these gates.</p>
 <h2>Recommendation and intended outcome</h2>
 <p>Build toward a small Rust host with explicit extension points, while retaining the existing Python/Textual UI during migration. Make harness adapters, capability processors and UI contributions independent product building blocks. Keep durable identity, capture policy, storage transactions and extension supervision under kernel control. Move measured expensive work into Rust in bounded stages, with one authoritative storage writer at each stage.</p>
 <p>Success means adding a separately packaged harness without editing core dispatch, adding a metric pane without editing the central app, and running existing workflows with lower measured whole-monitor cost. A directory reshuffle, an enum listing every runtime, or a fast Rust parser attached to the same expensive pipeline is insufficient.</p>
@@ -253,7 +269,7 @@
 </tr>
 <tr>
 <td>Rust placement</td>
-<td>First a bounded worker for the measured compute hotspot; later the host and storage authority after parity gates. The chosen first hotspot remains open until profiling.</td>
+<td>Rust is the chosen implementation direction for the plugin architecture. Build idiomatic, bounded process adapters and host components first, then move storage authority after parity and migration gates. Profiling guides optimization order and validates outcomes; it does not decide whether to use Rust.</td>
 </tr>
 <tr>
 <td>UI language</td>
@@ -411,10 +427,10 @@ grants = [&quot;configured-source-read&quot;]
 <td>In-process trusted compatibility implementation with the same ports.</td>
 </tr>
 <tr>
-<td>6: Rust performance slice</td>
-<td>Add Cargo workspace and one profiled parse/preparation worker. Keep Python as sole persistence and policy authority. Differential output comparison on synthetic/replay fixtures before opt-in execution.</td>
-<td>Exact semantic parity; declared end-to-end performance gate; full process/RSS overhead included; packaging works from installed artifacts.</td>
-<td>Worker off, previous Python implementation selected.</td>
+<td>6: Rust adapter and host migration</td>
+<td>Build idiomatic Rust process adapters and bounded host components behind the versioned protocol. Keep Python as sole persistence and policy authority until storage cutover. Compare exact source/derived semantics and profile whole-monitor behavior without assuming a speedup.</td>
+<td>Exact semantic parity; Rust target CI; installed-artifact integration and process/RSS measurements; performance claims only when predeclared gates pass.</td>
+<td>Keep the Python compatibility implementation while Rust parity or packaging is incomplete.</td>
 </tr>
 <tr>
 <td>7: capabilities and UI registry</td>
@@ -443,7 +459,7 @@ grants = [&quot;configured-source-read&quot;]
 </tbody>
 </table></div>
 <p>The production process-based Phase 6 depends on the minimum Phase 5 host (handshake, framing, control channel, budgets and crash/replay). It may overlap remaining adapter extraction after those gates. A disposable earlier Rust benchmark is allowed only on isolated synthetic data, cannot ingest production state, and does not count as a delivered plugin. A PyO3 alternative requires its own reviewed interpreter/ownership decision and does not satisfy process isolation; full Rust authority must wait for adapter semantics, protocol and durability parity. UI registry work can proceed independently after contracts stabilize. Do not combine a UI redesign with this refactor. Existing 0.2.8 appearance remains the baseline until a separate user decision changes it.</p>
-<p>Indicative effort for one experienced implementer plus reviewer: baseline/contracts 1–2 engineer-weeks, full adapter extraction/host 2–4, Rust slice 1–2, capability/UI extraction 2–3, complete storage parity/cutover 3–6. These are planning ranges, not calendar commitments; some work overlaps. Re-estimate after phases 0 and 3. The Rust host milestone is contingent on measured benefit and parity, not a fixed launch date.</p>
+<p>Indicative effort for one experienced implementer plus reviewer: baseline/contracts 1–2 engineer-weeks, full adapter extraction/host 2–4, Rust slice 1–2, capability/UI extraction 2–3, complete storage parity/cutover 3–6. These are planning ranges, not calendar commitments; some work overlaps. Re-estimate after phases 0 and 3. Rust correctness and operability require parity evidence; performance gains are measured separately and never assumed.</p>
 <h2>7. Extension proofs and non-negotiable tests</h2>
 <h3>Three demonstrations of real modularity</h3>
 <ol>
@@ -497,14 +513,14 @@ grants = [&quot;configured-source-read&quot;]
 <h2>8. Packaging, operations and release gates</h2>
 <p>Preserve the <code>agenturm</code> command and existing API clients. Distribute the Rust executable inside platform-specific Python wheels initially, so <code>uv tool install agenturm</code> remains usable; never download executable code on first launch. Define Linux glibc/musl, macOS and Windows support explicitly before making native code mandatory. Unsupported targets retain a clearly declared Python compatibility path until native packaging is qualified. A standalone Rust distribution is a later packaging option, not a reason to break current installation.</p>
 <p>Expose plugin ID/version/state, last successful cursor/commit time, lag, queued bytes, processing duration, restart count, policy epoch and missing capability reasons through Diagnostics and headless health. Keep payloads and credentials out of operational logs. Report feature readiness separately from host connection health. Reuse existing support/export redaction behavior.</p>
-<p>Before defaulting to Rust: full supported Python/client CI, Rust target CI, wheels installed in clean environments, source/derived semantic comparison, migration/rollback drills, no unresolved high-severity review findings, and the predeclared performance gates must pass. Do not publish a release merely because a Rust executable builds.</p>
+<p>Before retiring the Python compatibility path or declaring a Rust performance milestone: full supported Python/client CI, Rust target CI, wheels installed in clean environments, source/derived semantic comparison, migration/rollback drills, no unresolved high-severity review findings, and the relevant predeclared performance gates must pass. Rust is the target architecture regardless of whether a particular slice is faster. Do not publish a release merely because a Rust executable builds.</p>
 <h2>9. Decision gates and stop conditions</h2>
 <ul>
 <li><strong>Now:</strong> implementation is authorized. Complete each phase’s evidence and review gates before advancing, starting with the current baseline and adapter boundary. This document alone does not certify later cutover or performance.</li>
-<li><strong>After Phase 0:</strong> agree on the primary slowdown, concrete baseline, absolute resource ceilings and first Rust target. If SQL/polling dominates, fix algorithm/scheduling in the new boundaries before expecting Rust to help.</li>
+<li><strong>After Phase 0:</strong> record the primary slowdown, concrete baseline and absolute resource ceilings. Start the Rust adapter/host boundary as the chosen architecture. If SQL/polling dominates, fix algorithm/scheduling in the new boundaries before expecting Rust to improve speed.</li>
 <li><strong>After adapter/process proofs:</strong> freeze the minimum supported contract; do not stabilize speculative APIs before real adapters exercise them.</li>
 <li><strong>Before storage cutover:</strong> review exact writer exclusion, schema/downgrade, replay retention and policy equivalence. Any ambiguity blocks cutover.</li>
-<li><strong>If parity or performance fails:</strong> keep Python authoritative, preserve failure evidence, narrow the Rust scope and revise the plan. No expanding benchmark loops to manufacture a pass.</li>
+<li><strong>If parity fails:</strong> keep Python authoritative, preserve failure evidence and fix the Rust boundary before cutover. If a performance gate fails, report that result without claiming a gain and optimize the measured cause. No expanding benchmark loops to manufacture a pass.</li>
 </ul>
 <p>Open design details for Phase 0/1: exact workload volume and sustained write rate, minimum OS/architecture support, first hotspot, normalized envelope schemas, stable cursor compatibility with external clients, and treatment of pre-existing external writers. Defaults above permit planning; none is claimed as measured or implemented.</p>
 <h2>10. Primary design references</h2>
