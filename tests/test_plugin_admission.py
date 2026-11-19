@@ -69,7 +69,6 @@ class AdmissionTests(unittest.TestCase):
             rows = db.execute("SELECT revision,native_session_id,native_worker_id,native_turn_id "
                               "FROM plugin_evidence_v1 ORDER BY revision").fetchall()
         self.assertEqual([tuple(row) for row in rows], [
-            (0, "native-session", "worker-1", "turn-1"),
             (1, "native-session", "worker-1", "turn-1")])
         before = self.snapshot()
         with self.assertRaisesRegex(ProtocolError, "stale plugin event revision"):
@@ -102,6 +101,21 @@ class AdmissionTests(unittest.TestCase):
             with self.assertRaisesRegex(ProtocolError, "capacity"):
                 commit_batch(self.store, self.lease, "next", self.batch("later", [record("two")]))
             self.assertEqual(self.snapshot(), before)
+            self.assertEqual(commit_batch(self.store, self.lease, "next", self.batch(
+                "corrected", [{**record("one", "failed"), "revision": 1}])), "corrected")
+            with self.store._connect() as db:
+                rows = db.execute("SELECT revision,payload_json FROM plugin_evidence_v1").fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][0], 1)
+
+    def test_failed_batch_restores_superseded_revision(self):
+        commit_batch(self.store, self.lease, "", self.batch(records=[record(), record("two")]))
+        before = self.snapshot()
+        with self.assertRaisesRegex(ProtocolError, "conflicting"):
+            commit_batch(self.store, self.lease, "next", self.batch("bad", [
+                {**record("one", "failed"), "revision": 1},
+                record("two", "interrupted")]))
+        self.assertEqual(self.snapshot(), before)
 
     def test_old_evidence_schema_migrates_identity_columns(self):
         path = Path(self.temp.name) / "old.db"

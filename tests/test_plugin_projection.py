@@ -106,6 +106,8 @@ class PluginProjectionTests(unittest.TestCase):
         self.assertEqual(sessions(self.store)["sessions"][0]["metadata_usage"],
                          {"input_tokens": 15, "output_tokens": 1,
                           "cache_read_tokens": 2})
+        with self.store._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 2)
 
     def test_usage_large_valid_counters_remain_exact(self):
         self.commit("", "one", [usage("u1", {"input_tokens": 2**63 - 1}),

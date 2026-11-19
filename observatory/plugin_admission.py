@@ -306,6 +306,14 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                     if latest[1] != item[6]:
                         raise ProtocolError("conflicting plugin event revision")
                     continue
+                # Only the latest revision participates in projection and
+                # future monotonic admission. Replace obsolete rows inside
+                # this same cursor transaction, freeing capacity for a
+                # correction even when the source is otherwise at its cap.
+                deleted = db.execute("DELETE FROM plugin_evidence_v1 WHERE source_id=? "
+                                     "AND event_id_hash=? AND revision<?",
+                                     (*item[:2], item[2])).rowcount
+                count -= deleted
             if count >= MAX_SOURCE_RECORDS:
                 raise ProtocolError("plugin source evidence capacity reached")
             db.execute("INSERT INTO plugin_evidence_v1 "
