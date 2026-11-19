@@ -11,6 +11,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "agenturm-plugin-host"
+version = "0.1.0"
+dependencies = [
+ "agenturm-protocol",
+ "serde_json",
+]
+
+[[package]]
 name = "agenturm-protocol"
 version = "0.0.1"
 

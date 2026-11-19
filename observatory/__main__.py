@@ -54,6 +54,10 @@ def main():
     server.add_argument("--metadata-only", action="store_true", help="omit native session text, commands and outputs")
     server.add_argument("--plugin-config", type=Path,
                         help="explicit metadata-only source plugin configuration TOML (loopback only)")
+    server.add_argument("--rust-plugin-host", type=Path,
+                        help="opt-in absolute path to a locally built Rust process host (POSIX only)")
+    server.add_argument("--rust-plugin-host-sha256",
+                        help="expected SHA-256 of the Rust process host executable")
     launcher = sub.add_parser("run", help="automatically capture model calls from a Python agent")
     launcher.add_argument("--endpoint", default=os.environ.get("OBSERVATORY_ENDPOINT", "http://127.0.0.1:4318"),
                           help="receiver address (or OBSERVATORY_ENDPOINT)")
@@ -124,7 +128,9 @@ def main():
             serve(args.db, args.host, args.port, args.token, args.watch_jsonl,
                   args.watch_service, args.retention_days, args.local_agents, args.metadata_only,
                   managed_db=managed_db, no_auth=args.no_auth, allowed_hosts=args.allowed_host,
-                  plugin_config=args.plugin_config)
+                  plugin_config=args.plugin_config,
+                  rust_plugin_host=args.rust_plugin_host,
+                  rust_plugin_host_sha256=args.rust_plugin_host_sha256)
         except (OSError, ValueError) as exc:
             parser.exit(2, f"Agenturm: {exc}\n")
     elif args.command == "run":

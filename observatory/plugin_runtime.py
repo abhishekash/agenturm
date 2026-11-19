@@ -24,13 +24,17 @@ class PluginSession:
     def __init__(self, store: Store, manifest: PluginManifest, *, source_id: str,
                  allowed_grants: tuple[str, ...] = (), timeout: float = 5.0,
                  source_root: str | None = None,
-                 required_features: tuple[str, ...] = ()):
+                 required_features: tuple[str, ...] = (),
+                 rust_host_executable: str | None = None,
+                 rust_host_sha256: str | None = None):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         self.store = store
         self.process = PluginProcess(manifest, source_id=source_id,
                                      allowed_grants=allowed_grants, timeout=timeout,
-                                     source_root=source_root, required_features=required_features)
+                                     source_root=source_root, required_features=required_features,
+                                     rust_host_executable=rust_host_executable,
+                                     rust_host_sha256=rust_host_sha256)
         self.lease: SourceLease | None = None
         self.cursor: str | None = None
         self.projection_error: str | None = None

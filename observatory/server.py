@@ -517,7 +517,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
 def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
           watch_jsonl=(), watch_service="agent-harness", retention_days=None, local_agents=True, metadata_only=False,
           managed_db=False, no_auth=False, allowed_hosts=(), collector_registry=None,
-          plugin_config=None):
+          plugin_config=None, rust_plugin_host=None, rust_plugin_host_sha256=None):
     if db_path is None:
         from .receiver_state import telemetry_path,prepare_state_directory
         prepare_state_directory();db_path=str(telemetry_path());managed_db=True
@@ -528,6 +528,12 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
         if not loopback_host(host):raise ValueError('An externally bound receiver requires an explicit token and allowed Host configuration.')
         token=local_token(port,create=True)
     plugin_sources = ()
+    if rust_plugin_host is not None or rust_plugin_host_sha256 is not None:
+        if plugin_config is None:
+            raise ValueError("Rust plugin host requires --plugin-config")
+        from .plugin_process import rust_host_artifact
+        rust_host_artifact(str(rust_plugin_host) if rust_plugin_host is not None else None,
+                           rust_plugin_host_sha256)
     if plugin_config is not None:
         if not loopback_host(host):
             raise ValueError("plugin adapters require a loopback receiver")
@@ -540,7 +546,9 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
             child = PluginProcess(source.manifest, source_id=source.source_id,
                                   allowed_grants=source.allowed_grants, timeout=source.timeout,
                                   source_root=source.source_root,
-                                  required_features=tuple(f"harness.{name}/1" for name in source.replaces))
+                                  required_features=tuple(f"harness.{name}/1" for name in source.replaces),
+                                  rust_host_executable=str(rust_plugin_host) if rust_plugin_host else None,
+                                  rust_host_sha256=rust_plugin_host_sha256)
             if source.replaces:
                 child.verify_artifact()
     replacements = tuple(name for source in plugin_sources for name in source.replaces)
@@ -575,7 +583,10 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
     try:
         if plugin_sources:
             from .plugin_supervisor import PluginSupervisor
-            plugin_supervisor = PluginSupervisor(store, plugin_sources).start()
+            plugin_supervisor = PluginSupervisor(
+                store, plugin_sources,
+                rust_host_executable=str(rust_plugin_host) if rust_plugin_host else None,
+                rust_host_sha256=rust_plugin_host_sha256).start()
         server.serve_forever()
     except KeyboardInterrupt:
         pass
