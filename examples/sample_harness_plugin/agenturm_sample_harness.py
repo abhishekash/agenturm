@@ -26,6 +26,7 @@ IDENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}\Z")
 CODE = re.compile(r"[a-z][a-z0-9_./-]{0,63}\Z")
 STATES = {"started", "running", "paused", "completed", "failed", "interrupted", "cancelled"}
 USAGE = {"input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens"}
+RELATIONSHIPS = {"delegated", "review"}
 
 
 def pairs(items):
@@ -78,7 +79,8 @@ def identity(value):
 def record(row):
     if not isinstance(row, dict) or not {"id", "session", "at_ns", "kind"} <= row.keys():
         raise ValueError("invalid source record")
-    if set(row) - {"id", "session", "at_ns", "kind", "revision", "state", "reason_code", "usage"}:
+    if set(row) - {"id", "session", "at_ns", "kind", "revision", "state", "reason_code", "usage",
+                   "parent_session", "relation_kind"}:
         raise ValueError("unknown source record field")
     event_id = identity(row["id"])
     session_id = identity(row["session"])
@@ -107,6 +109,13 @@ def record(row):
                 or any(type(value) is not int or not 0 <= value <= 2**63 - 1
                        for value in payload.values())):
             raise ValueError("invalid source usage")
+    elif row["kind"] == "relationship" and set(row) <= {
+            "id", "session", "at_ns", "kind", "revision", "parent_session", "relation_kind"}:
+        parent = identity(row.get("parent_session"))
+        relation_kind = row.get("relation_kind")
+        if not isinstance(relation_kind, str) or relation_kind not in RELATIONSHIPS:
+            raise ValueError("invalid source relationship kind")
+        payload = {"parent_session_id": parent, "kind": relation_kind}
     else:
         raise ValueError("unsupported source record kind")
     return {"event_id": "sample:" + event_id, "revision": revision,

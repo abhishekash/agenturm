@@ -29,6 +29,7 @@ _USAGE = frozenset({"input_tokens", "output_tokens", "cache_read_tokens",
 _STATES = frozenset({"started", "running", "paused", "completed", "failed",
                      "interrupted", "cancelled"})
 _SEVERITIES = frozenset({"info", "warning", "error"})
+_RELATIONSHIPS = frozenset({"delegated", "review"})
 MAX_SOURCE_RECORDS = 50_000
 
 
@@ -88,6 +89,9 @@ def initialize(db: Connection) -> None:
             policy_epoch INTEGER NOT NULL,
             source_dirty_seq INTEGER NOT NULL,
             usage_json TEXT NOT NULL DEFAULT '{}',
+            parent_native_session_id TEXT NOT NULL DEFAULT '',
+            relationship_kind TEXT NOT NULL DEFAULT 'unknown',
+            relationship_state TEXT NOT NULL DEFAULT 'unresolved',
             PRIMARY KEY(source_id,native_session_id),
             FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
         CREATE INDEX IF NOT EXISTS plugin_session_projection_recent_v1
@@ -117,6 +121,11 @@ def initialize(db: Connection) -> None:
     projection_columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_session_projection_v1)")}
     if "usage_json" not in projection_columns:
         db.execute("ALTER TABLE plugin_session_projection_v1 ADD COLUMN usage_json TEXT NOT NULL DEFAULT '{}'")
+    for name, declaration in (("parent_native_session_id", "TEXT NOT NULL DEFAULT ''"),
+                              ("relationship_kind", "TEXT NOT NULL DEFAULT 'unknown'"),
+                              ("relationship_state", "TEXT NOT NULL DEFAULT 'unresolved'")):
+        if name not in projection_columns:
+            db.execute(f"ALTER TABLE plugin_session_projection_v1 ADD COLUMN {name} {declaration}")
 
 
 def _identity(value: str, name: str) -> str:
@@ -243,6 +252,14 @@ def _metadata(record: dict) -> dict:
                 or not isinstance(payload.get("severity"), str)
                 or payload["severity"] not in _SEVERITIES):
             raise ProtocolError("invalid diagnostic metadata")
+    elif kind == "relationship":
+        if (set(payload) != {"parent_session_id", "kind"}
+                or not isinstance(payload.get("parent_session_id"), str)
+                or not _ID.fullmatch(payload["parent_session_id"])
+                or not isinstance(payload.get("kind"), str)
+                or payload["kind"] not in _RELATIONSHIPS
+                or not record.get("identity", {}).get("session_id")):
+            raise ProtocolError("invalid relationship metadata")
     else:
         raise ProtocolError("record kind has no metadata admission policy")
     return payload

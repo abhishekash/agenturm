@@ -123,6 +123,31 @@ class SampleHarnessPluginTests(unittest.TestCase):
             set_source_capture(self.store, source_id="sample-source", enabled=False)
             self.assertEqual(last_source_diagnostic(self.store, lease), {})
 
+    def test_real_child_relationship_resolves_only_after_parent_arrives(self):
+        self.append({"id": "child-start", "session": "child", "at_ns": "100",
+                     "kind": "lifecycle", "state": "running"},
+                    {"id": "child-link", "session": "child", "at_ns": "110",
+                     "kind": "relationship", "parent_session": "parent",
+                     "relation_kind": "delegated"})
+        with self.session() as worker:
+            worker.poll_once()
+            child = self.projected()[0]
+            self.assertEqual((child["relationship_kind"], child["relationship_state"]),
+                             ("delegated", "unresolved"))
+            self.append({"id": "parent-start", "session": "parent", "at_ns": "120",
+                         "kind": "lifecycle", "state": "running"})
+            worker.poll_once()
+            rows = {row["native_session_id"]: row for row in self.projected()}
+            self.assertEqual(rows["child"]["relationship_state"], "confirmed")
+            self.assertIsNotNone(rows["child"]["parent_agent_id"])
+            self.append({"id": "child-link", "session": "child", "at_ns": "110",
+                         "kind": "relationship", "revision": 1,
+                         "parent_session": "missing", "relation_kind": "review"})
+            worker.poll_once()
+            rows = {row["native_session_id"]: row for row in self.projected()}
+            self.assertEqual((rows["child"]["relationship_kind"],
+                              rows["child"]["relationship_state"]), ("review", "unresolved"))
+
     def test_oversized_source_line_fails_without_cursor_advance(self):
         self.source_file.write_bytes(b"x" * (16 * 1024 + 1) + b"\n")
         with self.session() as session:
