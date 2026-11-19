@@ -2,10 +2,10 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Architecture proposal</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="rust-plugin-kernel-plan.md">Markdown source ↗</a></nav><h1>Rust kernel and pluggable Agenturm: execution plan</h1><details><summary>Contents</summary><ul><li><a href="#implementation-ledger">Implementation ledger</a></li><li><a href="#recommendation-and-intended-outcome">Recommendation and intended outcome</a></li><li><a href="#1-what-the-repository-establishes">1. What the repository establishes</a></li><li><a href="#2-target-architecture-and-dependency-rules">2. Target architecture and dependency rules</a></li><li><a href="#3-rust-deployment-and-extension-mechanism">3. Rust deployment and extension mechanism</a></li><li><a href="#4-contracts-that-must-be-designed-before-extraction">4. Contracts that must be designed before extraction</a></li><li><a href="#5-scheduling-and-performance-budgets">5. Scheduling and performance budgets</a></li><li><a href="#6-execution-sequence-reviewable-pull-requests">6. Execution sequence: reviewable pull requests</a></li><li><a href="#7-extension-proofs-and-non-negotiable-tests">7. Extension proofs and non-negotiable tests</a></li><li><a href="#8-packaging-operations-and-release-gates">8. Packaging, operations and release gates</a></li><li><a href="#9-decision-gates-and-stop-conditions">9. Decision gates and stop conditions</a></li><li><a href="#10-primary-design-references">10. Primary design references</a></li></ul></details>
-<section aria-labelledby="implementation-ledger"><p>Status: independently reviewed execution plan, prepared 19 November 2026 against <code>ca202c7</code> (main including Kiro support). Implementation progress is recorded below through a standalone process source example with explicit gap diagnostics, alongside a measured idle UI improvement. The remaining gates are still binding; this is not a completed Rust migration. The previously stopped branch cleanup and UI revert are not resumed.</p>
-<h2 id="implementation-ledger">Implementation ledger · 19 November 2026</h2>
-<div class="table-wrap" tabindex="0" role="region" aria-label="Implementation checkpoints"><table>
+</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-plugin-kernel-plan.md">Markdown source ↗</a></nav><h1>Rust kernel and pluggable Agenturm: execution plan</h1>
+<p>Status: independently reviewed execution plan, prepared 19 November 2026 against <code>ca202c7</code> (main including Kiro support). Implementation progress is recorded below through a standalone process source example with explicit gap diagnostics, alongside a measured idle UI improvement. The remaining gates are still binding; this is not a completed Rust migration. The previously stopped branch cleanup and UI revert are not resumed.</p>
+<h2>Implementation ledger · 19 November 2026</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
 <tr>
 <th>Merged work</th>
@@ -35,59 +35,101 @@
 </tr>
 <tr>
 <td><a href="https://github.com/abhishekash/agenturm/pull/136">#136</a></td>
-<td>Store-owned source lease, metadata evidence, cursor and dirty sequence commit atomically; exact crash replay and stale-worker fencing tested. See <a href="../validation/plugin-durable-admission.md">checkpoint report</a>. Production activation and projection remain future gates.</td>
+<td>Store-owned source lease, metadata evidence, cursor and dirty sequence commit atomically; exact crash replay and stale-worker fencing tested. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-durable-admission.md">checkpoint report</a>. Production activation and projection remain future gates.</td>
 </tr>
 <tr>
 <td><a href="https://github.com/abhishekash/agenturm/pull/137">#137</a></td>
-<td>Trusted in-process capability panes register through a headless, bounded view model and generic Textual shell rendering. A synthetic Prompt signals pane works at 60×18 and provider failures are isolated. See <a href="../validation/ui-contribution-registry.md">checkpoint report</a>. External UI plugin discovery is not enabled.</td>
+<td>Trusted in-process capability panes register through a headless, bounded view model and generic Textual shell rendering. A synthetic Prompt signals pane works at 60×18 and provider failures are isolated. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/ui-contribution-registry.md">checkpoint report</a>. External UI plugin discovery is not enabled.</td>
 </tr>
 <tr>
 <td><a href="https://github.com/abhishekash/agenturm/pull/138">#138</a></td>
-<td>Same-commit generated whole-app baseline: 6.10–6.26% 60-second idle CPU, 14.807 seconds for 20,000-span ingest/derivation, and 163–173 ms first refresh. An instrumented tiny write fixture points to SQL/transaction cost, not a proven Rust parser payoff. See <a href="../validation/rust-kernel-baseline-2026-11-19.md">measurements and limits</a>.</td>
+<td>Same-commit generated whole-app baseline: 6.10–6.26% 60-second idle CPU, 14.807 seconds for 20,000-span ingest/derivation, and 163–173 ms first refresh. An instrumented tiny write fixture points to SQL/transaction cost, not a proven Rust parser payoff. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-kernel-baseline-2026-11-19.md">measurements and limits</a>.</td>
 </tr>
 <tr>
 <td><a href="https://github.com/abhishekash/agenturm/pull/139">#139</a></td>
-<td>Process host and Store admission composed across repeated polls. Empty idle batches at the unchanged cursor are acknowledged without a write; progress, replay and stale-lease behavior use the same durable path. See <a href="../validation/plugin-runtime-session.md">checkpoint report</a>. Default production collection remains separate.</td>
+<td>Process host and Store admission composed across repeated polls. Empty idle batches at the unchanged cursor are acknowledged without a write; progress, replay and stale-lease behavior use the same durable path. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-runtime-session.md">checkpoint report</a>. Default production collection remains separate.</td>
 </tr>
 <tr>
 <td><a href="https://github.com/abhishekash/agenturm/pull/140">#140</a></td>
-<td>An isolated unprofiled 60-second tmux run measured 7.95% whole-monitor idle CPU: 5.72% cockpit, 2.23% receiver. It is below the plan's 300-second publishable gate and excludes retained history. See <a href="../validation/real-terminal-idle-2026-11-19.html">process split and limits</a>.</td>
+<td>An isolated unprofiled 60-second tmux run measured 7.95% whole-monitor idle CPU: 5.72% cockpit, 2.23% receiver. It is below the plan's 300-second publishable gate and excludes retained history. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/real-terminal-idle-2026-11-19.md">process split and limits</a>.</td>
 </tr>
 <tr>
 <td><a href="https://github.com/abhishekash/agenturm/pull/141">#141</a></td>
-<td>A separately compiled Rust process uses the same framed protocol, Python Store admission and durable cursor path to commit one synthetic lifecycle event, idle and restart without duplication. See <a href="../validation/rust-plugin-fixture.html">checkpoint report</a>.</td>
+<td>A separately compiled Rust process uses the same framed protocol, Python Store admission and durable cursor path to commit one synthetic lifecycle event, idle and restart without duplication. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-plugin-fixture.md">checkpoint report</a>.</td>
 </tr>
 <tr>
 <td><a href="https://github.com/abhishekash/agenturm/pull/142">#142</a>–<a href="https://github.com/abhishekash/agenturm/pull/144">#144</a></td>
-<td>The opt-in inbox stores bounded native identity and monotonic corrections, fences batches on a durable capture-policy epoch, and projects explicit lifecycle evidence into health sessions with dirty/revocation checks. See <a href="../validation/plugin-evidence-identity.html">identity</a>, <a href="../validation/plugin-capture-policy.html">policy</a> and <a href="../validation/plugin-lifecycle-projection.html">projection</a> reports. Full merged-run CI was in progress at this snapshot.</td>
+<td>The opt-in inbox stores bounded native identity and monotonic corrections, fences batches on a durable capture-policy epoch, and projects explicit lifecycle evidence into health sessions with dirty/revocation checks. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-evidence-identity.md">identity</a>, <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-capture-policy.md">policy</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-lifecycle-projection.md">projection</a> reports. Full merged-run CI was in progress at this snapshot.</td>
 </tr>
 <tr>
 <td><a href="https://github.com/abhishekash/agenturm/pull/145">#145</a></td>
 <td>The compiled Rust fixture sends native session identity and the Python host projects one Completed session across the protocol. Rust formatting, Clippy, seven tests, build and cross-language integration passed. It remains synthetic.</td>
 </tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/146">#146</a>–<a href="https://github.com/abhishekash/agenturm/pull/148">#148</a></td><td>A provisional Python child SDK, supervised bounded restarts and explicit <code>serve --plugin-config</code> activation connect a separately executed metadata-only adapter to health sessions. See <a href="../validation/plugin-process-transport.html">transport</a>, <a href="../validation/plugin-supervision.html">supervision</a> and <a href="../plugin-source-sdk.html">activation and SDK</a>. This is opt-in, not a bundled harness migration.</td></tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/149">#149</a></td><td>Coalesces unchanged live cockpit refreshes. A same-fixture 60-second diagnostic fell from 9.20% to 7.38% of one core; a clean 300-second generated run measured 7.10%. The retained-history under-5% gate remains open. See <a href="../validation/idle-refresh-2026-11-19.html">measurements</a>.</td></tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/150">#150</a></td><td>Projects corrected, additive typed plugin usage into policy-current health sessions and the generic details view, preserving missing counters and exact large totals. See <a href="../validation/plugin-usage-projection.html">usage projection</a>. Retention and a bundled harness remain open.</td></tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/151">#151</a></td><td>Atomically replaces obsolete event revisions, admitting corrections at capacity without changing projection or cursor semantics. Distinct-event retention remains open. See <a href="../validation/plugin-revision-compaction.html">compaction checkpoint</a>.</td></tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/152">#152</a></td><td>Moves Claude identity, Kiro poll state and Codex/Claude continuation behavior behind registered native adapter hooks; generic bounded reads and persistence stay host-owned. See <a href="../validation/native-poll-adapter-hooks.html">hook parity</a>. Remaining Kiro collector wiring is not extracted.</td></tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/153">#153</a></td><td>Routes native peer linking through an adapter hook and moves Kiro spawn-to-worker resolution out of the generic collector. See <a href="../validation/native-peer-adapter-hook.html">peer-link parity</a>. Folder status still needs extraction.</td></tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/154">#154</a></td><td>Isolates optional peer/status hook failures and rejects adapter status fields that would overwrite host-owned session data. See <a href="../validation/native-hook-isolation.html">fault-injection checkpoint</a>.</td></tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/155">#155</a></td><td>Moves Kiro workspace permission status/cache behind an adapter extension; generic health composition isolates and bounds extension output. See <a href="../validation/native-status-extension.html">status checkpoint</a>. Trusted adapters remain in-process.</td></tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/156">#156</a></td><td>Adds explicit process-plugin replacement of one registered native source, with manifest claim and executable preflight before Store creation; the trusted collector excludes that source to avoid dual readers. See <a href="../validation/plugin-source-ownership.html">ownership checkpoint</a>. No bundled production harness or full evidence parity yet.</td></tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/157">#157</a></td><td>Adds an explicitly configured absolute root for process source adapters, declared by manifest feature and grant and passed only to the child process. See <a href="../validation/plugin-configured-root.html">root checkpoint</a>. No packaged Pi adapter or filesystem sandbox is implied.</td></tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/158">#158</a></td><td>Adds a separately installed standard-library sample harness process. An explicit config reads synthetic JSONL, commits lifecycle/usage, survives restart/correction/rotation and appears in receiver health without kernel or UI dispatch edits. See <a href="../validation/sample-harness-process-plugin.html">sample checkpoint</a>. It is metadata-only and cannot replace Pi at parity.</td></tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/159">#159</a></td><td>Checks active child handshake features against approved manifest and configured root/replacement requirements before polling. See <a href="../validation/plugin-feature-handshake.html">handshake checkpoint</a>. A failed replacement remains unavailable rather than starting a second reader.</td></tr>
-<tr><td><a href="https://github.com/abhishekash/agenturm/pull/160">#160</a></td><td>Emits a durable possible-gap diagnostic on sample source replacement/truncation/rewrite and exposes the latest policy-current diagnostic in worker health across restart. See <a href="../validation/plugin-source-gap.html">gap checkpoint</a>. General gap/disposition and retention contracts remain open.</td></tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/146">#146</a>–<a href="https://github.com/abhishekash/agenturm/pull/148">#148</a></td>
+<td>A provisional Python child SDK, supervised bounded restarts and explicit <code>serve --plugin-config</code> activation connect a separately executed metadata-only adapter to health sessions. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-process-transport.md">transport</a>, <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-supervision.md">supervision</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/plugin-source-sdk.md">activation and SDK</a>. This is opt-in, not a bundled harness migration.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/149">#149</a></td>
+<td>Coalesces unchanged live cockpit refreshes. A same-fixture 60-second diagnostic fell from 9.20% to 7.38% of one core; a clean 300-second generated run measured 7.10%. The retained-history under-5% gate remains open. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/idle-refresh-2026-11-19.md">measurements</a>.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/150">#150</a></td>
+<td>Projects corrected, additive typed plugin usage into policy-current health sessions and the generic details view, preserving missing counters and exact large totals. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-usage-projection.md">usage projection</a>. Retention and a bundled harness remain open.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/151">#151</a></td>
+<td>Atomically replaces obsolete event revisions, admitting corrections at capacity without changing projection or cursor semantics. Distinct-event retention remains open. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-revision-compaction.md">compaction checkpoint</a>.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/152">#152</a></td>
+<td>Moves Claude identity, Kiro poll state and Codex/Claude continuation behavior behind registered native adapter hooks; generic bounded reads and persistence stay host-owned. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/native-poll-adapter-hooks.md">hook parity</a>. Remaining Kiro collector wiring is not extracted.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/153">#153</a></td>
+<td>Routes native peer linking through an adapter hook and moves Kiro spawn-to-worker resolution out of the generic collector. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/native-peer-adapter-hook.md">peer-link parity</a>. Folder status still needs extraction.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/154">#154</a></td>
+<td>Isolates optional peer/status hook failures and rejects adapter status fields that would overwrite host-owned session data. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/native-hook-isolation.md">fault-injection checkpoint</a>.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/155">#155</a></td>
+<td>Moves Kiro workspace permission status/cache behind an adapter extension; generic health composition isolates and bounds extension output. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/native-status-extension.md">status checkpoint</a>. Trusted adapters remain in-process.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/156">#156</a></td>
+<td>Adds explicit process-plugin replacement of one registered native source, with manifest claim and executable preflight before Store creation; the trusted collector excludes that source to avoid dual readers. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-source-ownership.md">ownership checkpoint</a>. No bundled production harness or full evidence parity yet.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/157">#157</a></td>
+<td>Adds an explicitly configured absolute root for process source adapters, declared by manifest feature and grant and passed only to the child process. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-configured-root.md">root checkpoint</a>. No packaged Pi adapter or filesystem sandbox is implied.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/158">#158</a></td>
+<td>Adds a separately installed standard-library sample harness process. An explicit config reads synthetic JSONL, commits lifecycle/usage, survives restart/correction/rotation and appears in receiver health without kernel or UI dispatch edits. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/sample-harness-process-plugin.md">sample checkpoint</a>. It is metadata-only and cannot replace Pi at parity.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/159">#159</a></td>
+<td>Checks active child handshake features against approved manifest and configured root/replacement requirements before polling. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-feature-handshake.md">handshake checkpoint</a>. A failed replacement remains unavailable rather than starting a second reader.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/160">#160</a></td>
+<td>Emits a durable possible-gap diagnostic on sample source replacement/truncation/rewrite and exposes the latest policy-current diagnostic in worker health across restart. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-source-gap.md">gap checkpoint</a>. General gap/disposition and retention contracts remain open.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/161">#161</a></td>
+<td>Rechecks the Rust target with active and idle generated diagnostics. The unprofiled active soak passed; its profiled counterpart failed the cockpit graceful-exit gate. SQLite and UI costs are more credible next investigations than a JSON parser, and retained-history acceptance is blocked by local disk headroom. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-target-recheck-2026-11-19.md">measurements and limits</a>.</td>
+</tr>
 </tbody>
 </table></div>
 <p>The existing OpenCode reader is registered and its legacy operation facts now use a contributor, but more source-specific interpretation remains. The synthetic sixth adapter proves collector injection. Explicit process-adapter activation is available by configuration, but remains a provisional metadata-only path without a bundled production harness. The UI pane registry is a trusted constructor hook, not a production plugin host. No Rust production ingestion, external UI discovery, storage cutover, external connector, wheel packaging, or retained-history performance-gate pass has been delivered. The Python Store remains the only database writer.</p>
 <p>A local full Python run on the Pi checkpoint executed 1,436 tests with 14 skips and one failure in the HTTP-tail smoke: the host had about 2.57 GiB free while the test required a 4 GiB disk reserve plus fixture headroom. The same checkpoint passed remote full CI; the local failure is an environment limit, not evidence that the performance gate passed. The fresh generated baseline is a single diagnostic with 12 refresh samples, not the plan's sustained-write latency acceptance run. Continue with a bundled harness migration, finite retention, a capability proof using real scoped data, active-native attribution, a measured Rust slice, storage-authority review and packaging. The process host, inbox, trusted UI registry and opt-in lifecycle projection alone do not satisfy these gates.</p>
-</section>
-<h2 id="recommendation-and-intended-outcome">Recommendation and intended outcome</h2>
+<h2>Recommendation and intended outcome</h2>
 <p>Build toward a small Rust host with explicit extension points, while retaining the existing Python/Textual UI during migration. Make harness adapters, capability processors and UI contributions independent product building blocks. Keep durable identity, capture policy, storage transactions and extension supervision under kernel control. Move measured expensive work into Rust in bounded stages, with one authoritative storage writer at each stage.</p>
 <p>Success means adding a separately packaged harness without editing core dispatch, adding a metric pane without editing the central app, and running existing workflows with lower measured whole-monitor cost. A directory reshuffle, an enum listing every runtime, or a fast Rust parser attached to the same expensive pipeline is insufficient.</p>
 <p>This is an application microkernel, not an operating-system microkernel or a requirement to create a fleet of services. The product remains a local monitor. The default distribution includes the supported adapters and capabilities; users should not need to assemble a usable installation.</p>
-<h2 id="1-what-the-repository-establishes">1. What the repository establishes</h2>
+<h2>1. What the repository establishes</h2>
 <h3>Structural audit at the frozen baseline</h3>
 <p>There are 90 Python modules and 33,151 lines under <code>observatory</code>. Line counts indicate review and coupling scope, not execution cost.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
@@ -136,7 +178,7 @@
 <li>Growth in native history, adapter count or new format behavior changes the workload.</li>
 </ol>
 <p>Rust can reduce compute/allocation costs and improve ownership boundaries. It cannot by itself fix missing indexes, excessive reads, unbounded work, pinned WAL snapshots or repeated processing. Phase 0 determines which hypothesis is material.</p>
-<h2 id="2-target-architecture-and-dependency-rules">2. Target architecture and dependency rules</h2>
+<h2>2. Target architecture and dependency rules</h2>
 <pre><code class="language-text"> Codex  Claude  Pi  Kiro  OpenCode       Future connectors
       source-adapter plugins          input / output plugins
                  | bounded, versioned ports |
@@ -191,7 +233,7 @@
 </table></div>
 <p>Storage is an internal port with a first-party SQLite implementation. It is not an independently replaceable third-party database plugin in v1. Redaction and identity enforcement are similarly non-overridable services. “Everything is a plugin” applies to product integrations and features, not to the integrity rules that make their results trustworthy.</p>
 <p>Dependency checks must reject <code>kernel -&gt; adapters</code>, <code>kernel -&gt; UI</code>, <code>domain -&gt; sqlite/Textual</code>, and imports between unrelated adapter implementations. A shipped adapter list belongs in distribution configuration, not conditional logic in the kernel. Legacy translation is allowed only in a named, time-limited compatibility layer with tests and a removal milestone.</p>
-<h2 id="3-rust-deployment-and-extension-mechanism">3. Rust deployment and extension mechanism</h2>
+<h2>3. Rust deployment and extension mechanism</h2>
 <h3>Decisions</h3>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -241,7 +283,7 @@
 </table></div>
 <p>Start with a minimal Cargo dependency set: serialization/schema support, error handling, structured tracing and bounded runtime primitives. Tokio is appropriate for process I/O and supervision, not as a reason to make SQLite calls async. Keep long-lived SQLite connections on owned dedicated threads; bound CPU work separately. Final crate versions and MSRV are selected and pinned in the first Rust PR after checking supported deployment targets. Include <code>Cargo.lock</code>, license/dependency checks and reproducible release builds.</p>
 <p>Native child processes provide crash separation, not an OS security sandbox. Approved plugins run with the user's OS privileges unless a separately implemented sandbox is enabled. Manifest permissions restrict kernel APIs, not all filesystem/network syscalls. Do not claim otherwise. Core installation must not auto-execute code found in arbitrary project directories. Install and activation are explicit, version-pinned operations.</p>
-<h2 id="4-contracts-that-must-be-designed-before-extraction">4. Contracts that must be designed before extraction</h2>
+<h2>4. Contracts that must be designed before extraction</h2>
 <h3>Manifest and activation</h3>
 <p>Provided capabilities describe features; grants describe host-authorized access and are not interchangeable. Each plugin declares a stable ID, version, kernel protocol range, provided/required extension-point versions, executable/artifact identity, configuration schema, optional dependencies and grants. Harness format versions are separate from plugin and protocol versions. Unknown required features fail activation with a reason; compatible optional additions may be ignored. Reject duplicate IDs, dependency cycles and incompatible providers before ingestion begins. Discover manifests without importing/executing plugin code.</p>
 <p>Example, illustrative rather than a shipped schema:</p>
@@ -268,7 +310,7 @@ grants = [&quot;configured-source-read&quot;]
 <p>Preserve metadata-only capture, redaction, revocation tombstones and receiver/source isolation through parsing, storage, caches, UI, copy and export. Raw inputs are restricted to adapters with the configured source grant; analysis/UI plugins consume sanitized scoped evidence. Capability output includes contributing evidence references so revocation invalidates it. A capability that cannot provide sufficient provenance uses a conservative whole-scope invalidation policy.</p>
 <p>Plugin state is namespaced and accessed through versioned kernel storage APIs with byte quotas. State migrations are explicit, transactional and reversible or snapshot-backed; plugins cannot run arbitrary DDL against core tables. Schema-incompatible downgrades fail clearly. On removal, historical derived records retain plugin/version provenance and become unavailable/stale if they cannot be interpreted; source evidence and user-owned decisions remain intact.</p>
 <p>Future inbound connectors use the source contract with credentials resolved by the host, bounded retries, durable cursors and rate-limit handling. Outbound connectors are a separate side-effect contract: explicit destination/action grants, idempotency keys, durable delivery state, retry/dead-letter visibility and no automatic send merely because an analysis plugin emitted a finding. Recheck policy just before dispatch; cancellation/revocation blocks queued work but cannot undo a request already accepted remotely. A timed-out in-flight request has an uncertain delivery outcome until reconciled using the destination’s idempotency/status support; do not blindly resend or claim it was cancelled. Avoid a generic connector interface that conflates read-only ingestion with publishing messages or mutating external systems.</p>
-<h2 id="5-scheduling-and-performance-budgets">5. Scheduling and performance budgets</h2>
+<h2>5. Scheduling and performance budgets</h2>
 <p>For finite-retention input, stopping polling cannot prevent the producer from rotating or deleting unread data. Where permitted, a bounded host-owned durable staging spool can preserve accepted raw input under the capture policy; otherwise detect and expose an unrecoverable source gap. A full spool pauses admission and reports a gap if retention overtakes it. Never turn backlog, rotation loss or plugin failure into a complete-coverage claim.</p>
 <p>Backpressure is a product behavior: when a plugin reaches admission limits, stop polling it, retain the durable cursor, expose lag, and let other sources progress. Use fair per-source scheduling and global ceilings. CPU-heavy preparation stays outside the writer thread/transaction when a complete source/policy revision fence can be proved; publication revalidates that fence. Otherwise preserve the current coherent transaction until a safe replacement exists. Measure queue wait, SQL execution, decoding/derivation, WAL checkpoint stalls and UI rendering separately. Do not queue one blocking job per event or let a slow extension hold a database transaction while making RPC/network calls. Coalesce derivation only where older dirty revisions are provably superseded; never coalesce distinct source evidence.</p>
 <p>Provisional defaults to validate in Phase 0: at most four active external plugin processes, 4 MiB framed data per plugin, 16 MiB global queued wire bytes, at most two bounded CPU batches, and one SQLite writer. Hard host-owned bounds cover framed bytes, queue bytes, outstanding requests and a schema-aware decoder’s node/string/allocation budget. A post-decode size check alone is not a hard allocation bound. Register and test the decoder’s worst-case expansion before asserting one. An arbitrary native child’s allocations are not bounded by its protocol frame: RSS monitoring/termination is a soft operational limit. Linux cgroups, Windows job objects or other platform mechanisms may provide separate hard process limits, but their guarantees and support must be explicit. Unsupported platforms do not inherit a hard-limit claim. RSS measurements cover all child processes. Existing source record/read limits remain unless an explicit compatibility test proves a change. An inactive plugin consumes no polling loop. On-demand panes activate their processors only when configured or subscribed.</p>
@@ -316,7 +358,7 @@ grants = [&quot;configured-source-read&quot;]
 <p>For latency, pre-register at least 200 attempted requests per measured endpoint per run over at least 120 seconds, offered rate/concurrency, payload mix, timeouts and nearest-rank p95. Report errors/timeouts separately and reject a performance pass with capture/coverage errors; a timeout cannot disappear from the denominator. For idle CPU, use at least 60 seconds after a declared 30-second warmup, count process-tree CPU seconds divided by wall seconds (one core = 100%), and report peak aggregate RSS plus sampling interval. Fresh fixture/process means application-cold, not OS-cache-cold; record OS cache treatment without privileged cache eviction. Include startup time and warm-cache behavior separately. A representative three-pair run is a work cap, not statistical certainty; Phase 0 registers total time and stops as inconclusive if required samples cannot fit that budget. Do not multiply all workloads into an open-ended soak matrix.</p>
 <p>These are proposed engineering gates, not achieved results or portable promises. Memory ceiling in MiB and normal ingestion rate must be registered after measuring the representative workload. If the target improvement is smaller than run-to-run variability, the result is inconclusive. Start with one baseline diagnostic and a bounded baseline/candidate comparison (three paired runs maximum); repeat only for a concrete unresolved failure. Do not restart the previously cancelled long-soak/100-run protocol.</p>
 <p>Use existing <code>benchmark_app.py</code>, <code>benchmark_discovery.py</code>, <code>profile_ingest_writes.py</code>, session/MCP profiles and retained-history/HTTP-tail harnesses where they fit. Add child-process accounting and extension scheduling visibility rather than inventing a disconnected “Rust benchmark.” Separate profile runs from timed comparisons. Include idle, active native writes, cold/restart history, large payloads, many adapters and a deliberately slow plugin.</p>
-<h2 id="6-execution-sequence-reviewable-pull-requests">6. Execution sequence: reviewable pull requests</h2>
+<h2>6. Execution sequence: reviewable pull requests</h2>
 <p>Each row is a bounded delivery, not permission to begin. Split further if a review cannot establish one coherent invariant. No milestone becomes default until its exit gate passes.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -398,7 +440,7 @@ grants = [&quot;configured-source-read&quot;]
 </table></div>
 <p>The production process-based Phase 6 depends on the minimum Phase 5 host (handshake, framing, control channel, budgets and crash/replay). It may overlap remaining adapter extraction after those gates. A disposable earlier Rust benchmark is allowed only on isolated synthetic data, cannot ingest production state, and does not count as a delivered plugin. A PyO3 alternative requires its own reviewed interpreter/ownership decision and does not satisfy process isolation; full Rust authority must wait for adapter semantics, protocol and durability parity. UI registry work can proceed independently after contracts stabilize. Do not combine a UI redesign with this refactor. Existing 0.2.8 appearance remains the baseline until a separate user decision changes it.</p>
 <p>Indicative effort for one experienced implementer plus reviewer: baseline/contracts 1–2 engineer-weeks, full adapter extraction/host 2–4, Rust slice 1–2, capability/UI extraction 2–3, complete storage parity/cutover 3–6. These are planning ranges, not calendar commitments; some work overlaps. Re-estimate after phases 0 and 3. The Rust host milestone is contingent on measured benefit and parity, not a fixed launch date.</p>
-<h2 id="7-extension-proofs-and-non-negotiable-tests">7. Extension proofs and non-negotiable tests</h2>
+<h2>7. Extension proofs and non-negotiable tests</h2>
 <h3>Three demonstrations of real modularity</h3>
 <ol>
 <li><strong>Harness:</strong> install a fixture adapter from a separate package; discover a session, ingest a message/check/usage/lifecycle event, inspect it and uninstall the adapter. No kernel/UI source edit. Disabling it cannot report the session completed.</li>
@@ -448,11 +490,11 @@ grants = [&quot;configured-source-read&quot;]
 </table></div>
 <p>These tests are starting points, not a substitute for new protocol/crash/migration cases. Record the exact commands and results for each implementation PR; do not re-label old passing runs as proof of new Rust behavior.</p>
 <p>Rust-specific checks: <code>cargo fmt --check</code>, Clippy with documented lint policy, unit/integration tests, fuzz framing/parsers and cursor decoding, explicit integer-overflow/time bounds, and concurrency tests around commit/ack/revocation. Avoid unsafe code by default; any introduced unsafe/FFI boundary needs a written ownership contract and targeted validation. A separate expert reviewer must inspect the storage-authority cutover, not only the parser implementation.</p>
-<h2 id="8-packaging-operations-and-release-gates">8. Packaging, operations and release gates</h2>
+<h2>8. Packaging, operations and release gates</h2>
 <p>Preserve the <code>agenturm</code> command and existing API clients. Distribute the Rust executable inside platform-specific Python wheels initially, so <code>uv tool install agenturm</code> remains usable; never download executable code on first launch. Define Linux glibc/musl, macOS and Windows support explicitly before making native code mandatory. Unsupported targets retain a clearly declared Python compatibility path until native packaging is qualified. A standalone Rust distribution is a later packaging option, not a reason to break current installation.</p>
 <p>Expose plugin ID/version/state, last successful cursor/commit time, lag, queued bytes, processing duration, restart count, policy epoch and missing capability reasons through Diagnostics and headless health. Keep payloads and credentials out of operational logs. Report feature readiness separately from host connection health. Reuse existing support/export redaction behavior.</p>
 <p>Before defaulting to Rust: full supported Python/client CI, Rust target CI, wheels installed in clean environments, source/derived semantic comparison, migration/rollback drills, no unresolved high-severity review findings, and the predeclared performance gates must pass. Do not publish a release merely because a Rust executable builds.</p>
-<h2 id="9-decision-gates-and-stop-conditions">9. Decision gates and stop conditions</h2>
+<h2>9. Decision gates and stop conditions</h2>
 <ul>
 <li><strong>Now:</strong> implementation is authorized. Complete each phase’s evidence and review gates before advancing, starting with the current baseline and adapter boundary. This document alone does not certify later cutover or performance.</li>
 <li><strong>After Phase 0:</strong> agree on the primary slowdown, concrete baseline, absolute resource ceilings and first Rust target. If SQL/polling dominates, fix algorithm/scheduling in the new boundaries before expecting Rust to help.</li>
@@ -461,7 +503,7 @@ grants = [&quot;configured-source-read&quot;]
 <li><strong>If parity or performance fails:</strong> keep Python authoritative, preserve failure evidence, narrow the Rust scope and revise the plan. No expanding benchmark loops to manufacture a pass.</li>
 </ul>
 <p>Open design details for Phase 0/1: exact workload volume and sustained write rate, minimum OS/architecture support, first hotspot, normalized envelope schemas, stable cursor compatibility with external clients, and treatment of pre-existing external writers. Defaults above permit planning; none is claimed as measured or implemented.</p>
-<h2 id="10-primary-design-references">10. Primary design references</h2>
+<h2>10. Primary design references</h2>
 <ul>
 <li><a href="https://help.eclipse.org/latest/topic/org.eclipse.platform.doc.isv/guide/arch.htm">Eclipse platform architecture</a>: explicit extension points and separately contributed subsystems inform the plugin registry. Agenturm does not need an OSGi implementation.</li>
 <li><a href="https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md">Pi extension documentation</a>: event, command and UI contribution interfaces are useful inspiration. Pi's in-process trust model is not a sandbox and is not copied as Agenturm's isolation guarantee.</li>
@@ -469,5 +511,5 @@ grants = [&quot;configured-source-read&quot;]
 <li><a href="https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html">Tokio blocking work</a>: started blocking tasks cannot be aborted by cancelling their handles; bounded work and shutdown design are required.</li>
 <li><a href="https://www.sqlite.org/wal.html">SQLite WAL</a>: single-writer concurrency and checkpoint/read-snapshot behavior constrain storage architecture regardless of language.</li>
 </ul>
-<p>Independent review findings and resolution are recorded in the <a href="rust-plugin-kernel-review.html">companion Rust review</a>. This plan is a proposed execution contract, not an implementation-complete report.</p>
+<p>Independent review findings and resolution are recorded in the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-plugin-kernel-review.md">companion Rust review</a>. This plan is a proposed execution contract, not an implementation-complete report.</p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
