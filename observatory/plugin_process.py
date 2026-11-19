@@ -18,13 +18,12 @@ from typing import BinaryIO, Callable
 
 from .plugin_frames import FrameError, MAX_FRAME_BYTES, read_frame, write_frame
 from .plugin_manifest import PluginManifest, plan_activation
-from .plugin_wire import (MAX_BATCH_RECORDS, PROTOCOL_MAJOR, PollBatch, ProtocolError,
+from .plugin_wire import (MAX_BATCH_RECORDS, MAX_CONTROL_FRAME_BYTES, PROTOCOL_MAJOR, PollBatch, ProtocolError,
                           decode_message, encode_message, validate_batch,
                           validate_hello_ack)
 
 
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
-MAX_CONTROL_FRAME_BYTES = 64 * 1024
 MAX_STDERR_BYTES = 16 * 1024
 MAX_PROCESSES = 4
 _process_slots = threading.BoundedSemaphore(MAX_PROCESSES)
