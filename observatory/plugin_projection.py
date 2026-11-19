@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 MAX_PROJECTION_EVIDENCE = 50_000
 MAX_PROJECTION_SESSIONS = 2_000
+MAX_JSON_SAFE_INTEGER = 2**53 - 1
 
 
 def _reduce(rows: list, receiver_id: str, source_id: str, policy_epoch: int,
@@ -31,12 +32,18 @@ def _reduce(rows: list, receiver_id: str, source_id: str, policy_epoch: int,
         native_id = row["native_session_id"]
         if not native_id:
             continue
-        entry = sessions.setdefault(native_id, {"last_record_ns": 0, "lifecycle": []})
+        entry = sessions.setdefault(native_id, {"last_record_ns": 0, "lifecycle": [], "usage": {}})
         entry["last_record_ns"] = max(entry["last_record_ns"], row["admitted_ns"])
         if row["kind"] == "lifecycle":
             payload = json.loads(row["payload_json"])
             entry["lifecycle"].append((row["time_ns"], payload["state"],
                                        payload.get("reason_code", "")))
+        elif row["kind"] == "usage":
+            # Each distinct event is an additive observation; a higher
+            # revision replaces it before this reduction. Preserve absent
+            # counters as unknown rather than manufacturing zeroes.
+            for field, value in json.loads(row["payload_json"]).items():
+                entry["usage"][field] = entry["usage"].get(field, 0) + value
     if len(sessions) > MAX_PROJECTION_SESSIONS:
         raise ProtocolError("plugin session projection capacity reached")
     result = []
@@ -54,7 +61,8 @@ def _reduce(rows: list, receiver_id: str, source_id: str, policy_epoch: int,
         session_key = "plugin:" + hashlib.sha256(
             (receiver_id + "\0" + source_id + "\0" + native_id).encode()).hexdigest()
         result.append((source_id, native_id, session_key, state, reason, state_time,
-                       entry["last_record_ns"], policy_epoch, dirty_seq))
+                       entry["last_record_ns"], policy_epoch, dirty_seq,
+                       json.dumps(entry["usage"], sort_keys=True, separators=(",", ":"))))
     return result
 
 
@@ -96,7 +104,9 @@ def project_source(store: Store, source_id: str) -> int:
                 != revision):
             raise ProtocolError("plugin projection source changed; retry")
         db.execute("DELETE FROM plugin_session_projection_v1 WHERE source_id=?", (source_id,))
-        db.executemany("INSERT INTO plugin_session_projection_v1 VALUES(?,?,?,?,?,?,?,?,?)",
+        db.executemany("INSERT INTO plugin_session_projection_v1(source_id,native_session_id,session_key,"
+                       "state,reason_code,state_time_ns,last_record_ns,policy_epoch,source_dirty_seq,"
+                       "usage_json) VALUES(?,?,?,?,?,?,?,?,?,?)",
                        projected)
         db.execute("INSERT INTO plugin_projection_cursor_v1(source_id,projected_seq,policy_epoch) "
                    "VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
@@ -131,6 +141,8 @@ def sessions(store: Store, *, limit: int = 200) -> dict:
     for row in rows[:limit]:
         reported = {"started": "running", "paused": "waiting",
                     "cancelled": "interrupted"}.get(row["state"], row["state"])
+        usage = {key: value if value <= MAX_JSON_SAFE_INTEGER else str(value)
+                 for key, value in json.loads(row["usage_json"]).items()}
         result.append({"id": row["session_key"], "source_id": row["session_key"],
                        "plugin_source_id": row["source_id"],
                        "session_id": row["session_key"], "native_session_id": row["native_session_id"],
@@ -142,6 +154,7 @@ def sessions(store: Store, *, limit: int = 200) -> dict:
                        "task_outcome_ns": row["state_time_ns"] if reported in
                        {"completed", "failed", "interrupted", "cancelled"} else 0,
                        "reason_code": row["reason_code"], "coverage": "partial",
+                       "metadata_usage": usage,
                        "discovery_state": "observed", "relationship_kind": "unknown",
                        "relationship_state": "unresolved"})
     return {"sessions": result, "pending_sources": pending,
