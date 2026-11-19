@@ -12,8 +12,14 @@ from ..session_text import remember_task
 
 
 class CodexAdapter:
+    agent_namespace = "codex-rollout"
     continue_prefix_after_task = True
     modern_usage_records = True
+
+    def continuation_root(self, row):
+        payload = row.get("payload") or {}
+        return (isinstance(payload, dict) and isinstance(payload.get("item"), dict)
+                and payload["item"].get("type") == "UserMessage")
 
     def historical_outcome(self, row: dict, current_turn: str) -> bool:
         payload = row.get("payload") or {}

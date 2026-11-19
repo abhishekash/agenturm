@@ -9,6 +9,7 @@ from ..session_text import remember_task
 
 
 class PiAdapter:
+    agent_namespace = "pi-sessions"
     def initial_task(self, row: dict) -> object:
         if row.get("type") != "message":
             return None
