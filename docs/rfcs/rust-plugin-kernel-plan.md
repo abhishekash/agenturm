@@ -1,6 +1,6 @@
 # Rust kernel and pluggable Agenturm: execution plan
 
-Status: independently reviewed execution plan, prepared 19 November 2026 against `ca202c7` (main including Kiro support). Implementation progress is recorded below through isolated native adapter hooks and a measured idle UI improvement. The remaining gates are still binding; this is not a completed Rust migration. The previously stopped branch cleanup and UI revert are not resumed.
+Status: independently reviewed execution plan, prepared 19 November 2026 against `ca202c7` (main including Kiro support). Implementation progress is recorded below through native adapter status extensions and a measured idle UI improvement. The remaining gates are still binding; this is not a completed Rust migration. The previously stopped branch cleanup and UI revert are not resumed.
 
 ## Implementation ledger · 19 November 2026
 
@@ -26,6 +26,7 @@ Status: independently reviewed execution plan, prepared 19 November 2026 against
 | [#152](https://github.com/abhishekash/agenturm/pull/152) | Moves Claude identity, Kiro poll state and Codex/Claude continuation behavior behind registered native adapter hooks; generic bounded reads and persistence stay host-owned. See [hook parity](../validation/native-poll-adapter-hooks.md). Remaining Kiro collector wiring is not extracted. |
 | [#153](https://github.com/abhishekash/agenturm/pull/153) | Routes native peer linking through an adapter hook and moves Kiro spawn-to-worker resolution out of the generic collector. See [peer-link parity](../validation/native-peer-adapter-hook.md). Folder status still needs extraction. |
 | [#154](https://github.com/abhishekash/agenturm/pull/154) | Isolates optional peer/status hook failures and rejects adapter status fields that would overwrite host-owned session data. See [fault-injection checkpoint](../validation/native-hook-isolation.md). |
+| [#155](https://github.com/abhishekash/agenturm/pull/155) | Moves Kiro workspace permission status/cache behind an adapter extension; generic health composition isolates and bounds extension output. See [status checkpoint](../validation/native-status-extension.md). Trusted adapters remain in-process. |
 
 The existing OpenCode reader is registered and its legacy operation facts now use a contributor, but more source-specific interpretation remains. The synthetic sixth adapter proves collector injection. Explicit process-adapter activation is available by configuration, but remains a provisional metadata-only path without a bundled production harness. The UI pane registry is a trusted constructor hook, not a production plugin host. No Rust production ingestion, external UI discovery, storage cutover, external connector, wheel packaging, or retained-history performance-gate pass has been delivered. The Python Store remains the only database writer.
 

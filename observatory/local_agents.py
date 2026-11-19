@@ -1004,6 +1004,16 @@ _HOST_STATUS_FIELDS = frozenset({
     'relationship_provenance', 'discovery_state', 'coverage', 'observed_ns',
     'review',
 })
+_HOST_STATUS_TOP_LEVEL = frozenset({
+    'enabled', 'initial_poll_complete', 'sources', 'discovered_sources',
+    'omitted_sources', 'read_errors', 'ambiguous_sources', 'last_read_error',
+    'skipped_records', 'backlog_bytes', 'schema_errors',
+    'skipped_oversized_records', 'capture_content', 'lookback_hours',
+    'max_sources', 'opencode_discovered_sessions', 'opencode_omitted_sessions',
+    'opencode_diagnostics', 'reader_plugins', 'runtime', 'mcp_configurations',
+    'mcp_config_errors', 'mcp_config_updated', 'hierarchy', 'sessions',
+    'opencode_read_errors',
+})
 
 
 class LocalAgents:
@@ -1031,9 +1041,6 @@ class LocalAgents:
         self.hierarchy_revision = ""
         self.hierarchy_facts_revision = ""
         self.hierarchy_write_errors = 0
-        self.kiro_folders = []
-        self.kiro_folders_cache = {}
-        self.kiro_folders_checked = 0.0
         from .native_readers import builtin_readers
         self.reader_specs = builtin_readers() if reader_specs is None else tuple(reader_specs)
         if len({spec.id for spec in self.reader_specs}) != len(self.reader_specs):
@@ -1225,21 +1232,31 @@ class LocalAgents:
         nodes = [*observed.values(), *announced.values()]
         return nodes, announced
 
-    def kiro_folder_status(self):
-        """Trusted folders and per-folder rules, re-read at most every 10 s."""
-        if not any(session.runtime == "Kiro" for session in self.sessions.values()):
-            return []
-        if time.monotonic() - self.kiro_folders_checked >= KIRO_RULES_REFRESH_SECONDS:
-            self.kiro_folders_checked = time.monotonic()
-            from .kiro_permissions import workspace_permissions
+    def adapter_status_extensions(self, sessions):
+        """Collect active adapter status fields without letting one hide another."""
+        groups = {}
+        for session in sessions:
+            groups.setdefault(type(session.adapter), []).append(session)
+        extensions = {}
+        for peers in groups.values():
             try:
-                self.kiro_folders = workspace_permissions(kiro_home(), self.kiro_folders_cache)
-            except OSError as exc:
-                self.record_error(exc, 'Reading Kiro workspace permissions')
-        if self.capture_details:
-            return list(self.kiro_folders)
-        return [{**item, "folder": Path(item["folder"]).name if item.get("folder") else None}
-                for item in self.kiro_folders]
+                hook = getattr(peers[0].adapter, 'status_extension', None)
+                if hook is None:
+                    continue
+                fields = hook(self.capture_details, self.record_error)
+                if (not isinstance(fields, dict) or fields.keys() & _HOST_STATUS_TOP_LEVEL
+                        or fields.keys() & extensions.keys() or any(
+                            type(key) is not str or not key or len(key) > 64 for key in fields)):
+                    raise ValueError('native adapter status extension conflicts with host fields')
+                if len(json.dumps(fields, allow_nan=False).encode('utf-8')) > 64 * 1024:
+                    raise ValueError('native adapter status extension exceeds 64 KiB')
+                extensions.update(fields)
+            except Exception as exc:
+                self.record_error(exc, f'Inspecting native adapter {type(peers[0].adapter).__name__}')
+        # Compatibility: existing health clients expect the field even when
+        # the Kiro adapter has no active source.
+        extensions.setdefault('kiro_folders', [])
+        return extensions
 
     def status(self):
         sessions = list(self.sessions.values())
@@ -1352,6 +1369,7 @@ class LocalAgents:
                 context = contexts.get(item.get("parent_agent_id"))
                 if context:
                     item["parent_context"] = context
+        extensions = self.adapter_status_extensions(sessions)
         return {"enabled": True, "initial_poll_complete": self.initial_poll_complete, "sources": len(sessions), "discovered_sources": self.discovered_sources,
                 "omitted_sources": self.omitted_sources, "read_errors": self.errors,
                 "ambiguous_sources": self.ambiguous_sources,
@@ -1365,7 +1383,7 @@ class LocalAgents:
                 "opencode_omitted_sessions": getattr(self.opencode, "omitted_sessions", 0),
                 "opencode_diagnostics": reader_diagnostics.get("opencode", {}),
                 "reader_plugins": reader_diagnostics,
-                "kiro_folders": self.kiro_folder_status(),
+                **extensions,
                 "runtime": self.runtime_snapshot,
                 "mcp_configurations": list(self.mcp_configurations),
                 "mcp_config_errors": self.mcp_config_errors,

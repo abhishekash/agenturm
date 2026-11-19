@@ -54,6 +54,30 @@ class NativePortTests(unittest.TestCase):
         self.assertEqual(collector.adapter_status_metadata(healthy), {})
         self.assertEqual(errors[-1][0], 'ValueError')
 
+    def test_status_extensions_are_isolated_and_cannot_override_health(self):
+        errors = []
+        class Broken:
+            def status_extension(self, _capture, _on_error):
+                raise ValueError('broken')
+        class Healthy:
+            def status_extension(self, capture, _on_error):
+                return {'fixture_status': 'captured' if capture else 'metadata'}
+        collector = object.__new__(LocalAgents)
+        collector.capture_details = False
+        collector.record_error = lambda exc, operation: errors.append((type(exc).__name__, operation))
+        peers = [SimpleNamespace(adapter=Broken()), SimpleNamespace(adapter=Healthy())]
+        self.assertEqual(collector.adapter_status_extensions(peers),
+                         {'fixture_status': 'metadata', 'kiro_folders': []})
+        self.assertEqual(errors[0][0], 'ValueError')
+        peers[0].adapter.status_extension = lambda _capture, _on_error: {'sessions': []}
+        self.assertEqual(collector.adapter_status_extensions(peers),
+                         {'fixture_status': 'metadata', 'kiro_folders': []})
+        self.assertEqual(errors[-1][0], 'ValueError')
+        peers[0].adapter.status_extension = lambda _capture, _on_error: {'bad': object()}
+        self.assertEqual(collector.adapter_status_extensions(peers),
+                         {'fixture_status': 'metadata', 'kiro_folders': []})
+        self.assertEqual(errors[-1][0], 'TypeError')
+
     def test_collector_injects_narrow_host_facade_into_both_reader_types(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)

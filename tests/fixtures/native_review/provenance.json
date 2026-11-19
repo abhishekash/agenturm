@@ -3,18 +3,18 @@
   "verified_on": "2026-11-19",
   "reader": {
     "legacy_verified_baseline": "1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8",
-    "adapter_commit": "26d0ac82aaa8b6680dd15d34698b2b267d3631ba",
+    "adapter_commit": "41a51fa7f3e80ac207af1f6d5b0d5f0e64141d46",
     "files": {
       "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
       "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
-      "observatory/local_agents.py": "e98877ad1e4f94ff773b4ba249bffa31a97bc672f6c57e01bb0cd19511b7c16a",
+      "observatory/local_agents.py": "19c4ee4005df2ab2b03abfbe66ef734b64c7705dcba9c87e47a651677abd5d25",
       "observatory/local_activity.py": "9bf2c058ef9ac7c43fa2bfb8f21db80545016d2b18cacde3db97d85bb8a56aea",
       "observatory/native_sources.py": "bddcbcd2f5dd322cfd47df963a6ca983826bc24b8335ad6d22b023cea32502de",
-      "observatory/native_adapter.py": "6939f213debdf3573f7892444ffda6d341e815d6e4e4e1ae0a8bb0111f88628f",
+      "observatory/native_adapter.py": "09232642c06e6e95a4c7f52c64ef7b4f6be1b94e444dd59b0e35e3a1cc28326d",
       "observatory/adapters/pi.py": "413c7583cec9f8c9e53ad64cf1152a5404b1fe5c340dd2a1759b388bef8bb04f",
       "observatory/adapters/claude.py": "c1cd024db7c7ee248e3c3aff15c63939adfe2671ef0367dc403e1ee55cf969d0",
       "observatory/adapters/codex.py": "cb0a479060a7eee84004ab9c9cb4becb675e7c1dd935623357a3c3b5ec9f25b7",
-      "observatory/adapters/kiro.py": "d5655388f971e86243e07155bde4fece2281c1e7de0c62b59ac465429b81b1b9"
+      "observatory/adapters/kiro.py": "58bd17289292e74263e438527c582f99954181deca86bb256b0455a781485556"
     },
     "core_membership_commits": [
       "d955cbbc5f87a04a1055ee0bf07ed52ef85e8fc9",
@@ -117,10 +117,19 @@
           "observatory/local_agents.py": "16dbed5421d4fec68cf290946c6fa98bd1c442a44b97f9837a78cb0663ccb02b"
         },
         "qualification": "Before optional adapter peer/status hook failures were isolated and host-owned status fields were protected; producer schema coverage is unchanged."
+      },
+      {
+        "commit": "3a2a4c4d7b7fb6b6264e158cd0bba67f52f5ccf2",
+        "files": {
+          "observatory/local_agents.py": "e98877ad1e4f94ff773b4ba249bffa31a97bc672f6c57e01bb0cd19511b7c16a",
+          "observatory/native_adapter.py": "6939f213debdf3573f7892444ffda6d341e815d6e4e4e1ae0a8bb0111f88628f",
+          "observatory/adapters/kiro.py": "d5655388f971e86243e07155bde4fece2281c1e7de0c62b59ac465429b81b1b9"
+        },
+        "qualification": "Before Kiro workspace status moved into an adapter-owned extension; source fixture and producer schema coverage are unchanged."
       }
     ],
-    "verified_reader_commit": "26d0ac82aaa8b6680dd15d34698b2b267d3631ba",
-    "verification_scope": "Current hashes bind registered discovery, conflict-safe source ownership, native activity, adapter composition, peer linking and optional hook failure isolation. Synthetic fixture tests passed locally for Codex, Claude Code, Pi and Kiro. OpenCode/upstream schema and fixture bytes are unchanged. This does not establish a new observed producer version, process isolation, or universal compatibility; see docs/validation/native-fixture-provenance.md."
+    "verified_reader_commit": "41a51fa7f3e80ac207af1f6d5b0d5f0e64141d46",
+    "verification_scope": "Current hashes bind registered discovery, conflict-safe source ownership, native activity, adapter composition, peer linking and bounded status extensions. Synthetic fixture tests passed locally for Codex, Claude Code, Pi and Kiro. OpenCode/upstream schema and fixture bytes are unchanged. This does not establish a new observed producer version, process isolation, or universal compatibility; see docs/validation/native-fixture-provenance.md."
   },
   "fixtures": [
     {
