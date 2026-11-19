@@ -69,4 +69,5 @@ agenturm serve --plugin-config /absolute/path/to/plugins.toml \
 </tbody>
 </table></div>
 <p>This is a Linux qualification slice, not a multi-platform wheel release. The <code>linux_x86_64</code> tag itself does not encode the glibc floor; Agenturm refuses explicit bundled-host activation on older glibc, while its Python paths remain usable. The minimum glibc version for a broader portable native wheel has not been established by <code>auditwheel</code>. macOS and Windows build, process cleanup, installer and installed-client gates remain open.</p>
+<p>After rebasing on main through #173, the release host and adapter were rebuilt, native then pure wheels were built sequentially, and the same isolated <code>uv tool</code> validator passed against <code>rebased-native</code> and <code>rebased-pure</code>. The build and test directories are disposable; their local paths identify the captured run, not a published distribution.</p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
