@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from observatory.core import Store
-from observatory.plugin_admission import activate_source, commit_batch
+from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
 from observatory.plugin_wire import PollBatch, ProtocolError
 from tests import test_plugin_process
 
@@ -106,6 +106,11 @@ class AdmissionTests(unittest.TestCase):
     def test_old_evidence_schema_migrates_identity_columns(self):
         path = Path(self.temp.name) / "old.db"
         with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE plugin_source_cursor_v1 (source_id TEXT PRIMARY KEY,"
+                       "receiver_id TEXT NOT NULL,plugin_id TEXT NOT NULL,generation TEXT NOT NULL,"
+                       "lease_epoch INTEGER NOT NULL,cursor TEXT NOT NULL DEFAULT '',"
+                       "prior_cursor TEXT NOT NULL DEFAULT '',last_batch_digest TEXT NOT NULL DEFAULT '',"
+                       "dirty_seq INTEGER NOT NULL DEFAULT 0,updated_ns INTEGER NOT NULL)")
             db.execute("CREATE TABLE plugin_evidence_v1 (source_id TEXT NOT NULL,"
                        "event_id_hash TEXT NOT NULL,revision INTEGER NOT NULL,kind TEXT NOT NULL,"
                        "time_ns INTEGER NOT NULL,payload_json TEXT NOT NULL,record_digest TEXT NOT NULL,"
@@ -113,7 +118,46 @@ class AdmissionTests(unittest.TestCase):
         migrated = Store(str(path))
         with migrated._connect() as db:
             columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_evidence_v1)")}
-        self.assertTrue({"native_session_id", "native_worker_id", "native_turn_id"} <= columns)
+            cursor_columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_source_cursor_v1)")}
+        self.assertTrue({"native_session_id", "native_worker_id", "native_turn_id",
+                         "policy_epoch"} <= columns)
+        self.assertTrue({"policy_epoch", "capture_enabled"} <= cursor_columns)
+
+    def test_capture_revocation_erases_evidence_and_fences_worker(self):
+        commit_batch(self.store, self.lease, "", self.batch())
+        self.assertEqual(set_source_capture(self.store, source_id="fixture-source", enabled=False), 2)
+        with self.store._connect() as db:
+            row = db.execute("SELECT cursor,dirty_seq,policy_epoch,capture_enabled "
+                             "FROM plugin_source_cursor_v1 WHERE source_id='fixture-source'").fetchone()
+            evidence = db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0]
+        self.assertEqual(tuple(row), ("next", 2, 2, 0))
+        self.assertEqual(evidence, 0)
+        with self.assertRaisesRegex(ProtocolError, "stale plugin source lease"):
+            commit_batch(self.store, self.lease, "next", self.batch("later", [record("two")]))
+        with self.assertRaisesRegex(ProtocolError, "capture revoked"):
+            activate_source(self.store, plugin_id="fixture.plugin",
+                            source_id="fixture-source", generation=GENERATION)
+        self.assertEqual(set_source_capture(self.store, source_id="fixture-source", enabled=True), 3)
+        resumed = activate_source(self.store, plugin_id="fixture.plugin",
+                                  source_id="fixture-source", generation=GENERATION)
+        self.assertEqual((resumed.cursor, resumed.policy_epoch), ("next", 3))
+        commit_batch(self.store, resumed, "next", self.batch("later", [record("two")]))
+        with self.store._connect() as db:
+            rows = db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0]
+            epoch = db.execute("SELECT policy_epoch FROM plugin_evidence_v1").fetchone()[0]
+        self.assertEqual(rows, 1)
+        self.assertEqual(epoch, 3)
+
+    def test_capture_policy_noop_does_not_fence_or_dirty(self):
+        self.assertEqual(set_source_capture(self.store, source_id="fixture-source", enabled=True), 1)
+        self.assertEqual(self.snapshot(), (("", 0), [], []))
+        commit_batch(self.store, self.lease, "", self.batch())
+
+    def test_capture_policy_requires_existing_source(self):
+        with self.assertRaisesRegex(ProtocolError, "unknown plugin source"):
+            set_source_capture(self.store, source_id="missing", enabled=False)
+        with self.assertRaises(TypeError):
+            set_source_capture(self.store, source_id="fixture-source", enabled=0)
 
     def test_invalid_metadata_in_second_record_never_writes_first(self):
         with self.assertRaisesRegex(ProtocolError, "metadata"):

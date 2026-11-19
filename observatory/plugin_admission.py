@@ -39,6 +39,7 @@ class SourceLease:
     generation: str
     epoch: int
     cursor: str
+    policy_epoch: int
 
 
 def initialize(db: Connection) -> None:
@@ -53,6 +54,8 @@ def initialize(db: Connection) -> None:
             prior_cursor TEXT NOT NULL DEFAULT '',
             last_batch_digest TEXT NOT NULL DEFAULT '',
             dirty_seq INTEGER NOT NULL DEFAULT 0,
+            policy_epoch INTEGER NOT NULL DEFAULT 1,
+            capture_enabled INTEGER NOT NULL DEFAULT 1,
             updated_ns INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS plugin_evidence_v1 (
             source_id TEXT NOT NULL,
@@ -65,6 +68,7 @@ def initialize(db: Connection) -> None:
             native_session_id TEXT NOT NULL DEFAULT '',
             native_worker_id TEXT NOT NULL DEFAULT '',
             native_turn_id TEXT NOT NULL DEFAULT '',
+            policy_epoch INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY(source_id,event_id_hash,revision),
             FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
         CREATE TABLE IF NOT EXISTS plugin_evidence_dirty_v1 (
@@ -73,9 +77,17 @@ def initialize(db: Connection) -> None:
             FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
     """)
     columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_evidence_v1)")}
-    for name in ("native_session_id", "native_worker_id", "native_turn_id"):
+    for name, declaration in (("native_session_id", "TEXT NOT NULL DEFAULT ''"),
+                              ("native_worker_id", "TEXT NOT NULL DEFAULT ''"),
+                              ("native_turn_id", "TEXT NOT NULL DEFAULT ''"),
+                              ("policy_epoch", "INTEGER NOT NULL DEFAULT 1")):
         if name not in columns:
-            db.execute(f"ALTER TABLE plugin_evidence_v1 ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+            db.execute(f"ALTER TABLE plugin_evidence_v1 ADD COLUMN {name} {declaration}")
+    cursor_columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_source_cursor_v1)")}
+    for name, declaration in (("policy_epoch", "INTEGER NOT NULL DEFAULT 1"),
+                              ("capture_enabled", "INTEGER NOT NULL DEFAULT 1")):
+        if name not in cursor_columns:
+            db.execute(f"ALTER TABLE plugin_source_cursor_v1 ADD COLUMN {name} {declaration}")
 
 
 def _identity(value: str, name: str) -> str:
@@ -103,6 +115,8 @@ def activate_source(store: Store, *, plugin_id: str, source_id: str,
         if row is not None and (row["receiver_id"], row["plugin_id"], row["generation"]) != (
                 receiver_id, plugin_id, generation):
             raise ProtocolError("source ownership or artifact generation changed")
+        if row is not None and not row["capture_enabled"]:
+            raise ProtocolError("plugin source capture revoked")
         now = time.time_ns()
         if row is None:
             db.execute("INSERT INTO plugin_source_cursor_v1 "
@@ -110,11 +124,50 @@ def activate_source(store: Store, *, plugin_id: str, source_id: str,
                        "VALUES(?,?,?,?,?,?)",
                        (source_id, receiver_id, plugin_id, generation, epoch, now))
             cursor = ""
+            policy_epoch = 1
         else:
             db.execute("UPDATE plugin_source_cursor_v1 SET lease_epoch=?,updated_ns=? "
                        "WHERE source_id=?", (epoch, now, source_id))
             cursor = row["cursor"]
-    return SourceLease(receiver_id, plugin_id, source_id, generation, epoch, cursor)
+            policy_epoch = row["policy_epoch"]
+    return SourceLease(receiver_id, plugin_id, source_id, generation, epoch, cursor,
+                       policy_epoch)
+
+
+def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
+    """Change host-owned capture policy and fence active workers atomically.
+
+    Revocation erases the source's metadata evidence and invalidates downstream
+    projections. The durable cursor remains, so re-enabling starts from the
+    last acknowledged source position rather than silently replaying history.
+    """
+    _identity(source_id, "source ID")
+    if type(enabled) is not bool:
+        raise TypeError("enabled must be a boolean")
+    receiver_id = store.receiver_namespace()
+    with store._source_write(), store._connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        actual = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
+        if actual is None or actual[0] != receiver_id:
+            raise ProtocolError("receiver identity changed during policy update")
+        row = db.execute("SELECT * FROM plugin_source_cursor_v1 WHERE source_id=?",
+                         (source_id,)).fetchone()
+        if row is None or row["receiver_id"] != receiver_id:
+            raise ProtocolError("unknown plugin source")
+        if bool(row["capture_enabled"]) == enabled:
+            return row["policy_epoch"]
+        epoch = row["policy_epoch"] + 1
+        lease_epoch = secrets.randbelow(2**63 - 1) + 1
+        if not enabled:
+            db.execute("DELETE FROM plugin_evidence_v1 WHERE source_id=?", (source_id,))
+        dirty_seq = row["dirty_seq"] + 1
+        db.execute("UPDATE plugin_source_cursor_v1 SET capture_enabled=?,policy_epoch=?,"
+                   "lease_epoch=?,dirty_seq=?,updated_ns=? WHERE source_id=?",
+                   (int(enabled), epoch, lease_epoch, dirty_seq, time.time_ns(), source_id))
+        db.execute("INSERT INTO plugin_evidence_dirty_v1(source_id,dirty_seq) VALUES(?,?) "
+                   "ON CONFLICT(source_id) DO UPDATE SET dirty_seq=excluded.dirty_seq",
+                   (source_id, dirty_seq))
+    return epoch
 
 
 def _metadata(record: dict) -> dict:
@@ -188,8 +241,11 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
         row = db.execute("SELECT * FROM plugin_source_cursor_v1 WHERE source_id=?",
                          (lease.source_id,)).fetchone()
         if (receiver is None or receiver[0] != lease.receiver_id or row is None
-                or (row["receiver_id"], row["plugin_id"], row["generation"], row["lease_epoch"]) !=
-                (lease.receiver_id, lease.plugin_id, lease.generation, lease.epoch)):
+                or not row["capture_enabled"]
+                or (row["receiver_id"], row["plugin_id"], row["generation"],
+                    row["lease_epoch"], row["policy_epoch"]) !=
+                (lease.receiver_id, lease.plugin_id, lease.generation, lease.epoch,
+                 lease.policy_epoch)):
             raise ProtocolError("stale plugin source lease")
         if not rows and batch.cursor == row["cursor"] and expected_cursor == row["cursor"]:
             # An idle poll has no durable effect. It still follows lease and
@@ -222,8 +278,8 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                 raise ProtocolError("plugin source evidence capacity reached")
             db.execute("INSERT INTO plugin_evidence_v1 "
                        "(source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest,"
-                       "native_session_id,native_worker_id,native_turn_id) "
-                       "VALUES(?,?,?,?,?,?,?,?,?,?)", item)
+                       "native_session_id,native_worker_id,native_turn_id,policy_epoch) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (*item, lease.policy_epoch))
             count += 1
         seq = row["dirty_seq"] + (1 if rows else 0)
         db.execute("UPDATE plugin_source_cursor_v1 SET cursor=?,prior_cursor=?,last_batch_digest=?,"
