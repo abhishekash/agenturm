@@ -5,11 +5,13 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from observatory.core import Store
 from observatory.local_activity import emit
 from observatory.local_agents import LocalAgents, Session
-from observatory.native_sources import NativeSourceSpec
+from observatory.native_sources import NativeSourceSpec, builtin_sources
 
 
 class FixtureAdapter:
@@ -42,6 +44,32 @@ class FixtureAdapter:
 
 
 class AdapterTests(unittest.TestCase):
+    def test_bundled_factories_discover_trusted_sources_in_stable_order(self):
+        specs = builtin_sources()
+        self.assertEqual([spec.id for spec in specs], ["codex", "claude", "pi", "kiro"])
+        self.assertEqual([type(spec.build_adapter()).__name__ for spec in specs],
+                         ["CodexAdapter", "ClaudeAdapter", "PiAdapter", "KiroAdapter"])
+
+    def test_new_bundled_module_needs_no_dispatch_edit(self):
+        import observatory.native_sources as sources
+        module = SimpleNamespace(SOURCE_PRIORITY=9, source_spec=lambda: NativeSourceSpec(
+            "fixture", "Fixture", lambda: Path("/absent"), adapter_factory=FixtureAdapter))
+        with (patch.object(sources.pkgutil, "iter_modules", return_value=[SimpleNamespace(name="fixture")]),
+              patch.object(sources.importlib, "import_module", return_value=module)):
+            self.assertEqual([spec.id for spec in builtin_sources()], ["fixture"])
+            session = Session(None, Path("/absent/fixture.jsonl"), "Fixture")
+            self.assertIsInstance(session.adapter, FixtureAdapter)
+
+    def test_bundled_factory_rejects_duplicate_ids(self):
+        import observatory.native_sources as sources
+        module = SimpleNamespace(SOURCE_PRIORITY=9, source_spec=lambda: NativeSourceSpec(
+            "fixture", "Fixture", lambda: Path("/absent"), adapter_factory=FixtureAdapter))
+        with (patch.object(sources.pkgutil, "iter_modules", return_value=[
+                    SimpleNamespace(name="one"), SimpleNamespace(name="two")]),
+              patch.object(sources.importlib, "import_module", return_value=module)):
+            with self.assertRaisesRegex(ValueError, "duplicate bundled source ID"):
+                builtin_sources()
+
     def test_injected_adapter_ingests_turn_check_usage_and_completion(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)

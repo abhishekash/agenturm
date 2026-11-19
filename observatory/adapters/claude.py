@@ -1,12 +1,25 @@
 """Claude Code format callbacks for the trusted in-process collector."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from ..agent_hierarchy import canonical_agent_id, provenance
 from ..local_activity import emit, mcp_attributes, plaintext, safe
 from ..native_json import loads
 from ..session_text import local_command_only, remember_task
+
+
+SOURCE_PRIORITY = 1
+
+
+def source_spec():
+    from ..native_sources import NativeSourceSpec
+
+    return NativeSourceSpec(
+        "claude", "Claude Code",
+        lambda: Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects",
+        adapter_factory=ClaudeAdapter)
 
 CLAUDE_META_BYTES = 64 * 1024
 

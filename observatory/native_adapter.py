@@ -21,16 +21,11 @@ class NativeSessionAdapter(Protocol):
 
 
 def builtin_adapter(runtime: str) -> NativeSessionAdapter | None:
-    if runtime == "Kiro":
-        from .adapters.kiro import KiroAdapter
-        return KiroAdapter()
-    if runtime == "Codex":
-        from .adapters.codex import CodexAdapter
-        return CodexAdapter()
-    if runtime == "Pi":
-        from .adapters.pi import PiAdapter
-        return PiAdapter()
-    if runtime == "Claude Code":
-        from .adapters.claude import ClaudeAdapter
-        return ClaudeAdapter()
-    return None
+    # Legacy direct Session construction uses the same declarations as the
+    # collector. New source formats need no second runtime-name branch.
+    from .native_sources import builtin_sources
+
+    matching = [spec for spec in builtin_sources() if spec.runtime == runtime]
+    if len(matching) > 1:
+        raise ValueError(f"multiple bundled adapters for {runtime}")
+    return matching[0].build_adapter() if matching else None

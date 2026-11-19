@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 from pathlib import Path
 
@@ -9,6 +10,18 @@ from ..agent_hierarchy import canonical_agent_id, provenance
 from ..local_activity import duration, emit, mcp_attributes, mcp_failed, plaintext, safe
 from ..native_json import loads
 from ..session_text import remember_task
+
+
+SOURCE_PRIORITY = 0
+
+
+def source_spec():
+    from ..native_sources import NativeSourceSpec
+
+    return NativeSourceSpec(
+        "codex", "Codex",
+        lambda: Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions",
+        adapter_factory=CodexAdapter)
 
 
 class CodexAdapter:
