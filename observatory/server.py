@@ -559,9 +559,9 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
         selected = collector_registry if collector_registry is not None else CollectorRegistry.bundled()
         if not isinstance(selected, CollectorRegistry):
             raise TypeError("collector registry must be a CollectorRegistry")
-        known_sources = {spec.id for spec in selected.sources}
+        known_sources = {spec.id for spec in (*selected.sources, *selected.readers)}
         if not set(replacements) <= known_sources:
-            raise ValueError("plugin replacement names an unavailable built-in source")
+            raise ValueError("plugin replacement names an unavailable built-in harness")
         collector_registry = selected.without(*replacements)
     store = Store(db_path, async_derived_refresh=True)
     retention_days=retention_policy(store,managed=managed_db,requested=retention_days)
