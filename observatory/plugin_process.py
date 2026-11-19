@@ -14,6 +14,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import BinaryIO, Callable
 
@@ -303,7 +304,11 @@ class PluginProcess:
         process = self.process
         self._stopping.set()
         if process is not None:
-            if process.poll() is None:
+            # Do not reap the group leader before its remaining members have
+            # been stopped. Keeping its PID reserved fences normal-close PGID
+            # reuse on platforms with waitid(WNOWAIT).
+            running = process.returncode is None if self._group_id is not None else process.poll() is None
+            if running:
                 if not force and process.stdin is not None:
                     def request_stop() -> None:
                         try:
@@ -318,13 +323,13 @@ class PluginProcess:
                     if force:
                         self._signal_group(signal.SIGTERM)
                     try:
-                        process.wait(timeout=min(self.timeout, 2.0) if not force else 0.1)
+                        self._wait_group(process, timeout=min(self.timeout, 2.0) if not force else 0.1)
                     except subprocess.TimeoutExpired:
                         self._signal_group(signal.SIGTERM)
                         try:
-                            process.wait(timeout=1.0)
+                            self._wait_group(process, timeout=1.0)
                         except subprocess.TimeoutExpired:
-                            self._signal_group(signal.SIGKILL)
+                            self._kill_group()
                             process.wait(timeout=1.0)
                 else:
                     try:
@@ -337,11 +342,10 @@ class PluginProcess:
                             process.kill()
                             process.wait(timeout=1.0)
             if self._group_id is not None:
-                # The host may have crashed while its child kept running.
-                # Its dedicated group contains only these two processes.
-                if force or process.returncode != 0:
-                    self._signal_group(signal.SIGKILL)
-                self._group_id = None
+                # Also clean ordinary helpers after a successful host exit.
+                # Crash paths may already have reaped the leader; this remains
+                # best-effort cleanup, not a sandbox for detached descendants.
+                self._kill_group()
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     try:
@@ -362,6 +366,28 @@ class PluginProcess:
                 os.killpg(self._group_id, sig)
             except ProcessLookupError:
                 pass
+
+    def _kill_group(self) -> None:
+        self._signal_group(signal.SIGKILL)
+        self._group_id = None
+
+    def _wait_group(self, process: subprocess.Popen, *, timeout: float) -> None:
+        if process.returncode is None and hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    exited = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                except ChildProcessError:
+                    # Another caller may already have polled/reaped a crash.
+                    break
+                if exited is not None:
+                    self._kill_group()
+                    process.wait(timeout=1.0)
+                    return
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(process.args, timeout)
+                time.sleep(0.01)
+        process.wait(timeout=timeout)
 
     def __enter__(self) -> PluginProcess:
         return self.start()

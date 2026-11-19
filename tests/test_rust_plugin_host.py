@@ -2,6 +2,8 @@
 import hashlib
 import json
 import os
+import select
+import signal
 import struct
 import subprocess
 import sys
@@ -21,6 +23,7 @@ from observatory.plugin_process import PluginProcess
 from observatory.plugin_projection import project_source
 from observatory.plugin_runtime import PluginSession
 from observatory.plugin_wire import ProtocolError
+from observatory.plugin_frames import read_frame, write_frame
 from observatory.server import BoundedHTTPServer, serve
 
 
@@ -328,6 +331,123 @@ class RustPluginHostTests(unittest.TestCase):
             self.assertFalse(_running(child_pid), "Rust host did not reap blocked child")
         finally:
             host.close(force=True)
+
+    def _raw_host(self, body):
+        """Exercise transport supervision without Python's timeout/reader help."""
+        child = self.root / "blocked-child.py"
+        marker = self.root / "blocked-child.pid"
+        marker.unlink(missing_ok=True)
+        child.write_text(
+            "#!/usr/bin/python3\nimport fcntl,json,os,struct,sys,time\n"
+            "fcntl.fcntl(sys.stdin.fileno(),fcntl.F_SETPIPE_SZ,4096)\n"
+            f"open({str(marker)!r},'w').write(str(os.getpid()))\n"
+            "def read():\n"
+            " n=struct.unpack('>I',sys.stdin.buffer.read(4))[0]\n"
+            " return json.loads(sys.stdin.buffer.read(n))\n"
+            "def send(v):\n"
+            " b=json.dumps(v).encode();sys.stdout.buffer.write(struct.pack('>I',len(b))+b);sys.stdout.buffer.flush()\n"
+            + body)
+        child.chmod(0o700)
+        process = subprocess.Popen([self.host, "--child", str(child)],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, start_new_session=True)
+
+        def cleanup():
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=2)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
+
+        self.addCleanup(cleanup)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if marker.exists() and marker.read_text():
+                return process, int(marker.read_text())
+            time.sleep(0.01)
+        self.fail("transport fixture did not start")
+
+    def test_blocked_child_write_observes_parent_eof_and_write_deadline(self):
+        for close_parent in (True, False):
+            with self.subTest(close_parent=close_parent):
+                process, child_pid = self._raw_host("time.sleep(30)\n")
+                request = {"type": "hello", "protocol": 1, "padding": ""}
+                # A transport-valid maximum control frame plus its prefix
+                # exceeds the child's unread pipe, without exceeding our cap.
+                request["padding"] = "x" * (65536 - len(json.dumps(request)))
+                write_frame(process.stdin, json.dumps(request), max_bytes=65536)
+                time.sleep(0.1)
+                if close_parent:
+                    process.stdin.close()
+                self.assertEqual(process.wait(timeout=2 if close_parent else 7), 2)
+                self.assertFalse(_running(child_pid), "blocked writer left child running")
+
+    def test_blocked_parent_write_observes_parent_eof_and_write_deadline(self):
+        for close_parent in (True, False):
+            with self.subTest(close_parent=close_parent):
+                process, child_pid = self._raw_host(
+                    "read();send({'type':'hello_ack'})\n"
+                    "read();send({'type':'batch','cursor':'next','padding':'x'*4000000})\n"
+                    "time.sleep(30)\n")
+                write_frame(process.stdin, json.dumps({"type": "hello", "protocol": 1}))
+                self.assertTrue(select.select([process.stdout], [], [], 2)[0], "hello timed out")
+                self.assertEqual(json.loads(read_frame(process.stdout))["type"], "hello_ack")
+                write_frame(process.stdin, json.dumps({"type": "poll", "protocol": 1}))
+                # Deliberately never drain the large response; only Rust can
+                # observe control EOF or its write deadline and reap the child.
+                time.sleep(0.2)
+                if close_parent:
+                    process.stdin.close()
+                self.assertEqual(process.wait(timeout=2 if close_parent else 7), 2)
+                self.assertFalse(_running(child_pid), "blocked writer left child running")
+
+    def test_successful_close_reaps_group_helpers_before_leader(self):
+        helper_marker = self.root / "helper.pid"
+        child = self.root / "helper-parent.py"
+        child.write_text(
+            "#!/usr/bin/python3\nimport json,struct,sys,subprocess\n"
+            "def read():\n"
+            " n=struct.unpack('>I',sys.stdin.buffer.read(4))[0]\n"
+            " return json.loads(sys.stdin.buffer.read(n))\n"
+            "def send(v):\n"
+            " b=json.dumps(v).encode();sys.stdout.buffer.write(struct.pack('>I',len(b))+b);sys.stdout.buffer.flush()\n"
+            "read()\nhelper=subprocess.Popen(['/usr/bin/sleep','30'])\n"
+            f"open({str(helper_marker)!r},'w').write(str(helper.pid))\n"
+            "send({'type':'hello_ack','protocol':1,'plugin_id':'fixture.helper','features':['source-adapter/1']})\n"
+            "read()\n")
+        child.chmod(0o700)
+        manifest_path = self.root / "helper.toml"
+        manifest_path.write_text(
+            'id="fixture.helper"\nversion="0.1.0"\nprotocol="1"\n'
+            f'entrypoint=["{child}"]\nartifact_sha256="{hashlib.sha256(child.read_bytes()).hexdigest()}"\n'
+            'provides=["source-adapter/1"]\nrequires=["evidence-ingest/1"]\n'
+            'depends_on=[]\ngrants=[]\n')
+        host = PluginProcess(PluginManifest.read(manifest_path), source_id="helper-source",
+                             rust_host_executable=self.host, rust_host_sha256=self.host_hash)
+        self.addCleanup(host.close, force=True)
+        host.start()
+        process = host.process
+        helper_pid = int(helper_marker.read_text())
+        self.addCleanup(lambda: os.kill(helper_pid, signal.SIGKILL) if _running(helper_pid) else None)
+        self.assertEqual(os.getpgid(helper_pid), process.pid)
+        original_signal = host._signal_group
+        reserved_leader = []
+
+        def signal_group(sig):
+            if sig == signal.SIGKILL:
+                reserved_leader.append(process.returncode is None and Path(f"/proc/{process.pid}").exists())
+            original_signal(sig)
+
+        with patch.object(host, "_signal_group", side_effect=signal_group):
+            host.close()
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(reserved_leader, [True])
+        deadline = time.monotonic() + 2
+        while _running(helper_pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(_running(helper_pid), "successful close left group helper running")
 
 
 if __name__ == "__main__":
