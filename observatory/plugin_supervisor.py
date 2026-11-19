@@ -76,7 +76,9 @@ class PluginSupervisor:
     failures quarantine the source until the owner explicitly restarts it.
     """
     def __init__(self, store: Store, sources: tuple[PluginSource, ...], *,
-                 max_failures: int = 5, backoff_seconds: float = 0.25):
+                 max_failures: int = 5, backoff_seconds: float = 0.25,
+                 rust_host_executable: str | None = None,
+                 rust_host_sha256: str | None = None):
         sources = tuple(sources)
         if len(sources) > MAX_PROCESSES or len({item.source_id for item in sources}) != len(sources):
             raise ValueError("duplicate or excessive plugin sources")
@@ -93,11 +95,15 @@ class PluginSupervisor:
             PluginSession(store, source.manifest, source_id=source.source_id,
                           allowed_grants=source.allowed_grants, timeout=source.timeout,
                           source_root=source.source_root,
-                          required_features=tuple(f"harness.{name}/1" for name in source.replaces))
+                          required_features=tuple(f"harness.{name}/1" for name in source.replaces),
+                          rust_host_executable=rust_host_executable,
+                          rust_host_sha256=rust_host_sha256)
         self.store = store
         self.sources = sources
         self.max_failures = max_failures
         self.backoff_seconds = float(backoff_seconds)
+        self.rust_host_executable = rust_host_executable
+        self.rust_host_sha256 = rust_host_sha256
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.threads: list[threading.Thread] = []
@@ -140,7 +146,9 @@ class PluginSupervisor:
             session = PluginSession(self.store, source.manifest, source_id=source_id,
                                     allowed_grants=source.allowed_grants,
                                     timeout=source.timeout, source_root=source.source_root,
-                                    required_features=tuple(f"harness.{name}/1" for name in source.replaces))
+                                    required_features=tuple(f"harness.{name}/1" for name in source.replaces),
+                                    rust_host_executable=self.rust_host_executable,
+                                    rust_host_sha256=self.rust_host_sha256)
             try:
                 self._update(source_id, state="starting", restart_count=max(0, attempts))
                 attempts += 1

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import queue
+import signal
 import stat
 import subprocess
 import tempfile
@@ -29,11 +30,36 @@ MAX_PROCESSES = 4
 _process_slots = threading.BoundedSemaphore(MAX_PROCESSES)
 
 
+def rust_host_artifact(path: str | None, digest: str | None) -> bytes | None:
+    """Verify an explicitly selected host before any plugin/source activation."""
+    if path is None and digest is None:
+        return None
+    if (os.name != "posix" or not isinstance(path, str) or not Path(path).is_absolute()
+            or not isinstance(digest, str) or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)):
+        raise ValueError("Rust plugin host requires an absolute POSIX path and SHA-256")
+    artifact = Path(path)
+    if artifact.is_symlink():
+        raise ProtocolError("Rust plugin host must be a regular file")
+    try:
+        info = artifact.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ARTIFACT_BYTES:
+            raise ProtocolError("invalid Rust plugin host artifact")
+        raw = artifact.read_bytes()
+    except OSError as exc:
+        raise ProtocolError("cannot read Rust plugin host artifact") from exc
+    if len(raw) > MAX_ARTIFACT_BYTES or hashlib.sha256(raw).hexdigest() != digest:
+        raise ProtocolError("Rust plugin host artifact hash mismatch")
+    return raw
+
+
 class PluginProcess:
     def __init__(self, manifest: PluginManifest, *, source_id: str,
                  allowed_grants: tuple[str, ...] = (), timeout: float = 5.0,
                  source_root: str | None = None,
-                 required_features: tuple[str, ...] = ()):
+                 required_features: tuple[str, ...] = (),
+                 rust_host_executable: str | None = None,
+                 rust_host_sha256: str | None = None):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         plan_activation({manifest.id: manifest}, (manifest.id,),
@@ -68,7 +94,11 @@ class PluginProcess:
         self.timeout = float(timeout)
         self.source_root = source_root
         self.required_features = frozenset(expected)
+        rust_host_artifact(rust_host_executable, rust_host_sha256)
+        self.rust_host_executable = rust_host_executable
+        self.rust_host_sha256 = rust_host_sha256
         self.process: subprocess.Popen | None = None
+        self._group_id: int | None = None
         self._temporary: tempfile.TemporaryDirectory | None = None
         self._frames: queue.Queue[object] = queue.Queue(maxsize=2)
         self._stopping = threading.Event()
@@ -191,15 +221,25 @@ class PluginProcess:
         self._slot_held = True
         try:
             copied = self._artifact()
+            host_bytes = rust_host_artifact(self.rust_host_executable, self.rust_host_sha256)
+            command = [str(copied)]
+            if host_bytes is not None:
+                host_copy = Path(self._temporary.name) / "rust-host"
+                host_copy.write_bytes(host_bytes)
+                host_copy.chmod(0o700)
+                command = [str(host_copy), "--child", str(copied)]
             child_env = {"PATH": os.defpath, "LANG": "C.UTF-8",
                          "AGENTURM_PLUGIN_PROTOCOL": "1"}
             if self.source_root is not None:
                 child_env["AGENTURM_PLUGIN_SOURCE_ROOT"] = self.source_root
             self.process = subprocess.Popen(
-                [str(copied)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, cwd=self._temporary.name,
                 env=child_env,
-                bufsize=0, close_fds=True)
+                bufsize=0, close_fds=True,
+                start_new_session=host_bytes is not None)
+            if host_bytes is not None:
+                self._group_id = self.process.pid
             threading.Thread(target=self._reader, args=(self.process.stdout,),
                              name="agenturm-plugin-data", daemon=True).start()
             threading.Thread(target=self._drain_stderr, args=(self.process.stderr,),
@@ -274,15 +314,34 @@ class PluginProcess:
                     thread = threading.Thread(target=request_stop, name="agenturm-plugin-stop", daemon=True)
                     thread.start()
                     thread.join(min(self.timeout, 0.2))
-                try:
-                    process.wait(timeout=min(self.timeout, 2.0) if not force else 0.1)
-                except subprocess.TimeoutExpired:
-                    process.terminate()
+                if self._group_id is not None:
+                    if force:
+                        self._signal_group(signal.SIGTERM)
                     try:
-                        process.wait(timeout=1.0)
+                        process.wait(timeout=min(self.timeout, 2.0) if not force else 0.1)
                     except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=1.0)
+                        self._signal_group(signal.SIGTERM)
+                        try:
+                            process.wait(timeout=1.0)
+                        except subprocess.TimeoutExpired:
+                            self._signal_group(signal.SIGKILL)
+                            process.wait(timeout=1.0)
+                else:
+                    try:
+                        process.wait(timeout=min(self.timeout, 2.0) if not force else 0.1)
+                    except subprocess.TimeoutExpired:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=1.0)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=1.0)
+            if self._group_id is not None:
+                # The host may have crashed while its child kept running.
+                # Its dedicated group contains only these two processes.
+                if force or process.returncode != 0:
+                    self._signal_group(signal.SIGKILL)
+                self._group_id = None
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     try:
@@ -296,6 +355,13 @@ class PluginProcess:
         if self._slot_held:
             _process_slots.release()
             self._slot_held = False
+
+    def _signal_group(self, sig: int) -> None:
+        if self._group_id is not None:
+            try:
+                os.killpg(self._group_id, sig)
+            except ProcessLookupError:
+                pass
 
     def __enter__(self) -> PluginProcess:
         return self.start()
