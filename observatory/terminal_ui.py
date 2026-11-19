@@ -1429,6 +1429,8 @@ class ObservatoryApp(App):
         self.workflow_snooze=0
         self.workflow_delivery="Disabled"
         self.last_update=0
+        self._last_tick_snapshot=None
+        self._last_tick_at=0.0
         self.table_data={}
         self.table_signatures={}
         self.inspector_signatures={}
@@ -1915,7 +1917,7 @@ class ObservatoryApp(App):
         self.query_one('#host-detail').styles.height=8
         self.update_layout()
         if not self.feed.thread.is_alive():self.feed.thread.start()
-        self.refresh_timer=self.set_interval(.5,self.refresh_data)
+        self.refresh_timer=self.set_interval(.5,self.refresh_tick)
         self.action_page(self.preference_view)
 
     def exit(self, result=None, return_code=0, message=None):
@@ -2170,6 +2172,20 @@ class ObservatoryApp(App):
             self.pause_change_key=change_key
             self.pause_change_count=changed_records(frozen,live,page)
         return frozen
+
+    def refresh_tick(self):
+        """Leave unchanged idle chrome alone; direct actions still render now."""
+        snapshot=self.feed.snapshot
+        now=time.monotonic()
+        if (snapshot is self._last_tick_snapshot and snapshot.updated and not snapshot.error
+                and self.feed.connection.phase=='live'
+                and self.last_update!=-1 and not self.feed.retry_requested
+                and not getattr(self.screen,'selections',None)
+                and now-self._last_tick_at<2.0):
+            return
+        self._last_tick_snapshot=snapshot
+        self._last_tick_at=now
+        self.refresh_data()
 
     def refresh_data(self):
         # Timer messages can already be queued when child widgets unmount.

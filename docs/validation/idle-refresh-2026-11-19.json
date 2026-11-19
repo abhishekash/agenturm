@@ -1,0 +1,189 @@
+{
+  "runs": [
+    {
+      "name": "clean_parent_60s",
+      "source_head": "0bd31e9a4ab10215a1ba8b6ab0e87e898d52bb94",
+      "source_dirty": false,
+      "warmup_seconds": 30.0,
+      "requested_idle_seconds": 60.0,
+      "publishable_by_harness": false,
+      "generated_fixture": true,
+      "processes": {
+        "receiver": {
+          "cpu_one_core_percent": 3.283328790252123,
+          "sampled_seconds": 60.00008302088827,
+          "peak_sampled_rss_mib": 63.87109375,
+          "last_rss_mib": 63.87109375
+        },
+        "cockpit": {
+          "cpu_one_core_percent": 5.916663903882723,
+          "sampled_seconds": 60.00002801697701,
+          "peak_sampled_rss_mib": 70.3359375,
+          "last_rss_mib": 70.3359375
+        },
+        "driver": {
+          "cpu_one_core_percent": 0.13333332352650729,
+          "sampled_seconds": 60.00000441307202,
+          "peak_sampled_rss_mib": 36.42578125,
+          "last_rss_mib": 36.42578125
+        }
+      },
+      "whole_monitor": {
+        "cpu_one_core_percent": 9.199992694134846,
+        "peak_sampled_rss_mib": 134.20703125,
+        "median_sampled_rss_mib": 132.84765625,
+        "last_rss_mib": 134.20703125
+      },
+      "no_timed_api_or_keyboard_work": true,
+      "no_provider_calls": true,
+      "native_read_errors": 0,
+      "exit_status": {
+        "cockpit": {
+          "status": "0",
+          "signal": ""
+        },
+        "receiver": 0
+      },
+      "errors": []
+    },
+    {
+      "name": "timer_only_60s",
+      "source_head": "0bd31e9a4ab10215a1ba8b6ab0e87e898d52bb94",
+      "source_dirty": true,
+      "warmup_seconds": 30.0,
+      "requested_idle_seconds": 60.0,
+      "publishable_by_harness": false,
+      "generated_fixture": true,
+      "processes": {
+        "receiver": {
+          "cpu_one_core_percent": 3.0499929036409785,
+          "sampled_seconds": 60.00013960083015,
+          "peak_sampled_rss_mib": 64.19140625,
+          "last_rss_mib": 64.18359375
+        },
+        "cockpit": {
+          "cpu_one_core_percent": 5.28332397392643,
+          "sampled_seconds": 60.000106289982796,
+          "peak_sampled_rss_mib": 70.3125,
+          "last_rss_mib": 70.28125
+        },
+        "driver": {
+          "cpu_one_core_percent": 0.133333445364807,
+          "sampled_seconds": 59.99994958587922,
+          "peak_sampled_rss_mib": 36.44140625,
+          "last_rss_mib": 36.44140625
+        }
+      },
+      "whole_monitor": {
+        "cpu_one_core_percent": 8.333316877567409,
+        "peak_sampled_rss_mib": 134.50390625,
+        "median_sampled_rss_mib": 133.71875,
+        "last_rss_mib": 134.46484375
+      },
+      "no_timed_api_or_keyboard_work": true,
+      "no_provider_calls": true,
+      "native_read_errors": 0,
+      "exit_status": {
+        "cockpit": {
+          "status": "0",
+          "signal": ""
+        },
+        "receiver": 0
+      },
+      "errors": []
+    },
+    {
+      "name": "coalesced_dirty_60s",
+      "source_head": "0bd31e9a4ab10215a1ba8b6ab0e87e898d52bb94",
+      "source_dirty": true,
+      "warmup_seconds": 30.0,
+      "requested_idle_seconds": 60.0,
+      "publishable_by_harness": false,
+      "generated_fixture": true,
+      "processes": {
+        "receiver": {
+          "cpu_one_core_percent": 3.1499950670481613,
+          "sampled_seconds": 60.00009396113455,
+          "peak_sampled_rss_mib": 51.77734375,
+          "last_rss_mib": 51.77734375
+        },
+        "cockpit": {
+          "cpu_one_core_percent": 4.233323365760403,
+          "sampled_seconds": 60.000141273019835,
+          "peak_sampled_rss_mib": 63.34375,
+          "last_rss_mib": 63.3125
+        },
+        "driver": {
+          "cpu_one_core_percent": 0.11666632638774306,
+          "sampled_seconds": 60.000175001099706,
+          "peak_sampled_rss_mib": 31.28125,
+          "last_rss_mib": 31.28125
+        }
+      },
+      "whole_monitor": {
+        "cpu_one_core_percent": 7.383318432808564,
+        "peak_sampled_rss_mib": 115.08984375,
+        "median_sampled_rss_mib": 114.8515625,
+        "last_rss_mib": 115.08984375
+      },
+      "no_timed_api_or_keyboard_work": true,
+      "no_provider_calls": true,
+      "native_read_errors": 0,
+      "exit_status": {
+        "cockpit": {
+          "status": "0",
+          "signal": ""
+        },
+        "receiver": 0
+      },
+      "errors": []
+    },
+    {
+      "name": "coalesced_clean_300s",
+      "source_head": "bffdb4562d6c7db574875ca49f8c8c9305394c7c",
+      "source_dirty": false,
+      "warmup_seconds": 60.0,
+      "requested_idle_seconds": 300.0,
+      "publishable_by_harness": true,
+      "generated_fixture": true,
+      "processes": {
+        "receiver": {
+          "cpu_one_core_percent": 3.083333894561807,
+          "sampled_seconds": 299.9999453939963,
+          "peak_sampled_rss_mib": 51.234375,
+          "last_rss_mib": 51.234375
+        },
+        "cockpit": {
+          "cpu_one_core_percent": 4.016669902923964,
+          "sampled_seconds": 299.99975828803144,
+          "peak_sampled_rss_mib": 63.56640625,
+          "last_rss_mib": 63.53515625
+        },
+        "driver": {
+          "cpu_one_core_percent": 0.13000008611378222,
+          "sampled_seconds": 299.99980127601884,
+          "peak_sampled_rss_mib": 31.58203125,
+          "last_rss_mib": 31.58203125
+        }
+      },
+      "whole_monitor": {
+        "cpu_one_core_percent": 7.100003797485771,
+        "peak_sampled_rss_mib": 114.796875,
+        "median_sampled_rss_mib": 114.5390625,
+        "last_rss_mib": 114.76953125
+      },
+      "no_timed_api_or_keyboard_work": true,
+      "no_provider_calls": true,
+      "native_read_errors": 0,
+      "exit_status": {
+        "cockpit": {
+          "status": "0",
+          "signal": ""
+        },
+        "receiver": 0
+      },
+      "errors": []
+    }
+  ],
+  "retained_history_gate_passed": false
+}
