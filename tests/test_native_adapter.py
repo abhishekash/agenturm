@@ -8,7 +8,7 @@ from pathlib import Path
 
 from observatory.core import Store
 from observatory.local_activity import emit
-from observatory.local_agents import LocalAgents
+from observatory.local_agents import LocalAgents, Session
 from observatory.native_sources import NativeSourceSpec
 
 
@@ -81,7 +81,11 @@ class AdapterTests(unittest.TestCase):
                 store.close()
 
     def test_adapter_contract_is_validated_before_collection(self):
-        with self.assertRaisesRegex(ValueError, "invalid native source adapter"):
+        with self.assertRaisesRegex(ValueError, "no native adapter"):
+            Session(None, Path("/absent/unknown.jsonl"), "Unknown")
+        with self.assertRaisesRegex(ValueError, "requires an adapter factory"):
+            NativeSourceSpec("bad", "Bad", lambda: Path("/absent"))
+        with self.assertRaisesRegex(ValueError, "requires an adapter factory"):
             NativeSourceSpec("bad", "Bad", lambda: Path("/absent"), adapter_factory=object())
         with self.assertRaisesRegex(ValueError, "has an invalid adapter"):
             NativeSourceSpec("bad", "Bad", lambda: Path("/absent"),
@@ -134,9 +138,9 @@ class AdapterTests(unittest.TestCase):
             alias = root / "alias"
             alias.symlink_to(overlap, target_is_directory=True)
             specs = (
-                NativeSourceSpec("one", "One", lambda: overlap),
-                NativeSourceSpec("two", "Two", lambda: alias),
-                NativeSourceSpec("valid", "Valid", lambda: valid),
+                NativeSourceSpec("one", "One", lambda: overlap, adapter_factory=FixtureAdapter),
+                NativeSourceSpec("two", "Two", lambda: alias, adapter_factory=FixtureAdapter),
+                NativeSourceSpec("valid", "Valid", lambda: valid, adapter_factory=FixtureAdapter),
             )
             collector = LocalAgents(None, source_specs=specs, reader_specs=())
             collector.discover()
