@@ -73,7 +73,8 @@ try:
                   'cursor':request['cursor'],'records':[]})
             continue
         record = {'event_id':'fixture-1','revision':0,'kind':'lifecycle',
-                  'time_ns':'9007199254740993','payload':{'state':'completed'}}
+                  'time_ns':'9007199254740993','payload':{'state':'completed'},
+                  'identity':{'session_id':'fixture-native-session'}}
         send({'type':'batch','protocol':1,
               'source_id':'wrong' if MODE == 'wrong_source' else request['source_id'],
               'cursor':'next','records':[record]})

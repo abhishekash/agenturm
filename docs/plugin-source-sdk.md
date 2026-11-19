@@ -23,4 +23,22 @@ run_adapter("example.source", MyAdapter())
 
 The executable runs with the user's OS privileges and is not sandboxed. Host grants restrict Agenturm APIs, not filesystem or network syscalls. The manifest hash covers only the executable bytes. A Python entrypoint script that imports mutable installed packages is therefore not a closed, version-pinned artifact; package a self-contained executable or zipapp and explicitly approve its dependency chain before production activation. The current SDK and manifest are provisional; no default collector auto-discovers or launches third-party code.
 
+## Explicit receiver activation
+
+Create a TOML file outside untrusted project directories and name each approved manifest and source. The receiver reads only the file passed to `--plugin-config`; it does not scan for plugins. This initial path accepts up to four independent source adapters and metadata-only capture.
+
+```toml
+schema = 1
+
+[[sources]]
+manifest = "/absolute/path/to/approved-plugin.toml"
+source_id = "my-source"
+grants = ["configured-source-read"]
+capture = "metadata-only"
+poll_interval = 0.5
+timeout = 5.0
+```
+
+Run `agenturm serve --plugin-config /absolute/path/to/plugins.toml` on a loopback address, then connect the cockpit to that receiver. The manifest separately pins the executable hash; an unexpected change prevents launch. `/api/health` reports worker state, restart count, last cursor, projection coverage and a host-authored failure reason. Revoking capture through the host policy API fences the worker and removes its admitted metadata. A source pauses at the current 50,000-evidence-row cap; retention and compaction remain required for continuously running production adapters.
+
 Conformance checks exercise a compiled Rust fixture and a separate Python executable across the same host, durable inbox and lifecycle projection. The Python executable test is a protocol proof, not a production distribution or performance measurement. See the [execution plan](rfcs/rust-plugin-kernel-plan.md) and [projection checkpoint](validation/plugin-lifecycle-projection.md).

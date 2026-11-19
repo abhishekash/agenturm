@@ -16,5 +16,18 @@ run_adapter(&quot;example.source&quot;, MyAdapter())
 </code></pre>
 <p><code>run_adapter</code> reserves stdout for framed protocol messages. It validates the handshake, source ID, cursor, record count, byte budget, wire shape, acknowledgment order and stop message. It does not validate the source's semantic truth; the host's metadata admission accepts only lifecycle, usage and diagnostic payloads today. Message, tool and relationship records are not yet admitted. Raw prompts, output, paths and free text are outside this metadata-only contract.</p>
 <p>The executable runs with the user's OS privileges and is not sandboxed. Host grants restrict Agenturm APIs, not filesystem or network syscalls. The manifest hash covers only the executable bytes. A Python entrypoint script that imports mutable installed packages is therefore not a closed, version-pinned artifact; package a self-contained executable or zipapp and explicitly approve its dependency chain before production activation. The current SDK and manifest are provisional; no default collector auto-discovers or launches third-party code.</p>
+<h2>Explicit receiver activation</h2>
+<p>Create a TOML file outside untrusted project directories and name each approved manifest and source. The receiver reads only the file passed to <code>--plugin-config</code>; it does not scan for plugins. This initial path accepts up to four independent source adapters and metadata-only capture.</p>
+<pre><code class="language-toml">schema = 1
+
+[[sources]]
+manifest = &quot;/absolute/path/to/approved-plugin.toml&quot;
+source_id = &quot;my-source&quot;
+grants = [&quot;configured-source-read&quot;]
+capture = &quot;metadata-only&quot;
+poll_interval = 0.5
+timeout = 5.0
+</code></pre>
+<p>Run <code>agenturm serve --plugin-config /absolute/path/to/plugins.toml</code> on a loopback address, then connect the cockpit to that receiver. The manifest separately pins the executable hash; an unexpected change prevents launch. <code>/api/health</code> reports worker state, restart count, last cursor, projection coverage and a host-authored failure reason. Revoking capture through the host policy API fences the worker and removes its admitted metadata. A source pauses at the current 50,000-evidence-row cap; retention and compaction remain required for continuously running production adapters.</p>
 <p>Conformance checks exercise a compiled Rust fixture and a separate Python executable across the same host, durable inbox and lifecycle projection. The Python executable test is a protocol proof, not a production distribution or performance measurement. See the <a href="rfcs/rust-plugin-kernel-plan.html">execution plan</a> and <a href="validation/plugin-lifecycle-projection.html">projection checkpoint</a>.</p>
 </main></body></html>

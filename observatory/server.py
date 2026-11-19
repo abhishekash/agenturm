@@ -515,7 +515,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
 
 def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
           watch_jsonl=(), watch_service="agent-harness", retention_days=None, local_agents=True, metadata_only=False,
-          managed_db=False, no_auth=False, allowed_hosts=(), collector_registry=None):
+          managed_db=False, no_auth=False, allowed_hosts=(), collector_registry=None,
+          plugin_config=None):
     if db_path is None:
         from .receiver_state import telemetry_path,prepare_state_directory
         prepare_state_directory();db_path=str(telemetry_path());managed_db=True
@@ -525,6 +526,12 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
     if not token and not no_auth:
         if not loopback_host(host):raise ValueError('An externally bound receiver requires an explicit token and allowed Host configuration.')
         token=local_token(port,create=True)
+    plugin_sources = ()
+    if plugin_config is not None:
+        if not loopback_host(host):
+            raise ValueError("plugin adapters require a loopback receiver")
+        from .plugin_config import read_plugin_config
+        plugin_sources = read_plugin_config(plugin_config)
     store = Store(db_path, async_derived_refresh=True)
     retention_days=retention_policy(store,managed=managed_db,requested=retention_days)
     if retention_days is not None:
@@ -538,15 +545,21 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
     store.local_agent_monitor = local
     watch = start_watchers(store, watch_jsonl, watch_service) if watch_jsonl else None
     maintenance = _start_retention(store, retention_days) if retention_days is not None else None
+    plugin_supervisor = None
     print(f"Agenturm receiver listening at http://{host}:{server.server_port} (database: {db_path})", flush=True)
     if local:
         print("Watching local Codex / Claude Code sessions · " + ("metadata only" if metadata_only else "activity and bounded, redacted content"), flush=True)
     try:
+        if plugin_sources:
+            from .plugin_supervisor import PluginSupervisor
+            plugin_supervisor = PluginSupervisor(store, plugin_sources).start()
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+        if plugin_supervisor:
+            plugin_supervisor.close()
         if local:
             local.close()
         if watch:

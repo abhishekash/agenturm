@@ -52,6 +52,8 @@ def main():
     server.add_argument("--no-local-agents", dest="local_agents", action="store_false",
                         help="disable automatic local Codex / Claude Code session discovery")
     server.add_argument("--metadata-only", action="store_true", help="omit native session text, commands and outputs")
+    server.add_argument("--plugin-config", type=Path,
+                        help="explicit metadata-only source plugin configuration TOML (loopback only)")
     launcher = sub.add_parser("run", help="automatically capture model calls from a Python agent")
     launcher.add_argument("--endpoint", default=os.environ.get("OBSERVATORY_ENDPOINT", "http://127.0.0.1:4318"),
                           help="receiver address (or OBSERVATORY_ENDPOINT)")
@@ -121,7 +123,8 @@ def main():
         try:
             serve(args.db, args.host, args.port, args.token, args.watch_jsonl,
                   args.watch_service, args.retention_days, args.local_agents, args.metadata_only,
-                  managed_db=managed_db, no_auth=args.no_auth, allowed_hosts=args.allowed_host)
+                  managed_db=managed_db, no_auth=args.no_auth, allowed_hosts=args.allowed_host,
+                  plugin_config=args.plugin_config)
         except (OSError, ValueError) as exc:
             parser.exit(2, f"Agenturm: {exc}\n")
     elif args.command == "run":
