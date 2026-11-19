@@ -23,13 +23,14 @@ if TYPE_CHECKING:
 class PluginSession:
     def __init__(self, store: Store, manifest: PluginManifest, *, source_id: str,
                  allowed_grants: tuple[str, ...] = (), timeout: float = 5.0,
-                 source_root: str | None = None):
+                 source_root: str | None = None,
+                 required_features: tuple[str, ...] = ()):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         self.store = store
         self.process = PluginProcess(manifest, source_id=source_id,
                                      allowed_grants=allowed_grants, timeout=timeout,
-                                     source_root=source_root)
+                                     source_root=source_root, required_features=required_features)
         self.lease: SourceLease | None = None
         self.cursor: str | None = None
         self.projection_error: str | None = None

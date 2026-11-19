@@ -130,7 +130,7 @@ def _text(value: object, name: str, limit: int) -> str:
     return value
 
 
-def validate_hello_ack(message: dict, *, plugin_id: str) -> None:
+def validate_hello_ack(message: dict, *, plugin_id: str) -> tuple[str, ...]:
     if set(message) != {"type", "protocol", "plugin_id", "features"}:
         raise ProtocolError("invalid hello acknowledgment fields")
     if (message["type"] != "hello_ack" or type(message["protocol"]) is not int
@@ -138,10 +138,13 @@ def validate_hello_ack(message: dict, *, plugin_id: str) -> None:
         raise ProtocolError("plugin identity or protocol mismatch")
     features = message["features"]
     if (not isinstance(features, list) or len(features) > 32
-            or any(not isinstance(item, str) or len(item) > 64 for item in features)
+            or any(not isinstance(item, str) or len(item) > 64
+                   or not re.fullmatch(r"[a-z][a-z0-9.-]*/[1-9][0-9]*", item)
+                   for item in features)
             or len(set(features)) != len(features)
             or "source-adapter/1" not in features):
         raise ProtocolError("source adapter feature unavailable")
+    return tuple(features)
 
 
 @dataclass(frozen=True)

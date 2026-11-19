@@ -32,7 +32,8 @@ _process_slots = threading.BoundedSemaphore(MAX_PROCESSES)
 class PluginProcess:
     def __init__(self, manifest: PluginManifest, *, source_id: str,
                  allowed_grants: tuple[str, ...] = (), timeout: float = 5.0,
-                 source_root: str | None = None):
+                 source_root: str | None = None,
+                 required_features: tuple[str, ...] = ()):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         plan_activation({manifest.id: manifest}, (manifest.id,),
@@ -54,10 +55,19 @@ class PluginProcess:
             if ("configured-root/1" not in manifest.provides
                     or "configured-source-read" not in manifest.grants):
                 raise ValueError("plugin source root requires a declared feature and grant")
+        if (not isinstance(required_features, tuple)
+                or any(not isinstance(feature, str) for feature in required_features)):
+            raise ValueError("invalid required plugin features")
+        expected = {"source-adapter/1", *required_features}
+        if source_root is not None:
+            expected.add("configured-root/1")
+        if not expected <= set(manifest.provides):
+            raise ProtocolError("manifest lacks a required plugin feature")
         self.manifest = manifest
         self.source_id = source_id
         self.timeout = float(timeout)
         self.source_root = source_root
+        self.required_features = frozenset(expected)
         self.process: subprocess.Popen | None = None
         self._temporary: tempfile.TemporaryDirectory | None = None
         self._frames: queue.Queue[object] = queue.Queue(maxsize=2)
@@ -197,7 +207,9 @@ class PluginProcess:
             self._send({"type": "hello", "protocol": PROTOCOL_MAJOR,
                         "plugin_id": self.manifest.id, "source_id": self.source_id,
                         "max_frame_bytes": MAX_FRAME_BYTES})
-            validate_hello_ack(self._next(), plugin_id=self.manifest.id)
+            advertised = set(validate_hello_ack(self._next(), plugin_id=self.manifest.id))
+            if not self.required_features <= advertised or not advertised <= set(self.manifest.provides):
+                raise ProtocolError("plugin handshake features differ from approved manifest")
             return self
         except BaseException:
             self.close(force=True)
