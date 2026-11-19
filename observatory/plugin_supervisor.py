@@ -23,6 +23,7 @@ class PluginSource:
     allowed_grants: tuple[str, ...] = ()
     poll_interval: float = 0.5
     timeout: float = 5.0
+    replaces: tuple[str, ...] = ()
 
 
 _REASONS = {

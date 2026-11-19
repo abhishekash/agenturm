@@ -532,6 +532,26 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
             raise ValueError("plugin adapters require a loopback receiver")
         from .plugin_config import read_plugin_config
         plugin_sources = read_plugin_config(plugin_config)
+        # Activation validation is inert. Fail before opening the Store or
+        # disabling a trusted source if a configured child cannot be admitted.
+        from .plugin_process import PluginProcess
+        for source in plugin_sources:
+            child = PluginProcess(source.manifest, source_id=source.source_id,
+                                  allowed_grants=source.allowed_grants, timeout=source.timeout)
+            if source.replaces:
+                child.verify_artifact()
+    replacements = tuple(name for source in plugin_sources for name in source.replaces)
+    if replacements:
+        if not local_agents:
+            raise ValueError("built-in source replacement requires local collection")
+        from .collector_runtime import CollectorRegistry
+        selected = collector_registry if collector_registry is not None else CollectorRegistry.bundled()
+        if not isinstance(selected, CollectorRegistry):
+            raise TypeError("collector registry must be a CollectorRegistry")
+        known_sources = {spec.id for spec in selected.sources}
+        if not set(replacements) <= known_sources:
+            raise ValueError("plugin replacement names an unavailable built-in source")
+        collector_registry = selected.without(*replacements)
     store = Store(db_path, async_derived_refresh=True)
     retention_days=retention_policy(store,managed=managed_db,requested=retention_days)
     if retention_days is not None:
