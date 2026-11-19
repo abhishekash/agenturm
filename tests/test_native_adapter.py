@@ -52,7 +52,8 @@ class AdapterTests(unittest.TestCase):
 
     def test_new_bundled_module_needs_no_dispatch_edit(self):
         import observatory.native_sources as sources
-        module = SimpleNamespace(SOURCE_PRIORITY=9, source_spec=lambda: NativeSourceSpec(
+        module = SimpleNamespace(__name__="observatory.adapters.fixture", SOURCE_PRIORITY=9,
+                                 source_spec=lambda: NativeSourceSpec(
             "fixture", "Fixture", lambda: Path("/absent"), adapter_factory=FixtureAdapter))
         with (patch.object(sources.pkgutil, "iter_modules", return_value=[SimpleNamespace(name="fixture")]),
               patch.object(sources.importlib, "import_module", return_value=module)):
@@ -62,7 +63,8 @@ class AdapterTests(unittest.TestCase):
 
     def test_bundled_factory_rejects_duplicate_ids(self):
         import observatory.native_sources as sources
-        module = SimpleNamespace(SOURCE_PRIORITY=9, source_spec=lambda: NativeSourceSpec(
+        module = SimpleNamespace(__name__="observatory.adapters.fixture", SOURCE_PRIORITY=9,
+                                 source_spec=lambda: NativeSourceSpec(
             "fixture", "Fixture", lambda: Path("/absent"), adapter_factory=FixtureAdapter))
         with (patch.object(sources.pkgutil, "iter_modules", return_value=[
                     SimpleNamespace(name="one"), SimpleNamespace(name="two")]),

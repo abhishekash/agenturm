@@ -141,6 +141,18 @@
 <td><a href="https://github.com/abhishekash/agenturm/pull/167">#167</a></td>
 <td>Adds a bounded source-local evidence horizon with atomic rollover, late-correction fencing, visible retention gaps and invalidated derived session state. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/plugin-retention-horizon.md">retention checkpoint</a>. Affected history remains incomplete; full retained-history acceptance is still open.</td>
 </tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/168">#168</a></td>
+<td>Bundled JSONL harness modules declare source factories discovered from Agenturm's trusted package; direct session construction uses the same registry. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/bundled-harness-discovery.md">factory checkpoint</a>. External harnesses still require explicit process config.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/169">#169</a></td>
+<td>Adds an opt-in reusable Rust process host with bounded framing, control sequencing and child cleanup, while Python retains artifact/grant/policy/lease/commit/ack authority. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-plugin-host.md">host checkpoint</a>. Wheel packaging and built-in harness parity remain open.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/170">#170</a></td>
+<td>Moves OpenCode reader registration into its bundled adapter module and discovers reader factories through the same trusted package scanner. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/bundled-reader-discovery.md">reader checkpoint</a>. It remains an in-process compatibility reader.</td>
+</tr>
 </tbody>
 </table></div>
 <p>The existing OpenCode reader is registered and its legacy operation facts now use a contributor, but more source-specific interpretation remains. The synthetic sixth adapter proves collector injection. Explicit process-adapter activation is available by configuration, but remains a provisional metadata-only path without a bundled production harness. The Rust sample executes through this real receiver path, while the loopback connector and Prompt signals pane prove narrower boundaries. The UI pane registry is a trusted constructor hook, not a production plugin host. No Rust production harness parity, external UI discovery, storage cutover, general external connector, wheel packaging, or retained-history performance-gate pass has been delivered. The Python Store remains the only database writer.</p>
