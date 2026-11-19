@@ -766,34 +766,6 @@ class Session:
                 key, (label, since) = next(iter(self.kiro_interactions.items()))
                 state, self.waiting_for, request_key = "waiting", label, key
                 self.pending_request_times[key] = since
-        else:
-            message = row.get("message") or {}
-            if not isinstance(message, dict):
-                return
-            if row.get('type')=='user' and claude_local_command(row):
-                return
-            blocks = message.get("content")
-            blocks = blocks if isinstance(blocks, list) else []
-            if row.get("type") == "user" and not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
-                state = "running"
-                self.pending_tools.clear()
-            for block in blocks:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") == "tool_use":
-                    key = str(block.get('id'))
-                    name = str(block.get('name') or 'Tool')
-                    self.pending_tools[key] = name
-                    if name.rsplit('.',1)[-1] in {'request_user_input','AskUserQuestion'}:
-                        self.pending_request_times[key] = stamp
-                    state = "running"
-                elif block.get("type") == "tool_result":
-                    self.pending_tools.pop(str(block.get("tool_use_id")), None)
-                    state = "running"
-                    self.waiting_for = ""
-            if message.get("stop_reason") == "end_turn":
-                state = "completed"
-                self.pending_tools.clear()
         if self.pending_tools:
             names = list(self.pending_tools.values())
             if any(name.rsplit(".", 1)[-1] in {"request_user_input", "AskUserQuestion"} for name in names):
@@ -1153,86 +1125,8 @@ class Session:
         return []
 
     def claude(self, row, stamp, prior_models=None):
-        row_session = _safe_identifier(row.get("sessionId"))
-        row_agent = _safe_identifier(row.get("agentId"))
-        if self.claude_agent_id:
-            # Shared-session workers keep their own evidence identity even when
-            # every record repeats the root sessionId.
-            self.session_id = row_agent or self.claude_agent_id
-            self.native_session_id = row_session or self.claude_parent_session_id or self.session_id
-            self.native_worker_id = self.claude_agent_id
-        elif row_session:
-            self.session_id = row_session
-            self.native_session_id = row_session
-            if not self.native_root_session_id:
-                self.native_root_session_id = row_session
-            self.agent_id = canonical_agent_id(self.runtime, self.agent_namespace, row_session)
-            if not row_agent and not self.parent_agent_id:
-                self.relationship_kind = "unknown"
-                self.relationship_state = "unresolved"
-                self.relationship_provenance = provenance(
-                    "claude-code", "main transcript; no parent metadata")
-        self.project = Path(row["cwd"]).name if row.get("cwd") else self.project
-        message = row.get("message") or {}
-        if not isinstance(message, dict):
-            return []
-        if row.get('type')=='user' and claude_local_command(row):
-            return []
-        content = message.get("content") or []
-        blocks = content if isinstance(content, list) else []
-        result = []
-        if row.get("type") == "user":
-            tools = [block for block in blocks if isinstance(block, dict) and block.get("type") == "tool_result"]
-            if not tools:
-                self.turn = str(row.get("uuid") or stamp)
-                self.started[self.turn] = stamp
-                result.append(self.root(stamp, "running"))
-            for block in tools:
-                key = block.get("tool_use_id")
-                if key in self.spawn_calls:
-                    self.spawn_calls.pop(key, None)
-                    if not block.get("is_error"):
-                        child = _spawned_agent_id(row.get("toolUseResult"))
-                        if child:
-                            self.announce(child, stamp,
-                                          "tool_result.toolUseResult.agentId (Claude Task/Agent)")
-                name, start, turn = self.calls.get(key, ("Claude tool", stamp, self.turn))
-                previous, self.turn = self.turn, turn
-                result.append(self.span(("tool", key), name, stamp,
-                    {"gen_ai.operation.name": "execute_tool", "tool.name": name, **mcp_attributes(name)},
-                    start=start, error=bool(block.get("is_error"))))
-                self.turn = previous
-        elif row.get("type") == "assistant":
-            self.model = message.get("model") or self.model
-            key = message.get("id") or row.get("uuid") or stamp
-            usage = message.get("usage")
-            if isinstance(usage, dict):
-                previous = self.usage.get(key)
-                if previous is None:
-                    previous = {}
-                    # Evicting maxima must not lower a persisted model span if
-                    # an old streaming update arrives after the cache window.
-                    if self.usage.evictions or self.usage.dropped_oversized:
-                        span_id = identity(self.source_id, ("model", key), size=16)
-                        span = (prior_models or {}).get((identity(self.source_id, self.turn), span_id))
-                        if span:
-                            previous = span["attributes"].get("observatory.native_usage", previous)
-                        elif hasattr(self.store, "native_model_usage"):
-                            previous = self.store.native_model_usage(
-                                self.source_id, identity(self.source_id, self.turn), span_id)
-                for field in CLAUDE_USAGE_FIELDS:
-                    previous[field] = max(count(previous.get(field)), count(usage.get(field)))
-                self.usage[key] = previous
-                result.append(self.model_span(("model", key), previous, stamp, claude=True))
-            for block in blocks:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    name = str(block.get("name") or "Claude tool")
-                    self.calls[block.get("id")] = (name, stamp, self.turn)
-                    if name in SPAWN_TOOLS:
-                        self.spawn_calls[block.get("id")] = (name, stamp, self.turn)
-            if message.get("stop_reason") == "end_turn":
-                result.append(self.root(stamp, "completed"))
-        return result
+        """Compatibility entry point; Claude format logic lives in its adapter."""
+        return self.adapter.parse(self, row, stamp, prior_models or {})
 
     def read_initial_task(self, stream):
         """Read a bounded prefix for identity only; never replay old work or state."""
@@ -1267,10 +1161,6 @@ class Session:
                         content = payload.get('message')
                     elif row.get('type') == 'response_item' and payload.get('type') == 'message' and payload.get('role') == 'user':
                         content = payload.get('content')
-                elif self.runtime == 'Claude Code' and row.get('type') == 'user':
-                    message = row.get('message') or {}
-                    if isinstance(message, dict):
-                        content = message.get('content')
                 elif self.runtime == 'Kiro':
                     payload = row.get('payload') or {}
                     if isinstance(payload, dict) and payload.get('type') == 'user' and payload.get('source') != 'steer':

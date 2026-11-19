@@ -20,4 +20,7 @@ def builtin_adapter(runtime: str) -> NativeSessionAdapter | None:
     if runtime == "Pi":
         from .adapters.pi import PiAdapter
         return PiAdapter()
+    if runtime == "Claude Code":
+        from .adapters.claude import ClaudeAdapter
+        return ClaudeAdapter()
     return None

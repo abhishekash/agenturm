@@ -253,48 +253,9 @@ def codex_activity(session, row, stamp):
 
 
 def claude_activity(session, row, stamp):
-    message = row.get("message") or {}
-    if not isinstance(message, dict):
-        return []
-    content = message.get("content") or []
-    blocks = content if isinstance(content, list) else []
-    out = []
-    if row.get("type") == "assistant" and isinstance(message.get("usage"), dict):
-        out.append(emit(session, row, stamp, "model", "usage", session.model or "Model not reported", message["usage"], "reported"))
-    text = plaintext(content)
-    if text and row.get("type") in {"assistant", "user"}:
-        role = row["type"]
-        if role == "user" and session.capture_details:
-            remember_task(session, content)
-        out.append(emit(session, row, stamp, "message", role, text.splitlines()[0][:300] if session.capture_details else role+" message", text))
-    for block in blocks:
-        if not isinstance(block, dict):
-            continue
-        if block.get("type") == "tool_use":
-            name, args = str(block.get("name") or "Tool"), block.get("input") or {}
-            domain = "shell" if name.lower() in {"bash", "shell", "terminal"} else "file" if name.lower() in {"read", "write", "edit", "glob", "grep", "multiedit"} else "browser" if name.lower() in {"webfetch", "websearch"} else "tool"
-            subject = args.get("command") or args.get("file_path") or args.get("path") or args.get("url") or args.get("query") or name if isinstance(args, dict) else name
-            mcp = mcp_attributes(name)
-            if mcp:
-                domain, subject = "mcp", mcp["mcp.server.name"]
-            session.tool_inputs[str(block.get("id"))] = (name, safe(subject, 500) if session.capture_details else "", session.turn)
-            out.append(emit(session, row, stamp, domain, name, subject if session.capture_details else name,
-                {"arguments": args} if mcp else args, "started", {"tool.name": name, **mcp},
-                call_id=block.get("id") if mcp else None))
-        elif block.get("type") == "tool_result":
-            name, subject, call_turn = session.tool_inputs.pop(str(block.get("tool_use_id")), ("Tool", "Tool result", session.turn))
-            mcp = mcp_attributes(name)
-            pending = session.calls.pop(block.get("tool_use_id"), None)
-            output = block.get("content") or ""
-            out.append(emit(session, row, stamp, "mcp" if mcp else "tool", name+" result", subject if session.capture_details else name,
-                {"result": output} if mcp else output, "error" if block.get("is_error") else "success", mcp,
-                call_id=block.get("tool_use_id") if mcp else None, turn=pending[2] if pending else call_turn))
-        elif block.get("type") == "thinking":
-            out.append(emit(session, row, stamp, "agent", "processing", "Model processing"))
-    if row.get("type") == "system":
-        out.append(emit(session, row, stamp, "context", str(row.get("subtype") or "event"), "Session event",
-                        {key:row[key] for key in ("durationMs", "messageCount", "isMeta") if key in row}))
-    return [entry for entry in out if entry]
+    """Compatibility entry point for the bundled Claude format adapter."""
+    from .adapters.claude import ClaudeAdapter
+    return ClaudeAdapter().activity(session, row, stamp)
 
 
 def pi_activity(session, row, stamp):
