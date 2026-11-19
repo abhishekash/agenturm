@@ -50,7 +50,7 @@ from .ui_render import update_status_text
 from .ui_content import metadata_table, prose, write_body, write_section
 from .ui_coverage import analysis_coverage
 from .ui_contributions import PaneRegistry, PaneScope, validate_model
-from .ui_monitoring import (UsageScreen, SortScreen, SessionScopeScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, credit_summary, permission_summary, changed_records, failed,
+from .ui_monitoring import (UsageScreen, SortScreen, SessionScopeScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, credit_summary, permission_summary, metadata_usage_text, changed_records, failed,
                             failure_groups, event_id, connection_feedback, session_history_feedback)
 
 
@@ -3700,6 +3700,7 @@ class ObservatoryApp(App):
         self.query_one('#agent-retry').display=bool(evidence.error)
         self.query_one('#agent-review-work').display=self.session_mode=='overview'
         if self.session_mode=='details':
+            metadata_usage=metadata_usage_text(item.get('metadata_usage'))
             details=[('Task',task_preview(item) or title),('Session ID',item.get('session_id') or item['id']),
                 ('Agent ID',item.get('agent_id')),('Project',item.get('project')),('Branch',item.get('branch')),
                 ('Model',item.get('model')),('Updated',when(item.get('stamp'))),
@@ -3707,6 +3708,7 @@ class ObservatoryApp(App):
             self.inspect('agent-detail',title,fields+details+hierarchy_fields,
                 [('Status evidence',attention_guidance(item,lifecycle_event=lifecycle_event)[0][1] if item.get('state')=='Interrupted' else attention_evidence(item,summary)),('Waiting on',wait_summary(item)),
                  ('Task usage',usage_text),*([('Credits',credits_text)] if credits_text else []),
+                 *([('Reported source usage',metadata_usage)] if metadata_usage else []),
                  *([('Permissions',permissions_text)] if permissions_text else []),
                  ('Evidence coverage',coverage),('Analysis coverage',analysis_coverage(summary)),
                  ('History freshness',session_history_feedback(self.data)),

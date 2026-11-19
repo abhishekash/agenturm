@@ -16,6 +16,22 @@ from .operation_facts import correlation_facts,operation_key as recorded_operati
 FAILURES = {'error', 'failed', 'denied', 'blocked', 'policy_denied', 'incomplete'}
 
 
+def metadata_usage_text(usage):
+    """Render independently reported counters without implying missing zeroes."""
+    if not isinstance(usage, dict) or not usage:
+        return ''
+    fields = (("input_tokens", "Input"), ("output_tokens", "Output"),
+              ("cache_read_tokens", "Cache read"), ("cache_write_tokens", "Cache write"),
+              ("total_tokens", "Total"))
+    values = []
+    for key, label in fields:
+        value = usage.get(key)
+        if type(value) is int and value >= 0 or (isinstance(value, str) and
+                value.isascii() and value.isdecimal() and len(value) <= 32):
+            values.append(f'{label} {int(value):,}')
+    return ' · '.join(values)
+
+
 def session_history_feedback(snapshot):
     """Describe the missing slice without relabelling useful current observations."""
     if getattr(snapshot,'native_bootstrap',False):

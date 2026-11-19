@@ -86,6 +86,7 @@ def initialize(db: Connection) -> None:
             last_record_ns INTEGER NOT NULL,
             policy_epoch INTEGER NOT NULL,
             source_dirty_seq INTEGER NOT NULL,
+            usage_json TEXT NOT NULL DEFAULT '{}',
             PRIMARY KEY(source_id,native_session_id),
             FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
         CREATE INDEX IF NOT EXISTS plugin_session_projection_recent_v1
@@ -109,6 +110,9 @@ def initialize(db: Connection) -> None:
                               ("capture_enabled", "INTEGER NOT NULL DEFAULT 1")):
         if name not in cursor_columns:
             db.execute(f"ALTER TABLE plugin_source_cursor_v1 ADD COLUMN {name} {declaration}")
+    projection_columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_session_projection_v1)")}
+    if "usage_json" not in projection_columns:
+        db.execute("ALTER TABLE plugin_session_projection_v1 ADD COLUMN usage_json TEXT NOT NULL DEFAULT '{}'")
 
 
 def _identity(value: str, name: str) -> str:
