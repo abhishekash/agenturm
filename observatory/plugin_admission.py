@@ -7,6 +7,7 @@ only bounded records and never writes the database itself.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import secrets
 import time
@@ -105,6 +106,9 @@ def initialize(db: Connection) -> None:
                               ("admitted_ns", "INTEGER NOT NULL DEFAULT 0")):
         if name not in columns:
             db.execute(f"ALTER TABLE plugin_evidence_v1 ADD COLUMN {name} {declaration}")
+    db.execute("CREATE INDEX IF NOT EXISTS plugin_evidence_diagnostic_recent_v1 "
+               "ON plugin_evidence_v1(source_id,policy_epoch,admitted_ns DESC) "
+               "WHERE kind='diagnostic'")
     cursor_columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_source_cursor_v1)")}
     for name, declaration in (("policy_epoch", "INTEGER NOT NULL DEFAULT 1"),
                               ("capture_enabled", "INTEGER NOT NULL DEFAULT 1")):
@@ -198,6 +202,21 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
                    "projected_seq=excluded.projected_seq,policy_epoch=excluded.policy_epoch",
                    (source_id, dirty_seq, epoch))
     return epoch
+
+
+def last_source_diagnostic(store: Store, lease: SourceLease) -> dict:
+    """Load the latest policy-current coarse diagnostic after a worker restart."""
+    with store._connect() as db:
+        row = db.execute("SELECT e.payload_json,e.time_ns FROM plugin_evidence_v1 e "
+                         "JOIN plugin_source_cursor_v1 c USING(source_id) "
+                         "WHERE e.source_id=? AND e.kind='diagnostic' "
+                         "AND e.policy_epoch=? AND c.policy_epoch=? "
+                         "AND c.receiver_id=? AND c.capture_enabled=1 "
+                         "ORDER BY e.admitted_ns DESC,e.rowid DESC LIMIT 1",
+                         (lease.source_id, lease.policy_epoch, lease.policy_epoch,
+                          lease.receiver_id)).fetchone()
+    return ({**json.loads(row["payload_json"]), "time_ns": str(row["time_ns"])}
+            if row is not None else {})
 
 
 def _metadata(record: dict) -> dict:

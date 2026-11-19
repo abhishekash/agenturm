@@ -1,0 +1,7 @@
+# Source gap diagnostic checkpoint
+
+19 November 2026. The standalone sample harness no longer resets a changed file cursor silently. Replacement, truncation and a rewrite near the committed offset first produce a `possible_source_gap` warning in the same durable batch as any new records. A previously observed file disappearing stops the child without advancing the cursor; once it reappears, the warning precedes new records. This is intentionally a possible gap: the adapter cannot prove whether every old byte had been consumed before replacement, nor detect arbitrary historical edits outside its 256-byte cursor fingerprint.
+
+The host exposes the latest coarse, policy-current source diagnostic in the worker's `/api/health` status. A worker restart reloads it from the durable inbox; capture revocation clears it. The value contains only code, severity and a decimal-string source timestamp. An indexed lookup avoids scanning the full 50,000-event source inbox on each restart. The child emits no source path or record content in the diagnostic.
+
+Validation: 42 focused sample, process, supervisor, runtime and admission tests passed. Cases cover rotation, same-inode rewrite, disappearance/reappearance, durable restart recovery, receiver HTTP visibility and policy-revocation cleanup. `compileall`, HTML parsing and `git diff --check` passed. The source protocol still lacks a general gap/disposition or finite-retention contract, and the sample remains metadata-only.
