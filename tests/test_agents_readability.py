@@ -68,6 +68,8 @@ class AgentsReadabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('1 needs attention',app.query_one('#stat-attention').render().plain)
             self.assertIn('status check',app.query_one('#stat-attention').tooltip)
             app.select_agent('s-missing');await pilot.press('e');await pilot.pause()
+            self.assertIn('Status unknown',app.query_one('#agent-context').render().plain)
+            app.set_session_mode('details');await pilot.pause()
             self.assertIn('Task outcome was not reported',app.query_one('#agent-detail').plain_text)
             self.assertFalse(app.query_one('#agent-reviewed').display)
             await pilot.press('escape');app.select_agent('s-root');table.focus()
