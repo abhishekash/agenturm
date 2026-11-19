@@ -28,6 +28,7 @@ _USAGE = frozenset({"input_tokens", "output_tokens", "cache_read_tokens",
 _STATES = frozenset({"started", "running", "paused", "completed", "failed",
                      "interrupted", "cancelled"})
 _SEVERITIES = frozenset({"info", "warning", "error"})
+MAX_SOURCE_RECORDS = 50_000
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,9 @@ def initialize(db: Connection) -> None:
             time_ns INTEGER NOT NULL,
             payload_json TEXT NOT NULL,
             record_digest TEXT NOT NULL,
+            native_session_id TEXT NOT NULL DEFAULT '',
+            native_worker_id TEXT NOT NULL DEFAULT '',
+            native_turn_id TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(source_id,event_id_hash,revision),
             FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
         CREATE TABLE IF NOT EXISTS plugin_evidence_dirty_v1 (
@@ -68,6 +72,10 @@ def initialize(db: Connection) -> None:
             dirty_seq INTEGER NOT NULL,
             FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
     """)
+    columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_evidence_v1)")}
+    for name in ("native_session_id", "native_worker_id", "native_turn_id"):
+        if name not in columns:
+            db.execute(f"ALTER TABLE plugin_evidence_v1 ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
 
 
 def _identity(value: str, name: str) -> str:
@@ -150,10 +158,13 @@ def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]
     for record in validated.records:
         payload = _metadata(record)
         canonical = encode_message(record)
+        identity = record.get("identity") or {}
         rows.append((source_id,
                      hashlib.sha256((source_id + "\0" + record["event_id"]).encode()).hexdigest(),
                      record["revision"], record["kind"], int(record["time_ns"]),
-                     encode_message(payload), hashlib.sha256(canonical.encode()).hexdigest()))
+                     encode_message(payload), hashlib.sha256(canonical.encode()).hexdigest(),
+                     identity.get("session_id", ""), identity.get("worker_id", ""),
+                     identity.get("turn_id", "")))
     batch_digest = hashlib.sha256(encode_message({"cursor": validated.cursor,
                                                   "records": list(validated.records)}).encode()).hexdigest()
     return batch_digest, tuple(rows)
@@ -191,15 +202,29 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
             raise ProtocolError("stale plugin cursor")
         if batch.cursor == expected_cursor:
             raise ProtocolError("plugin cursor did not advance")
+        count = db.execute("SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
+                           (lease.source_id,)).fetchone()[0]
         for item in rows:
-            existing = db.execute("SELECT record_digest FROM plugin_evidence_v1 "
-                                  "WHERE source_id=? AND event_id_hash=? AND revision=?",
-                                  item[:3]).fetchone()
-            if existing is not None and existing[0] != item[6]:
-                raise ProtocolError("conflicting plugin event revision")
-            db.execute("INSERT OR IGNORE INTO plugin_evidence_v1 "
-                       "(source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest) "
-                       "VALUES(?,?,?,?,?,?,?)", item)
+            latest = db.execute("SELECT revision,record_digest,kind,native_session_id,"
+                                "native_worker_id,native_turn_id FROM plugin_evidence_v1 "
+                                "WHERE source_id=? AND event_id_hash=? "
+                                "ORDER BY revision DESC LIMIT 1", item[:2]).fetchone()
+            if latest is not None:
+                if tuple(latest[2:]) != (item[3], item[7], item[8], item[9]):
+                    raise ProtocolError("plugin event identity or kind changed")
+                if item[2] < latest[0]:
+                    raise ProtocolError("stale plugin event revision")
+                if item[2] == latest[0]:
+                    if latest[1] != item[6]:
+                        raise ProtocolError("conflicting plugin event revision")
+                    continue
+            if count >= MAX_SOURCE_RECORDS:
+                raise ProtocolError("plugin source evidence capacity reached")
+            db.execute("INSERT INTO plugin_evidence_v1 "
+                       "(source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest,"
+                       "native_session_id,native_worker_id,native_turn_id) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?)", item)
+            count += 1
         seq = row["dirty_seq"] + (1 if rows else 0)
         db.execute("UPDATE plugin_source_cursor_v1 SET cursor=?,prior_cursor=?,last_batch_digest=?,"
                    "dirty_seq=?,updated_ns=? WHERE source_id=?",

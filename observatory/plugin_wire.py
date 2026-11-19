@@ -166,9 +166,16 @@ def validate_batch(message: dict, *, source_id: str) -> PollBatch:
         cursor = _text(cursor, "cursor", MAX_CURSOR_CHARS)
     seen = set()
     for record in records:
-        if not isinstance(record, dict) or set(record) != {
-                "event_id", "revision", "kind", "time_ns", "payload"}:
+        required = {"event_id", "revision", "kind", "time_ns", "payload"}
+        if not isinstance(record, dict) or set(record) not in (required, required | {"identity"}):
             raise ProtocolError("invalid record fields")
+        if "identity" in record:
+            identity = record["identity"]
+            if (not isinstance(identity, dict)
+                    or not {"session_id"} <= set(identity) <= {"session_id", "worker_id", "turn_id"}):
+                raise ProtocolError("invalid record identity fields")
+            for field, value in identity.items():
+                _text(value, "record " + field, MAX_ID_CHARS)
         event_id = _text(record["event_id"], "event ID", MAX_ID_CHARS)
         if event_id in seen:
             raise ProtocolError("duplicate event ID within batch")

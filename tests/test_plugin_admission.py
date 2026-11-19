@@ -1,7 +1,9 @@
 """Durable plugin inbox: atomicity, lease fencing and child acknowledgment."""
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 from observatory.core import Store
 from observatory.plugin_admission import activate_source, commit_batch
@@ -56,6 +58,62 @@ class AdmissionTests(unittest.TestCase):
             commit_batch(self.store, self.lease, "next", self.batch("later", [
                 record("new"), record("one", "failed")]))
         self.assertEqual(self.snapshot(), before)
+
+    def test_identity_is_durable_and_correction_revisions_are_monotonic(self):
+        original = {**record(), "identity": {"session_id": "native-session",
+                                                "worker_id": "worker-1", "turn_id": "turn-1"}}
+        commit_batch(self.store, self.lease, "", self.batch(records=[original]))
+        corrected = {**original, "revision": 1, "payload": {"state": "failed"}}
+        commit_batch(self.store, self.lease, "next", self.batch("corrected", [corrected]))
+        with self.store._connect() as db:
+            rows = db.execute("SELECT revision,native_session_id,native_worker_id,native_turn_id "
+                              "FROM plugin_evidence_v1 ORDER BY revision").fetchall()
+        self.assertEqual([tuple(row) for row in rows], [
+            (0, "native-session", "worker-1", "turn-1"),
+            (1, "native-session", "worker-1", "turn-1")])
+        before = self.snapshot()
+        with self.assertRaisesRegex(ProtocolError, "stale plugin event revision"):
+            commit_batch(self.store, self.lease, "corrected", self.batch("stale", [original]))
+        self.assertEqual(self.snapshot(), before)
+        changed_identity = {**corrected, "revision": 2,
+                            "identity": {"session_id": "other-session"}}
+        with self.assertRaisesRegex(ProtocolError, "identity or kind changed"):
+            commit_batch(self.store, self.lease, "corrected", self.batch("moved", [changed_identity]))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_identity_shape_is_validated_before_any_write(self):
+        bad = [None, {}, {"worker_id": "worker"}, {"session_id": ""},
+               {"session_id": "session", "unexpected": "value"},
+               {"session_id": "session", "worker_id": 1}]
+        for identity in bad:
+            with self.subTest(identity=identity), self.assertRaisesRegex(ProtocolError, "identity|record"):
+                commit_batch(self.store, self.lease, "", self.batch(records=[
+                    record("good"), {**record("bad"), "identity": identity}]))
+        self.assertEqual(self.snapshot(), (("", 0), [], []))
+
+    def test_capacity_refuses_entire_batch_without_advancing_cursor(self):
+        with patch("observatory.plugin_admission.MAX_SOURCE_RECORDS", 1):
+            with self.assertRaisesRegex(ProtocolError, "capacity"):
+                commit_batch(self.store, self.lease, "", self.batch(records=[
+                    record("one"), record("two")]))
+            self.assertEqual(self.snapshot(), (("", 0), [], []))
+            commit_batch(self.store, self.lease, "", self.batch(records=[record("one")]))
+            before = self.snapshot()
+            with self.assertRaisesRegex(ProtocolError, "capacity"):
+                commit_batch(self.store, self.lease, "next", self.batch("later", [record("two")]))
+            self.assertEqual(self.snapshot(), before)
+
+    def test_old_evidence_schema_migrates_identity_columns(self):
+        path = Path(self.temp.name) / "old.db"
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE plugin_evidence_v1 (source_id TEXT NOT NULL,"
+                       "event_id_hash TEXT NOT NULL,revision INTEGER NOT NULL,kind TEXT NOT NULL,"
+                       "time_ns INTEGER NOT NULL,payload_json TEXT NOT NULL,record_digest TEXT NOT NULL,"
+                       "PRIMARY KEY(source_id,event_id_hash,revision))")
+        migrated = Store(str(path))
+        with migrated._connect() as db:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_evidence_v1)")}
+        self.assertTrue({"native_session_id", "native_worker_id", "native_turn_id"} <= columns)
 
     def test_invalid_metadata_in_second_record_never_writes_first(self):
         with self.assertRaisesRegex(ProtocolError, "metadata"):
