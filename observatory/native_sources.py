@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .native_adapter import NativeSessionAdapter
+
 
 KIRO_SKIPPED_DIRECTORIES = frozenset({"cli", "snapshots", ".index"})
 
@@ -36,6 +38,7 @@ class NativeSourceSpec:
     root: Callable[[], Path]
     accepts_file: Callable[[str | Path], bool] = lambda _path: True
     accepts_directory: Callable[[str], bool] = lambda _name: True
+    adapter_factory: Callable[[], NativeSessionAdapter] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]*", self.id):
@@ -43,13 +46,26 @@ class NativeSourceSpec:
         if (not isinstance(self.runtime, str) or not self.runtime.strip() or
                 not all(map(callable, (self.root, self.accepts_file, self.accepts_directory)))):
             raise ValueError("invalid native source specification")
+        if self.adapter_factory is not None and not callable(self.adapter_factory):
+            raise ValueError("invalid native source adapter")
+
+    def build_adapter(self) -> NativeSessionAdapter | None:
+        if self.adapter_factory is None:
+            return None
+        adapter = self.adapter_factory()
+        if not all(callable(getattr(adapter, name, None)) for name in
+                   ("initial_task", "parse", "activity", "observe_state")):
+            raise ValueError(f"native source {self.id} has an invalid adapter")
+        return adapter
 
 
 def builtin_sources() -> tuple[NativeSourceSpec, ...]:
+    from .adapters.pi import PiAdapter
     return (
         NativeSourceSpec("codex", "Codex", lambda: Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions"),
         NativeSourceSpec("claude", "Claude Code", lambda: Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"),
-        NativeSourceSpec("pi", "Pi", lambda: Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home() / ".pi" / "agent"))) / "sessions"),
+        NativeSourceSpec("pi", "Pi", lambda: Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home() / ".pi" / "agent"))) / "sessions",
+                         adapter_factory=PiAdapter),
         NativeSourceSpec("kiro", "Kiro", lambda: kiro_home() / "sessions", kiro_source,
                          lambda name: name not in KIRO_SKIPPED_DIRECTORIES),
     )

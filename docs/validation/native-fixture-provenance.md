@@ -38,6 +38,8 @@ The legacy turn-builder file hash changed because its SQLite connections now clo
 
 ## Remaining evidence
 
+Pi's parser, lifecycle state, initial task and activity callbacks were moved into `observatory/adapters/pi.py` on 2026-11-19. The manifest pins the new adapter, its composition layer and native activity source; the old `1cc8b04` collector hash remains in history. Existing Pi fixture tests and a synthetic injected adapter test exercise this path. There is still no observed Pi producer version or live-agent certification. OpenCode parser bytes, immutable upstream sources and fixture bytes remain unchanged.
+
 The 2026-11-19 kernel-boundary work changed `local_agents.py` through registered discovery, registered readers and a host evidence facade. Its current hash is pinned in the manifest; the prior `ca202c7` hash remains in history. OpenCode parser bytes, upstream source hashes and synthetic fixtures are unchanged. The first four main-branch CI runs after this work failed only because the old hash was left in the manifest. This provenance repair makes no claim of new producer coverage or a passing full CI run; current-format and provenance tests must pass on the repaired tree.
 
 The automated provenance and current selected-format compatibility layer is reproducible. It is not a captured live-agent certification, an execution of the complete upstream decoder, or an upstream database migration test. Legacy fixture observed versions remain unknown. No live Claude/Pi journey, external participant, adoption or whole-monitor resource claim is added. Final combined-tree compatibility, CI and retained-history resource measurements remain separate gates in the implementation plan.
