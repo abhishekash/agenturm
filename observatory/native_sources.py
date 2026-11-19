@@ -59,29 +59,34 @@ class NativeSourceSpec:
         return adapter
 
 
+def bundled_adapter_modules() -> tuple[object, ...]:
+    """Import only modules in Agenturm's trusted installed adapter package."""
+    from . import adapters
+
+    return tuple(importlib.import_module(f"{adapters.__name__}.{item.name}")
+                 for item in pkgutil.iter_modules(adapters.__path__))
+
+
 def builtin_sources() -> tuple[NativeSourceSpec, ...]:
     """Load trusted bundled source factories without a runtime dispatch table.
 
-    Only modules inside Agenturm's installed adapters package are scanned.
-    Independently installed adapters use the explicit process-plugin config;
+    Independently installed adapters use explicit process-plugin config;
     project-local Python files are never imported by this discovery path.
     """
-    from . import adapters
-
     declared = []
-    for module_info in pkgutil.iter_modules(adapters.__path__):
-        module = importlib.import_module(f"{adapters.__name__}.{module_info.name}")
+    for module in bundled_adapter_modules():
+        module_name = module.__name__.rsplit(".", 1)[-1]
         factory = getattr(module, "source_spec", None)
         if factory is None:
             continue
         if not callable(factory):
-            raise ValueError(f"invalid bundled source factory in {module_info.name}")
+            raise ValueError(f"invalid bundled source factory in {module_name}")
         spec = factory()
         if not isinstance(spec, NativeSourceSpec):
-            raise ValueError(f"invalid bundled source declaration in {module_info.name}")
+            raise ValueError(f"invalid bundled source declaration in {module_name}")
         priority = getattr(module, "SOURCE_PRIORITY", 100)
         if type(priority) is not int or not 0 <= priority <= 1000:
-            raise ValueError(f"invalid bundled source priority in {module_info.name}")
+            raise ValueError(f"invalid bundled source priority in {module_name}")
         declared.append((priority, spec.id, spec))
     declared.sort(key=lambda item: (item[0], item[1]))
     specs = tuple(item[2] for item in declared)

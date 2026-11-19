@@ -40,8 +40,21 @@ class NativeReaderSpec:
 
 
 def builtin_readers() -> tuple[NativeReaderSpec, ...]:
-    def opencode(store: object, capture_details: bool) -> NativeReader:
-        from .opencode import OpenCodeReader
-        return OpenCodeReader(store, capture_details=capture_details)
+    """Load trusted reader factories from the same bundled adapter package."""
+    from .native_sources import bundled_adapter_modules
 
-    return (NativeReaderSpec("opencode", opencode, mcp_client="OpenCode"),)
+    declared = []
+    for module in bundled_adapter_modules():
+        factory = getattr(module, "reader_spec", None)
+        if factory is None:
+            continue
+        if not callable(factory):
+            raise ValueError(f"invalid bundled reader factory in {module.__name__}")
+        spec = factory()
+        if not isinstance(spec, NativeReaderSpec):
+            raise ValueError(f"invalid bundled reader declaration in {module.__name__}")
+        declared.append(spec)
+    declared.sort(key=lambda spec: spec.id)
+    if len({spec.id for spec in declared}) != len(declared):
+        raise ValueError("duplicate bundled reader ID")
+    return tuple(declared)

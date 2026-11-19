@@ -3,10 +3,11 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from observatory.core import Store
 from observatory.local_agents import LocalAgents
-from observatory.native_readers import NativeReaderSpec
+from observatory.native_readers import NativeReaderSpec, builtin_readers
 from observatory.native_sources import NativeSourceSpec
 from observatory.adapters.pi import PiAdapter
 
@@ -31,6 +32,28 @@ class FixtureReader:
 
 
 class RegistryTests(unittest.TestCase):
+    def test_opencode_reader_is_declared_in_bundled_module(self):
+        specs = builtin_readers()
+        self.assertEqual([spec.id for spec in specs], ["opencode"])
+        self.assertEqual(specs[0].mcp_client, "OpenCode")
+
+    def test_new_bundled_reader_needs_no_central_dispatch_edit(self):
+        module = SimpleNamespace(__name__="observatory.adapters.fixture_reader",
+                                 reader_spec=lambda: NativeReaderSpec(
+                                     "fixture", lambda _store, _capture: FixtureReader()))
+        with patch("observatory.native_sources.bundled_adapter_modules", return_value=(module,)):
+            specs = builtin_readers()
+        self.assertEqual([spec.id for spec in specs], ["fixture"])
+        self.assertIsInstance(specs[0].build(None, False), FixtureReader)
+
+    def test_duplicate_bundled_reader_ids_fail(self):
+        module = SimpleNamespace(__name__="observatory.adapters.fixture_reader",
+                                 reader_spec=lambda: NativeReaderSpec(
+                                     "fixture", lambda _store, _capture: FixtureReader()))
+        with patch("observatory.native_sources.bundled_adapter_modules", return_value=(module, module)):
+            with self.assertRaisesRegex(ValueError, "duplicate bundled reader ID"):
+                builtin_readers()
+
     def test_injected_reader_contributes_status_and_can_be_disabled(self):
         with tempfile.TemporaryDirectory() as root:
             store = Store(Path(root) / "agenturm.db")
