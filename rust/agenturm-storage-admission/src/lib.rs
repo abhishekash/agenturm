@@ -970,6 +970,9 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::path::PathBuf;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
 
     fn fixture() -> Connection {
         fixture_at(Path::new(":memory:"))
@@ -1492,12 +1495,51 @@ mod tests {
         assert_eq!(state(&reopened), ("next".into(), 1, 0));
         drop(reopened);
         let _ = fs::remove_file(&path);
-        let mut wal = path.clone();
-        wal.set_extension("db-wal");
-        let _ = fs::remove_file(wal);
-        let mut shm = path.clone();
-        shm.set_extension("db-shm");
-        let _ = fs::remove_file(shm);
+        let _ = fs::remove_file(PathBuf::from(format!("{}-wal", path.display())));
+        let _ = fs::remove_file(PathBuf::from(format!("{}-shm", path.display())));
+    }
+
+    #[test]
+    fn concurrent_exact_revocations_commit_once_across_connections() {
+        let path = std::env::temp_dir().join(format!(
+            "agenturm-revoke-race-{}-{}.db",
+            std::process::id(),
+            now_ns().unwrap()
+        ));
+        let mut db = fixture_at(&path);
+        commit(&mut db, &request("next", "", &[])).unwrap();
+        drop(db);
+
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            let request = revoke_request(0);
+            workers.push(thread::spawn(move || {
+                let mut db = Connection::open(&path).unwrap();
+                db.busy_timeout(Duration::from_secs(5)).unwrap();
+                barrier.wait();
+                revoke(&mut db, &request).unwrap().disposition.to_owned()
+            }));
+        }
+        barrier.wait();
+        let mut dispositions: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        dispositions.sort();
+        assert_eq!(dispositions, ["committed", "replay"]);
+        let reopened = Connection::open(&path).unwrap();
+        assert_eq!(state(&reopened), ("next".into(), 1, 0));
+        let source: (i64, i64, i64) = reopened.query_row(
+            "SELECT lease_epoch,policy_epoch,capture_enabled FROM plugin_source_cursor_v1 WHERE source_id='source-one'",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(source, (8, 2, 0));
+        drop(reopened);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(PathBuf::from(format!("{}-wal", path.display())));
+        let _ = fs::remove_file(PathBuf::from(format!("{}-shm", path.display())));
     }
 
     #[test]

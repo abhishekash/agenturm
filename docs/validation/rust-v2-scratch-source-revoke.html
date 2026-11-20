@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Rust v2 scratch source revocation</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#fff;--fg:#171923;--muted:#535b69;--line:#d6dbe4;--panel:#f4f6fa;--accent:#3358b5}
+    @media(prefers-color-scheme:dark){:root{--bg:#11141a;--fg:#eef1f7;--muted:#b1bac8;--line:#38404d;--panel:#1a202a;--accent:#abc0ff}}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.7 system-ui,-apple-system,Segoe UI,sans-serif}
+    main{max-width:900px;margin:auto;padding:clamp(20px,5vw,56px)}h1{font-size:clamp(2rem,5vw,3rem);line-height:1.15;margin:0 0 1rem}
+    h2{font-size:1.4rem;margin:2rem 0 .6rem;padding-top:1rem;border-top:1px solid var(--line)}p{margin:.8rem 0;color:var(--muted)}
+    strong{color:var(--fg)}.status{display:inline-block;border:1px solid var(--line);background:var(--panel);padding:.55rem .8rem;border-radius:.55rem;color:var(--fg)}
+    code{overflow-wrap:anywhere;background:var(--panel);padding:.1rem .3rem;border-radius:.25rem}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Rust v2 scratch source revocation</h1>
+    <p><span class="status">Experimental · scratch only · 20 November 2026</span></p>
+    <p>This policy operation does not change production capture policy, the canonical receiver database, or Python <code>Store</code> authority.</p>
+
+    <h2>Contract and transaction</h2>
+    <p>The typed <code>RevokeSource</code> request carries the current source lease, acknowledged cursor, and expected dirty sequence. Under <code>BEGIN IMMEDIATE</code>, the service checks the receiver, explicit scratch marker, pinned path, writer lease, and exact source lease.</p>
+    <p>Revocation increments lease and policy epochs, disables capture, clears the content fingerprint, advances the dirty sequence, and retains the acknowledged cursor. It removes lifecycle evidence and related projection, Activity, content-status, and dirty rows in the same transaction.</p>
+    <p>Requests fail before mutation when private-reference ownership, stored content, member state, continuity gaps, retention, or non-lifecycle evidence exist. Rust has no trusted reference-provider cleanup SPI, so the operation refuses private-provider history.</p>
+    <p>The durable request receipt makes exact retries safe across database reopen. Changed bytes or reuse of the ID by the other v2 operation fail closed; admission and revocation check both receipt namespaces.</p>
+
+    <h2>Validation</h2>
+    <p>Local Rust checks passed: 42 tests (24 contract, 16 scratch-admission, 2 Linux service), workspace formatting, and Clippy with warnings denied. The installed Python scratch-admission module passed 14 tests, including a real Store-backed case for projection cleanup, epoch fencing, stale admission denial, retry in a second process, changed-request rejection, and cross-operation request-ID conflict.</p>
+    <p>This remains unavailable to canonical database callers. Python <code>Store</code> remains the production writer and capture-policy authority. Writer exclusion, migration, recovery, compatibility, and platform gates remain open. No performance gain is claimed.</p>
+  </main>
+</body>
+</html>
