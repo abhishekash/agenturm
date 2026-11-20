@@ -113,6 +113,51 @@ class PiDirectoryTests(unittest.TestCase):
         self.assertNotIn("private request", retained)
         self.assertNotIn(str(self.sources), retained)
 
+    def test_acknowledged_removal_then_same_path_reappearance_keeps_old_session_unknown(self):
+        self.admit_two()
+        self.first.unlink()
+        with self.worker() as worker:
+            removed = worker.poll_once()
+            self.assertEqual(removed.member_cursor, "")
+            self.assertEqual(len(worker.members), 1)
+        self.assertEqual(self.sessions()["pi-one"]["reason_code"], "source_gap")
+        self.assertEqual(self.sessions()["pi-two"]["run_state"], "completed")
+
+        # The removed member has no local checkpoint. Re-reading identical
+        # bytes must not turn the already gapped session back to Completed.
+        session(self.first, "pi-one")
+        with self.worker() as worker:
+            restored = worker.poll_once()
+            self.assertTrue(restored.member_cursor)
+            self.assertEqual(len(worker.members), 2)
+        self.assertEqual((self.sessions()["pi-one"]["run_state"],
+                          self.sessions()["pi-one"]["reason_code"]),
+                         ("unknown", "source_gap"))
+        with self.worker() as worker:
+            self.assertEqual(len(worker.members), 2)
+            self.assertEqual(worker.poll_once().records, ())
+        self.assertEqual(self.sessions()["pi-one"]["run_state"], "unknown")
+
+        # A genuinely new session in that path can be admitted from its own
+        # complete header, while the old tombstone and healthy sibling remain.
+        self.first.unlink()
+        with self.worker() as worker:
+            self.assertEqual(worker.poll_once().member_cursor, "")
+        session(self.first, "pi-new")
+        with self.worker() as worker:
+            self.assertTrue(worker.poll_once().member_cursor)
+        states = self.sessions()
+        self.assertEqual((states["pi-one"]["run_state"],
+                          states["pi-one"]["reason_code"]),
+                         ("unknown", "source_gap"))
+        self.assertEqual(states["pi-two"]["run_state"], "completed")
+        self.assertEqual(states["pi-new"]["run_state"], "completed")
+        with self.store._connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM plugin_source_gap_invalidated_v1 "
+                "WHERE source_id=? AND native_session_id='pi-one'",
+                (self.plugin.source_id,)).fetchone()[0], 1)
+
     def test_root_outage_is_one_durable_source_wide_gap(self):
         checkpoints, cursor = self.admit_two()
         moved = self.root / "unavailable"

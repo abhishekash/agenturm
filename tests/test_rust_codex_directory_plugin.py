@@ -248,6 +248,49 @@ class CodexDirectoryTests(unittest.TestCase):
                 "SELECT payload_json FROM plugin_evidence_v1"))
         self.assertNotIn(str(self.sources), retained)
 
+    def test_acknowledged_removal_then_same_path_reappearance_keeps_old_session_unknown(self):
+        with self.worker() as worker:
+            worker.poll_once()
+            worker.poll_once()
+        self.first.unlink()
+        with self.worker() as worker:
+            removed = worker.poll_once()
+            self.assertEqual(removed.member_cursor, "")
+            self.assertEqual(len(worker.members), 1)
+        self.assertEqual(self.sessions()["session-one"]["reason_code"], "source_gap")
+        self.assertEqual(self.sessions()["session-two"]["run_state"], "completed")
+
+        rollout(self.first, "session-one")
+        with self.worker() as worker:
+            restored = worker.poll_once()
+            self.assertTrue(restored.member_cursor)
+            self.assertEqual(len(worker.members), 2)
+        self.assertEqual((self.sessions()["session-one"]["run_state"],
+                          self.sessions()["session-one"]["reason_code"]),
+                         ("unknown", "source_gap"))
+        with self.worker() as worker:
+            self.assertEqual(len(worker.members), 2)
+            self.assertEqual(worker.poll_once().records, ())
+        self.assertEqual(self.sessions()["session-one"]["run_state"], "unknown")
+
+        self.first.unlink()
+        with self.worker() as worker:
+            self.assertEqual(worker.poll_once().member_cursor, "")
+        rollout(self.first, "session-new")
+        with self.worker() as worker:
+            self.assertTrue(worker.poll_once().member_cursor)
+        states = self.sessions()
+        self.assertEqual((states["session-one"]["run_state"],
+                          states["session-one"]["reason_code"]),
+                         ("unknown", "source_gap"))
+        self.assertEqual(states["session-two"]["run_state"], "completed")
+        self.assertEqual(states["session-new"]["run_state"], "completed")
+        with self.store._connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM plugin_source_gap_invalidated_v1 "
+                "WHERE source_id=? AND native_session_id='session-one'",
+                (self.plugin.source_id,)).fetchone()[0], 1)
+
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
                      "root can read a permission-denied test file")
     def test_unreadable_discovered_file_gaps_its_member_and_recovers(self):
