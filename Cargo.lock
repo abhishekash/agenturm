@@ -101,6 +101,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "agenturm-loopback-inbound-connector"
+version = "0.1.0"
+dependencies = [
+ "agenturm-source-process",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "agenturm-migration-verify"
 version = "0.1.0"
 dependencies = [
