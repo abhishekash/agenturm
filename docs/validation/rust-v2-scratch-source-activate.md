@@ -1,6 +1,6 @@
 # Rust v2 scratch source activation
 
-20 November 2026. Implementation code is in commit `8c5fd44`; the open PR also includes a later documentation-only ledger/status refresh. Local checks below ran against the implementation commit. This checkpoint covers the PR-only `ActivateSource` slice. It is available only through the explicitly marked Rust scratch path; it does not route production callers, replace Python `Store`, or claim a performance gain.
+20 November 2026. PR #295 merged at `402d389`; its final PR head was `ab2cf4b`, and implementation code is in commit `8c5fd44`. Local checks below ran against the implementation commit. This checkpoint covers the merged `ActivateSource` slice. It is available only through the explicitly marked Rust scratch path; it does not route production callers, replace Python `Store`, or claim a performance gain.
 
 ## Contract and boundary
 
@@ -14,7 +14,7 @@ This operation does not clean private providers and does not add a provider clea
 
 ## Validation
 
-Rust 1.100.0 local checks on the PR head:
+Rust 1.100.0 local checks on implementation commit `8c5fd44` (before the final documentation-only refresh):
 
 ```sh
 cargo fmt --all -- --check
@@ -29,8 +29,8 @@ AGENTURM_RUST_STORAGE_SERVICE_BIN="$PWD/target/debug/agenturm-storage-service" p
 
 Results: workspace formatting and Clippy passed; workspace Rust tests passed with 150 passed, 0 failed, 0 ignored across 44 test-result groups. The focused three-crate run passed 54 tests (27 admission, 25 contract, 2 service). The installed scratch admission suite passed all 15 tests; installed storage service integration passed all 10 tests. The scratch integration exercises first activation defaults, persisted replay, changed-request conflict, real `Store` lifecycle admission/projection, reactivation lease fencing and cursor/policy/dirty preservation, stale-lease rejection, retry of the earlier activation after reactivation and after revoke, and refusal to re-enable after revocation. Rust trigger tests also cover ignored update/insert/receipt writes and source/request-ID mutation by post-write triggers.
 
-The CI workflow already runs the installed scratch admission module after building the Rust binary; no production dispatch or CI authority change is part of this slice. GitHub CI is reported separately from local evidence.
+The CI workflow already runs the installed scratch admission module after building the Rust binary; no production dispatch or CI authority change is part of this slice. All 14 GitHub checks were queued at merge, so queued CI is not recorded as passing.
 
 ## Remaining boundary
 
-The Rust operation is an experimental marked-scratch writer only. It is not exposed to canonical/production callers; production capture policy and Store authority remain in Python. No private-provider cleanup, general source lifecycle service, cutover safety, or speed claim follows from this checkpoint.
+The merged Rust operation is an experimental marked-scratch writer only. It is not exposed to canonical/production callers; production capture policy and Store authority remain in Python. No private-provider cleanup, general source lifecycle service, cutover safety, or speed claim follows from this checkpoint.
