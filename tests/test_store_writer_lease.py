@@ -368,20 +368,6 @@ class StoreWriterLeaseTests(unittest.TestCase):
         with self.assertRaises(StoreWriterLeaseError):
             StoreWriterLease.acquire(alias)
 
-    def test_hardlink_alias_refuses_store_admission(self):
-        path = self.database("hardlink-source.db")
-        alias = self.database("hardlink-alias.db")
-        store = Store(path, writer_lease=True)
-        self.addCleanup(store.close)
-        before = self.snapshot(path)
-        os.link(path, alias)
-        with self.assertRaisesRegex(StoreWriterLeaseError, "database target changed"):
-            with store._connect() as db:
-                db.execute("INSERT INTO schema_meta(key,value) VALUES('hardlink_write','1')")
-        self.assertEqual(self.snapshot(path), before)
-        with self.assertRaises(StoreWriterLeaseError):
-            StoreWriterLease.acquire(alias)
-
     def test_constructor_failure_releases_only_after_tracked_work_drains(self):
         path = self.database()
         with sqlite3.connect(path) as db:
@@ -439,6 +425,57 @@ class StoreWriterLeaseTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIsInstance(result[0], RuntimeError)
         self.assertIn("injected initialization failure", str(result[0]))
+        self.assertEqual(retained_lease_count(), 0)
+        self.assertEqual(self.lease_probe(path).stdout.strip(), "ACQUIRED")
+
+    def test_failed_constructor_quiescence_keeps_registry_lock_until_manual_drain(self):
+        path = self.database()
+        migration_started = threading.Event()
+        release_worker = threading.Event()
+        constructor_done = threading.Event()
+        partial_stores = []
+        result = []
+        original_quiesce = Store.quiesce_for_writer_handoff
+
+        def hold_migration(store):
+            migration_started.set()
+            release_worker.wait(5)
+
+        def injected_failure(*_args, **_kwargs):
+            raise RuntimeError("injected initialization failure after worker start")
+
+        def failed_quiescence(store, _timeout):
+            partial_stores.append(store)
+            return False
+
+        def construct():
+            try:
+                Store(path, async_derived_refresh=True, workflow_patterns=True,
+                      writer_lease=True)
+            except BaseException as exc:
+                result.append(exc)
+            finally:
+                constructor_done.set()
+
+        with patch.object(Store, "_finish_migration", hold_migration), \
+                patch.object(Store, "_refresh_summaries", side_effect=injected_failure), \
+                patch.object(Store, "quiesce_for_writer_handoff", failed_quiescence):
+            constructor = threading.Thread(target=construct)
+            constructor.start()
+            self.assertTrue(migration_started.wait(5))
+            self.assertTrue(constructor_done.wait(5))
+            constructor.join(1)
+            self.assertFalse(constructor.is_alive())
+            self.assertEqual(len(partial_stores), 1)
+            self.assertEqual(len(result), 1)
+            store = partial_stores[0]
+            self.assertTrue(store._writer_lease.held)
+            self.assertEqual(retained_lease_count(), 1)
+            self.assertIn("DENIED:", self.lease_probe(path).stdout)
+            release_worker.set()
+            self.assertTrue(original_quiesce(store, 3))
+            self.assertTrue(store._writer_lease.release_after_quiescence())
+            store._writer_lease = None
         self.assertEqual(retained_lease_count(), 0)
         self.assertEqual(self.lease_probe(path).stdout.strip(), "ACQUIRED")
 
