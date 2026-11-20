@@ -73,9 +73,13 @@ class ExecutionScope:
 
     def path(self, cursor=None):
         if self.kind == 'unavailable': raise ValueError('No unambiguous execution identity')
-        return '/api/activity?' + urlencode(dict(limit=PAGE_SIZE, service=self.producer,
-            agent_id=self.agent_id, session_id=self.session_id, trace_id=self.run_id if not self.turn_id else '',turn_id=self.turn_id,
-            subtree=0, review=1, cursor=cursor or ''))
+        query=dict(limit=PAGE_SIZE, service=self.producer, subtree=0, review=1)
+        if self.agent_id:query['agent_id']=self.agent_id
+        if self.session_id:query['session_id']=self.session_id
+        if self.turn_id:query['turn_id']=self.turn_id
+        elif self.run_id:query['trace_id']=self.run_id
+        if cursor:query['cursor']=cursor
+        return '/api/activity?' + urlencode(query)
 
 
 def scope_for(item, snapshot=None, endpoint=''):
