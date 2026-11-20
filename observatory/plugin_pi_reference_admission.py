@@ -50,6 +50,18 @@ class _ContentOutcome:
 class PiContentAdmission(ReferenceAdmissionProvider):
     id = "pi-content"
 
+    def initialize_schema(self, db) -> None:
+        plugin_pi_content.initialize(db)
+        db.execute("INSERT OR IGNORE INTO plugin_reference_owner_v1(source_id,provider_id) "
+                   "SELECT source_id,'pi-content' FROM plugin_content_v1 UNION "
+                   "SELECT source_id,'pi-content' FROM plugin_content_batch_v1 UNION "
+                   "SELECT source_id,'pi-content' FROM plugin_content_status_v1")
+
+    def erase_source(self, db, source_id: str) -> None:
+        for table in ("plugin_content_v1", "plugin_content_batch_v1",
+                      "plugin_content_status_v1"):
+            db.execute(f"DELETE FROM {table} WHERE source_id=?", (source_id,))
+
     def inherited_withheld_reason(self, selected_provider, reason: str) -> str:
         # Preserve the original shared Pi status row for an unanchored command
         # source. An unrelated trusted provider must not affect Pi diagnostics.
@@ -144,6 +156,16 @@ class PiContentAdmission(ReferenceAdmissionProvider):
 
 class PiCommandAdmission(ReferenceAdmissionProvider):
     id = "pi-command"
+
+    def initialize_schema(self, db) -> None:
+        plugin_pi_command.initialize(db)
+        db.execute("INSERT OR IGNORE INTO plugin_reference_owner_v1(source_id,provider_id) "
+                   "SELECT source_id,'pi-command' FROM plugin_command_content_v1 UNION "
+                   "SELECT source_id,'pi-command' FROM plugin_command_batch_v1")
+
+    def erase_source(self, db, source_id: str) -> None:
+        for table in ("plugin_command_content_v1", "plugin_command_batch_v1"):
+            db.execute(f"DELETE FROM {table} WHERE source_id=?", (source_id,))
 
     def prepare(self, refs, grant, batch, lease) -> PreparedReference:
         checked = plugin_pi_command.validate_refs(refs, batch)

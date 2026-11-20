@@ -8,6 +8,7 @@ from observatory.core import Store
 from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
 from observatory.plugin_reference_admission import (
     DEFAULT_REFERENCE_ADMISSIONS, PreparedReference, ReferenceAdmissionProvider,
+    ReferenceAdmissionRegistry,
     ReferenceSubmission,
 )
 from observatory.plugin_pi_reference_admission import PiContentAdmission
@@ -21,8 +22,18 @@ class AuditAdmission(ReferenceAdmissionProvider):
 
     def __init__(self):
         self.fail_after_write = False
+        self.fail_erase = False
         self.on_verify = None
         self.reason = ""
+
+    def initialize_schema(self, db):
+        db.execute("CREATE TABLE IF NOT EXISTS audit_fixture("
+                   "source_id TEXT PRIMARY KEY,cursor TEXT NOT NULL,digest TEXT NOT NULL)")
+
+    def erase_source(self, db, source_id):
+        db.execute("DELETE FROM audit_fixture WHERE source_id=?", (source_id,))
+        if self.fail_erase:
+            raise RuntimeError("injected trusted erase failure")
 
     def prepare(self, refs, grant, batch, lease):
         if (type(refs) is not tuple or len(refs) != 1
@@ -68,11 +79,9 @@ class ReferenceAdmissionSPITests(unittest.TestCase):
         self.addCleanup(self.store.close)
         self.lease = activate_source(self.store, plugin_id="fixture.plugin",
                                      source_id="fixture-source", generation="a" * 64)
-        with self.store._connect() as db:
-            db.execute("CREATE TABLE audit_fixture(source_id TEXT PRIMARY KEY,"
-                       "cursor TEXT NOT NULL,digest TEXT NOT NULL)")
         self.provider = AuditAdmission()
         self.registry = DEFAULT_REFERENCE_ADMISSIONS.with_provider(self.provider)
+        self.registry.install_schema(self.store)
         self.batch = PollBatch("fixture-source", "cursor-one", ({
             "event_id": "event-one", "revision": 0, "kind": "lifecycle",
             "time_ns": "9007199254740993", "payload": {"state": "completed"},
@@ -143,20 +152,105 @@ class ReferenceAdmissionSPITests(unittest.TestCase):
         self.assertEqual(prepared.checked[0][0]["row_sha256"], original_hash)
         self.assertNotEqual(prepared.checked[0][0]["row_sha256"], ref["row_sha256"])
 
-    def test_revocation_fences_admission_but_generic_receipt_cleanup_is_not_installed(self):
+    def test_revocation_requires_provider_and_erases_its_receipt_atomically(self):
         self.commit()
-        set_source_capture(self.store, source_id=self.lease.source_id, enabled=False)
+        before = self.snapshot()
+        other_store = Store(self.store.path)
+        self.addCleanup(other_store.close)
+        with self.assertRaisesRegex(ProtocolError, "provider is unavailable"):
+            set_source_capture(other_store, source_id=self.lease.source_id, enabled=False)
+        self.assertEqual(self.snapshot(), before)
+        set_source_capture(other_store, source_id=self.lease.source_id, enabled=False,
+                           reference_admissions=self.registry)
         with self.assertRaisesRegex(ProtocolError, "stale plugin source lease"):
             self.commit()
         after = self.snapshot()
         self.assertEqual(after[1], 0)
-        # The fixture receipt contains no private data. A future lifecycle SPI
-        # must add provider cleanup before private custom providers can ship.
-        self.assertEqual(len(after[2]), 1)
+        self.assertEqual(after[2], [])
+
+    def test_provider_erase_failure_rolls_back_policy_and_all_rows(self):
+        self.commit()
+        before = self.snapshot()
+        self.provider.fail_erase = True
+        with self.assertRaisesRegex(RuntimeError, "injected trusted erase failure"):
+            set_source_capture(self.store, source_id=self.lease.source_id, enabled=False,
+                               reference_admissions=self.registry)
+        self.assertEqual(self.snapshot(), before)
+        with self.store._connect() as db:
+            row = db.execute("SELECT capture_enabled,policy_epoch FROM plugin_source_cursor_v1 "
+                             "WHERE source_id=?", (self.lease.source_id,)).fetchone()
+        self.assertEqual(tuple(row), (1, 1))
+
+    def test_fingerprint_reset_requires_installed_provider_and_erases_receipt(self):
+        self.commit()
+        before = self.snapshot()
+        with self.assertRaisesRegex(ProtocolError, "provider is unavailable"):
+            activate_source(self.store, plugin_id="fixture.plugin",
+                            source_id=self.lease.source_id, generation="a" * 64)
+        kwargs = {"plugin_id": "fixture.plugin", "source_id": self.lease.source_id,
+                  "generation": "a" * 64, "content_fingerprint": "b" * 64}
+        with self.assertRaisesRegex(ProtocolError, "provider is unavailable"):
+            activate_source(self.store, **kwargs)
+        self.assertEqual(self.snapshot(), before)
+        resumed = activate_source(self.store, **kwargs,
+                                  reference_admissions=self.registry)
+        self.assertEqual(resumed.cursor, "cursor-one")
+        self.assertEqual(self.snapshot()[2], [])
+        with self.store._connect() as db:
+            status = db.execute("SELECT 1 FROM plugin_content_status_v1 WHERE source_id=?",
+                                (self.lease.source_id,)).fetchone()
+        self.assertIsNone(status)
+
+    def test_commits_fail_closed_when_provider_that_owns_source_is_missing(self):
+        self.commit()
+        next_batch = PollBatch(self.lease.source_id, "cursor-two", ({
+            "event_id": "event-two", "revision": 0, "kind": "lifecycle",
+            "time_ns": "9007199254740994", "payload": {"state": "completed"},
+        },))
+        before = self.snapshot()
+        with self.assertRaisesRegex(ProtocolError, "provider is unavailable"):
+            commit_batch(self.store, self.lease, "cursor-one", next_batch)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_schema_install_rolls_back_provider_ddl_on_failure(self):
+        class BrokenAdmission(AuditAdmission):
+            id = "broken-audit"
+
+            def initialize_schema(self, db):
+                db.execute("CREATE TABLE failed_reference_install(value TEXT)")
+                raise RuntimeError("injected schema install failure")
+
+        registry = DEFAULT_REFERENCE_ADMISSIONS.with_provider(BrokenAdmission())
+        with self.assertRaisesRegex(RuntimeError, "injected schema install failure"):
+            registry.install_schema(self.store)
+        with self.store._connect() as db:
+            row = db.execute("SELECT 1 FROM sqlite_master "
+                             "WHERE name='failed_reference_install'").fetchone()
+        self.assertIsNone(row)
+
+    def test_registry_rejects_provider_without_source_erasure(self):
+        class IncompleteAdmission(ReferenceAdmissionProvider):
+            id = "incomplete"
+
+        with self.assertRaisesRegex(ValueError, "invalid trusted reference providers"):
+            ReferenceAdmissionRegistry((*DEFAULT_REFERENCE_ADMISSIONS.providers,
+                                        IncompleteAdmission()))
+
+    def test_existing_pi_status_is_adopted_into_provider_ownership(self):
+        commit_batch(self.store, self.lease, "", self.batch)
+        with self.store._connect() as db:
+            db.execute("DELETE FROM plugin_reference_owner_v1")
+        reopened = Store(self.store.path)
+        self.addCleanup(reopened.close)
+        with reopened._connect() as db:
+            owners = db.execute("SELECT provider_id FROM plugin_reference_owner_v1 "
+                                "WHERE source_id=?", (self.lease.source_id,)).fetchall()
+        self.assertEqual([row[0] for row in owners], ["pi-content"])
 
     def test_revocation_between_verify_and_writer_transaction_blocks_commit(self):
         self.provider.on_verify = lambda: set_source_capture(
-            self.store, source_id=self.lease.source_id, enabled=False)
+            self.store, source_id=self.lease.source_id, enabled=False,
+            reference_admissions=self.registry)
         with self.assertRaisesRegex(ProtocolError, "stale plugin source lease"):
             self.commit()
         after = self.snapshot()

@@ -120,10 +120,15 @@ class PluginSession:
                        if self.capture_source is not None else "")
         if self.capture_source is not None:
             self.capture_modes.require_source(self.capture_mode, self.capture_source)
+        # Store startup already installed the bundled providers. Only a
+        # receiver-supplied extension registry needs this extra writer step.
+        if self.reference_admissions is not DEFAULT_REFERENCE_ADMISSIONS:
+            self.reference_admissions.install_schema(self.store)
         self.lease = activate_source(self.store, plugin_id=manifest.id,
                                      source_id=self.process.source_id,
                                      generation=manifest.artifact_sha256,
-                                     content_fingerprint=fingerprint)
+                                     content_fingerprint=fingerprint,
+                                     reference_admissions=self.reference_admissions)
         self.cursor = self.lease.cursor
         try:
             self.process.start()

@@ -68,6 +68,11 @@ def initialize(db: Connection) -> None:
             capture_enabled INTEGER NOT NULL DEFAULT 1,
             content_fingerprint TEXT NOT NULL DEFAULT '',
             updated_ns INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS plugin_reference_owner_v1 (
+            source_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            PRIMARY KEY(source_id,provider_id),
+            FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
         CREATE TABLE IF NOT EXISTS plugin_source_member_cursor_v1 (
             source_id TEXT NOT NULL,
             member_id TEXT NOT NULL,
@@ -154,9 +159,7 @@ def initialize(db: Connection) -> None:
             db.execute(f"ALTER TABLE plugin_session_projection_v1 ADD COLUMN {name} {declaration}")
     plugin_retention.initialize(db)
     plugin_source_gap.initialize(db)
-    from . import plugin_pi_content, plugin_pi_command
-    plugin_pi_content.initialize(db)
-    plugin_pi_command.initialize(db)
+    DEFAULT_REFERENCE_ADMISSIONS.initialize_schema(db)
     # A pre-activity plugin projection cannot certify the new Activity rows.
     # The worker's startup projection pass republishes both from one snapshot.
     if (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'").fetchone()
@@ -193,7 +196,9 @@ def _identity(value: str, name: str) -> str:
 
 
 def activate_source(store: Store, *, plugin_id: str, source_id: str,
-                    generation: str, content_fingerprint: str = "") -> SourceLease:
+                    generation: str, content_fingerprint: str = "",
+                    reference_admissions: ReferenceAdmissionRegistry =
+                    DEFAULT_REFERENCE_ADMISSIONS) -> SourceLease:
     """Issue a new fence for this exact artifact and return its durable cursor."""
     _identity(plugin_id, "plugin ID")
     _identity(source_id, "source ID")
@@ -202,6 +207,8 @@ def activate_source(store: Store, *, plugin_id: str, source_id: str,
     if (not isinstance(content_fingerprint, str) or content_fingerprint
             and not _HASH.fullmatch(content_fingerprint)):
         raise ValueError("invalid Pi content configuration fingerprint")
+    if not isinstance(reference_admissions, ReferenceAdmissionRegistry):
+        raise TypeError("trusted reference admission registry required")
     epoch = secrets.randbelow(2**63 - 1) + 1
     receiver_id = store.receiver_namespace()
     with store._source_write(), store._connect() as db:
@@ -216,6 +223,8 @@ def activate_source(store: Store, *, plugin_id: str, source_id: str,
             raise ProtocolError("source ownership or artifact generation changed")
         if row is not None and not row["capture_enabled"]:
             raise ProtocolError("plugin source capture revoked")
+        if row is not None:
+            reference_admissions.require_source_providers(db, source_id)
         now = time.time_ns()
         if row is None:
             db.execute("INSERT INTO plugin_source_cursor_v1 "
@@ -227,11 +236,7 @@ def activate_source(store: Store, *, plugin_id: str, source_id: str,
             policy_epoch = 1
         else:
             if row["content_fingerprint"] != content_fingerprint:
-                db.execute("DELETE FROM plugin_content_v1 WHERE source_id=?", (source_id,))
-                db.execute("DELETE FROM plugin_content_batch_v1 WHERE source_id=?", (source_id,))
-                db.execute("DELETE FROM plugin_content_status_v1 WHERE source_id=?", (source_id,))
-                db.execute("DELETE FROM plugin_command_content_v1 WHERE source_id=?", (source_id,))
-                db.execute("DELETE FROM plugin_command_batch_v1 WHERE source_id=?", (source_id,))
+                reference_admissions.erase_source(db, source_id)
             db.execute("UPDATE plugin_source_cursor_v1 SET lease_epoch=?,content_fingerprint=?,updated_ns=? "
                        "WHERE source_id=?", (epoch, content_fingerprint, now, source_id))
             cursor = row["cursor"]
@@ -240,7 +245,9 @@ def activate_source(store: Store, *, plugin_id: str, source_id: str,
                        policy_epoch, content_fingerprint)
 
 
-def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
+def set_source_capture(store: Store, *, source_id: str, enabled: bool,
+                       reference_admissions: ReferenceAdmissionRegistry =
+                       DEFAULT_REFERENCE_ADMISSIONS) -> int:
     """Change host-owned capture policy and fence active workers atomically.
 
     Revocation erases the source's metadata evidence and invalidates downstream
@@ -250,6 +257,8 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
     _identity(source_id, "source ID")
     if type(enabled) is not bool:
         raise TypeError("enabled must be a boolean")
+    if not isinstance(reference_admissions, ReferenceAdmissionRegistry):
+        raise TypeError("trusted reference admission registry required")
     receiver_id = store.receiver_namespace()
     with store._source_write(), store._connect() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -260,17 +269,14 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
                          (source_id,)).fetchone()
         if row is None or row["receiver_id"] != receiver_id:
             raise ProtocolError("unknown plugin source")
+        reference_admissions.require_source_providers(db, source_id)
         if bool(row["capture_enabled"]) == enabled:
             return row["policy_epoch"]
         epoch = row["policy_epoch"] + 1
         lease_epoch = secrets.randbelow(2**63 - 1) + 1
         if not enabled:
             db.execute("DELETE FROM plugin_evidence_v1 WHERE source_id=?", (source_id,))
-            db.execute("DELETE FROM plugin_content_v1 WHERE source_id=?", (source_id,))
-            db.execute("DELETE FROM plugin_content_batch_v1 WHERE source_id=?", (source_id,))
-            db.execute("DELETE FROM plugin_content_status_v1 WHERE source_id=?", (source_id,))
-            db.execute("DELETE FROM plugin_command_content_v1 WHERE source_id=?", (source_id,))
-            db.execute("DELETE FROM plugin_command_batch_v1 WHERE source_id=?", (source_id,))
+            reference_admissions.erase_source(db, source_id)
             db.execute("DELETE FROM plugin_session_projection_v1 WHERE source_id=?", (source_id,))
             db.execute("DELETE FROM activity_index_v1 WHERE kind='plugin' AND owner_key=?",
                        (source_id,))
@@ -503,6 +509,7 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                 (lease.receiver_id, lease.plugin_id, lease.generation, lease.epoch,
                  lease.policy_epoch, lease.content_fingerprint)):
             raise ProtocolError("stale plugin source lease")
+        reference_admissions.require_source_providers(db, lease.source_id)
         if (not rows and not batch.member_id and batch.cursor == row["cursor"]
                 and expected_cursor == row["cursor"]):
             if requested:
@@ -674,4 +681,5 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
         for current, context, outcome in zip(reference_admissions.providers,
                                              contexts, outcomes):
             current.finalize(context, outcome)
+        reference_admissions.record_source_providers(db, lease.source_id)
     return batch.cursor
