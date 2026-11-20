@@ -260,7 +260,7 @@ fn read_telemetry(db: &Connection, receiver: &str) -> Result<Vec<SourceCursor>> 
     }
     let mut query = db.prepare(
         "SELECT s.source_id,s.cursor,s.lease_epoch,s.policy_epoch,s.dirty_seq,s.last_batch_digest,\
-        c.cursor,c.refs_digest,k.cursor,k.refs_digest FROM plugin_source_cursor_v1 s \
+        c.cursor,c.refs_digest,k.cursor,k.refs_digest,s.receiver_id FROM plugin_source_cursor_v1 s \
         LEFT JOIN plugin_content_batch_v1 c USING(source_id) \
         LEFT JOIN plugin_command_batch_v1 k USING(source_id) ORDER BY s.source_id LIMIT 4097",
     )?;
@@ -269,28 +269,38 @@ fn read_telemetry(db: &Connection, receiver: &str) -> Result<Vec<SourceCursor>> 
         let content_digest: Option<String> = r.get(7)?;
         let command_cursor: Option<String> = r.get(8)?;
         let command_digest: Option<String> = r.get(9)?;
-        Ok(SourceCursor {
-            source_id: r.get(0)?,
-            cursor: r.get(1)?,
-            lease_epoch: r.get(2)?,
-            policy_epoch: r.get(3)?,
-            dirty_seq: r.get(4)?,
-            last_batch_digest: r.get(5)?,
-            content_receipt: content_cursor
-                .zip(content_digest)
-                .map(|(cursor, refs_digest)| ReplayReceipt {
-                    cursor,
-                    refs_digest,
-                }),
-            command_receipt: command_cursor
-                .zip(command_digest)
-                .map(|(cursor, refs_digest)| ReplayReceipt {
-                    cursor,
-                    refs_digest,
-                }),
-        })
+        Ok((
+            r.get::<_, String>(10)?,
+            SourceCursor {
+                source_id: r.get(0)?,
+                cursor: r.get(1)?,
+                lease_epoch: r.get(2)?,
+                policy_epoch: r.get(3)?,
+                dirty_seq: r.get(4)?,
+                last_batch_digest: r.get(5)?,
+                content_receipt: content_cursor
+                    .zip(content_digest)
+                    .map(|(cursor, refs_digest)| ReplayReceipt {
+                        cursor,
+                        refs_digest,
+                    }),
+                command_receipt: command_cursor
+                    .zip(command_digest)
+                    .map(|(cursor, refs_digest)| ReplayReceipt {
+                        cursor,
+                        refs_digest,
+                    }),
+            },
+        ))
     })?;
-    let sources: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
+    let rows: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
+    if rows
+        .iter()
+        .any(|(row_receiver, _)| row_receiver != receiver)
+    {
+        return Err(invalid("source cursor receiver mismatch"));
+    }
+    let sources: Vec<_> = rows.into_iter().map(|(_, source)| source).collect();
     if sources.len() > MAX_SOURCES {
         return Err(invalid("too many source cursors"));
     }

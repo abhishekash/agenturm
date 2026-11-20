@@ -66,7 +66,7 @@ fn fixture() -> Fixture {
     let telemetry = Connection::open(&source).unwrap();
     telemetry.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
     telemetry.execute_batch("CREATE TABLE schema_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-        CREATE TABLE plugin_source_cursor_v1(source_id TEXT PRIMARY KEY,cursor TEXT NOT NULL,
+        CREATE TABLE plugin_source_cursor_v1(source_id TEXT PRIMARY KEY,receiver_id TEXT NOT NULL,cursor TEXT NOT NULL,
         lease_epoch INTEGER NOT NULL,policy_epoch INTEGER NOT NULL,dirty_seq INTEGER NOT NULL,
         last_batch_digest TEXT NOT NULL);
         CREATE TABLE plugin_content_batch_v1(source_id TEXT PRIMARY KEY,cursor TEXT NOT NULL,refs_digest TEXT NOT NULL);
@@ -76,7 +76,7 @@ fn fixture() -> Fixture {
     // WAL-only committed row: keep this source connection open until backup.
     telemetry
         .execute(
-            "INSERT INTO plugin_source_cursor_v1 VALUES('pi:a','cursor-2',1,1,2,?1)",
+            "INSERT INTO plugin_source_cursor_v1 VALUES('pi:a','receiver-1','cursor-2',1,1,2,?1)",
             ["a".repeat(64)],
         )
         .unwrap();
@@ -279,4 +279,19 @@ fn interrupted_preparation_cannot_modify_live_source() {
     assert!(!verify(&f.manifest));
     assert_eq!(fs::read(&f.source).unwrap(), before);
     assert_eq!(source_row(), 1);
+}
+
+#[test]
+fn rejects_foreign_source_receiver_even_with_matching_manifest_and_digest() {
+    let mut f = fixture();
+    let path = Path::new(&f.manifest.telemetry.path);
+    let db = Connection::open(path).unwrap();
+    db.execute(
+        "UPDATE plugin_source_cursor_v1 SET receiver_id='foreign-receiver' WHERE source_id='pi:a'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    f.manifest.telemetry = descriptor(path, 1);
+    assert!(!verify(&f.manifest));
 }

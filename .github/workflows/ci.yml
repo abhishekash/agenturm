@@ -31,11 +31,15 @@ jobs:
       - run: cargo build --locked --bin agenturm-backup-query
       - run: cargo build --locked --bin agenturm-storage-service
       - run: cargo build --locked --bin agenturm-storage-admission
+      - run: cargo build --locked --bin agenturm-migration-verify
       - run: cargo build --locked -p agenturm-storage-service-contract --example v2_client
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
       - run: python -m pip install .
+      - run: python -m unittest tests.test_rust_migration_candidate -v
+        env:
+          AGENTURM_RUST_MIGRATION_VERIFY_BIN: ${{ github.workspace }}/target/debug/agenturm-migration-verify
       - run: python -m unittest tests.test_rust_plugin_fixture -v
         env:
           AGENTURM_RUST_FIXTURE_BIN: ${{ github.workspace }}/target/debug/agenturm-fixture-plugin
