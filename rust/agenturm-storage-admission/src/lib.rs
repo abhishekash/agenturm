@@ -786,26 +786,22 @@ pub fn require_marked_scratch_path(path: &Path) -> Result<()> {
 
 /// Only a detached, explicitly marked real Store clone may enter this route.
 /// The service supplies the path; untrusted v2 frames contain no path.
-pub fn require_marked_activation_clone_path(path: &Path) -> Result<()> {
-    if !path.is_absolute() || !fs::symlink_metadata(path)?.file_type().is_file() {
-        return Err(reject("activation clone must be an existing regular file"));
-    }
-    let read = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let marker: Option<String> = read
+fn require_activation_clone_markers(db: &Connection) -> Result<()> {
+    let marker: Option<String> = db
         .query_row(
             "SELECT value FROM schema_meta WHERE key=?",
             [CLONE_MARKER],
             |row| row.get(0),
         )
         .optional()?;
-    let authority: Option<String> = read
+    let authority: Option<String> = db
         .query_row(
             "SELECT value FROM schema_meta WHERE key='storage_authority_v1'",
             [],
             |row| row.get(0),
         )
         .optional()?;
-    let schema: Option<String> = read
+    let schema: Option<String> = db
         .query_row(
             "SELECT value FROM schema_meta WHERE key='plugin_sessions_read_schema'",
             [],
@@ -821,6 +817,14 @@ pub fn require_marked_activation_clone_path(path: &Path) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+pub fn require_marked_activation_clone_path(path: &Path) -> Result<()> {
+    if !path.is_absolute() || !fs::symlink_metadata(path)?.file_type().is_file() {
+        return Err(reject("activation clone must be an existing regular file"));
+    }
+    let read = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    require_activation_clone_markers(&read)
 }
 
 fn with_marked_scratch<T>(
@@ -1052,33 +1056,7 @@ fn activate_source_guarded(
         writer_lease.verify_admission()?;
     }
     if real_clone {
-        let marker: Option<String> = transaction
-            .query_row(
-                "SELECT value FROM schema_meta WHERE key=?",
-                [CLONE_MARKER],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let authority: Option<String> = transaction
-            .query_row(
-                "SELECT value FROM schema_meta WHERE key='storage_authority_v1'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let schema: Option<String> = transaction
-            .query_row(
-                "SELECT value FROM schema_meta WHERE key='plugin_sessions_read_schema'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if marker.as_deref() != Some("enabled")
-            || authority.as_deref() != Some("python-v1")
-            || schema.as_deref() != Some("1")
-        {
-            return Err(reject("activation clone marker changed"));
-        }
+        require_activation_clone_markers(&transaction)?;
     } else {
         require_scratch(&transaction)?;
     }
@@ -1413,6 +1391,12 @@ fn activate_source_guarded(
         &replay.request_id,
         "storage_source_activate_v2",
     )?;
+    if real_clone {
+        // Triggers may alter authorization metadata while the source or replay
+        // receipt is written. Recheck under the same transaction so marker
+        // removal rolls back both writes instead of authorizing this commit.
+        require_activation_clone_markers(&transaction)?;
+    }
     transaction.commit()?;
     Ok(SourceActivationReceipt {
         lease,
@@ -3805,6 +3789,38 @@ mod tests {
         assert_eq!(activation_source_state(&db, "source-one"), state_before);
         assert_eq!(activation_receipt_count(&db, &request.request_id), Some(1));
         assert!(activated.lease.epoch > 0);
+    }
+
+    #[test]
+    fn real_clone_activation_rolls_back_if_trigger_removes_authority_marker() {
+        let mut db = fixture();
+        db.execute_batch(
+            "INSERT INTO schema_meta VALUES('storage_activation_clone_v1','enabled'); \
+             INSERT INTO schema_meta VALUES('storage_authority_v1','python-v1'); \
+             INSERT INTO schema_meta VALUES('plugin_sessions_read_schema','1'); \
+             CREATE TRIGGER tamper_activation_clone_marker \
+             AFTER UPDATE OF lease_epoch ON plugin_source_cursor_v1 \
+             BEGIN DELETE FROM schema_meta WHERE key='storage_activation_clone_v1'; END;",
+        )
+        .unwrap();
+        let request = activation_request("4123456789abcdef0123456789abcdef", "source-one");
+        let before = activation_source_state(&db, "source-one");
+        let replay = request.replay_identity().unwrap();
+        let error = activate_source_guarded(&mut db, &request, None, &replay, true).unwrap_err();
+        assert!(error.to_string().contains("activation clone marker"));
+        assert_eq!(activation_source_state(&db, "source-one"), before);
+        assert!(matches!(
+            activation_receipt_count(&db, &request.request_id),
+            None | Some(0)
+        ));
+        let marker: String = db
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key='storage_activation_clone_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(marker, "enabled");
     }
 
     #[test]
