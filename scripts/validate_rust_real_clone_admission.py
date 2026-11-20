@@ -7,9 +7,7 @@ import json
 import os
 from pathlib import Path
 import signal
-import socket
 import sqlite3
-import struct
 import subprocess
 import sys
 import tempfile
@@ -82,25 +80,11 @@ def request_for(lease: dict, batch, request_id: str, expected_cursor: str) -> di
                           "batch_digest": digest, "records": records}}
 
 
-def child_entry() -> None:
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--client", action="store_true")
-    parser.add_argument("--socket", type=Path)
-    parser.add_argument("--request", type=Path)
-    parser.add_argument("--reply", type=Path)
-    parser.add_argument("--reject", action="store_true")
-    parser.add_argument("--drop-reply", action="store_true")
-    args = parser.parse_args()
-    child_request(args)
-
-
 def main(binary: Path) -> None:
     check(sys.platform == "linux" and os.geteuid() == 0,
           "run as root on isolated Linux")
     from observatory.core import Store
     from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
-    from observatory.plugin_reference_admission import DEFAULT_REFERENCE_ADMISSIONS
 
     service_uid, client_uid, wrong_uid, service_gid, client_gid = identities()
     with tempfile.TemporaryDirectory(prefix="agenturm-real-clone-admit-") as temporary:
@@ -109,6 +93,12 @@ def main(binary: Path) -> None:
         canonical = root / "canonical.db"
         original = Store(canonical)
         receiver = original.receiver_id
+        activate_source(original, plugin_id="fixture.plugin", source_id="private-source",
+                        generation="b" * 64, content_fingerprint="c" * 64)
+        activate_source(original, plugin_id="fixture.plugin", source_id="owned-source",
+                        generation="d" * 64)
+        with original._connect() as db:
+            db.execute("INSERT INTO plugin_reference_owner_v1 VALUES('owned-source','pi-content')")
         original.close()
 
         data = root / "private-data"
@@ -135,7 +125,7 @@ def main(binary: Path) -> None:
                                    source_id="batch-source", generation="a" * 64)
         batch = new_batch("batch-source", "cursor-one")
         from observatory.plugin_admission import _validated
-        batch_digest, rows, _ = _validated(batch, "batch-source")
+        _, rows, _ = _validated(batch, "batch-source")
         # The Rust slice deliberately has no private reference provider. Use
         # Python's normal metadata admission oracle and compare core evidence,
         # cursor, and dirty state; provider ownership remains a separate gate.
@@ -181,6 +171,38 @@ def main(binary: Path) -> None:
                   activated["result"]["disposition"] == "committed",
                   "Rust source activation failed")
             lease = activated["result"]["lease"]
+
+            def existing_lease(source_id: str) -> dict:
+                with closing(sqlite3.connect(clone)) as db:
+                    row = db.execute(
+                        "SELECT receiver_id,plugin_id,source_id,generation,lease_epoch,policy_epoch "
+                        "FROM plugin_source_cursor_v1 WHERE source_id=?", (source_id,)).fetchone()
+                return dict(zip(("receiver_id", "plugin_id", "source_id", "generation",
+                                 "epoch", "policy_epoch"), row))
+
+            for number, source_id in (("4", "private-source"), ("5", "owned-source")):
+                private_batch = new_batch(source_id, f"cursor-{source_id}")
+                private_request = request_for(existing_lease(source_id), private_batch,
+                                              number * 32, "")
+                private_path = root / f"{source_id}.json"
+                private_path.write_text(json.dumps(private_request))
+                private_path.chmod(0o644)
+                with closing(sqlite3.connect(clone)) as db:
+                    before = db.execute(
+                        "SELECT cursor,dirty_seq,policy_epoch,capture_enabled,content_fingerprint "
+                        "FROM plugin_source_cursor_v1 WHERE source_id=?", (source_id,)).fetchone()
+                    count_before = db.execute(
+                        "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?", (source_id,)).fetchone()[0]
+                run_client(private_path, socket_path, uid=client_uid, gid=client_gid, reject=True)
+                with closing(sqlite3.connect(clone)) as db:
+                    after = db.execute(
+                        "SELECT cursor,dirty_seq,policy_epoch,capture_enabled,content_fingerprint "
+                        "FROM plugin_source_cursor_v1 WHERE source_id=?", (source_id,)).fetchone()
+                    count_after = db.execute(
+                        "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?", (source_id,)).fetchone()[0]
+                    check((after, count_after) == (before, count_before),
+                          f"private source {source_id} changed after rejected admission")
+
             request = request_for(lease, batch, "2" * 32, "")
             request_path = root / "admit.json"
             request_path.write_text(json.dumps(request))
@@ -190,6 +212,11 @@ def main(binary: Path) -> None:
             # Deterministically abort an evidence insert and prove SQLite rolls
             # back both the cursor and the request receipt.
             with closing(sqlite3.connect(clone)) as db:
+                db.execute("CREATE TABLE IF NOT EXISTS storage_admission_request_v2 ("
+                           "request_id TEXT PRIMARY KEY, receiver_id TEXT NOT NULL, "
+                           "request_digest TEXT NOT NULL, source_id TEXT NOT NULL, "
+                           "cursor TEXT NOT NULL, batch_digest TEXT NOT NULL, "
+                           "dirty_seq INTEGER NOT NULL, disposition TEXT NOT NULL)")
                 db.execute("CREATE TRIGGER abort_batch BEFORE INSERT ON plugin_evidence_v1 "
                            "BEGIN SELECT RAISE(ABORT,'test precommit abort'); END")
                 db.commit()
@@ -229,18 +256,6 @@ def main(binary: Path) -> None:
             check(replay["result"]["disposition"] == "replay",
                   "restart admission replay was not durable")
 
-            # Revoke through Python against the clone while the Rust service is
-            # idle, then prove the previously issued Rust lease is stale.
-            stale_batch = new_batch("batch-source", "cursor-two")
-            stale_request = request_for(lease, stale_batch, "3" * 32, "cursor-one")
-            stale_path = root / "stale.json"
-            stale_path.write_text(json.dumps(stale_request))
-            stale_path.chmod(0o644)
-            clone_store = Store(clone)
-            set_source_capture(clone_store, source_id="batch-source", enabled=False)
-            clone_store.close()
-            run_client(stale_path, socket_path, uid=client_uid, gid=client_gid, reject=True)
-
             with closing(sqlite3.connect(clone)) as db, closing(sqlite3.connect(oracle)) as py:
                 rust_state = db.execute(
                     "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
@@ -250,7 +265,6 @@ def main(binary: Path) -> None:
                     "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
                     "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
                     "WHERE source_id='batch-source'").fetchone()
-                # Policy and random lease epochs are unaffected by admission.
                 check(rust_state == py_state, "Rust cursor/policy state differs from Python")
                 projection = ("event_id_hash,revision,kind,time_ns,payload_json,record_digest,"
                               "native_session_id,native_worker_id,native_turn_id,native_operation_id,"
@@ -272,6 +286,55 @@ def main(binary: Path) -> None:
                     "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
                     (request["request_id"],)).fetchone()[0]
                 check(receipt_count == 1, "admission replay receipt was duplicated")
+
+            # Revoke through Python against the clone while the Rust service is
+            # idle, then prove the previously issued Rust lease is stale. The
+            # Python oracle receives the same policy transition.
+            stale_batch = new_batch("batch-source", "cursor-two")
+            stale_request = request_for(lease, stale_batch, "3" * 32, "cursor-one")
+            stale_path = root / "stale.json"
+            stale_path.write_text(json.dumps(stale_request))
+            stale_path.chmod(0o644)
+            clone_store = Store(clone)
+            set_source_capture(clone_store, source_id="batch-source", enabled=False)
+            clone_store.close()
+            oracle_store = Store(oracle)
+            set_source_capture(oracle_store, source_id="batch-source", enabled=False)
+            oracle_store.close()
+            with closing(sqlite3.connect(clone)) as db:
+                before_stale = db.execute(
+                    "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                    "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='batch-source'").fetchone()
+                before_evidence = db.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id='batch-source'").fetchone()[0]
+            run_client(stale_path, socket_path, uid=client_uid, gid=client_gid, reject=True)
+            with closing(sqlite3.connect(clone)) as db:
+                after_stale = db.execute(
+                    "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                    "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='batch-source'").fetchone()
+                after_evidence = db.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id='batch-source'").fetchone()[0]
+                check((after_stale, after_evidence) == (before_stale, before_evidence),
+                      "stale lease admission changed revoked source state")
+
+            with closing(sqlite3.connect(clone)) as db, closing(sqlite3.connect(oracle)) as py:
+                rust_state = db.execute(
+                    "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                    "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='batch-source'").fetchone()
+                py_state = py.execute(
+                    "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                    "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='batch-source'").fetchone()
+                # Policy and random lease epochs are unaffected by admission.
+                check(rust_state == py_state, "Rust cursor/policy state differs from Python")
+                rust_count = db.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id='batch-source'").fetchone()[0]
+                py_count = py.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id='batch-source'").fetchone()[0]
+                check(rust_count == py_count == 0, "revocation left source evidence")
 
             # The exact receipt and cursor survive service restart; all test
             # mutations stayed on the detached clone.

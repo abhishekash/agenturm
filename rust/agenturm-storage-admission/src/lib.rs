@@ -26,6 +26,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 48;
 const MAX_SOURCE_RECORDS: i64 = 50_000;
+const MAX_CURSOR_CHARS: usize = v2::MAX_CURSOR_CHARS;
 const SCRATCH_MARKER: &str = "storage_admission_scratch_v1";
 const CLONE_MARKER: &str = "storage_activation_clone_v1";
 const V2_RECEIPT_TABLES: &[&str] = &[
@@ -56,7 +57,7 @@ fn identity(value: &str) -> bool {
 }
 
 fn cursor(value: &str) -> bool {
-    value.len() <= 512 && !value.chars().any(char::is_control)
+    value.len() <= MAX_CURSOR_CHARS && !value.chars().any(char::is_control)
 }
 
 fn reason_code(value: &str) -> bool {
@@ -187,6 +188,7 @@ fn finish(
     request: &Request,
     replay: Option<&v2::ReplayIdentity>,
     existing_v2_receipt: bool,
+    real_clone: bool,
 ) -> Result<Receipt> {
     if let Some(replay) = replay.filter(|_| !existing_v2_receipt) {
         transaction.execute(
@@ -204,6 +206,12 @@ fn finish(
                 receipt.disposition,
             ],
         )?;
+    }
+    if real_clone {
+        // A trigger may change authorization metadata while evidence or its
+        // receipt is written. Recheck in the same transaction so the entire
+        // admission rolls back if the clone boundary changes.
+        require_activation_clone_markers(&transaction)?;
     }
     transaction.commit()?;
     Ok(receipt)
@@ -460,7 +468,7 @@ fn commit_guarded_mode(
         lease.verify_admission()?;
     }
     if real_clone {
-        require_marked_real_clone(&transaction)?;
+        require_activation_clone_markers(&transaction)?;
     } else {
         require_scratch(&transaction)?;
     }
@@ -607,6 +615,7 @@ fn commit_guarded_mode(
             request,
             replay,
             existing_v2_receipt,
+            real_clone,
         );
     }
     if request.cursor == current_cursor
@@ -636,6 +645,7 @@ fn commit_guarded_mode(
             request,
             replay,
             existing_v2_receipt,
+            real_clone,
         );
     }
     if request.expected_cursor != current_cursor {
@@ -764,6 +774,7 @@ fn commit_guarded_mode(
         request,
         replay,
         existing_v2_receipt,
+        real_clone,
     )
 }
 
@@ -959,7 +970,11 @@ pub fn apply_activation_clone_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u
                 dirty_seq: receipt.dirty_seq,
             })
         }
-        _ => return Err(reject("real-schema clone accepts only activation or admission")),
+        _ => {
+            return Err(reject(
+                "real-schema clone accepts only activation or admission",
+            ));
+        }
     };
     v2::Reply {
         version: v2::VERSION,
@@ -1483,7 +1498,7 @@ fn activate_source_guarded(
 }
 
 fn cursor_value(value: &str) -> bool {
-    value.len() <= 512 && !value.chars().any(char::is_control)
+    value.len() <= MAX_CURSOR_CHARS && !value.chars().any(char::is_control)
 }
 
 fn revoke_source_guarded(
@@ -2540,6 +2555,16 @@ mod tests {
         (cursor, dirty, count)
     }
 
+    #[test]
+    fn storage_cursor_accepts_exact_shared_limit_and_rejects_overflow() {
+        assert!(cursor_value(&"c".repeat(MAX_CURSOR_CHARS)));
+        assert!(!cursor_value(&"c".repeat(MAX_CURSOR_CHARS + 1)));
+        assert!(!cursor_value(&format!(
+            "{}\n",
+            "c".repeat(MAX_CURSOR_CHARS - 1)
+        )));
+    }
+
     fn activation_source_state(db: &Connection, source_id: &str) -> Option<TestSourceState> {
         db.query_row(
             "SELECT receiver_id,plugin_id,generation,lease_epoch,policy_epoch,capture_enabled,\
@@ -2578,6 +2603,25 @@ mod tests {
         exists.then(|| {
             db.query_row(
                 "SELECT COUNT(*) FROM storage_source_activate_v2 WHERE request_id=?",
+                [request_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        })
+    }
+
+    fn admission_receipt_count(db: &Connection, request_id: &str) -> Option<i64> {
+        let exists: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' \
+                 AND name='storage_admission_request_v2')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        exists.then(|| {
+            db.query_row(
+                "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
                 [request_id],
                 |row| row.get(0),
             )
@@ -3887,6 +3931,130 @@ mod tests {
         assert_eq!(activation_source_state(&db, "source-one"), before);
         assert!(matches!(
             activation_receipt_count(&db, &request.request_id),
+            None | Some(0)
+        ));
+        let marker: String = db
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key='storage_activation_clone_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(marker, "enabled");
+    }
+
+    fn clone_admission_request(request_id: &str, cursor: &str) -> v2::Request {
+        v2::Request {
+            version: v2::VERSION,
+            request_id: request_id.to_owned(),
+            receiver_id: "receiver-one".to_owned(),
+            operation: v2::Operation::AdmitLifecycle {
+                lease: v2::SourceLease {
+                    receiver_id: "receiver-one".to_owned(),
+                    plugin_id: "fixture.plugin".to_owned(),
+                    source_id: "source-one".to_owned(),
+                    generation: "a".repeat(64),
+                    epoch: 7,
+                    policy_epoch: 1,
+                },
+                expected_cursor: String::new(),
+                cursor: cursor.to_owned(),
+                batch_digest: "d".repeat(64),
+                records: vec![v2::PreparedLifecycle {
+                    event_id_hash: "e".repeat(64),
+                    revision: 0,
+                    kind: v2::LifecycleKind::Lifecycle,
+                    time_ns: 100,
+                    payload_json: "{\"state\":\"started\"}".to_owned(),
+                    record_digest: "f".repeat(64),
+                    native_session_id: "native-one".to_owned(),
+                    native_worker_id: String::new(),
+                    native_turn_id: String::new(),
+                    native_operation_id: String::new(),
+                }],
+            },
+        }
+    }
+
+    fn add_real_clone_markers(db: &Connection) {
+        db.execute_batch(
+            "INSERT INTO schema_meta VALUES('storage_activation_clone_v1','enabled'); \
+             INSERT INTO schema_meta VALUES('storage_authority_v1','python-v1'); \
+             INSERT INTO schema_meta VALUES('plugin_sessions_read_schema','1');",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn real_clone_admission_commits_replays_and_observes_800_character_cursor() {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        let cursor = "k".repeat(v2::MAX_CURSOR_CHARS);
+        let wire = clone_admission_request("5123456789abcdef0123456789abcdef", &cursor);
+        let replay = wire.replay_identity().unwrap();
+        let prepared = Request {
+            schema_version: 1,
+            sqlite_path: "/tmp/real-clone.db".to_owned(),
+            lease: Lease {
+                receiver_id: "receiver-one".to_owned(),
+                plugin_id: "fixture.plugin".to_owned(),
+                source_id: "source-one".to_owned(),
+                generation: "a".repeat(64),
+                epoch: 7,
+                policy_epoch: 1,
+            },
+            expected_cursor: String::new(),
+            cursor: cursor.clone(),
+            batch_digest: "d".repeat(64),
+            records: vec![PreparedRecord {
+                event_id_hash: "e".repeat(64),
+                revision: 0,
+                kind: "lifecycle".to_owned(),
+                time_ns: 100,
+                payload_json: "{\"state\":\"started\"}".to_owned(),
+                record_digest: "f".repeat(64),
+                native_session_id: "native-one".to_owned(),
+                native_worker_id: String::new(),
+                native_turn_id: String::new(),
+                native_operation_id: String::new(),
+            }],
+        };
+        let committed = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true).unwrap();
+        assert_eq!(committed.disposition, "committed");
+        assert_eq!(committed.cursor, cursor);
+        let after_commit = state(&db);
+        let replayed = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true).unwrap();
+        assert_eq!(replayed.disposition, "replay");
+        assert_eq!(state(&db), after_commit);
+        assert_eq!(admission_receipt_count(&db, &wire.request_id), Some(1));
+        assert_eq!(after_commit, ("k".repeat(v2::MAX_CURSOR_CHARS), 1, 1));
+    }
+
+    #[test]
+    fn real_clone_admission_rolls_back_if_trigger_removes_authority_marker() {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        db.execute_batch(
+            "CREATE TRIGGER tamper_admission_clone_marker \
+             AFTER INSERT ON plugin_evidence_v1 \
+             BEGIN DELETE FROM schema_meta WHERE key='storage_activation_clone_v1'; END;",
+        )
+        .unwrap();
+        let wire = clone_admission_request("6123456789abcdef0123456789abcdef", "cursor-one");
+        let replay = wire.replay_identity().unwrap();
+        let event_hash = "e".repeat(64);
+        let record_digest = "f".repeat(64);
+        let prepared = request(
+            "cursor-one",
+            "",
+            &[(event_hash.as_str(), record_digest.as_str())],
+        );
+        let before = state(&db);
+        let error = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true).unwrap_err();
+        assert!(error.to_string().contains("activation clone marker"));
+        assert_eq!(state(&db), before);
+        assert!(matches!(
+            admission_receipt_count(&db, &wire.request_id),
             None | Some(0)
         ));
         let marker: String = db

@@ -12,6 +12,8 @@ use std::collections::HashSet;
 pub const VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = crate::MAX_FRAME_BYTES;
 pub const MAX_RECORDS: usize = 48;
+/// Matches the bounded shared Rust JSONL cursor and Python source host.
+pub const MAX_CURSOR_CHARS: usize = 800;
 
 type Result<T> = std::result::Result<T, ContractError>;
 
@@ -190,7 +192,7 @@ fn digest(value: &str, bytes: usize) -> bool {
 }
 
 fn cursor(value: &str) -> bool {
-    value.len() <= 512 && !value.chars().any(char::is_control)
+    value.len() <= MAX_CURSOR_CHARS && !value.chars().any(char::is_control)
 }
 
 fn reason_code(value: &str) -> bool {
@@ -641,6 +643,21 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_cursor_accepts_exact_shared_limit_and_rejects_overflow() {
+        let (mut request, _) = fixture();
+        if let Operation::AdmitLifecycle { cursor, .. } = &mut request.operation {
+            *cursor = "c".repeat(MAX_CURSOR_CHARS);
+        } else {
+            panic!("fixture is lifecycle admission");
+        }
+        assert!(request.validate().is_ok());
+        if let Operation::AdmitLifecycle { cursor, .. } = &mut request.operation {
+            *cursor = "c".repeat(MAX_CURSOR_CHARS + 1);
+        }
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
     fn rejects_unsupported_evidence_and_duplicate_identity() {
         let (request, _) = fixture();
         let mut value: Value = serde_json::from_slice(&request.to_json().unwrap()).unwrap();
@@ -688,7 +705,7 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .truncate(1);
-        value["operation"]["cursor"] = json!("x".repeat(513));
+        value["operation"]["cursor"] = json!("x".repeat(MAX_CURSOR_CHARS + 1));
         assert!(Request::from_json(&serde_json::to_vec(&value).unwrap()).is_err());
         value["operation"]["cursor"] = json!("cursor-one");
         value["operation"]["records"][0]["payload_json"] = json!(format!(
