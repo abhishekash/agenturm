@@ -17,6 +17,7 @@ from observatory.outbound_delivery import OutboundQueue
 from observatory.saved_tasks import TaskError, TaskStore
 from observatory.workflow_store import WorkflowStore, WorkflowStoreError
 from observatory.plugin_wire import ProtocolError
+import observatory.cooperating_candidate as coordinator
 
 
 class CooperatingCandidateTests(unittest.TestCase):
@@ -160,6 +161,87 @@ class CooperatingCandidateTests(unittest.TestCase):
                 self.prepare()
         state = json.loads((self.output / "state.json").read_text())
         self.assertEqual(state["state"], "incomplete")
+
+    def test_invalid_verifier_and_output_fail_before_one_way_fences(self):
+        for output, verifier, message in (
+            (self.output, self.root / "missing-verifier", "binary unavailable"),
+            (Path("relative-candidate"), self.binary, "absolute"),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(CandidateError, message):
+                    prepare_cooperating_candidate(
+                        telemetry=self.telemetry, workflow=self.workflow, tasks=self.tasks,
+                        outbound=self.outbound, output=output, verifier=verifier, timeout=1)
+                with self.workflow._transaction(write=False) as db:
+                    self.assertEqual(db.execute("SELECT 1").fetchone()[0], 1)
+                with self.tasks._connect() as db:
+                    self.assertEqual(db.execute("SELECT 1").fetchone()[0], 1)
+                with self.telemetry._connect() as db:
+                    self.assertEqual(db.execute("SELECT 1").fetchone()[0], 1)
+        self.assertFalse(self.output.exists())
+
+    def test_failed_incomplete_marker_sync_unlinks_and_syncs_directory(self):
+        class FailingGuard:
+            def __init__(self):
+                self.calls = 0
+
+            def verify(self):
+                self.calls += 1
+                if self.calls == 2:
+                    raise RuntimeError("late guard failure")
+
+        @contextmanager
+        def guard(_timeout):
+            yield FailingGuard()
+
+        original_sync = coordinator._sync_directory
+        sync_calls = 0
+
+        def fail_first_sync(path):
+            nonlocal sync_calls
+            sync_calls += 1
+            if sync_calls == 1:
+                raise OSError("injected incomplete marker sync failure")
+            return original_sync(path)
+
+        with patch.object(self.outbound, "dispatch_handoff_guard", side_effect=guard):
+            with patch.object(coordinator, "_sync_directory", side_effect=fail_first_sync):
+                with self.assertRaisesRegex(CandidateError, "incomplete state may need quarantine"):
+                    self.prepare()
+        self.assertEqual(sync_calls, 2)
+        self.assertFalse((self.output / "state.json").exists())
+
+    def test_dispatch_guard_is_held_through_backup_and_verification(self):
+        entered = threading.Event()
+        release = threading.Event()
+        result = []
+        original_prepare = coordinator.prepare_candidate
+
+        def blocked_prepare(**kwargs):
+            entered.set()
+            if not release.wait(2):
+                raise RuntimeError("backup release timed out")
+            return original_prepare(**kwargs)
+
+        def run():
+            try:
+                result.append(self.prepare())
+            except Exception as exc:
+                result.append(exc)
+
+        with patch.object(coordinator, "prepare_candidate", side_effect=blocked_prepare):
+            worker = threading.Thread(target=run)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                with self.assertRaisesRegex(ProtocolError, "dispatch or recovery is active"):
+                    with self.outbound._dispatch_lease(exclusive=False):
+                        pass
+            finally:
+                release.set()
+                worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [self.output / "manifest.json"])
 
 
 if __name__ == "__main__":

@@ -10,7 +10,8 @@ from pathlib import Path
 import time
 
 from .core import Store
-from .migration_candidate import CandidateError, prepare_candidate
+from .migration_candidate import (CandidateError, _preflight_candidate_inputs,
+                                  _sync_directory, prepare_candidate)
 from .outbound_delivery import OutboundQueue
 from .saved_tasks import TaskStore
 from .workflow_store import WorkflowStore
@@ -27,16 +28,13 @@ def _invalidate_prepared(directory: Path) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(replacement, marker)
-        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        _sync_directory(directory)
     except BaseException as exc:
         # A missing marker is always incomplete. If even removal fails, the
         # operator must quarantine this candidate before inspecting it.
         try:
             marker.unlink(missing_ok=True)
+            _sync_directory(directory)
         except BaseException as removal_error:
             raise CandidateError(
                 f"candidate handoff failed; quarantine {directory} manually") from removal_error
@@ -63,6 +61,11 @@ def prepare_cooperating_candidate(*, telemetry: Store, workflow: WorkflowStore,
         raise CandidateError("outbound queue must use the supplied telemetry Store")
     if type(timeout) not in (int, float) or not 0 < timeout <= 60:
         raise ValueError("cooperating candidate timeout must be above 0 and at most 60 seconds")
+    # Reject deterministic input failures before any one-way handoff request.
+    # The producer repeats this preflight under the dispatch guard after drain.
+    _preflight_candidate_inputs(
+        telemetry=telemetry.path, workflow=workflow.path, tasks=tasks.path,
+        output=output, verifier=verifier)
     deadline = time.monotonic() + timeout
 
     def remaining() -> float:
