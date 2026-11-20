@@ -7,6 +7,10 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+/// Feature-off, data-only v2 lifecycle admission proposal. No v1 transport
+/// function dispatches this module or accepts a v2 request.
+pub mod v2;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
