@@ -16,11 +16,22 @@ dependencies = [
 name = "agenturm-codex-harness"
 version = "0.1.0"
 dependencies = [
+ "agenturm-directory-source",
  "agenturm-jsonl-source",
  "agenturm-source-process",
  "serde_json",
  "sha2",
  "time",
+]
+
+[[package]]
+name = "agenturm-directory-source"
+version = "0.1.0"
+dependencies = [
+ "agenturm-jsonl-source",
+ "agenturm-source-process",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
