@@ -37,7 +37,7 @@ def initialize(db: Connection) -> None:
 
 
 def invalidate_existing(db: Connection, source_id: str,
-                        incoming_session_ids: set[str]) -> None:
+                        incoming_session_ids: set[str], *, member_id: str = "") -> None:
     """Snapshot already admitted sessions before the new gap record is written.
 
     The caller owns BEGIN IMMEDIATE and the cursor transaction. Evidence
@@ -49,11 +49,49 @@ def invalidate_existing(db: Connection, source_id: str,
         (source_id,))}
     if _LEGACY_ALL in existing:
         return
-    rows = db.execute(
-        "SELECT native_session_id,MAX(admitted_ns) FROM plugin_evidence_v1 "
-        "WHERE source_id=? AND native_session_id!='' "
-        "GROUP BY native_session_id LIMIT ?",
-        (source_id, MAX_INVALIDATED_SESSIONS + 1)).fetchall()
+    # A member-scoped gap is safe only when current evidence has durable,
+    # matching ownership. Earlier unowned rows and a still-authoritative
+    # projection without evidence force the old whole-source disposition.
+    # Retention tombstones are already Unknown even after their evidence is
+    # pruned; their member bindings are retained if they were admitted here.
+    scoped = bool(member_id) and db.execute(
+        "SELECT 1 FROM plugin_evidence_v1 e LEFT JOIN plugin_session_member_v1 m "
+        "ON m.source_id=e.source_id AND m.native_session_id=e.native_session_id "
+        "WHERE e.source_id=? AND e.native_session_id!='' "
+        "AND (e.member_id='' OR m.member_id IS NULL OR m.member_id='' "
+        "OR m.member_id!=e.member_id) LIMIT 1",
+        (source_id,)).fetchone() is None and db.execute(
+        "SELECT 1 FROM plugin_session_projection_v1 p LEFT JOIN plugin_session_member_v1 m "
+        "ON m.source_id=p.source_id AND m.native_session_id=p.native_session_id "
+        "WHERE p.source_id=? AND p.reason_code NOT IN ('retention_gap','source_gap') "
+        "AND (m.member_id IS NULL OR m.member_id='') LIMIT 1",
+        (source_id,)).fetchone() is None and db.execute(
+        "SELECT 1 FROM plugin_session_member_v1 WHERE source_id=? "
+        "AND member_id='' LIMIT 1",
+        (source_id,)).fetchone() is None
+    if scoped:
+        rows = db.execute(
+            "SELECT native_session_id,MAX(record_ns) FROM ("
+            "SELECT native_session_id,admitted_ns AS record_ns FROM plugin_evidence_v1 "
+            "WHERE source_id=? AND member_id=? AND native_session_id!='' "
+            "UNION ALL SELECT p.native_session_id,p.last_record_ns AS record_ns "
+            "FROM plugin_session_projection_v1 p JOIN plugin_session_member_v1 m "
+            "ON m.source_id=p.source_id AND m.native_session_id=p.native_session_id "
+            "WHERE p.source_id=? AND m.member_id=? "
+            "AND p.reason_code NOT IN ('retention_gap','source_gap')) "
+            "GROUP BY native_session_id LIMIT ?",
+            (source_id, member_id, source_id, member_id,
+             MAX_INVALIDATED_SESSIONS + 1)).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT native_session_id,MAX(record_ns) FROM ("
+            "SELECT native_session_id,admitted_ns AS record_ns FROM plugin_evidence_v1 "
+            "WHERE source_id=? AND native_session_id!='' "
+            "UNION ALL SELECT native_session_id,last_record_ns AS record_ns "
+            "FROM plugin_session_projection_v1 WHERE source_id=? "
+            "AND reason_code NOT IN ('retention_gap','source_gap')) "
+            "GROUP BY native_session_id LIMIT ?",
+            (source_id, source_id, MAX_INVALIDATED_SESSIONS + 1)).fetchall()
     retained = {row[0] for row in db.execute(
         "SELECT native_session_id FROM plugin_retention_invalidated_v1 WHERE source_id=?",
         (source_id,))}

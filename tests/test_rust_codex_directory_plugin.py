@@ -132,17 +132,18 @@ class CodexDirectoryTests(unittest.TestCase):
             self.assertEqual(missing.member_cursor, "")
             self.assertEqual(len(member_cursors(self.store, worker.lease)), 1)
             invalidated = self.sessions()
-            self.assertEqual({row["reason_code"] for row in invalidated.values()},
-                             {"source_gap"})
-            self.assertEqual(self.store.activity_page()["activity"], [])
+            self.assertEqual(invalidated["session-one"]["reason_code"], "source_gap")
+            self.assertEqual(invalidated["session-two"]["run_state"], "completed")
+            self.assertNotEqual(invalidated["session-two"]["reason_code"], "source_gap")
+            self.assertEqual(len(self.store.activity_page()["activity"]), 1)
             third = self.sources / "2026" / "11" / "three.jsonl"
             rollout(third, "session-three")
             worker.poll_once()
             current = self.sessions()
             self.assertEqual(current["session-three"]["run_state"], "completed")
             self.assertEqual(current["session-one"]["run_state"], "unknown")
-            self.assertEqual(current["session-two"]["run_state"], "unknown")
-            self.assertEqual(len(self.store.activity_page()["activity"]), 1)
+            self.assertEqual(current["session-two"]["run_state"], "completed")
+            self.assertEqual(len(self.store.activity_page()["activity"]), 2)
         with self.store._connect() as db:
             retained = "".join(row[0] for row in db.execute(
                 "SELECT payload_json FROM plugin_evidence_v1"))
@@ -167,7 +168,8 @@ class CodexDirectoryTests(unittest.TestCase):
             sessions = self.sessions()
             self.assertEqual(sessions["session-new"]["run_state"], "completed")
             self.assertEqual(sessions["session-two"]["run_state"], "unknown")
-            self.assertEqual(len(self.store.activity_page()["activity"]), 1)
+            self.assertEqual(sessions["session-one"]["run_state"], "completed")
+            self.assertEqual(len(self.store.activity_page()["activity"]), 2)
 
     def test_five_incomplete_files_advance_scan_position_without_evidence(self):
         self.first.unlink()
