@@ -21,6 +21,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+# CI invokes this root-only coordinator with the system interpreter, which may
+# differ from the setup-python interpreter where the package was installed.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from validate_rust_storage_service_accounts import (check, drop_to, identities,
                                                      read_exact, wait_exit, wait_socket)
 
