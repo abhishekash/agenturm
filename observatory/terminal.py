@@ -1113,9 +1113,11 @@ def print_snapshot(feed, *, refresh=True):
         return number(record.get(key))
     print("AGENTURM  " + feed.api.endpoint)
     if snapshot.local_status.get("enabled"):
-        from .source_coverage import coverage_summary
+        from .source_coverage import coverage_summary, coverage_warning
         mode = "bounded, redacted content" if snapshot.local_status.get('capture_content') else "metadata only"
         print(f"Sources: {coverage_summary(snapshot.local_status)} · {mode}")
+        warning = coverage_warning(snapshot.local_status)
+        if warning:print(warning)
     known_cost = totals.get('known_cost_usd')
     cost_text = 'Not reported' if known_cost is None else f'${known_cost:.4f}'
     print(f"Runs {number(totals.get('runs'))}  Spans {number(totals.get('spans'))}  "

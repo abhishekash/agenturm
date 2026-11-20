@@ -4,7 +4,9 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +15,8 @@ from observatory.plugin_admission import member_cursors
 from observatory.plugin_config import read_plugin_config
 from observatory.plugin_projection import project_source
 from observatory.plugin_runtime import PluginSession
+from observatory.plugin_supervisor import PluginSupervisor
+from observatory.source_coverage import process_source_availability
 from observatory.plugin_wire import ProtocolError, decode_message, encode_message
 
 
@@ -70,6 +74,43 @@ class CodexDirectoryTests(unittest.TestCase):
         project_source(self.store, self.plugin.source_id)
         return {row["native_session_id"]: row for row in
                 self.store.plugin_sessions()["sessions"]}
+
+    def test_root_unavailable_then_restored_keeps_last_outcomes_and_recovers_coverage(self):
+        source = replace(self.plugin, poll_interval=0.05)
+        manager = PluginSupervisor(self.store, (source,), max_failures=20,
+                                   backoff_seconds=0.2).start()
+        self.addCleanup(manager.close)
+
+        def until(predicate, seconds=8):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                status = manager.snapshot()[0]
+                if predicate(status):
+                    return status
+                time.sleep(0.02)
+            self.fail(f"source did not reach expected condition: {manager.snapshot()}")
+
+        healthy = until(lambda status: status["state"] == "running"
+                        and status["last_success_ns"] > 0)
+        self.assertEqual({row["run_state"] for row in self.sessions().values()},
+                         {"completed"})
+        moved = self.root / "sessions-unavailable"
+        self.sources.rename(moved)
+        try:
+            failed = until(lambda status: status["state"] == "degraded"
+                           and status["last_failure_ns"] > healthy["last_success_ns"])
+            self.assertEqual(process_source_availability([failed],
+                             self.store.plugin_sessions()["sessions"])[0]["availability"],
+                             "unavailable")
+            self.assertEqual({row["run_state"] for row in self.sessions().values()},
+                             {"completed"})
+        finally:
+            moved.rename(self.sources)
+        recovered = until(lambda status: status["state"] == "running"
+                          and status["last_success_ns"] > status["last_failure_ns"])
+        self.assertEqual(process_source_availability([recovered],
+                         self.store.plugin_sessions()["sessions"])[0]["availability"],
+                         "ready")
 
     def test_files_resume_disappear_and_new_session_after_gap(self):
         with self.worker() as worker:
