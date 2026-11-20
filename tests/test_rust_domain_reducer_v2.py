@@ -95,10 +95,17 @@ def python_projection(fixture):
                         "relationship_kind": row["relationship_kind"],
                         "relationship_state": row["relationship_state"],
                     })
+                facts = sorted((json.loads(row["payload"]) for row in activities),
+                               key=lambda fact: fact["id"])
+                if fixture["schema_version"] == 2:
+                    # This frozen interchange version predates the host's
+                    # producer-turn provenance marker. Keep its historical
+                    # golden shape; version 3 checks exact current Activity.
+                    for fact in facts:
+                        fact["metadata"].pop("tool_turn_relation", None)
                 return {"schema_version": fixture["schema_version"],
                         "sessions": sorted(result, key=lambda row: row["native_session_id"]),
-                        "activities": sorted((json.loads(row["payload"]) for row in activities),
-                                             key=lambda fact: fact["id"])}
+                        "activities": facts}
         finally:
             store.close()
 
