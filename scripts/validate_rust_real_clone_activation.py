@@ -9,6 +9,7 @@ from pathlib import Path
 import signal
 import socket
 import sqlite3
+import shutil
 import struct
 import subprocess
 import sys
@@ -101,11 +102,14 @@ def main() -> None:
         client_case(args)
         return
     check(sys.platform == "linux" and os.geteuid() == 0, "run as root on isolated Linux")
-    binary = args.bin.resolve(strict=True)
+    binary_source = args.bin.resolve(strict=True)
     service_uid, client_uid, wrong_uid, service_gid, client_gid = identities()
     with tempfile.TemporaryDirectory(prefix="agenturm-real-clone-") as temporary:
         root = Path(temporary)
         root.chmod(0o755)
+        binary = root / "agenturm-storage-service"
+        shutil.copy2(binary_source, binary)
+        binary.chmod(0o755)
         source = root / "source.db"
         from observatory.core import Store
         from observatory.plugin_admission import activate_source
