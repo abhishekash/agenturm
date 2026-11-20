@@ -156,11 +156,13 @@ class PollBatch:
     records: tuple[dict, ...]
     member_id: str = ""
     member_cursor: str = ""
+    root_gap: bool = False
 
 
 def validate_batch(message: dict, *, source_id: str) -> PollBatch:
     fields = {"type", "protocol", "source_id", "cursor", "records"}
-    if set(message) not in (fields, fields | {"member_id", "member_cursor"}):
+    if set(message) not in (fields, fields | {"member_id", "member_cursor"},
+                            fields | {"root_gap"}):
         raise ProtocolError("invalid batch fields")
     if (message["type"] != "batch" or type(message["protocol"]) is not int
             or message["protocol"] != PROTOCOL_MAJOR or message["source_id"] != source_id):
@@ -212,4 +214,12 @@ def validate_batch(message: dict, *, source_id: str) -> PollBatch:
             raise ProtocolError("invalid discovery member cursor")
     elif "member_id" in message:
         raise ProtocolError("invalid discovery member ID")
-    return PollBatch(source_id, cursor, tuple(records), member_id, member_cursor)
+    root_gap = message.get("root_gap", False)
+    if "root_gap" in message and (root_gap is not True or len(records) != 1
+                                   or records[0]["kind"] != "diagnostic"
+                                   or records[0]["revision"] != 0
+                                   or records[0].get("identity")
+                                   or records[0]["payload"] != {
+                                       "code": "possible_source_gap", "severity": "warning"}):
+        raise ProtocolError("invalid discovery root gap")
+    return PollBatch(source_id, cursor, tuple(records), member_id, member_cursor, root_gap)

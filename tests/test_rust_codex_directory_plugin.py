@@ -1,5 +1,6 @@
 """Installed Codex directory reader through durable per-file Store admission."""
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -58,7 +59,8 @@ class CodexDirectoryTests(unittest.TestCase):
              "--destination", str(self.root / "installed"), "--source", str(self.sources),
              "--directory"], check=True, capture_output=True, text=True)
         self.plugin = read_plugin_config(result.stdout.strip())[0]
-        self.assertEqual(self.plugin.required_features, ("source-discovery/1",))
+        self.assertEqual(self.plugin.required_features,
+                         ("source-discovery/1", "source-discovery-root-gap/1"))
         self.store = Store(self.root / "store.db")
         self.addCleanup(self.store.close)
 
@@ -75,7 +77,7 @@ class CodexDirectoryTests(unittest.TestCase):
         return {row["native_session_id"]: row for row in
                 self.store.plugin_sessions()["sessions"]}
 
-    def test_root_unavailable_then_restored_keeps_last_outcomes_and_recovers_coverage(self):
+    def test_root_unavailable_quarantines_prior_outcomes_then_recovers_coverage(self):
         source = replace(self.plugin, poll_interval=0.05)
         manager = PluginSupervisor(self.store, (source,), max_failures=20,
                                    backoff_seconds=0.2).start()
@@ -102,8 +104,10 @@ class CodexDirectoryTests(unittest.TestCase):
             self.assertEqual(process_source_availability([failed],
                              self.store.plugin_sessions()["sessions"])[0]["availability"],
                              "unavailable")
+            self.assertEqual({row["reason_code"] for row in self.sessions().values()},
+                             {"source_gap"})
             self.assertEqual({row["run_state"] for row in self.sessions().values()},
-                             {"completed"})
+                             {"unknown"})
         finally:
             moved.rename(self.sources)
         recovered = until(lambda status: status["state"] == "running"
@@ -111,6 +115,91 @@ class CodexDirectoryTests(unittest.TestCase):
         self.assertEqual(process_source_availability([recovered],
                          self.store.plugin_sessions()["sessions"])[0]["availability"],
                          "ready")
+        self.assertEqual({row["run_state"] for row in self.sessions().values()},
+                         {"unknown"})
+        third = self.sources / "2026" / "11" / "three.jsonl"
+        rollout(third, "session-three")
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            sessions = self.sessions()
+            if "session-three" in sessions:
+                break
+            time.sleep(0.02)
+        self.assertEqual(sessions["session-three"]["run_state"], "completed")
+        self.assertEqual(sessions["session-one"]["run_state"], "unknown")
+        self.assertEqual(sessions["session-two"]["run_state"], "unknown")
+
+    def test_root_gap_checkpoint_survives_restart_and_feature_is_required(self):
+        with self.worker() as worker:
+            worker.poll_once()
+            worker.poll_once()
+            old_members = dict(worker.members)
+            old_cursor = worker.cursor
+        moved = self.root / "sessions-unavailable"
+        self.sources.rename(moved)
+        try:
+            # The same binary cannot use the new memberless diagnostic through
+            # a directory configuration that omitted the root-gap feature.
+            with PluginSession(self.store, self.plugin.manifest,
+                               source_id=self.plugin.source_id,
+                               allowed_grants=self.plugin.allowed_grants,
+                               source_root=self.plugin.source_root,
+                               required_features=("source-discovery/1",)) as old_worker:
+                with self.assertRaises(ProtocolError):
+                    old_worker.poll_once()
+            self.assertEqual(self.sessions()["session-one"]["run_state"], "completed")
+            with self.worker() as worker:
+                self.assertEqual(worker.cursor, old_cursor)
+                gap = worker.poll_once()
+                self.assertFalse(gap.member_id)
+                self.assertTrue(gap.root_gap)
+                self.assertTrue(gap.cursor.startswith("d2:"))
+                self.assertEqual(dict(worker.members), old_members)
+                self.assertEqual({row["reason_code"] for row in self.sessions().values()},
+                                 {"source_gap"})
+                outage_cursor = worker.cursor
+            with self.worker() as worker:
+                self.assertEqual(worker.cursor, outage_cursor)
+                self.assertEqual(dict(worker.members), old_members)
+                with self.assertRaises(ProtocolError):
+                    worker.poll_once()
+        finally:
+            moved.rename(self.sources)
+        with self.worker() as worker:
+            self.assertEqual(worker.cursor, outage_cursor)
+            self.assertEqual(dict(worker.members), old_members)
+            recovered = worker.poll_once()
+            self.assertFalse(recovered.records)
+            self.assertTrue(recovered.cursor.startswith("d1:"))
+            self.assertEqual(dict(worker.members), old_members)
+            self.assertEqual({row["run_state"] for row in self.sessions().values()},
+                             {"unknown"})
+
+    def test_missing_root_starts_in_directory_mode_through_rust_host(self):
+        host = os.environ.get("AGENTURM_RUST_PLUGIN_HOST_BIN")
+        if not host:
+            self.skipTest("installed Rust plugin host required")
+        with self.worker() as worker:
+            worker.poll_once()
+            worker.poll_once()
+        moved = self.root / "sessions-unavailable"
+        self.sources.rename(moved)
+        try:
+            with PluginSession(self.store, self.plugin.manifest,
+                               source_id=self.plugin.source_id,
+                               allowed_grants=self.plugin.allowed_grants,
+                               source_root=self.plugin.source_root,
+                               required_features=self.plugin.runtime_features,
+                               rust_host_executable=host,
+                               rust_host_sha256=hashlib.sha256(Path(host).read_bytes()).hexdigest()) as worker:
+                gap = worker.poll_once()
+                self.assertTrue(gap.cursor.startswith("d2:"))
+                self.assertFalse(gap.member_id)
+                self.assertTrue(gap.root_gap)
+                self.assertEqual({row["reason_code"] for row in self.sessions().values()},
+                                 {"source_gap"})
+        finally:
+            moved.rename(self.sources)
 
     def test_files_resume_disappear_and_new_session_after_gap(self):
         with self.worker() as worker:

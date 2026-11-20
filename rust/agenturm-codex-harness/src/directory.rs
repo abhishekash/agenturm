@@ -74,12 +74,12 @@ fn files(root: &Path) -> Result<BTreeMap<String, PathBuf>> {
     Ok(result)
 }
 
-fn global_cursor(cursor: &str) -> Result<(u64, String)> {
+fn global_cursor(cursor: &str) -> Result<(u64, String, bool)> {
     if cursor.is_empty() {
-        return Ok((0, String::new()));
+        return Ok((0, String::new(), false));
     }
     let mut fields = cursor.split(':');
-    let (Some("d1"), Some(sequence), Some(member), None) =
+    let (Some(version @ ("d1" | "d2")), Some(sequence), Some(member), None) =
         (fields.next(), fields.next(), fields.next(), fields.next())
     else {
         return Err(invalid("invalid discovery cursor"));
@@ -95,7 +95,7 @@ fn global_cursor(cursor: &str) -> Result<(u64, String)> {
     {
         return Err(invalid("invalid discovery cursor"));
     }
-    Ok((sequence.parse()?, member.to_owned()))
+    Ok((sequence.parse()?, member.to_owned(), version == "d2"))
 }
 
 fn next_cursor(sequence: u64, member: &str) -> Result<String> {
@@ -106,6 +106,39 @@ fn next_cursor(sequence: u64, member: &str) -> Result<String> {
             .ok_or("discovery cursor exhausted")?,
         member
     ))
+}
+
+fn root_gap_cursor(sequence: u64, last: &str) -> Result<String> {
+    Ok(format!(
+        "d2:{}:{}",
+        sequence
+            .checked_add(1)
+            .ok_or("discovery cursor exhausted")?,
+        if last.is_empty() {
+            "0".repeat(64)
+        } else {
+            last.to_owned()
+        }
+    ))
+}
+
+fn root_gap_batch(source_id: &str, cursor: &str, max_bytes: usize) -> Result<Value> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let stamp = u64::try_from(now).map_err(|_| invalid("discovery clock overflow"))?;
+    let evidence = format!("{}:{}:root", source_id, cursor);
+    let event_id = format!(
+        "codex-discovery-gap:{:x}",
+        Sha256::digest(evidence.as_bytes())
+    );
+    let value = json!({"type":"batch","protocol":1,"source_id":source_id,
+                       "root_gap":true,
+                       "cursor":cursor,"records":[{"event_id":event_id,"revision":0,
+                       "kind":"diagnostic","time_ns":stamp.to_string(),
+                       "payload":{"code":"possible_source_gap","severity":"warning"}}]});
+    if serde_json::to_vec(&value)?.len() > max_bytes {
+        return Err(invalid("discovery batch exceeds frame budget"));
+    }
+    Ok(value)
 }
 
 fn member_batch(
@@ -137,8 +170,14 @@ fn poll_directory(
     max_records: usize,
     max_bytes: usize,
 ) -> Result<Value> {
-    let (sequence, last) = global_cursor(cursor)?;
-    let discovered = files(root)?;
+    let (sequence, last, outage) = global_cursor(cursor)?;
+    let discovered = match files(root) {
+        Ok(files) => files,
+        Err(_error) if !outage => {
+            return root_gap_batch(source_id, &root_gap_cursor(sequence, &last)?, max_bytes);
+        }
+        Err(error) => return Err(error),
+    };
     if members.len() > MAX_MEMBERS {
         return Err(invalid("too many durable discovery members"));
     }
@@ -204,6 +243,8 @@ fn poll_directory(
     // This bounds prefix verification per poll and resumes fairly on restart.
     let cursor = if order.len() > MAX_FILES_PER_POLL {
         next_cursor(sequence, scanned_last.ok_or("missing scanned member")?)?
+    } else if outage {
+        format!("d1:{sequence}:{last}")
     } else {
         cursor.to_owned()
     };
@@ -214,6 +255,7 @@ fn poll_directory(
 impl Poller for DirectoryPoller {
     const PLUGIN_ID: &'static str = <CodexFormat as agenturm_jsonl_source::SourceFormat>::PLUGIN_ID;
     const DISCOVERY: bool = true;
+    const ROOT_GAP: bool = true;
 
     fn poll(
         _path: &Path,
@@ -240,6 +282,76 @@ impl Poller for DirectoryPoller {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_root_emits_once_and_recovery_rechecks_saved_members() {
+        let root = std::env::temp_dir().join(format!(
+            "agenturm-codex-discovery-root-gap-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("one.jsonl");
+        fs::write(
+            &file,
+            b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"one\"}}\n",
+        )
+        .unwrap();
+        let first = poll_directory(
+            &root,
+            "source",
+            "",
+            &BTreeMap::new(),
+            256,
+            agenturm_jsonl_source::max_frame_bytes(),
+        )
+        .unwrap();
+        let id = member_id(&root, &file).unwrap();
+        let members = BTreeMap::from([(
+            id.clone(),
+            first["member_cursor"].as_str().unwrap().to_owned(),
+        )]);
+        let cursor = first["cursor"].as_str().unwrap();
+        let moved = root.with_extension("unavailable");
+        fs::rename(&root, &moved).unwrap();
+        let gap = poll_directory(
+            &root,
+            "source",
+            cursor,
+            &members,
+            256,
+            agenturm_jsonl_source::max_frame_bytes(),
+        )
+        .unwrap();
+        assert!(gap["cursor"].as_str().unwrap().starts_with("d2:"));
+        assert_eq!(gap["root_gap"], true);
+        assert_eq!(gap["records"][0]["payload"]["code"], "possible_source_gap");
+        assert!(gap.get("member_id").is_none());
+        assert!(
+            poll_directory(
+                &root,
+                "source",
+                gap["cursor"].as_str().unwrap(),
+                &members,
+                256,
+                agenturm_jsonl_source::max_frame_bytes(),
+            )
+            .is_err()
+        );
+        fs::rename(&moved, &root).unwrap();
+        let recovered = poll_directory(
+            &root,
+            "source",
+            gap["cursor"].as_str().unwrap(),
+            &members,
+            256,
+            agenturm_jsonl_source::max_frame_bytes(),
+        )
+        .unwrap();
+        assert!(recovered["cursor"].as_str().unwrap().starts_with("d1:"));
+        assert!(recovered["records"].as_array().unwrap().is_empty());
+        assert_eq!(members.len(), 1);
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn discovers_nested_files_and_rejects_excess() {

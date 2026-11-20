@@ -91,6 +91,9 @@ class PluginProcess:
             expected.add("configured-root/1")
         if not expected <= set(manifest.provides):
             raise ProtocolError("manifest lacks a required plugin feature")
+        if "source-discovery-root-gap/1" in expected and (
+                "source-discovery/1" not in expected or source_root is None):
+            raise ProtocolError("root-gap feature requires configured discovery")
         self.manifest = manifest
         self.source_id = source_id
         self.timeout = float(timeout)
@@ -234,6 +237,8 @@ class PluginProcess:
                          "AGENTURM_PLUGIN_PROTOCOL": "1"}
             if self.source_root is not None:
                 child_env["AGENTURM_PLUGIN_SOURCE_ROOT"] = self.source_root
+            if "source-discovery/1" in self.required_features:
+                child_env["AGENTURM_PLUGIN_DISCOVERY_MODE"] = "1"
             self.process = subprocess.Popen(
                 command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, cwd=self._temporary.name,
@@ -290,12 +295,15 @@ class PluginProcess:
             self.close(force=True)
             raise ProtocolError("plugin exceeded poll record budget")
         if "source-discovery/1" in self.required_features:
-            if ((not batch.member_id and batch.records)
+            root_gap = ("source-discovery-root-gap/1" in self.required_features
+                        and batch.root_gap)
+            if ((batch.root_gap and not root_gap)
+                    or (not batch.member_id and batch.records and not root_gap)
                     or (batch.member_id and batch.member_id not in members
                         and len(members) >= MAX_DISCOVERY_MEMBERS)):
                 self.close(force=True)
                 raise ProtocolError("invalid discovery member result")
-        elif batch.member_id:
+        elif batch.member_id or batch.root_gap:
             self.close(force=True)
             raise ProtocolError("unexpected discovery member result")
         self.pending = batch

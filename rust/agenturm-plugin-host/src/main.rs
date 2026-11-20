@@ -59,6 +59,11 @@ fn spawn_child(path: &PathBuf) -> Result<(OwnedChild, ChildStdin, ChildStdout)> 
     if let Some(root) = std::env::var_os("AGENTURM_PLUGIN_SOURCE_ROOT") {
         command.env("AGENTURM_PLUGIN_SOURCE_ROOT", root);
     }
+    if std::env::var_os("AGENTURM_PLUGIN_DISCOVERY_MODE").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        command.env("AGENTURM_PLUGIN_DISCOVERY_MODE", "1");
+    }
     let mut child = OwnedChild(command.spawn()?);
     let input = child.0.stdin.take().ok_or("child stdin unavailable")?;
     let output = child.0.stdout.take().ok_or("child stdout unavailable")?;
