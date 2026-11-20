@@ -31,6 +31,7 @@ jobs:
       - run: cargo build --locked --bin agenturm-backup-query
       - run: cargo build --locked --bin agenturm-storage-service
       - run: cargo build --locked --bin agenturm-storage-admission
+      - run: cargo build --locked -p agenturm-storage-service-contract --example v2_client
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
@@ -78,7 +79,7 @@ jobs:
       - name: Prove distinct storage service and client accounts
         run: sudo -n /usr/bin/python3 scripts/validate_rust_storage_service_accounts.py --bin target/debug/agenturm-storage-service
       - name: Prove experimental v2 scratch dispatch across accounts
-        run: sudo -n /usr/bin/python3 scripts/validate_rust_storage_service_v2_accounts.py --bin target/debug/agenturm-storage-service
+        run: sudo -n /usr/bin/python3 scripts/validate_rust_storage_service_v2_accounts.py --bin target/debug/agenturm-storage-service --rust-client-bin target/debug/examples/v2_client
 
   rust-host-linux-wheel:
     name: Linux x86_64 Rust host wheel

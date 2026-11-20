@@ -526,6 +526,44 @@ mod local {
         Ok(())
     }
 
+    /// Send one canonical v2 request only to the exact service principal.
+    /// Peer validation must precede all request bytes because lifecycle
+    /// evidence must not be disclosed to an unrelated socket listener.
+    pub fn send_v2_request(
+        stream: &mut UnixStream,
+        request: &crate::v2::Request,
+        server_policy: ServerPolicy,
+    ) -> Result<()> {
+        let frame = request.to_json()?;
+        server_policy.authorize(kernel_peer(stream)?)?;
+        write_frame_bytes(&mut DeadlineIo::new(stream, IO_TIMEOUT), &frame)?;
+        stream.shutdown(std::net::Shutdown::Write)?;
+        Ok(())
+    }
+
+    fn read_v2_reply_with_timeout(
+        stream: &mut UnixStream,
+        request: &crate::v2::Request,
+        server_policy: ServerPolicy,
+        timeout: Duration,
+    ) -> Result<crate::v2::Reply> {
+        request.validate()?;
+        // Verify the kernel peer before consuming any server-controlled bytes.
+        server_policy.authorize(kernel_peer(stream)?)?;
+        let frame = read_frame_bytes(&mut DeadlineIo::new(stream, timeout))?;
+        crate::v2::Reply::from_json(&frame, request)
+    }
+
+    /// Accept only a one-frame reply from the exact service principal and
+    /// bind its digest, IDs, cursor and batch to the original v2 request.
+    pub fn read_v2_reply(
+        stream: &mut UnixStream,
+        request: &crate::v2::Request,
+        server_policy: ServerPolicy,
+    ) -> Result<crate::v2::Reply> {
+        read_v2_reply_with_timeout(stream, request, server_policy, IO_TIMEOUT)
+    }
+
     impl AuthorizedRequest {
         pub fn request(&self) -> &Request {
             &self.request
@@ -597,6 +635,7 @@ mod local {
         use super::*;
         use crate::{Operation, ProbeTopic, ReplayRelation};
         use serde::Deserialize;
+        use serde_json::{Value, json};
         use std::fmt::Debug;
         use std::io::Write;
         use std::sync::mpsc;
@@ -609,6 +648,35 @@ mod local {
                 ProbeTopic::Protocol,
             )
             .unwrap()
+        }
+
+        fn sample_v2() -> crate::v2::Request {
+            let fixture: Value = serde_json::from_str(include_str!(
+                "../../../tests/fixtures/rust_storage_mutation_v2.json"
+            ))
+            .unwrap();
+            crate::v2::Request::from_json(&serde_json::to_vec(&fixture["request"]).unwrap())
+                .unwrap()
+        }
+
+        fn v2_reply(request: &crate::v2::Request) -> crate::v2::Reply {
+            let crate::v2::Operation::AdmitLifecycle {
+                cursor,
+                batch_digest,
+                ..
+            } = &request.operation;
+            crate::v2::Reply {
+                version: crate::v2::VERSION,
+                request_id: request.request_id.clone(),
+                receiver_id: request.receiver_id.clone(),
+                request_digest: request.replay_identity().unwrap().digest,
+                result: crate::v2::AdmissionResult {
+                    disposition: crate::v2::Disposition::Committed,
+                    cursor: cursor.clone(),
+                    batch_digest: batch_digest.clone(),
+                    dirty_seq: 1,
+                },
+            }
         }
 
         #[cfg(target_os = "linux")]
@@ -868,12 +936,166 @@ mod local {
                 Err(ContractError::Denied(_))
             ));
         }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn exact_v2_request_and_reply_round_trip() {
+            let request = sample_v2();
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            send_v2_request(&mut client, &request, server_policy()).unwrap();
+            let admitted =
+                read_authorized_v2_request(&mut server, policy(), &request.receiver_id).unwrap();
+            assert_eq!(admitted.request(), &request);
+            assert_eq!(admitted.frame(), request.to_json().unwrap());
+            let frame = v2_reply(&request).to_json(&request).unwrap();
+            send_v2_reply(&mut server, &admitted, &frame).unwrap();
+            assert_eq!(
+                read_v2_reply(&mut client, &request, server_policy()).unwrap(),
+                v2_reply(&request)
+            );
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn v2_reply_rejects_wrong_service_before_reading_frame() {
+            let request = sample_v2();
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            server.write_all(&[0, 0, 0, 1, b'!']).unwrap();
+            let uid = unsafe { libc::geteuid() };
+            let gid = unsafe { libc::getegid() };
+            let wrong = ServerPolicy::synthetic_for_test(uid + 2, gid, uid + 1).unwrap();
+            assert!(matches!(
+                read_v2_reply(&mut client, &request, wrong),
+                Err(ContractError::Denied(_))
+            ));
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn v2_request_rejects_wrong_service_without_disclosing_bytes() {
+            let request = sample_v2();
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            let uid = unsafe { libc::geteuid() };
+            let gid = unsafe { libc::getegid() };
+            let wrong = ServerPolicy::synthetic_for_test(uid + 2, gid, uid + 1).unwrap();
+            assert!(matches!(
+                send_v2_request(&mut client, &request, wrong),
+                Err(ContractError::Denied(_))
+            ));
+            server
+                .set_read_timeout(Some(Duration::from_millis(20)))
+                .unwrap();
+            let mut byte = [0_u8; 1];
+            assert!(matches!(
+                server.read(&mut byte),
+                Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+            ));
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn v2_reply_rejects_malformed_truncated_oversized_duplicate_and_trailing_frames() {
+            let request = sample_v2();
+            let valid = v2_reply(&request).to_json(&request).unwrap();
+            let raw = String::from_utf8(valid.clone()).unwrap();
+            let duplicate = raw.replacen("\"version\":2", "\"version\":2,\"version\":2", 1);
+            let duplicate_len = duplicate.len();
+            let cases = [
+                (vec![0, 0, 0, 1, b'!'], None),
+                (vec![0, 0, 0, 4, b'{'], None),
+                (
+                    ((crate::MAX_FRAME_BYTES as u32) + 1).to_be_bytes().to_vec(),
+                    None,
+                ),
+                (duplicate.into_bytes(), Some(duplicate_len)),
+                (
+                    {
+                        let mut trailing = valid.clone();
+                        trailing.push(b'!');
+                        trailing
+                    },
+                    Some(valid.len()),
+                ),
+            ];
+            for (bytes, declared_length) in cases {
+                let (mut client, mut server) = UnixStream::pair().unwrap();
+                if let Some(length) = declared_length {
+                    server.write_all(&(length as u32).to_be_bytes()).unwrap();
+                }
+                server.write_all(&bytes).unwrap();
+                server.shutdown(std::net::Shutdown::Write).unwrap();
+                assert!(read_v2_reply(&mut client, &request, server_policy()).is_err());
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn v2_reply_rejects_wrong_digest_ids_cursor_batch_and_version() {
+            let request = sample_v2();
+            let valid: Value =
+                serde_json::from_slice(&v2_reply(&request).to_json(&request).unwrap()).unwrap();
+            let mut altered = Vec::new();
+            for (field, value) in [
+                ("request_digest", json!("f".repeat(64))),
+                ("request_id", json!("f".repeat(32))),
+                ("receiver_id", json!("receiver:wrong")),
+                ("version", json!(1)),
+            ] {
+                let mut changed = valid.clone();
+                changed[field] = value;
+                altered.push(changed);
+            }
+            for (field, value) in [
+                ("cursor", json!("wrong-cursor")),
+                ("batch_digest", json!("f".repeat(64))),
+            ] {
+                let mut changed = valid.clone();
+                changed["result"][field] = value;
+                altered.push(changed);
+            }
+            for changed in altered {
+                let (mut client, mut server) = UnixStream::pair().unwrap();
+                write_frame_bytes(&mut server, &serde_json::to_vec(&changed).unwrap()).unwrap();
+                server.shutdown(std::net::Shutdown::Write).unwrap();
+                assert!(matches!(
+                    read_v2_reply(&mut client, &request, server_policy()),
+                    Err(ContractError::Invalid(_))
+                ));
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn v2_reply_has_one_total_frame_deadline() {
+            let request = sample_v2();
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            server.write_all(&16_u32.to_be_bytes()).unwrap();
+            server.write_all(b"x").unwrap();
+            let producer = thread::spawn(move || {
+                for _ in 0..8 {
+                    thread::sleep(Duration::from_millis(50));
+                    if server.write_all(b"x").is_err() {
+                        break;
+                    }
+                }
+            });
+            assert!(matches!(
+                read_v2_reply_with_timeout(
+                    &mut client,
+                    &request,
+                    server_policy(),
+                    Duration::from_millis(180)
+                ),
+                Err(ContractError::Io(ref error)) if error.kind() == ErrorKind::TimedOut
+            ));
+            producer.join().unwrap();
+        }
     }
 }
 
 #[cfg(unix)]
 pub use local::{
     AuthorizedRequest, AuthorizedV2Request, PeerCredentials, PeerPolicy, ServerPolicy,
-    read_authorized_request, read_authorized_v2_request, read_probe_reply, send_probe_reply,
-    send_request, send_v2_reply,
+    read_authorized_request, read_authorized_v2_request, read_probe_reply, read_v2_reply,
+    send_probe_reply, send_request, send_v2_reply, send_v2_request,
 };

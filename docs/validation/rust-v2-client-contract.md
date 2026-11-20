@@ -1,0 +1,11 @@
+# Rust v2 scratch client checkpoint
+
+20 November 2026. This is a feature-off client transport for the experimental Rust scratch service. The production receiver does not call it, and Python remains the canonical writer.
+
+`send_v2_request` serializes a validated v2 lifecycle request as canonical JSON, checks the exact service UID/GID with Linux `SO_PEERCRED` **before sending any evidence bytes**, sends one bounded frame, then half-closes the socket. `read_v2_reply` rechecks the service peer before reading any reply bytes. It accepts one frame of at most 64 KiB within a single two-second deadline and validates the reply against the original request: version, receiver and request IDs, full canonical request digest, cursor and batch digest. The caller creates a `ServerPolicy` after dropping to its separate non-root client account. A rejected or missing reply is **not** evidence that a scratch write did not occur; an exact request retry uses the durable scratch receipt.
+
+The fixture-only `v2_client` Rust example uses these APIs against a connected Unix socket. The root-required Docker account fixture now runs that binary under the distinct client UID/GID against the opt-in scratch service. It proves a wrong claimed service UID is denied before a request, then verifies an exact replay response from the real service UID/GID. It retains the existing wrong-client-peer, wrong-receiver, private-root, marker and unrelated-canonical-file checks. The request never supplies a database path; the example does not open one.
+
+Validation: 23 Rust contract tests passed, covering malformed, truncated, oversized, duplicate-key and trailing reply frames; wrong peer before request bytes; wrong peer and bound fields before accepting a reply; a total drip-feed frame deadline; and a valid request/reply exchange. Targeted Clippy with warnings denied and workspace formatting passed. The separate-UID Docker fixture passed in a bare Python 3.12 image with no network. The GitHub CI matrix remains a separate gate; these local results do not imply a completed CI run.
+
+The client API does not route production mutations, prove old held-open writer exclusion, migrate canonical SQLite/WAL state, or provide forward recovery. See the [writer cutover gate](rust-writer-cutover-gate.md).
