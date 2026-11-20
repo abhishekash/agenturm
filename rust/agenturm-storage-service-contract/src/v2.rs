@@ -747,7 +747,7 @@ mod tests {
         result.lease.epoch = 23;
         result.lease.plugin_id = "other.plugin".into();
         assert!(mismatched.to_json(&request).is_err());
-        let mut wrong_kind = reply;
+        let mut wrong_kind = reply.clone();
         let OperationResult::SourceActivated(result) = wrong_kind.result else {
             unreachable!()
         };
@@ -760,6 +760,23 @@ mod tests {
             capture_enabled: false,
         });
         assert!(wrong_kind.to_json(&request).is_err());
+
+        let mut wrong_operation = request.clone();
+        wrong_operation.operation = Operation::AdmitLifecycle {
+            lease: SourceLease {
+                receiver_id: request.receiver_id.clone(),
+                plugin_id: plugin_id.clone(),
+                source_id: source_id.clone(),
+                generation: generation.clone(),
+                epoch: 23,
+                policy_epoch: 1,
+            },
+            expected_cursor: String::new(),
+            cursor: "next".into(),
+            batch_digest: "d".repeat(64),
+            records: Vec::new(),
+        };
+        assert!(reply.to_json(&wrong_operation).is_err());
     }
 
     #[test]

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rust v2 scratch source activation</title>
+<style>
+body{font:16px/1.55 system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem;color:#20242b}h1,h2{line-height:1.2}code,pre{font-family:ui-monospace,monospace}pre{overflow:auto;background:#f3f5f7;padding:1rem;border-radius:.4rem}table{border-collapse:collapse}td,th{border:1px solid #ccd2da;padding:.45rem .7rem;text-align:left}aside{border-left:4px solid #6578db;padding:.2rem 1rem;background:#f6f7ff}
+</style>
+</head>
+<body>
+<main>
+<h1>Rust v2 scratch source activation</h1>
+<p>20 November 2026. This checkpoint covers a PR-only <code>ActivateSource</code> slice. It is available only through the explicitly marked Rust scratch path; it does not route production callers, replace Python <code>Store</code>, or claim a performance gain.</p>
+
+<h2>Contract and boundary</h2>
+<p>The typed v2 operation takes a plugin ID, source ID, and generation. Under <code>BEGIN IMMEDIATE</code>, it verifies the scratch marker, receiver identity, and the cooperating writer lease when the CLI provides one. A new source receives a server-generated positive lease epoch and explicit Python-compatible defaults: empty cursor/prior cursor/digest/fingerprint, dirty sequence 0, policy epoch 1, and capture enabled.</p>
+<p>For an existing source, activation requires the exact receiver/plugin/generation, enabled capture, an empty private-content fingerprint, and supported metadata-only lifecycle history. It increments only the lease epoch, preserving cursor, policy epoch, and dirty sequence. A nonempty cursor requires matching content-batch and content-status receipts; incomplete history fails closed. Revoked rows, private owners/content, unsupported member/gap/retention state, malformed projection history, and absent-row orphans (including source-linked lifecycle, revoke, and activation receipts) are refused.</p>
+<p>Activation, lifecycle admission, and revocation share one request-ID namespace enforced by bidirectional checks across their typed receipt tables. Activation stores its typed reply atomically. Exact retries are checked before active-source validation and return the original lease after restart, later activation, or revocation without changing current source state. Changed payloads and IDs used by another operation fail closed. Duplicate activation requests on independent SQLite connections serialize under the immediate transaction and return one original lease.</p>
+<aside>This operation does not clean private providers and does not add a provider cleanup SPI. Python <code>Store</code> remains production authority.</aside>
+
+<h2>Validation</h2>
+<p>Rust 1.100.0 local checks on the PR head:</p>
+<pre><code>cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo test -p agenturm-storage-admission -p agenturm-storage-service-contract -p agenturm-storage-service
+cargo build --locked --bin agenturm-storage-admission
+cargo build --locked --bin agenturm-storage-service
+AGENTURM_RUST_SCRATCH_ADMISSION_BIN="$PWD/target/debug/agenturm-storage-admission" python3 -m unittest tests.test_rust_scratch_admission -v
+AGENTURM_RUST_STORAGE_SERVICE_BIN="$PWD/target/debug/agenturm-storage-service" python3 -m unittest tests.test_rust_storage_service -v</code></pre>
+<table>
+<thead><tr><th>Check</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>Workspace format and Clippy</td><td>Passed</td></tr>
+<tr><td>Workspace Rust tests</td><td>147 passed, 0 failed, 0 ignored across 44 result groups</td></tr>
+<tr><td>Focused admission, contract, and service tests</td><td>51 passed: 24 admission, 25 contract, 2 service</td></tr>
+<tr><td>Installed scratch admission integration</td><td>15 passed</td></tr>
+<tr><td>Installed storage service integration</td><td>10 passed</td></tr>
+</tbody>
+</table>
+<p>The scratch integration exercises first activation defaults, persisted replay, changed-request conflict, real <code>Store</code> lifecycle admission/projection, reactivation lease fencing and cursor/policy/dirty preservation, stale-lease rejection, retry of the earlier activation after reactivation and after revoke, and refusal to re-enable after revocation. The CI workflow already runs the installed scratch admission module after building the Rust binary; no production dispatch or CI authority change is part of this slice. GitHub CI is separate from local evidence.</p>
+
+<h2>Remaining boundary</h2>
+<p>The Rust operation is an experimental marked-scratch writer only. It is not exposed to canonical/production callers; production capture policy and Store authority remain in Python. No private-provider cleanup, general source lifecycle service, cutover safety, or speed claim follows from this checkpoint.</p>
+</main>
+</body>
+</html>

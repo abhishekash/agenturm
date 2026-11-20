@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,6 +27,11 @@ const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 48;
 const MAX_SOURCE_RECORDS: i64 = 50_000;
 const SCRATCH_MARKER: &str = "storage_admission_scratch_v1";
+const V2_RECEIPT_TABLES: &[&str] = &[
+    "storage_admission_request_v2",
+    "storage_source_revoke_v2",
+    "storage_source_activate_v2",
+];
 
 fn reject(message: &'static str) -> Box<dyn Error> {
     message.into()
@@ -154,6 +160,14 @@ struct SourceRevocationReceipt {
     capture_enabled: bool,
 }
 
+#[derive(Debug)]
+struct SourceActivationReceipt {
+    lease: v2::SourceLease,
+    cursor: String,
+    dirty_seq: i64,
+    disposition: &'static str,
+}
+
 fn finish(
     transaction: Transaction<'_>,
     receipt: Receipt,
@@ -243,6 +257,174 @@ fn require_scratch(db: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn reject_cross_operation_request_id(
+    db: &Connection,
+    request_id: &str,
+    own_table: &str,
+) -> Result<()> {
+    if !V2_RECEIPT_TABLES.contains(&own_table) {
+        return Err(reject("unknown v2 receipt namespace"));
+    }
+    for table in V2_RECEIPT_TABLES
+        .iter()
+        .copied()
+        .filter(|table| *table != own_table)
+    {
+        let exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            continue;
+        }
+        // `table` is selected only from V2_RECEIPT_TABLES above.
+        let query = format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE request_id=?)");
+        if db.query_row(&query, [request_id], |row| row.get::<_, bool>(0))? {
+            return Err(reject("conflicting v2 request replay identity"));
+        }
+    }
+    Ok(())
+}
+
+fn fresh_lease_epoch(avoid: Option<i64>) -> Result<i64> {
+    let mut random = fs::File::open("/dev/urandom")?;
+    for _ in 0..8 {
+        let mut bytes = [0_u8; 8];
+        random.read_exact(&mut bytes)?;
+        let epoch = i64::from_ne_bytes(bytes) & i64::MAX;
+        if epoch > 0 && Some(epoch) != avoid {
+            return Ok(epoch);
+        }
+    }
+    Err(reject("could not generate a fresh positive lease epoch"))
+}
+
+fn activation_has_orphan_rows(db: &Connection, source_id: &str) -> Result<bool> {
+    let rows: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_evidence_dirty_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_session_projection_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_projection_cursor_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_content_batch_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_content_status_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_retention_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM activity_index_v1 WHERE kind='plugin' AND owner_key=?1) \
+         OR EXISTS(SELECT 1 FROM investigation_dirty_v1 WHERE kind='plugin' AND owner_key=?1)",
+        [source_id],
+        |row| row.get(0),
+    )?;
+    if rows {
+        return Ok(true);
+    }
+    for table in V2_RECEIPT_TABLES {
+        let exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if exists {
+            let query = format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE source_id=?)");
+            if db.query_row(&query, [source_id], |row| row.get::<_, bool>(0))? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn validate_active_source_history(
+    db: &Connection,
+    source_id: &str,
+    cursor: &str,
+    dirty_seq: i64,
+    policy_epoch: i64,
+) -> Result<()> {
+    let unsupported: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_retention_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 \
+                   AND (revision<>0 OR kind<>'lifecycle' OR member_id<>'' OR policy_epoch<>?2)) \
+         OR EXISTS(SELECT 1 FROM plugin_session_projection_v1 p WHERE p.source_id=?1 \
+                   AND (p.policy_epoch<>?2 OR p.source_dirty_seq>?3 OR NOT EXISTS(\
+                       SELECT 1 FROM plugin_evidence_v1 e WHERE e.source_id=p.source_id \
+                         AND e.native_session_id=p.native_session_id AND e.kind='lifecycle' \
+                         AND e.revision=0 AND e.member_id=''))) \
+         OR EXISTS(SELECT 1 FROM plugin_content_batch_v1 WHERE source_id=?1 \
+                   AND (cursor<>?4 OR refs_digest<>?5)) \
+         OR (?4<>'' AND NOT EXISTS(SELECT 1 FROM plugin_content_batch_v1 \
+                    WHERE source_id=?1 AND cursor=?4 AND refs_digest=?5)) \
+         OR EXISTS(SELECT 1 FROM plugin_content_status_v1 WHERE source_id=?1 \
+                   AND (cursor<>?4 OR refs_count<>0 OR policy_epoch<>?2 OR reason<>'not_requested')) \
+         OR (?4<>'' AND NOT EXISTS(SELECT 1 FROM plugin_content_status_v1 \
+                    WHERE source_id=?1 AND cursor=?4 AND refs_count=0 \
+                      AND policy_epoch=?2 AND reason='not_requested')) \
+         OR EXISTS(SELECT 1 FROM plugin_projection_cursor_v1 WHERE source_id=?1 \
+                   AND (projected_seq>?3 OR policy_epoch<>?2)) \
+         OR EXISTS(SELECT 1 FROM plugin_evidence_dirty_v1 WHERE source_id=?1 AND dirty_seq<>?3) \
+         OR EXISTS(SELECT 1 FROM activity_index_v1 WHERE kind='plugin' AND owner_key=?1 \
+                   AND NOT EXISTS(SELECT 1 FROM plugin_session_projection_v1 p WHERE p.source_id=?1))",
+        params![
+            source_id,
+            policy_epoch,
+            dirty_seq,
+            cursor,
+            format!("{:x}", Sha256::digest(b"{\"refs\":[]}")),
+        ],
+        |row| row.get(0),
+    )?;
+    if unsupported {
+        return Err(reject(
+            "scratch source has private, unsupported, or orphan history",
+        ));
+    }
+    let evidence_dirty: Option<i64> = db
+        .query_row(
+            "SELECT dirty_seq FROM plugin_evidence_dirty_v1 WHERE source_id=?",
+            [source_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if evidence_dirty.unwrap_or(0) != dirty_seq {
+        return Err(reject("scratch evidence dirty sequence is inconsistent"));
+    }
+    let projection: Option<(i64, i64)> = db
+        .query_row(
+            "SELECT projected_seq,policy_epoch FROM plugin_projection_cursor_v1 WHERE source_id=?",
+            [source_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if projection
+        .is_some_and(|(projected, policy)| projected == dirty_seq && policy == policy_epoch)
+    {
+        let orphaned: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM plugin_evidence_v1 e WHERE e.source_id=?1 \
+             AND e.native_session_id<>'' AND NOT EXISTS(SELECT 1 FROM plugin_session_projection_v1 p \
+               WHERE p.source_id=e.source_id AND p.native_session_id=e.native_session_id))",
+            [source_id],
+            |row| row.get(0),
+        )?;
+        if orphaned {
+            return Err(reject(
+                "scratch projection omits admitted lifecycle history",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn commit_guarded(
     db: &mut Connection,
     request: &Request,
@@ -261,20 +443,11 @@ fn commit_guarded(
         |row| row.get(0),
     )?;
     if let Some(replay) = replay {
-        let revoke_table: bool = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='storage_source_revoke_v2')",
-            [],
-            |row| row.get(0),
+        reject_cross_operation_request_id(
+            &transaction,
+            &replay.request_id,
+            "storage_admission_request_v2",
         )?;
-        if revoke_table
-            && transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM storage_source_revoke_v2 WHERE request_id=?)",
-                [&replay.request_id],
-                |row| row.get::<_, bool>(0),
-            )?
-        {
-            return Err(reject("conflicting v2 request replay identity"));
-        }
     }
     type Source = (
         String,
@@ -628,6 +801,22 @@ pub fn apply_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
     let request = v2::Request::from_json(input)?;
     let replay = request.replay_identity()?;
     let result = match &request.operation {
+        v2::Operation::ActivateSource { .. } => {
+            let receipt = with_marked_scratch(path, |db, writer_lease| {
+                activate_source_guarded(db, &request, Some(writer_lease), &replay)
+            })?;
+            let disposition = match receipt.disposition {
+                "committed" => v2::Disposition::Committed,
+                "replay" => v2::Disposition::Replay,
+                _ => return Err(reject("unexpected scratch activation disposition")),
+            };
+            v2::OperationResult::SourceActivated(v2::SourceActivatedResult {
+                disposition,
+                lease: receipt.lease,
+                cursor: receipt.cursor,
+                dirty_seq: receipt.dirty_seq,
+            })
+        }
         v2::Operation::AdmitLifecycle {
             lease,
             expected_cursor,
@@ -727,6 +916,246 @@ pub fn apply_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
     .map_err(Into::into)
 }
 
+fn activate_source_guarded(
+    db: &mut Connection,
+    request: &v2::Request,
+    writer_lease: Option<&WriterLease>,
+    replay: &v2::ReplayIdentity,
+) -> Result<SourceActivationReceipt> {
+    let v2::Operation::ActivateSource {
+        plugin_id,
+        source_id,
+        generation,
+    } = &request.operation
+    else {
+        return Err(reject("source activation operation required"));
+    };
+    let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if let Some(writer_lease) = writer_lease {
+        writer_lease.verify_admission()?;
+    }
+    require_scratch(&transaction)?;
+    let receiver: String = transaction.query_row(
+        "SELECT value FROM schema_meta WHERE key='receiver_id'",
+        [],
+        |row| row.get(0),
+    )?;
+    if receiver != request.receiver_id {
+        return Err(reject("scratch receiver identity mismatch"));
+    }
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS storage_source_activate_v2(\
+         request_id TEXT PRIMARY KEY,receiver_id TEXT NOT NULL,request_digest TEXT NOT NULL,\
+         source_id TEXT NOT NULL,plugin_id TEXT NOT NULL,generation TEXT NOT NULL,\
+         lease_epoch INTEGER NOT NULL,policy_epoch INTEGER NOT NULL,cursor TEXT NOT NULL,\
+         dirty_seq INTEGER NOT NULL)",
+    )?;
+    type Stored = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        String,
+        i64,
+    );
+    let stored: Option<Stored> = transaction
+        .query_row(
+            "SELECT receiver_id,request_digest,source_id,plugin_id,generation,lease_epoch,\
+             policy_epoch,cursor,dirty_seq FROM storage_source_activate_v2 WHERE request_id=?",
+            [&replay.request_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
+        )
+        .optional()?;
+    if let Some((
+        stored_receiver,
+        digest,
+        stored_source,
+        stored_plugin,
+        stored_generation,
+        epoch,
+        policy,
+        cursor,
+        dirty_seq,
+    )) = stored
+    {
+        if stored_receiver != receiver
+            || digest != replay.digest
+            || stored_source != *source_id
+            || stored_plugin != *plugin_id
+            || stored_generation != *generation
+            || epoch <= 0
+            || policy <= 0
+            || !cursor_value(&cursor)
+            || dirty_seq < 0
+        {
+            return Err(reject("conflicting v2 source activation request"));
+        }
+        transaction.commit()?;
+        return Ok(SourceActivationReceipt {
+            lease: v2::SourceLease {
+                receiver_id: receiver,
+                plugin_id: stored_plugin,
+                source_id: stored_source,
+                generation: stored_generation,
+                epoch,
+                policy_epoch: policy,
+            },
+            cursor,
+            dirty_seq,
+            disposition: "replay",
+        });
+    }
+    reject_cross_operation_request_id(
+        &transaction,
+        &replay.request_id,
+        "storage_source_activate_v2",
+    )?;
+
+    type Source = (
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        i64,
+    );
+    let source: Option<Source> = transaction
+        .query_row(
+            "SELECT receiver_id,plugin_id,generation,lease_epoch,policy_epoch,capture_enabled,\
+             content_fingerprint,cursor,prior_cursor,last_batch_digest,dirty_seq \
+             FROM plugin_source_cursor_v1 WHERE source_id=?",
+            [source_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                ))
+            },
+        )
+        .optional()?;
+    let now = now_ns()?;
+    let (epoch, policy, cursor, dirty_seq) = if let Some((
+        source_receiver,
+        stored_plugin,
+        stored_generation,
+        old_epoch,
+        policy,
+        enabled,
+        fingerprint,
+        cursor,
+        prior_cursor,
+        last_digest,
+        dirty_seq,
+    )) = source
+    {
+        if source_receiver != receiver
+            || stored_plugin != *plugin_id
+            || stored_generation != *generation
+        {
+            return Err(reject("source ownership, receiver, or generation mismatch"));
+        }
+        if enabled != 1 || !fingerprint.is_empty() {
+            return Err(reject(
+                "scratch source capture is revoked or has private state",
+            ));
+        }
+        if old_epoch <= 0
+            || policy <= 0
+            || dirty_seq < 0
+            || !cursor_value(&cursor)
+            || !cursor_value(&prior_cursor)
+            || (!last_digest.is_empty() && !hash(&last_digest))
+        {
+            return Err(reject("scratch source state is malformed"));
+        }
+        validate_active_source_history(&transaction, source_id, &cursor, dirty_seq, policy)?;
+        let epoch = fresh_lease_epoch(Some(old_epoch))?;
+        transaction.execute(
+            "UPDATE plugin_source_cursor_v1 SET lease_epoch=?,updated_ns=? WHERE source_id=?",
+            params![epoch, now, source_id],
+        )?;
+        (epoch, policy, cursor, dirty_seq)
+    } else {
+        if activation_has_orphan_rows(&transaction, source_id)? {
+            return Err(reject("orphan scratch source history prevents activation"));
+        }
+        let epoch = fresh_lease_epoch(None)?;
+        transaction.execute(
+            "INSERT INTO plugin_source_cursor_v1 \
+             (source_id,receiver_id,plugin_id,generation,lease_epoch,cursor,prior_cursor,\
+              last_batch_digest,dirty_seq,policy_epoch,capture_enabled,content_fingerprint,updated_ns) \
+             VALUES(?,?,?,?,?,'','','',0,1,1,'',?)",
+            params![source_id, receiver, plugin_id, generation, epoch, now],
+        )?;
+        (epoch, 1, String::new(), 0)
+    };
+    let lease = v2::SourceLease {
+        receiver_id: receiver.clone(),
+        plugin_id: plugin_id.clone(),
+        source_id: source_id.clone(),
+        generation: generation.clone(),
+        epoch,
+        policy_epoch: policy,
+    };
+    transaction.execute(
+        "INSERT INTO storage_source_activate_v2(request_id,receiver_id,request_digest,\
+         source_id,plugin_id,generation,lease_epoch,policy_epoch,cursor,dirty_seq) \
+         VALUES(?,?,?,?,?,?,?,?,?,?)",
+        params![
+            replay.request_id,
+            receiver,
+            replay.digest,
+            source_id,
+            plugin_id,
+            generation,
+            epoch,
+            policy,
+            cursor,
+            dirty_seq
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(SourceActivationReceipt {
+        lease,
+        cursor,
+        dirty_seq,
+        disposition: "committed",
+    })
+}
+
+fn cursor_value(value: &str) -> bool {
+    value.len() <= 512 && !value.chars().any(char::is_control)
+}
+
 fn revoke_source_guarded(
     db: &mut Connection,
     request: &v2::Request,
@@ -759,20 +1188,11 @@ fn revoke_source_guarded(
         return Err(reject("scratch receiver identity mismatch"));
     }
 
-    let admission_table: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='storage_admission_request_v2')",
-        [],
-        |row| row.get(0),
+    reject_cross_operation_request_id(
+        &transaction,
+        &replay.request_id,
+        "storage_source_revoke_v2",
     )?;
-    if admission_table
-        && transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM storage_admission_request_v2 WHERE request_id=?)",
-            [&replay.request_id],
-            |row| row.get::<_, bool>(0),
-        )?
-    {
-        return Err(reject("conflicting v2 request replay identity"));
-    }
 
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS storage_source_revoke_v2(\
@@ -999,7 +1419,8 @@ mod tests {
                native_turn_id TEXT,native_operation_id TEXT,member_id TEXT,policy_epoch INTEGER, \
                admitted_ns INTEGER,PRIMARY KEY(source_id,event_id_hash,revision)); \
              CREATE TABLE plugin_evidence_dirty_v1(source_id TEXT PRIMARY KEY,dirty_seq INTEGER); \
-             CREATE TABLE plugin_session_projection_v1(source_id TEXT,native_session_id TEXT); \
+             CREATE TABLE plugin_session_projection_v1(source_id TEXT,native_session_id TEXT, \
+               policy_epoch INTEGER,source_dirty_seq INTEGER); \
              CREATE TABLE plugin_projection_cursor_v1(source_id TEXT PRIMARY KEY,projected_seq INTEGER,policy_epoch INTEGER); \
              CREATE TABLE activity_index_v1(event_key TEXT,kind TEXT,owner_key TEXT); \
              CREATE TABLE investigation_dirty_v1(kind TEXT,owner_key TEXT); \
@@ -1073,6 +1494,44 @@ mod tests {
                 expected_dirty_seq,
             },
         }
+    }
+
+    fn activation_request(request_id: &str, source_id: &str) -> v2::Request {
+        v2::Request {
+            version: v2::VERSION,
+            request_id: request_id.to_owned(),
+            receiver_id: "receiver-one".to_owned(),
+            operation: v2::Operation::ActivateSource {
+                plugin_id: "fixture.plugin".to_owned(),
+                source_id: source_id.to_owned(),
+                generation: "a".repeat(64),
+            },
+        }
+    }
+
+    fn lifecycle_v2_request(
+        request_id: &str,
+        lease: &v2::SourceLease,
+        expected_cursor: &str,
+        cursor: &str,
+    ) -> v2::Request {
+        v2::Request {
+            version: v2::VERSION,
+            request_id: request_id.to_owned(),
+            receiver_id: lease.receiver_id.clone(),
+            operation: v2::Operation::AdmitLifecycle {
+                lease: lease.clone(),
+                expected_cursor: expected_cursor.to_owned(),
+                cursor: cursor.to_owned(),
+                batch_digest: "d".repeat(64),
+                records: vec![],
+            },
+        }
+    }
+
+    fn activate(db: &mut Connection, request: &v2::Request) -> Result<SourceActivationReceipt> {
+        let replay = request.replay_identity()?;
+        activate_source_guarded(db, request, None, &replay)
     }
 
     fn revoke(db: &mut Connection, request: &v2::Request) -> Result<SourceRevocationReceipt> {
@@ -1209,7 +1668,7 @@ mod tests {
         let first = request("next", "", &[(&event_hash, &event_digest)]);
         commit(&mut db, &first).unwrap();
         db.execute(
-            "INSERT INTO plugin_session_projection_v1 VALUES('source-one','native-one')",
+            "INSERT INTO plugin_session_projection_v1 VALUES('source-one','native-one',1,1)",
             [],
         )
         .unwrap();
@@ -1423,7 +1882,7 @@ mod tests {
         let mut db = fixture();
         commit(&mut db, &request("next", "", &[])).unwrap();
         db.execute(
-            "INSERT INTO plugin_session_projection_v1 VALUES('source-one','native-one')",
+            "INSERT INTO plugin_session_projection_v1 VALUES('source-one','native-one',1,0)",
             [],
         )
         .unwrap();
@@ -1536,6 +1995,566 @@ mod tests {
             "SELECT lease_epoch,policy_epoch,capture_enabled FROM plugin_source_cursor_v1 WHERE source_id='source-one'",
             [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
         assert_eq!(source, (8, 2, 0));
+        drop(reopened);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(PathBuf::from(format!("{}-wal", path.display())));
+        let _ = fs::remove_file(PathBuf::from(format!("{}-shm", path.display())));
+    }
+
+    #[test]
+    fn activate_new_source_sets_explicit_defaults_and_exact_retry_is_stable() {
+        let mut db = fixture();
+        let activation = activation_request("3123456789abcdef0123456789abcdef", "new-source");
+        let first = activate(&mut db, &activation).unwrap();
+        assert_eq!(first.disposition, "committed");
+        assert!(first.lease.epoch > 0);
+        assert_eq!(
+            (
+                first.lease.policy_epoch,
+                first.cursor.as_str(),
+                first.dirty_seq
+            ),
+            (1, "", 0)
+        );
+        let row: (
+            String,
+            String,
+            String,
+            i64,
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+            String,
+        ) = db
+            .query_row(
+                "SELECT receiver_id,plugin_id,generation,lease_epoch,cursor,prior_cursor,\
+                 last_batch_digest,dirty_seq,policy_epoch,capture_enabled,content_fingerprint \
+                 FROM plugin_source_cursor_v1 WHERE source_id='new-source'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get(10)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "receiver-one".into(),
+                "fixture.plugin".into(),
+                "a".repeat(64),
+                first.lease.epoch,
+                "".into(),
+                "".into(),
+                "".into(),
+                0,
+                1,
+                1,
+                "".into()
+            )
+        );
+        let retry = activate(&mut db, &activation).unwrap();
+        assert_eq!(retry.disposition, "replay");
+        assert_eq!(retry.lease, first.lease);
+        assert_eq!((retry.cursor.as_str(), retry.dirty_seq), ("", 0));
+
+        let mut changed = activation.clone();
+        if let v2::Operation::ActivateSource { generation, .. } = &mut changed.operation {
+            *generation = "b".repeat(64);
+        }
+        assert!(
+            activate(&mut db, &changed)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicting")
+        );
+        let stored_epoch: i64 = db
+            .query_row(
+                "SELECT lease_epoch FROM plugin_source_cursor_v1 WHERE source_id='new-source'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_epoch, first.lease.epoch);
+    }
+
+    #[test]
+    fn activate_reissues_lease_without_changing_cursor_policy_or_dirty_state() {
+        let mut db = fixture();
+        let first_request = activation_request("4123456789abcdef0123456789abcdef", "source-one");
+        let first = activate(&mut db, &first_request).unwrap();
+        let event_hash = "1".repeat(64);
+        let event_digest = "2".repeat(64);
+        db.execute(
+            "INSERT INTO plugin_evidence_v1(source_id,event_id_hash,revision,kind,time_ns,\
+             payload_json,record_digest,native_session_id,native_worker_id,native_turn_id,\
+             native_operation_id,member_id,policy_epoch,admitted_ns) \
+             VALUES('source-one',?,0,'lifecycle',100,'{\"state\":\"started\"}',?,\
+                    'native-one','','','', '',1,100)",
+            params![event_hash, event_digest],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO plugin_evidence_dirty_v1 VALUES('source-one',1)",
+            [],
+        )
+        .unwrap();
+        let empty_refs = format!("{:x}", Sha256::digest(b"{\"refs\":[]}"));
+        db.execute(
+            "INSERT INTO plugin_content_batch_v1 VALUES('source-one','next',?)",
+            [&empty_refs],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO plugin_content_status_v1 VALUES('source-one','next',\
+                    'not_requested',0,1)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE plugin_source_cursor_v1 SET cursor='next',prior_cursor='',\
+                    last_batch_digest=?,dirty_seq=1 WHERE source_id='source-one'",
+            [&"c".repeat(64)],
+        )
+        .unwrap();
+
+        let mut existing = activation_request("5123456789abcdef0123456789abcdef", "source-one");
+        if let v2::Operation::ActivateSource { generation, .. } = &mut existing.operation {
+            *generation = first.lease.generation.clone();
+        }
+        let renewed = activate(&mut db, &existing).unwrap();
+        assert_eq!(renewed.disposition, "committed");
+        assert_ne!(renewed.lease.epoch, first.lease.epoch);
+        assert_eq!(renewed.lease.policy_epoch, first.lease.policy_epoch);
+        assert_eq!((renewed.cursor.as_str(), renewed.dirty_seq), ("next", 1));
+        let state: (i64, i64, String, i64, String) = db
+            .query_row(
+                "SELECT lease_epoch,policy_epoch,cursor,dirty_seq,content_fingerprint \
+             FROM plugin_source_cursor_v1 WHERE source_id='source-one'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            state,
+            (renewed.lease.epoch, 1, "next".into(), 1, String::new())
+        );
+        let mut stale = request("later", "next", &[]);
+        stale.lease.epoch = first.lease.epoch;
+        assert!(
+            commit(&mut db, &stale)
+                .unwrap_err()
+                .to_string()
+                .contains("stale")
+        );
+        let before_replay: (i64, i64, String, i64) = db
+            .query_row(
+                "SELECT lease_epoch,policy_epoch,cursor,dirty_seq FROM plugin_source_cursor_v1 \
+             WHERE source_id='source-one'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        let replay = activate(&mut db, &first_request).unwrap();
+        assert_eq!(replay.disposition, "replay");
+        assert_eq!(replay.lease, first.lease);
+        assert_eq!(before_replay, (renewed.lease.epoch, 1, "next".into(), 1));
+        let after_replay: (i64, i64, String, i64) = db
+            .query_row(
+                "SELECT lease_epoch,policy_epoch,cursor,dirty_seq FROM plugin_source_cursor_v1 \
+             WHERE source_id='source-one'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(after_replay, before_replay);
+    }
+
+    #[test]
+    fn activation_replay_after_revoke_does_not_reenable_source() {
+        let mut db = fixture();
+        let activation = activation_request("6123456789abcdef0123456789abcdef", "source-one");
+        let original = activate(&mut db, &activation).unwrap();
+        let mut revoke_request = revoke_request(0);
+        revoke_request.request_id = "7123456789abcdef0123456789abcdef".into();
+        if let v2::Operation::RevokeSource { lease, cursor, .. } = &mut revoke_request.operation {
+            *lease = original.lease.clone();
+            cursor.clear();
+        }
+        let revoked = revoke(&mut db, &revoke_request).unwrap();
+        assert_eq!(revoked.disposition, "committed");
+        let before: (i64, i64, i64, String) = db.query_row(
+            "SELECT lease_epoch,policy_epoch,capture_enabled,cursor FROM plugin_source_cursor_v1 \
+             WHERE source_id='source-one'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert_eq!(before.2, 0);
+        let replay = activate(&mut db, &activation).unwrap();
+        assert_eq!(replay.disposition, "replay");
+        assert_eq!(replay.lease, original.lease);
+        let after: (i64, i64, i64, String) = db.query_row(
+            "SELECT lease_epoch,policy_epoch,capture_enabled,cursor FROM plugin_source_cursor_v1 \
+             WHERE source_id='source-one'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert_eq!(after, before);
+        let refusal = activate(
+            &mut db,
+            &activation_request("8123456789abcdef0123456789abcdef", "source-one"),
+        );
+        assert!(refusal.unwrap_err().to_string().contains("revoked"));
+    }
+
+    #[test]
+    fn activate_refuses_identity_mismatch_revoked_and_private_or_unsupported_state() {
+        for (table, insert, message) in [
+            (
+                "plugin_reference_owner_v1",
+                "INSERT INTO plugin_reference_owner_v1 VALUES('source-one','private')",
+                "private",
+            ),
+            (
+                "plugin_content_v1",
+                "INSERT INTO plugin_content_v1 VALUES('source-one')",
+                "private",
+            ),
+            (
+                "plugin_source_member_cursor_v1",
+                "INSERT INTO plugin_source_member_cursor_v1 VALUES('source-one')",
+                "unsupported",
+            ),
+            (
+                "plugin_source_gap_invalidated_v1",
+                "INSERT INTO plugin_source_gap_invalidated_v1 VALUES('source-one')",
+                "unsupported",
+            ),
+            (
+                "plugin_retention_v1",
+                "INSERT INTO plugin_retention_v1 VALUES('source-one')",
+                "unsupported",
+            ),
+            (
+                "plugin_session_member_v1",
+                "INSERT INTO plugin_session_member_v1 VALUES('source-one')",
+                "unsupported",
+            ),
+        ] {
+            let mut db = fixture();
+            let first = activate(
+                &mut db,
+                &activation_request("6123456789abcdef0123456789abcdef", "source-one"),
+            )
+            .unwrap();
+            db.execute(insert, []).unwrap();
+            let changed = activation_request("7123456789abcdef0123456789abcdef", "source-one");
+            let error = activate(&mut db, &changed).unwrap_err();
+            assert!(error.to_string().contains(message), "{table}: {error}");
+            let state: (i64,i64) = db.query_row(
+                "SELECT lease_epoch,capture_enabled FROM plugin_source_cursor_v1 WHERE source_id='source-one'",
+                [], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+            assert_eq!(state, (first.lease.epoch, 1), "{table}");
+        }
+
+        let mut db = fixture();
+        let first = activate(
+            &mut db,
+            &activation_request("8123456789abcdef0123456789abcdef", "source-one"),
+        )
+        .unwrap();
+        let mut wrong_plugin = activation_request("9123456789abcdef0123456789abcdef", "source-one");
+        if let v2::Operation::ActivateSource { plugin_id, .. } = &mut wrong_plugin.operation {
+            *plugin_id = "different.plugin".into();
+        }
+        assert!(
+            activate(&mut db, &wrong_plugin)
+                .unwrap_err()
+                .to_string()
+                .contains("mismatch")
+        );
+        let mut wrong_generation =
+            activation_request("a123456789abcdef0123456789abcdef", "source-one");
+        if let v2::Operation::ActivateSource { generation, .. } = &mut wrong_generation.operation {
+            *generation = "b".repeat(64);
+        }
+        assert!(
+            activate(&mut db, &wrong_generation)
+                .unwrap_err()
+                .to_string()
+                .contains("mismatch")
+        );
+        db.execute(
+            "UPDATE plugin_source_cursor_v1 SET capture_enabled=0 WHERE source_id='source-one'",
+            [],
+        )
+        .unwrap();
+        let revoked = activation_request("b123456789abcdef0123456789abcdef", "source-one");
+        assert!(
+            activate(&mut db, &revoked)
+                .unwrap_err()
+                .to_string()
+                .contains("revoked")
+        );
+        let enabled: i64 = db
+            .query_row(
+                "SELECT capture_enabled FROM plugin_source_cursor_v1 WHERE source_id='source-one'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(enabled, 0);
+        assert!(first.lease.epoch > 0);
+    }
+
+    #[test]
+    fn activation_refuses_missing_current_content_receipts_for_nonempty_cursor() {
+        for missing_table in ["plugin_content_batch_v1", "plugin_content_status_v1"] {
+            let mut db = fixture();
+            let first = activate(
+                &mut db,
+                &activation_request("9123456789abcdef0123456789abcdef", "source-one"),
+            )
+            .unwrap();
+            let empty_refs = format!("{:x}", Sha256::digest(b"{\"refs\":[]}"));
+            db.execute(
+                "INSERT INTO plugin_content_batch_v1 VALUES('source-one','cursor-one',?)",
+                [&empty_refs],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO plugin_content_status_v1 VALUES(\
+                 'source-one','cursor-one','not_requested',0,1)",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "UPDATE plugin_source_cursor_v1 SET cursor='cursor-one',last_batch_digest=? \
+                 WHERE source_id='source-one'",
+                [&"a".repeat(64)],
+            )
+            .unwrap();
+            db.execute(
+                &format!("DELETE FROM {missing_table} WHERE source_id='source-one'"),
+                [],
+            )
+            .unwrap();
+            let retry = activation_request("a123456789abcdef0123456789abcdef", "source-one");
+            let error = activate(&mut db, &retry).unwrap_err();
+            assert!(
+                error.to_string().contains("orphan history"),
+                "{missing_table}: {error}"
+            );
+            let state: (i64, String) = db
+                .query_row(
+                    "SELECT lease_epoch,cursor FROM plugin_source_cursor_v1 WHERE source_id='source-one'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                state,
+                (first.lease.epoch, "cursor-one".into()),
+                "{missing_table}"
+            );
+        }
+    }
+
+    #[test]
+    fn activation_rejects_orphan_history_and_receipts_after_cursor_removal() {
+        let mut db = fixture();
+        let first = activate(
+            &mut db,
+            &activation_request("c123456789abcdef0123456789abcdef", "source-one"),
+        )
+        .unwrap();
+        db.execute(
+            "DELETE FROM plugin_source_cursor_v1 WHERE source_id='source-one'",
+            [],
+        )
+        .unwrap();
+        let later = activation_request("d123456789abcdef0123456789abcdef", "source-one");
+        assert!(
+            activate(&mut db, &later)
+                .unwrap_err()
+                .to_string()
+                .contains("orphan")
+        );
+        assert_eq!(
+            activate(
+                &mut db,
+                &activation_request("c123456789abcdef0123456789abcdef", "source-one")
+            )
+            .unwrap()
+            .lease,
+            first.lease
+        );
+        assert!(
+            db.query_row(
+                "SELECT 1 FROM plugin_source_cursor_v1 WHERE source_id='source-one'",
+                [],
+                |_| Ok(())
+            )
+            .optional()
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn activation_and_admission_and_revoke_share_request_id_namespace() {
+        let id = "e123456789abcdef0123456789abcdef";
+        let mut db = fixture();
+        let activated = activate(&mut db, &activation_request(id, "source-one")).unwrap();
+        let mut admission = request("next", "", &[]);
+        admission.lease.epoch = activated.lease.epoch;
+        let typed_admission = lifecycle_v2_request(id, &activated.lease, "", "next");
+        let replay = typed_admission.replay_identity().unwrap();
+        assert!(
+            commit_guarded(&mut db, &admission, None, Some(&replay))
+                .unwrap_err()
+                .to_string()
+                .contains("conflicting")
+        );
+        let mut revoke_req = revoke_request(0);
+        revoke_req.request_id = id.into();
+        if let v2::Operation::RevokeSource { lease, .. } = &mut revoke_req.operation {
+            *lease = activated.lease.clone();
+        }
+        if let v2::Operation::RevokeSource { cursor, .. } = &mut revoke_req.operation {
+            cursor.clear();
+        }
+        assert!(
+            revoke(&mut db, &revoke_req)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicting")
+        );
+
+        let mut db = fixture();
+        let activated = activate(
+            &mut db,
+            &activation_request("f123456789abcdef0123456789abcdef", "source-one"),
+        )
+        .unwrap();
+        let id = "0123456789abcdef0123456789abcdef";
+        let typed_admission = lifecycle_v2_request(id, &activated.lease, "", "next");
+        let replay = typed_admission.replay_identity().unwrap();
+        let mut admission = request("next", "", &[]);
+        admission.lease.epoch = activated.lease.epoch;
+        commit_guarded(&mut db, &admission, None, Some(&replay)).unwrap();
+        let mut reused_activation = activation_request(id, "source-one");
+        if let v2::Operation::ActivateSource { generation, .. } = &mut reused_activation.operation {
+            *generation = activated.lease.generation.clone();
+        }
+        assert!(
+            activate(&mut db, &reused_activation)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicting")
+        );
+
+        let mut db = fixture();
+        let activated = activate(
+            &mut db,
+            &activation_request("1123456789abcdef0123456789abcdef", "source-one"),
+        )
+        .unwrap();
+        let id = "2123456789abcdef0123456789abcdef";
+        let mut revoke_req = revoke_request(0);
+        revoke_req.request_id = id.into();
+        if let v2::Operation::RevokeSource { lease, .. } = &mut revoke_req.operation {
+            *lease = activated.lease.clone();
+        }
+        if let v2::Operation::RevokeSource { cursor, .. } = &mut revoke_req.operation {
+            cursor.clear();
+        }
+        revoke(&mut db, &revoke_req).unwrap();
+        let mut reused_activation = activation_request(id, "source-one");
+        if let v2::Operation::ActivateSource { generation, .. } = &mut reused_activation.operation {
+            *generation = activated.lease.generation.clone();
+        }
+        assert!(
+            activate(&mut db, &reused_activation)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicting")
+        );
+    }
+
+    #[test]
+    fn activation_exact_retry_survives_restart_and_duplicate_race() {
+        let path = std::env::temp_dir().join(format!(
+            "agenturm-activate-replay-{}-{}.db",
+            std::process::id(),
+            now_ns().unwrap()
+        ));
+        let request = activation_request("3123456789abcdef0123456789abcdef", "source-one");
+        let mut db = fixture_at(&path);
+        let first = activate(&mut db, &request).unwrap();
+        drop(db);
+        let mut reopened = Connection::open(&path).unwrap();
+        let replay = activate(&mut reopened, &request).unwrap();
+        assert_eq!(replay.disposition, "replay");
+        assert_eq!(replay.lease, first.lease);
+        assert_eq!((replay.cursor.as_str(), replay.dirty_seq), ("", 0));
+        drop(reopened);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(PathBuf::from(format!("{}-wal", path.display())));
+        let _ = fs::remove_file(PathBuf::from(format!("{}-shm", path.display())));
+
+        let path = std::env::temp_dir().join(format!(
+            "agenturm-activate-race-{}-{}.db",
+            std::process::id(),
+            now_ns().unwrap()
+        ));
+        let db = fixture_at(&path);
+        drop(db);
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            let request = request.clone();
+            workers.push(thread::spawn(move || {
+                let mut db = Connection::open(&path).unwrap();
+                db.busy_timeout(Duration::from_secs(5)).unwrap();
+                barrier.wait();
+                activate(&mut db, &request).unwrap()
+            }));
+        }
+        barrier.wait();
+        let first = workers.remove(0).join().unwrap();
+        let second = workers.remove(0).join().unwrap();
+        assert_ne!(first.disposition, second.disposition);
+        assert_eq!(first.lease, second.lease);
+        let reopened = Connection::open(&path).unwrap();
+        let state:(i64,i64,i64,String)=reopened.query_row(
+            "SELECT lease_epoch,policy_epoch,dirty_seq,cursor FROM plugin_source_cursor_v1 WHERE source_id='source-one'",
+            [],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap();
+        assert_eq!(state, (first.lease.epoch, 1, 0, String::new()));
         drop(reopened);
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(PathBuf::from(format!("{}-wal", path.display())));
