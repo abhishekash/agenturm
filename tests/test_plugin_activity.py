@@ -16,7 +16,9 @@ from observatory.plugin_wire import PollBatch, ProtocolError
 
 def fact(event, kind, payload, *, session="native-1", revision=0, stamp="100",
          worker="worker-1", turn="turn-1", operation=None):
-    identity = {"session_id": session, "worker_id": worker, "turn_id": turn}
+    identity = {"session_id": session, "worker_id": worker}
+    if turn is not None:
+        identity["turn_id"] = turn
     if operation is not None:
         identity["operation_id"] = operation
     return {"event_id": event, "revision": revision, "kind": kind,
@@ -130,6 +132,150 @@ class PluginActivityTests(unittest.TestCase):
         set_source_capture(self.store, source_id="fixture-source", enabled=False)
         self.assertEqual(self.activity(), [])
 
+    def test_result_uses_only_one_retained_call_and_survives_restart(self):
+        self.commit("", "one", [
+            fact("user-1", "message", {"role": "user"}, turn="first", stamp="10"),
+            fact("call", "tool", {"category": "file", "result": "started"},
+                 operation="shared", turn="first", stamp="11")])
+        project_source(self.store, "fixture-source")
+        call = next(row for row in self.activity() if row["result"] == "started")
+        reopened = Store(self.path)
+        self.addCleanup(reopened.close)
+        self.commit("one", "two", [
+            fact("user-2", "message", {"role": "user"}, turn="second", stamp="20"),
+            fact("result", "tool", {"category": "other", "result": "failed"},
+                 operation="shared", turn=None, stamp="21")])
+        project_source(reopened, "fixture-source")
+        rows = reopened.activity_page()["activity"]
+        result = next(row for row in rows if row["result"] == "failed")
+        newer = next(row for row in rows if row["action"] == "user" and row["time_unix_nano"] == 20)
+        self.assertEqual((result["turn_id"], result["operation_id"], result["action"]),
+                         (call["turn_id"], call["operation_id"], "file"))
+        self.assertNotEqual(result["turn_id"], newer["turn_id"])
+        self.assertEqual(result["metadata"]["tool_turn_relation"], "matched_call")
+        self.assertFalse(result["metadata"]["native_turn_observed"])
+        self.assertIn(result["id"],
+                      [r["id"] for r in reopened.activity_page(review=True)["activity"]])
+
+    def test_reused_or_missing_call_cannot_claim_result_turn(self):
+        self.commit("", "one", [
+            fact("first", "tool", {"category": "file", "result": "started"},
+                 operation="reused", turn="turn-1", stamp="10"),
+            fact("second", "tool", {"category": "file", "result": "started"},
+                 operation="reused", turn="turn-2", stamp="20"),
+            fact("ambiguous", "tool", {"category": "file", "result": "failed"},
+                 operation="reused", turn=None, stamp="30"),
+            fact("missing", "tool", {"category": "shell", "result": "failed"},
+                 operation="unknown", turn="turn-2", stamp="40")])
+        project_source(self.store, "fixture-source")
+        rows = {row["time_unix_nano"]: row for row in self.activity()}
+        self.assertEqual(rows[30]["turn_id"], "")
+        self.assertEqual(rows[30]["metadata"]["tool_turn_relation"], "ambiguous_call")
+        self.assertTrue(rows[40]["turn_id"])
+        self.assertEqual(rows[40]["metadata"]["tool_turn_relation"], "unverified_native_turn")
+        self.assertEqual(len(self.store.activity_page(review=True)["activity"]), 2)
+        self.commit("one", "two", [
+            fact("second", "tool", {"category": "file", "result": "succeeded"},
+                 operation="reused", turn="turn-2", stamp="20", revision=1)])
+        project_source(self.store, "fixture-source")
+        self.assertEqual(next(row for row in self.activity() if row["time_unix_nano"] == 30)
+                         ["metadata"]["tool_turn_relation"], "matched_call")
+
+    def test_legacy_pi_result_without_call_does_not_retain_guessed_turn(self):
+        from observatory.plugin_activity import index_rows
+        row = {"event_id_hash": "event", "kind": "tool", "native_session_id": "pi",
+               "payload_json": '{"category":"file","result":"failed"}',
+               "native_operation_id": "call", "native_turn_id": "later-user",
+               "native_worker_id": "", "time_ns": 20, "admitted_ns": 20}
+        result = index_rows([row], receiver_id="receiver", source_id="source",
+                            plugin_id="example.rust-pi-harness", invalidated=set())
+        fact = json.loads(result[0][-1])
+        self.assertEqual(fact["turn_id"], "")
+        self.assertEqual(fact["metadata"]["tool_turn_relation"], "missing_call")
+        self.assertTrue(fact["metadata"]["native_turn_observed"])
+
+    def test_terminal_call_without_started_phase_keeps_producer_turn(self):
+        self.commit("", "one", [
+            fact("kiro-denied-call", "tool", {"category": "shell", "result": "denied"},
+                 operation="denied", turn="original", stamp="10"),
+            fact("kiro-denied-result", "tool", {"category": "shell", "result": "denied"},
+                 operation="denied", turn="original", stamp="20")])
+        project_source(self.store, "fixture-source")
+        rows = self.activity()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len({row["turn_id"] for row in rows}), 1)
+        self.assertTrue(rows[0]["turn_id"])
+        self.assertTrue(all(row["metadata"]["tool_turn_relation"] == "unverified_native_turn"
+                            for row in rows))
+        self.assertEqual(len(self.store.activity_page(turn_id=rows[0]["turn_id"],
+                                                      review=True)["activity"]), 2)
+
+    def test_future_call_or_conflicting_producer_turn_stays_unavailable(self):
+        self.commit("", "one", [
+            fact("orphan-result", "tool", {"category": "file", "result": "failed"},
+                 operation="reused", turn=None, stamp="10"),
+            fact("later-call", "tool", {"category": "file", "result": "started"},
+                 operation="reused", turn="later", stamp="20"),
+            fact("conflict-call", "tool", {"category": "file", "result": "started"},
+                 operation="conflict", turn="original", stamp="30"),
+            fact("conflict-result", "tool", {"category": "file", "result": "failed"},
+                 operation="conflict", turn="wrong", stamp="40"),
+            fact("category-call", "tool", {"category": "shell", "result": "started"},
+                 operation="category", turn="original", stamp="50"),
+            fact("category-result", "tool", {"category": "file", "result": "succeeded"},
+                 operation="category", turn=None, stamp="60"),
+            fact("same-time-call", "tool", {"category": "file", "result": "started"},
+                 operation="same-time", turn="original", stamp="70"),
+            fact("same-time-result", "tool", {"category": "file", "result": "failed"},
+                 operation="same-time", turn=None, stamp="70")])
+        project_source(self.store, "fixture-source")
+        rows = {row["time_unix_nano"]: row for row in self.activity()}
+        self.assertEqual((rows[10]["turn_id"], rows[10]["metadata"]["tool_turn_relation"]),
+                         ("", "future_call"))
+        self.assertEqual((rows[40]["turn_id"], rows[40]["metadata"]["tool_turn_relation"]),
+                         ("", "conflicting_turn"))
+        self.assertTrue(rows[40]["metadata"]["native_turn_observed"])
+        self.assertEqual(rows[60]["action"], "other")
+        self.assertTrue(rows[60]["metadata"]["tool_category_conflict"])
+        same_time_result = next(row for row in self.activity() if row["result"] == "failed"
+                                and row["time_unix_nano"] == 70)
+        self.assertEqual((same_time_result["turn_id"],
+                          same_time_result["metadata"]["tool_turn_relation"]),
+                         ("", "unproven_order"))
+
+    def test_revocation_clears_correlated_result(self):
+        self.commit("", "one", [
+            fact("call", "tool", {"category": "file", "result": "started"},
+                 operation="call-1", turn="first", stamp="10"),
+            fact("result", "tool", {"category": "file", "result": "failed"},
+                 operation="call-1", turn=None, stamp="20")])
+        project_source(self.store, "fixture-source")
+        self.assertTrue(any(row["metadata"].get("tool_turn_relation") == "matched_call"
+                            for row in self.activity()))
+        set_source_capture(self.store, source_id="fixture-source", enabled=False)
+        self.assertEqual(self.activity(), [])
+
+    def test_retention_loss_withholds_correlated_result(self):
+        with patch("observatory.plugin_admission.MAX_SOURCE_RECORDS", 4):
+            self.commit("", "one", [
+                fact("call", "tool", {"category": "file", "result": "started"},
+                     session="affected", operation="call-1", turn="first", stamp="10"),
+                fact("result", "tool", {"category": "file", "result": "failed"},
+                     session="affected", operation="call-1", turn=None, stamp="20"),
+                fact("other-1", "message", {"role": "user"},
+                     session="other-1", stamp="30"),
+                fact("other-2", "message", {"role": "user"},
+                     session="other-2", stamp="40")])
+            project_source(self.store, "fixture-source")
+            self.assertEqual(next(row for row in self.activity() if row["result"] == "failed")
+                             ["metadata"]["tool_turn_relation"], "matched_call")
+            self.commit("one", "two", [fact("other-3", "message", {"role": "user"},
+                                           session="other-3", stamp="50")])
+            project_source(self.store, "fixture-source")
+            self.assertFalse(any(row["result"] == "failed" for row in self.activity()))
+            self.assertIn("affected", {row["native_session_id"] for row in sessions(self.store)
+                                       ["sessions"] if row["reason_code"] == "retention_gap"})
+
     def test_revocation_removes_activity_and_fences_old_worker(self):
         self.commit("", "one", [fact("m", "message", {"role": "assistant"})])
         project_source(self.store, "fixture-source")
@@ -176,6 +322,31 @@ class PluginActivityTests(unittest.TestCase):
         self.assertEqual(len(activity), 1)
         self.assertEqual(len(activity[0]["turn_id"]), 32)
         self.assertEqual(len(reopened.activity_page(turn_id=activity[0]["turn_id"])["activity"]), 1)
+
+    def test_turn_correlation_upgrade_rebuilds_without_source_write(self):
+        self.commit("", "one", [
+            fact("call", "tool", {"category": "file", "result": "started"},
+                 operation="call-1", turn="original", stamp="10"),
+            fact("result", "tool", {"category": "file", "result": "failed"},
+                 operation="call-1", turn=None, stamp="20")])
+        project_source(self.store, "fixture-source")
+        correct = next(row for row in self.activity() if row["result"] == "failed")
+        with self.store._connect() as db:
+            stale = json.loads(db.execute("SELECT payload FROM activity_index_v1 "
+                                          "WHERE event_key=?", (correct["id"],)).fetchone()[0])
+            stale["turn_id"] = "a" * 32
+            db.execute("UPDATE activity_index_v1 SET turn_id=?,payload=? WHERE event_key=?",
+                       (stale["turn_id"], json.dumps(stale), correct["id"]))
+            db.execute("DELETE FROM schema_meta WHERE key='plugin_activity_projection_v3'")
+        reopened = Store(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.activity_page()["activity"], [])
+        self.assertEqual(sessions(reopened)["pending_sources"], 1)
+        project_source(reopened, "fixture-source")
+        rebuilt = next(row for row in reopened.activity_page()["activity"]
+                       if row["result"] == "failed")
+        self.assertEqual(rebuilt["turn_id"], correct["turn_id"])
+        self.assertEqual(rebuilt["metadata"]["tool_turn_relation"], "matched_call")
 
     def test_http_activity_cache_cannot_replay_stale_policy_or_revision(self):
         from observatory.server import BoundedHTTPServer, handler_for

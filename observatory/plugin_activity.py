@@ -14,6 +14,7 @@ _TOOL_RESULTS = frozenset({"started", "succeeded", "failed", "denied"})
 _CHECK_CATEGORIES = frozenset({"test", "lint", "build", "review", "other"})
 _CHECK_RESULTS = frozenset({"passed", "failed", "skipped", "unknown"})
 _ACTIVITY_KINDS = frozenset({"message", "tool", "check"})
+_LEGACY_PI_PROCESS_ID = "example.rust-pi-harness"
 _OPERATION_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}\Z")
 
 
@@ -57,32 +58,86 @@ def index_rows(rows: list, *, receiver_id: str, source_id: str, plugin_id: str,
     latest: dict[str, object] = {}
     for row in rows:
         latest.setdefault(row["event_id_hash"], row)
-    result = []
+    visible = []
+    calls: dict[tuple[str, str], list[tuple[str, str, int, int]]] = {}
     for row in latest.values():
-        kind = row["kind"]
-        native_session = row["native_session_id"]
+        kind, native_session = row["kind"], row["native_session_id"]
         if kind not in _ACTIVITY_KINDS or not native_session or native_session in invalidated:
             continue
         payload = json.loads(row["payload_json"])
-        # Stored metadata was validated at admission; fail closed on corrupt or
-        # legacy rows before publishing any revision of this source.
+        # Validate before correlating, including call rows which may later be
+        # used to assign a result's turn. No unadmitted state is consulted.
         validate_metadata({"kind": kind, "payload": payload,
                            "identity": {"session_id": native_session,
                                         "operation_id": row["native_operation_id"]}})
+        visible.append((row, payload))
+        if kind == "tool" and payload["result"] == "started" and row["native_operation_id"]:
+            key = (native_session, row["native_operation_id"])
+            calls.setdefault(key, []).append((row["native_turn_id"], payload["category"],
+                                              row["time_ns"], row["admitted_ns"]))
+    result = []
+    for row, payload in visible:
+        kind = row["kind"]
+        native_session = row["native_session_id"]
         session_key = "plugin:" + _opaque(receiver_id, source_id, native_session)
         event_key = "plugin-event:" + _opaque(receiver_id, source_id, row["event_id_hash"])
         agent_id = canonical_agent_id(plugin_id, "plugin:" + source_id, native_session)
+        native_turn = row["native_turn_id"]
+        category = payload.get("category", "")
+        relation = ""
+        category_conflict = False
+        operation_id = row["native_operation_id"]
+        if kind == "tool" and payload["result"] != "started" and operation_id:
+            matches = calls.get((native_session, operation_id), [])
+            match = matches[0] if len(matches) == 1 else None
+            if (match and match[0] and match[2] < row["time_ns"]
+                    and match[3] <= row["admitted_ns"]
+                    and (not native_turn or native_turn == match[0])):
+                native_turn = match[0]
+                relation = "matched_call"
+                # A result's missing name can be recovered from its call. A
+                # disagreement is left visible as unknown coarse category.
+                if category == "other":
+                    category = match[1]
+                elif category != match[1] and match[1] != "other":
+                    category = "other"
+                    category_conflict = True
+            else:
+                if len(matches) > 1:
+                    native_turn = ""
+                    relation = "ambiguous_call"
+                elif match is None:
+                    # Other adapters can report a turn directly even when a
+                    # terminal tool fact has no separate started fact. Older
+                    # bundled Pi results borrowed the current user turn, so
+                    # their raw turn cannot be trusted without a call.
+                    if native_turn and plugin_id != _LEGACY_PI_PROCESS_ID:
+                        relation = "unverified_native_turn"
+                    else:
+                        native_turn = ""
+                        relation = "missing_call"
+                elif match[2] > row["time_ns"] or match[3] > row["admitted_ns"]:
+                    native_turn = ""
+                    relation = "future_call"
+                elif match[2] == row["time_ns"]:
+                    native_turn = ""
+                    relation = "unproven_order"
+                elif not match[0]:
+                    native_turn = ""
+                    relation = "call_turn_unavailable"
+                else:
+                    native_turn = ""
+                    relation = "conflicting_turn"
         turn_id = (_opaque("plugin-turn", receiver_id, source_id, native_session,
-                           row["native_turn_id"])[:32]
-                   if row["native_turn_id"] else "")
+                           native_turn)[:32]
+                   if native_turn else "")
         if kind == "message":
             action, result_name = payload["role"], "observed"
             subject = payload["role"].capitalize() + " message recorded"
         else:
-            action, result_name = payload["category"], payload["result"]
-            subject = (payload["category"].capitalize() +
+            action, result_name = category, payload["result"]
+            subject = (category.capitalize() +
                        (" check recorded" if kind == "check" else " operation recorded"))
-        operation_id = row["native_operation_id"]
         operation_key = ("plugin-operation:" + _opaque(receiver_id, source_id,
                                                         native_session, operation_id)
                          if kind == "tool" and operation_id else "")
@@ -99,7 +154,9 @@ def index_rows(rows: list, *, receiver_id: str, source_id: str, plugin_id: str,
                              "native_worker_observed": bool(row["native_worker_id"]),
                              "native_turn_observed": bool(row["native_turn_id"]),
                              "native_operation_observed": bool(operation_id),
-                             "capture": "content-free", "coverage": "partial"},
+                             "capture": "content-free", "coverage": "partial",
+                             **({"tool_turn_relation": relation} if relation else {}),
+                             **({"tool_category_conflict": True} if category_conflict else {})},
                 "capture_content": False, "detail_present": False,
                 "operation_present": False}
         result.append((event_key, "plugin", source_id, row["time_ns"], None,
