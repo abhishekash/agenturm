@@ -145,8 +145,9 @@ def child(args: argparse.Namespace) -> None:
 def run_child(case: str, *, uid: int, gid: int, root: Path,
               supplementary: tuple[int, ...] = ()) -> None:
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
-    result = subprocess.run([sys.executable, __file__, "--case", case,
+    fixture = root / Path(__file__).name
+    env["PYTHONPATH"] = str(root)
+    result = subprocess.run([sys.executable, str(fixture), "--case", case,
         "--socket", str(root / "transport" / SOCKET_NAME),
         "--data", str(root / "private-data"), "--request", str(root / "request.json")],
         preexec_fn=drop_to(uid, gid, supplementary), env=env,
@@ -216,6 +217,15 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="agenturm-v2-accounts-") as temporary:
         root = Path(temporary)
         root.chmod(0o755)
+        fixture = root / Path(__file__).name
+        shutil.copy2(Path(__file__).resolve(), fixture)
+        fixture.chmod(0o644)
+        account_fixture = root / "validate_rust_storage_service_accounts.py"
+        shutil.copy2(Path(__file__).resolve().with_name(account_fixture.name),
+                     account_fixture)
+        account_fixture.chmod(0o644)
+        shutil.copytree(Path(__file__).resolve().parents[1] / "observatory",
+                        root / "observatory")
         binary = root / "agenturm-storage-service"
         shutil.copy2(binary_source, binary)
         binary.chmod(0o755)

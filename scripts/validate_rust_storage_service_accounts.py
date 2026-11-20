@@ -137,11 +137,11 @@ def child(args: argparse.Namespace) -> None:
 
 
 def run_child(case: str, *, uid: int, gid: int, socket_path: Path,
-              data: Path, supplementary: tuple[int, ...] = ()) -> None:
+              data: Path, fixture: Path, supplementary: tuple[int, ...] = ()) -> None:
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = str(fixture.parent)
     result = subprocess.run(
-        [sys.executable, __file__, "--case", case, "--socket", str(socket_path),
+        [sys.executable, str(fixture), "--case", case, "--socket", str(socket_path),
          "--data", str(data)], preexec_fn=drop_to(uid, gid, supplementary),
         env=env, text=True, capture_output=True, timeout=8,
     )
@@ -188,6 +188,13 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="agenturm-accounts-") as temporary:
         root = Path(temporary)
         root.chmod(0o755)
+        # Lower-privilege children cannot traverse a private CI checkout. Copy
+        # the tiny fixture and Python package into this public, disposable root.
+        fixture = root / Path(__file__).name
+        shutil.copy2(Path(__file__).resolve(), fixture)
+        fixture.chmod(0o644)
+        shutil.copytree(Path(__file__).resolve().parents[1] / "observatory",
+                        root / "observatory")
         binary = root / "agenturm-storage-service"
         shutil.copy2(binary_source, binary)
         binary.chmod(0o755)
@@ -222,19 +229,20 @@ def main() -> None:
             check(list(data.iterdir()) == [], "probe service wrote data")
             print("PASS data 0700, transport 2710, socket 0660", flush=True)
             run_child("store", uid=client_uid, gid=client_gid,
-                      socket_path=socket_path, data=data)
+                      socket_path=socket_path, data=data, fixture=fixture)
             run_child("valid", uid=client_uid, gid=client_gid,
-                      socket_path=socket_path, data=data)
+                      socket_path=socket_path, data=data, fixture=fixture)
             run_child("wrong_uid", uid=wrong_uid, gid=client_gid,
-                      socket_path=socket_path, data=data)
+                      socket_path=socket_path, data=data, fixture=fixture)
             # Supplementary client group grants traversal; SO_PEERCRED must still
             # reject the wrong primary GID after the connection is accepted.
             run_child("wrong_gid", uid=client_uid, gid=wrong_gid,
-                      supplementary=(client_gid,), socket_path=socket_path, data=data)
+                      supplementary=(client_gid,), socket_path=socket_path, data=data,
+                      fixture=fixture)
             run_child("same_uid", uid=service_uid, gid=service_gid,
-                      socket_path=socket_path, data=data)
+                      socket_path=socket_path, data=data, fixture=fixture)
             run_child("wrong_receiver", uid=client_uid, gid=client_gid,
-                      socket_path=socket_path, data=data)
+                      socket_path=socket_path, data=data, fixture=fixture)
             wait_exit(service, socket_path)
             check(list(data.iterdir()) == [], "probe service wrote data after connections")
             print("PASS bounded exit and socket cleanup", flush=True)
@@ -254,7 +262,7 @@ def main() -> None:
             os.chown(database, service_uid, service_gid)
             database.chmod(0o600)
             run_child("store_existing", uid=client_uid, gid=client_gid,
-                      socket_path=socket_path, data=data)
+                      socket_path=socket_path, data=data, fixture=fixture)
         finally:
             if service.poll() is None:
                 service.kill()
