@@ -225,16 +225,13 @@ def _sync_directory(path: Path) -> None:
         os.close(fd)
 
 
-def prepare_candidate(*, telemetry: os.PathLike[str] | str,
-                      workflow: os.PathLike[str] | str,
-                      tasks: os.PathLike[str] | str,
-                      output: os.PathLike[str] | str,
-                      verifier: os.PathLike[str] | str) -> Path:
-    """Produce and verify a historical candidate, never a cutover certificate.
-
-    All sources must be stopped and private. Any failure leaves
-    the new output directory marked incomplete rather than a valid candidate.
-    """
+def _preflight_candidate_inputs(*, telemetry: os.PathLike[str] | str,
+                                workflow: os.PathLike[str] | str,
+                                tasks: os.PathLike[str] | str,
+                                output: os.PathLike[str] | str,
+                                verifier: os.PathLike[str] | str
+                                ) -> tuple[dict[str, Path], Path, Path]:
+    """Read-only input preflight; callers must recheck at actual preparation."""
     if os.name != "posix" or not Path("/proc/self/fd").is_dir():
         raise CandidateError("descriptor-bound offline preparation requires Linux procfs")
     sources = dict(zip(_SOURCE_NAMES, map(_absolute, (telemetry, workflow, tasks))))
@@ -252,6 +249,22 @@ def prepare_candidate(*, telemetry: os.PathLike[str] | str,
     for path in sources.values():
         with _stopped_source(path):
             pass
+    return sources, destination, binary
+
+
+def prepare_candidate(*, telemetry: os.PathLike[str] | str,
+                      workflow: os.PathLike[str] | str,
+                      tasks: os.PathLike[str] | str,
+                      output: os.PathLike[str] | str,
+                      verifier: os.PathLike[str] | str) -> Path:
+    """Produce and verify a historical candidate, never a cutover certificate.
+
+    All sources must be stopped and private. Any failure leaves
+    the new output directory marked incomplete rather than a valid candidate.
+    """
+    sources, destination, binary = _preflight_candidate_inputs(
+        telemetry=telemetry, workflow=workflow, tasks=tasks,
+        output=output, verifier=verifier)
     destination.mkdir(mode=0o700)
     _sync_directory(destination.parent)
     state = destination / "state.json"
