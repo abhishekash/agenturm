@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from examples.rust_kiro_harness_plugin.install import install
 from observatory.core import Store
-from observatory.local_agents import Session
+from observatory.local_agents import Session, identity
 from observatory.plugin_admission import set_source_capture, last_source_diagnostic
 from observatory.plugin_config import read_plugin_config
 from observatory.plugin_projection import project_source
@@ -157,6 +157,93 @@ class RustKiroHarnessTests(unittest.TestCase):
             process.poll_once()
             self.assertEqual(self.projected()[0]["run_state"], "running")
             self.assertEqual(self.projected()[0]["reason_code"], "")
+
+    def test_consent_round_resolution_keeps_newer_request_waiting(self):
+        self.append(row("user-one", 0, {"type": "user"}),
+                    row("start-one", 1, {"type": "turn_start"}),
+                    row("pending-round-one", 2, {"type": "pending_interaction",
+                                                 "toolCallId": "call-one", "consentRound": 1}),
+                    row("pending-round-two", 3, {"type": "pending_interaction",
+                                                 "toolCallId": "call-one", "consentRound": 2}))
+        native = Store(self.root / "native-rounds.db")
+        self.addCleanup(native.close)
+        native_reader = Session(native, self.source, "Kiro", capture_details=False)
+        native_reader.poll()
+        self.assertEqual(native_reader.run_state, "waiting")
+        with self.worker() as first:
+            first.poll_once()
+            self.assertEqual(self.projected()[0]["run_state"], "waiting")
+        self.append(row("resolved-round-one", 4, {"type": "interaction_resolved",
+                                                 "toolCallId": "call-one", "consentRound": 1}))
+        native_reader.poll()
+        self.assertEqual(native_reader.run_state, "waiting")
+        with self.worker() as second:
+            second.poll_once()
+            self.assertEqual(self.projected()[0]["run_state"], native_reader.run_state)
+        self.append(row("resolved-round-two", 5, {"type": "interaction_resolved",
+                                                 "toolCallId": "call-one", "consentRound": 2}))
+        native_reader.poll()
+        self.assertEqual(native_reader.run_state, "running")
+        with self.worker() as third:
+            third.poll_once()
+            self.assertEqual(self.projected()[0]["run_state"], native_reader.run_state)
+
+    def test_call_status_overrides_success_and_survives_restart(self):
+        self.append(row("user-one", 0, {"type": "user"}),
+                    row("start-one", 1, {"type": "turn_start"}),
+                    row("denied-call", 2, {"type": "tool_call", "toolCallId": "denied",
+                                           "toolName": "run_command", "status": "denied"}))
+        with self.worker() as first:
+            first.poll_once()
+        self.append(row("denied-result", 3, {"type": "tool_result", "toolCallId": "denied",
+                                             "success": True}),
+                    row("failed-call", 4, {"type": "tool_call", "toolCallId": "failed",
+                                           "toolName": "run_command", "status": "failed"}),
+                    row("failed-result", 5, {"type": "tool_result", "toolCallId": "failed",
+                                             "content": "private failed output"}))
+        native = Store(self.root / "native-call-status.db")
+        self.addCleanup(native.close)
+        Session(native, self.source, "Kiro", capture_details=False).poll()
+        with native._connect() as db:
+            native_results = [json.loads(item[0])["agent.activity.result"] for item in db.execute(
+                "SELECT attributes FROM logs WHERE service='kiro'")
+                if json.loads(item[0]).get("tool.name") == "run_command"]
+        self.assertEqual(native_results, ["denied", "error"])
+        with self.worker() as second:
+            second.poll_once()
+        self.projected()
+        tool_activity = [item for item in self.store.activity_page()["activity"]
+                         if item["domain"] == "tool"]
+        self.assertEqual([item["result"] for item in sorted(tool_activity,
+                           key=lambda item: item["time_unix_nano"])],
+                         ["denied", "denied", "failed", "failed"])
+
+    def test_new_turn_with_unresolved_call_fails_before_wrong_attribution(self):
+        self.append(row("user-one", 0, {"type": "user"}),
+                    row("start-one", 1, {"type": "turn_start"}),
+                    row("call-one", 2, {"type": "tool_call", "toolCallId": "call-one",
+                                         "toolName": "run_command"}),
+                    row("end-one", 3, {"type": "turn_end", "stopReason": "end_turn"}))
+        with self.worker() as first:
+            admitted = first.poll_once()
+        self.append(row("user-two", 4, {"type": "user"}),
+                    row("start-two", 5, {"type": "turn_start"}),
+                    row("result-one", 6, {"type": "tool_result", "toolCallId": "call-one",
+                                           "success": True}))
+        native = Store(self.root / "native-late-result.db")
+        self.addCleanup(native.close)
+        native_reader = Session(native, self.source, "Kiro", capture_details=False)
+        native_reader.poll()
+        with native._connect() as db:
+            native_tools = [(item[0], json.loads(item[1])) for item in db.execute(
+                "SELECT trace_id,attributes FROM logs WHERE service='kiro'")
+                if json.loads(item[1]).get("tool.name") == "run_command"]
+        self.assertEqual(len(native_tools), 1)
+        self.assertEqual(native_tools[0][0], identity(native_reader.source_id, "user-one"))
+        with self.worker() as second:
+            with self.assertRaises(ProtocolError):
+                second.poll_once()
+            self.assertEqual(second.cursor, admitted.cursor)
 
     def test_worker_path_identity_and_missing_result_flag_refusal(self):
         worker_dir = self.session_dir / "sub-executions"

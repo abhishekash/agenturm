@@ -31,7 +31,8 @@ pub(crate) struct Context {
     turn_open: bool,
     queued_id: String,
     queued_stamp: String,
-    pending_interaction: String,
+    pending_interactions: Vec<String>,
+    open_call: String,
     worker_started: bool,
 }
 
@@ -99,35 +100,68 @@ pub(crate) fn initial_context(path: &Path, raw: &[u8]) -> Result<Context> {
         turn_open: !worker.is_empty(),
         queued_id: String::new(),
         queued_stamp: "0".to_owned(),
-        pending_interaction: String::new(),
+        pending_interactions: Vec::new(),
+        open_call: String::new(),
         worker_started: false,
     })
 }
 
 pub(crate) fn checkpoint(context: &Context) -> String {
     format!(
-        "k{}:{}:{}:{}:{}:{}:{}",
+        "k{}:{}:{}:{}:{}:{}:{}:{}",
         context.path_hash,
         u8::from(context.turn_open),
         context.turn_id,
         context.queued_id,
         context.queued_stamp,
-        context.pending_interaction,
-        u8::from(context.worker_started)
+        context.pending_interactions.join("."),
+        u8::from(context.worker_started),
+        context.open_call
     )
+}
+
+fn digest_key(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))[..24].to_owned()
+}
+
+fn interaction_key(payload: &serde_json::Map<String, Value>) -> Result<String> {
+    let operation = payload
+        .get("toolCallId")
+        .and_then(Value::as_str)
+        .ok_or("Kiro interaction lacks call ID")?;
+    if !identifier(operation) {
+        return Err(invalid("invalid Kiro interaction identity"));
+    }
+    let round = match payload.get("consentRound") {
+        Some(Value::Number(number)) if number.is_i64() || number.is_u64() => number.to_string(),
+        Some(Value::Number(_)) => return Err(invalid("unsupported Kiro consent round")),
+        _ => "0".to_owned(),
+    };
+    Ok(digest_key(&format!("{operation}:{round}")))
+}
+
+fn digest_field(value: &str) -> bool {
+    value.len() == 24 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 pub(crate) fn restore(context: &mut Context, raw: &str) -> Result<()> {
     let fields: Vec<_> = raw.split(':').collect();
-    if fields.len() != 7
+    if fields.len() != 8
         || fields[0] != format!("k{}", context.path_hash)
         || !matches!(fields[1], "0" | "1")
         || (!fields[2].is_empty() && !identifier(fields[2]))
         || (!fields[3].is_empty() && !identifier(fields[3]))
         || fields[4].parse::<u64>().is_err()
         || (fields[3].is_empty() && fields[4] != "0")
-        || (!fields[5].is_empty() && !identifier(fields[5]))
+        || (!fields[5].is_empty()
+            && (fields[5].split('.').count() > 2 || !fields[5].split('.').all(digest_field)))
         || !matches!(fields[6], "0" | "1")
+        || (!fields[7].is_empty()
+            && (fields[7].len() != 26
+                || !fields[7].is_ascii()
+                || !digest_field(&fields[7][..24])
+                || !matches!(&fields[7][24..25], "s" | "f" | "d")
+                || !matches!(&fields[7][25..26], "m" | "s" | "f" | "o")))
     {
         return Err(invalid(
             "invalid Kiro checkpoint or configured path changed",
@@ -137,8 +171,13 @@ pub(crate) fn restore(context: &mut Context, raw: &str) -> Result<()> {
     context.turn_id = fields[2].to_owned();
     context.queued_id = fields[3].to_owned();
     context.queued_stamp = fields[4].to_owned();
-    context.pending_interaction = fields[5].to_owned();
+    context.pending_interactions = if fields[5].is_empty() {
+        Vec::new()
+    } else {
+        fields[5].split('.').map(str::to_owned).collect()
+    };
     context.worker_started = fields[6] == "1";
+    context.open_call = fields[7].to_owned();
     Ok(())
 }
 
@@ -289,9 +328,12 @@ pub(crate) fn translate_line(
                     "info",
                 ));
             } else {
+                if !next.open_call.is_empty() {
+                    return Err(invalid("Kiro turn changed with unresolved tool call"));
+                }
                 next.turn_id = id.to_owned();
                 next.turn_open = true;
-                next.pending_interaction.clear();
+                next.pending_interactions.clear();
                 facts.push(fact(
                     &base,
                     "message",
@@ -314,6 +356,9 @@ pub(crate) fn translate_line(
         }
         "turn_start" => {
             let id = row_id.ok_or("Kiro turn start lacks ID")?;
+            if !next.turn_open && !next.open_call.is_empty() {
+                return Err(invalid("Kiro turn changed with unresolved tool call"));
+            }
             if !next.queued_id.is_empty() {
                 let queued_base = format!("kiro:{origin}:{}", next.queued_id);
                 next.turn_id.clone_from(&next.queued_id);
@@ -340,7 +385,7 @@ pub(crate) fn translate_line(
                 next.turn_id = reported.to_owned();
             }
             next.turn_open = true;
-            next.pending_interaction.clear();
+            next.pending_interactions.clear();
             facts.push(fact(
                 &base,
                 "lifecycle",
@@ -354,7 +399,7 @@ pub(crate) fn translate_line(
         "turn_end" => {
             row_id.ok_or("Kiro turn end lacks ID")?;
             next.turn_open = false;
-            next.pending_interaction.clear();
+            next.pending_interactions.clear();
             let state = match payload.get("stopReason").and_then(Value::as_str) {
                 Some("end_turn") => Some(("completed", None)),
                 Some("cancelled") => Some(("interrupted", Some("kiro_cancelled"))),
@@ -418,27 +463,69 @@ pub(crate) fn translate_line(
             if !identifier(operation) {
                 return Err(invalid("invalid Kiro tool call identity"));
             }
-            let name = payload
-                .get("toolName")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let category = category(name);
-            let result = if kind == "tool_call" {
+            let (category, result) = if kind == "tool_call" {
+                let category = category(
+                    payload
+                        .get("toolName")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                );
                 let denial = payload
                     .get("_meta")
                     .and_then(|value| value.get("kiro"))
                     .and_then(|value| value.get("policyDenial"));
-                if denial.is_some_and(Value::is_object) {
+                let status = match payload.get("status").and_then(Value::as_str) {
+                    Some("denied") => "d",
+                    Some("failed") => "f",
+                    _ if denial.is_some_and(Value::is_object) => "d",
+                    _ => "s",
+                };
+                let category_code = match category {
+                    "mcp" => "m",
+                    "shell" => "s",
+                    "file" => "f",
+                    _ => "o",
+                };
+                let key = digest_key(operation);
+                if !next.open_call.is_empty() && !next.open_call.starts_with(&key) {
+                    return Err(invalid(
+                        "multiple unresolved Kiro tool calls are not representable",
+                    ));
+                }
+                next.open_call = format!("{key}{status}{category_code}");
+                let result = if status == "d" {
                     "denied"
+                } else if status == "f" {
+                    "failed"
                 } else {
                     "started"
-                }
+                };
+                (category, result)
             } else {
-                match payload.get("success").and_then(Value::as_bool) {
-                    Some(true) => "succeeded",
-                    Some(false) => "failed",
-                    None => return Err(invalid("Kiro result lacks explicit success")),
+                let key = digest_key(operation);
+                if !next.open_call.starts_with(&key) || next.open_call.len() != 26 {
+                    return Err(invalid("Kiro result has no matching unresolved call"));
                 }
+                let status = &next.open_call[24..25];
+                let category = match &next.open_call[25..26] {
+                    "m" => "mcp",
+                    "s" => "shell",
+                    "f" => "file",
+                    _ => "other",
+                };
+                let result = if status == "d" {
+                    "denied"
+                } else if status == "f"
+                    || payload.get("success").and_then(Value::as_bool) == Some(false)
+                {
+                    "failed"
+                } else if payload.get("success").and_then(Value::as_bool) == Some(true) {
+                    "succeeded"
+                } else {
+                    return Err(invalid("Kiro result lacks explicit success"));
+                };
+                next.open_call.clear();
+                (category, result)
             };
             facts.push(fact(
                 &base,
@@ -451,18 +538,15 @@ pub(crate) fn translate_line(
             ));
         }
         "pending_interaction" => {
-            let operation = payload
-                .get("toolCallId")
-                .and_then(Value::as_str)
-                .ok_or("Kiro pending interaction lacks call ID")?;
-            if !identifier(operation)
-                || (!next.pending_interaction.is_empty() && next.pending_interaction != operation)
-            {
-                return Err(invalid(
-                    "multiple or malformed Kiro interactions are not representable",
-                ));
+            let key = interaction_key(payload)?;
+            if !next.pending_interactions.contains(&key) {
+                if next.pending_interactions.len() == 2 {
+                    return Err(invalid(
+                        "more than two pending Kiro interactions are not representable",
+                    ));
+                }
+                next.pending_interactions.push(key);
             }
-            next.pending_interaction = operation.to_owned();
             facts.push(diagnostic(
                 &base,
                 "permission",
@@ -482,17 +566,9 @@ pub(crate) fn translate_line(
             ));
         }
         "interaction_resolved" => {
-            let operation = payload
-                .get("toolCallId")
-                .and_then(Value::as_str)
-                .ok_or("Kiro interaction resolution lacks call ID")?;
-            if !identifier(operation) {
-                return Err(invalid("invalid Kiro interaction identity"));
-            }
-            let matched = next.pending_interaction == operation;
-            if matched {
-                next.pending_interaction.clear();
-            }
+            let key = interaction_key(payload)?;
+            let prior_count = next.pending_interactions.len();
+            next.pending_interactions.retain(|pending| pending != &key);
             facts.push(diagnostic(
                 &base,
                 "permission",
@@ -501,7 +577,7 @@ pub(crate) fn translate_line(
                 "kiro_permission_unrepresented",
                 "info",
             ));
-            if matched && next.turn_open {
+            if prior_count > 0 && next.pending_interactions.is_empty() && next.turn_open {
                 facts.push(fact(
                     &base,
                     "resumed",
@@ -557,6 +633,9 @@ pub(crate) fn translate_line(
                 "info",
             ));
         }
+    }
+    if checkpoint(&next).len() > 200 {
+        return Err(invalid("Kiro checkpoint exceeds bounded cursor budget"));
     }
     Ok((facts, next))
 }
@@ -652,7 +731,7 @@ mod tests {
         );
         let (facts, still_waiting) = translate_line(&other, &restored, "generation", 2).unwrap();
         assert_eq!(facts.len(), 1);
-        assert_eq!(still_waiting.pending_interaction, "call-1");
+        assert_eq!(still_waiting.pending_interactions.len(), 1);
         let matched = row(
             "r2",
             3,
@@ -660,7 +739,7 @@ mod tests {
         );
         let (facts, resumed) = translate_line(&matched, &still_waiting, "generation", 3).unwrap();
         assert_eq!(facts[1]["payload"]["state"], "running");
-        assert!(resumed.pending_interaction.is_empty());
+        assert!(resumed.pending_interactions.is_empty());
         let second = row(
             "p2",
             4,
@@ -672,6 +751,74 @@ mod tests {
             5,
             json!({"type":"pending_interaction","toolCallId":"call-3"}),
         );
-        assert!(translate_line(&overlapping, &waiting, "generation", 5).is_err());
+        let (_, two_pending) = translate_line(&overlapping, &waiting, "generation", 5).unwrap();
+        let overflow = row(
+            "p4",
+            6,
+            json!({"type":"pending_interaction","toolCallId":"call-4"}),
+        );
+        assert!(translate_line(&overflow, &two_pending, "generation", 6).is_err());
+    }
+
+    #[test]
+    fn consent_rounds_are_distinct_across_checkpoint_restore() {
+        let first = row("u1", 0, json!({"type":"user"}));
+        let context = initial_context(Path::new("/x/sess_one/messages.jsonl"), &first).unwrap();
+        let (_, mut current) = translate_line(&first, &context, "generation", 0).unwrap();
+        for round in [1, 2] {
+            let pending = row(
+                &format!("pending-{round}"),
+                round,
+                json!({"type":"pending_interaction","toolCallId":"same-call","consentRound":round}),
+            );
+            (_, current) = translate_line(&pending, &current, "generation", round as u64).unwrap();
+        }
+        let mut restored = context.clone();
+        restore(&mut restored, &checkpoint(&current)).unwrap();
+        let old_round = row(
+            "resolved-one",
+            3,
+            json!({"type":"interaction_resolved","toolCallId":"same-call","consentRound":1}),
+        );
+        let (facts, waiting) = translate_line(&old_round, &restored, "generation", 3).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(waiting.pending_interactions.len(), 1);
+        let new_round = row(
+            "resolved-two",
+            4,
+            json!({"type":"interaction_resolved","toolCallId":"same-call","consentRound":2}),
+        );
+        let (facts, running) = translate_line(&new_round, &waiting, "generation", 4).unwrap();
+        assert_eq!(facts[1]["payload"]["state"], "running");
+        assert!(running.pending_interactions.is_empty());
+    }
+
+    #[test]
+    fn call_status_survives_restart_and_new_turn_with_open_call_fails() {
+        let first = row("u1", 0, json!({"type":"user"}));
+        let context = initial_context(Path::new("/x/sess_one/messages.jsonl"), &first).unwrap();
+        let (_, running) = translate_line(&first, &context, "generation", 0).unwrap();
+        let denied = row(
+            "call",
+            1,
+            json!({"type":"tool_call","toolCallId":"call-1","toolName":"run_command","status":"denied"}),
+        );
+        let (facts, waiting) = translate_line(&denied, &running, "generation", 1).unwrap();
+        assert_eq!(facts[0]["payload"]["result"], "denied");
+        let mut restored = context.clone();
+        restore(&mut restored, &checkpoint(&waiting)).unwrap();
+        let result = row(
+            "result",
+            2,
+            json!({"type":"tool_result","toolCallId":"call-1","success":true}),
+        );
+        let (facts, finished) = translate_line(&result, &restored, "generation", 2).unwrap();
+        assert_eq!(facts[0]["payload"]["result"], "denied");
+        assert_eq!(facts[0]["payload"]["category"], "shell");
+        assert!(finished.open_call.is_empty());
+        let end = row("end", 3, json!({"type":"turn_end","stopReason":"end_turn"}));
+        let (_, ended) = translate_line(&end, &waiting, "generation", 3).unwrap();
+        let next_user = row("u2", 4, json!({"type":"user"}));
+        assert!(translate_line(&next_user, &ended, "generation", 4).is_err());
     }
 }
