@@ -86,6 +86,12 @@ class RegistryTests(unittest.TestCase):
                 disabled = LocalAgents(store, source_specs=(), reader_specs=())
                 self.assertEqual(disabled.reader_plugins, {})
                 self.assertEqual(disabled.status()["sessions"], [])
+                unknown = LocalAgents(store, source_specs=(), reader_specs=(
+                    NativeReaderSpec("unknown", lambda _store, _capture: FixtureReader()),))
+                unknown_coverage = unknown.status()["source_coverage"][1]
+                self.assertEqual(unknown_coverage["active"], 1)
+                self.assertIsNone(unknown_coverage["omitted"])
+                self.assertEqual(unknown_coverage["state"], "partial")
             finally:
                 store.close()
 

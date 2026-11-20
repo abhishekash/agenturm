@@ -17,7 +17,7 @@ def _count(value):
 def _label(value):
     if not isinstance(value, str):
         return ""
-    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value[:1024])
     clean = "".join(char for char in value if unicodedata.category(char) not in {"Cc", "Cf"})
     clean = clean.strip()
     return chop_cells(clean, MAX_LABEL_CELLS)[0] if clean else ""

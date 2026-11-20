@@ -1203,7 +1203,7 @@ class LocalAgents:
                                     "omitted": details.get("omitted"),
                                     "limit": details.get("limit"),
                                     "state": "unavailable" if spec.id in reader_failed else
-                                             "partial" if details.get("omitted") else "ready"})
+                                             "partial" if details.get("omitted") is None or details.get("omitted") else "ready"})
         collection_read_errors = self.errors + sum(
             value for diagnostics in reader_diagnostics.values()
             if isinstance(diagnostics, dict)
