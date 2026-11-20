@@ -30,6 +30,7 @@ class ContentPreviewProvider:
     hint: str
     clipped_note: str
     empty_text: str = '(empty message)'
+    read_provider_id: str | None = None
 
     def path(self, record: dict) -> str:
         event_id = record.get('id') if isinstance(record, dict) else None
@@ -37,7 +38,10 @@ class ContentPreviewProvider:
                 or not isinstance(event_id, str) or not _EVENT_KEY.fullmatch(event_id)
                 or self.matches(record) is not True):
             raise ValueError('content preview requires one eligible Activity event')
-        return self.route + '?' + urlencode({'event_id': event_id})
+        query = {'event_id': event_id}
+        if self.read_provider_id is not None:
+            query['provider_id'] = self.read_provider_id
+        return self.route + '?' + urlencode(query)
 
     def section(self, state: dict | None) -> tuple[str, str]:
         if state and state['status'] == 'available':
@@ -68,6 +72,10 @@ class ContentPreviewRegistry:
                 or len(self._providers) >= MAX_PROVIDERS or not callable(provider.matches)
                 or not isinstance(provider.route, str)
                 or not _LOCAL_ROUTE.fullmatch(provider.route)
+                or provider.read_provider_id is not None and
+                   (not isinstance(provider.read_provider_id, str) or
+                    not _PROVIDER_ID.fullmatch(provider.read_provider_id) or
+                    provider.route != '/api/plugin-reference-content')
                 or not all(isinstance(value, str) and 0 < len(value) <= 160
                            and safe_text(value) == value
                            for value in (provider.label, provider.hint,

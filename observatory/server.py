@@ -62,7 +62,11 @@ def _capability_revision_watch(path):
         raise
 
 
-def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hosts=()):
+def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hosts=(),
+                reference_readers=None):
+    if reference_readers is None:
+        from .plugin_reference_read import DEFAULT_REFERENCE_READERS
+        reference_readers = DEFAULT_REFERENCE_READERS
     cache = ResponseCache(store.path)
     class Handler(DeadlineHandler, BaseHTTPRequestHandler):
         response_cache = cache
@@ -107,6 +111,64 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 self.send_header('X-Agenturm-Receiver-ID', receiver)
             self.end_headers()
             self.wfile.write(data)
+
+        def _plugin_reference_text(self, provider_id, event_id, unavailable):
+            from .rust_shadow_snapshot import _store_file_identity
+            from .plugin_reference_read import _binding
+            try:
+                store_identity = _store_file_identity(store)
+                activity_identity = store._source_file_identity('Activity')
+                initial_binding = _binding(store, provider_id, event_id)
+            except (OSError, ValueError, sqlite3.Error):
+                self._json(503, {'error': 'Plugin source revision unavailable.'})
+                return
+            selected = reference_readers.read_exact(store, provider_id, event_id)
+            if selected is None:
+                try:
+                    changed = (initial_binding is not None and
+                               (_binding(store, provider_id, event_id) != initial_binding or
+                                _store_file_identity(store) != store_identity or
+                                store._source_file_identity('Activity') != activity_identity))
+                except (OSError, ValueError, sqlite3.Error):
+                    changed = initial_binding is not None
+                if changed:
+                    self._json(409, {'error': 'Plugin source revision changed.'})
+                    return
+                self._json(404, {'error': unavailable})
+                return
+            try:
+                if (_store_file_identity(store) != store_identity or
+                        store._source_file_identity('Activity') != activity_identity):
+                    self._json(409, {'error': 'Plugin source revision changed.'})
+                    return
+            except (OSError, ValueError, sqlite3.Error):
+                self._json(503, {'error': 'Plugin source revision unavailable.'})
+                return
+            encoded = selected.text.encode('utf-8')
+            clipped = selected.clipped or len(encoded) > 4096
+            preview = encoded[:4096].decode('utf-8', 'ignore') if len(encoded) > 4096 else selected.text
+            self._activity_file_identity = activity_identity
+            self._cache_version = None
+
+            def current_reference():
+                try:
+                    return (_store_file_identity(store) == store_identity and
+                            store._source_file_identity('Activity') == activity_identity and
+                            reference_readers.read_exact(store, provider_id, event_id) == selected and
+                            _store_file_identity(store) == store_identity)
+                except (OSError, ValueError, sqlite3.Error):
+                    return False
+
+            self._capability_guard = current_reference
+            try:
+                data = json.dumps({
+                    'receiver_id': selected.receiver_id, 'event_id': selected.event_id,
+                    'redacted_text': preview, 'clipped': clipped,
+                    'revision': [selected.lease_epoch, selected.policy_epoch, selected.dirty_seq],
+                }, ensure_ascii=False).encode('utf-8')
+                self._json_bytes(200, data, body_receiver=selected.receiver_id)
+            finally:
+                self._capability_guard = None
 
         def _protobuf_ok(self):
             # Empty OTLP export response means the full batch was accepted.
@@ -429,11 +491,28 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     self._json(400, {'error': str(exc)})
                 except (sqlite3.Error, OSError):
                     self._json(503, {'error': 'Plugin Activity source revision unavailable.'})
+            elif path == "/api/plugin-reference-content":
+                from .plugin_activity import _EVENT_KEY
+                from .plugin_reference_read import _PROVIDER_ID
+                from .receiver_state import loopback_host
+                if not loopback_host(self.server.server_address[0]) or \
+                        not loopback_host(self.client_address[0]):
+                    self._json(403, {'error': 'Captured text requires a local receiver.'})
+                    return
+                query = parse_qs(route.query, keep_blank_values=True)
+                if set(query) != {'event_id', 'provider_id'} or any(len(values) != 1 for values in query.values()):
+                    self._json(400, {'error': 'One exact event and trusted provider are required.'})
+                    return
+                event_id, provider_id = query['event_id'][0], query['provider_id'][0]
+                if not _EVENT_KEY.fullmatch(event_id) or not _PROVIDER_ID.fullmatch(provider_id):
+                    self._json(400, {'error': 'Invalid plugin Activity event or provider.'})
+                    return
+                self._plugin_reference_text(provider_id, event_id,
+                                            'Private content unavailable for this exact event.')
             elif path == "/api/plugin-content":
                 # Explicit, exact-event text access. The active receiver owns
                 # the source grant and never trusts a path supplied by HTTP.
                 from .plugin_activity import _EVENT_KEY
-                from .plugin_pi_content_read import Available, read_exact_pi_user_text
                 from .receiver_state import loopback_host
                 from .workflow_evidence import safe_text
                 if not loopback_host(self.server.server_address[0]) or \
@@ -448,41 +527,14 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 if not _EVENT_KEY.fullmatch(event_id):
                     self._json(400, {'error': 'Invalid plugin Activity event.'})
                     return
-                selected = read_exact_pi_user_text(store, event_id)
-                if not isinstance(selected, Available):
-                    self._json(404, {'error': 'Captured text unavailable for this exact event.'})
-                    return
-                # Bound the response independently of the retained source row.
-                clean = safe_text(selected.redacted_text)
-                encoded = clean.encode('utf-8')
-                clipped = len(encoded) > 4096
-                preview = encoded[:4096].decode('utf-8', 'ignore') if clipped else clean
-                proof = selected.proof
-                try:self._activity_file_identity = store._source_file_identity('Activity')
-                except (OSError, ValueError, sqlite3.Error):
-                    self._json(503, {'error': 'Plugin source revision unavailable.'})
-                    return
-                self._cache_version = None
-                self._capability_guard = lambda: read_exact_pi_user_text(store, event_id) == selected
-                try:
-                    data = json.dumps({
-                        'receiver_id': proof.receiver_id, 'event_id': event_id,
-                        'redacted_text': preview, 'clipped': clipped,
-                        'revision': [proof.lease_epoch, proof.policy_epoch,
-                                     proof.source_dirty_seq],
-                    }, ensure_ascii=False).encode('utf-8')
-                    self._json_bytes(200, data, body_receiver=proof.receiver_id)
-                finally:
-                    self._capability_guard = None
+                self._plugin_reference_text('pi-content', event_id,
+                                            'Captured text unavailable for this exact event.')
             elif path == "/api/plugin-command-content":
                 # One opt-in Pi bash request, selected by its projected Activity
                 # event. A started fact records the request, not execution.
                 from .plugin_activity import _EVENT_KEY
-                from .plugin_pi_command_read import Available, read_exact_pi_requested_command
                 from .plugin_wire import ProtocolError
                 from .receiver_state import loopback_host
-                from .rust_shadow_snapshot import _store_file_identity
-                from .workflow_evidence import safe_text
                 if not loopback_host(self.server.server_address[0]) or \
                         not loopback_host(self.client_address[0]):
                     self._json(403, {'error': 'Captured text requires a local receiver.'})
@@ -495,49 +547,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 if not _EVENT_KEY.fullmatch(event_id):
                     self._json(400, {'error': 'Invalid plugin Activity event.'})
                     return
-                try:
-                    store_identity = _store_file_identity(store)
-                except (OSError, ValueError, sqlite3.Error, ProtocolError):
-                    self._json(503, {'error': 'Plugin source revision unavailable.'})
-                    return
-                selected = read_exact_pi_requested_command(store, event_id)
-                if not isinstance(selected, Available):
-                    self._json(404, {'error': 'Requested command unavailable for this exact event.'})
-                    return
-                clean = safe_text(selected.redacted_command)
-                encoded = clean.encode('utf-8')
-                clipped = len(encoded) > 4096
-                preview = encoded[:4096].decode('utf-8', 'ignore') if clipped else clean
-                proof = selected.proof
-                try:
-                    if _store_file_identity(store) != store_identity:
-                        self._json(409, {'error': 'Plugin source revision changed.'})
-                        return
-                    self._activity_file_identity = store._source_file_identity('Activity')
-                except (OSError, ValueError, sqlite3.Error, ProtocolError):
-                    self._json(503, {'error': 'Plugin source revision unavailable.'})
-                    return
-                self._cache_version = None
-
-                def current_command():
-                    try:
-                        return (_store_file_identity(store) == store_identity and
-                                read_exact_pi_requested_command(store, event_id) == selected and
-                                _store_file_identity(store) == store_identity)
-                    except (OSError, ValueError, sqlite3.Error, ProtocolError):
-                        return False
-
-                self._capability_guard = current_command
-                try:
-                    data = json.dumps({
-                        'receiver_id': proof.receiver_id, 'event_id': event_id,
-                        'redacted_text': preview, 'clipped': clipped,
-                        'revision': [proof.lease_epoch, proof.policy_epoch,
-                                     proof.source_dirty_seq],
-                    }, ensure_ascii=False).encode('utf-8')
-                    self._json_bytes(200, data, body_receiver=proof.receiver_id)
-                finally:
-                    self._capability_guard = None
+                self._plugin_reference_text('pi-command', event_id,
+                                            'Requested command unavailable for this exact event.')
             elif path == "/api/metrics":
                 certificate=({'_initial_receiver':self._get_receiver_id,'_initial_file':self._metrics_file_identity}if certified_metrics else {})
                 self._json(200, store.metrics(**certificate))
@@ -799,21 +810,31 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
           watch_jsonl=(), watch_service="agent-harness", retention_days=None, local_agents=True, metadata_only=False,
           managed_db=False, no_auth=False, allowed_hosts=(), collector_registry=None,
           plugin_config=None, rust_plugin_host=None, rust_plugin_host_sha256=None,
-          capture_modes=None, reference_admissions=None, batch_handlers=None):
+          capture_modes=None, reference_admissions=None, batch_handlers=None,
+          reference_readers=None):
     from .plugin_batch_handlers import BatchHandlerRegistry, DEFAULT_BATCH_HANDLERS
     from .plugin_capture_modes import CaptureModeRegistry, DEFAULT_CAPTURE_MODES
     from .plugin_reference_admission import (DEFAULT_REFERENCE_ADMISSIONS,
                                              ReferenceAdmissionRegistry)
+    from .plugin_reference_read import (DEFAULT_REFERENCE_READERS,
+                                        ReferenceReadRegistry)
     capture_modes = DEFAULT_CAPTURE_MODES if capture_modes is None else capture_modes
     reference_admissions = (DEFAULT_REFERENCE_ADMISSIONS if reference_admissions is None
                             else reference_admissions)
     batch_handlers = DEFAULT_BATCH_HANDLERS if batch_handlers is None else batch_handlers
+    reference_readers = (DEFAULT_REFERENCE_READERS if reference_readers is None
+                         else reference_readers)
     if not isinstance(capture_modes, CaptureModeRegistry):
         raise TypeError("trusted capture mode registry required")
     if not isinstance(reference_admissions, ReferenceAdmissionRegistry):
         raise TypeError("trusted reference admission registry required")
     if not isinstance(batch_handlers, BatchHandlerRegistry):
         raise TypeError("trusted batch handler registry required")
+    if not isinstance(reference_readers, ReferenceReadRegistry):
+        raise TypeError("trusted reference read registry required")
+    admission_ids = {provider.id for provider in reference_admissions.providers}
+    if any(provider.id not in admission_ids for provider in reference_readers.providers):
+        raise ValueError("reference readers must match installed admission providers")
     if db_path is None:
         from .receiver_state import telemetry_path,prepare_state_directory
         prepare_state_directory();db_path=str(telemetry_path());managed_db=True
@@ -868,7 +889,8 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
     retention_days=retention_policy(store,managed=managed_db,requested=retention_days)
     if retention_days is not None:
         store.prune(retention_days)
-    server = ThreadingHTTPServer((host, port), handler_for(store, token,allowed_hosts=allowed_hosts))
+    server = ThreadingHTTPServer((host, port), handler_for(
+        store, token, allowed_hosts=allowed_hosts, reference_readers=reference_readers))
     local = None
     if local_agents and host in {"127.0.0.1", "localhost", "::1"}:
         from .collector_runtime import start_local_collector

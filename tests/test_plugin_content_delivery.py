@@ -101,8 +101,99 @@ class PluginContentDeliveryTests(unittest.TestCase):
         with patch.object(reader, 'read_exact_pi_user_text', side_effect=revoke):
             status, denied = self.get(self.path())
         self.assertEqual(status, 409)
-        self.assertGreaterEqual(count, 2)
+        # The registry's post-read binding check now supplies the second gate.
+        self.assertEqual(count, 1)
         self.assertNotIn('password=', json.dumps(denied))
+
+    def test_generic_trusted_reference_route_checks_owner_and_revoke_guard(self):
+        from observatory.plugin_reference_read import (
+            ReferenceReadProvider, ReferenceReadRegistry, ReferenceText, _binding,
+        )
+        provider_id = 'synthetic-private'
+        with self.store._write_db() as db:
+            db.execute("INSERT INTO plugin_reference_owner_v1(source_id,provider_id) "
+                       "VALUES(?,?)", ('pi-directory', provider_id))
+
+        def synthetic(store, event_id):
+            binding = _binding(store, provider_id, event_id)
+            if binding is None:
+                return None
+            return ReferenceText(provider_id, binding[0], binding[1], event_id,
+                                 *binding[2:], 'Synthetic [REDACTED]')
+
+        registry = ReferenceReadRegistry((ReferenceReadProvider(provider_id, synthetic),))
+        handler = handler_for(self.store, 'secret', quiet=True, reference_readers=registry)
+        self.addCleanup(handler.response_cache.close)
+        server = BoundedHTTPServer(('127.0.0.1', 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        def get(path):
+            request = Request(f'http://127.0.0.1:{server.server_port}' + path,
+                              headers={'Authorization': 'Bearer secret'})
+            try:
+                with urlopen(request, timeout=5) as response:
+                    return response.status, json.load(response), response.headers
+            except HTTPError as exc:
+                return exc.code, json.loads(exc.read()), exc.headers
+
+        query = urlencode({'provider_id': provider_id, 'event_id': self.event_id})
+        status, body, headers = get('/api/plugin-reference-content?' + query)
+        self.assertEqual(status, 200)
+        self.assertEqual(body['redacted_text'], 'Synthetic [REDACTED]')
+        self.assertEqual(headers['Cache-Control'], 'no-store')
+        self.assertEqual(get('/api/plugin-reference-content?' +
+                             urlencode({'provider_id': 'unknown', 'event_id': self.event_id}))[0], 404)
+        self.assertEqual(get('/api/plugin-reference-content?' + query + '&extra=1')[0], 400)
+
+        def broken_reader(_store, _event_id):
+            raise RuntimeError('synthetic provider failure')
+
+        broken_registry = ReferenceReadRegistry((ReferenceReadProvider(
+            provider_id, broken_reader),))
+        broken_handler = handler_for(self.store, 'secret', quiet=True,
+                                     reference_readers=broken_registry)
+        self.addCleanup(broken_handler.response_cache.close)
+        broken_server = BoundedHTTPServer(('127.0.0.1', 0), broken_handler)
+        broken_thread = threading.Thread(target=broken_server.serve_forever, daemon=True)
+        broken_thread.start()
+        self.addCleanup(broken_server.server_close)
+        self.addCleanup(broken_server.shutdown)
+        broken_request = Request(f'http://127.0.0.1:{broken_server.server_port}'
+                                 '/api/plugin-reference-content?' + query,
+                                 headers={'Authorization': 'Bearer secret'})
+        with self.assertRaises(HTTPError) as broken_error:
+            urlopen(broken_request, timeout=5)
+        self.assertEqual(broken_error.exception.code, 404)
+        self.assertNotIn('Synthetic', broken_error.exception.read().decode())
+
+        def revoke_after_select(store, event_id):
+            result = synthetic(store, event_id)
+            with store._write_db() as db:
+                db.execute("DELETE FROM plugin_reference_owner_v1 "
+                           "WHERE source_id=? AND provider_id=?",
+                           ('pi-directory', provider_id))
+            return result
+
+        revoked_registry = ReferenceReadRegistry((ReferenceReadProvider(
+            provider_id, revoke_after_select),))
+        revoked_handler = handler_for(self.store, 'secret', quiet=True,
+                                      reference_readers=revoked_registry)
+        self.addCleanup(revoked_handler.response_cache.close)
+        revoked_server = BoundedHTTPServer(('127.0.0.1', 0), revoked_handler)
+        revoked_thread = threading.Thread(target=revoked_server.serve_forever, daemon=True)
+        revoked_thread.start()
+        self.addCleanup(revoked_server.server_close)
+        self.addCleanup(revoked_server.shutdown)
+        request = Request(f'http://127.0.0.1:{revoked_server.server_port}'
+                          '/api/plugin-reference-content?' + query,
+                          headers={'Authorization': 'Bearer secret'})
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request, timeout=5)
+        self.assertEqual(error.exception.code, 409)
+        self.assertNotIn('Synthetic', error.exception.read().decode())
 
     def test_same_inode_rewrite_between_proofs_withholds_body(self):
         from observatory import plugin_pi_content_read as reader
@@ -130,6 +221,13 @@ class PluginContentDeliveryTests(unittest.TestCase):
         self.fixture.file.write_bytes(self.fixture.header +
                                       self.fixture.user.replace(b'highly-private', b'another-secret'))
         self.assertEqual(self.get(self.path())[0], 404)
+
+    def test_unavailable_activity_revision_returns_service_unavailable(self):
+        with patch.object(self.store, '_source_file_identity',
+                          side_effect=OSError('synthetic unavailable revision')):
+            status, body = self.get(self.path())
+        self.assertEqual(status, 503)
+        self.assertNotIn('password=', json.dumps(body))
 
     def deliver_new_text(self, text):
         from tests.test_plugin_pi_content import PiContentTests
