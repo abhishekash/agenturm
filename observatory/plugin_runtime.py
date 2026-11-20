@@ -16,6 +16,9 @@ from .plugin_admission import (SourceLease, activate_source, commit_batch,
 from .plugin_manifest import PluginManifest
 from .plugin_process import PluginProcess
 from .plugin_projection import project_source
+from .plugin_reference_admission import (DEFAULT_REFERENCE_ADMISSIONS,
+                                         ReferenceAdmissionRegistry,
+                                         ReferenceSubmission)
 from .plugin_wire import CommandPollBatch, ContentPollBatch, PollBatch, ProtocolError
 
 if TYPE_CHECKING:
@@ -33,11 +36,15 @@ class PluginSession:
                  content_source: PluginSource | None = None,
                  command_source: PluginSource | None = None,
                  capture_source: PluginSource | None = None,
-                 capture_modes: CaptureModeRegistry = DEFAULT_CAPTURE_MODES):
+                 capture_modes: CaptureModeRegistry = DEFAULT_CAPTURE_MODES,
+                 reference_admissions: ReferenceAdmissionRegistry =
+                 DEFAULT_REFERENCE_ADMISSIONS):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         if not isinstance(capture_modes, CaptureModeRegistry):
             raise TypeError("trusted capture mode registry required")
+        if not isinstance(reference_admissions, ReferenceAdmissionRegistry):
+            raise TypeError("trusted reference admission registry required")
         self.store = store
         self.capture_source = None
         self.capture_grant = None
@@ -62,11 +69,13 @@ class PluginSession:
                     or set(source.runtime_features) != set(required_features)):
                 raise ProtocolError("capture source differs from trusted process configuration")
         mode = capture_modes.select_session(source, required_features)
+        reference_admissions.require_provider(mode.reference_provider_id)
         if legacy_family is not None and mode.reference_family != legacy_family:
             raise ProtocolError("reference source differs from trusted capture mode")
         self.capture_source = source
         self.capture_mode = mode
         self.capture_modes = capture_modes
+        self.reference_admissions = reference_admissions
         if mode.reference_family == "content":
             self.content_source = source
         elif mode.reference_family == "command":
@@ -150,19 +159,23 @@ class PluginSession:
         if self.lease is None or self.cursor is None:
             raise ProtocolError("plugin session is not running")
         expected = self.cursor
+        def trusted_submission(received):
+            if isinstance(received, ContentPollBatch) and received.content_refs:
+                if self.capture_mode.reference_family != "content":
+                    raise ProtocolError("content references differ from trusted capture mode")
+                return ReferenceSubmission(self.capture_mode.reference_provider_id,
+                                           received.content_refs, self.capture_grant)
+            if isinstance(received, CommandPollBatch) and received.command_refs:
+                if self.capture_mode.reference_family != "command":
+                    raise ProtocolError("command references differ from trusted capture mode")
+                return ReferenceSubmission(self.capture_mode.reference_provider_id,
+                                           received.command_refs, self.capture_grant)
+            return None
         batch = self.process.poll_commit(expected, lambda received: commit_batch(
             self.store, self.lease, expected, received,
             allow_root_gap="source-discovery-root-gap/1" in self.process.required_features,
-            content_refs=(received.content_refs
-                          if isinstance(received, ContentPollBatch) else ()),
-            content_grant=(self.content_grant
-                           if isinstance(received, ContentPollBatch) and received.content_refs
-                           else None),
-            command_refs=(received.command_refs
-                          if isinstance(received, CommandPollBatch) else ()),
-            command_grant=(self.command_grant
-                           if isinstance(received, CommandPollBatch) and received.command_refs
-                           else None)),
+            reference_submission=trusted_submission(received),
+            reference_admissions=self.reference_admissions),
             members=self.members)
         self.cursor = batch.cursor
         if batch.member_id and self.members is not None:

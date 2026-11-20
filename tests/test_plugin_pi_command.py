@@ -6,11 +6,13 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from observatory.core import Store
 from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
 from observatory.plugin_manifest import PluginManifest
 from observatory.plugin_pi_command import PiCommandGrant, PiCommandRef
+from observatory.plugin_pi_content import UnanchoredOrigin
 from observatory.plugin_supervisor import PluginSource
 from observatory.plugin_wire import PollBatch, ProtocolError
 
@@ -108,6 +110,22 @@ class PiCommandAdmissionTests(unittest.TestCase):
             commit_batch(self.store, self.lease, "", batch,
                          command_refs=(replace(ref, row_sha256="0" * 64),),
                          command_grant=self.grant)
+
+    def test_unanchored_command_keeps_pi_content_status_diagnostic(self):
+        batch, ref = self.bundle()
+        with patch("observatory.plugin_pi_command.verify_refs",
+                   side_effect=UnanchoredOrigin()):
+            self.assertEqual(commit_batch(self.store, self.lease, "", batch,
+                                          command_refs=(ref,), command_grant=self.grant),
+                             batch.cursor)
+        self.assertEqual(self.rows(), [])
+        with self.store._connect() as db:
+            status = db.execute("SELECT reason,refs_count FROM plugin_content_status_v1 "
+                                "WHERE source_id=?", (self.source.source_id,)).fetchone()
+            receipt = db.execute("SELECT refs_digest FROM plugin_command_batch_v1 "
+                                 "WHERE source_id=?", (self.source.source_id,)).fetchone()
+        self.assertEqual(tuple(status), ("unanchored_origin", 0))
+        self.assertIsNotNone(receipt)
 
     def test_forged_ref_and_non_bash_block_never_ack(self):
         batch, ref = self.bundle()

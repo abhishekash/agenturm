@@ -2,7 +2,7 @@
 
 The TOML file and child process only name a mode. Trusted receiver code builds
 this immutable registry before parsing configuration or starting a worker.
-Reference admission remains in the existing Pi-specific Store path.
+The trusted mode binds reference families to receiver-owned admission providers.
 """
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ class CaptureMode:
     reference_feature: str | None = None
     reference_family: str | None = None
     grant_type: type | None = None
+    reference_provider_id: str | None = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.name, str) or not PLUGIN_ID.fullmatch(self.name)
@@ -50,6 +51,10 @@ class CaptureMode:
                 or self.reference_family not in (None, "content", "command")
                 or (self.reference_family is None) != (self.reference_feature is None)
                 or (self.grant_type is None) != (self.reference_feature is None)
+                or (self.reference_provider_id is None) != (self.reference_feature is None)
+                or self.reference_provider_id is not None and (
+                    not isinstance(self.reference_provider_id, str)
+                    or not PLUGIN_ID.fullmatch(self.reference_provider_id))
                 or self.grant_type is not None and (
                     not callable(getattr(self.grant_type, "fingerprint_for_source", None))
                     or not callable(getattr(self.grant_type, "from_source", None)))):
@@ -87,7 +92,10 @@ class CaptureModeRegistry:
             raise ValueError("invalid trusted capture modes")
         names = [mode.name for mode in modes]
         features = [mode.reference_feature for mode in modes if mode.reference_feature]
+        providers = [mode.reference_provider_id for mode in modes
+                     if mode.reference_provider_id]
         if (len(set(names)) != len(names) or len(set(features)) != len(features)
+                or len(set(providers)) != len(providers)
                 or names.count("metadata-only") != 1):
             raise ValueError("duplicate or missing trusted capture mode")
         metadata = next(mode for mode in modes if mode.name == "metadata-only")
@@ -147,8 +155,8 @@ DEFAULT_CAPTURE_MODES = CaptureModeRegistry((
     CaptureMode("metadata-only"),
     CaptureMode("pi-review-text-v1", _PI_DIRECTORY | {"pi-content-ref/1"},
                 ("pi",), True, frozenset({"configured-source-read"}),
-                "pi-content-ref/1", "content", PiContentGrant),
+                "pi-content-ref/1", "content", PiContentGrant, "pi-content"),
     CaptureMode("pi-review-text-command-v1", _PI_DIRECTORY | {"pi-command-ref/1"},
                 ("pi",), True, frozenset({"configured-source-read"}),
-                "pi-command-ref/1", "command", PiCommandGrant),
+                "pi-command-ref/1", "command", PiCommandGrant, "pi-command"),
 ))
