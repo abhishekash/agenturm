@@ -357,10 +357,11 @@ pub(crate) fn translate_line(
             if operation.is_empty() || operation.len() > 512 {
                 return Err(invalid("invalid Claude tool result identity"));
             }
-            let failed = block
-                .get("is_error")
-                .and_then(Value::as_bool)
-                .ok_or("Claude tool result lacks explicit is_error")?;
+            let failed = match block.get("is_error") {
+                None => false,
+                Some(Value::Bool(failed)) => *failed,
+                Some(_) => return Err(invalid("Claude tool result has invalid is_error")),
+            };
             let operation = digest(operation);
             facts.push(fact(
                 format!("{base}:tool-result-{index}"),
@@ -507,9 +508,13 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_without_explicit_error_flag_refuses_before_ack() {
+    fn tool_result_with_malformed_error_flag_refuses_before_ack() {
         let context = header_identity(br#"{"type":"user","sessionId":"session"}"#).unwrap();
-        assert!(translate_line(br#"{"type":"user","sessionId":"session","timestamp":"2026-10-24T12:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"call-1","content":"private output"}]}}"#, &context, "origin", 42).is_err());
+        assert!(translate_line(br#"{"type":"user","sessionId":"session","timestamp":"2026-10-24T12:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"call-1","is_error":"false","content":"private output"}]}}"#, &context, "origin", 42).is_err());
+        let (succeeded, _) = translate_line(br#"{"type":"user","sessionId":"session","timestamp":"2026-10-24T12:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"call-1","content":"private output"}]}}"#, &context, "origin", 42).unwrap();
+        assert_eq!(succeeded[0]["payload"]["result"], "succeeded");
+        let (failed, _) = translate_line(br#"{"type":"user","sessionId":"session","timestamp":"2026-10-24T12:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"call-1","is_error":true,"content":"private output"}]}}"#, &context, "origin", 42).unwrap();
+        assert_eq!(failed[0]["payload"]["result"], "failed");
     }
 
     #[test]

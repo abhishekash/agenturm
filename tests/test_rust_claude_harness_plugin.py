@@ -73,7 +73,7 @@ class RustClaudeHarnessTests(unittest.TestCase):
                 stop_reason="tool_use"),
             row("user", "r-1", 2,
                 [{"type": "tool_result", "tool_use_id": "call-1",
-                  "is_error": True, "content": "private output"}]),
+                  "content": "private output"}]),
             row("assistant", "a-2", 3, [{"type": "text", "text": "private answer"}],
                 id="msg-2", usage={"input_tokens": 2, "output_tokens": 5},
                 stop_reason="end_turn"),
@@ -166,9 +166,10 @@ class RustClaudeHarnessTests(unittest.TestCase):
                                 changed.records[1]["event_id"])
             self.projected()
 
-    def test_missing_result_flag_refuses_before_cursor_ack(self):
+    def test_malformed_result_flag_refuses_before_cursor_ack(self):
         self.append(row("user", "u-1", 0,
                         [{"type": "tool_result", "tool_use_id": "call-1",
+                          "is_error": "false",
                           "content": "private output"}]))
         with self.worker() as process:
             with self.assertRaises(ProtocolError):
