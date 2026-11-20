@@ -1,0 +1,15 @@
+[package]
+name = "agenturm-storage-service"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+publish = false
+license = "MIT"
+
+[dependencies]
+agenturm-storage-service-contract = { path = "../agenturm-storage-service-contract" }
+libc = "0.2"
+
+[[bin]]
+name = "agenturm-storage-service"
+path = "src/main.rs"
