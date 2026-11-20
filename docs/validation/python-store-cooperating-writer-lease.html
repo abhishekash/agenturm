@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Python Store cooperating writer lease</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.55 system-ui, sans-serif; background: #f6f8fb; color: #17202d; }
+    body { margin: 0; padding: clamp(1rem, 4vw, 3rem); }
+    main { max-width: 58rem; margin: auto; padding: clamp(1.2rem, 3vw, 2.5rem); border-radius: 1rem; background: #fff; box-shadow: 0 8px 32px #0b1b3312; }
+    h1 { line-height: 1.2; margin: 0 0 .5rem; }
+    h2 { font-size: 1.1rem; margin-top: 1.7rem; }
+    p { margin: .8rem 0; }
+    code { overflow-wrap: anywhere; padding: .1em .3em; border-radius: .25rem; background: #e9eef5; }
+    .meta { color: #526275; }
+    @media (prefers-color-scheme: dark) {
+      :root { background: #111722; color: #e7edf7; }
+      main { background: #1b2533; box-shadow: none; }
+      code { background: #304054; }
+      .meta { color: #aabbd0; }
+    }
+  </style>
+</head>
+<body><main>
+  <h1>Python Store cooperating writer lease</h1>
+  <p class="meta">20 November 2026 · Opt-in Linux fence; production Rust authority remains off.</p>
+  <h2>Lock and admission</h2>
+  <p><code>Store(path, writer_lease=True)</code> acquires a sibling lock derived from the resolved database target before Store authority preflight or database initialization. Opt-in requires an existing private database parent. The lock is an owner-only, singly linked regular file opened without symlink following and with close-on-exec, then held by a nonblocking exclusive Linux <code>flock</code>. Symlink aliases to one database target contend on the same lock.</p>
+  <p>Same-process Store instances share one descriptor through a PID-and-path registry with a reference count. Forked children drop inherited descriptor copies; exec does not inherit the descriptor. Each writer connection checks lock and database identity before open, after open, and before commit. A database absent at lease acquisition is bound only after Store proves it created the file exclusively.</p>
+  <h2>Close and constructor failure</h2>
+  <p>Opt-in close uses the existing handoff proof to fence new work and wait for that Store's tracked writer connections, pooled readers, migration worker, derived worker, and incoming-status read. It releases only when quiescence succeeds. A timeout or cleanup failure keeps a strong registry reference to the lock, so garbage collection cannot unlock it; a later close may retry, and otherwise process exit releases it.</p>
+  <p>The fixture covers process contention, symlink aliases, same-process references, fork/exec, SIGKILL, lock and database replacement, transaction rollback on a late identity change, missing-database races, constructor failures before and after worker start, active reader/writer close timeouts, and non-Linux feature-off behavior. Focused local command: <code>python -m unittest tests.test_store_writer_lease -v</code>. CI runs this fixture in the Linux Rust protocol and plugin-adapter job.</p>
+  <h2>Limits and remaining gates</h2>
+  <p>This is a cooperating fence only: legacy binaries and direct SQLite writers can ignore it. An in-flight operation and a swap-and-swap-back race are not fenced. Workflow, saved-task, outbound, and direct mutation paths remain outside this lease. Windows/macOS are unsupported. A protected Rust service-owned canonical path, full mutation routing, old-writer exclusion, synchronized migration, and forward recovery remain necessary. No performance gain is asserted.</p>
+  <p><a href="python-store-cooperating-writer-lease.md">Markdown source</a> · <a href="rust-writer-cutover-gate.html">Writer cutover gate</a></p>
+</main></body></html>
