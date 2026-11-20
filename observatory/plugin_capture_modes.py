@@ -48,7 +48,7 @@ class CaptureMode:
                     not isinstance(self.reference_feature, str)
                     or not FEATURE.fullmatch(self.reference_feature)
                     or self.reference_feature not in self.required_features)
-                or self.reference_family not in (None, "content", "command")
+                or self.reference_family not in (None, "content", "command", "reference")
                 or (self.reference_family is None) != (self.reference_feature is None)
                 or (self.grant_type is None) != (self.reference_feature is None)
                 or (self.reference_provider_id is None) != (self.reference_feature is None)

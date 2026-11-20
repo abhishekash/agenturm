@@ -10,6 +10,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+from .plugin_batch_handlers import BatchHandlerRegistry, DEFAULT_BATCH_HANDLERS
 from .plugin_capture_modes import CaptureModeRegistry, DEFAULT_CAPTURE_MODES
 from .plugin_admission import (SourceLease, activate_source, commit_batch,
                                last_source_diagnostic, member_cursors)
@@ -19,7 +20,8 @@ from .plugin_projection import project_source
 from .plugin_reference_admission import (DEFAULT_REFERENCE_ADMISSIONS,
                                          ReferenceAdmissionRegistry,
                                          ReferenceSubmission)
-from .plugin_wire import CommandPollBatch, ContentPollBatch, PollBatch, ProtocolError
+from .plugin_wire import (CommandPollBatch, ContentPollBatch, PollBatch,
+                          ProtocolError, ReferencePollBatch)
 
 if TYPE_CHECKING:
     from .core import Store
@@ -38,13 +40,16 @@ class PluginSession:
                  capture_source: PluginSource | None = None,
                  capture_modes: CaptureModeRegistry = DEFAULT_CAPTURE_MODES,
                  reference_admissions: ReferenceAdmissionRegistry =
-                 DEFAULT_REFERENCE_ADMISSIONS):
+                 DEFAULT_REFERENCE_ADMISSIONS,
+                 batch_handlers: BatchHandlerRegistry = DEFAULT_BATCH_HANDLERS):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         if not isinstance(capture_modes, CaptureModeRegistry):
             raise TypeError("trusted capture mode registry required")
         if not isinstance(reference_admissions, ReferenceAdmissionRegistry):
             raise TypeError("trusted reference admission registry required")
+        if not isinstance(batch_handlers, BatchHandlerRegistry):
+            raise TypeError("trusted batch handler registry required")
         self.store = store
         self.capture_source = None
         self.capture_grant = None
@@ -70,12 +75,14 @@ class PluginSession:
                 raise ProtocolError("capture source differs from trusted process configuration")
         mode = capture_modes.select_session(source, required_features)
         reference_admissions.require_provider(mode.reference_provider_id)
+        batch_handlers.require_capture_feature(required_features, mode.reference_feature)
         if legacy_family is not None and mode.reference_family != legacy_family:
             raise ProtocolError("reference source differs from trusted capture mode")
         self.capture_source = source
         self.capture_mode = mode
         self.capture_modes = capture_modes
         self.reference_admissions = reference_admissions
+        self.batch_handlers = batch_handlers
         if mode.reference_family == "content":
             self.content_source = source
         elif mode.reference_family == "command":
@@ -85,7 +92,8 @@ class PluginSession:
                                      source_root=source_root, required_features=required_features,
                                      rust_host_executable=rust_host_executable,
                                      rust_host_sha256=rust_host_sha256,
-                                     content_refs_enabled=mode.reference_family == "content")
+                                     content_refs_enabled=mode.reference_family == "content",
+                                     batch_handlers=batch_handlers)
         self.lease: SourceLease | None = None
         self.cursor: str | None = None
         self.members: dict[str, str] | None = None
@@ -175,6 +183,13 @@ class PluginSession:
                     raise ProtocolError("command references differ from trusted capture mode")
                 return ReferenceSubmission(self.capture_mode.reference_provider_id,
                                            received.command_refs, self.capture_grant)
+            if isinstance(received, ReferencePollBatch):
+                if (self.capture_mode.reference_family != "reference"
+                        or received.reference_feature != self.capture_mode.reference_feature):
+                    raise ProtocolError("references differ from trusted capture mode")
+                if received.reference_refs:
+                    return ReferenceSubmission(self.capture_mode.reference_provider_id,
+                                               received.reference_refs, self.capture_grant)
             return None
         batch = self.process.poll_commit(expected, lambda received: commit_batch(
             self.store, self.lease, expected, received,

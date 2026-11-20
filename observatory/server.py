@@ -799,17 +799,21 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
           watch_jsonl=(), watch_service="agent-harness", retention_days=None, local_agents=True, metadata_only=False,
           managed_db=False, no_auth=False, allowed_hosts=(), collector_registry=None,
           plugin_config=None, rust_plugin_host=None, rust_plugin_host_sha256=None,
-          capture_modes=None, reference_admissions=None):
+          capture_modes=None, reference_admissions=None, batch_handlers=None):
+    from .plugin_batch_handlers import BatchHandlerRegistry, DEFAULT_BATCH_HANDLERS
     from .plugin_capture_modes import CaptureModeRegistry, DEFAULT_CAPTURE_MODES
     from .plugin_reference_admission import (DEFAULT_REFERENCE_ADMISSIONS,
                                              ReferenceAdmissionRegistry)
     capture_modes = DEFAULT_CAPTURE_MODES if capture_modes is None else capture_modes
     reference_admissions = (DEFAULT_REFERENCE_ADMISSIONS if reference_admissions is None
                             else reference_admissions)
+    batch_handlers = DEFAULT_BATCH_HANDLERS if batch_handlers is None else batch_handlers
     if not isinstance(capture_modes, CaptureModeRegistry):
         raise TypeError("trusted capture mode registry required")
     if not isinstance(reference_admissions, ReferenceAdmissionRegistry):
         raise TypeError("trusted reference admission registry required")
+    if not isinstance(batch_handlers, BatchHandlerRegistry):
+        raise TypeError("trusted batch handler registry required")
     if db_path is None:
         from .receiver_state import telemetry_path,prepare_state_directory
         prepare_state_directory();db_path=str(telemetry_path());managed_db=True
@@ -835,12 +839,17 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
         # disabling a trusted source if a configured child cannot be admitted.
         from .plugin_process import PluginProcess
         for source in plugin_sources:
+            mode = capture_modes.select_session(source, source.runtime_features)
+            reference_admissions.require_provider(mode.reference_provider_id)
+            batch_handlers.require_capture_feature(source.runtime_features,
+                                                   mode.reference_feature)
             child = PluginProcess(source.manifest, source_id=source.source_id,
                                   allowed_grants=source.allowed_grants, timeout=source.timeout,
                                   source_root=source.source_root,
                                   required_features=source.runtime_features,
                                   rust_host_executable=str(rust_plugin_host) if rust_plugin_host else None,
-                                  rust_host_sha256=rust_plugin_host_sha256)
+                                  rust_host_sha256=rust_plugin_host_sha256,
+                                  batch_handlers=batch_handlers)
             if source.replaces:
                 child.verify_artifact()
     replacements = tuple(name for source in plugin_sources for name in source.replaces)
@@ -880,7 +889,8 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
                 rust_host_executable=str(rust_plugin_host) if rust_plugin_host else None,
                 rust_host_sha256=rust_plugin_host_sha256,
                 capture_modes=capture_modes,
-                reference_admissions=reference_admissions).start()
+                reference_admissions=reference_admissions,
+                batch_handlers=batch_handlers).start()
         server.serve_forever()
     except KeyboardInterrupt:
         pass

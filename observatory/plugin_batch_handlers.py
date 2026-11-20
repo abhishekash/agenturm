@@ -12,12 +12,12 @@ from types import MappingProxyType
 
 from .plugin_manifest import FEATURE
 from .plugin_wire import (PollBatch, ProtocolError, validate_batch,
-                          validate_command_batch, validate_content_batch)
+                          validate_command_batch, validate_content_batch,
+                          validate_reference_batch)
 
 
 BatchValidator = Callable[[dict, str], PollBatch]
-_REFERENCE_FEATURE = re.compile(
-    r"[a-z][a-z0-9.-]*-(?:content|command)-ref/[1-9][0-9]*\Z")
+_REFERENCE_FEATURE = re.compile(r"[a-z][a-z0-9.-]*-ref/[1-9][0-9]*\Z")
 
 
 def _validate_ordinary(message: dict, source_id: str) -> PollBatch:
@@ -58,6 +58,18 @@ class BatchHandlerRegistry:
             raise ValueError("duplicate host batch handler")
         return BatchHandlerRegistry({**self._handlers, feature: validator})
 
+    def with_reference_handler(self, feature: str, validate_refs) -> BatchHandlerRegistry:
+        """Install one trusted reference family on the common bounded envelope."""
+        if (not isinstance(feature, str) or not _REFERENCE_FEATURE.fullmatch(feature)
+                or not callable(validate_refs)):
+            raise ValueError("invalid trusted reference batch handler")
+
+        def validate(message: dict, source_id: str) -> PollBatch:
+            return validate_reference_batch(message, source_id=source_id,
+                                            feature=feature, validate_refs=validate_refs)
+
+        return self.with_handler(feature, validate)
+
     def select(self, required_features: Iterable[str]) -> BatchValidator:
         features = frozenset(required_features)
         if any(not isinstance(feature, str) or not FEATURE.fullmatch(feature)
@@ -78,6 +90,14 @@ class BatchHandlerRegistry:
         """Return the one host-registered envelope feature, if selected."""
         self.select(required_features)
         return next((feature for feature in required_features if feature in self._handlers), None)
+
+    def require_capture_feature(self, required_features: Iterable[str],
+                                mode_feature: str | None) -> None:
+        """Bind a reference envelope to the host-selected capture mode."""
+        selected = self.selected_feature(required_features)
+        if (mode_feature is not None or selected is not None
+                and _REFERENCE_FEATURE.fullmatch(selected)) and selected != mode_feature:
+            raise ProtocolError("reference envelope differs from trusted capture mode")
 
 
 DEFAULT_BATCH_HANDLERS = BatchHandlerRegistry().with_handler(

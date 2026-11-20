@@ -7,6 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .plugin_batch_handlers import BatchHandlerRegistry, DEFAULT_BATCH_HANDLERS
 from .plugin_capture_modes import CaptureModeRegistry, DEFAULT_CAPTURE_MODES
 from .plugin_reference_admission import (DEFAULT_REFERENCE_ADMISSIONS,
                                          ReferenceAdmissionRegistry)
@@ -92,7 +93,8 @@ class PluginSupervisor:
                  rust_host_sha256: str | None = None,
                  capture_modes: CaptureModeRegistry = DEFAULT_CAPTURE_MODES,
                  reference_admissions: ReferenceAdmissionRegistry =
-                 DEFAULT_REFERENCE_ADMISSIONS):
+                 DEFAULT_REFERENCE_ADMISSIONS,
+                 batch_handlers: BatchHandlerRegistry = DEFAULT_BATCH_HANDLERS):
         sources = tuple(sources)
         if len(sources) > MAX_PROCESSES or len({item.source_id for item in sources}) != len(sources):
             raise ValueError("duplicate or excessive plugin sources")
@@ -104,6 +106,8 @@ class PluginSupervisor:
             raise TypeError("trusted capture mode registry required")
         if not isinstance(reference_admissions, ReferenceAdmissionRegistry):
             raise TypeError("trusted reference admission registry required")
+        if not isinstance(batch_handlers, BatchHandlerRegistry):
+            raise TypeError("trusted batch handler registry required")
         for source in sources:
             if not isinstance(source, PluginSource) or not isinstance(source.manifest, PluginManifest):
                 raise TypeError("plugin source requires a manifest")
@@ -116,6 +120,7 @@ class PluginSupervisor:
                           required_features=source.runtime_features,
                           capture_source=source, capture_modes=capture_modes,
                           reference_admissions=reference_admissions,
+                          batch_handlers=batch_handlers,
                           rust_host_executable=rust_host_executable,
                           rust_host_sha256=rust_host_sha256)
         self.store = store
@@ -126,6 +131,7 @@ class PluginSupervisor:
         self.rust_host_sha256 = rust_host_sha256
         self.capture_modes = capture_modes
         self.reference_admissions = reference_admissions
+        self.batch_handlers = batch_handlers
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.threads: list[threading.Thread] = []
@@ -171,6 +177,7 @@ class PluginSupervisor:
                                     required_features=source.runtime_features,
                                     capture_source=source, capture_modes=self.capture_modes,
                                     reference_admissions=self.reference_admissions,
+                                    batch_handlers=self.batch_handlers,
                                     rust_host_executable=self.rust_host_executable,
                                     rust_host_sha256=self.rust_host_sha256)
             try:
