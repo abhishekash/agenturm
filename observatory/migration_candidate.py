@@ -61,8 +61,14 @@ def _identity(info: os.stat_result) -> tuple[int, ...]:
 
 def _digest_fd(fd: int) -> str:
     hasher = hashlib.sha256()
+    size = os.fstat(fd).st_size
+    if size > _MAX_BACKUP_BYTES:
+        raise CandidateError("source exceeds byte limit")
     offset = 0
-    while block := os.pread(fd, 1024 * 1024, offset):
+    while offset < size:
+        block = os.pread(fd, min(1024 * 1024, size - offset), offset)
+        if not block:
+            raise CandidateError("source shortened during digest")
         hasher.update(block)
         offset += len(block)
     return hasher.hexdigest()
@@ -114,8 +120,14 @@ def _stopped_source(path: Path) -> Iterator[dict[str, int]]:
 def _copy_fd(fd: int, destination: Path) -> None:
     copied = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
     try:
+        size = os.fstat(fd).st_size
+        if size > _MAX_BACKUP_BYTES:
+            raise CandidateError("source exceeds byte limit")
         offset = 0
-        while block := os.pread(fd, 1024 * 1024, offset):
+        while offset < size:
+            block = os.pread(fd, min(1024 * 1024, size - offset), offset)
+            if not block:
+                raise CandidateError("source shortened during copy")
             view = memoryview(block)
             while view:
                 view = view[os.write(copied, view):]
@@ -282,8 +294,27 @@ def prepare_candidate(*, telemetry: os.PathLike[str] | str,
     verified_state = dict(format="migration_candidate_preparation_v1", state="verified",
                           manifest_sha256=_digest(manifest_path))
     _write_private(next_state, (json.dumps(verified_state, separators=(",", ":")) + "\n").encode())
-    os.replace(next_state, state)
-    _sync_directory(destination)
+    try:
+        os.replace(next_state, state)
+        _sync_directory(destination)
+    except BaseException as publish_error:
+        # An error after replace must not leave a misleading verified marker.
+        # If recovery fails too, remove the marker; no marker means incomplete.
+        try:
+            recovery = destination / ".incomplete-state.tmp"
+            _write_private(recovery,
+                           b'{"format":"migration_candidate_preparation_v1","state":"incomplete"}\n')
+            os.replace(recovery, state)
+            _sync_directory(destination)
+        except BaseException:
+            try:
+                state.unlink(missing_ok=True)
+                _sync_directory(destination)
+            except BaseException as recovery_error:
+                raise CandidateError(
+                    "candidate publish failed; incomplete state could not be made durable; "
+                    f"quarantine {destination} manually") from recovery_error
+        raise CandidateError("candidate publish failed; output remains incomplete") from publish_error
     return manifest_path
 
 
