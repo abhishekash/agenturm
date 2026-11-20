@@ -25,12 +25,20 @@ mod linux {
     const SOCKET_NAME: &str = "agenturm-storage-v1.sock";
     const LOCK_NAME: &str = ".agenturm-storage-v1.lock";
     const SCRATCH_NAME: &str = "scratch.db";
+    const CLONE_NAME: &str = "telemetry-clone.db";
     const SCRATCH_FILES: &[&str] = &[
         SCRATCH_NAME,
         ".scratch.db.agenturm-writer.lock",
         "scratch.db-journal",
         "scratch.db-wal",
         "scratch.db-shm",
+    ];
+    const CLONE_FILES: &[&str] = &[
+        CLONE_NAME,
+        ".telemetry-clone.db.agenturm-writer.lock",
+        "telemetry-clone.db-journal",
+        "telemetry-clone.db-wal",
+        "telemetry-clone.db-shm",
     ];
     static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -52,12 +60,14 @@ mod linux {
         pub client_gid: u32,
         pub max_connections: Option<usize>,
         pub experimental_v2_scratch: bool,
+        pub experimental_real_clone_activation: bool,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum RootKind {
         DataProbe,
         DataScratch,
+        DataClone,
         Transport,
     }
 
@@ -164,8 +174,13 @@ mod linux {
         fn capture(path: &Path, kind: RootKind, client_gid: u32) -> io::Result<Self> {
             let metadata = direct_directory(path)?;
             Self::check(&metadata, path, kind, client_gid)?;
-            let scratch_identity = if kind == RootKind::DataScratch {
-                let scratch = fs::symlink_metadata(path.join(SCRATCH_NAME))?;
+            let scratch_identity = if matches!(kind, RootKind::DataScratch | RootKind::DataClone) {
+                let name = if kind == RootKind::DataClone {
+                    CLONE_NAME
+                } else {
+                    SCRATCH_NAME
+                };
+                let scratch = fs::symlink_metadata(path.join(name))?;
                 Some((scratch.dev(), scratch.ino()))
             } else {
                 None
@@ -189,7 +204,7 @@ mod linux {
                 return Err(denied("service root is not owned by service UID"));
             }
             match kind {
-                RootKind::DataProbe | RootKind::DataScratch => {
+                RootKind::DataProbe | RootKind::DataScratch | RootKind::DataClone => {
                     if metadata.mode() & 0o7777 != 0o700 {
                         return Err(denied("data root must be private 0700"));
                     }
@@ -200,10 +215,12 @@ mod linux {
                             return Err(denied("probe data root must be empty"));
                         }
                         let name = entry.file_name();
-                        if !SCRATCH_FILES
-                            .iter()
-                            .any(|allowed| name == OsStr::new(allowed))
-                        {
+                        let allowed = if kind == RootKind::DataClone {
+                            CLONE_FILES
+                        } else {
+                            SCRATCH_FILES
+                        };
+                        if !allowed.iter().any(|allowed| name == OsStr::new(allowed)) {
                             return Err(denied("scratch data root has an unexpected entry"));
                         }
                         let file = fs::symlink_metadata(entry.path())?;
@@ -214,9 +231,14 @@ mod linux {
                         {
                             return Err(denied("scratch file ownership or mode changed"));
                         }
-                        saw_scratch |= name == OsStr::new(SCRATCH_NAME);
+                        saw_scratch |= name
+                            == OsStr::new(if kind == RootKind::DataClone {
+                                CLONE_NAME
+                            } else {
+                                SCRATCH_NAME
+                            });
                     }
-                    if kind == RootKind::DataScratch && !saw_scratch {
+                    if matches!(kind, RootKind::DataScratch | RootKind::DataClone) && !saw_scratch {
                         return Err(denied("scratch database is missing"));
                     }
                 }
@@ -238,7 +260,12 @@ mod linux {
             }
             Self::check(&metadata, &self.path, self.kind, self.client_gid)?;
             if let Some(expected) = self.scratch_identity {
-                let current = fs::symlink_metadata(self.path.join(SCRATCH_NAME))?;
+                let name = if self.kind == RootKind::DataClone {
+                    CLONE_NAME
+                } else {
+                    SCRATCH_NAME
+                };
+                let current = fs::symlink_metadata(self.path.join(name))?;
                 if (current.dev(), current.ino()) != expected {
                     return Err(denied("scratch database identity changed"));
                 }
@@ -358,7 +385,10 @@ mod linux {
             ProbeTopic::Protocol,
         )
         .is_ok();
-        if !valid_receiver || config.max_connections == Some(0) {
+        if !valid_receiver
+            || config.max_connections == Some(0)
+            || (config.experimental_v2_scratch && config.experimental_real_clone_activation)
+        {
             return Err(denied("invalid service receiver or connection bound"));
         }
         let policy = PeerPolicy::for_current_service(config.client_uid, config.client_gid)
@@ -369,6 +399,8 @@ mod linux {
             &config.data_root,
             if config.experimental_v2_scratch {
                 RootKind::DataScratch
+            } else if config.experimental_real_clone_activation {
+                RootKind::DataClone
             } else {
                 RootKind::DataProbe
             },
@@ -388,8 +420,8 @@ mod linux {
     pub fn run(config: &ServiceConfig) -> io::Result<()> {
         STOP.store(false, Ordering::Relaxed);
         let (data, transport, policy) = validate(config)?;
-        let _private_mask = config
-            .experimental_v2_scratch
+        let _private_mask = (config.experimental_v2_scratch
+            || config.experimental_real_clone_activation)
             .then(UmaskGuard::private_files);
         let instance = InstanceGuard::acquire(transport.clone())?;
         if config.experimental_v2_scratch {
@@ -397,6 +429,12 @@ mod linux {
             // Never inspect the marker until this service owns the lock.
             agenturm_storage_admission::require_marked_scratch_path(&data.path.join(SCRATCH_NAME))
                 .map_err(|_| denied("scratch database marker is unavailable"))?;
+            data.verify()?;
+        } else if config.experimental_real_clone_activation {
+            agenturm_storage_admission::require_marked_activation_clone_path(
+                &data.path.join(CLONE_NAME),
+            )
+            .map_err(|_| denied("real-schema activation clone marker unavailable"))?;
             data.verify()?;
         }
         let socket_path = transport.path.join(SOCKET_NAME);
@@ -463,6 +501,21 @@ mod linux {
                     if let Ok(reply) =
                         agenturm_storage_admission::apply_v2_json(&scratch, request.frame())
                     {
+                        data.verify()?;
+                        instance.verify()?;
+                        socket.verify()?;
+                        let _ = send_v2_reply(&mut stream, &request, &reply);
+                    }
+                }
+            } else if config.experimental_real_clone_activation {
+                if let Ok(request) =
+                    read_authorized_v2_request(&mut stream, policy, &config.receiver_id)
+                {
+                    let clone = data.path.join(CLONE_NAME);
+                    if let Ok(reply) = agenturm_storage_admission::apply_activation_clone_v2_json(
+                        &clone,
+                        request.frame(),
+                    ) {
                         data.verify()?;
                         instance.verify()?;
                         socket.verify()?;
@@ -544,6 +597,33 @@ mod linux {
             fs::remove_file(&scratch).unwrap();
             fs::remove_file(&archived).unwrap();
             fs::remove_dir(&base).unwrap();
+        }
+
+        #[test]
+        fn real_clone_root_rejects_same_bytes_at_replaced_inode() {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "agenturm-real-clone-root-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir(&root).unwrap();
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+            let clone = root.join(CLONE_NAME);
+            fs::write(&clone, b"detached candidate").unwrap();
+            fs::set_permissions(&clone, fs::Permissions::from_mode(0o600)).unwrap();
+            let proof = RootProof::capture(&root, RootKind::DataClone, 42).unwrap();
+            proof.verify().unwrap();
+            let old = root.with_extension("old");
+            fs::rename(&clone, &old).unwrap();
+            fs::write(&clone, b"detached candidate").unwrap();
+            fs::set_permissions(&clone, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(proof.verify().is_err());
+            fs::remove_file(clone).unwrap();
+            fs::remove_file(old).unwrap();
+            fs::remove_dir(root).unwrap();
         }
     }
 }

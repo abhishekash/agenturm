@@ -27,6 +27,7 @@ const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 48;
 const MAX_SOURCE_RECORDS: i64 = 50_000;
 const SCRATCH_MARKER: &str = "storage_admission_scratch_v1";
+const CLONE_MARKER: &str = "storage_activation_clone_v1";
 const V2_RECEIPT_TABLES: &[&str] = &[
     "storage_admission_request_v2",
     "storage_source_revoke_v2",
@@ -783,6 +784,45 @@ pub fn require_marked_scratch_path(path: &Path) -> Result<()> {
     require_scratch(&read)
 }
 
+/// Only a detached, explicitly marked real Store clone may enter this route.
+/// The service supplies the path; untrusted v2 frames contain no path.
+pub fn require_marked_activation_clone_path(path: &Path) -> Result<()> {
+    if !path.is_absolute() || !fs::symlink_metadata(path)?.file_type().is_file() {
+        return Err(reject("activation clone must be an existing regular file"));
+    }
+    let read = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let marker: Option<String> = read
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key=?",
+            [CLONE_MARKER],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let authority: Option<String> = read
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key='storage_authority_v1'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let schema: Option<String> = read
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key='plugin_sessions_read_schema'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if marker.as_deref() != Some("enabled")
+        || authority.as_deref() != Some("python-v1")
+        || schema.as_deref() != Some("1")
+    {
+        return Err(reject(
+            "activation clone marker or real Store schema is unavailable",
+        ));
+    }
+    Ok(())
+}
+
 fn with_marked_scratch<T>(
     path: &Path,
     apply: impl FnOnce(&mut Connection, &WriterLease) -> Result<T>,
@@ -806,6 +846,52 @@ fn with_marked_scratch<T>(
     Ok(result)
 }
 
+fn with_marked_activation_clone<T>(
+    path: &Path,
+    apply: impl FnOnce(&mut Connection, &WriterLease) -> Result<T>,
+) -> Result<T> {
+    require_marked_activation_clone_path(path)?;
+    let lease = WriterLease::acquire(path)?;
+    lease.verify_admission()?;
+    let mut db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    require_marked_activation_clone_path(path)?;
+    let result = apply(&mut db, &lease)?;
+    drop(db);
+    drop(lease);
+    Ok(result)
+}
+
+/// Mutate only ActivateSource on a detached real-schema clone. No production caller.
+pub fn apply_activation_clone_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
+    let request = v2::Request::from_json(input)?;
+    if !matches!(&request.operation, v2::Operation::ActivateSource { .. }) {
+        return Err(reject("activation clone accepts only ActivateSource"));
+    }
+    let replay = request.replay_identity()?;
+    let receipt = with_marked_activation_clone(path, |db, lease| {
+        activate_source_guarded(db, &request, Some(lease), &replay, true)
+    })?;
+    let disposition = match receipt.disposition {
+        "committed" => v2::Disposition::Committed,
+        "replay" => v2::Disposition::Replay,
+        _ => return Err(reject("unexpected activation clone disposition")),
+    };
+    v2::Reply {
+        version: v2::VERSION,
+        request_id: request.request_id.clone(),
+        receiver_id: request.receiver_id.clone(),
+        request_digest: replay.digest,
+        result: v2::OperationResult::SourceActivated(v2::SourceActivatedResult {
+            disposition,
+            lease: receipt.lease,
+            cursor: receipt.cursor,
+            dirty_seq: receipt.dirty_seq,
+        }),
+    }
+    .to_json(&request)
+    .map_err(Into::into)
+}
+
 /// Apply a strict v2 lifecycle request to an explicit disposable scratch path.
 /// The path is a CLI/library argument, never accepted from the untrusted v2
 /// frame. No service listener, receiver, or production Store calls this API.
@@ -815,7 +901,7 @@ pub fn apply_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
     let result = match &request.operation {
         v2::Operation::ActivateSource { .. } => {
             let receipt = with_marked_scratch(path, |db, writer_lease| {
-                activate_source_guarded(db, &request, Some(writer_lease), &replay)
+                activate_source_guarded(db, &request, Some(writer_lease), &replay, false)
             })?;
             let disposition = match receipt.disposition {
                 "committed" => v2::Disposition::Committed,
@@ -951,6 +1037,7 @@ fn activate_source_guarded(
     request: &v2::Request,
     writer_lease: Option<&WriterLease>,
     replay: &v2::ReplayIdentity,
+    real_clone: bool,
 ) -> Result<SourceActivationReceipt> {
     let v2::Operation::ActivateSource {
         plugin_id,
@@ -964,7 +1051,37 @@ fn activate_source_guarded(
     if let Some(writer_lease) = writer_lease {
         writer_lease.verify_admission()?;
     }
-    require_scratch(&transaction)?;
+    if real_clone {
+        let marker: Option<String> = transaction
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key=?",
+                [CLONE_MARKER],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let authority: Option<String> = transaction
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key='storage_authority_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let schema: Option<String> = transaction
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key='plugin_sessions_read_schema'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if marker.as_deref() != Some("enabled")
+            || authority.as_deref() != Some("python-v1")
+            || schema.as_deref() != Some("1")
+        {
+            return Err(reject("activation clone marker changed"));
+        }
+    } else {
+        require_scratch(&transaction)?;
+    }
     let receiver: String = transaction.query_row(
         "SELECT value FROM schema_meta WHERE key='receiver_id'",
         [],
@@ -2463,7 +2580,7 @@ mod tests {
 
     fn activate(db: &mut Connection, request: &v2::Request) -> Result<SourceActivationReceipt> {
         let replay = request.replay_identity()?;
-        activate_source_guarded(db, request, None, &replay)
+        activate_source_guarded(db, request, None, &replay, false)
     }
 
     fn capture_request(
