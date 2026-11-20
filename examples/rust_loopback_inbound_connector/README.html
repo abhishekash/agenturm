@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rust loopback inbound connector fixture</title>
+<style>
+:root{color-scheme:light dark;font:16px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f7f8fa;color:#1d2530}
+body{margin:0;padding:clamp(1rem,4vw,3rem)}main{max-width:54rem;margin:auto;background:#fff;border:1px solid #dce1e7;border-radius:14px;padding:clamp(1.25rem,4vw,3rem)}
+h1{font-size:clamp(1.7rem,4vw,2.3rem);line-height:1.2}h2{font-size:1.15rem;margin:2rem 0 .5rem}p,li{max-width:75ch}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf0f4;padding:1rem;border-radius:8px}code{overflow-wrap:anywhere}
+@media(prefers-color-scheme:dark){:root{background:#121821;color:#e7ebf0}main{background:#1b2430;border-color:#344152}pre{background:#303c4c}}
+</style></head><body><main>
+<h1>Rust loopback inbound connector fixture</h1>
+<p>This separately built, opt-in Rust connector reads metadata-only pages from one configured loopback HTTP endpoint. It reuses <code>connector-adapter/1</code> and <code>source-adapter/1</code> with the generic plugin supervisor. The child never opens the receiver Store: the host owns admission, capture lease, durable cursor, commit-before-ACK, replay and projection.</p>
+<h2>Build and explicitly install</h2>
+<pre><code>cargo build --locked --release --bin agenturm-loopback-inbound-connector
+python examples/rust_loopback_inbound_connector/install.py \
+  --binary "$PWD/target/release/agenturm-loopback-inbound-connector" \
+  --destination /absolute/private/inbound-plugin \
+  --endpoint http://127.0.0.1:8123/events \
+  --source-id rust-loopback-source
+agenturm serve --plugin-config /absolute/private/inbound-plugin/plugins.toml</code></pre>
+<p>The installer copies an already-built executable, pins its copied bytes, and writes an endpoint file and explicit plugin config. It never compiles, launches or activates the connector. Agenturm does not enable this example by default.</p>
+<p>The endpoint is illustrative. A compatible local HTTP service must already be listening there; this example does not launch one.</p>
+<h2>Scope and limits</h2>
+<p>Only the literal URL shape <code>http://127.0.0.1:&lt;port&gt;/events</code> is accepted. The adapter opens a direct loopback TCP connection; it does not consult proxy settings, follow redirects, send credentials or perform writes. It reads at most 1 MiB per HTTP body, 256 records per poll, 16 KiB per projected record, and the shared 4 MiB process frame limit. Remote pages reject duplicate and unknown fields and allow at most 8,192 structural tokens. Lifecycle and usage metadata are accepted; private content and arbitrary text fail before Store admission. Grants are admission declarations, not an OS network sandbox; the process runs with the user's OS permissions.</p>
+<p>A <code>429</code> creates an idle batch with the same cursor and bounded in-process retry delay. A <code>410</code> for a nonfresh cursor yields one durable <code>cursor_expired</code> gap diagnostic. The host ACKs only after its Store transaction succeeds, so restart resumes at the committed cursor. Capture revocation fences the active lease and removes this source's admitted projection through the existing host path.</p>
+<p>This is a connector capability proof, not a credentialed external connector, stable SDK/ABI or performance claim. Do not put credentials in the endpoint or source config.</p>
+</main></body></html>

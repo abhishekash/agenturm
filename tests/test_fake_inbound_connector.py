@@ -1,5 +1,6 @@
 """A separately installed fake inbound connector through the real process/Store path."""
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,7 @@ from examples.fake_inbound_connector.agenturm_fake_inbound import cursor_parts
 
 
 PACKAGE = Path(__file__).resolve().parents[1] / "examples" / "fake_inbound_connector"
+RUST_PACKAGE = Path(__file__).resolve().parents[1] / "examples" / "rust_loopback_inbound_connector"
 
 
 def lifecycle(event, session, stamp, state, revision=0):
@@ -36,7 +38,9 @@ class FixtureState:
         self.revision = "r1"
         self.pages = []
         self.throttle = 0
+        self.retry_after = "1"
         self.redirect = False
+        self.response_mode = "normal"
         self.requests = []
 
 
@@ -54,7 +58,7 @@ class FixtureHTTP(BaseHTTPRequestHandler):
             if self.state.throttle:
                 self.state.throttle -= 1
                 self.send_response(429)
-                self.send_header("Retry-After", "1")
+                self.send_header("Retry-After", self.state.retry_after)
                 self.end_headers()
                 return
             if self.state.redirect:
@@ -64,6 +68,7 @@ class FixtureHTTP(BaseHTTPRequestHandler):
                 return
             revision = self.state.revision
             pages = list(self.state.pages)
+            response_mode = self.state.response_mode
         if token and not token.startswith(revision + ":"):
             self.send_response(410)
             self.end_headers()
@@ -80,9 +85,21 @@ class FixtureHTTP(BaseHTTPRequestHandler):
         next_token = f"{revision}:{index + 1}" if records else token
         payload = json.dumps({"records": records, "next": next_token},
                              separators=(",", ":")).encode()
+        if response_mode == "overlong-body":
+            payload = b" " * (1024 * 1024 + 1)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
+        if response_mode == "wrong-length":
+            self.send_header("Content-Length", str(len(payload) + 1))
+        elif response_mode == "duplicate-length":
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Length", str(len(payload)))
+        else:
+            self.send_header("Content-Length", str(len(payload)))
+        if response_mode == "chunked":
+            self.send_header("Transfer-Encoding", "chunked")
+        if response_mode == "overlong-headers":
+            self.send_header("X-Fill", "x" * (16 * 1024 + 1))
         self.end_headers()
         self.wfile.write(payload)
 
@@ -105,9 +122,15 @@ class FakeInboundConnectorTests(unittest.TestCase):
         self.addCleanup(self.server.shutdown)
         self.endpoint = f"http://127.0.0.1:{self.server.server_port}/events"
         installed = self.root / "installed"
-        result = subprocess.run([sys.executable, str(PACKAGE / "install.py"),
-                                 "--destination", str(installed), "--endpoint", self.endpoint],
-                                capture_output=True, text=True, check=True)
+        rust_binary = os.environ.get("AGENTURM_RUST_LOOPBACK_INBOUND_BIN")
+        if rust_binary:
+            command = [sys.executable, str(RUST_PACKAGE / "install.py"),
+                       "--binary", rust_binary, "--destination", str(installed),
+                       "--endpoint", self.endpoint, "--source-id", "fake-inbound-source"]
+        else:
+            command = [sys.executable, str(PACKAGE / "install.py"),
+                       "--destination", str(installed), "--endpoint", self.endpoint]
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
         self.config = Path(result.stdout.strip())
         self.store = Store(str(self.root / "store.db"))
         self.addCleanup(self.store.close)
@@ -162,6 +185,21 @@ class FakeInboundConnectorTests(unittest.TestCase):
                          ("completed", {"input_tokens": 6}))
         with self.store._connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 3)
+
+    def test_429_retry_after_is_clamped_and_does_not_advance_cursor(self):
+        with self.state.lock:
+            self.state.pages = [[lifecycle("after-limit", "session", 100, "running")]]
+            self.state.throttle = 1
+            self.state.retry_after = "999"
+        with self.session() as connector:
+            start = connector.cursor
+            limited = connector.poll_once()
+            self.assertEqual((limited.cursor, limited.records), (start, ()))
+            with self.state.lock:
+                count = len(self.state.requests)
+            self.assertEqual(connector.poll_once().records, ())
+            with self.state.lock:
+                self.assertEqual(len(self.state.requests), count)
 
     def test_commit_before_ack_restart_uses_durable_cursor_without_duplicate(self):
         with self.state.lock:
@@ -232,9 +270,33 @@ class FakeInboundConnectorTests(unittest.TestCase):
         with self.store._connect() as db:
             self.assertEqual(db.execute("SELECT cursor FROM plugin_source_cursor_v1").fetchone()[0], "")
 
+    def test_bad_http_framing_and_limits_roll_back_cursor_for_rust_child(self):
+        if not os.environ.get("AGENTURM_RUST_LOOPBACK_INBOUND_BIN"):
+            self.skipTest("Rust connector binary is not configured")
+        for mode in ("wrong-length", "duplicate-length", "chunked",
+                     "overlong-headers", "overlong-body"):
+            with self.subTest(mode=mode):
+                with self.state.lock:
+                    self.state.response_mode = mode
+                    self.state.pages = [[lifecycle("framing", "session", 100, "running")]]
+                with self.session() as connector:
+                    with self.assertRaises(ProtocolError):
+                        connector.poll_once()
+                with self.store._connect() as db:
+                    self.assertEqual(db.execute(
+                        "SELECT cursor FROM plugin_source_cursor_v1").fetchone()[0], "")
+                    self.assertEqual(db.execute(
+                        "SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 0)
+                with self.state.lock:
+                    self.state.response_mode = "normal"
+
     def test_installed_connector_reaches_receiver_without_kernel_registration(self):
-        self.assertEqual(read_plugin_config(self.config)[0].required_features,
-                         ("connector-adapter/1",))
+        source = read_plugin_config(self.config)[0]
+        self.assertEqual(source.required_features, ("connector-adapter/1",))
+        self.assertTrue({"source-adapter/1", "configured-root/1", "connector.inbound/1",
+                         "connector-adapter/1"} <= set(source.manifest.provides))
+        self.assertTrue({"configured-source-read", "loopback-http-read"} <=
+                        set(source.allowed_grants))
         with self.state.lock:
             self.state.pages = [[lifecycle("served", "external", 100, "completed")]]
         import socket
