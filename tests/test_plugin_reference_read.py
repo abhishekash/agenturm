@@ -70,6 +70,12 @@ class ReferenceReadTests(unittest.TestCase):
                           result.policy_epoch, result.dirty_seq),
                          ('source:a', 'receiver:a', 5, 2, 9))
 
+    def test_provider_runtime_error_fails_closed(self):
+        def broken(_store, _event_id):
+            raise RuntimeError('synthetic provider failure')
+        registry = ReferenceReadRegistry((ReferenceReadProvider('trusted-private', broken),))
+        self.assertIsNone(registry.read_exact(self.store, 'trusted-private', EVENT_A))
+
     def test_unknown_provider_cross_source_and_cross_receiver_fail_closed(self):
         registry = ReferenceReadRegistry((self.provider(),))
         self.assertIsNone(registry.read_exact(self.store, 'missing-provider', EVENT_A))

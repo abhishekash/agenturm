@@ -12,12 +12,12 @@ The existing Pi user-text and requested-command readers remain the providers for
 
 Only trusted receiver composition may install a read provider or a UI preview declaration. An untrusted child, TOML file, manifest, or arbitrary plugin cannot register a reader or choose its proof implementation. A future reader must provide its own trusted proof and redaction logic, be durably granted for an exact source, and preserve these revision and revocation checks. This does not mean arbitrary plugins can read private content.
 
-The synthetic provider tests use only fixed synthetic text. They exercise exact owner/source/receiver binding, unknown provider rejection, revocation during a read, stale projection, and output bounds. Existing Pi route tests cover legacy status behavior (400 malformed query, 403 nonlocal access, 404 unavailable or revoked content, 409 mid-read change, 503 unavailable revision), no-store delivery, and response cancellation. UI tests cover the transient preview lifecycle and expiry.
+The synthetic provider tests use only fixed synthetic text. They exercise exact owner/source/receiver binding, unknown provider rejection, provider `RuntimeError` isolation, revocation during a read, stale projection, and output bounds. Existing Pi route tests cover legacy status behavior (400 malformed query, 403 nonlocal access, 404 unavailable or revoked content, 409 mid-read change, 503 unavailable revision), no-store delivery, and response cancellation. UI tests cover the transient preview lifecycle and expiry.
 
 ## Verification
 
 - Broad plugin-family suite after rebase: **247 tests passed** (`uv run python -m unittest discover -s tests -p 'test_plugin_*.py'`).
-- Backend and HTTP route subset after rebase: **23 tests passed** (`test_plugin_reference_read`, `PluginContentDeliveryTests`, and `PiCommandHTTPDeliveryTests`).
+- Backend and HTTP route subset after the provider exception fix: **24 tests passed** (`test_plugin_reference_read`, `PluginContentDeliveryTests`, and `PiCommandHTTPDeliveryTests`).
 - Combined registry, route, UI preview, and Pi read-proof suite before rebase: **78 tests passed**. It was rerun after rebase for the backend and route subset above.
 
 No performance claim or production cutover is made.

@@ -148,6 +148,27 @@ class PluginContentDeliveryTests(unittest.TestCase):
                              urlencode({'provider_id': 'unknown', 'event_id': self.event_id}))[0], 404)
         self.assertEqual(get('/api/plugin-reference-content?' + query + '&extra=1')[0], 400)
 
+        def broken_reader(_store, _event_id):
+            raise RuntimeError('synthetic provider failure')
+
+        broken_registry = ReferenceReadRegistry((ReferenceReadProvider(
+            provider_id, broken_reader),))
+        broken_handler = handler_for(self.store, 'secret', quiet=True,
+                                     reference_readers=broken_registry)
+        self.addCleanup(broken_handler.response_cache.close)
+        broken_server = BoundedHTTPServer(('127.0.0.1', 0), broken_handler)
+        broken_thread = threading.Thread(target=broken_server.serve_forever, daemon=True)
+        broken_thread.start()
+        self.addCleanup(broken_server.server_close)
+        self.addCleanup(broken_server.shutdown)
+        broken_request = Request(f'http://127.0.0.1:{broken_server.server_port}'
+                                 '/api/plugin-reference-content?' + query,
+                                 headers={'Authorization': 'Bearer secret'})
+        with self.assertRaises(HTTPError) as broken_error:
+            urlopen(broken_request, timeout=5)
+        self.assertEqual(broken_error.exception.code, 404)
+        self.assertNotIn('Synthetic', broken_error.exception.read().decode())
+
         def revoke_after_select(store, event_id):
             result = synthetic(store, event_id)
             with store._write_db() as db:

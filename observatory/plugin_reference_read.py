@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import MappingProxyType
 import re
-import sqlite3
 from typing import Callable
 
 from .plugin_activity import _EVENT_KEY
@@ -102,8 +101,9 @@ class ReferenceReadRegistry:
                     or safe_text(result.text) != result.text or type(result.clipped) is not bool):
                 return None
             return result
-        except (sqlite3.Error, OSError, ValueError, TypeError, AttributeError,
-                KeyError, IndexError, UnicodeError, OverflowError, RecursionError):
+        except Exception:
+            # A trusted provider is still an extension boundary: an ordinary
+            # implementation error must not escape into the HTTP handler.
             return None
 
 
