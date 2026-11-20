@@ -307,6 +307,30 @@ class FakeOutboundTests(unittest.TestCase):
         with self.queue.dispatch_handoff_guard(1) as guard:
             guard.verify()
 
+    def test_handoff_guard_does_not_adopt_database_swapped_during_lock_open(self):
+        database = Path(self.store.path)
+        archived = self.root / "original-agenturm.db"
+        replacement = self.root / "replacement-agenturm.db"
+        replacement.write_bytes(b"disposable replacement inode")
+        replacement.chmod(0o600)
+        real_open = os.open
+
+        def open_then_swap(path, flags, mode=0o777):
+            descriptor = real_open(path, flags, mode)
+            database.rename(archived)
+            replacement.rename(database)
+            return descriptor
+
+        try:
+            with patch('observatory.outbound_delivery.os.open', side_effect=open_then_swap):
+                with self.assertRaisesRegex(ProtocolError, "database path changed"):
+                    with self.queue.dispatch_handoff_guard(1):
+                        self.fail("handoff adopted a replacement database")
+        finally:
+            if archived.exists():
+                database.unlink()
+                archived.rename(database)
+
     def test_crashed_lock_owner_releases_guard_for_recovery(self):
         self.queue.enqueue("crashed-owner", "fake-sink", ACTION, 18, now_ns=100)
         with self.store._source_write(), self.store._connect() as db:

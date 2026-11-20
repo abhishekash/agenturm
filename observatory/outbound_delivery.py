@@ -324,13 +324,13 @@ class _DispatchLock:
     """Opened lock identity that must still name the held inode."""
 
     def __init__(self, path: Path, descriptor: int, database: Path | None,
-                 parent_identity: tuple[int, int] | None):
+                 parent_identity: tuple[int, int] | None,
+                 database_identity: tuple[int, int] | None):
         self.path = path
         self.descriptor = descriptor
         self.identity = self._identity(os.fstat(descriptor))
         self.database = database
-        self.database_identity = (self._identity(database.lstat())
-                                  if database is not None else None)
+        self.database_identity = database_identity
         self.parent_identity = parent_identity
 
     @staticmethod
@@ -472,7 +472,8 @@ class OutboundQueue:
         if type(timeout) not in (int, float) or not 0 <= timeout <= 60:
             raise ValueError("outbound dispatch lock requires a 0–60 second timeout")
         database = Path(self.store.path)
-        parent_identity = _handoff_path_proof(database)[0] if handoff else None
+        parent_identity, database_identity = (
+            _handoff_path_proof(database) if handoff else (None, None))
         path = Path(self.store.path + ".outbound-dispatch.lock")
         try:
             descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -481,7 +482,8 @@ class OutboundQueue:
             raise ProtocolError("outbound dispatch lock cannot be opened safely") from exc
         try:
             guard = _DispatchLock(path, descriptor,
-                                  database if handoff else None, parent_identity)
+                                  database if handoff else None,
+                                  parent_identity, database_identity)
             guard.verify()
             deadline = time.monotonic() + timeout
             while True:
