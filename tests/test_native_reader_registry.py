@@ -61,9 +61,12 @@ class RegistryTests(unittest.TestCase):
                 reader = FixtureReader()
                 spec = NativeReaderSpec("fixture", lambda _store, _capture: reader,
                                         mcp_client="Fixture", label="Fixture harness",
-                                        coverage=lambda _reader: {"omitted": 2, "limit": 10})
+                                        coverage=lambda _reader: {"omitted": 2, "limit": 10},
+                                        status_extension=lambda _reader, diagnostics: {
+                                            "fixture_polls": diagnostics["polls"]},
+                                        status_keys=("fixture_polls",))
                 monitor = LocalAgents(store, source_specs=(), reader_specs=(spec,))
-                self.assertIsNone(monitor.opencode)
+                self.assertNotIn("opencode", monitor.reader_plugins)
                 monitor.discover = lambda: None
                 original_poll = reader.poll
                 def poll_once():
@@ -76,6 +79,7 @@ class RegistryTests(unittest.TestCase):
                 result = monitor.status()
                 self.assertEqual(reader.servers, ("fixture-mcp",))
                 self.assertEqual(result["reader_plugins"]["fixture"], {"polls": 1})
+                self.assertEqual(result["fixture_polls"], 1)
                 self.assertEqual(result["source_coverage"][1],
                                  {"label": "Fixture harness", "unit": "sessions",
                                   "active": 1, "omitted": 2, "limit": 10,
@@ -83,6 +87,9 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual([row["agent_id"] for row in result["sessions"]],
                                  ["fixture-agent"])
                 self.assertEqual(result["opencode_discovered_sessions"], 0)
+                self.assertEqual(result["opencode_omitted_sessions"], 0)
+                self.assertEqual(result["opencode_diagnostics"], {})
+                self.assertEqual(result["opencode_read_errors"], 0)
                 disabled = LocalAgents(store, source_specs=(), reader_specs=())
                 self.assertEqual(disabled.reader_plugins, {})
                 self.assertEqual(disabled.status()["sessions"], [])
@@ -110,6 +117,56 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid native reader specification"):
             NativeReaderSpec("fixture", lambda _store, _capture: FixtureReader(),
                              coverage="not callable")
+        with self.assertRaisesRegex(ValueError, "invalid native reader specification"):
+            NativeReaderSpec("fixture", lambda _store, _capture: FixtureReader(),
+                             status_extension=lambda _reader, _diagnostics: {},
+                             status_keys=())
+
+    def test_reader_status_fields_cannot_replace_host_fields(self):
+        status = lambda _reader, _diagnostics: {"read_errors": 0}
+        with self.assertRaisesRegex(ValueError, "conflicts with host fields"):
+            LocalAgents(None, source_specs=(), reader_specs=(NativeReaderSpec(
+                "fixture", lambda _store, _capture: FixtureReader(),
+                status_extension=status, status_keys=("read_errors",)),))
+
+    def test_reader_status_callback_cannot_add_undeclared_fields(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = Store(Path(root) / "agenturm.db")
+            try:
+                spec = NativeReaderSpec(
+                    "fixture", lambda _store, _capture: FixtureReader(),
+                    status_extension=lambda _reader, _diagnostics: {
+                        "fixture_polls": 0, "sessions": "overridden"},
+                    status_keys=("fixture_polls",))
+                collector = LocalAgents(store, source_specs=(), reader_specs=(spec,))
+                status = collector.status()
+                self.assertEqual(status["sessions"], [{"agent_id": "fixture-agent",
+                    "source_id": "fixture-source", "runtime": "Fixture",
+                    "run_state": "unknown"}])
+                self.assertNotIn("fixture_polls", status)
+                self.assertEqual(status["last_read_error"]["operation"],
+                                 "Inspecting native reader fixture status extension")
+            finally:
+                store.close()
+
+    def test_bundled_status_contract_follows_replaced_reader(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = Store(Path(root) / "agenturm.db")
+            try:
+                reader = FixtureReader()
+                reader.discovered_sessions = 7
+                reader.omitted_sessions = 2
+                reader.errors = 3
+                reader.diagnostics = lambda: {"read_errors": 3}
+                collector = LocalAgents(store, source_specs=(), reader_specs=(
+                    NativeReaderSpec("opencode", lambda _store, _capture: reader),))
+                status = collector.status()
+                self.assertEqual(status["opencode_discovered_sessions"], 7)
+                self.assertEqual(status["opencode_omitted_sessions"], 2)
+                self.assertEqual(status["opencode_read_errors"], 3)
+                self.assertEqual(status["opencode_diagnostics"], {"read_errors": 3})
+            finally:
+                store.close()
 
     def test_broken_reader_coverage_is_isolated(self):
         with tempfile.TemporaryDirectory() as root:

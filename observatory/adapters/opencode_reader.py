@@ -41,7 +41,15 @@ def reader_spec():
         mcp_client="OpenCode", label="OpenCode",
         coverage=lambda reader: {"discovered": reader.discovered_sessions,
                                  "omitted": reader.omitted_sessions,
-                                 "limit": MAX_SESSIONS})
+                                 "limit": MAX_SESSIONS},
+        status_extension=lambda reader, diagnostics: {
+            "opencode_discovered_sessions": getattr(reader, "discovered_sessions", 0),
+            "opencode_omitted_sessions": getattr(reader, "omitted_sessions", 0),
+            "opencode_diagnostics": diagnostics,
+            "opencode_read_errors": getattr(reader, "errors", 0),
+        },
+        status_keys=("opencode_discovered_sessions", "opencode_omitted_sessions",
+                     "opencode_diagnostics", "opencode_read_errors"))
 
 
 def turn_review_spec():
