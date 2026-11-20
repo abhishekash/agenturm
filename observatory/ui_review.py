@@ -2,6 +2,7 @@
 from __future__ import annotations
 from copy import deepcopy
 import json
+import time
 from rich.text import Text
 from textual import on, work
 from textual.binding import Binding
@@ -407,6 +408,7 @@ class ReviewScreen(ModalScreen):
             self.pi_text=None
             self.notify('Pi text unavailable: exact source or capture policy changed.',severity='warning')
         else:
+            result['expires_at']=time.monotonic()+20
             self.pi_text=result
             self.set_timer(20,lambda:self.expire_pi_text(generation))
             self.set_timer(2,lambda:self.revalidate_pi_text(generation))
@@ -420,8 +422,19 @@ class ReviewScreen(ModalScreen):
 
     @work(thread=True,exclusive=True,group='review-pi-text-recheck',exit_on_error=False)
     def check_pi_text(self,generation,record,revision):
-        try:current=current_plugin_activity_revision(self.owner.feed.api,record,self.scope.receiver)
-        except Exception:current=None
+        current=None
+        try:
+            from .ui_plugin_content import PI_USER_TEXT,accepted_preview
+            before=current_plugin_activity_revision(self.owner.feed.api,record,self.scope.receiver)
+            if before==revision:
+                response=shared_get(self.owner.feed.api,PI_USER_TEXT.path(record),
+                                    cancelled=lambda:not self.is_mounted or generation!=self.pi_text_generation)
+                after=current_plugin_activity_revision(self.owner.feed.api,record,self.scope.receiver)
+                accepted=accepted_preview(response,record,self.scope.receiver,before,after,
+                                          matches=PI_USER_TEXT.matches)
+                if accepted is not None and after==revision:
+                    current=(accepted[0],accepted[1],after)
+        except Exception:pass
         try:self.app.call_from_thread(self.finish_pi_text_recheck,generation,record,revision,current)
         except RuntimeError:pass
 
@@ -430,28 +443,37 @@ class ReviewScreen(ModalScreen):
         if (not self.is_mounted or self._pi_request_record()!=record or
                 self.owner.feed.snapshot.receiver_id!=self.scope.receiver or
                 self.current_policy().get('capture_content') is False or
-                current!=revision):
+                current!=(self.pi_text['text'],self.pi_text['clipped'],revision) or
+                time.monotonic()>=self.pi_text['expires_at']):
             self.pi_text=None;self.pi_text_generation+=1;self.render_projection();return
         self.set_timer(2,lambda:self.revalidate_pi_text(generation))
 
     def expire_pi_text(self,generation):
         if generation==self.pi_text_generation and self.pi_text:
-            self.pi_text=None;self.render_projection()
+            self.pi_text=None;self.pi_text_generation+=1;self.render_projection()
 
     def action_export_json(self):
         self.apply_capture_policy()
         projection=deepcopy(self.projection)
         pi_text=deepcopy(self.pi_text)
         record=pi_text.get('record') if pi_text else None
+        pi_generation=self.pi_text_generation
         if pi_text and (record!=self._pi_request_record() or self.current_policy().get('capture_content') is False):
             self.pi_text=None;self.notify('Pi text withheld: source or capture policy changed.',severity='warning');return
         content=review_investigation_json(projection,pi_text)
+        def preview_valid():
+            return (pi_text is None or
+                    self.is_mounted and self.pi_text_generation==pi_generation and
+                    self.pi_text is not None and self.pi_text.get('record')==record and
+                    time.monotonic()<pi_text['expires_at'] and
+                    self._pi_request_record()==record and
+                    self.owner.feed.snapshot.receiver_id==self.scope.receiver and
+                    self.current_policy().get('capture_content') is not False)
         def valid():
             if not self.is_mounted or self.owner.feed.snapshot.receiver_id!=self.scope.receiver:
                 return False
             if pi_text is None:return self.current_policy().get('capture_content') is not False
-            if (self.current_policy().get('capture_content') is False or
-                    self._pi_request_record()!=record):return False
+            if not preview_valid():return False
             try:
                 from .ui_plugin_content import PI_USER_TEXT,accepted_preview
                 before=current_plugin_activity_revision(self.owner.feed.api,record,self.scope.receiver)
@@ -464,7 +486,9 @@ class ReviewScreen(ModalScreen):
         if not valid():
             self.pi_text=None;self.notify('Source content changed; refresh Review before exporting.',severity='warning');return
         self.app.push_screen(ExportScreen('review',{},content=content,can_export=valid,
-                                          poll_policy=False,allow_clipboard=False))
+                                          poll_policy=pi_text is not None,
+                                          preview_valid=preview_valid if pi_text is not None else None,
+                                          allow_clipboard=False))
 
     def start_receipt(self,export):
         from .ui_saved_tasks import projection_policy_state

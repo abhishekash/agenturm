@@ -183,12 +183,13 @@ class ExportScreen(ModalScreen):
     BINDINGS = [('escape', 'dismiss', 'Cancel')]
 
     def __init__(self, view, record, scope=None, *, content=None, can_export=None,
-                 poll_policy=True, allow_clipboard=True):
+                 poll_policy=True, allow_clipboard=True, preview_valid=None):
         super().__init__()
         self.content = content if content is not None else investigation_json(view, record, scope)
         self.can_export=can_export
         self.poll_policy=poll_policy
         self.allow_clipboard=allow_clipboard
+        self.preview_valid=preview_valid
         self._export_invalidated=False
 
     def compose(self) -> ComposeResult:
@@ -206,7 +207,7 @@ class ExportScreen(ModalScreen):
         preview.write(Text(self.content))
         preview.scroll_home(animate=False)
         self.query_one('#export-cancel', Button).focus()
-        if self.can_export is not None and self.poll_policy:
+        if (self.can_export is not None or self.preview_valid is not None) and self.poll_policy:
             self.set_interval(.25,self.check_export_policy)
 
     @on(Button.Pressed, '#export-cancel')
@@ -231,7 +232,8 @@ class ExportScreen(ModalScreen):
         self.write_export(path)
 
     def check_export_policy(self):
-        if self._export_invalidated or self.can_export is not None and not self.can_export():
+        valid=self.preview_valid if self.preview_valid is not None else self.can_export
+        if self._export_invalidated or valid is not None and not valid():
             self._export_invalidated=True
             self.content=''
             self.query_one('#export-preview',RichLog).clear()
@@ -260,6 +262,7 @@ class ExportScreen(ModalScreen):
 
     def finish_export(self,error):
         if not self.is_mounted:return
+        if self._export_invalidated:self.check_export_policy()
         self.query_one('#export-confirm',Button).disabled=self._export_invalidated
         if error:self.notify(error,severity='error');return
         self.dismiss()

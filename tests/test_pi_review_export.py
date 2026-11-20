@@ -1,6 +1,7 @@
 """Transient Pi user-text parity in Review JSON exports."""
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -91,6 +92,45 @@ class PiReviewExportScreenTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(target.exists())
                 self.assertEqual(screen.content,'')
                 self.assertTrue(screen.query_one('#export-confirm').disabled)
+
+    async def test_expiry_while_json_preview_is_open_clears_and_disables_it(self):
+        from textual.app import App
+        from textual.widgets import Static
+        from observatory.ui_export import ExportScreen
+
+        expires_at=time.monotonic()+.15
+        class Harness(App):
+            def compose(self):yield Static('Review')
+            def on_mount(self):
+                self.push_screen(ExportScreen('review',{},content='REDACTED_PI_TEXT',
+                    can_export=lambda:time.monotonic()<expires_at,poll_policy=True,
+                    preview_valid=lambda:time.monotonic()<expires_at,allow_clipboard=False))
+        async with Harness().run_test(size=(80,24)) as pilot:
+            await pilot.pause(.4)
+            screen=pilot.app.screen
+            self.assertEqual(screen.content,'')
+            self.assertTrue(screen.query_one('#export-confirm').disabled)
+
+    async def test_revocation_while_json_preview_is_open_clears_and_disables_it(self):
+        from textual.app import App
+        from textual.widgets import Static
+        from observatory.ui_export import ExportScreen
+
+        permitted=[True]
+        class Harness(App):
+            def compose(self):yield Static('Review')
+            def on_mount(self):
+                self.push_screen(ExportScreen('review',{},content='REDACTED_PI_TEXT',
+                    can_export=lambda:permitted[0],poll_policy=True,
+                    preview_valid=lambda:permitted[0],allow_clipboard=False))
+        async with Harness().run_test(size=(80,24)) as pilot:
+            await pilot.pause()
+            screen=pilot.app.screen
+            self.assertIn('REDACTED_PI_TEXT',screen.content)
+            permitted[0]=False
+            await pilot.pause(.4)
+            self.assertEqual(screen.content,'')
+            self.assertTrue(screen.query_one('#export-confirm').disabled)
 
 
 if __name__ == '__main__':
