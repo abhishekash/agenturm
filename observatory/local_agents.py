@@ -849,11 +849,14 @@ class LocalAgents:
             raise ValueError("duplicate native reader ID")
         if {spec.id for spec in self.reader_specs} & {spec.id for spec in self.source_specs}:
             raise ValueError("native reader and source IDs must be unique")
-        # Bundled compatibility status remains present even when a reader is
-        # disabled. Active declarations may replace their bundled declaration.
-        status_specs = {spec.id: spec for spec in bundled_readers if spec.status_extension}
-        status_specs.update((spec.id, spec) for spec in self.reader_specs if spec.status_extension)
-        self.reader_status_specs = tuple(status_specs.values())
+        # Bundled compatibility fields remain present even when a reader is
+        # disabled or replaced. A replacement may add fields, not erase or
+        # redeclare those historical keys.
+        status_specs = [spec for spec in bundled_readers if spec.status_extension]
+        status_specs.extend(spec for spec in self.reader_specs
+                            if spec.status_extension and not any(
+                                spec is bundled for bundled in status_specs))
+        self.reader_status_specs = tuple(status_specs)
         status_keys = [key for spec in self.reader_status_specs for key in spec.status_keys]
         if len(status_keys) != len(set(status_keys)) or set(status_keys) & _HOST_STATUS_TOP_LEVEL:
             raise ValueError("native reader status extension conflicts with host fields")

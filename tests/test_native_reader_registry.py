@@ -159,14 +159,26 @@ class RegistryTests(unittest.TestCase):
                 reader.errors = 3
                 reader.diagnostics = lambda: {"read_errors": 3}
                 collector = LocalAgents(store, source_specs=(), reader_specs=(
-                    NativeReaderSpec("opencode", lambda _store, _capture: reader),))
+                    NativeReaderSpec("opencode", lambda _store, _capture: reader,
+                                     status_extension=lambda _reader, _diagnostics: {
+                                         "custom_status": "ready"},
+                                     status_keys=("custom_status",)),))
                 status = collector.status()
                 self.assertEqual(status["opencode_discovered_sessions"], 7)
                 self.assertEqual(status["opencode_omitted_sessions"], 2)
                 self.assertEqual(status["opencode_read_errors"], 3)
                 self.assertEqual(status["opencode_diagnostics"], {"read_errors": 3})
+                self.assertEqual(status["custom_status"], "ready")
             finally:
                 store.close()
+
+    def test_replacement_reader_cannot_redeclare_compatibility_key(self):
+        spec = NativeReaderSpec("opencode", lambda _store, _capture: FixtureReader(),
+                                status_extension=lambda _reader, _diagnostics: {
+                                    "opencode_read_errors": 900},
+                                status_keys=("opencode_read_errors",))
+        with self.assertRaisesRegex(ValueError, "conflicts with host fields"):
+            LocalAgents(None, source_specs=(), reader_specs=(spec,))
 
     def test_broken_reader_coverage_is_isolated(self):
         with tempfile.TemporaryDirectory() as root:
