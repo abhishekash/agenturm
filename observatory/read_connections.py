@@ -152,6 +152,26 @@ class ReadConnections:
             finally:
                 self._drained.notify_all()
 
+    def begin_close(self, timeout: float) -> bool:
+        """Feature-off handoff close with a bounded lock-acquisition wait.
+
+        A failed lock acquisition leaves the pool open for a later retry. It
+        cannot preempt an SQLite handle already inside ``close()``.
+        """
+        if type(timeout) not in (int, float) or not 0 <= timeout <= 60:
+            raise ValueError('Read pool close requires a timeout from 0 to 60 seconds')
+        if not self.lock.acquire(timeout=float(timeout)):
+            return False
+        try:
+            self.closed = True
+            try:
+                self._discard_idle()
+            finally:
+                self._drained.notify_all()
+            return True
+        finally:
+            self.lock.release()
+
     def wait_closed(self, timeout: float) -> bool:
         """Wait at most ``timeout`` seconds for close and all leased reads.
 
