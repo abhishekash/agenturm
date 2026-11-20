@@ -31,6 +31,16 @@ def mcp_config_contributions():
                       root / ".opencode" / "opencode.jsonc"), priority=6),)
 
 
+def _opencode_status_extension(reader, diagnostics):
+    """Stable bundled compatibility callback across reader_spec() calls."""
+    return {
+        "opencode_discovered_sessions": getattr(reader, "discovered_sessions", 0),
+        "opencode_omitted_sessions": getattr(reader, "omitted_sessions", 0),
+        "opencode_diagnostics": diagnostics,
+        "opencode_read_errors": getattr(reader, "errors", 0),
+    }
+
+
 def reader_spec():
     from ..native_readers import NativeReaderSpec
     from ..opencode import MAX_SESSIONS, OpenCodeReader
@@ -42,12 +52,7 @@ def reader_spec():
         coverage=lambda reader: {"discovered": reader.discovered_sessions,
                                  "omitted": reader.omitted_sessions,
                                  "limit": MAX_SESSIONS},
-        status_extension=lambda reader, diagnostics: {
-            "opencode_discovered_sessions": getattr(reader, "discovered_sessions", 0),
-            "opencode_omitted_sessions": getattr(reader, "omitted_sessions", 0),
-            "opencode_diagnostics": diagnostics,
-            "opencode_read_errors": getattr(reader, "errors", 0),
-        },
+        status_extension=_opencode_status_extension,
         status_keys=("opencode_discovered_sessions", "opencode_omitted_sessions",
                      "opencode_diagnostics", "opencode_read_errors"))
 

@@ -851,11 +851,15 @@ class LocalAgents:
             raise ValueError("native reader and source IDs must be unique")
         # Bundled compatibility fields remain present even when a reader is
         # disabled or replaced. A replacement may add fields, not erase or
-        # redeclare those historical keys.
+        # redeclare those historical keys. Bundled status callbacks are stable
+        # module-level functions so a fresh declaration can be recognized.
         status_specs = [spec for spec in bundled_readers if spec.status_extension]
         status_specs.extend(spec for spec in self.reader_specs
                             if spec.status_extension and not any(
-                                spec is bundled for bundled in status_specs))
+                                spec.id == bundled.id and
+                                spec.status_extension is bundled.status_extension and
+                                spec.status_keys == bundled.status_keys
+                                for bundled in status_specs))
         self.reader_status_specs = tuple(status_specs)
         status_keys = [key for spec in self.reader_status_specs for key in spec.status_keys]
         if len(status_keys) != len(set(status_keys)) or set(status_keys) & _HOST_STATUS_TOP_LEVEL:

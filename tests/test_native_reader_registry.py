@@ -37,6 +37,14 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual([spec.id for spec in specs], ["opencode"])
         self.assertEqual(specs[0].mcp_client, "OpenCode")
 
+    def test_fresh_builtin_specs_are_one_status_declaration(self):
+        # The collector discovers bundled specs again during initialization.
+        # Explicitly passing a separately created tuple must not duplicate
+        # the same trusted compatibility callback.
+        monitor = LocalAgents(None, source_specs=(), reader_specs=builtin_readers())
+        self.assertEqual(len(monitor.reader_status_specs), 1)
+        self.assertIn("opencode_read_errors", monitor.status())
+
     def test_new_bundled_reader_needs_no_central_dispatch_edit(self):
         module = SimpleNamespace(__name__="observatory.adapters.fixture_reader",
                                  reader_spec=lambda: NativeReaderSpec(
