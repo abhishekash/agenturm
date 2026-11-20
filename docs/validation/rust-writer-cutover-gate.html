@@ -30,9 +30,9 @@ a{color:#135ca3}a:focus-visible{outline:3px solid #dc9128;outline-offset:3px}
 
 <h2>Lease acceptance tests</h2>
 <ol><li>Two new processes targeting the same managed database or a target/symlink alias: one acquires; the loser changes no main file, WAL, SHM, mode or marker.</li>
-<li>Two Store objects in one process share one lease; another process remains excluded until the last closes. Constructor failure releases it.</li>
+<li>Two Store objects in one process share one lease; another process remains excluded until the last closes. Constructor failure releases it only after any started work has stopped.</li>
 <li>Owner SIGKILL releases the OS lock; restart recovers WAL and cursor/receipt without a concurrent second owner.</li>
-<li>Symlinked, nonregular or replaced lock-file path is rejected before database mutation. Unlink/recreate while the owner lives; its next write must refuse the changed lock pathname.</li>
+<li>Symlinked, nonregular or replaced lock-file path is rejected before database mutation. Unlink/recreate while the owner lives; its next writer admission must refuse the changed lock pathname. A write already in flight is not fenced by this check.</li>
 <li>Retarget an explicit database symlink or atomically replace the database while open: the next write fails and never recreates or adopts a new target.</li>
 <li>Exercise actual cockpit fallback, a receiver on another port, and mutating CLI commands; record clear behavior before making the lease default. Hold work beyond shutdown timeout and prove the lock remains held until quiescence or exit.</li></ol>
 
