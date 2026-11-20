@@ -26,6 +26,7 @@ class PluginSource:
     replaces: tuple[str, ...] = ()
     source_root: str | None = None
     required_features: tuple[str, ...] = ()
+    capture_mode: str = "metadata-only"
 
     @property
     def runtime_features(self) -> tuple[str, ...]:

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .plugin_wire import (MAX_CURSOR_CHARS, MAX_DISCOVERY_MEMBERS, MEMBER_ID, PollBatch,
-                          ProtocolError, encode_message, validate_batch)
+                          ProtocolError, decode_message, encode_message, validate_batch)
 from . import plugin_retention, plugin_source_gap
 from .plugin_activity import validate_metadata as validate_activity_metadata
 
@@ -45,6 +45,7 @@ class SourceLease:
     epoch: int
     cursor: str
     policy_epoch: int
+    content_fingerprint: str = ""
 
 
 def initialize(db: Connection) -> None:
@@ -61,6 +62,7 @@ def initialize(db: Connection) -> None:
             dirty_seq INTEGER NOT NULL DEFAULT 0,
             policy_epoch INTEGER NOT NULL DEFAULT 1,
             capture_enabled INTEGER NOT NULL DEFAULT 1,
+            content_fingerprint TEXT NOT NULL DEFAULT '',
             updated_ns INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS plugin_source_member_cursor_v1 (
             source_id TEXT NOT NULL,
@@ -134,7 +136,8 @@ def initialize(db: Connection) -> None:
                "WHERE kind='diagnostic'")
     cursor_columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_source_cursor_v1)")}
     for name, declaration in (("policy_epoch", "INTEGER NOT NULL DEFAULT 1"),
-                              ("capture_enabled", "INTEGER NOT NULL DEFAULT 1")):
+                              ("capture_enabled", "INTEGER NOT NULL DEFAULT 1"),
+                              ("content_fingerprint", "TEXT NOT NULL DEFAULT ''")):
         if name not in cursor_columns:
             db.execute(f"ALTER TABLE plugin_source_cursor_v1 ADD COLUMN {name} {declaration}")
     projection_columns = {row[1] for row in db.execute("PRAGMA table_info(plugin_session_projection_v1)")}
@@ -147,6 +150,8 @@ def initialize(db: Connection) -> None:
             db.execute(f"ALTER TABLE plugin_session_projection_v1 ADD COLUMN {name} {declaration}")
     plugin_retention.initialize(db)
     plugin_source_gap.initialize(db)
+    from . import plugin_pi_content
+    plugin_pi_content.initialize(db)
     # A pre-activity plugin projection cannot certify the new Activity rows.
     # The worker's startup projection pass republishes both from one snapshot.
     if (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'").fetchone()
@@ -177,12 +182,15 @@ def _identity(value: str, name: str) -> str:
 
 
 def activate_source(store: Store, *, plugin_id: str, source_id: str,
-                    generation: str) -> SourceLease:
+                    generation: str, content_fingerprint: str = "") -> SourceLease:
     """Issue a new fence for this exact artifact and return its durable cursor."""
     _identity(plugin_id, "plugin ID")
     _identity(source_id, "source ID")
     if not isinstance(generation, str) or not _HASH.fullmatch(generation):
         raise ValueError("generation must be the artifact SHA-256")
+    if (not isinstance(content_fingerprint, str) or content_fingerprint
+            and not _HASH.fullmatch(content_fingerprint)):
+        raise ValueError("invalid Pi content configuration fingerprint")
     epoch = secrets.randbelow(2**63 - 1) + 1
     receiver_id = store.receiver_namespace()
     with store._source_write(), store._connect() as db:
@@ -200,18 +208,23 @@ def activate_source(store: Store, *, plugin_id: str, source_id: str,
         now = time.time_ns()
         if row is None:
             db.execute("INSERT INTO plugin_source_cursor_v1 "
-                       "(source_id,receiver_id,plugin_id,generation,lease_epoch,updated_ns) "
-                       "VALUES(?,?,?,?,?,?)",
-                       (source_id, receiver_id, plugin_id, generation, epoch, now))
+                       "(source_id,receiver_id,plugin_id,generation,lease_epoch,"
+                       "content_fingerprint,updated_ns) VALUES(?,?,?,?,?,?,?)",
+                       (source_id, receiver_id, plugin_id, generation, epoch,
+                        content_fingerprint, now))
             cursor = ""
             policy_epoch = 1
         else:
-            db.execute("UPDATE plugin_source_cursor_v1 SET lease_epoch=?,updated_ns=? "
-                       "WHERE source_id=?", (epoch, now, source_id))
+            if row["content_fingerprint"] != content_fingerprint:
+                db.execute("DELETE FROM plugin_content_v1 WHERE source_id=?", (source_id,))
+                db.execute("DELETE FROM plugin_content_batch_v1 WHERE source_id=?", (source_id,))
+                db.execute("DELETE FROM plugin_content_status_v1 WHERE source_id=?", (source_id,))
+            db.execute("UPDATE plugin_source_cursor_v1 SET lease_epoch=?,content_fingerprint=?,updated_ns=? "
+                       "WHERE source_id=?", (epoch, content_fingerprint, now, source_id))
             cursor = row["cursor"]
             policy_epoch = row["policy_epoch"]
     return SourceLease(receiver_id, plugin_id, source_id, generation, epoch, cursor,
-                       policy_epoch)
+                       policy_epoch, content_fingerprint)
 
 
 def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
@@ -240,6 +253,9 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
         lease_epoch = secrets.randbelow(2**63 - 1) + 1
         if not enabled:
             db.execute("DELETE FROM plugin_evidence_v1 WHERE source_id=?", (source_id,))
+            db.execute("DELETE FROM plugin_content_v1 WHERE source_id=?", (source_id,))
+            db.execute("DELETE FROM plugin_content_batch_v1 WHERE source_id=?", (source_id,))
+            db.execute("DELETE FROM plugin_content_status_v1 WHERE source_id=?", (source_id,))
             db.execute("DELETE FROM plugin_session_projection_v1 WHERE source_id=?", (source_id,))
             db.execute("DELETE FROM activity_index_v1 WHERE kind='plugin' AND owner_key=?",
                        (source_id,))
@@ -250,8 +266,9 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
             db.execute("DELETE FROM plugin_session_member_v1 WHERE source_id=?", (source_id,))
         dirty_seq = row["dirty_seq"] + 1
         db.execute("UPDATE plugin_source_cursor_v1 SET capture_enabled=?,policy_epoch=?,"
-                   "lease_epoch=?,dirty_seq=?,updated_ns=? WHERE source_id=?",
-                   (int(enabled), epoch, lease_epoch, dirty_seq, time.time_ns(), source_id))
+                   "lease_epoch=?,dirty_seq=?,content_fingerprint=?,updated_ns=? WHERE source_id=?",
+                   (int(enabled), epoch, lease_epoch, dirty_seq,
+                    row["content_fingerprint"] if enabled else "", time.time_ns(), source_id))
         db.execute("INSERT INTO plugin_evidence_dirty_v1(source_id,dirty_seq) VALUES(?,?) "
                    "ON CONFLICT(source_id) DO UPDATE SET dirty_seq=excluded.dirty_seq",
                    (source_id, dirty_seq))
@@ -352,7 +369,7 @@ def _metadata(record: dict) -> dict:
     return payload
 
 
-def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]]:
+def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...], PollBatch]:
     if not isinstance(batch, PollBatch):
         raise TypeError("validated plugin batch required")
     if type(batch.root_gap) is not bool:
@@ -368,7 +385,10 @@ def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]
         wire.update(member_id=batch.member_id, member_cursor=batch.member_cursor)
     if batch.root_gap:
         wire["root_gap"] = True
-    validated = validate_batch(wire, source_id=source_id)
+    # Snapshot mutable caller dictionaries through the bounded wire decoder.
+    # Content references must bind to this same validated batch, not to a
+    # subsequently changed Python object.
+    validated = validate_batch(decode_message(encode_message(wire)), source_id=source_id)
     rows = []
     for record in validated.records:
         payload = _metadata(record)
@@ -388,11 +408,12 @@ def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]
     if validated.root_gap:
         digest_input["root_gap"] = True
     batch_digest = hashlib.sha256(encode_message(digest_input).encode()).hexdigest()
-    return batch_digest, tuple(rows)
+    return batch_digest, tuple(rows), validated
 
 
 def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
-                 batch: PollBatch, *, allow_root_gap: bool = False) -> str:
+                 batch: PollBatch, *, allow_root_gap: bool = False,
+                 content_refs: tuple[dict, ...] = (), content_grant=None) -> str:
     """Commit evidence, cursor and dirty marker together, then permit ack.
 
     Exact replay after a crash is accepted. Any different batch at the same
@@ -402,7 +423,20 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
         raise TypeError("source lease required")
     if not isinstance(expected_cursor, str):
         raise ValueError("expected cursor must be text")
-    digest, rows = _validated(batch, lease.source_id)
+    from . import plugin_pi_content
+    digest, rows, batch = _validated(batch, lease.source_id)
+    checked_refs = plugin_pi_content.validate_refs(content_refs, batch)
+    if checked_refs:
+        if (not isinstance(content_grant, plugin_pi_content.PiContentGrant)
+                or (content_grant.source_id, content_grant.plugin_id,
+                    content_grant.generation, content_grant.lease_epoch,
+                    content_grant.policy_epoch, content_grant.fingerprint) !=
+                (lease.source_id, lease.plugin_id, lease.generation,
+                 lease.epoch, lease.policy_epoch, lease.content_fingerprint)):
+            raise ProtocolError("Pi content grant unavailable")
+    elif content_grant is not None:
+        raise ProtocolError("Pi content grant without references")
+    refs_digest = hashlib.sha256(encode_message({"refs": list(content_refs)}).encode()).hexdigest()
     protected_hashes = {item[1] for item in rows}
     incoming_session_ids = {item[7] for item in rows if item[7]}
     gap_hashes = {item[1] for item in rows if item[3] == "diagnostic"
@@ -412,6 +446,35 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
         raise ProtocolError("discovery root gap requires configured feature")
     if batch.member_id and not batch.member_cursor and not gap_hashes:
         raise ProtocolError("removed discovery member requires source-gap evidence")
+    verified_content = ()
+    withheld_reason = plugin_pi_content.withheld_reason(batch) if checked_refs else ""
+    preflight_member_cursor = None
+    if checked_refs:
+        with store._connect() as db:
+            db.execute("BEGIN")
+            source = db.execute("SELECT receiver_id,plugin_id,generation,lease_epoch,"
+                                "policy_epoch,content_fingerprint,capture_enabled,cursor,prior_cursor,"
+                                "last_batch_digest FROM plugin_source_cursor_v1 WHERE source_id=?",
+                                (lease.source_id,)).fetchone()
+            if (source is None or not source["capture_enabled"]
+                    or tuple(source[:5]) != (lease.receiver_id, lease.plugin_id,
+                                             lease.generation, lease.epoch,
+                                             lease.policy_epoch)
+                    or source["content_fingerprint"] != lease.content_fingerprint):
+                raise ProtocolError("stale plugin source lease")
+            member = db.execute("SELECT cursor FROM plugin_source_member_cursor_v1 "
+                                "WHERE source_id=? AND member_id=?",
+                                (lease.source_id, batch.member_id)).fetchone()
+            preflight_member_cursor = member[0] if member else ""
+            replay = (batch.cursor == source["cursor"]
+                      and digest == source["last_batch_digest"]
+                      and expected_cursor in (source["prior_cursor"], source["cursor"]))
+        if not replay:
+            try:
+                verified_content = plugin_pi_content.verify_refs(
+                    checked_refs, content_grant, batch, preflight_member_cursor)
+            except plugin_pi_content.UnanchoredOrigin:
+                withheld_reason = "unanchored_origin"
     with store._source_write(), store._connect() as db:
         db.execute("BEGIN IMMEDIATE")
         receiver = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
@@ -420,17 +483,26 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
         if (receiver is None or receiver[0] != lease.receiver_id or row is None
                 or not row["capture_enabled"]
                 or (row["receiver_id"], row["plugin_id"], row["generation"],
-                    row["lease_epoch"], row["policy_epoch"]) !=
+                    row["lease_epoch"], row["policy_epoch"], row["content_fingerprint"]) !=
                 (lease.receiver_id, lease.plugin_id, lease.generation, lease.epoch,
-                 lease.policy_epoch)):
+                 lease.policy_epoch, lease.content_fingerprint)):
             raise ProtocolError("stale plugin source lease")
         if (not rows and not batch.member_id and batch.cursor == row["cursor"]
                 and expected_cursor == row["cursor"]):
+            if checked_refs:
+                raise ProtocolError("Pi content reference cannot be idle")
             # An idle poll has no durable effect. It still follows lease and
             # source checks before the host may acknowledge it.
             return row["cursor"]
         if batch.cursor == row["cursor"] and digest == row["last_batch_digest"] and expected_cursor in (
                 row["prior_cursor"], row["cursor"]):
+            receipt = db.execute("SELECT cursor,refs_digest FROM plugin_content_batch_v1 "
+                                 "WHERE source_id=?", (lease.source_id,)).fetchone()
+            if ((receipt is None and checked_refs)
+                    or (receipt is not None and
+                        (receipt["cursor"], receipt["refs_digest"]) !=
+                        (batch.cursor, refs_digest))):
+                raise ProtocolError("Pi content replay mismatch")
             return row["cursor"]
         if expected_cursor != row["cursor"]:
             raise ProtocolError("stale plugin cursor")
@@ -448,6 +520,9 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                                            "WHERE source_id=?", (lease.source_id,)).fetchone()[0]
                 if count_members >= MAX_DISCOVERY_MEMBERS:
                     raise ProtocolError("discovery member limit exceeded")
+            if (checked_refs and (old_member[0] if old_member else "") !=
+                    preflight_member_cursor):
+                raise ProtocolError("Pi content member checkpoint changed")
         if batch.member_id:
             mapped_count = db.execute("SELECT COUNT(*) FROM plugin_session_member_v1 "
                                       "WHERE source_id=?", (lease.source_id,)).fetchone()[0]
@@ -495,6 +570,7 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                            (lease.source_id,)).fetchone()[0]
         admitted_ns = time.time_ns()
         inserted = False
+        inserted_hashes = set()
         for raw_item in rows:
             # An upgraded directory source may keep reporting an older native
             # session. Preserve that session's unowned provenance on every
@@ -552,6 +628,7 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (*item, lease.policy_epoch, admitted_ns))
             count += 1
             inserted = True
+            inserted_hashes.add(item[1])
         seq = row["dirty_seq"] + int(inserted)
         db.execute("UPDATE plugin_source_cursor_v1 SET cursor=?,prior_cursor=?,last_batch_digest=?,"
                    "dirty_seq=?,updated_ns=? WHERE source_id=?",
@@ -570,4 +647,45 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
             db.execute("INSERT INTO plugin_evidence_dirty_v1(source_id,dirty_seq) VALUES(?,?) "
                        "ON CONFLICT(source_id) DO UPDATE SET dirty_seq=excluded.dirty_seq",
                        (lease.source_id, seq))
+        omitted_duplicates = 0
+        capacity_victims = 0
+        inserted_content = []
+        if verified_content:
+            for ref, file_dev, file_ino, redacted_text in verified_content:
+                event_hash = hashlib.sha256(
+                    (lease.source_id + "\0" + ref["event_id"]).encode()).hexdigest()
+                if event_hash not in inserted_hashes:
+                    # A repeated v1 fact is not a content correction, even if
+                    # another source row reused its native Pi ID.
+                    omitted_duplicates += 1
+                    continue
+                db.execute("DELETE FROM plugin_content_v1 WHERE source_id=? AND event_id_hash=?",
+                           (lease.source_id, event_hash))
+                db.execute("INSERT INTO plugin_content_v1 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                           (lease.source_id, event_hash, ref["revision"], ref["kind"],
+                            ref["native_session_id"], ref["native_turn_id"], batch.member_id,
+                            ref["row_offset"], ref["row_length"], ref["row_sha256"],
+                            file_dev, file_ino, redacted_text, lease.policy_epoch, lease.epoch, seq))
+                inserted_content.append((event_hash, ref["revision"]))
+        plugin_pi_content.prune_orphans(db, lease.source_id)
+        missing_new_content = any(db.execute(
+            "SELECT 1 FROM plugin_content_v1 WHERE source_id=? AND event_id_hash=? AND revision=?",
+            (lease.source_id, event_hash, revision)).fetchone() is None
+            for event_hash, revision in inserted_content)
+        if verified_content:
+            capacity_victims = plugin_pi_content.prune_capacity(db, lease.source_id)
+        reason = withheld_reason or ("invalidated_session" if missing_new_content else
+                                    "capacity" if capacity_victims else "")
+        if not reason:
+            reason = "duplicate_occurrence" if omitted_duplicates else (
+                "not_requested" if not checked_refs else "none")
+        db.execute("INSERT INTO plugin_content_status_v1(source_id,cursor,reason,refs_count,policy_epoch) "
+                   "VALUES(?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
+                   "cursor=excluded.cursor,reason=excluded.reason,"
+                   "refs_count=excluded.refs_count,policy_epoch=excluded.policy_epoch",
+                   (lease.source_id, batch.cursor, reason, len(checked_refs), lease.policy_epoch))
+        db.execute("INSERT INTO plugin_content_batch_v1(source_id,cursor,refs_digest) VALUES(?,?,?) "
+                   "ON CONFLICT(source_id) DO UPDATE SET cursor=excluded.cursor,"
+                   "refs_digest=excluded.refs_digest",
+                   (lease.source_id, batch.cursor, refs_digest))
     return batch.cursor
