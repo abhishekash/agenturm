@@ -20,6 +20,7 @@ MAX_STRUCTURAL_TOKENS = 8192
 MAX_BATCH_RECORDS = 256
 MAX_CONTROL_FRAME_BYTES = 64 * 1024
 MAX_RECORD_BYTES = 16 * 1024
+# Opaque process-source cursors are bounded by UTF-8 bytes on every transport.
 MAX_CURSOR_CHARS = 800
 MAX_DISCOVERY_MEMBERS = 48
 MEMBER_ID = re.compile(r"[0-9a-f]{64}\Z")
@@ -128,6 +129,23 @@ def encode_message(value: dict) -> str:
 def _text(value: object, name: str, limit: int) -> str:
     if not isinstance(value, str) or not value or len(value) > limit or any(
             ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ProtocolError(f"invalid {name}")
+    return value
+
+
+def _cursor_valid(value: object, *, allow_empty: bool = False) -> bool:
+    if (not isinstance(value, str) or (not value and not allow_empty)
+            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value)):
+        return False
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
+    return size <= MAX_CURSOR_CHARS
+
+
+def _cursor_text(value: object, name: str, *, allow_empty: bool = False) -> str:
+    if not _cursor_valid(value, allow_empty=allow_empty):
         raise ProtocolError(f"invalid {name}")
     return value
 
@@ -270,7 +288,7 @@ def validate_batch(message: dict, *, source_id: str) -> PollBatch:
     # changes without inventing a new cursor, including on its first poll.
     cursor = message["cursor"]
     if cursor != "" or records:
-        cursor = _text(cursor, "cursor", MAX_CURSOR_CHARS)
+        cursor = _cursor_text(cursor, "cursor")
     seen = set()
     for record in records:
         required = {"event_id", "revision", "kind", "time_ns", "payload"}
@@ -305,9 +323,8 @@ def validate_batch(message: dict, *, source_id: str) -> PollBatch:
     if member_id:
         if not isinstance(member_id, str) or not MEMBER_ID.fullmatch(member_id):
             raise ProtocolError("invalid discovery member ID")
-        if not isinstance(member_cursor, str) or len(member_cursor) > MAX_CURSOR_CHARS or any(
-                ord(char) < 32 or ord(char) == 127 for char in member_cursor):
-            raise ProtocolError("invalid discovery member cursor")
+        member_cursor = _cursor_text(member_cursor, "discovery member cursor",
+                                     allow_empty=True)
     elif "member_id" in message:
         raise ProtocolError("invalid discovery member ID")
     root_gap = message.get("root_gap", False)

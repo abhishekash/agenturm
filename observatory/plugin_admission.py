@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .plugin_wire import (MAX_CURSOR_CHARS, MAX_DISCOVERY_MEMBERS, MEMBER_ID, PollBatch,
-                          ProtocolError, decode_message, encode_message, validate_batch)
+                          ProtocolError, _cursor_valid, decode_message, encode_message,
+                          validate_batch)
 from .plugin_reference_admission import (DEFAULT_REFERENCE_ADMISSIONS,
                                          ReferenceAdmissionRegistry,
                                          ReferenceSubmission,
@@ -338,8 +339,7 @@ def member_cursors(store: Store, lease: SourceLease) -> dict[str, str]:
             (lease.source_id, MAX_DISCOVERY_MEMBERS + 1)).fetchall()
     if (len(rows) > MAX_DISCOVERY_MEMBERS or any(
             not isinstance(member, str) or not MEMBER_ID.fullmatch(member)
-            or not isinstance(cursor, str) or len(cursor) > MAX_CURSOR_CHARS
-            or any(ord(char) < 32 or ord(char) == 127 for char in cursor)
+            or not _cursor_valid(cursor, allow_empty=True)
             for member, cursor in rows)):
         raise ProtocolError("discovery checkpoint limit exceeded")
     return dict(rows)

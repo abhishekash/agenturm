@@ -23,7 +23,7 @@ const MAX_SCAN: u64 = 1024 * 1024;
 const MAX_RECORDS: u64 = 256;
 // Match observatory.plugin_wire.MAX_STRUCTURAL_TOKENS for the serialized batch.
 const MAX_STRUCTURAL_TOKENS: usize = 8192;
-const MAX_CURSOR: usize = 512;
+const MAX_CURSOR: usize = 800;
 const MAX_ID: usize = 199;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;

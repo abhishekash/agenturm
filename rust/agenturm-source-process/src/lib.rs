@@ -14,7 +14,11 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const CONTROL_LIMIT: usize = 64 * 1024;
 const MAX_RECORDS: u64 = 256;
 const MAX_STRUCTURAL_TOKENS: usize = 8192;
-const MAX_CURSOR_CHARS: usize = 800;
+pub const MAX_CURSOR_BYTES: usize = 800;
+
+fn valid_cursor(value: &str) -> bool {
+    value.len() <= MAX_CURSOR_BYTES && !value.chars().any(char::is_control)
+}
 
 fn structural_tokens(raw: &[u8]) -> usize {
     let (mut quoted, mut escaped, mut count) = (false, false, 0);
@@ -94,7 +98,7 @@ fn discovery_members(value: Option<&Value>) -> Result<BTreeMap<String, String>> 
             return Err(invalid("invalid discovery member ID"));
         }
         let cursor = value.as_str().ok_or("invalid discovery member cursor")?;
-        if cursor.len() > MAX_CURSOR_CHARS || cursor.bytes().any(|b| b < 32 || b == 127) {
+        if !valid_cursor(cursor) {
             return Err(invalid("invalid discovery member cursor"));
         }
         result.insert(id.to_owned(), cursor.to_owned());
@@ -175,9 +179,7 @@ impl Session {
                     .get("cursor")
                     .and_then(Value::as_str)
                     .ok_or("missing cursor")?;
-                if cursor.len() > MAX_CURSOR_CHARS
-                    || cursor.bytes().any(|byte| byte < 32 || byte == 127)
-                {
+                if !valid_cursor(cursor) {
                     return Err(invalid("invalid poll cursor"));
                 }
                 let count = object
@@ -223,12 +225,13 @@ impl Session {
                 {
                     return Err(invalid("poll response exceeds requested budget"));
                 }
-                self.pending = Some(
-                    response["cursor"]
-                        .as_str()
-                        .ok_or("missing response cursor")?
-                        .to_owned(),
-                );
+                let response_cursor = response["cursor"]
+                    .as_str()
+                    .ok_or("missing response cursor")?;
+                if !valid_cursor(response_cursor) {
+                    return Err(invalid("invalid response cursor"));
+                }
+                self.pending = Some(response_cursor.to_owned());
                 Ok(Some((response, bytes as usize)))
             }
             "ack" if object.len() == 4 => {
@@ -392,6 +395,50 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(idle["records"], json!([]));
+    }
+
+    #[test]
+    fn source_and_discovery_cursors_observe_800_byte_boundary() {
+        let member_id = "a".repeat(64);
+        let accepted = json!({member_id.clone(): "c".repeat(MAX_CURSOR_BYTES)});
+        assert!(discovery_members(Some(&accepted)).is_ok());
+        let rejected = json!({member_id: "c".repeat(MAX_CURSOR_BYTES + 1)});
+        assert!(discovery_members(Some(&rejected)).is_err());
+
+        let mut session = Session::default();
+        session
+            .handle::<Content>(
+                json!({"type":"hello","protocol":1,"plugin_id":"fixture.content",
+                "source_id":"source","max_frame_bytes":65536}),
+                Path::new("/tmp"),
+            )
+            .unwrap();
+        let cursor = "c".repeat(MAX_CURSOR_BYTES);
+        let reply = session
+            .handle::<Content>(
+                json!({"type":"poll","protocol":1,"source_id":"source",
+                "cursor":cursor,"max_records":1,"max_bytes":65536}),
+                Path::new("/tmp"),
+            )
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(reply["cursor"], cursor);
+        session
+            .handle::<Content>(
+                json!({"type":"ack","protocol":1,"source_id":"source","cursor":cursor}),
+                Path::new("/tmp"),
+            )
+            .unwrap();
+        assert!(
+            session
+                .handle::<Content>(
+                    json!({"type":"poll","protocol":1,"source_id":"source",
+                "cursor":"c".repeat(MAX_CURSOR_BYTES + 1),"max_records":1,"max_bytes":65536}),
+                    Path::new("/tmp"),
+                )
+                .is_err()
+        );
     }
 
     #[test]

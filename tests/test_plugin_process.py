@@ -140,6 +140,13 @@ class ProcessHostTests(unittest.TestCase):
         self.assertIsNone(host.process)
         self.assertFalse(self.marker.exists())
 
+    def test_poll_accepts_800_byte_resume_cursor_and_rejects_801(self):
+        with self.host("idle") as host:
+            self.assertEqual(host.poll("c" * 800).cursor, "c" * 800)
+            host.ack("c" * 800)
+            with self.assertRaisesRegex(ValueError, "resume cursor"):
+                host.poll("c" * 801)
+
     def test_identity_oversize_and_timeout_close_the_worker(self):
         for mode in ("wrong_source", "oversize", "timeout", "crash", "bad_json"):
             with self.subTest(mode=mode):
@@ -191,13 +198,19 @@ class ProcessHostTests(unittest.TestCase):
 
 
 class WireTests(unittest.TestCase):
-    def test_cursor_boundary_is_800_characters(self):
+    def test_opaque_cursor_bound_counts_utf8_bytes_for_source_and_member(self):
         batch = {"type": "batch", "protocol": 1, "source_id": "source",
-                 "cursor": "x" * 800, "records": []}
-        self.assertEqual(len(validate_batch(batch, source_id="source").cursor), 800)
-        batch["cursor"] += "x"
-        with self.assertRaisesRegex(ProtocolError, "cursor"):
-            validate_batch(batch, source_id="source")
+                 "cursor": "c" * 800, "records": []}
+        self.assertEqual(validate_batch(batch, source_id="source").cursor, "c" * 800)
+        for cursor in ("c" * 801, "é" * 401, "\x80"):
+            with self.subTest(cursor=cursor[:8]), self.assertRaisesRegex(ProtocolError, "cursor"):
+                validate_batch({**batch, "cursor": cursor}, source_id="source")
+        self.assertEqual(validate_batch({**batch, "cursor": "é" * 400},
+                                        source_id="source").cursor, "é" * 400)
+        member = {**batch, "member_id": "a" * 64, "member_cursor": "m" * 800}
+        self.assertEqual(validate_batch(member, source_id="source").member_cursor, "m" * 800)
+        with self.assertRaisesRegex(ProtocolError, "member cursor"):
+            validate_batch({**member, "member_cursor": "m" * 801}, source_id="source")
 
     def test_duplicate_keys_nonfinite_numbers_and_depth_are_rejected(self):
         for raw in ('{"x":1,"x":2}', '{"x":NaN}', '{"x":1e9999}',

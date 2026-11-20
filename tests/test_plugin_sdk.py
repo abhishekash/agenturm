@@ -76,6 +76,17 @@ class SdkTests(unittest.TestCase):
             with self.subTest(message=message), self.assertRaises(ProtocolError):
                 server.handle(message)
 
+    def test_child_poll_accepts_800_byte_cursor_and_rejects_801(self):
+        server = AdapterServer("fixture.python", Adapter())
+        server.handle(self.hello())
+        cursor = "c" * 800
+        reply, _ = server.handle(self.poll(cursor))
+        self.assertEqual(reply["cursor"], cursor)
+        server.handle({"type": "ack", "protocol": 1, "source_id": "source-one",
+                       "cursor": cursor})
+        with self.assertRaisesRegex(ProtocolError, "cursor"):
+            server.handle(self.poll("c" * 801))
+
     def test_binary_stream_loop_has_no_unframed_output(self):
         inbound = io.BytesIO()
         for message in (self.hello(), self.poll(),

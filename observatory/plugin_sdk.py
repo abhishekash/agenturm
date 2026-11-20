@@ -12,8 +12,8 @@ from typing import BinaryIO, Protocol
 
 from .plugin_frames import MAX_FRAME_BYTES, read_frame, write_frame
 from .plugin_manifest import PLUGIN_ID
-from .plugin_wire import (MAX_BATCH_RECORDS, MAX_CONTROL_FRAME_BYTES, MAX_CURSOR_CHARS, MAX_ID_CHARS,
-                          PROTOCOL_MAJOR, PollBatch, ProtocolError, _text,
+from .plugin_wire import (MAX_BATCH_RECORDS, MAX_CONTROL_FRAME_BYTES, MAX_ID_CHARS,
+                          PROTOCOL_MAJOR, PollBatch, ProtocolError, _cursor_text, _text,
                           decode_message, encode_message, validate_batch)
 
 @dataclass(frozen=True)
@@ -71,7 +71,7 @@ class AdapterServer:
                 raise ProtocolError("plugin source mismatch or unacknowledged batch")
             cursor = message["cursor"]
             if cursor != "":
-                cursor = _text(cursor, "cursor", MAX_CURSOR_CHARS)
+                cursor = _cursor_text(cursor, "cursor")
             if not isinstance(cursor, str):
                 raise ProtocolError("invalid cursor")
             count, size = message["max_records"], message["max_bytes"]
