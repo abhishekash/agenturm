@@ -353,7 +353,8 @@ class Session:
 
     def observe_state(self, row, stamp):
         """Track explicit lifecycle records; absence of output is not an approval wait."""
-        payload = (row.get("payload") or {}) if self.runtime == "Codex" else row
+        state_context = getattr(self.adapter, "state_context", None)
+        payload = state_context(row) if state_context is not None else row
         if not isinstance(payload, dict):
             return
         cwd = payload.get("cwd")
