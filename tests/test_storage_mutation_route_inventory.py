@@ -154,6 +154,11 @@ def scan_tree(tree: ast.AST, path: str) -> tuple[Counter[tuple[str, str, str]], 
             parent = parents.get(node)
             if not isinstance(parent, ast.Call) or parent.func is not node:
                 aliases.append(f"{path}:{node.lineno}: indirect SQLite callable reference")
+        elif (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+              and imported_api(node, node.id) and not in_annotation(node)):
+            parent = parents.get(node)
+            if not isinstance(parent, ast.Call) or parent.func is not node:
+                aliases.append(f"{path}:{node.lineno}: imported SQLite callable escaped")
         if not isinstance(node, ast.Call):
             continue
         called = node.func
@@ -285,6 +290,9 @@ def new_route():
             "import pysqlcipher3\npysqlcipher3.connect('x.db')",
             "from sqlite3 import Connection as C\nC('x.db')",
             "from sqlite3 import Connection\nConnection = object\nConnection('x.db')",
+            "from sqlite3 import Connection\ndef supplier(): return Connection",
+            "def supplier():\n    from sqlite3 import Connection\n    return Connection",
+            "from sqlite3.dbapi2 import Connection\ndef pass_through(f): return f(Connection)",
         ):
             with self.subTest(source=source):
                 _, aliases = scan_tree(ast.parse(source), "new.py")
@@ -299,6 +307,10 @@ def new_route():
         sites, aliases = scan_tree(ast.parse(
             "from sqlite3 import Connection\n"
             "def other(Connection): return Connection('not sqlite')\n"), "new.py")
+        self.assertEqual((sites, aliases), (Counter(), []))
+        sites, aliases = scan_tree(ast.parse(
+            "from sqlite3 import Connection\n"
+            "def annotated(value: Connection) -> Connection: return value\n"), "new.py")
         self.assertEqual((sites, aliases), (Counter(), []))
 
     def test_every_access_site_has_reviewed_classification(self):
