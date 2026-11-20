@@ -240,6 +240,8 @@ class PluginProcess:
                 child_env["AGENTURM_PLUGIN_SOURCE_ROOT"] = self.source_root
             if "source-discovery/1" in self.required_features:
                 child_env["AGENTURM_PLUGIN_DISCOVERY_MODE"] = "1"
+            if "pi-content-ref/1" in self.required_features:
+                child_env["AGENTURM_PLUGIN_CONTENT_REFS"] = "1"
             self.process = subprocess.Popen(
                 command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, cwd=self._temporary.name,
