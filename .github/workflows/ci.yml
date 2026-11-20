@@ -77,6 +77,8 @@ jobs:
           AGENTURM_RUST_SCRATCH_ADMISSION_BIN: ${{ github.workspace }}/target/debug/agenturm-storage-admission
       - name: Prove distinct storage service and client accounts
         run: sudo -n /usr/bin/python3 scripts/validate_rust_storage_service_accounts.py --bin target/debug/agenturm-storage-service
+      - name: Prove experimental v2 scratch dispatch across accounts
+        run: sudo -n /usr/bin/python3 scripts/validate_rust_storage_service_v2_accounts.py --bin target/debug/agenturm-storage-service
 
   rust-host-linux-wheel:
     name: Linux x86_64 Rust host wheel

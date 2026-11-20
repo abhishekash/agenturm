@@ -1,14 +1,14 @@
 //! Feature-off local storage-service transport contract.
 //!
-//! This crate has no listener, database handle, mutation operation, or
-//! production caller. V1 only proves a one-request-per-connection protocol
-//! probe over a local socket. A future service must independently own its
-//! database path, durable replay receipts, policy, and writer lifecycle.
+//! This crate has no listener, database handle, or production caller. V1 is a
+//! one-request-per-connection protocol probe; v2 framing is used only by an
+//! explicitly enabled disposable scratch service. Canonical storage still
+//! requires independent path, policy, recovery, and writer-lifecycle gates.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-/// Feature-off, data-only v2 lifecycle admission proposal. No v1 transport
-/// function dispatches this module or accepts a v2 request.
+/// Typed v2 lifecycle admission contract. Only experimental scratch dispatch
+/// accepts this version; the ordinary v1 probe remains version-isolated.
 pub mod v2;
 
 use serde::{Deserialize, Serialize};
@@ -175,7 +175,7 @@ impl ReplayIdentity {
     }
 }
 
-fn read_frame<T: for<'de> Deserialize<'de>>(reader: &mut impl Read) -> Result<T> {
+fn read_frame_bytes(reader: &mut impl Read) -> Result<Vec<u8>> {
     let mut header = [0_u8; 4];
     reader.read_exact(&mut header)?;
     let length = u32::from_be_bytes(header) as usize;
@@ -184,33 +184,41 @@ fn read_frame<T: for<'de> Deserialize<'de>>(reader: &mut impl Read) -> Result<T>
     }
     let mut data = vec![0_u8; length];
     reader.read_exact(&mut data)?;
-    let value = serde_json::from_slice(&data)
-        .map_err(|_| ContractError::Invalid("malformed or unsupported JSON frame"))?;
     // Exactly one frame is allowed per connection. The caller half-closes its
     // write side after the frame; a timeout bounds a peer that never closes.
     let mut trailing = [0_u8; 1];
     if reader.read(&mut trailing)? != 0 {
         return Err(ContractError::Invalid("trailing frame data"));
     }
-    Ok(value)
+    Ok(data)
+}
+
+fn read_frame<T: for<'de> Deserialize<'de>>(reader: &mut impl Read) -> Result<T> {
+    serde_json::from_slice(&read_frame_bytes(reader)?)
+        .map_err(|_| ContractError::Invalid("malformed or unsupported JSON frame"))
+}
+
+fn write_frame_bytes(writer: &mut impl Write, data: &[u8]) -> Result<()> {
+    if data.is_empty() || data.len() > MAX_FRAME_BYTES {
+        return Err(ContractError::Invalid("frame length exceeds contract"));
+    }
+    writer.write_all(&(data.len() as u32).to_be_bytes())?;
+    writer.write_all(data)?;
+    writer.flush()?;
+    Ok(())
 }
 
 fn write_frame<T: Serialize>(writer: &mut impl Write, value: &T) -> Result<()> {
     let data = serde_json::to_vec(value)
         .map_err(|_| ContractError::Invalid("response serialization failed"))?;
-    if data.is_empty() || data.len() > MAX_FRAME_BYTES {
-        return Err(ContractError::Invalid("frame length exceeds contract"));
-    }
-    writer.write_all(&(data.len() as u32).to_be_bytes())?;
-    writer.write_all(&data)?;
-    writer.flush()?;
-    Ok(())
+    write_frame_bytes(writer, &data)
 }
 
 #[cfg(unix)]
 mod local {
     use super::{
-        ContractError, ProbeResult, Reply, Request, Result, VERSION, read_frame, write_frame,
+        ContractError, ProbeResult, Reply, Request, Result, VERSION, read_frame, read_frame_bytes,
+        write_frame, write_frame_bytes,
     };
     use std::io::{self, ErrorKind, Read, Write};
     use std::os::unix::net::UnixStream;
@@ -472,6 +480,50 @@ mod local {
     pub struct AuthorizedRequest {
         request: Request,
         peer: PeerCredentials,
+    }
+
+    /// A peer-authorized v2 frame. The original bytes are passed only to the
+    /// explicit scratch admission bridge after its typed contract is checked.
+    pub struct AuthorizedV2Request {
+        request: crate::v2::Request,
+        frame: Vec<u8>,
+    }
+
+    impl AuthorizedV2Request {
+        pub fn request(&self) -> &crate::v2::Request {
+            &self.request
+        }
+
+        pub fn frame(&self) -> &[u8] {
+            &self.frame
+        }
+    }
+
+    pub fn read_authorized_v2_request(
+        stream: &mut UnixStream,
+        policy: PeerPolicy,
+        expected_receiver_id: &str,
+    ) -> Result<AuthorizedV2Request> {
+        policy.authorize(kernel_peer(stream)?)?;
+        let frame = read_frame_bytes(&mut DeadlineIo::new(stream, IO_TIMEOUT))?;
+        let request = crate::v2::Request::from_json(&frame)?;
+        if request.receiver_id != expected_receiver_id {
+            return Err(ContractError::Denied(
+                "receiver identity differs from service",
+            ));
+        }
+        Ok(AuthorizedV2Request { request, frame })
+    }
+
+    pub fn send_v2_reply(
+        stream: &mut UnixStream,
+        request: &AuthorizedV2Request,
+        frame: &[u8],
+    ) -> Result<()> {
+        crate::v2::Reply::from_json(frame, &request.request)?;
+        write_frame_bytes(&mut DeadlineIo::new(stream, IO_TIMEOUT), frame)?;
+        stream.shutdown(std::net::Shutdown::Write)?;
+        Ok(())
     }
 
     impl AuthorizedRequest {
@@ -821,6 +873,7 @@ mod local {
 
 #[cfg(unix)]
 pub use local::{
-    AuthorizedRequest, PeerCredentials, PeerPolicy, ServerPolicy, read_authorized_request,
-    read_probe_reply, send_probe_reply, send_request,
+    AuthorizedRequest, AuthorizedV2Request, PeerCredentials, PeerPolicy, ServerPolicy,
+    read_authorized_request, read_authorized_v2_request, read_probe_reply, send_probe_reply,
+    send_request, send_v2_reply,
 };

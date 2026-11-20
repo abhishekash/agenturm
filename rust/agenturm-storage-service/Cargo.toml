@@ -7,6 +7,7 @@ publish = false
 license = "MIT"
 
 [dependencies]
+agenturm-storage-admission = { path = "../agenturm-storage-admission" }
 agenturm-storage-service-contract = { path = "../agenturm-storage-service-contract" }
 libc = "0.2"
 
