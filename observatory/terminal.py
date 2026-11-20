@@ -1188,6 +1188,14 @@ def _run_terminal_app(app):
     return asyncio.run(run())
 
 
+def _cockpit_app(feed, *, ui_panes=()):
+    """Compose the trusted local Activity previews at the UI boundary."""
+    from .terminal_ui import ObservatoryApp
+    from .ui_pi_command_content import PI_REQUESTED_COMMAND
+    return ObservatoryApp(feed, ui_panes=ui_panes,
+                          content_preview_providers=(PI_REQUESTED_COMMAND,))
+
+
 def run_cockpit(*, db_path=None, port=14318, endpoint=None,
                 once=False, new_window=False, local_agents=True, metadata_only=False, managed_db=False,
                 retention_days=None, capability_config=()):
@@ -1245,7 +1253,7 @@ def run_cockpit(*, db_path=None, port=14318, endpoint=None,
             if capability_config:
                 from .capability_activation import activate_capabilities
                 capability_activations, panes = activate_capabilities(tuple(capability_config), api, feed)
-            return _run_terminal_app(ObservatoryApp(feed, ui_panes=panes))
+            return _run_terminal_app(_cockpit_app(feed, ui_panes=panes))
         try:
             health = api.get("/api/health?probe=1")
             if not health.get("ok"):
@@ -1300,7 +1308,7 @@ def run_cockpit(*, db_path=None, port=14318, endpoint=None,
                     return 3
                 time.sleep(.1)
         else:
-            return _run_terminal_app(ObservatoryApp(feed))
+            return _run_terminal_app(_cockpit_app(feed))
     except KeyboardInterrupt:
         return 130
     finally:
