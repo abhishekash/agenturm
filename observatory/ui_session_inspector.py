@@ -39,6 +39,18 @@ def _safe_entry(entry: object) -> bool:
             and all(ord(char) >= 32 or char in "\n\t" for char in value))
 
 
+def without_label_collisions(entries, reserved):
+    """Keep contributed entries whose labels do not repeat shell-owned labels."""
+    seen = {label.strip().casefold() for label in reserved}
+    result = []
+    for label, value in entries:
+        key = label.strip().casefold()
+        if key not in seen:
+            result.append((label, value))
+            seen.add(key)
+    return tuple(result)
+
+
 class SessionInspectorRegistry:
     """Compose trusted sections without letting one faulty provider break UI."""
 
@@ -80,11 +92,13 @@ class SessionInspectorRegistry:
                                (*model.overview_fields, *model.detail_sections))):
                 continue
             for label, value in model.overview_fields:
-                if label not in field_labels and len(fields) < MAX_ENTRIES:
+                key = label.strip().casefold()
+                if key not in field_labels and len(fields) < MAX_ENTRIES:
                     fields.append((label, value))
-                    field_labels.add(label)
+                    field_labels.add(key)
             for label, value in model.detail_sections:
-                if label not in section_labels and len(sections) < MAX_ENTRIES:
+                key = label.strip().casefold()
+                if key not in section_labels and len(sections) < MAX_ENTRIES:
                     sections.append((label, value))
-                    section_labels.add(label)
+                    section_labels.add(key)
         return SessionInspectorModel(tuple(fields), tuple(sections))

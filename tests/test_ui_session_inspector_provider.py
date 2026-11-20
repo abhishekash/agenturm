@@ -1,10 +1,12 @@
 """Trusted session-inspector contributions preserve Kiro permission evidence."""
 import unittest
+from unittest.mock import patch
 
 from observatory.terminal import _cockpit_app
 from observatory.ui_kiro_inspector import KIRO_PERMISSIONS, permission_summary
 from observatory.ui_session_inspector import (
     SessionInspectorModel, SessionInspectorProvider, SessionInspectorRegistry,
+    without_label_collisions,
 )
 from tests.test_terminal_search import ManualFeed
 
@@ -62,6 +64,23 @@ class InspectorRegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             SessionInspectorRegistry((other, other))
 
+    def test_shell_labels_take_priority_over_provider_labels(self):
+        self.assertEqual(without_label_collisions(
+            ((" credits ", "shadow"), ("Adapter", "ready"),
+             ("adapter", "duplicate")), ("Credits",)),
+            (("Adapter", "ready"),))
+        first = SessionInspectorProvider(
+            "first", lambda _item: True,
+            lambda _item, _status: SessionInspectorModel(
+                (("Adapter", "first"),), (("Evidence", "first"),)))
+        second = SessionInspectorProvider(
+            "second", lambda _item: True,
+            lambda _item, _status: SessionInspectorModel(
+                ((" adapter ", "second"),), ((" evidence ", "second"),)))
+        self.assertEqual(SessionInspectorRegistry((first, second)).for_session({}, {}),
+                         SessionInspectorModel((("Adapter", "first"),),
+                                               (("Evidence", "first"),)))
+
 
 class InspectorLayoutTests(unittest.IsolatedAsyncioTestCase):
     async def test_cockpit_kiro_at_floor_and_standard_size(self):
@@ -104,27 +123,45 @@ class InspectorLayoutTests(unittest.IsolatedAsyncioTestCase):
         provider = SessionInspectorProvider(
             "fixture-adapter", lambda item: item.get("runtime") == "Fixture",
             lambda _item, _status: SessionInspectorModel(
-                (("Adapter", "ready"),), (("Evidence", "fixture details"),)))
+                (("Adapter", "ready"), (" credits ", "shadow credits"),
+                 (" agent ", "shadow identity")),
+                (("Evidence", "fixture details"),
+                 (" evidence coverage ", "shadow coverage"))))
         feed = ManualFeed()
         feed.api.sessions = [{"source_id": "source-fixture", "session_id": "session-fixture",
                               "service": "fixture", "runtime": "Fixture",
-                              "task": "Inspect fixture", "project": "project"}]
+                              "task": "Inspect fixture", "project": "project",
+                              "credits": 1.5, "credits_reported": True}]
         feed.refresh()
         app = ObservatoryApp(feed, persist_preferences=False,
                              session_inspector_providers=(provider,))
+        credit_patch = patch('observatory.terminal_ui.credit_summary',
+                             return_value='This run 1.5\nFixture-reported credits')
+        credit_patch.start()
+        self.addCleanup(credit_patch.stop)
         async with app.run_test(size=(60, 18)) as pilot:
             await pilot.pause()
             app.refresh_timer.stop()
             app.set_agent_filter("all")
             app.select_agent("source-fixture")
             await pilot.pause()
-            self.assertIn(("Adapter", "ready"), app.inspector_payloads["agent-detail"][1])
+            fields = app.inspector_payloads["agent-detail"][1]
+            self.assertIn(("Adapter", "ready"), fields)
+            self.assertEqual(sum(label.strip().casefold() == "agent"
+                                 for label, _ in fields), 1)
+            self.assertEqual(sum(label.strip().casefold() == "credits"
+                                 for label, _ in fields), 1)
+            self.assertNotIn("shadow identity", repr(fields))
+            self.assertNotIn("shadow credits", repr(fields))
             app.action_expand()
             await pilot.pause()
             app.set_session_mode("details")
             await pilot.pause()
-            self.assertIn(("Evidence", "fixture details"),
-                          app.inspector_payloads["agent-detail"][2])
+            sections = app.inspector_payloads["agent-detail"][2]
+            self.assertIn(("Evidence", "fixture details"), sections)
+            self.assertEqual(sum(label.strip().casefold() == "evidence coverage"
+                                 for label, _ in sections), 1)
+            self.assertNotIn("shadow coverage", repr(sections))
 
 
 if __name__ == "__main__":

@@ -54,7 +54,7 @@ from .ui_render import update_status_text
 from .ui_content import metadata_table, prose, write_body, write_section
 from .ui_coverage import analysis_coverage
 from .ui_contributions import PaneRegistry, PaneScope, validate_model
-from .ui_session_inspector import SessionInspectorRegistry
+from .ui_session_inspector import SessionInspectorRegistry, without_label_collisions
 from .ui_monitoring import (UsageScreen, SortScreen, SessionScopeScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, credit_summary, metadata_usage_text, changed_records, failed,
                             failure_groups, event_id, connection_feedback, session_history_feedback)
 
@@ -3809,7 +3809,10 @@ class ObservatoryApp(App):
             if dismissed:fields.append(('Attention','Dismissed'))
             if self.agent_has_failures and not attention_required(item):fields.append(('Errors','Unseen recent error · s Inspect'))
             if credits_text:fields.append(('Credits',credits_text.splitlines()[0]))
-            fields.extend(inspector_additions.overview_fields)
+            fields.extend(without_label_collisions(
+                inspector_additions.overview_fields,
+                (label for label, _ in fields),
+            ))
             if request_event and input_required(item):
                 sections.append(('Latest request',session_excerpt(request_text(recorded_message_text(request_event)).body,lines=3)))
             sections += [(label,value) for label,value in short_hierarchy if label=='Subtree summary']
@@ -3840,14 +3843,18 @@ class ObservatoryApp(App):
                 ('Agent ID',item.get('agent_id')),('Project',item.get('project')),('Branch',item.get('branch')),
                 ('Model',item.get('model')),('Updated',when(item.get('stamp'))),
                 ('Capture','Metadata only' if item.get('capture_content') is False else 'Recorded content when available')]
+            before=[('Status evidence',attention_guidance(item,lifecycle_event=lifecycle_event)[0][1] if item.get('state')=='Interrupted' else attention_evidence(item,summary)),('Waiting on',wait_summary(item)),
+                    ('Task usage',usage_text),*([('Credits',credits_text)] if credits_text else []),
+                    *([('Reported source usage',metadata_usage)] if metadata_usage else [])]
+            after=[('Evidence coverage',coverage),('Analysis coverage',analysis_coverage(summary)),
+                   ('History freshness',session_history_feedback(self.data)),
+                   ('Working directory',item.get('working_directory'))]+hierarchy_sections+ai_sections
+            contributed=without_label_collisions(
+                inspector_additions.detail_sections,
+                (label for label, _ in before+after),
+            )
             self.inspect('agent-detail',title,fields+details+hierarchy_fields,
-                [('Status evidence',attention_guidance(item,lifecycle_event=lifecycle_event)[0][1] if item.get('state')=='Interrupted' else attention_evidence(item,summary)),('Waiting on',wait_summary(item)),
-                 ('Task usage',usage_text),*([('Credits',credits_text)] if credits_text else []),
-                 *([('Reported source usage',metadata_usage)] if metadata_usage else []),
-                 *inspector_additions.detail_sections,
-                 ('Evidence coverage',coverage),('Analysis coverage',analysis_coverage(summary)),
-                 ('History freshness',session_history_feedback(self.data)),
-                 ('Working directory',item.get('working_directory'))]+hierarchy_sections+ai_sections,
+                before+list(contributed)+after,
                 identity=(item['id'],'details'),context_in_header=True)
             return
         sections=guidance()

@@ -8,7 +8,7 @@
 </style></head><body><main>
 <nav>Agenturm · <a href="kiro-inspector-contribution.md">Markdown source</a></nav>
 <h1>Kiro session-inspector contribution</h1>
-<p>20 November 2026. The cockpit now composes Kiro's permission view through a trusted session-inspector provider. Generic <code>terminal_ui.py</code> renders bounded overview fields and detail sections returned by the registry; it does not name Kiro or inspect <code>kiro_folders</code>. The Kiro formatter and provider live in <code>ui_kiro_inspector.py</code>, and <code>terminal.py</code> registers them at the cockpit composition root.</p>
+<p>20 November 2026. The cockpit now composes Kiro's permission view through a trusted session-inspector provider. The generic session-inspector path in <code>terminal_ui.py</code> renders bounded overview fields and detail sections returned by the registry; that path no longer names Kiro or inspects <code>kiro_folders</code>. Other Kiro-specific UI copy remains outside this inspector refactor. The Kiro formatter and provider live in <code>ui_kiro_inspector.py</code>, and <code>terminal.py</code> registers them at the cockpit composition root.</p>
 <h2>Visible behavior</h2>
 <p>The existing inspector layout is unchanged. A Kiro session with recorded permissions still shows the same compact <strong>Permissions</strong> field and detailed <strong>Permissions</strong> section. A source that disappears from the current snapshot no longer supplies those sections. The provider reads only current snapshot metadata, keeps no cached folder paths, and follows the collector's metadata-only redaction of permission subjects and folder names. No new pane, key binding, source read, or content capture was added.</p>
 <h2>Extension boundary</h2>
