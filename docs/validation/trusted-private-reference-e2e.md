@@ -6,8 +6,8 @@ This checkpoint exercises the generic reference envelope, host-selected capture 
 
 ## Evidence exercised
 
-- The child process receives only a synthetic SHA-256 digest and submits it with one coarse Activity record through `reference_refs`.
-- The trusted host grant reads the configured fixture file, binds its fingerprint to the source lease, and the admission provider reopens and compares the source bytes before commit.
+- The separately installed child receives the configured test-root path through its environment and can access the fixture there. Its `reference_refs` wire message contains only the synthetic SHA-256 digest and event metadata; it never sends file bytes over the protocol.
+- Independently, the trusted host grant reads the configured fixture file, binds its fingerprint to the source lease, and the admission provider reopens and compares the source bytes before commit.
 - Reference content, its source digest, ordinary evidence, cursor, and provider ownership are committed in the same writer transaction.
 - The Activity projection publishes the event. The generic `/api/plugin-reference-content` route returns only the exact requested event through a host-registered reader.
 - The read output redacts the fixed fake password, omits the configured file path, and is capped at 4096 UTF-8 bytes with `clipped=true`.
