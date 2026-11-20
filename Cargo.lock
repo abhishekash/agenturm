@@ -146,6 +146,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "agenturm-storage-admission"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "agenturm-storage-shadow"
 version = "0.1.0"
 dependencies = [
