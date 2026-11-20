@@ -108,6 +108,8 @@ dependencies = [
  "agenturm-directory-source",
  "agenturm-jsonl-source",
  "agenturm-source-process",
+ "libc",
+ "serde",
  "serde_json",
  "sha2",
  "time",

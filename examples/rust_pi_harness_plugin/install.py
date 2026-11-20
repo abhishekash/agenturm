@@ -22,12 +22,16 @@ def main() -> None:
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--directory", action="store_true",
                         help="read up to 48 Pi session JSONL files below an existing directory")
+    parser.add_argument("--content-refs", action="store_true",
+                        help="explicit Pi directory user-text references (no public Review reader)")
     parser.add_argument("--source-id", help="stable source ID (defaults to a distinct ID per mode)")
     args = parser.parse_args()
     if os.name != "posix":
         parser.error("the Rust Pi executable currently supports POSIX hosts")
     if not all(path.is_absolute() for path in (args.binary, args.destination, args.source)):
         parser.error("binary, destination and source must be absolute paths")
+    if args.content_refs and not args.directory:
+        parser.error("Pi content references require --directory")
     if not args.binary.is_file() or not os.access(args.binary, os.X_OK):
         parser.error("binary must be an existing executable file")
     if args.directory:
@@ -38,7 +42,8 @@ def main() -> None:
     elif args.source.is_dir():
         parser.error("use --directory for a directory source")
     source_id = (args.source_id if args.source_id is not None else
-                 ("rust-pi-directory-source" if args.directory else "rust-pi-source"))
+                 ("rust-pi-content-source" if args.content_refs else
+                  "rust-pi-directory-source" if args.directory else "rust-pi-source"))
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", source_id):
         parser.error("invalid source ID")
     destination = args.destination
@@ -56,6 +61,9 @@ def main() -> None:
     artifact.chmod(0o700)
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     provides = ('["source-adapter/1", "configured-root/1", "source-discovery/1", '
+                '"source-discovery-root-gap/1", "harness.pi/1", "pi-content-ref/1"]'
+                if args.content_refs else
+                '["source-adapter/1", "configured-root/1", "source-discovery/1", '
                 '"source-discovery-root-gap/1"]'
                 if args.directory else '["source-adapter/1", "configured-root/1"]')
     with manifest.open("x") as output:
@@ -72,9 +80,14 @@ def main() -> None:
             f'manifest = {json.dumps(str(manifest))}\n'
             f'source_id = {json.dumps(source_id)}\n'
             'grants = ["configured-source-read"]\n'
-            'capture = "metadata-only"\npoll_interval = 0.5\ntimeout = 5.0\n'
+            f'capture = {json.dumps("pi-review-text-v1" if args.content_refs else "metadata-only")}\n'
+            'poll_interval = 0.5\ntimeout = 5.0\n'
             f'root = {json.dumps(str(args.source))}\n'
+            + ('replaces = ["pi"]\n' if args.content_refs else '')
             + ('requires_features = ["source-discovery/1", '
+               '"source-discovery-root-gap/1", "configured-root/1", '
+               '"harness.pi/1", "pi-content-ref/1"]\n' if args.content_refs else
+               'requires_features = ["source-discovery/1", '
                '"source-discovery-root-gap/1"]\n' if args.directory else ''))
     print(config)
 

@@ -13,6 +13,28 @@ use std::path::{Path, PathBuf};
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const CONTROL_LIMIT: usize = 64 * 1024;
 const MAX_RECORDS: u64 = 256;
+const MAX_STRUCTURAL_TOKENS: usize = 8192;
+
+fn structural_tokens(raw: &[u8]) -> usize {
+    let (mut quoted, mut escaped, mut count) = (false, false, 0);
+    for byte in raw {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                quoted = false;
+            }
+        } else if *byte == b'"' {
+            quoted = true;
+            count += 1;
+        } else if matches!(byte, b'{' | b'}' | b'[' | b']' | b',' | b':') {
+            count += 1;
+        }
+    }
+    count
+}
 
 fn invalid(message: &'static str) -> Box<dyn Error> {
     message.into()
@@ -31,6 +53,8 @@ pub trait Poller {
     const PLUGIN_ID: &'static str;
     const DISCOVERY: bool = false;
     const ROOT_GAP: bool = false;
+    const CONTENT_REF_FEATURE: Option<&'static str> = None;
+    const EXTRA_FEATURES: &'static [&'static str] = &[];
     fn poll(
         path: &Path,
         source_id: &str,
@@ -123,6 +147,10 @@ impl Session {
             if P::ROOT_GAP {
                 features.push("source-discovery-root-gap/1");
             }
+            if let Some(feature) = P::CONTENT_REF_FEATURE {
+                features.push(feature);
+            }
+            features.extend_from_slice(P::EXTRA_FEATURES);
             return Ok(Some((
                 json!({"type":"hello_ack","protocol":1,"plugin_id":P::PLUGIN_ID,
                 "features":features}),
@@ -157,7 +185,14 @@ impl Session {
                 {
                     return Err(invalid("invalid poll budget"));
                 }
-                let response = if P::DISCOVERY {
+                let poll_budget = if P::CONTENT_REF_FEATURE.is_some() {
+                    (bytes as usize)
+                        .checked_sub(128)
+                        .ok_or("content envelope frame budget too small")?
+                } else {
+                    bytes as usize
+                };
+                let mut response = if P::DISCOVERY {
                     let members = discovery_members(object.get("members"))?;
                     P::poll_discovery(
                         path,
@@ -165,17 +200,20 @@ impl Session {
                         cursor,
                         &members,
                         count as usize,
-                        bytes as usize,
+                        poll_budget,
                     )?
                 } else {
-                    P::poll(
-                        path,
-                        &self.source_id,
-                        cursor,
-                        count as usize,
-                        bytes as usize,
-                    )?
+                    P::poll(path, &self.source_id, cursor, count as usize, poll_budget)?
                 };
+                if P::CONTENT_REF_FEATURE.is_some() && response.get("content_refs").is_none() {
+                    response["content_refs"] = json!({"schema_version":1,"refs":[]});
+                }
+                let encoded = serde_json::to_vec(&response)?;
+                if encoded.len() > bytes as usize
+                    || structural_tokens(&encoded) > MAX_STRUCTURAL_TOKENS
+                {
+                    return Err(invalid("poll response exceeds requested budget"));
+                }
                 self.pending = Some(
                     response["cursor"]
                         .as_str()
@@ -231,6 +269,29 @@ mod tests {
     use super::*;
 
     struct Discovery;
+
+    struct Content;
+
+    impl Poller for Content {
+        const PLUGIN_ID: &'static str = "fixture.content";
+        const CONTENT_REF_FEATURE: Option<&'static str> = Some("fixture-content/1");
+        const EXTRA_FEATURES: &'static [&'static str] = &["harness.fixture/1"];
+
+        fn poll(
+            _path: &Path,
+            source_id: &str,
+            cursor: &str,
+            _max_records: usize,
+            max_bytes: usize,
+        ) -> Result<Value> {
+            if cursor == "large" {
+                return Ok(json!({"type":"batch","protocol":1,"source_id":source_id,
+                          "cursor":cursor,"records":[],"padding":"x".repeat(max_bytes)}));
+            }
+            Ok(json!({"type":"batch","protocol":1,"source_id":source_id,
+                      "cursor":cursor,"records":[]}))
+        }
+    }
 
     impl Poller for Discovery {
         const PLUGIN_ID: &'static str = "fixture.discovery";
@@ -304,5 +365,53 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(idle["records"], json!([]));
+    }
+
+    #[test]
+    fn declared_content_feature_and_final_envelope_obey_exact_budget() {
+        let mut session = Session::default();
+        let hello = session
+            .handle::<Content>(
+                json!({"type":"hello","protocol":1,"plugin_id":"fixture.content",
+                "source_id":"source","max_frame_bytes":65536}),
+                Path::new("/tmp"),
+            )
+            .unwrap()
+            .unwrap()
+            .0;
+        assert!(
+            hello["features"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("fixture-content/1"))
+        );
+        assert!(
+            hello["features"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("harness.fixture/1"))
+        );
+        let request = |max_bytes| {
+            json!({"type":"poll","protocol":1,
+            "source_id":"source","cursor":"","max_records":1,"max_bytes":max_bytes})
+        };
+        let oversized = json!({"type":"poll","protocol":1,
+            "source_id":"source","cursor":"large","max_records":1,"max_bytes":256});
+        assert!(
+            session
+                .handle::<Content>(oversized, Path::new("/tmp"))
+                .is_err()
+        );
+        assert!(session.pending.is_none());
+        let response = session
+            .handle::<Content>(request(256), Path::new("/tmp"))
+            .unwrap()
+            .unwrap()
+            .0;
+        assert!(serde_json::to_vec(&response).unwrap().len() <= 256);
+        assert_eq!(
+            response["content_refs"],
+            json!({"schema_version":1,"refs":[]})
+        );
     }
 }

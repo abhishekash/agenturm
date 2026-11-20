@@ -2,15 +2,16 @@
 
 #![forbid(unsafe_code)]
 
+mod content;
 mod directory;
 mod pi;
 
 use agenturm_jsonl_source::{Result, SourceFormat};
 use serde_json::Value;
 
-struct PiFormat;
+struct PiFormat<const CONTENT: bool = false>;
 
-impl SourceFormat for PiFormat {
+impl<const CONTENT: bool> SourceFormat for PiFormat<CONTENT> {
     type Context = pi::Context;
     const PLUGIN_ID: &'static str = "example.rust-pi-harness";
     const GAP_EVENT_PREFIX: &'static str = "pi-gap";
@@ -42,7 +43,13 @@ fn main() {
     // The host receives a coarse failure only, never source contents or paths.
     let directory_mode = std::env::var_os("AGENTURM_PLUGIN_DISCOVERY_MODE").as_deref()
         == Some(std::ffi::OsStr::new("1"));
-    let result = if directory_mode {
+    let content_mode = std::env::var_os("AGENTURM_PLUGIN_CONTENT_REFS").as_deref()
+        == Some(std::ffi::OsStr::new("1"));
+    let result = if content_mode && !directory_mode {
+        std::process::exit(2)
+    } else if content_mode {
+        agenturm_source_process::run::<directory::ContentDirectoryPoller>()
+    } else if directory_mode {
         agenturm_source_process::run::<directory::DirectoryPoller>()
     } else {
         agenturm_jsonl_source::run::<PiFormat>()

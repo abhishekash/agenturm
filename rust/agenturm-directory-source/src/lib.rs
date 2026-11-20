@@ -18,6 +18,21 @@ use sha2::{Digest, Sha256};
 /// diagnostics. Changing the prefix changes durable diagnostic identities.
 pub trait DirectoryFormat: SourceFormat {
     const DISCOVERY_GAP_EVENT_PREFIX: &'static str;
+    const CONTENT_REF_FEATURE: Option<&'static str> = None;
+    const EXTRA_FEATURES: &'static [&'static str] = &[];
+
+    /// Optional format-owned content nominations for the one member already
+    /// selected by the bounded discovery engine. The host proves each ref.
+    fn decorate_member(
+        _root: &Path,
+        _path: &Path,
+        _member: &str,
+        _prior_cursor: &str,
+        _local: &Value,
+        _batch: &mut Value,
+        _max_bytes: usize,
+    ) {
+    }
 }
 
 /// Explicitly configured directory reader. The host remains responsible for
@@ -317,14 +332,24 @@ where
         let new = local["cursor"].as_str().ok_or("missing local cursor")?;
         let records = local["records"].as_array().ok_or("missing local records")?;
         if new != saved_cursor || !records.is_empty() {
-            return member_batch(
+            let mut batch = member_batch(
                 source_id,
                 &next_cursor(sequence, &last)?,
                 &last,
                 new,
                 records.clone(),
                 max_bytes,
+            )?;
+            F::decorate_member(
+                root,
+                path,
+                &last,
+                saved_cursor,
+                &local,
+                &mut batch,
+                max_bytes,
             );
+            return Ok(batch);
         }
         return Ok(json!({"type":"batch","protocol":1,"source_id":source_id,
                          "cursor":format!("d1:{sequence}:{last}"),"records":[]}));
@@ -365,14 +390,16 @@ where
             let new = local["cursor"].as_str().ok_or("missing local cursor")?;
             let records = local["records"].as_array().ok_or("missing local records")?;
             if new != old || !records.is_empty() {
-                return member_batch(
+                let mut batch = member_batch(
                     source_id,
                     &next_cursor(sequence, member)?,
                     member,
                     new,
                     records.clone(),
                     max_bytes,
-                );
+                )?;
+                F::decorate_member(root, path, member, old, &local, &mut batch, max_bytes);
+                return Ok(batch);
             }
         }
     }
@@ -393,6 +420,8 @@ impl<F: DirectoryFormat> Poller for DirectoryPoller<F> {
     const PLUGIN_ID: &'static str = F::PLUGIN_ID;
     const DISCOVERY: bool = true;
     const ROOT_GAP: bool = true;
+    const CONTENT_REF_FEATURE: Option<&'static str> = F::CONTENT_REF_FEATURE;
+    const EXTRA_FEATURES: &'static [&'static str] = F::EXTRA_FEATURES;
 
     fn poll(
         _path: &Path,

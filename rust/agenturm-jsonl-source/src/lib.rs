@@ -175,6 +175,30 @@ impl Cursor {
     }
 }
 
+/// Decoded, bounded source checkpoint for format-owned reference nominations.
+/// This is observational only; the receiver must prove bytes independently.
+pub struct CursorProof {
+    pub version: u8,
+    pub device: u64,
+    pub inode: u64,
+    pub offset: u64,
+    pub digest: String,
+    pub header_digest: String,
+    pub generation: String,
+}
+
+pub fn cursor_proof(raw: &str) -> Result<Option<CursorProof>> {
+    Ok(Cursor::parse(raw)?.map(|cursor| CursorProof {
+        version: cursor.version,
+        device: cursor.device,
+        inode: cursor.inode,
+        offset: cursor.offset,
+        digest: cursor.digest,
+        header_digest: cursor.header_digest,
+        generation: cursor.generation,
+    }))
+}
+
 #[cfg(unix)]
 fn file_identity(metadata: &Metadata) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt;

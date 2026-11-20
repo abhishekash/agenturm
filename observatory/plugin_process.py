@@ -62,7 +62,8 @@ class PluginProcess:
                  source_root: str | None = None,
                  required_features: tuple[str, ...] = (),
                  rust_host_executable: str | None = None,
-                 rust_host_sha256: str | None = None):
+                 rust_host_sha256: str | None = None,
+                 content_refs_enabled: bool = False):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         plan_activation({manifest.id: manifest}, (manifest.id,),
@@ -95,11 +96,15 @@ class PluginProcess:
         if "source-discovery-root-gap/1" in expected and (
                 "source-discovery/1" not in expected or source_root is None):
             raise ProtocolError("root-gap feature requires configured discovery")
+        if type(content_refs_enabled) is not bool or (content_refs_enabled and (
+                "source-discovery/1" not in expected or source_root is None)):
+            raise ProtocolError("content references require configured discovery")
         self.manifest = manifest
         self.source_id = source_id
         self.timeout = float(timeout)
         self.source_root = source_root
         self.required_features = frozenset(expected)
+        self.content_refs_enabled = content_refs_enabled
         rust_host_artifact(rust_host_executable, rust_host_sha256)
         self.rust_host_executable = rust_host_executable
         self.rust_host_sha256 = rust_host_sha256
@@ -240,6 +245,8 @@ class PluginProcess:
                 child_env["AGENTURM_PLUGIN_SOURCE_ROOT"] = self.source_root
             if "source-discovery/1" in self.required_features:
                 child_env["AGENTURM_PLUGIN_DISCOVERY_MODE"] = "1"
+            if self.content_refs_enabled:
+                child_env["AGENTURM_PLUGIN_CONTENT_REFS"] = "1"
             self.process = subprocess.Popen(
                 command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, cwd=self._temporary.name,

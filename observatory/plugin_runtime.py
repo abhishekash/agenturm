@@ -33,11 +33,6 @@ class PluginSession:
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         self.store = store
-        self.process = PluginProcess(manifest, source_id=source_id,
-                                     allowed_grants=allowed_grants, timeout=timeout,
-                                     source_root=source_root, required_features=required_features,
-                                     rust_host_executable=rust_host_executable,
-                                     rust_host_sha256=rust_host_sha256)
         self.content_source = None
         self.content_grant = None
         if content_source is not None:
@@ -49,11 +44,17 @@ class PluginSession:
                     or set(content_source.allowed_grants) != set(allowed_grants)
                     or set(content_source.runtime_features) != set(required_features)
                     or content_source.capture_mode != "pi-review-text-v1"
-                    or "pi-content-ref/1" not in self.process.required_features):
+                    or "pi-content-ref/1" not in required_features):
                 raise ProtocolError("Pi content source differs from trusted process configuration")
             self.content_source = content_source
-        elif "pi-content-ref/1" in self.process.required_features:
+        elif "pi-content-ref/1" in required_features:
             raise ProtocolError("Pi content feature requires trusted configuration")
+        self.process = PluginProcess(manifest, source_id=source_id,
+                                     allowed_grants=allowed_grants, timeout=timeout,
+                                     source_root=source_root, required_features=required_features,
+                                     rust_host_executable=rust_host_executable,
+                                     rust_host_sha256=rust_host_sha256,
+                                     content_refs_enabled=self.content_source is not None)
         self.lease: SourceLease | None = None
         self.cursor: str | None = None
         self.members: dict[str, str] | None = None
