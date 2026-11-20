@@ -32,6 +32,7 @@ jobs:
       - run: cargo build --locked --bin agenturm-storage-service
       - run: cargo build --locked --bin agenturm-storage-admission
       - run: cargo build --locked --bin agenturm-migration-verify
+      - run: cargo build --locked --bin agenturm-count-observations
       - run: cargo build --locked -p agenturm-storage-service-contract --example v2_client
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -40,6 +41,9 @@ jobs:
       - run: python -m unittest tests.test_plugin_reference_wire_spi -v
       - run: python -m unittest tests.test_plugin_private_reference_e2e -v
       - run: python -m unittest tests.test_store_writer_lease -v
+      - run: python -m unittest tests.test_declarative_count_capability -v
+        env:
+          AGENTURM_RUST_COUNT_OBSERVATIONS_BIN: ${{ github.workspace }}/target/debug/agenturm-count-observations
       - run: python -m unittest tests.test_rust_migration_candidate -v
         env:
           AGENTURM_RUST_MIGRATION_VERIFY_BIN: ${{ github.workspace }}/target/debug/agenturm-migration-verify
