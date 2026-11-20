@@ -1,3 +1,3 @@
 [workspace]
-members = ["rust/agenturm-protocol", "rust/agenturm-fixture-plugin", "rust/agenturm-sample-harness", "rust/agenturm-plugin-host", "rust/agenturm-domain-reducer", "rust/agenturm-pi-harness"]
+members = ["rust/agenturm-protocol", "rust/agenturm-fixture-plugin", "rust/agenturm-sample-harness", "rust/agenturm-plugin-host", "rust/agenturm-domain-reducer", "rust/agenturm-jsonl-source", "rust/agenturm-pi-harness"]
 resolver = "2"

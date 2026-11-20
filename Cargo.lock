@@ -20,12 +20,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "agenturm-pi-harness"
+name = "agenturm-jsonl-source"
 version = "0.1.0"
 dependencies = [
  "agenturm-protocol",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "agenturm-pi-harness"
+version = "0.1.0"
+dependencies = [
+ "agenturm-jsonl-source",
+ "serde_json",
  "time",
 ]
 
