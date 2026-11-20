@@ -1,7 +1,7 @@
 """Internal, fail-closed Pi user-text read. No HTTP or UI caller is wired here.
 
-Only the receiver's active supervisor supplies the configured root. The two
-short Store snapshots fence policy and row changes around source-file I/O.
+Only the receiver's active supervisor supplies the configured root. Short
+Store snapshots fence policy and row changes around source-file I/O.
 """
 from __future__ import annotations
 
