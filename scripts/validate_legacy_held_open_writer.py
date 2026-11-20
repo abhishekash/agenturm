@@ -16,6 +16,7 @@ from pathlib import Path
 import pwd
 import grp
 import select
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -204,6 +205,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="agenturm-held-open-") as temporary:
         root = Path(temporary)
         root.chmod(0o755)
+        fixture_dir = root / "public-fixture"
+        fixture_dir.mkdir(mode=0o755)
+        fixture = fixture_dir / Path(__file__).name
+        shutil.copy2(Path(__file__).resolve(), fixture)
+        fixture.chmod(0o644)
         old = root / "old"
         private = root / "service-private"
         old.mkdir(mode=0o700)
@@ -219,9 +225,13 @@ def main() -> None:
             env["AGENTURM_RELEASE_SITE"] = str(site)
             env["PYTHONPATH"] = str(site)
         else:
-            env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+            site = root / "python-site"
+            site.mkdir(mode=0o755)
+            shutil.copytree(Path(__file__).resolve().parents[1] / "observatory",
+                            site / "observatory")
+            env["PYTHONPATH"] = str(site)
         holder = subprocess.Popen(
-            [sys.executable, __file__, "--case", "holder", "--database", str(database)],
+            [sys.executable, str(fixture), "--case", "holder", "--database", str(database)],
             preexec_fn=drop_to(legacy_uid, legacy_gid), env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1,
@@ -273,7 +283,7 @@ def main() -> None:
                   private.stat().st_uid == service_uid,
                   "private target permissions changed")
             fresh = subprocess.run(
-                [sys.executable, __file__, "--case", "fresh", "--data", str(private)],
+                [sys.executable, str(fixture), "--case", "fresh", "--data", str(private)],
                 preexec_fn=drop_to(legacy_uid, legacy_gid), env=env,
                 capture_output=True, text=True, timeout=10,
             )

@@ -153,8 +153,8 @@ class StartupReceiverHealthTests(unittest.TestCase):
                     write_native(source, name, parent)
                     monitor.sessions[source] = Session(store, source, 'Codex', capture_details=True)
                 monitor.discover = lambda: None
-                monitor.opencode.poll = lambda: 0
-                monitor.opencode.set_mcp_servers = lambda *args: None
+                monitor.reader_plugins['opencode'].poll = lambda: 0
+                monitor.reader_plugins['opencode'].set_mcp_servers = lambda *args: None
                 monitor.runtime_updated = time.monotonic() + 3600
                 store.local_agent_monitor = monitor
                 server = RecordingServer(('127.0.0.1', 0), handler_for(store, TOKEN, quiet=True))

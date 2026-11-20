@@ -1,20 +1,20 @@
 {
   "format": "agenturm-native-fixture-provenance-v1",
-  "verified_on": "2026-11-19",
+  "verified_on": "2026-11-20",
   "reader": {
     "legacy_verified_baseline": "1e8bdcbe5337ca52e7fdfe5b30c793c1e48764c8",
     "adapter_commit": "41a51fa7f3e80ac207af1f6d5b0d5f0e64141d46",
     "files": {
       "observatory/opencode.py": "55e197ca56ce5540e33db9be6a1d0dbeba945db9ef7f7bb3506fdba73bd4be5f",
       "observatory/opencode_turns.py": "9606a98d84109244c534c8705f3b50a39c0d52e85606c083273adb79afca40ec",
-      "observatory/local_agents.py": "19c4ee4005df2ab2b03abfbe66ef734b64c7705dcba9c87e47a651677abd5d25",
+      "observatory/local_agents.py": "e80fd3a497ff1489b6628f697f0046fe4fac55bfe7f56d4641c41f36b60ad4a5",
       "observatory/local_activity.py": "9bf2c058ef9ac7c43fa2bfb8f21db80545016d2b18cacde3db97d85bb8a56aea",
-      "observatory/native_sources.py": "83db71f7e921276a4ce2dd5c192ece8e7324be481c939a5e7adb4179ef5c3c53",
-      "observatory/native_adapter.py": "d453145452b1881cf59bca8949cfdf1e70d17e7a47d1f9ae0ed6afd274bdc6c6",
+      "observatory/native_sources.py": "1801b514eca0da5859f09da610ee73fcd9405352025f7eb7f167e5889862cf55",
+      "observatory/native_adapter.py": "1c9603bcb02798d84cd65d973b9b835a9592f4a3ce75b8c2bfc485cc0907f978",
       "observatory/adapters/pi.py": "bab86e6ed3a6fe7f9949b973bd90491f86e30173823014dc4894233ca941758e",
-      "observatory/adapters/claude.py": "2deb3028aeb28f6b5c1ff4167e80a97726b242c6350b0c75f0bf60a045816b42",
-      "observatory/adapters/codex.py": "72a8a9e89f98c23a5d356d42406802f378b656f86837a53ab69100635d2f2349",
-      "observatory/adapters/kiro.py": "fe3c4d79882dc57464941eef824b73fb52274cd2faf9d12662f251322af62fe3"
+      "observatory/adapters/claude.py": "96c58f9e2d44531962d22652d12425f7025d367d96033914330cf4bbace09994",
+      "observatory/adapters/codex.py": "147d9403e3c621985fa2ded2b631aece7bfa7018980de592aa63a51239ce962b",
+      "observatory/adapters/kiro.py": "f079797cacce348a3568f0b3644671d0bfc5c822902284385dd6a3697c3903f9"
     },
     "core_membership_commits": [
       "d955cbbc5f87a04a1055ee0bf07ed52ef85e8fc9",
@@ -145,7 +145,7 @@
       }
     ],
     "verified_reader_commit": "90140d8e0e1f017f99448288263e4cbc8fba22b9",
-    "verification_scope": "Current hashes bind the in-process native reader and adapter bytes at main #184. Synthetic native fixture, source registry and provenance tests check this tree. Producer fixture bytes and immutable upstream source references are unchanged. This does not establish a live producer capture, complete format coverage, process adapter parity, or a passing full CI run; see docs/validation/native-fixture-provenance.md."
+    "verification_scope": "Current hashes bind the in-process native reader and adapter bytes at main #301. Synthetic native fixture, source registry and provenance tests check this tree. Producer fixture bytes and immutable upstream source references are unchanged. This does not establish a live producer capture, complete format coverage, process adapter parity, or a passing full CI run; see docs/validation/native-fixture-provenance.md."
   },
   "fixtures": [
     {

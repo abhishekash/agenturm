@@ -13,12 +13,17 @@ import shutil
 import signal
 import socket
 import sqlite3
+import shutil
 import stat
 import struct
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+# CI invokes this root-only coordinator with the system interpreter, which may
+# differ from the setup-python interpreter where the package was installed.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from validate_rust_storage_service_accounts import (check, drop_to, identities,
                                                      read_exact, wait_exit, wait_socket)
@@ -144,8 +149,9 @@ def child(args: argparse.Namespace) -> None:
 def run_child(case: str, *, uid: int, gid: int, root: Path,
               supplementary: tuple[int, ...] = ()) -> None:
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
-    result = subprocess.run([sys.executable, __file__, "--case", case,
+    fixture = root / Path(__file__).name
+    env["PYTHONPATH"] = str(root)
+    result = subprocess.run([sys.executable, str(fixture), "--case", case,
         "--socket", str(root / "transport" / SOCKET_NAME),
         "--data", str(root / "private-data"), "--request", str(root / "request.json")],
         preexec_fn=drop_to(uid, gid, supplementary), env=env,
@@ -202,10 +208,10 @@ def main() -> None:
     check(sys.platform == "linux" and os.geteuid() == 0,
           "run this fixture as root in an isolated Linux VM or container")
     check(args.bin is not None and args.bin.is_file(), "pass a built service")
-    binary = args.bin.resolve()
-    rust_client = args.rust_client_bin.resolve() if args.rust_client_bin else None
-    if rust_client is not None:
-        check(rust_client.is_file(), "pass a built Rust client")
+    binary_source = args.bin.resolve()
+    rust_client_source = args.rust_client_bin.resolve() if args.rust_client_bin else None
+    if rust_client_source is not None:
+        check(rust_client_source.is_file(), "pass a built Rust client")
     service_uid, client_uid, wrong_uid, service_gid, client_gid = identities()
     def drop_service() -> None:
         # Deliberately permissive launcher umask: service must impose privacy.
@@ -215,6 +221,23 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="agenturm-v2-accounts-") as temporary:
         root = Path(temporary)
         root.chmod(0o755)
+        fixture = root / Path(__file__).name
+        shutil.copy2(Path(__file__).resolve(), fixture)
+        fixture.chmod(0o644)
+        account_fixture = root / "validate_rust_storage_service_accounts.py"
+        shutil.copy2(Path(__file__).resolve().with_name(account_fixture.name),
+                     account_fixture)
+        account_fixture.chmod(0o644)
+        shutil.copytree(Path(__file__).resolve().parents[1] / "observatory",
+                        root / "observatory")
+        binary = root / "agenturm-storage-service"
+        shutil.copy2(binary_source, binary)
+        binary.chmod(0o755)
+        rust_client = None
+        if rust_client_source is not None:
+            rust_client = root / "agenturm-v2-client"
+            shutil.copy2(rust_client_source, rust_client)
+            rust_client.chmod(0o755)
         data = root / "private-data"
         transport = root / "transport"
         data.mkdir(mode=0o700)

@@ -2190,12 +2190,18 @@ class ObservatoryApp(App):
 
     def refresh_tick(self):
         """Leave unchanged idle chrome alone; direct actions still render now."""
+        # Timer messages may already be queued when Textual tears down the
+        # screen stack. ``App.screen`` raises when that stack is empty, so use
+        # the public stack snapshot before inspecting the active screen.
+        screen_stack=self.screen_stack
+        if not screen_stack:return
+        screen=screen_stack[-1]
         snapshot=self.feed.snapshot
         now=time.monotonic()
         if (snapshot is self._last_tick_snapshot and snapshot.updated and not snapshot.error
                 and self.feed.connection.phase=='live'
                 and self.last_update!=-1 and not self.feed.retry_requested
-                and not getattr(self.screen,'selections',None)
+                and not getattr(screen,'selections',None)
                 and now-self._last_tick_at<2.0):
             return
         self._last_tick_snapshot=snapshot
