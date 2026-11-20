@@ -51,8 +51,9 @@
 <p>No performance gain or full Pi parity is asserted. The Python Store remains the sole database writer.</p>
 <h2>Verification</h2>
 <ul>
-<li><code>cargo fmt --all -- --check</code>, <code>cargo clippy --workspace --all-targets --locked -- -D warnings</code>, and <code>cargo test --workspace --locked</code>.</li>
-<li><code>cargo build --locked -p agenturm-pi-harness</code> followed by <code>AGENTURM_RUST_PI_BIN=... uv run python -m unittest tests.test_rust_pi_harness_plugin -v</code> against an installed SHA-pinned binary.</li>
-<li>Existing plugin and native Pi regression tests.</li>
+<li>After rebasing onto main <code>009a201</code>, <code>cargo fmt --all -- --check</code>, <code>cargo clippy --workspace --all-targets --locked -- -D warnings</code>, and <code>cargo test --workspace --locked</code> passed. The Pi crate had nine passing unit tests; the workspace had 30 passing Rust tests.</li>
+<li><code>cargo build --locked -p agenturm-pi-harness</code> and <code>AGENTURM_RUST_PI_BIN=... uv run python -m unittest tests.test_rust_pi_harness_plugin -q</code> passed six installed SHA-pinned binary tests, including same-inode truncation with a reused native row ID.</li>
+<li>The native Pi and plugin regression set passed 85 Python tests.</li>
 </ul>
+<p>An independent Rust reviewer inspected the cursor and whole-line acceptance loop and found that rejected lines retain their offset and context and that gap diagnostics page coherently. That review did not cover the entire Pi translation or installed test surface; those behaviors have the targeted checks above and remain subject to broader Pi corpus validation.</p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
