@@ -18,6 +18,7 @@ from pathlib import Path
 from .agent_hierarchy import (AGENT_ID, HierarchyGraph, canonical_agent_id, normalize_node,
                               provenance)
 from .findings import _safe_text, analyze, mcp_result_error
+from .native_ingest_scopes import NativeIngestScopes
 
 TRACE_ID = re.compile(r"^[0-9a-fA-F]{32}$")
 SPAN_ID = re.compile(r"^[0-9a-fA-F]{16}$")
@@ -636,6 +637,7 @@ class IndexNotReady(RuntimeError):
 class Store:
     def __init__(self, path, async_derived_refresh=False, workflow_patterns=None):
         self.path = str(path)
+        self._native_ingest_scopes = NativeIngestScopes.bundled()
         from .read_connections import ReadConnections
         self._read_connections = ReadConnections(path)
         self.workflow_patterns = (os.environ.get("AGENTURM_WORKFLOW_PATTERNS", "0") == "1"
@@ -803,43 +805,7 @@ class Store:
             # accepted in-process native writes may claim a capability source;
             # any raw replacement clears that claim before a trusted writer
             # restores it in the same transaction.
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS native_capture_owner_v1 (
-                    kind TEXT NOT NULL, owner_key TEXT NOT NULL, source_id TEXT NOT NULL,
-                    PRIMARY KEY(kind,owner_key));
-                CREATE TRIGGER IF NOT EXISTS native_capture_span_insert_v1
-                    AFTER INSERT ON spans
-                    WHEN NEW.scope_name IN ('observatory.local_agents','observatory.opencode') BEGIN
-                    DELETE FROM native_capture_owner_v1
-                    WHERE kind='span' AND owner_key=NEW.trace_id||':'||NEW.span_id; END;
-                CREATE TRIGGER IF NOT EXISTS native_capture_span_update_v1
-                    AFTER UPDATE ON spans
-                    WHEN OLD.scope_name IN ('observatory.local_agents','observatory.opencode')
-                      OR NEW.scope_name IN ('observatory.local_agents','observatory.opencode') BEGIN
-                    DELETE FROM native_capture_owner_v1 WHERE kind='span'
-                    AND owner_key IN (OLD.trace_id||':'||OLD.span_id,NEW.trace_id||':'||NEW.span_id); END;
-                CREATE TRIGGER IF NOT EXISTS native_capture_span_delete_v1
-                    AFTER DELETE ON spans
-                    WHEN OLD.scope_name IN ('observatory.local_agents','observatory.opencode') BEGIN
-                    DELETE FROM native_capture_owner_v1
-                    WHERE kind='span' AND owner_key=OLD.trace_id||':'||OLD.span_id; END;
-                CREATE TRIGGER IF NOT EXISTS native_capture_log_insert_v1
-                    AFTER INSERT ON logs
-                    WHEN NEW.scope_name IN ('observatory.local_agents','observatory.opencode') BEGIN
-                    DELETE FROM native_capture_owner_v1
-                    WHERE kind='log' AND owner_key=NEW.digest; END;
-                CREATE TRIGGER IF NOT EXISTS native_capture_log_update_v1
-                    AFTER UPDATE ON logs
-                    WHEN OLD.scope_name IN ('observatory.local_agents','observatory.opencode')
-                      OR NEW.scope_name IN ('observatory.local_agents','observatory.opencode') BEGIN
-                    DELETE FROM native_capture_owner_v1 WHERE kind='log'
-                    AND owner_key IN (OLD.digest,NEW.digest); END;
-                CREATE TRIGGER IF NOT EXISTS native_capture_log_delete_v1
-                    AFTER DELETE ON logs
-                    WHEN OLD.scope_name IN ('observatory.local_agents','observatory.opencode') BEGIN
-                    DELETE FROM native_capture_owner_v1
-                    WHERE kind='log' AND owner_key=OLD.digest; END;
-            """)
+            self._native_ingest_scopes.install_capture_fences(db)
             finding_columns={row[1] for row in db.execute('PRAGMA table_info(finding_cache)')}
             for name in ('agent_id','session_id','producer','group_key'):
                 if name not in finding_columns:db.execute(f'ALTER TABLE finding_cache ADD COLUMN {name} TEXT')
@@ -1797,7 +1763,7 @@ class Store:
         if (not self._async_derived_refresh or not records or len(records)>64 or
                 not state.get('ready')or state.get('error')or self.last_derived_error or
                 self._derived_stopping or self._migration_stop.is_set()or self.workflow_patterns or
-                any(r.get('scope_name')not in {'observatory.local_agents','observatory.opencode'}for r in records)):
+                any(not self._native_ingest_scopes.contains(r.get('scope_name')) for r in records)):
             return False
         traces=sorted({r.get('trace_id')for r in records if r.get('trace_id')})
         if not traces or len(traces)>4 or any(not r.get('trace_id')for r in records):return False
@@ -2171,15 +2137,13 @@ class Store:
             return records
         return [record for record,row in zip(records,rows) if db.execute(sql,row).rowcount]
 
-    @staticmethod
-    def _capture_source_from_native(record):
-        if record.get('scope_name') not in {'observatory.local_agents','observatory.opencode'}:
+    def _capture_source_from_native(self, record):
+        if not self._native_ingest_scopes.contains(record.get('scope_name')):
             return None
         source=(record.get('resource_attributes') or {}).get('observatory.source_id')
         return source if isinstance(source,str) and 0<len(source)<=200 else None
 
-    @staticmethod
-    def _native_noop_guard(table):
+    def _native_noop_guard(self, table):
         # Exact stored bytes/NULLs only: watermark, membership and capture
         # metadata remain real changes. The final parameter is a same-writer
         # repair flag, not permission to discard an invalidation.
@@ -2197,15 +2161,14 @@ class Store:
                 AND EXISTS(SELECT 1 FROM logs legacy WHERE legacy.scope_name='observatory.local_agents'
                     AND json_extract(legacy.attributes,'$."observatory.record_id"')={record_id}
                     AND legacy.digest<>excluded.digest))"""
-        return f" AND (excluded.scope_name IS NULL OR excluded.scope_name NOT IN ('observatory.local_agents','observatory.opencode') OR {changed} OR ?{legacy})"
+        return f" AND (excluded.scope_name IS NULL OR excluded.scope_name NOT IN ({self._native_ingest_scopes.sql}) OR {changed} OR ?{legacy})"
 
-    @staticmethod
-    def _native_repair_flags(db,records,kind):
+    def _native_repair_flags(self,db,records,kind):
         # Inspect only small cached/scalar state once per trace. Do not scan
         # raw maxima for healthy replays; absent/stale caches still force work.
         traces=set()
         for row in records:
-            if row.get('scope_name')in {'observatory.local_agents','observatory.opencode'}and row.get('trace_id'):
+            if self._native_ingest_scopes.contains(row.get('scope_name')) and row.get('trace_id'):
                 traces.add(row['trace_id'])
         states={}
         for trace in traces:
@@ -2220,7 +2183,7 @@ class Store:
             states[trace]=(bool(missing_or_dirty),row['last_ns'])
         flags=[]
         for row in records:
-            state=states.get(row.get('trace_id'))if row.get('scope_name')in {'observatory.local_agents','observatory.opencode'}else None
+            state=states.get(row.get('trace_id')) if self._native_ingest_scopes.contains(row.get('scope_name')) else None
             stamp=row['end_unix_nano']if kind=='span'else row['time_unix_nano']
             flags.append(bool(state and(state[0]or state[1]<stamp)))
         return flags
@@ -2248,6 +2211,8 @@ class Store:
         with self._source_write() as refresh:
             with self._connect() as db:
                 db.execute('BEGIN IMMEDIATE')
+                if _trusted_native:
+                    self._native_ingest_scopes.require_current(db)
                 spans=self._policy_records(spans,'span',db)
                 flags=self._native_repair_flags(db,spans,'span')if skip_unchanged_native else []
                 repair={row['trace_id']for row,flag in zip(spans,flags)if flag}
@@ -2299,7 +2264,7 @@ class Store:
     def _ingest_agent_nodes_from_spans(self, spans, *, _db=None):
         nodes = []
         for span in spans:
-            if span.get("scope_name") in {"observatory.local_agents", "observatory.opencode"}:
+            if self._native_ingest_scopes.contains(span.get("scope_name")):
                 continue
             node = _agent_node_from_attributes(
                 span.get("attributes"), span.get("resource_attributes"),
@@ -2396,6 +2361,8 @@ class Store:
         with self._source_write() as refresh:
             with self._connect() as db:
                 db.execute('BEGIN IMMEDIATE')
+                if _trusted_native:
+                    self._native_ingest_scopes.require_current(db)
                 if expected_receiver is not None:
                     if not isinstance(expected_receiver,str) or not 0<len(expected_receiver)<=128:
                         raise ValueError('Invalid expected receiver identity')
@@ -2463,7 +2430,7 @@ class Store:
                                                  log.get("service"), log.get("time_unix_nano"),
                                                  log.get("digest"))
                      for log in records
-                     if log.get("scope_name") not in {"observatory.local_agents", "observatory.opencode"}]
+                     if not self._native_ingest_scopes.contains(log.get("scope_name"))]
             nodes = [node for node in nodes if node]
             if nodes:
                 self.upsert_agent_nodes(nodes[:5000])
@@ -2527,14 +2494,14 @@ class Store:
                             "AND owner.owner_key=source.digest AND owner.source_id="
                             "json_extract(source.resource_attributes,'$.\"observatory.source_id\"') "
                             "WHERE source.digest=activity_index_v1.owner_key "
-                            "AND source.scope_name IN ('observatory.local_agents','observatory.opencode') "
+                            f"AND source.scope_name IN ({self._native_ingest_scopes.sql}) "
                             "AND owner.source_id "
                             f"IN ({placeholders}))) OR (kind='span' AND EXISTS(SELECT 1 FROM spans source "
                             "JOIN native_capture_owner_v1 owner ON owner.kind='span' "
                             "AND owner.owner_key=source.trace_id||':'||source.span_id AND owner.source_id="
                             "json_extract(source.resource_attributes,'$.\"observatory.source_id\"') "
                             "WHERE source.trace_id||':'||source.span_id=activity_index_v1.owner_key "
-                            "AND source.scope_name IN ('observatory.local_agents','observatory.opencode') "
+                            f"AND source.scope_name IN ({self._native_ingest_scopes.sql}) "
                             f"AND owner.source_id IN ({placeholders}))))")
             capture_params=(*_capture_source_ids,*_capture_source_ids)
         if trace_id and turn_id:raise ValueError('Choose an exact trace or a recorded turn, not both')
@@ -2583,6 +2550,7 @@ class Store:
                 db.commit()
                 raise ValueError('Activity index is catching up; retry after receiver migration completes')
             if capture_filter is not None:
+                self._native_ingest_scopes.require_current(db)
                 # Inspect the bounded candidate window before filtering it.
                 # If older rows exist, the page remains incomplete; no older
                 # row can silently make a complete aggregate look complete.
