@@ -69,6 +69,21 @@ fn spawn_child(path: &PathBuf) -> Result<(OwnedChild, ChildStdin, ChildStdout)> 
     {
         command.env("AGENTURM_PLUGIN_CONTENT_REFS", "1");
     }
+    if let Some(feature) = std::env::var_os("AGENTURM_PLUGIN_BATCH_FEATURE") {
+        let feature = feature.to_str().ok_or("invalid plugin batch feature")?;
+        if feature.is_empty()
+            || feature.len() > 96
+            || !feature.as_bytes()[0].is_ascii_lowercase()
+            || !feature.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'-' | b'/')
+            })
+        {
+            return Err(invalid("invalid plugin batch feature"));
+        }
+        command.env("AGENTURM_PLUGIN_BATCH_FEATURE", feature);
+    }
     let mut child = OwnedChild(command.spawn()?);
     let input = child.0.stdin.take().ok_or("child stdin unavailable")?;
     let output = child.0.stdout.take().ok_or("child stdout unavailable")?;

@@ -166,6 +166,41 @@ class ContentPollBatch(PollBatch):
     content_refs: tuple[dict, ...] = ()
 
 
+@dataclass(frozen=True)
+class CommandPollBatch(PollBatch):
+    """A separately negotiated, reference-only Pi command envelope."""
+
+    command_refs: tuple[object, ...] = ()
+
+
+def validate_command_batch(message: dict, *, source_id: str) -> CommandPollBatch:
+    """Decode only a bounded command-reference envelope, never command text."""
+    from dataclasses import fields
+    from .plugin_pi_command import PiCommandRef
+
+    if not isinstance(message, dict) or "command_refs" not in message:
+        raise ProtocolError("Pi command reference envelope is required")
+    envelope = message["command_refs"]
+    if (not isinstance(envelope, dict) or set(envelope) != {"schema_version", "refs"}
+            or type(envelope["schema_version"]) is not int
+            or envelope["schema_version"] != 1
+            or not isinstance(envelope["refs"], list)
+            or len(envelope["refs"]) > 48
+            or len(encode_message(envelope).encode("utf-8")) > MAX_CONTROL_FRAME_BYTES):
+        raise ProtocolError("invalid Pi command reference envelope")
+    expected = {field.name for field in fields(PiCommandRef)}
+    refs = []
+    for item in envelope["refs"]:
+        if not isinstance(item, dict) or set(item) != expected:
+            raise ProtocolError("invalid Pi command reference shape")
+        refs.append(PiCommandRef(**item))
+    ordinary = {key: value for key, value in message.items() if key != "command_refs"}
+    batch = validate_batch(ordinary, source_id=source_id)
+    return CommandPollBatch(batch.source_id, batch.cursor, batch.records,
+                            batch.member_id, batch.member_cursor, batch.root_gap,
+                            tuple(refs))
+
+
 def validate_content_batch(message: dict, *, source_id: str) -> ContentPollBatch:
     """Require a separately versioned, bounded reference-only envelope.
 

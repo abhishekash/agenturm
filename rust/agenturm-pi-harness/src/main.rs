@@ -9,9 +9,9 @@ mod pi;
 use agenturm_jsonl_source::{Result, SourceFormat};
 use serde_json::Value;
 
-struct PiFormat<const CONTENT: bool = false>;
+struct PiFormat<const CONTENT: bool = false, const COMMAND: bool = false>;
 
-impl<const CONTENT: bool> SourceFormat for PiFormat<CONTENT> {
+impl<const CONTENT: bool, const COMMAND: bool> SourceFormat for PiFormat<CONTENT, COMMAND> {
     type Context = pi::Context;
     const PLUGIN_ID: &'static str = "example.rust-pi-harness";
     const GAP_EVENT_PREFIX: &'static str = "pi-gap";
@@ -45,15 +45,20 @@ fn main() {
         == Some(std::ffi::OsStr::new("1"));
     let content_mode = std::env::var_os("AGENTURM_PLUGIN_CONTENT_REFS").as_deref()
         == Some(std::ffi::OsStr::new("1"));
-    let result = if content_mode && !directory_mode {
-        std::process::exit(2)
-    } else if content_mode {
-        agenturm_source_process::run::<directory::ContentDirectoryPoller>()
-    } else if directory_mode {
-        agenturm_source_process::run::<directory::DirectoryPoller>()
-    } else {
-        agenturm_jsonl_source::run::<PiFormat>()
-    };
+    let command_mode = std::env::var_os("AGENTURM_PLUGIN_BATCH_FEATURE").as_deref()
+        == Some(std::ffi::OsStr::new("pi-command-ref/1"));
+    let result =
+        if (content_mode && command_mode) || ((content_mode || command_mode) && !directory_mode) {
+            std::process::exit(2)
+        } else if content_mode {
+            agenturm_source_process::run::<directory::ContentDirectoryPoller>()
+        } else if command_mode {
+            agenturm_source_process::run::<directory::CommandDirectoryPoller>()
+        } else if directory_mode {
+            agenturm_source_process::run::<directory::DirectoryPoller>()
+        } else {
+            agenturm_jsonl_source::run::<PiFormat>()
+        };
     if result.is_err() {
         std::process::exit(2);
     }

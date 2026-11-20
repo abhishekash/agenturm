@@ -15,7 +15,7 @@ from .plugin_admission import (SourceLease, activate_source, commit_batch,
 from .plugin_manifest import PluginManifest
 from .plugin_process import PluginProcess
 from .plugin_projection import project_source
-from .plugin_wire import ContentPollBatch, PollBatch, ProtocolError
+from .plugin_wire import CommandPollBatch, ContentPollBatch, PollBatch, ProtocolError
 
 if TYPE_CHECKING:
     from .core import Store
@@ -29,12 +29,17 @@ class PluginSession:
                  required_features: tuple[str, ...] = (),
                  rust_host_executable: str | None = None,
                  rust_host_sha256: str | None = None,
-                 content_source: PluginSource | None = None):
+                 content_source: PluginSource | None = None,
+                 command_source: PluginSource | None = None):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         self.store = store
         self.content_source = None
         self.content_grant = None
+        self.command_source = None
+        self.command_grant = None
+        if content_source is not None and command_source is not None:
+            raise ProtocolError("Pi reference capture modes are mutually exclusive")
         if content_source is not None:
             from .plugin_supervisor import PluginSource
             if (not isinstance(content_source, PluginSource)
@@ -49,6 +54,20 @@ class PluginSession:
             self.content_source = content_source
         elif "pi-content-ref/1" in required_features:
             raise ProtocolError("Pi content feature requires trusted configuration")
+        if command_source is not None:
+            from .plugin_supervisor import PluginSource
+            if (not isinstance(command_source, PluginSource)
+                    or command_source.manifest != manifest
+                    or command_source.source_id != source_id
+                    or command_source.source_root != source_root
+                    or set(command_source.allowed_grants) != set(allowed_grants)
+                    or set(command_source.runtime_features) != set(required_features)
+                    or command_source.capture_mode != "pi-review-text-command-v1"
+                    or "pi-command-ref/1" not in required_features):
+                raise ProtocolError("Pi command source differs from trusted process configuration")
+            self.command_source = command_source
+        elif "pi-command-ref/1" in required_features:
+            raise ProtocolError("Pi command feature requires trusted configuration")
         self.process = PluginProcess(manifest, source_id=source_id,
                                      allowed_grants=allowed_grants, timeout=timeout,
                                      source_root=source_root, required_features=required_features,
@@ -86,8 +105,11 @@ class PluginSession:
             raise ProtocolError("plugin session already started")
         manifest = self.process.manifest
         from .plugin_pi_content import PiContentGrant
+        from .plugin_pi_command import PiCommandGrant
         fingerprint = (PiContentGrant.fingerprint_for_source(self.content_source)
-                       if self.content_source is not None else "")
+                       if self.content_source is not None else
+                       PiCommandGrant.fingerprint_for_source(self.command_source)
+                       if self.command_source is not None else "")
         self.lease = activate_source(self.store, plugin_id=manifest.id,
                                      source_id=self.process.source_id,
                                      generation=manifest.artifact_sha256,
@@ -97,6 +119,8 @@ class PluginSession:
             self.process.start()
             if self.content_source is not None:
                 self.content_grant = PiContentGrant.from_source(self.content_source, self.lease)
+            if self.command_source is not None:
+                self.command_grant = PiCommandGrant.from_source(self.command_source, self.lease)
             if "source-discovery/1" in self.process.required_features:
                 self.members = member_cursors(self.store, self.lease)
             self.last_diagnostic = last_source_diagnostic(self.store, self.lease)
@@ -109,6 +133,7 @@ class PluginSession:
             self.cursor = None
             self.members = None
             self.content_grant = None
+            self.command_grant = None
             raise
         self._projection_stop.clear()
         self._projection_thread = threading.Thread(target=self._projection_loop,
@@ -128,6 +153,11 @@ class PluginSession:
                           if isinstance(received, ContentPollBatch) else ()),
             content_grant=(self.content_grant
                            if isinstance(received, ContentPollBatch) and received.content_refs
+                           else None),
+            command_refs=(received.command_refs
+                          if isinstance(received, CommandPollBatch) else ()),
+            command_grant=(self.command_grant
+                           if isinstance(received, CommandPollBatch) and received.command_refs
                            else None)),
             members=self.members)
         self.cursor = batch.cursor
@@ -157,6 +187,7 @@ class PluginSession:
         self.cursor = None
         self.members = None
         self.content_grant = None
+        self.command_grant = None
 
     def __enter__(self) -> PluginSession:
         return self.start()

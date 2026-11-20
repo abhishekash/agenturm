@@ -51,7 +51,8 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
             raise ValueError("invalid or duplicate plugin source ID")
         seen.add(source_id)
         capture_mode = row["capture"]
-        if capture_mode not in ("metadata-only", "pi-review-text-v1"):
+        if capture_mode not in ("metadata-only", "pi-review-text-v1",
+                                "pi-review-text-command-v1"):
             raise ValueError("unsupported plugin capture mode")
         grants = row["grants"]
         if (not isinstance(grants, list) or len(grants) > 16 or
@@ -100,8 +101,19 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
                     or not content_features <= set(required_features)
                     or not content_features | {"harness.pi/1"} <= set(manifest.provides)):
                 raise ValueError("Pi content capture requires directory source and grants")
-        elif "pi-content-ref/1" in required_features:
-            raise ValueError("Pi content feature requires explicit capture mode")
+        elif capture_mode == "pi-review-text-command-v1":
+            command_features = {"source-discovery/1", "source-discovery-root-gap/1",
+                                "configured-root/1", "pi-command-ref/1"}
+            if (replaces != ["pi"] or source_root is None
+                    or "configured-source-read" not in grants
+                    or "configured-source-read" not in manifest.grants
+                    or not command_features <= set(required_features)
+                    or not command_features | {"harness.pi/1"} <= set(manifest.provides)):
+                raise ValueError("Pi command capture requires directory source and grants")
+        if ("pi-content-ref/1" in required_features) != (capture_mode == "pi-review-text-v1"):
+            raise ValueError("Pi content feature requires matching explicit capture mode")
+        if ("pi-command-ref/1" in required_features) != (capture_mode == "pi-review-text-command-v1"):
+            raise ValueError("Pi command feature requires matching explicit capture mode")
         sources.append(PluginSource(manifest, source_id, tuple(grants),
                                     float(row["poll_interval"]), float(row["timeout"]),
                                     tuple(replaces), source_root, tuple(required_features),

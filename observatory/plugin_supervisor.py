@@ -106,6 +106,8 @@ class PluginSupervisor:
                           required_features=source.runtime_features,
                           content_source=(source if source.capture_mode == "pi-review-text-v1"
                                           else None),
+                          command_source=(source if source.capture_mode == "pi-review-text-command-v1"
+                                          else None),
                           rust_host_executable=rust_host_executable,
                           rust_host_sha256=rust_host_sha256)
         self.store = store
@@ -158,6 +160,8 @@ class PluginSupervisor:
                                     timeout=source.timeout, source_root=source.source_root,
                                     required_features=source.runtime_features,
                                     content_source=(source if source.capture_mode == "pi-review-text-v1"
+                                                    else None),
+                                    command_source=(source if source.capture_mode == "pi-review-text-command-v1"
                                                     else None),
                                     rust_host_executable=self.rust_host_executable,
                                     rust_host_sha256=self.rust_host_sha256)

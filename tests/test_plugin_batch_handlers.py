@@ -60,8 +60,12 @@ class BatchHandlerTests(unittest.TestCase):
             "schema_version": 1, "refs": []}}, "fixture").content_refs, ())
 
     def test_unknown_content_feature_and_conflicting_handlers_fail_closed(self):
-        with self.assertRaisesRegex(ProtocolError, "unregistered content reference"):
+        with self.assertRaisesRegex(ProtocolError, "unregistered reference batch"):
             DEFAULT_BATCH_HANDLERS.select({"next-content-ref/2"})
+        with self.assertRaisesRegex(ProtocolError, "unregistered reference batch"):
+            DEFAULT_BATCH_HANDLERS.select({"next-command-ref/2"})
+        with self.assertRaisesRegex(ProtocolError, "conflicting batch envelope"):
+            DEFAULT_BATCH_HANDLERS.select({"pi-content-ref/1", "pi-command-ref/1"})
         with self.assertRaisesRegex(ValueError, "duplicate host batch handler"):
             DEFAULT_BATCH_HANDLERS.with_handler("pi-content-ref/1", validate_batch)
         synthetic = DEFAULT_BATCH_HANDLERS.with_handler("fixture-envelope/1", validate_batch)
@@ -92,7 +96,7 @@ class BatchHandlerTests(unittest.TestCase):
                 '"fixture-envelope/1", "pi-content-ref/1"',
                 '"next-content-ref/2"'))
             unknown_manifest = PluginManifest.read(unknown_file)
-            with self.assertRaisesRegex(ProtocolError, "unregistered content reference"):
+            with self.assertRaisesRegex(ProtocolError, "unregistered reference batch"):
                 PluginProcess(unknown_manifest, source_id="fixture", timeout=2,
                               required_features=("next-content-ref/2",))
 

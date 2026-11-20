@@ -12,12 +12,12 @@ from types import MappingProxyType
 
 from .plugin_manifest import FEATURE
 from .plugin_wire import (PollBatch, ProtocolError, validate_batch,
-                          validate_content_batch)
+                          validate_command_batch, validate_content_batch)
 
 
 BatchValidator = Callable[[dict, str], PollBatch]
-_CONTENT_REFERENCE_FEATURE = re.compile(
-    r"[a-z][a-z0-9.-]*-content-ref/[1-9][0-9]*\Z")
+_REFERENCE_FEATURE = re.compile(
+    r"[a-z][a-z0-9.-]*-(?:content|command)-ref/[1-9][0-9]*\Z")
 
 
 def _validate_ordinary(message: dict, source_id: str) -> PollBatch:
@@ -30,6 +30,13 @@ def _validate_pi_content(message: dict, source_id: str) -> PollBatch:
     # the source itself before durable admission.
     from .plugin_pi_content import validate_refs
     validate_refs(batch.content_refs, batch)
+    return batch
+
+
+def _validate_pi_command(message: dict, source_id: str) -> PollBatch:
+    batch = validate_command_batch(message, source_id=source_id)
+    from .plugin_pi_command import validate_refs
+    validate_refs(batch.command_refs, batch)
     return batch
 
 
@@ -57,16 +64,22 @@ class BatchHandlerRegistry:
                for feature in features):
             raise ValueError("invalid required batch features")
         unknown = [feature for feature in features
-                   if _CONTENT_REFERENCE_FEATURE.fullmatch(feature)
+                   if _REFERENCE_FEATURE.fullmatch(feature)
                    and feature not in self._handlers]
         if unknown:
-            raise ProtocolError("unregistered content reference batch feature")
+            raise ProtocolError("unregistered reference batch feature")
         selected = [self._handlers[feature] for feature in features
                     if feature in self._handlers]
         if len(selected) > 1:
             raise ProtocolError("conflicting batch envelope features")
         return selected[0] if selected else _validate_ordinary
 
+    def selected_feature(self, required_features: Iterable[str]) -> str | None:
+        """Return the one host-registered envelope feature, if selected."""
+        self.select(required_features)
+        return next((feature for feature in required_features if feature in self._handlers), None)
+
 
 DEFAULT_BATCH_HANDLERS = BatchHandlerRegistry().with_handler(
-    "pi-content-ref/1", _validate_pi_content)
+    "pi-content-ref/1", _validate_pi_content).with_handler(
+    "pi-command-ref/1", _validate_pi_command)

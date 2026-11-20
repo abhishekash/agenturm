@@ -53,7 +53,8 @@ pub trait Poller {
     const PLUGIN_ID: &'static str;
     const DISCOVERY: bool = false;
     const ROOT_GAP: bool = false;
-    const CONTENT_REF_FEATURE: Option<&'static str> = None;
+    const REFERENCE_FEATURE: Option<&'static str> = None;
+    const REFERENCE_ENVELOPE_KEY: &'static str = "content_refs";
     const EXTRA_FEATURES: &'static [&'static str] = &[];
     fn poll(
         path: &Path,
@@ -147,7 +148,7 @@ impl Session {
             if P::ROOT_GAP {
                 features.push("source-discovery-root-gap/1");
             }
-            if let Some(feature) = P::CONTENT_REF_FEATURE {
+            if let Some(feature) = P::REFERENCE_FEATURE {
                 features.push(feature);
             }
             features.extend_from_slice(P::EXTRA_FEATURES);
@@ -185,7 +186,7 @@ impl Session {
                 {
                     return Err(invalid("invalid poll budget"));
                 }
-                let poll_budget = if P::CONTENT_REF_FEATURE.is_some() {
+                let poll_budget = if P::REFERENCE_FEATURE.is_some() {
                     (bytes as usize)
                         .checked_sub(128)
                         .ok_or("content envelope frame budget too small")?
@@ -205,8 +206,10 @@ impl Session {
                 } else {
                     P::poll(path, &self.source_id, cursor, count as usize, poll_budget)?
                 };
-                if P::CONTENT_REF_FEATURE.is_some() && response.get("content_refs").is_none() {
-                    response["content_refs"] = json!({"schema_version":1,"refs":[]});
+                if P::REFERENCE_FEATURE.is_some()
+                    && response.get(P::REFERENCE_ENVELOPE_KEY).is_none()
+                {
+                    response[P::REFERENCE_ENVELOPE_KEY] = json!({"schema_version":1,"refs":[]});
                 }
                 let encoded = serde_json::to_vec(&response)?;
                 if encoded.len() > bytes as usize
@@ -272,9 +275,27 @@ mod tests {
 
     struct Content;
 
+    struct Command;
+
+    impl Poller for Command {
+        const PLUGIN_ID: &'static str = "fixture.command";
+        const REFERENCE_FEATURE: Option<&'static str> = Some("fixture-command-ref/1");
+        const REFERENCE_ENVELOPE_KEY: &'static str = "command_refs";
+
+        fn poll(
+            path: &Path,
+            source_id: &str,
+            cursor: &str,
+            max_records: usize,
+            max_bytes: usize,
+        ) -> Result<Value> {
+            Content::poll(path, source_id, cursor, max_records, max_bytes)
+        }
+    }
+
     impl Poller for Content {
         const PLUGIN_ID: &'static str = "fixture.content";
-        const CONTENT_REF_FEATURE: Option<&'static str> = Some("fixture-content/1");
+        const REFERENCE_FEATURE: Option<&'static str> = Some("fixture-content/1");
         const EXTRA_FEATURES: &'static [&'static str] = &["harness.fixture/1"];
 
         fn poll(
@@ -413,5 +434,32 @@ mod tests {
             response["content_refs"],
             json!({"schema_version":1,"refs":[]})
         );
+    }
+
+    #[test]
+    fn command_feature_fills_only_its_selected_envelope() {
+        let mut session = Session::default();
+        session
+            .handle::<Command>(
+                json!({"type":"hello","protocol":1,
+            "plugin_id":"fixture.command","source_id":"source",
+            "max_frame_bytes":65536}),
+                Path::new("/tmp"),
+            )
+            .unwrap();
+        let response = session
+            .handle::<Command>(
+                json!({"type":"poll","protocol":1,
+            "source_id":"source","cursor":"","max_records":1,"max_bytes":256}),
+                Path::new("/tmp"),
+            )
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(
+            response["command_refs"],
+            json!({"schema_version":1,"refs":[]})
+        );
+        assert!(response.get("content_refs").is_none());
     }
 }

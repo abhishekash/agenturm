@@ -1,8 +1,9 @@
-"""Feature-off, receiver-owned Pi directory content admission primitive.
+"""Receiver-owned Pi directory user-text admission proof.
 
 The process may nominate a file range, but never supplies content. The host
 checks the directory member and JSONL checkpoint against its own open file,
-then extracts and redacts one user message. No read API consumes this table.
+then extracts and redacts one user message. The explicit Activity preview has
+a separate exact-event source and policy read gate.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import re
 import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import ClassVar
 
 from .local_activity import plaintext
 from .plugin_wire import ProtocolError
@@ -39,6 +41,8 @@ class UnanchoredOrigin(ProtocolError):
 @dataclass(frozen=True)
 class PiContentGrant:
     """Minted by trusted host configuration, never from a child message."""
+
+    grant_label: ClassVar[str] = "Pi content"
 
     source_id: str
     plugin_id: str
@@ -94,10 +98,10 @@ class PiContentGrant:
                 or (source.source_id, source.manifest.id,
                     source.manifest.artifact_sha256) !=
                 (lease.source_id, lease.plugin_id, lease.generation)):
-            raise ProtocolError("Pi content grant requires trusted directory configuration")
+            raise ProtocolError(f"{cls.grant_label} grant requires trusted directory configuration")
         fingerprint, root_dev, root_ino = cls.binding_for_source(source)
         if lease.content_fingerprint != fingerprint:
-            raise ProtocolError("Pi content configuration changed")
+            raise ProtocolError(f"{cls.grant_label} configuration changed")
         return cls(source.source_id, source.manifest.id, source.manifest.artifact_sha256,
                    lease.epoch, lease.policy_epoch, source.source_root, fingerprint,
                    root_dev, root_ino)

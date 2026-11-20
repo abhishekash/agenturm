@@ -1,7 +1,7 @@
-"""Inactive, receiver-owned proof for one requested Pi bash command.
+"""Receiver-owned proof for one opt-in requested Pi bash command.
 
-No installed source negotiates this reference type yet. The child may nominate
-a source range; only the host opens that file and extracts bounded text.
+The child may nominate a source range; only the host opens that file and
+extracts bounded text. The default Pi mode remains metadata-only.
 """
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import hashlib
 import os
 import stat
 from dataclasses import dataclass
+from typing import ClassVar
 
 from .local_activity import safe
 from .plugin_pi_content import (
@@ -44,7 +45,9 @@ class PiCommandRef:
 
 @dataclass(frozen=True)
 class PiCommandGrant(PiContentGrant):
-    """A separate trusted grant; the installed config cannot mint it yet."""
+    """A separate trusted grant for the explicit Pi command capture mode."""
+
+    grant_label: ClassVar[str] = "Pi command"
 
     @staticmethod
     def binding_for_source(source):
