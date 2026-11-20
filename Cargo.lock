@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "agenturm-backup-query"
+version = "0.1.0"
+dependencies = [
+ "agenturm-domain-query",
+ "agenturm-storage-shadow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "agenturm-claude-harness"
 version = "0.1.0"
 dependencies = [

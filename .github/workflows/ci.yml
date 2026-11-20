@@ -28,6 +28,7 @@ jobs:
       - run: cargo build --locked --bin agenturm-plugin-host
       - run: cargo build --locked --bin agenturm-domain-reducer
       - run: cargo build --locked --bin agenturm-domain-query
+      - run: cargo build --locked --bin agenturm-backup-query
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
@@ -63,6 +64,9 @@ jobs:
       - run: python -m unittest tests.test_rust_domain_query -v
         env:
           AGENTURM_RUST_QUERY_BIN: ${{ github.workspace }}/target/debug/agenturm-domain-query
+      - run: python -m unittest tests.test_rust_backup_query -v
+        env:
+          AGENTURM_RUST_BACKUP_QUERY_BIN: ${{ github.workspace }}/target/debug/agenturm-backup-query
 
   rust-host-linux-wheel:
     name: Linux x86_64 Rust host wheel
