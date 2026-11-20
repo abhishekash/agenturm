@@ -9,6 +9,7 @@ import stat
 from pathlib import Path
 
 from examples.count_observations_process.install import _directory
+from observatory.capability_process import MAX_ARTIFACT
 
 
 def _metadata(destination: Path, artifact_sha256: str) -> tuple[bytes, bytes]:
@@ -66,7 +67,7 @@ def _open_source(source: Path) -> int:
             child_fd = os.open(component, flags, dir_fd=parent_fd)
             os.close(parent_fd)
             parent_fd = child_fd
-        return os.open(source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        return os.open(source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
                        dir_fd=parent_fd)
     finally:
         os.close(parent_fd)
@@ -83,6 +84,10 @@ def _copy_executable(source: Path, directory: int, name: str) -> str:
         if (not stat.S_ISREG(source_stat.st_mode) or source_stat.st_size == 0
                 or not source_stat.st_mode & 0o111):
             raise ValueError("binary must be a nonempty executable regular file")
+        if source_stat.st_size > MAX_ARTIFACT:
+            raise ValueError("binary exceeds the 64 MiB capability artifact limit")
+        source_identity = (source_stat.st_dev, source_stat.st_ino, source_stat.st_size,
+                           source_stat.st_mtime_ns, source_stat.st_ctime_ns)
         output_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                             0o700, dir_fd=directory)
         created = True
@@ -93,6 +98,8 @@ def _copy_executable(source: Path, directory: int, name: str) -> str:
                 chunk = os.read(source_fd, 1024 * 1024)
                 if not chunk:
                     break
+                if copied + len(chunk) > MAX_ARTIFACT:
+                    raise ValueError("binary exceeds the 64 MiB capability artifact limit")
                 output.write(chunk)
                 digest.update(chunk)
                 copied += len(chunk)
@@ -100,6 +107,11 @@ def _copy_executable(source: Path, directory: int, name: str) -> str:
                 raise ValueError("binary changed while it was being copied")
             output.flush()
             os.fsync(output.fileno())
+            current = os.fstat(source_fd)
+            current_identity = (current.st_dev, current.st_ino, current.st_size,
+                                current.st_mtime_ns, current.st_ctime_ns)
+            if current_identity != source_identity:
+                raise ValueError("binary changed while it was being copied")
         return digest.hexdigest()
     except BaseException:
         if created:

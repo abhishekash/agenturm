@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import os
+import queue
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from examples.count_observations_process import install_rust
 from examples.count_observations_process.install_rust import install
+from examples.count_observations_process.install_rust import MAX_ARTIFACT
 from observatory.capability_process import read_capability_config
 
 
@@ -82,6 +87,72 @@ class RustCountCapabilityInstallerTests(unittest.TestCase):
         directory.mkdir()
         with self.assertRaisesRegex(ValueError, "executable regular file"):
             install(directory, self.destination)
+
+    def test_fifo_source_is_rejected_without_blocking(self):
+        fifo = self.root / "count-fifo"
+        os.mkfifo(fifo, 0o755)
+        result = queue.Queue()
+
+        def install_fifo():
+            try:
+                install(fifo, self.destination)
+            except BaseException as error:
+                result.put(error)
+
+        thread = threading.Thread(target=install_fifo, daemon=True)
+        thread.start()
+        thread.join(timeout=1)
+        self.assertFalse(thread.is_alive(), "opening a FIFO source must not block")
+        self.assertIsInstance(result.get_nowait(), ValueError)
+        self.assertFalse((self.destination / "count-observations").exists())
+
+    def test_over_cap_binary_is_rejected_before_artifact_or_metadata_creation(self):
+        oversized = self.root / "oversized-count"
+        with oversized.open("wb") as stream:
+            stream.truncate(install_rust.MAX_ARTIFACT + 1)
+        oversized.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, "64 MiB"):
+            install(oversized, self.destination)
+        for name in ("count-observations", "count-observations.toml", "capability.json"):
+            self.assertFalse((self.destination / name).exists())
+
+    def test_exact_host_artifact_limit_is_installable(self):
+        boundary = self.root / "boundary-count"
+        with boundary.open("wb") as stream:
+            stream.truncate(MAX_ARTIFACT)
+        boundary.chmod(0o755)
+        descriptor = install(boundary, self.destination)
+        artifact = self.destination / "count-observations"
+        self.assertEqual(artifact.stat().st_size, MAX_ARTIFACT)
+        digest = hashlib.sha256()
+        for _ in range(MAX_ARTIFACT // (1024 * 1024)):
+            digest.update(bytes(1024 * 1024))
+        self.assertEqual(read_capability_config(descriptor).manifest.artifact_sha256,
+                         digest.hexdigest())
+
+    def test_same_size_source_rewrite_during_copy_is_detected_and_rolled_back(self):
+        self.binary.write_bytes(b"a" * (2 * 1024 * 1024))
+        original_read = os.read
+        changed = []
+
+        def read_then_mutate(fd, size):
+            chunk = original_read(fd, size)
+            if chunk and not changed:
+                rewrite_fd = os.open(self.binary, os.O_WRONLY)
+                try:
+                    self.assertEqual(os.pwrite(rewrite_fd, b"z" * 4096, 1024 * 1024), 4096)
+                finally:
+                    os.close(rewrite_fd)
+                changed.append(True)
+            return chunk
+
+        with patch.object(install_rust.os, "read", read_then_mutate):
+            with self.assertRaisesRegex(ValueError, "changed while it was being copied"):
+                install(self.binary, self.destination)
+        self.assertTrue(changed)
+        self.assertEqual(self.binary.stat().st_size, 2 * 1024 * 1024)
+        for name in ("count-observations", "count-observations.toml", "capability.json"):
+            self.assertFalse((self.destination / name).exists())
 
 
 if __name__ == "__main__":
