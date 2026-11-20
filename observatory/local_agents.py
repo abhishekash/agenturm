@@ -810,10 +810,9 @@ _HOST_STATUS_TOP_LEVEL = frozenset({
     'omitted_sources', 'read_errors', 'ambiguous_sources', 'last_read_error',
     'skipped_records', 'backlog_bytes', 'schema_errors',
     'skipped_oversized_records', 'capture_content', 'lookback_hours',
-    'max_sources', 'opencode_discovered_sessions', 'opencode_omitted_sessions',
-    'opencode_diagnostics', 'reader_plugins', 'runtime', 'mcp_configurations',
+    'max_sources', 'reader_plugins', 'runtime', 'mcp_configurations',
     'mcp_config_errors', 'mcp_config_updated', 'hierarchy', 'sessions',
-    'opencode_read_errors', 'source_coverage', 'source_coverage_overflow',
+    'source_coverage', 'source_coverage_overflow',
     'collection_read_errors',
 })
 
@@ -844,14 +843,29 @@ class LocalAgents:
         self.hierarchy_facts_revision = ""
         self.hierarchy_write_errors = 0
         from .native_readers import builtin_readers
-        self.reader_specs = builtin_readers() if reader_specs is None else tuple(reader_specs)
+        bundled_readers = builtin_readers()
+        self.reader_specs = bundled_readers if reader_specs is None else tuple(reader_specs)
         if len({spec.id for spec in self.reader_specs}) != len(self.reader_specs):
             raise ValueError("duplicate native reader ID")
         if {spec.id for spec in self.reader_specs} & {spec.id for spec in self.source_specs}:
             raise ValueError("native reader and source IDs must be unique")
+        # Bundled compatibility fields remain present even when a reader is
+        # disabled or replaced. A replacement may add fields, not erase or
+        # redeclare those historical keys. Bundled status callbacks are stable
+        # module-level functions so a fresh declaration can be recognized.
+        status_specs = [spec for spec in bundled_readers if spec.status_extension]
+        status_specs.extend(spec for spec in self.reader_specs
+                            if spec.status_extension and not any(
+                                spec.id == bundled.id and
+                                spec.status_extension is bundled.status_extension and
+                                spec.status_keys == bundled.status_keys
+                                for bundled in status_specs))
+        self.reader_status_specs = tuple(status_specs)
+        status_keys = [key for spec in self.reader_status_specs for key in spec.status_keys]
+        if len(status_keys) != len(set(status_keys)) or set(status_keys) & _HOST_STATUS_TOP_LEVEL:
+            raise ValueError("native reader status extension conflicts with host fields")
+        self.reader_status_keys = frozenset(status_keys)
         self.reader_plugins = {spec.id: spec.build(self.evidence, capture_details) for spec in self.reader_specs}
-        # Preserve the existing OpenCode diagnostic surface during migration.
-        self.opencode = self.reader_plugins.get("opencode")
         self.initial_poll_complete = False
         self.thread = threading.Thread(target=self.loop, name="observatory-local-agents", daemon=True)
 
@@ -1046,7 +1060,8 @@ class LocalAgents:
                 if hook is None:
                     continue
                 fields = hook(self.capture_details, self.record_error)
-                if (not isinstance(fields, dict) or fields.keys() & _HOST_STATUS_TOP_LEVEL
+                if (not isinstance(fields, dict) or fields.keys() &
+                        (_HOST_STATUS_TOP_LEVEL | getattr(self, 'reader_status_keys', frozenset()))
                         or fields.keys() & extensions.keys() or any(
                             type(key) is not str or not key or len(key) > 64 for key in fields)):
                     raise ValueError('native adapter status extension conflicts with host fields')
@@ -1064,7 +1079,8 @@ class LocalAgents:
                 continue
             try:
                 fields = spec.empty_status_extension()
-                if (not isinstance(fields, dict) or fields.keys() & _HOST_STATUS_TOP_LEVEL
+                if (not isinstance(fields, dict) or fields.keys() &
+                        (_HOST_STATUS_TOP_LEVEL | getattr(self, 'reader_status_keys', frozenset()))
                         or fields.keys() & default_keys or any(
                             type(key) is not str or not key or len(key) > 64 for key in fields)):
                     raise ValueError('native source empty status extension conflicts with host fields')
@@ -1075,6 +1091,24 @@ class LocalAgents:
                     extensions.setdefault(key, value)
             except Exception as exc:
                 self.record_error(exc, f'Inspecting native source {spec.id} empty status extension')
+        return extensions
+
+    def reader_status_extensions(self, diagnostics):
+        """Publish registered reader compatibility fields, including disabled defaults."""
+        extensions = {}
+        for spec in self.reader_status_specs:
+            try:
+                fields = spec.status_extension(self.reader_plugins.get(spec.id),
+                                               diagnostics.get(spec.id, {}))
+                if (not isinstance(fields, dict) or
+                        fields.keys() != set(spec.status_keys) or
+                        any(type(key) is not str for key in fields)):
+                    raise ValueError('native reader status extension has undeclared fields')
+                if len(json.dumps(fields, allow_nan=False).encode('utf-8')) > 64 * 1024:
+                    raise ValueError('native reader status extension exceeds 64 KiB')
+                extensions.update(fields)
+            except Exception as exc:
+                self.record_error(exc, f'Inspecting native reader {spec.id} status extension')
         return extensions
 
     def status(self):
@@ -1230,6 +1264,7 @@ class LocalAgents:
                 if context:
                     item["parent_context"] = context
         extensions = self.adapter_status_extensions(sessions)
+        reader_extensions = self.reader_status_extensions(reader_diagnostics)
         return {"enabled": True, "initial_poll_complete": self.initial_poll_complete, "sources": len(sessions), "discovered_sources": self.discovered_sources,
                 "omitted_sources": self.omitted_sources, "read_errors": self.errors,
                 "collection_read_errors": collection_read_errors,
@@ -1240,13 +1275,11 @@ class LocalAgents:
                 "schema_errors": sum(session.schema_errors for session in sessions),
                 "skipped_oversized_records": sum(session.skipped_oversized for session in sessions),
                 "capture_content": self.capture_details, "lookback_hours": 24, "max_sources": MAX_SOURCES,
-                "opencode_discovered_sessions": getattr(self.opencode, "discovered_sessions", 0),
-                "opencode_omitted_sessions": getattr(self.opencode, "omitted_sessions", 0),
-                "opencode_diagnostics": reader_diagnostics.get("opencode", {}),
                 "reader_plugins": reader_diagnostics,
                 "source_coverage": source_coverage,
                 "source_coverage_overflow": max(0, len(self.reader_specs) - 22),
                 **extensions,
+                **reader_extensions,
                 "runtime": self.runtime_snapshot,
                 "mcp_configurations": list(self.mcp_configurations),
                 "mcp_config_errors": self.mcp_config_errors,
@@ -1258,8 +1291,7 @@ class LocalAgents:
                                   node.get("coverage") in {"partial", "unknown"}
                                   for node in nodes) else "complete"),
                               "write_errors": self.hierarchy_write_errors},
-                "sessions": observed,
-                "opencode_read_errors": getattr(self.opencode, "errors", 0)}
+                "sessions": observed}
 
     def close(self):
         self.stop.set()

@@ -23,6 +23,8 @@ class NativeReaderSpec:
     mcp_client: str | None = None
     label: str | None = None
     coverage: Callable[[NativeReader], dict] | None = None
+    status_extension: Callable[[NativeReader | None, dict], dict] | None = None
+    status_keys: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]*", self.id):
@@ -31,6 +33,12 @@ class NativeReaderSpec:
                 (self.label is not None and (not isinstance(self.label, str) or
                                              not self.label.strip() or len(self.label) > 40)) or
                 (self.coverage is not None and not callable(self.coverage)) or
+                (self.status_extension is not None and not callable(self.status_extension)) or
+                type(self.status_keys) is not tuple or
+                (self.status_extension is None and self.status_keys) or
+                (self.status_extension is not None and not self.status_keys) or
+                len(set(self.status_keys)) != len(self.status_keys) or
+                any(type(key) is not str or not key or len(key) > 64 for key in self.status_keys) or
                 (self.mcp_client is not None and
                  (not isinstance(self.mcp_client, str) or not self.mcp_client))):
             raise ValueError("invalid native reader specification")
