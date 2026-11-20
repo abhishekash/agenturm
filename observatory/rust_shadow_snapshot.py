@@ -7,6 +7,9 @@ to discard a result if the source or policy changed while it ran.
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
+import stat
 from dataclasses import dataclass
 
 from .plugin_activity import index_rows as activity_index_rows
@@ -27,6 +30,20 @@ class ShadowSnapshot:
     revision: tuple[str, int, int, int, int, int, int]
     fixture: dict
     expected: dict
+    # Optional for old callers that construct snapshots directly. Such a
+    # snapshot cannot pass current(): only capture() can bind a Store inode.
+    file_identity: tuple[int, int] | None = None
+
+
+def _store_file_identity(store) -> tuple[int, int]:
+    """Identify the regular Store target, including an explicit --db symlink."""
+    try:
+        info = os.stat(store.path)
+    except (AttributeError, OSError) as exc:
+        raise ProtocolError("shadow Store file is unavailable") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise ProtocolError("shadow Store path is not a regular file")
+    return info.st_dev, info.st_ino
 
 
 def _revision(db, source_id: str):
@@ -54,7 +71,8 @@ def capture(store, source_id: str) -> ShadowSnapshot | None:
     fixture contains only typed metadata admitted by the Store. A caller must
     check ``current`` after its independent reduction before using a result.
     """
-    with store._connect() as db:
+    file_identity = _store_file_identity(store)
+    with store._read() as db:
         db.execute("BEGIN")
         revision = _revision(db, source_id)
         if not _ready(revision):
@@ -195,19 +213,35 @@ def capture(store, source_id: str) -> ShadowSnapshot | None:
         raise ProtocolError("shadow Activity differs from admitted metadata")
     expected = {"schema_version": 3, "sessions": sessions,
                 "activities": sorted(facts, key=lambda fact: fact["id"])}
-    return ShadowSnapshot(source_id, revision, fixture, expected)
+    if _store_file_identity(store) != file_identity:
+        raise ProtocolError("shadow Store file changed during capture")
+    return ShadowSnapshot(source_id, revision, fixture, expected, file_identity)
 
 
 def current(store, snapshot: ShadowSnapshot) -> bool:
-    """Fence a shadow result against receiver, lease, policy and projection."""
+    """Fence a shadow result against Store file, receiver, lease and projection."""
     if not isinstance(snapshot, ShadowSnapshot):
         raise TypeError("shadow snapshot required")
-    with store._connect() as db:
-        db.execute("BEGIN")
-        try:
-            revision = _revision(db, snapshot.source_id)
-        except ProtocolError:
+    if snapshot.file_identity is None:
+        return False
+    try:
+        if _store_file_identity(store) != snapshot.file_identity:
             return False
-        receiver = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
-    return bool(receiver and receiver[0] == revision[0]
+    except ProtocolError:
+        return False
+    try:
+        with store._read() as db:
+            db.execute("BEGIN")
+            try:
+                revision = _revision(db, snapshot.source_id)
+            except ProtocolError:
+                return False
+            receiver = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
+    except (sqlite3.Error, OSError):
+        return False
+    try:
+        same_file = _store_file_identity(store) == snapshot.file_identity
+    except ProtocolError:
+        return False
+    return bool(same_file and receiver and receiver[0] == revision[0]
                 and _ready(revision) and revision == snapshot.revision)

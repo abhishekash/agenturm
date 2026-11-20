@@ -7,12 +7,10 @@ requires another check before publication.
 from __future__ import annotations
 
 import json
-import os
 import re
-import stat
 
 from .plugin_wire import ProtocolError
-from .rust_shadow_snapshot import capture, current
+from .rust_shadow_snapshot import _store_file_identity as _store_file, capture, current
 
 
 MAX_RESULT_BYTES = 128 * 1024
@@ -82,17 +80,6 @@ def _same_json(left, right):
                       ensure_ascii=True, allow_nan=False) == json.dumps(
                           right, sort_keys=True, separators=(",", ":"),
                           ensure_ascii=True, allow_nan=False)
-
-
-def _store_file(store):
-    """Bind the Store pathname to one regular inode across this check."""
-    try:
-        info = os.stat(store.path, follow_symlinks=False)
-    except (AttributeError, OSError) as exc:
-        raise ProtocolError("live Store file is unavailable") from exc
-    if not stat.S_ISREG(info.st_mode):
-        raise ProtocolError("live Store path is not a regular file")
-    return info.st_dev, info.st_ino
 
 
 def attest_exact(store, query: dict, rust_result: str | bytes) -> dict:

@@ -1,9 +1,12 @@
 """A live Store read snapshot can be compared with the pure Rust reducer."""
 import json
 import os
+import sqlite3
 import subprocess
 import tempfile
 import unittest
+from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 
 from observatory.core import Store
@@ -67,6 +70,47 @@ class ShadowSnapshotTests(unittest.TestCase):
         set_source_capture(self.store, source_id="shadow-source", enabled=False)
         self.assertFalse(current(self.store, newer))
         self.assertIsNone(capture(self.store, "shadow-source"))
+
+    def test_same_revision_database_replacement_invalidates_snapshot(self):
+        self.populate()
+        snapshot = capture(self.store, "shadow-source")
+        self.assertTrue(current(self.store, snapshot))
+        self.assertFalse(current(self.store, replace(snapshot, file_identity=None)))
+        replacement = Path(self.store.path).with_name("replacement.db")
+        with self.store._connect() as source, closing(sqlite3.connect(replacement)) as target:
+            source.backup(target)
+        with closing(sqlite3.connect(replacement)) as db:
+            db.execute("UPDATE plugin_session_projection_v1 SET state='completed' "
+                       "WHERE source_id='shadow-source' AND native_session_id='session-one'")
+            db.commit()
+            self.assertEqual(db.execute(
+                "SELECT state FROM plugin_session_projection_v1 WHERE source_id='shadow-source' "
+                "AND native_session_id='session-one'").fetchone()[0], "completed")
+        with self.store._connect() as db:
+            self.assertEqual(db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0], 0)
+        os.replace(replacement, self.store.path)
+        self.assertFalse(current(self.store, snapshot))
+        fresh = capture(self.store, "shadow-source")
+        self.assertEqual(fresh.revision, snapshot.revision)
+        self.assertNotEqual(fresh.file_identity, snapshot.file_identity)
+        self.assertNotEqual(fresh.expected, snapshot.expected)
+        self.assertTrue(current(self.store, fresh))
+
+    def test_shadow_snapshot_accepts_symlink_and_fences_retarget(self):
+        self.populate()
+        original = Path(self.store.path)
+        alias_path = original.with_name("receiver-alias.db")
+        alias_path.symlink_to(original.name)
+        alias = Store(alias_path)
+        self.addCleanup(alias.close)
+        snapshot = capture(alias, "shadow-source")
+        self.assertTrue(current(alias, snapshot))
+        replacement = original.with_name("alias-replacement.db")
+        with self.store._connect() as source, closing(sqlite3.connect(replacement)) as target:
+            source.backup(target)
+        alias_path.unlink()
+        alias_path.symlink_to(replacement.name)
+        self.assertFalse(current(alias, snapshot))
 
     def test_corrupt_stored_metadata_fails_before_export(self):
         self.populate()

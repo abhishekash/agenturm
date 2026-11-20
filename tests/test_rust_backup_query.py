@@ -193,13 +193,36 @@ class RustBackupQueryTests(unittest.TestCase):
         def replace_during_check(store, captured):
             self.assertEqual(captured.revision, snapshot.revision)
             os.replace(replacement, store.path)
-            still_current_by_revision = actual_current(store, captured)
-            self.assertTrue(still_current_by_revision)
-            return still_current_by_revision
+            current_after_replacement = actual_current(store, captured)
+            self.assertFalse(current_after_replacement)
+            return current_after_replacement
 
         with patch("observatory.rust_backup_attestation.current",
                    side_effect=replace_during_check), self.assertRaises(ProtocolError):
             attest_exact(self.store, query, raw)
+
+    def test_attestation_accepts_symlinked_store_and_rejects_retarget(self):
+        _, snapshot, copy = self.ready()
+        query = self.exact("session", "native-one")
+        raw = self.run_query(copy, "session", "native-one").stdout
+        alias_path = self.root / "store-alias.db"
+        alias_path.symlink_to(Path(self.store.path).name)
+        alias = Store(alias_path)
+        self.addCleanup(alias.close)
+        self.assertEqual(attest_exact(alias, query, raw)["row"],
+                         snapshot.expected["sessions"][0])
+        replacement = self.backup()
+        actual_current = current
+
+        def retarget_during_check(store, captured):
+            alias_path.unlink()
+            alias_path.symlink_to(replacement.name)
+            self.assertFalse(actual_current(store, captured))
+            return False
+
+        with patch("observatory.rust_backup_attestation.current",
+                   side_effect=retarget_during_check), self.assertRaises(ProtocolError):
+            attest_exact(alias, query, raw)
 
     def test_ready_exact_query_is_historical_and_matches_python_projection(self):
         unknown = self.result(self.backup(), "session", "native-one")
