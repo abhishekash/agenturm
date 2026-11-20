@@ -54,7 +54,8 @@ from .ui_render import update_status_text
 from .ui_content import metadata_table, prose, write_body, write_section
 from .ui_coverage import analysis_coverage
 from .ui_contributions import PaneRegistry, PaneScope, validate_model
-from .ui_monitoring import (UsageScreen, SortScreen, SessionScopeScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, credit_summary, permission_summary, metadata_usage_text, changed_records, failed,
+from .ui_session_inspector import SessionInspectorRegistry
+from .ui_monitoring import (UsageScreen, SortScreen, SessionScopeScreen, task_usage_summary, session_usage, task_run_usage, task_usage_label, credit_summary, metadata_usage_text, changed_records, failed,
                             failure_groups, event_id, connection_feedback, session_history_feedback)
 
 
@@ -1414,11 +1415,13 @@ class ObservatoryApp(App):
               Binding('6','page("metrics")','Metrics',show=False),Binding('7','page("findings")','Findings',show=False)]
 
     def __init__(self,feed,*,preferences_path=None,persist_preferences=None,task_store_path=None,
-                 ui_panes=(),content_preview_providers=()):
+                 ui_panes=(),content_preview_providers=(),session_inspector_providers=()):
         super().__init__()
         self.pane_registry=PaneRegistry(tuple(ui_panes))
         self.content_preview_registry=ContentPreviewRegistry(
             (PI_USER_TEXT,*tuple(content_preview_providers)))
+        self.session_inspector_registry=SessionInspectorRegistry(
+            tuple(session_inspector_providers))
         self.extension_models={}
         for name in list(self.available_themes):
             self.unregister_theme(name)
@@ -3668,7 +3671,8 @@ class ObservatoryApp(App):
         usage_text,_=task_usage_summary(run_usage,run_usage.get('task') or task_preview(item),scope='turn' if run_usage.get('turn_id') else 'trace',
                                       identity=run_usage.get('turn_id') or run_usage.get('trace_id') or '',compact=self.size.width<100)
         credits_text=credit_summary(run_usage,summary,running=item.get('run_state') in {'running','waiting'})
-        permissions_short,permissions_text=permission_summary(item,self.data.local_status.get('kiro_folders') or ())
+        inspector_additions=self.session_inspector_registry.for_session(
+            item,self.data.local_status)
         if credits_text:
             # The Credits field carries the run and session figures; do not repeat the run line.
             usage_text='\n'.join(line for line in usage_text.splitlines() if not line.startswith('Credits '))
@@ -3805,7 +3809,7 @@ class ObservatoryApp(App):
             if dismissed:fields.append(('Attention','Dismissed'))
             if self.agent_has_failures and not attention_required(item):fields.append(('Errors','Unseen recent error · s Inspect'))
             if credits_text:fields.append(('Credits',credits_text.splitlines()[0]))
-            if permissions_short:fields.append(('Permissions',permissions_short))
+            fields.extend(inspector_additions.overview_fields)
             if request_event and input_required(item):
                 sections.append(('Latest request',session_excerpt(request_text(recorded_message_text(request_event)).body,lines=3)))
             sections += [(label,value) for label,value in short_hierarchy if label=='Subtree summary']
@@ -3840,7 +3844,7 @@ class ObservatoryApp(App):
                 [('Status evidence',attention_guidance(item,lifecycle_event=lifecycle_event)[0][1] if item.get('state')=='Interrupted' else attention_evidence(item,summary)),('Waiting on',wait_summary(item)),
                  ('Task usage',usage_text),*([('Credits',credits_text)] if credits_text else []),
                  *([('Reported source usage',metadata_usage)] if metadata_usage else []),
-                 *([('Permissions',permissions_text)] if permissions_text else []),
+                 *inspector_additions.detail_sections,
                  ('Evidence coverage',coverage),('Analysis coverage',analysis_coverage(summary)),
                  ('History freshness',session_history_feedback(self.data)),
                  ('Working directory',item.get('working_directory'))]+hierarchy_sections+ai_sections,

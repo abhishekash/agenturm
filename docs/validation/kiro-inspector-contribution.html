@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kiro session-inspector contribution · Agenturm</title>
+<style>
+:root{color-scheme:light dark;--bg:#faf8f4;--fg:#25212b;--muted:#655d6d;--line:#d9d1df;--panel:#f0ecf3;--link:#6043a2}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.7 system-ui,sans-serif}main{max-width:850px;margin:auto;padding:32px clamp(20px,5vw,56px) 72px}h1{font-size:clamp(30px,6vw,44px);line-height:1.2}h2{font-size:25px;margin-top:36px}p,li{overflow-wrap:anywhere}a{color:var(--link);text-underline-offset:4px}code{font:0.86em ui-monospace,monospace;background:var(--panel);padding:2px 4px;border-radius:3px}pre{overflow:auto;background:var(--panel);border:1px solid var(--line);padding:16px;border-radius:6px}pre code{padding:0}nav,footer{font-size:14px;color:var(--muted);border-bottom:1px solid var(--line);padding-bottom:16px}footer{border-top:1px solid var(--line);border-bottom:0;padding-top:18px;margin-top:40px}li+li{margin-top:8px}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}pre{font-size:12px}}
+</style></head><body><main>
+<nav>Agenturm · <a href="kiro-inspector-contribution.md">Markdown source</a></nav>
+<h1>Kiro session-inspector contribution</h1>
+<p>20 November 2026. The cockpit now composes Kiro's permission view through a trusted session-inspector provider. Generic <code>terminal_ui.py</code> renders bounded overview fields and detail sections returned by the registry; it does not name Kiro or inspect <code>kiro_folders</code>. The Kiro formatter and provider live in <code>ui_kiro_inspector.py</code>, and <code>terminal.py</code> registers them at the cockpit composition root.</p>
+<h2>Visible behavior</h2>
+<p>The existing inspector layout is unchanged. A Kiro session with recorded permissions still shows the same compact <strong>Permissions</strong> field and detailed <strong>Permissions</strong> section. A source that disappears from the current snapshot no longer supplies those sections. The provider reads only current snapshot metadata, keeps no cached folder paths, and follows the collector's metadata-only redaction of permission subjects and folder names. No new pane, key binding, source read, or content capture was added.</p>
+<h2>Extension boundary</h2>
+<p>The registry accepts at most eight trusted providers, four fields and four detail sections total, bounded labels and text. A failing or invalid provider cannot prevent the rest of the inspector from rendering. A synthetic second runtime contributes its own field and section through the same UI path without a runtime-specific branch.</p>
+<h2>Validation</h2>
+<pre><code>python -m unittest tests.test_ui_session_inspector_provider tests.test_kiro_permissions tests.test_kiro_sessions -q
+30 tests passed locally</code></pre>
+<p>Live Textual tests exercised Kiro compact and details views at 60×18 and 80×24, source disappearance, and a synthetic provider at 60×18. Existing Kiro parsing, metadata-only redaction, and session tests remain green. This is an in-process trusted UI contribution, not a general untrusted extension execution boundary.</p>
+<footer>Self-contained HTML companion with embedded responsive light and dark styles.</footer>
+</main></body></html>

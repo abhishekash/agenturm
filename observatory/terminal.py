@@ -1189,11 +1189,13 @@ def _run_terminal_app(app):
 
 
 def _cockpit_app(feed, *, ui_panes=()):
-    """Compose the trusted local Activity previews at the UI boundary."""
+    """Compose trusted local UI contributions at the cockpit boundary."""
     from .terminal_ui import ObservatoryApp
     from .ui_pi_command_content import PI_REQUESTED_COMMAND
+    from .ui_kiro_inspector import KIRO_PERMISSIONS
     return ObservatoryApp(feed, ui_panes=ui_panes,
-                          content_preview_providers=(PI_REQUESTED_COMMAND,))
+                          content_preview_providers=(PI_REQUESTED_COMMAND,),
+                          session_inspector_providers=(KIRO_PERMISSIONS,))
 
 
 def run_cockpit(*, db_path=None, port=14318, endpoint=None,
