@@ -518,8 +518,8 @@ mod tests {
             <DirectoryPoller<SyntheticFormat> as Poller>::PLUGIN_ID,
             "fixture.directory-format"
         );
-        assert!(<DirectoryPoller<SyntheticFormat> as Poller>::DISCOVERY);
-        assert!(<DirectoryPoller<SyntheticFormat> as Poller>::ROOT_GAP);
+        const { assert!(<DirectoryPoller<SyntheticFormat> as Poller>::DISCOVERY) };
+        const { assert!(<DirectoryPoller<SyntheticFormat> as Poller>::ROOT_GAP) };
 
         let root = std::env::temp_dir().join(format!(
             "agenturm-synthetic-directory-wire-{}",
