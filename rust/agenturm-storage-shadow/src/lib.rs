@@ -7,8 +7,11 @@
 #![forbid(unsafe_code)]
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::de::{self, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Value, value::RawValue};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::Path;
 
@@ -25,6 +28,8 @@ struct Request {
     schema_version: u32,
     sqlite_path: String,
     source_id: String,
+    #[serde(default)]
+    include_projection: bool,
 }
 
 #[derive(Serialize)]
@@ -44,7 +49,32 @@ struct Certificate<'a> {
     source_id: &'a str,
     state: &'static str,
     revision: Option<Revision>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sessions: Option<Vec<Session>>,
 }
+
+#[derive(Serialize)]
+struct Session {
+    native_session_id: String,
+    session_key: String,
+    reported_state: String,
+    run_state: String,
+    reason_code: String,
+    state_time_ns: i64,
+    last_record_ns: i64,
+    metadata_usage: BTreeMap<String, Value>,
+    parent_native_session_id: String,
+    relationship_kind: String,
+    relationship_state: String,
+}
+
+const MAX_PROJECTION_SESSIONS: i64 = 2_000;
+const MAX_PROJECTION_BYTES: i64 = 4 * 1024 * 1024;
+const MAX_USAGE_BYTES: i64 = 4_096;
+const MAX_JSON_SAFE_INTEGER: u128 = (1_u128 << 53) - 1;
+// At most 50,000 admitted records can contribute one i64 usage observation
+// each to a source; Python's reducer sums them with arbitrary-size integers.
+const MAX_USAGE_SUM: u128 = 50_000_u128 * (i64::MAX as u128);
 
 fn source_id(value: &str) -> bool {
     !value.is_empty()
@@ -162,6 +192,7 @@ fn inspect_snapshot(db: &Connection, request: &Request) -> Result<Value> {
             source_id: &request.source_id,
             state: "unknown",
             revision: None,
+            sessions: None,
         })?);
     };
     if owner != receiver {
@@ -191,6 +222,17 @@ fn inspect_snapshot(db: &Connection, request: &Request) -> Result<Value> {
     } else {
         "pending"
     };
+    let sessions = if request.include_projection && ready {
+        Some(read_projection(
+            db,
+            &receiver,
+            &request.source_id,
+            policy,
+            dirty,
+        )?)
+    } else {
+        None
+    };
     Ok(serde_json::to_value(Certificate {
         schema_version: 1,
         receiver_id: &receiver,
@@ -204,7 +246,227 @@ fn inspect_snapshot(db: &Connection, request: &Request) -> Result<Value> {
             projected_seq: projected.map(|value| value.to_string()),
             projected_policy: projected_policy.map(|value| value.to_string()),
         }),
+        sessions,
     })?)
+}
+
+fn code(value: &str) -> bool {
+    value.len() <= 64
+        && value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'_' | b'.' | b'/' | b'-')
+        })
+}
+
+struct Usage(BTreeMap<String, Value>);
+
+impl<'de> Deserialize<'de> for Usage {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct UsageVisitor;
+
+        impl<'de> Visitor<'de> for UsageVisitor {
+            type Value = Usage;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an object of exact nonnegative token counters")
+            }
+
+            fn visit_map<M: MapAccess<'de>>(
+                self,
+                mut access: M,
+            ) -> std::result::Result<Self::Value, M::Error> {
+                let mut counters = BTreeMap::new();
+                while let Some((name, raw)) = access.next_entry::<String, Box<RawValue>>()? {
+                    if !matches!(
+                        name.as_str(),
+                        "input_tokens"
+                            | "output_tokens"
+                            | "cache_read_tokens"
+                            | "cache_write_tokens"
+                            | "total_tokens"
+                    ) {
+                        return Err(de::Error::custom("unknown stored usage counter"));
+                    }
+                    let token = raw.get();
+                    if token.is_empty()
+                        || token.len() > 26
+                        || token.starts_with('0') && token != "0"
+                        || !token.bytes().all(|byte| byte.is_ascii_digit())
+                    {
+                        return Err(de::Error::custom("invalid stored usage integer"));
+                    }
+                    let value = token
+                        .parse::<u128>()
+                        .map_err(|_| de::Error::custom("stored usage integer exceeds u128"))?;
+                    if value > MAX_USAGE_SUM {
+                        return Err(de::Error::custom("stored usage exceeds protocol ceiling"));
+                    }
+                    let exact = if value <= MAX_JSON_SAFE_INTEGER {
+                        Value::from(value as u64)
+                    } else {
+                        Value::from(value.to_string())
+                    };
+                    if counters.insert(name, exact).is_some() {
+                        return Err(de::Error::custom("duplicate stored usage counter"));
+                    }
+                }
+                Ok(Usage(counters))
+            }
+        }
+
+        deserializer.deserialize_map(UsageVisitor)
+    }
+}
+
+fn session_key(receiver: &str, source: &str, native: &str) -> String {
+    let identity = format!("{receiver}\0{source}\0{native}");
+    format!("plugin:{:x}", Sha256::digest(identity.as_bytes()))
+}
+
+fn read_projection(
+    db: &Connection,
+    receiver: &str,
+    source: &str,
+    policy: i64,
+    dirty: i64,
+) -> Result<Vec<Session>> {
+    // Check lengths in SQLite before bringing any stored text into Rust. The
+    // LIMIT detects oversize sources without reading their entire projection.
+    let (
+        count,
+        bytes,
+        usage_max,
+        native_max,
+        key_max,
+        state_max,
+        reason_max,
+        parent_max,
+        relation_kind_max,
+        relation_state_max,
+    ): (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = db.query_row(
+        r#"SELECT COUNT(*), COALESCE(SUM(
+                COALESCE(length(CAST(native_session_id AS BLOB)),0)+
+                COALESCE(length(CAST(session_key AS BLOB)),0)+
+                COALESCE(length(CAST(state AS BLOB)),0)+
+                COALESCE(length(CAST(reason_code AS BLOB)),0)+
+                COALESCE(length(CAST(usage_json AS BLOB)),0)+
+                COALESCE(length(CAST(parent_native_session_id AS BLOB)),0)+
+                COALESCE(length(CAST(relationship_kind AS BLOB)),0)+
+                COALESCE(length(CAST(relationship_state AS BLOB)),0)),0),
+                COALESCE(MAX(length(CAST(usage_json AS BLOB))),0),
+                COALESCE(MAX(length(CAST(native_session_id AS BLOB))),0),
+                COALESCE(MAX(length(CAST(session_key AS BLOB))),0),
+                COALESCE(MAX(length(CAST(state AS BLOB))),0),
+                COALESCE(MAX(length(CAST(reason_code AS BLOB))),0),
+                COALESCE(MAX(length(CAST(parent_native_session_id AS BLOB))),0),
+                COALESCE(MAX(length(CAST(relationship_kind AS BLOB))),0),
+                COALESCE(MAX(length(CAST(relationship_state AS BLOB))),0)
+             FROM (SELECT native_session_id,session_key,state,reason_code,usage_json,
+                          parent_native_session_id,relationship_kind,relationship_state
+                   FROM plugin_session_projection_v1 WHERE source_id=? LIMIT 2001)"#,
+        params![source],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+                row.get(9)?,
+            ))
+        },
+    )?;
+    if count > MAX_PROJECTION_SESSIONS
+        || bytes > MAX_PROJECTION_BYTES
+        || usage_max > MAX_USAGE_BYTES
+        || native_max > 256
+        || key_max > 71
+        || state_max > 16
+        || reason_max > 64
+        || parent_max > 256
+        || relation_kind_max > 16
+        || relation_state_max > 16
+    {
+        return Err(invalid("stored projection exceeds bounded read budget"));
+    }
+    let mut statement = db.prepare(
+        r#"SELECT native_session_id,session_key,state,reason_code,state_time_ns,
+                  last_record_ns,policy_epoch,source_dirty_seq,usage_json,
+                  parent_native_session_id,relationship_kind,relationship_state
+           FROM plugin_session_projection_v1 WHERE source_id=?
+           ORDER BY native_session_id LIMIT 2001"#,
+    )?;
+    let mut rows = statement.query(params![source])?;
+    let mut result = Vec::with_capacity(count as usize);
+    while let Some(row) = rows.next()? {
+        let native: String = row.get(0)?;
+        let key: String = row.get(1)?;
+        let state: String = row.get(2)?;
+        let reason: String = row.get(3)?;
+        let state_time: i64 = row.get(4)?;
+        let last_record: i64 = row.get(5)?;
+        let row_policy: i64 = row.get(6)?;
+        let row_dirty: i64 = row.get(7)?;
+        let usage_json: String = row.get(8)?;
+        let parent: String = row.get(9)?;
+        let relation_kind: String = row.get(10)?;
+        let relation_state: String = row.get(11)?;
+        if !source_id(&native)
+            || key != session_key(receiver, source, &native)
+            || !matches!(
+                state.as_str(),
+                "started"
+                    | "running"
+                    | "paused"
+                    | "completed"
+                    | "failed"
+                    | "interrupted"
+                    | "cancelled"
+                    | "unknown"
+            )
+            || !reason.is_empty() && !code(&reason)
+            || state_time < 0
+            || last_record < 0
+            || row_policy != policy
+            || row_dirty != dirty
+            || !parent.is_empty() && !source_id(&parent)
+            || !matches!(relation_kind.as_str(), "delegated" | "review" | "unknown")
+            || !matches!(
+                relation_state.as_str(),
+                "unresolved" | "confirmed" | "invalid" | "conflicted"
+            )
+        {
+            return Err(invalid("invalid or stale stored projection row"));
+        }
+        let Usage(metadata_usage) = serde_json::from_str(&usage_json)?;
+        let run_state = match state.as_str() {
+            "started" => "running",
+            "paused" => "waiting",
+            "cancelled" => "interrupted",
+            other => other,
+        }
+        .to_string();
+        result.push(Session {
+            native_session_id: native,
+            session_key: key,
+            reported_state: state,
+            run_state,
+            reason_code: reason,
+            state_time_ns: state_time,
+            last_record_ns: last_record,
+            metadata_usage,
+            parent_native_session_id: parent,
+            relationship_kind: relation_kind,
+            relationship_state: relation_state,
+        });
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -218,6 +480,7 @@ mod tests {
             r#"{"schema_version":1,"sqlite_path":"relative.db","source_id":"source"}"#,
             r#"{"schema_version":1,"sqlite_path":"/tmp/missing","source_id":"bad source"}"#,
             r#"{"schema_version":1,"sqlite_path":"/tmp/missing","source_id":"source","extra":1}"#,
+            r#"{"schema_version":1,"sqlite_path":"/tmp/missing","source_id":"source","include_projection":"yes"}"#,
         ] {
             assert!(inspect_json(input).is_err());
         }
