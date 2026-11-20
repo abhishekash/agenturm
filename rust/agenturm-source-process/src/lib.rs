@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn poll_cursor_accepts_800_chars_and_rejects_overflow() {
+    fn poll_cursor_accepts_800_bytes_and_rejects_overflow() {
         assert!(identity(&"s".repeat(200)));
         assert!(!identity(&"s".repeat(201)));
         let mut session = Session::default();
@@ -501,7 +501,7 @@ mod tests {
                 Path::new("/tmp"),
             )
             .unwrap();
-        let valid = "a".repeat(MAX_CURSOR_CHARS);
+        let valid = "a".repeat(MAX_CURSOR_BYTES);
         let batch = session
             .handle::<Content>(
                 json!({"type":"poll","protocol":1,"source_id":"source",
@@ -511,7 +511,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .0;
-        assert_eq!(batch["cursor"].as_str().unwrap().len(), MAX_CURSOR_CHARS);
+        assert_eq!(batch["cursor"].as_str().unwrap().len(), MAX_CURSOR_BYTES);
         session
             .handle::<Content>(
                 json!({"type":"ack","protocol":1,"source_id":"source",
@@ -519,7 +519,7 @@ mod tests {
                 Path::new("/tmp"),
             )
             .unwrap();
-        let invalid_cursor = "a".repeat(MAX_CURSOR_CHARS + 1);
+        let invalid_cursor = "a".repeat(MAX_CURSOR_BYTES + 1);
         assert!(
             session
                 .handle::<Content>(
