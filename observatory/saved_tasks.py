@@ -14,6 +14,7 @@ import stat
 import time
 import uuid
 
+from .aux_store_handoff import AuxiliaryStoreHandoff
 from .task_workspace import capture_workspace, display_text
 
 MAX_NOTES = 32000
@@ -43,6 +44,11 @@ def default_path():
 
 def backup_task_database(path, destination):
     """SQLite backup API works before initialization or migration of side tables."""
+    return _backup_task_database(path, destination)
+
+
+def _backup_task_database(path, destination, *, on_close_failure=None):
+    """Close both SQLite handles; notify an instance tracker if closure fails."""
     source_path = Path(path).expanduser().resolve()
     target = Path(destination).expanduser()
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -50,10 +56,24 @@ def backup_task_database(path, destination):
     try:
         source = sqlite3.connect(source_path.as_uri() + '?mode=ro', uri=True, timeout=3)
         try:
-            with sqlite3.connect(target) as backup:
-                source.backup(backup)
+            backup = sqlite3.connect(target)
+            try:
+                with backup:
+                    source.backup(backup)
+            finally:
+                try:
+                    backup.close()
+                except BaseException:
+                    if on_close_failure is not None:
+                        on_close_failure()
+                    raise
         finally:
-            source.close()
+            try:
+                source.close()
+            except BaseException:
+                if on_close_failure is not None:
+                    on_close_failure()
+                raise
     except BaseException:
         target.unlink(missing_ok=True)
         raise
@@ -337,6 +357,7 @@ def usage_summary(links):
 class TaskStore:
     def __init__(self, path=None):
         self.path = Path(path).expanduser() if path is not None else default_path()
+        self._handoff = AuxiliaryStoreHandoff()
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -371,16 +392,30 @@ class TaskStore:
 
     @contextmanager
     def _connect(self):
-        db = sqlite3.connect(self.path, timeout=3)
-        db.row_factory = sqlite3.Row
+        if not self._handoff.admit():
+            raise TaskError('Saved task writer handoff is in progress.')
+        db = None
         try:
+            db = sqlite3.connect(self.path, timeout=3)
+            db.row_factory = sqlite3.Row
             with db:
                 yield db
         finally:
-            db.close()
+            try:
+                if db is not None:
+                    db.close()
+            except BaseException:
+                self._handoff.cleanup_failed()
+                raise
+            finally:
+                self._handoff.release()
 
     def close(self):
         """Connections are short lived; retained for context-independent callers."""
+
+    def quiesce_for_writer_handoff(self, timeout: float) -> bool:
+        """Explicitly fence this instance and wait for its SQLite handles."""
+        return self._handoff.quiesce(timeout)
 
     def list(self, include_archived=False, *, offset=0):
         if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= 2**63 - 1:
@@ -564,7 +599,13 @@ class TaskStore:
 
     def backup(self, destination):
         """Make an explicit consistent private backup without overwriting a file."""
-        return backup_task_database(self.path, destination)
+        if not self._handoff.admit():
+            raise TaskError('Saved task writer handoff is in progress.')
+        try:
+            return _backup_task_database(
+                self.path, destination, on_close_failure=self._handoff.cleanup_failed)
+        finally:
+            self._handoff.release()
 
     def update(self, task_id, *, title=None, workspace=None, notes=None, archived=None, expected_revision=None):
         def modify(task):

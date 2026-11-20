@@ -14,6 +14,8 @@ from pathlib import Path
 import sqlite3
 import time
 
+from .aux_store_handoff import AuxiliaryStoreHandoff
+
 
 SCHEMA_VERSION = 2
 MAX_INCIDENTS = 10_000
@@ -92,6 +94,7 @@ class WorkflowStore:
     def __init__(self, path=None, *, max_incidents=MAX_INCIDENTS):
         self.path = Path(path).expanduser() if path is not None else default_path()
         self.max_incidents = max(1, min(MAX_INCIDENTS, int(max_incidents)))
+        self._handoff = AuxiliaryStoreHandoff()
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             if self.path.is_symlink():
@@ -145,6 +148,8 @@ class WorkflowStore:
 
     @contextmanager
     def _transaction(self, *, write=True):
+        if not self._handoff.admit():
+            raise WorkflowStoreError('Workflow writer handoff is in progress')
         db = None
         try:
             db = sqlite3.connect(self.path, timeout=.5)
@@ -163,8 +168,18 @@ class WorkflowStore:
                 db.rollback()
             raise
         finally:
-            if db is not None:
-                db.close()
+            try:
+                if db is not None:
+                    db.close()
+            except BaseException:
+                self._handoff.cleanup_failed()
+                raise
+            finally:
+                self._handoff.release()
+
+    def quiesce_for_writer_handoff(self, timeout: float) -> bool:
+        """Explicitly fence this instance and wait for its SQLite handles."""
+        return self._handoff.quiesce(timeout)
 
     @staticmethod
     def _cleanup(db, now):
