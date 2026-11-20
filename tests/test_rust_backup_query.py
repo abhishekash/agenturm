@@ -9,11 +9,13 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 from observatory.core import Store
 from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
 from observatory.plugin_projection import project_source
-from observatory.plugin_wire import PollBatch
+from observatory.plugin_wire import PollBatch, ProtocolError
+from observatory.rust_backup_attestation import MAX_RESULT_BYTES, attest_exact
 from observatory.rust_shadow_snapshot import capture, current
 
 
@@ -56,6 +58,148 @@ class RustBackupQueryTests(unittest.TestCase):
         process = self.run_query(path, kind, identity, source=source)
         self.assertEqual(process.returncode, 0, process.stderr)
         return json.loads(process.stdout)
+
+    def ready(self):
+        lease = activate_source(self.store, plugin_id="fixture.plugin",
+                                source_id=SOURCE, generation="a" * 64)
+        commit_batch(self.store, lease, "", PollBatch(SOURCE, "one", (
+            {"event_id": "start", "revision": 0, "kind": "lifecycle",
+             "time_ns": "10", "payload": {"state": "started"},
+             "identity": {"session_id": "native-one"}},
+            {"event_id": "message", "revision": 0, "kind": "message",
+             "time_ns": "11", "payload": {"role": "user"},
+             "identity": {"session_id": "native-one"}},
+        )))
+        project_source(self.store, SOURCE)
+        return lease, capture(self.store, SOURCE), self.backup()
+
+    @staticmethod
+    def exact(kind, identity):
+        return {"kind": kind, "source_id": SOURCE,
+                "native_session_id" if kind == "session" else "event_id": identity}
+
+    def attest(self, path, kind, identity):
+        process = self.run_query(path, kind, identity)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        return attest_exact(self.store, self.exact(kind, identity), process.stdout)
+
+    def test_exact_attestation_matches_session_activity_and_absence(self):
+        _, snapshot, copy = self.ready()
+        self.assertEqual(self.attest(copy, "session", "native-one")["row"],
+                         snapshot.expected["sessions"][0])
+        activity = snapshot.expected["activities"][0]
+        self.assertEqual(self.attest(copy, "activity", activity["id"])["row"], activity)
+        missing = self.attest(copy, "session", "native-missing")
+        self.assertEqual(missing["query"], self.exact("session", "native-missing"))
+        self.assertEqual((missing["coverage"], missing["row"]), ("partial", None))
+        self.assertEqual(missing["receiver_id"], snapshot.revision[0])
+        self.assertEqual(missing["revision"]["dirty_seq"], str(snapshot.revision[3]))
+        self.assertIsNone(self.attest(copy, "activity", "plugin-event:" + "0" * 64)["row"])
+
+    def test_attestation_preserves_conservative_gap_projection(self):
+        lease, _, _ = self.ready()
+        commit_batch(self.store, lease, "one", PollBatch(SOURCE, "two", (
+            {"event_id": "gap", "revision": 0, "kind": "diagnostic",
+             "time_ns": "0", "payload": {"code": "possible_source_gap",
+                                           "severity": "warning"}},)))
+        with self.assertRaises(ProtocolError):
+            self.attest(self.backup(), "session", "native-one")
+        project_source(self.store, SOURCE)
+        snapshot = capture(self.store, SOURCE)
+        copy = self.backup()
+        row = self.attest(copy, "session", "native-one")["row"]
+        self.assertEqual(row, snapshot.expected["sessions"][0])
+        self.assertEqual((row["reported_state"], row["reason_code"]),
+                         ("unknown", "source_gap"))
+        self.assertIsNone(self.attest(copy, "session", "native-missing")["row"])
+
+    def test_attestation_rejects_valid_backup_tamper_and_stale_live_source(self):
+        lease, snapshot, copy = self.ready()
+        query = self.exact("session", "native-one")
+        original = self.run_query(copy, "session", "native-one").stdout
+        self.assertEqual(attest_exact(self.store, query, original)["row"],
+                         snapshot.expected["sessions"][0])
+        with closing(sqlite3.connect(copy)) as db:
+            db.execute("UPDATE plugin_session_projection_v1 SET state='completed' "
+                       "WHERE source_id=? AND native_session_id='native-one'", (SOURCE,))
+            db.commit()
+        forged = self.run_query(copy, "session", "native-one").stdout
+        with self.assertRaises(ProtocolError):
+            attest_exact(self.store, query, forged)
+        self.assertTrue(current(self.store, snapshot))
+        commit_batch(self.store, lease, "one", PollBatch(SOURCE, "two", (
+            {"event_id": "pause", "revision": 0, "kind": "lifecycle",
+             "time_ns": "12", "payload": {"state": "paused"},
+             "identity": {"session_id": "native-one"}},)))
+        with self.assertRaises(ProtocolError):
+            attest_exact(self.store, query, original)
+        project_source(self.store, SOURCE)
+        fresh = self.backup()
+        fresh_result = self.run_query(fresh, "session", "native-one").stdout
+        set_source_capture(self.store, source_id=SOURCE, enabled=False)
+        with self.assertRaises(ProtocolError):
+            attest_exact(self.store, query, fresh_result)
+
+    def test_attestation_rejects_malformed_or_unavailable_rust_results(self):
+        _, _, copy = self.ready()
+        query = self.exact("session", "native-one")
+        good = self.result(copy, "session", "native-one")
+        for change in (
+            {"unexpected": 1}, {"coverage": "unavailable"}, {"state": "unknown"},
+            {"source_id": "other"}, {"receiver_id": "other"},
+            {"query": self.exact("session", "native-other")},
+            {"activity": None}, {"session": {**good["session"], "state_time_ns": True}},
+            {"revision": {**good["revision"], "dirty_seq": 1}},
+        ):
+            with self.subTest(change=change), self.assertRaises(ProtocolError):
+                attest_exact(self.store, query, json.dumps({**good, **change}))
+        malformed = (
+            json.dumps(good)[:-1] + ',"state":"ready"}',
+            json.dumps(good)[:-1] + ',"session":null}',
+            '{"state":NaN}',
+            '{"state":1e400}',
+            " " * (MAX_RESULT_BYTES + 1),
+        )
+        for raw in malformed:
+            with self.subTest(raw=raw[:24]), self.assertRaises(ProtocolError):
+                attest_exact(self.store, query, raw)
+
+    def test_attestation_rechecks_after_snapshot_before_return(self):
+        _, snapshot, copy = self.ready()
+        query = self.exact("session", "native-one")
+        raw = self.run_query(copy, "session", "native-one").stdout
+        actual_current = current
+
+        def revoke_during_check(store, captured):
+            self.assertEqual(captured.revision, snapshot.revision)
+            set_source_capture(store, source_id=SOURCE, enabled=False)
+            return actual_current(store, captured)
+
+        with patch("observatory.rust_backup_attestation.current",
+                   side_effect=revoke_during_check), self.assertRaises(ProtocolError):
+            attest_exact(self.store, query, raw)
+
+    def test_attestation_rejects_same_revision_store_file_replacement(self):
+        _, snapshot, copy = self.ready()
+        query = self.exact("session", "native-one")
+        raw = self.run_query(copy, "session", "native-one").stdout
+        replacement = self.backup()
+        with closing(sqlite3.connect(replacement)) as db:
+            db.execute("UPDATE plugin_session_projection_v1 SET state='completed' "
+                       "WHERE source_id=? AND native_session_id='native-one'", (SOURCE,))
+            db.commit()
+        actual_current = current
+
+        def replace_during_check(store, captured):
+            self.assertEqual(captured.revision, snapshot.revision)
+            os.replace(replacement, store.path)
+            still_current_by_revision = actual_current(store, captured)
+            self.assertTrue(still_current_by_revision)
+            return still_current_by_revision
+
+        with patch("observatory.rust_backup_attestation.current",
+                   side_effect=replace_during_check), self.assertRaises(ProtocolError):
+            attest_exact(self.store, query, raw)
 
     def test_ready_exact_query_is_historical_and_matches_python_projection(self):
         unknown = self.result(self.backup(), "session", "native-one")
