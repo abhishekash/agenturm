@@ -1,0 +1,305 @@
+"""Root-only two-UID proof for feature-off real Store clone admission."""
+from __future__ import annotations
+
+from contextlib import closing
+import hashlib
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import sqlite3
+import struct
+import subprocess
+import sys
+import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from validate_rust_real_clone_activation import send
+from validate_rust_storage_service_accounts import check, drop_to, identities, wait_socket
+
+
+def child_request(args) -> None:
+    request = json.loads(Path(args.request).read_text())
+    reply = send(Path(args.socket), request, expect_reply=not args.reject,
+                 discard=args.drop_reply)
+    if reply is not None and args.reply:
+        Path(args.reply).write_text(json.dumps(reply, separators=(",", ":")))
+
+
+def run_client(request_path: Path, socket_path: Path, *, uid: int, gid: int,
+               reply_path: Path | None = None, reject: bool = False,
+               drop_reply: bool = False) -> dict | None:
+    if reply_path is not None:
+        reply_path.unlink(missing_ok=True)
+    command = [sys.executable, __file__, "--client", "--socket", str(socket_path),
+               "--request", str(request_path)]
+    if reply_path is not None:
+        command.extend(("--reply", str(reply_path)))
+    if reject:
+        command.append("--reject")
+    if drop_reply:
+        command.append("--drop-reply")
+    result = subprocess.run(command, preexec_fn=drop_to(uid, gid),
+                            capture_output=True, text=True, timeout=8)
+    check(result.returncode == 0, f"client: {result.stdout}{result.stderr}")
+    return json.loads(reply_path.read_text()) if reply_path and reply_path.exists() else None
+
+
+def new_batch(source_id: str, cursor: str):
+    from observatory.plugin_wire import PollBatch
+    records = (
+        {"event_id": "event-start", "revision": 0, "kind": "lifecycle",
+         "time_ns": "100", "payload": {"state": "started"},
+         "identity": {"session_id": "session-one"}},
+        {"event_id": "event-finish", "revision": 0, "kind": "lifecycle",
+         "time_ns": "200", "payload": {"state": "completed"},
+         "identity": {"session_id": "session-one"}},
+    )
+    return PollBatch(source_id=source_id, cursor=cursor, records=records)
+
+
+def request_for(lease: dict, batch, request_id: str, expected_cursor: str) -> dict:
+    from observatory.plugin_admission import _validated
+    digest, rows, _ = _validated(batch, lease["source_id"])
+    records = [{
+        "event_id_hash": row[1],
+        "revision": row[2],
+        "time_ns": row[4],
+        "payload_json": row[5],
+        "record_digest": row[6],
+        "native_session_id": row[7],
+        "native_worker_id": row[8],
+        "native_turn_id": row[9],
+        "native_operation_id": row[10],
+    } for row in rows]
+    stable_lease = {key: lease[key] for key in
+                    ("receiver_id", "plugin_id", "source_id", "generation", "epoch", "policy_epoch")}
+    return {"version": 2, "request_id": request_id,
+            "receiver_id": lease["receiver_id"],
+            "operation": {"op": "admit_lifecycle", "lease": stable_lease,
+                          "expected_cursor": expected_cursor, "cursor": batch.cursor,
+                          "batch_digest": digest, "records": records}}
+
+
+def child_entry() -> None:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--client", action="store_true")
+    parser.add_argument("--socket", type=Path)
+    parser.add_argument("--request", type=Path)
+    parser.add_argument("--reply", type=Path)
+    parser.add_argument("--reject", action="store_true")
+    parser.add_argument("--drop-reply", action="store_true")
+    args = parser.parse_args()
+    child_request(args)
+
+
+def main(binary: Path) -> None:
+    check(sys.platform == "linux" and os.geteuid() == 0,
+          "run as root on isolated Linux")
+    from observatory.core import Store
+    from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
+    from observatory.plugin_reference_admission import DEFAULT_REFERENCE_ADMISSIONS
+
+    service_uid, client_uid, wrong_uid, service_gid, client_gid = identities()
+    with tempfile.TemporaryDirectory(prefix="agenturm-real-clone-admit-") as temporary:
+        root = Path(temporary)
+        root.chmod(0o755)
+        canonical = root / "canonical.db"
+        original = Store(canonical)
+        receiver = original.receiver_id
+        original.close()
+
+        data = root / "private-data"
+        data.mkdir(mode=0o700)
+        clone = data / "telemetry-clone.db"
+        oracle = root / "oracle.db"
+        with closing(sqlite3.connect(canonical)) as source_db:
+            for target in (clone, oracle):
+                with closing(sqlite3.connect(target)) as copy_db:
+                    source_db.backup(copy_db)
+        with closing(sqlite3.connect(clone)) as db:
+            db.execute("INSERT INTO schema_meta VALUES('storage_activation_clone_v1','enabled')")
+            db.commit()
+
+        def canonical_state():
+            paths = (canonical, Path(f"{canonical}-wal"), Path(f"{canonical}-shm"))
+            return tuple((path.stat().st_ino, path.stat().st_mtime_ns,
+                          hashlib.sha256(path.read_bytes()).hexdigest()) if path.exists() else None
+                         for path in paths)
+
+        canonical_before = canonical_state()
+        oracle_store = Store(oracle)
+        py_lease = activate_source(oracle_store, plugin_id="fixture.plugin",
+                                   source_id="batch-source", generation="a" * 64)
+        batch = new_batch("batch-source", "cursor-one")
+        from observatory.plugin_admission import _validated
+        batch_digest, rows, _ = _validated(batch, "batch-source")
+        # The Rust slice deliberately has no private reference provider. Use
+        # Python's normal metadata admission oracle and compare core evidence,
+        # cursor, and dirty state; provider ownership remains a separate gate.
+        python_result = commit_batch(oracle_store, py_lease, "", batch)
+        check(python_result == "cursor-one", "Python oracle did not commit cursor")
+        oracle_store.close()
+
+        # The canonical input, clone, and transport tree are separately pinned.
+        for path in data.iterdir():
+            os.chown(path, service_uid, service_gid)
+            path.chmod(0o600)
+        os.chown(data, service_uid, service_gid)
+        transport = root / "transport"
+        transport.mkdir(mode=0o700)
+        os.chown(transport, service_uid, client_gid)
+        transport.chmod(0o2710)
+
+        activation = {"version": 2, "request_id": "1" * 32, "receiver_id": receiver,
+                      "operation": {"op": "activate_source", "plugin_id": "fixture.plugin",
+                                    "source_id": "batch-source", "generation": "a" * 64}}
+        activation_path = root / "activation.json"
+        activation_path.write_text(json.dumps(activation))
+        activation_path.chmod(0o644)
+        socket_path = transport / "agenturm-storage-v1.sock"
+        service_command = [str(binary), "--data-root", str(data),
+                           "--transport-dir", str(transport), "--receiver-id", receiver,
+                           "--client-uid", str(client_uid), "--client-gid", str(client_gid),
+                           "--experimental-real-clone-activation", "enabled"]
+
+        def start_service():
+            process = subprocess.Popen(service_command,
+                preexec_fn=lambda: (os.umask(0), drop_to(service_uid, service_gid)()),
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            wait_socket(process, socket_path)
+            return process
+
+        service = start_service()
+        try:
+            reply_path = root / "activation-reply.json"
+            activated = run_client(activation_path, socket_path, uid=client_uid,
+                                   gid=client_gid, reply_path=reply_path)
+            check(activated is not None and
+                  activated["result"]["disposition"] == "committed",
+                  "Rust source activation failed")
+            lease = activated["result"]["lease"]
+            request = request_for(lease, batch, "2" * 32, "")
+            request_path = root / "admit.json"
+            request_path.write_text(json.dumps(request))
+            request_path.chmod(0o644)
+            admit_reply_path = root / "admit-reply.json"
+
+            # Deterministically abort an evidence insert and prove SQLite rolls
+            # back both the cursor and the request receipt.
+            with closing(sqlite3.connect(clone)) as db:
+                db.execute("CREATE TRIGGER abort_batch BEFORE INSERT ON plugin_evidence_v1 "
+                           "BEGIN SELECT RAISE(ABORT,'test precommit abort'); END")
+                db.commit()
+            run_client(request_path, socket_path, uid=client_uid, gid=client_gid, reject=True)
+            with closing(sqlite3.connect(clone)) as db:
+                cursor = db.execute("SELECT cursor FROM plugin_source_cursor_v1 "
+                                    "WHERE source_id='batch-source'").fetchone()[0]
+                evidence = db.execute("SELECT COUNT(*) FROM plugin_evidence_v1 "
+                                      "WHERE source_id='batch-source'").fetchone()[0]
+                receipts = db.execute("SELECT COUNT(*) FROM storage_admission_request_v2 "
+                                      "WHERE request_id=?", (request["request_id"],)).fetchone()[0]
+                check((cursor, evidence, receipts) == ("", 0, 0),
+                      "precommit abort left partial admission state")
+                db.execute("DROP TRIGGER abort_batch")
+                db.commit()
+
+            # Close the client after sending the complete request, simulating a
+            # lost reply after commit. The durable receipt must make a restart
+            # replay idempotent.
+            run_client(request_path, socket_path, uid=client_uid, gid=client_gid,
+                       drop_reply=True)
+            with closing(sqlite3.connect(clone)) as db:
+                cursor = db.execute("SELECT cursor FROM plugin_source_cursor_v1 "
+                                    "WHERE source_id='batch-source'").fetchone()[0]
+                check(cursor == "cursor-one", "lost reply did not commit cursor")
+            replay = run_client(request_path, socket_path, uid=client_uid, gid=client_gid,
+                                reply_path=admit_reply_path)
+            check(replay["result"]["disposition"] == "replay",
+                  "same-process admission retry was not a replay")
+
+            service.send_signal(signal.SIGTERM)
+            _, stderr = service.communicate(timeout=5)
+            check(service.returncode == 0, f"service shutdown failed: {stderr}")
+            service = start_service()
+            replay = run_client(request_path, socket_path, uid=client_uid, gid=client_gid,
+                                reply_path=admit_reply_path)
+            check(replay["result"]["disposition"] == "replay",
+                  "restart admission replay was not durable")
+
+            # Revoke through Python against the clone while the Rust service is
+            # idle, then prove the previously issued Rust lease is stale.
+            stale_batch = new_batch("batch-source", "cursor-two")
+            stale_request = request_for(lease, stale_batch, "3" * 32, "cursor-one")
+            stale_path = root / "stale.json"
+            stale_path.write_text(json.dumps(stale_request))
+            stale_path.chmod(0o644)
+            clone_store = Store(clone)
+            set_source_capture(clone_store, source_id="batch-source", enabled=False)
+            clone_store.close()
+            run_client(stale_path, socket_path, uid=client_uid, gid=client_gid, reject=True)
+
+            with closing(sqlite3.connect(clone)) as db, closing(sqlite3.connect(oracle)) as py:
+                rust_state = db.execute(
+                    "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                    "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='batch-source'").fetchone()
+                py_state = py.execute(
+                    "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                    "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='batch-source'").fetchone()
+                # Policy and random lease epochs are unaffected by admission.
+                check(rust_state == py_state, "Rust cursor/policy state differs from Python")
+                projection = ("event_id_hash,revision,kind,time_ns,payload_json,record_digest,"
+                              "native_session_id,native_worker_id,native_turn_id,native_operation_id,"
+                              "member_id,policy_epoch")
+                rust_rows = db.execute(
+                    f"SELECT {projection} FROM plugin_evidence_v1 WHERE source_id=? "
+                    "ORDER BY event_id_hash,revision", ("batch-source",)).fetchall()
+                py_rows = py.execute(
+                    f"SELECT {projection} FROM plugin_evidence_v1 WHERE source_id=? "
+                    "ORDER BY event_id_hash,revision", ("batch-source",)).fetchall()
+                check(rust_rows == py_rows, "Rust evidence differs from Python Store")
+                check(len(rust_rows) == len(rows), "admission evidence count mismatch")
+                dirty = db.execute("SELECT dirty_seq FROM plugin_evidence_dirty_v1 "
+                                   "WHERE source_id='batch-source'").fetchone()
+                py_dirty = py.execute("SELECT dirty_seq FROM plugin_evidence_dirty_v1 "
+                                      "WHERE source_id='batch-source'").fetchone()
+                check(dirty == py_dirty, "Rust evidence dirty sequence differs from Python")
+                receipt_count = db.execute(
+                    "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+                    (request["request_id"],)).fetchone()[0]
+                check(receipt_count == 1, "admission replay receipt was duplicated")
+
+            # The exact receipt and cursor survive service restart; all test
+            # mutations stayed on the detached clone.
+            check(canonical_state() == canonical_before, "canonical database changed")
+            print("PASS detached real Store clone lifecycle admission, parity, replay, and revoke fence")
+        finally:
+            if service.poll() is None:
+                service.send_signal(signal.SIGTERM)
+            try:
+                _, stderr = service.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                service.kill()
+                _, stderr = service.communicate(timeout=5)
+            check(service.returncode == 0, f"service failed: {stderr}")
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bin", type=Path)
+    parser.add_argument("--client", action="store_true")
+    parser.add_argument("--socket", type=Path)
+    parser.add_argument("--request", type=Path)
+    parser.add_argument("--reply", type=Path)
+    parser.add_argument("--reject", action="store_true")
+    parser.add_argument("--drop-reply", action="store_true")
+    args = parser.parse_args()
+    if args.client:
+        child_request(args)
+    else:
+        main(args.bin.resolve(strict=True))

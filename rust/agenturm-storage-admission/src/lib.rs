@@ -444,12 +444,26 @@ fn commit_guarded(
     writer_lease: Option<&WriterLease>,
     replay: Option<&v2::ReplayIdentity>,
 ) -> Result<Receipt> {
+    commit_guarded_mode(db, request, writer_lease, replay, false)
+}
+
+fn commit_guarded_mode(
+    db: &mut Connection,
+    request: &Request,
+    writer_lease: Option<&WriterLease>,
+    replay: Option<&v2::ReplayIdentity>,
+    real_clone: bool,
+) -> Result<Receipt> {
     validate(request)?;
     let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if let Some(lease) = writer_lease {
         lease.verify_admission()?;
     }
-    require_scratch(&transaction)?;
+    if real_clone {
+        require_marked_real_clone(&transaction)?;
+    } else {
+        require_scratch(&transaction)?;
+    }
     let receiver: String = transaction.query_row(
         "SELECT value FROM schema_meta WHERE key='receiver_id'",
         [],
@@ -530,6 +544,7 @@ fn commit_guarded(
          OR EXISTS(SELECT 1 FROM plugin_retention_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 \
                    AND (revision<>0 OR kind<>'lifecycle' OR member_id<>''))",
         [&request.lease.source_id],
@@ -865,32 +880,93 @@ fn with_marked_activation_clone<T>(
     Ok(result)
 }
 
-/// Mutate only ActivateSource on a detached real-schema clone. No production caller.
+/// Mutate only source activation and metadata-only lifecycle admission on a
+/// detached real-schema clone. No production caller.
 pub fn apply_activation_clone_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
     let request = v2::Request::from_json(input)?;
-    if !matches!(&request.operation, v2::Operation::ActivateSource { .. }) {
-        return Err(reject("activation clone accepts only ActivateSource"));
-    }
     let replay = request.replay_identity()?;
-    let receipt = with_marked_activation_clone(path, |db, lease| {
-        activate_source_guarded(db, &request, Some(lease), &replay, true)
-    })?;
-    let disposition = match receipt.disposition {
-        "committed" => v2::Disposition::Committed,
-        "replay" => v2::Disposition::Replay,
-        _ => return Err(reject("unexpected activation clone disposition")),
+    let result = match &request.operation {
+        v2::Operation::ActivateSource { .. } => {
+            let receipt = with_marked_activation_clone(path, |db, lease| {
+                activate_source_guarded(db, &request, Some(lease), &replay, true)
+            })?;
+            let disposition = match receipt.disposition {
+                "committed" => v2::Disposition::Committed,
+                "replay" => v2::Disposition::Replay,
+                _ => return Err(reject("unexpected activation clone disposition")),
+            };
+            v2::OperationResult::SourceActivated(v2::SourceActivatedResult {
+                disposition,
+                lease: receipt.lease,
+                cursor: receipt.cursor,
+                dirty_seq: receipt.dirty_seq,
+            })
+        }
+        v2::Operation::AdmitLifecycle {
+            lease,
+            expected_cursor,
+            cursor,
+            batch_digest,
+            records,
+        } => {
+            let path_string = path
+                .to_str()
+                .ok_or_else(|| reject("activation clone path must be UTF-8"))?
+                .to_owned();
+            let prepared = Request {
+                schema_version: 1,
+                sqlite_path: path_string,
+                lease: Lease {
+                    receiver_id: lease.receiver_id.clone(),
+                    plugin_id: lease.plugin_id.clone(),
+                    source_id: lease.source_id.clone(),
+                    generation: lease.generation.clone(),
+                    epoch: lease.epoch,
+                    policy_epoch: lease.policy_epoch,
+                },
+                expected_cursor: expected_cursor.clone(),
+                cursor: cursor.clone(),
+                batch_digest: batch_digest.clone(),
+                records: records
+                    .iter()
+                    .map(|row| PreparedRecord {
+                        event_id_hash: row.event_id_hash.clone(),
+                        revision: row.revision,
+                        kind: "lifecycle".to_owned(),
+                        time_ns: row.time_ns,
+                        payload_json: row.payload_json.clone(),
+                        record_digest: row.record_digest.clone(),
+                        native_session_id: row.native_session_id.clone(),
+                        native_worker_id: row.native_worker_id.clone(),
+                        native_turn_id: row.native_turn_id.clone(),
+                        native_operation_id: row.native_operation_id.clone(),
+                    })
+                    .collect(),
+            };
+            let receipt = with_marked_activation_clone(path, |db, lease| {
+                commit_guarded_mode(db, &prepared, Some(lease), Some(&replay), true)
+            })?;
+            let disposition = match receipt.disposition {
+                "committed" => v2::Disposition::Committed,
+                "replay" => v2::Disposition::Replay,
+                "idle" => v2::Disposition::Idle,
+                _ => return Err(reject("unexpected activation-clone admission disposition")),
+            };
+            v2::OperationResult::LifecycleAdmission(v2::AdmissionResult {
+                disposition,
+                cursor: receipt.cursor,
+                batch_digest: batch_digest.clone(),
+                dirty_seq: receipt.dirty_seq,
+            })
+        }
+        _ => return Err(reject("real-schema clone accepts only activation or admission")),
     };
     v2::Reply {
         version: v2::VERSION,
         request_id: request.request_id.clone(),
         receiver_id: request.receiver_id.clone(),
         request_digest: replay.digest,
-        result: v2::OperationResult::SourceActivated(v2::SourceActivatedResult {
-            disposition,
-            lease: receipt.lease,
-            cursor: receipt.cursor,
-            dirty_seq: receipt.dirty_seq,
-        }),
+        result,
     }
     .to_json(&request)
     .map_err(Into::into)
