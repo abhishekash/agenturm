@@ -16,11 +16,12 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const CONTROL_LIMIT: usize = 64 * 1024;
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 fn invalid(message: &'static str) -> Box<dyn Error> {
@@ -208,10 +209,64 @@ struct RelayChannels<'a> {
     response_budget: &'a AtomicUsize,
 }
 
+// A blocked pipe must never park the supervisor that owns and reaps the child.
+// Exactly one writer owns each pipe, with at most one outstanding frame. On
+// failure the process exits; a blocked writer is not reused or joined.
+struct FrameWriter {
+    requests: SyncSender<String>,
+    completed: Receiver<bool>,
+}
+
+impl FrameWriter {
+    fn new(writer: impl Write + Send + 'static, limit: usize) -> Self {
+        let (requests, incoming) = sync_channel::<String>(1);
+        let (finished, completed) = sync_channel(1);
+        thread::spawn(move || {
+            let mut writer = BufWriter::new(writer);
+            while let Ok(frame) = incoming.recv() {
+                let success = write_frame(&mut writer, &frame, limit).is_ok();
+                if finished.send(success).is_err() || !success {
+                    return;
+                }
+            }
+        });
+        Self {
+            requests,
+            completed,
+        }
+    }
+
+    fn write(&self, frame: String, peers: &[&AtomicBool]) -> Result<()> {
+        self.requests
+            .try_send(frame)
+            .map_err(|_| invalid("pipe writer unavailable"))?;
+        let deadline = Instant::now() + WRITE_TIMEOUT;
+        loop {
+            if peers.iter().any(|peer| !peer.load(Ordering::Acquire)) {
+                return Err(invalid("peer failed while writing frame"));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(invalid("pipe write timed out"));
+            }
+            match self
+                .completed
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
+                Ok(true) => return Ok(()),
+                Ok(false) | Err(RecvTimeoutError::Disconnected) => {
+                    return Err(invalid("pipe write failed"));
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+}
+
 fn relay(
     channels: RelayChannels<'_>,
-    parent_output: &mut impl Write,
-    child_input: &mut impl Write,
+    parent_output: &FrameWriter,
+    child_input: &FrameWriter,
     child: &mut OwnedChild,
 ) -> Result<()> {
     let mut state = RelayState::default();
@@ -228,7 +283,13 @@ fn relay(
         if matches!(kind, "hello" | "poll") {
             channels.response_budget.store(1, Ordering::Release);
         }
-        write_frame(child_input, &raw, CONTROL_LIMIT)?;
+        // A child may close stdout immediately after reading stop, so its EOF
+        // is expected during that write. Parent EOF still aborts supervision.
+        let mut peers = vec![channels.parent_alive];
+        if kind != "stop" {
+            peers.push(channels.child_alive);
+        }
+        child_input.write(raw, &peers)?;
         if kind == "stop" {
             wait_child_stop(child);
             return Ok(());
@@ -258,7 +319,7 @@ fn relay(
             }
         };
         state.response(kind, &response)?;
-        write_frame(parent_output, &response, MAX_FRAME_BYTES)?;
+        parent_output.write(response, &[channels.parent_alive, channels.child_alive])?;
     }
 }
 
@@ -272,7 +333,7 @@ fn run() -> Result<()> {
         return Err(invalid("unexpected host arguments"));
     }
     let (mut child, input, output) = spawn_child(&path)?;
-    let mut child_input = BufWriter::new(input);
+    let child_input = FrameWriter::new(input, CONTROL_LIMIT);
     let parent_alive = Arc::new(AtomicBool::new(true));
     let child_alive = Arc::new(AtomicBool::new(true));
     let response_budget = Arc::new(AtomicUsize::new(0));
@@ -283,8 +344,7 @@ fn run() -> Result<()> {
         Arc::clone(&child_alive),
         Some(Arc::clone(&response_budget)),
     );
-    let stdout = io::stdout();
-    let mut parent_output = BufWriter::new(stdout.lock());
+    let parent_output = FrameWriter::new(io::stdout(), MAX_FRAME_BYTES);
     relay(
         RelayChannels {
             parent_input: &parent_input,
@@ -293,8 +353,8 @@ fn run() -> Result<()> {
             child_alive: &child_alive,
             response_budget: &response_budget,
         },
-        &mut parent_output,
-        &mut child_input,
+        &parent_output,
+        &child_input,
         &mut child,
     )
 }
