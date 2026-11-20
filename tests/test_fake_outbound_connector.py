@@ -1,5 +1,7 @@
 """Durable outbound contract against a fixture sink; no real destination."""
 import json
+import os
+import select
 import subprocess
 import sys
 import tempfile
@@ -9,6 +11,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 from observatory.core import Store
@@ -214,8 +217,147 @@ class FakeOutboundTests(unittest.TestCase):
                     self.fail("dispatch did not reach the fixture sink")
                 with self.assertRaisesRegex(ProtocolError, "dispatch or recovery is active"):
                     self.queue.recover_in_flight()
+                with self.assertRaisesRegex(ProtocolError, "dispatch or recovery is active"):
+                    with self.queue.dispatch_handoff_guard(0.03):
+                        self.fail("handoff entered during external dispatch")
                 self.assertEqual(future.result()["state"], "delivered")
         self.assertEqual(self.queue.recover_in_flight(), 0)
+
+    def test_handoff_guard_waits_for_external_reconciliation_lookup(self):
+        self.queue.enqueue("lookup-held", "fake-sink", ACTION, 17, now_ns=100)
+        with self.store._source_write(), self.store._connect() as db:
+            db.execute("UPDATE outbound_delivery_v1 SET state='uncertain',attempts=1 "
+                       "WHERE delivery_id='lookup-held'")
+        entered, release = threading.Event(), threading.Event()
+
+        def held_lookup(_key):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("lookup was never released")
+            return {"status": "missing", "receipt": ""}
+
+        other = OutboundQueue(self.store)
+        child = self.process()
+        with patch.object(child, "lookup", side_effect=held_lookup):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(self.queue.reconcile, "lookup-held", child, now_ns=200)
+                self.assertTrue(entered.wait(5), "lookup did not begin")
+                try:
+                    with self.assertRaisesRegex(ProtocolError, "dispatch or recovery is active"):
+                        with other.dispatch_handoff_guard(0.03):
+                            self.fail("handoff entered during external lookup")
+                finally:
+                    release.set()
+                self.assertEqual(future.result(timeout=5)["state"], "retryable")
+        with other.dispatch_handoff_guard(1) as guard:
+            guard.verify()
+            with self.assertRaisesRegex(ProtocolError, "dispatch or recovery is active"):
+                self.queue.recover_in_flight()
+            with self.assertRaisesRegex(ProtocolError, "dispatch or recovery is active"):
+                self.queue.reconcile("lookup-held", child)
+
+    def test_handoff_guard_refuses_replaced_and_linked_lock_path(self):
+        lock = Path(self.store.path + ".outbound-dispatch.lock")
+        victim = self.root / "victim"
+        victim.write_text("unchanged")
+        lock.symlink_to(victim)
+        with self.assertRaisesRegex(ProtocolError, "safely"):
+            with self.queue.dispatch_handoff_guard(0.1):
+                pass
+        self.assertEqual(victim.read_text(), "unchanged")
+        lock.unlink()
+        moved = self.root / "moved-dispatch.lock"
+        with self.assertRaisesRegex(ProtocolError, "path changed"):
+            with self.queue.dispatch_handoff_guard(1) as guard:
+                lock.rename(moved)
+                lock.write_text("replacement")
+                lock.chmod(0o600)
+                guard.verify()
+        self.assertTrue(moved.is_file())
+        lock.unlink()
+        moved.unlink()
+
+    def test_handoff_guard_rejects_world_readable_or_hardlinked_lock(self):
+        lock = Path(self.store.path + ".outbound-dispatch.lock")
+        with self.queue.dispatch_handoff_guard(1):
+            pass
+        lock.chmod(0o644)
+        with self.assertRaisesRegex(ProtocolError, "path changed"):
+            with self.queue.dispatch_handoff_guard(0.1):
+                pass
+        lock.chmod(0o600)
+        linked = self.root / "linked-dispatch.lock"
+        os.link(lock, linked)
+        try:
+            with self.assertRaisesRegex(ProtocolError, "path changed"):
+                with self.queue.dispatch_handoff_guard(0.1):
+                    pass
+        finally:
+            linked.unlink()
+
+    def test_handoff_guard_rejects_replaceable_database_parent(self):
+        original = self.root.stat().st_mode & 0o7777
+        try:
+            self.root.chmod(0o777)
+            with self.assertRaisesRegex(ProtocolError, "private database and parent"):
+                with self.queue.dispatch_handoff_guard(0.1):
+                    pass
+        finally:
+            self.root.chmod(original)
+        with self.queue.dispatch_handoff_guard(1) as guard:
+            guard.verify()
+
+    def test_handoff_guard_does_not_adopt_database_swapped_during_lock_open(self):
+        database = Path(self.store.path)
+        archived = self.root / "original-agenturm.db"
+        replacement = self.root / "replacement-agenturm.db"
+        replacement.write_bytes(b"disposable replacement inode")
+        replacement.chmod(0o600)
+        real_open = os.open
+
+        def open_then_swap(path, flags, mode=0o777):
+            descriptor = real_open(path, flags, mode)
+            database.rename(archived)
+            replacement.rename(database)
+            return descriptor
+
+        try:
+            with patch('observatory.outbound_delivery.os.open', side_effect=open_then_swap):
+                with self.assertRaisesRegex(ProtocolError, "database path changed"):
+                    with self.queue.dispatch_handoff_guard(1):
+                        self.fail("handoff adopted a replacement database")
+        finally:
+            if archived.exists():
+                database.unlink()
+                archived.rename(database)
+
+    def test_crashed_lock_owner_releases_guard_for_recovery(self):
+        self.queue.enqueue("crashed-owner", "fake-sink", ACTION, 18, now_ns=100)
+        with self.store._source_write(), self.store._connect() as db:
+            db.execute("UPDATE outbound_delivery_v1 SET state='in_flight',attempts=1 "
+                       "WHERE delivery_id='crashed-owner'")
+        lock = Path(self.store.path + ".outbound-dispatch.lock")
+        script = ("import fcntl, os, sys, time\n"
+                  "fd=os.open(sys.argv[1],os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)\n"
+                  "fcntl.flock(fd,fcntl.LOCK_SH)\n"
+                  "print('ready',flush=True)\n"
+                  "time.sleep(30)\n")
+        owner = subprocess.Popen([sys.executable, "-c", script, str(lock)],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertTrue(select.select([owner.stdout], [], [], 5)[0],
+                            "lock owner did not report readiness")
+            self.assertEqual(owner.stdout.readline().strip(), "ready")
+            with self.assertRaisesRegex(ProtocolError, "dispatch or recovery is active"):
+                with self.queue.dispatch_handoff_guard(0.03):
+                    pass
+        finally:
+            owner.kill()
+            owner.communicate(timeout=5)
+        with self.queue.dispatch_handoff_guard(1) as guard:
+            guard.verify()
+        self.assertEqual(self.queue.recover_in_flight(), 1)
+        self.assertEqual(self.queue.status("crashed-owner")["state"], "uncertain")
 
     def test_accept_then_timeout_requires_lookup_and_never_blindly_resends(self):
         with self.sink.lock:
