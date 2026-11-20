@@ -46,6 +46,13 @@ def review_turn(db: object, trace_id: str) -> dict | None:
     for spec in specs:
         candidate = spec.review(db, trace_id)
         if candidate is not None:
+            owner = candidate.get("scope_owner") if isinstance(candidate, dict) else None
+            if (not isinstance(owner, dict)
+                    or candidate.get("trace_id") != trace_id
+                    or owner.get("producer") != spec.source_id
+                    or not isinstance(candidate.get("turn_id"), str)
+                    or not candidate["turn_id"]):
+                raise ValueError("native turn review has mismatched trace or source")
             if result is not None:
                 raise ValueError("multiple native turn reviewers claim one trace")
             result = candidate
