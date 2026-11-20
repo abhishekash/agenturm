@@ -168,6 +168,7 @@ dependencies = [
 name = "agenturm-storage-service"
 version = "0.1.0"
 dependencies = [
+ "agenturm-storage-admission",
  "agenturm-storage-service-contract",
  "libc",
 ]

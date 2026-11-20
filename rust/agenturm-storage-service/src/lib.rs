@@ -1,17 +1,19 @@
 //! Feature-off Linux storage-service skeleton.
 //!
-//! The service has no database connection or mutation operation. It serves
-//! only the v1 protocol probe for a distinct local client identity. The data
-//! root must be empty and inaccessible to that client. A separate transport
-//! directory grants only socket traversal and connection.
+//! Default mode serves only the v1 protocol probe with an empty private data
+//! root. An explicit experimental mode admits v2 lifecycle requests only to
+//! one pre-existing, marked disposable scratch database under that root.
+//! Neither mode is connected to the production receiver or canonical Store.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 #[cfg(target_os = "linux")]
 mod linux {
     use agenturm_storage_service_contract::{
-        PeerPolicy, ProbeTopic, Request, read_authorized_request, send_probe_reply,
+        PeerPolicy, ProbeTopic, Request, read_authorized_request, read_authorized_v2_request,
+        send_probe_reply, send_v2_reply,
     };
+    use std::ffi::OsStr;
     use std::fs::{self, File, Metadata, OpenOptions};
     use std::io::{self, ErrorKind};
     use std::os::fd::AsRawFd;
@@ -22,6 +24,14 @@ mod linux {
 
     const SOCKET_NAME: &str = "agenturm-storage-v1.sock";
     const LOCK_NAME: &str = ".agenturm-storage-v1.lock";
+    const SCRATCH_NAME: &str = "scratch.db";
+    const SCRATCH_FILES: &[&str] = &[
+        SCRATCH_NAME,
+        ".scratch.db.agenturm-writer.lock",
+        "scratch.db-journal",
+        "scratch.db-wal",
+        "scratch.db-shm",
+    ];
     static STOP: AtomicBool = AtomicBool::new(false);
 
     fn denied(reason: &'static str) -> io::Error {
@@ -41,11 +51,13 @@ mod linux {
         pub client_uid: u32,
         pub client_gid: u32,
         pub max_connections: Option<usize>,
+        pub experimental_v2_scratch: bool,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum RootKind {
-        Data,
+        DataProbe,
+        DataScratch,
         Transport,
     }
 
@@ -55,6 +67,7 @@ mod linux {
         kind: RootKind,
         identity: (u64, u64),
         client_gid: u32,
+        scratch_identity: Option<(u64, u64)>,
     }
 
     struct InstanceGuard {
@@ -151,11 +164,18 @@ mod linux {
         fn capture(path: &Path, kind: RootKind, client_gid: u32) -> io::Result<Self> {
             let metadata = direct_directory(path)?;
             Self::check(&metadata, path, kind, client_gid)?;
+            let scratch_identity = if kind == RootKind::DataScratch {
+                let scratch = fs::symlink_metadata(path.join(SCRATCH_NAME))?;
+                Some((scratch.dev(), scratch.ino()))
+            } else {
+                None
+            };
             Ok(Self {
                 path: path.to_path_buf(),
                 kind,
                 identity: (metadata.dev(), metadata.ino()),
                 client_gid,
+                scratch_identity,
             })
         }
 
@@ -169,11 +189,35 @@ mod linux {
                 return Err(denied("service root is not owned by service UID"));
             }
             match kind {
-                RootKind::Data => {
-                    if metadata.mode() & 0o7777 != 0o700
-                        || fs::read_dir(path)?.next().transpose()?.is_some()
-                    {
-                        return Err(denied("data root must be private and empty"));
+                RootKind::DataProbe | RootKind::DataScratch => {
+                    if metadata.mode() & 0o7777 != 0o700 {
+                        return Err(denied("data root must be private 0700"));
+                    }
+                    let mut saw_scratch = false;
+                    for entry in fs::read_dir(path)? {
+                        let entry = entry?;
+                        if kind == RootKind::DataProbe {
+                            return Err(denied("probe data root must be empty"));
+                        }
+                        let name = entry.file_name();
+                        if !SCRATCH_FILES
+                            .iter()
+                            .any(|allowed| name == OsStr::new(allowed))
+                        {
+                            return Err(denied("scratch data root has an unexpected entry"));
+                        }
+                        let file = fs::symlink_metadata(entry.path())?;
+                        if !file.is_file()
+                            || file.nlink() != 1
+                            || file.uid() != current_uid()
+                            || file.mode() & 0o7777 != 0o600
+                        {
+                            return Err(denied("scratch file ownership or mode changed"));
+                        }
+                        saw_scratch |= name == OsStr::new(SCRATCH_NAME);
+                    }
+                    if kind == RootKind::DataScratch && !saw_scratch {
+                        return Err(denied("scratch database is missing"));
                     }
                 }
                 RootKind::Transport => {
@@ -192,7 +236,14 @@ mod linux {
             if (metadata.dev(), metadata.ino()) != self.identity {
                 return Err(denied("service root identity changed"));
             }
-            Self::check(&metadata, &self.path, self.kind, self.client_gid)
+            Self::check(&metadata, &self.path, self.kind, self.client_gid)?;
+            if let Some(expected) = self.scratch_identity {
+                let current = fs::symlink_metadata(self.path.join(SCRATCH_NAME))?;
+                if (current.dev(), current.ino()) != expected {
+                    return Err(denied("scratch database identity changed"));
+                }
+            }
+            Ok(())
         }
     }
 
@@ -259,6 +310,12 @@ mod linux {
     struct UmaskGuard(libc::mode_t);
 
     impl UmaskGuard {
+        fn private_files() -> Self {
+            // SAFETY: this is a dedicated, single-threaded service process.
+            // Keep scratch sidecars private even when the launcher has umask 000.
+            Self(unsafe { libc::umask(0o077) })
+        }
+
         fn socket_mode() -> Self {
             // SAFETY: umask affects only this single-threaded service process;
             // its previous value is restored immediately after bind.
@@ -308,7 +365,15 @@ mod linux {
             .map_err(|_| {
                 denied("service and client identities must be distinct non-root accounts")
             })?;
-        let data = RootProof::capture(&config.data_root, RootKind::Data, config.client_gid)?;
+        let data = RootProof::capture(
+            &config.data_root,
+            if config.experimental_v2_scratch {
+                RootKind::DataScratch
+            } else {
+                RootKind::DataProbe
+            },
+            config.client_gid,
+        )?;
         let transport = RootProof::capture(
             &config.transport_dir,
             RootKind::Transport,
@@ -323,7 +388,17 @@ mod linux {
     pub fn run(config: &ServiceConfig) -> io::Result<()> {
         STOP.store(false, Ordering::Relaxed);
         let (data, transport, policy) = validate(config)?;
+        let _private_mask = config
+            .experimental_v2_scratch
+            .then(UmaskGuard::private_files);
         let instance = InstanceGuard::acquire(transport.clone())?;
+        if config.experimental_v2_scratch {
+            // SQLite may touch a WAL shared-memory sidecar even for a read.
+            // Never inspect the marker until this service owns the lock.
+            agenturm_storage_admission::require_marked_scratch_path(&data.path.join(SCRATCH_NAME))
+                .map_err(|_| denied("scratch database marker is unavailable"))?;
+            data.verify()?;
+        }
         let socket_path = transport.path.join(SOCKET_NAME);
         match fs::symlink_metadata(&socket_path) {
             Ok(_) => return Err(denied("service socket path already exists")),
@@ -380,7 +455,23 @@ mod linux {
             data.verify()?;
             instance.verify()?;
             socket.verify()?;
-            if let Ok(request) = read_authorized_request(&mut stream, policy, &config.receiver_id) {
+            if config.experimental_v2_scratch {
+                if let Ok(request) =
+                    read_authorized_v2_request(&mut stream, policy, &config.receiver_id)
+                {
+                    let scratch = data.path.join(SCRATCH_NAME);
+                    if let Ok(reply) =
+                        agenturm_storage_admission::apply_v2_json(&scratch, request.frame())
+                    {
+                        data.verify()?;
+                        instance.verify()?;
+                        socket.verify()?;
+                        let _ = send_v2_reply(&mut stream, &request, &reply);
+                    }
+                }
+            } else if let Ok(request) =
+                read_authorized_request(&mut stream, policy, &config.receiver_id)
+            {
                 // The probe reply says only that transport and peer checks
                 // succeeded. No database is opened or written.
                 let _ = send_probe_reply(&mut stream, &request);
@@ -422,6 +513,36 @@ mod linux {
             assert!(direct_directory(&real).is_err());
             fs::remove_file(base.join("link")).unwrap();
             fs::remove_dir(&real).unwrap();
+            fs::remove_dir(&base).unwrap();
+        }
+
+        #[test]
+        fn scratch_root_accepts_only_pinned_private_files() {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let base = std::env::temp_dir().join(format!(
+                "agenturm-service-scratch-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir(&base).unwrap();
+            fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+            let scratch = base.join(SCRATCH_NAME);
+            fs::write(&scratch, b"disposable fixture").unwrap();
+            fs::set_permissions(&scratch, fs::Permissions::from_mode(0o600)).unwrap();
+            let proof = RootProof::capture(&base, RootKind::DataScratch, 42).unwrap();
+            proof.verify().unwrap();
+            fs::write(base.join("canonical.db"), b"unrelated").unwrap();
+            assert!(proof.verify().is_err());
+            fs::remove_file(base.join("canonical.db")).unwrap();
+            let archived = base.with_extension("archive");
+            fs::rename(&scratch, &archived).unwrap();
+            fs::write(&scratch, b"replacement").unwrap();
+            fs::set_permissions(&scratch, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(proof.verify().is_err());
+            fs::remove_file(&scratch).unwrap();
+            fs::remove_file(&archived).unwrap();
             fs::remove_dir(&base).unwrap();
         }
     }

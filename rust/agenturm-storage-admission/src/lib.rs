@@ -562,6 +562,16 @@ pub fn apply_json(input: &str) -> Result<String> {
     Ok(serde_json::to_string(&receipt)?)
 }
 
+/// Read-only preflight for the fixed disposable path before a service socket
+/// is published. The transaction rechecks the marker before any mutation.
+pub fn require_marked_scratch_path(path: &Path) -> Result<()> {
+    if !path.is_absolute() || !fs::symlink_metadata(path)?.file_type().is_file() {
+        return Err(reject("scratch fixture must be an existing regular file"));
+    }
+    let read = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    require_scratch(&read)
+}
+
 fn with_marked_scratch<T>(
     path: &Path,
     apply: impl FnOnce(&mut Connection, &WriterLease) -> Result<T>,
@@ -572,9 +582,7 @@ fn with_marked_scratch<T>(
     {
         return Err(reject("scratch fixture must be an existing regular file"));
     }
-    let read = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    require_scratch(&read)?;
-    drop(read);
+    require_marked_scratch_path(path)?;
     // Only an explicitly marked scratch fixture creates a sibling lease file.
     // The lease binds the lexical and resolved database path and stays alive
     // until the write connection has closed.

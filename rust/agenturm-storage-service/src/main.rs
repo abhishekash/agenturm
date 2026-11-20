@@ -16,7 +16,7 @@ fn start() -> std::io::Result<()> {
     fn invalid() -> io::Error {
         io::Error::new(
             ErrorKind::InvalidInput,
-            "expected --data-root PATH --transport-dir PATH --receiver-id ID --client-uid UID --client-gid GID [--max-connections N]",
+            "expected --data-root PATH --transport-dir PATH --receiver-id ID --client-uid UID --client-gid GID [--max-connections N] [--experimental-v2-scratch enabled]",
         )
     }
     let mut args = std::env::args().skip(1);
@@ -36,6 +36,7 @@ fn start() -> std::io::Result<()> {
                 | "--client-uid"
                 | "--client-gid"
                 | "--max-connections"
+                | "--experimental-v2-scratch"
         )
     }) {
         return Err(invalid());
@@ -58,6 +59,11 @@ fn start() -> std::io::Result<()> {
             .remove("--max-connections")
             .map(|item| item.parse().map_err(|_| invalid()))
             .transpose()?,
+        experimental_v2_scratch: match values.remove("--experimental-v2-scratch") {
+            None => false,
+            Some(value) if value == "enabled" => true,
+            _ => return Err(invalid()),
+        },
     };
     run(&config)
 }
