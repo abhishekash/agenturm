@@ -18,10 +18,11 @@ use sha2::{Digest, Sha256};
 /// diagnostics. Changing the prefix changes durable diagnostic identities.
 pub trait DirectoryFormat: SourceFormat {
     const DISCOVERY_GAP_EVENT_PREFIX: &'static str;
-    const CONTENT_REF_FEATURE: Option<&'static str> = None;
+    const REFERENCE_FEATURE: Option<&'static str> = None;
+    const REFERENCE_ENVELOPE_KEY: &'static str = "content_refs";
     const EXTRA_FEATURES: &'static [&'static str] = &[];
 
-    /// Optional format-owned content nominations for the one member already
+    /// Optional format-owned reference nominations for the one member already
     /// selected by the bounded discovery engine. The host proves each ref.
     fn decorate_member(
         _root: &Path,
@@ -420,7 +421,8 @@ impl<F: DirectoryFormat> Poller for DirectoryPoller<F> {
     const PLUGIN_ID: &'static str = F::PLUGIN_ID;
     const DISCOVERY: bool = true;
     const ROOT_GAP: bool = true;
-    const CONTENT_REF_FEATURE: Option<&'static str> = F::CONTENT_REF_FEATURE;
+    const REFERENCE_FEATURE: Option<&'static str> = F::REFERENCE_FEATURE;
+    const REFERENCE_ENVELOPE_KEY: &'static str = F::REFERENCE_ENVELOPE_KEY;
     const EXTRA_FEATURES: &'static [&'static str] = F::EXTRA_FEATURES;
 
     fn poll(

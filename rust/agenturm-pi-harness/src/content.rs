@@ -17,6 +17,32 @@ const MAX_REFS: usize = 48;
 const MAX_ROW: usize = 8 * 1024;
 const MAX_NOMINATED: usize = 64 * 1024;
 const MAX_ENVELOPE: usize = 64 * 1024;
+const MAX_COMMAND: usize = 4 * 1024;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReferenceMode {
+    UserText,
+    RequestedCommand,
+}
+
+impl ReferenceMode {
+    fn envelope_key(self) -> &'static str {
+        match self {
+            Self::UserText => "content_refs",
+            Self::RequestedCommand => "command_refs",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SourceReference<'a> {
+    root: &'a Path,
+    path: &'a Path,
+    member: &'a str,
+    prior_cursor: &'a str,
+    local: &'a Value,
+    max_bytes: usize,
+}
 
 struct Unique(Value);
 
@@ -183,14 +209,18 @@ fn member_path(root: &Path, path: &Path, member: &str) -> Option<String> {
 }
 
 fn nominated(
-    root: &Path,
-    path: &Path,
-    member: &str,
-    prior_cursor: &str,
-    local: &Value,
+    source: SourceReference<'_>,
     batch: &Value,
-    max_bytes: usize,
+    mode: ReferenceMode,
 ) -> Option<Vec<Value>> {
+    let SourceReference {
+        root,
+        path,
+        member,
+        prior_cursor,
+        local,
+        max_bytes,
+    } = source;
     let source_id = batch["source_id"].as_str()?;
     let relative = member_path(root, path, member)?;
     let current = cursor_proof(local["cursor"].as_str()?).ok()??;
@@ -291,17 +321,38 @@ fn nominated(
     let base_tokens = structural_tokens(&base);
     let mut refs = Vec::new();
     let mut bytes = 0usize;
-    let mut offset = start;
+    let mut offset = if mode == ReferenceMode::RequestedCommand {
+        header_end
+    } else {
+        start
+    };
+    let mut last_user = String::new();
     while offset < prefix.len() {
         let end = offset + prefix[offset..].iter().position(|byte| *byte == b'\n')? + 1;
         let raw = &prefix[offset..end];
+        // Command provenance depends on the most recent user row even when
+        // that row preceded the current durable member checkpoint.
+        if mode == ReferenceMode::RequestedCommand {
+            if raw.len() > MAX_ROW {
+                return None;
+            }
+            let Unique(row) = serde_json::from_slice::<Unique>(raw).ok()?;
+            if row["type"] == "message" && row["message"]["role"] == "user" {
+                last_user = row["id"].as_str().filter(|id| identifier(id))?.to_owned();
+            }
+            if offset < start {
+                offset = end;
+                continue;
+            }
+        }
         if raw.len() <= MAX_ROW
             && bytes + raw.len() <= MAX_NOMINATED
             && refs.len() < MAX_REFS
             && let Ok(Unique(row)) = serde_json::from_slice::<Unique>(raw)
         {
             let row_id = row["id"].as_str();
-            if row["type"] == "message"
+            if mode == ReferenceMode::UserText
+                && row["type"] == "message"
                 && row["message"]["role"] == "user"
                 && row["timestamp"]
                     .as_str()
@@ -340,10 +391,87 @@ fn nominated(
                     }
                 }
             }
+            if mode == ReferenceMode::RequestedCommand
+                && row["type"] == "message"
+                && row["message"]["role"] == "assistant"
+                && !last_user.is_empty()
+                && row["timestamp"]
+                    .as_str()
+                    .is_some_and(host_timestamp_compatible)
+                && let Some(row_id) = row_id.filter(|id| identifier(id))
+                && let Some(blocks) = row["message"]["content"].as_array()
+                && blocks.len() <= 128
+            {
+                for (index, block) in blocks.iter().enumerate() {
+                    if block["type"] != "toolCall" || block["name"] != "bash" {
+                        continue;
+                    }
+                    let Some(call_id) = block["id"].as_str().filter(|id| identifier(id)) else {
+                        continue;
+                    };
+                    let Some(command) = block["arguments"]["command"].as_str() else {
+                        continue;
+                    };
+                    if command.is_empty() || command.len() > MAX_COMMAND {
+                        continue;
+                    }
+                    let event_id = format!("pi:{canonical}:{row_id}:tool-{index}");
+                    let present = records.iter().any(|record| {
+                        record["event_id"] == event_id
+                            && record["revision"] == 0
+                            && record["kind"] == "tool"
+                            && record["payload"] == json!({"category":"shell","result":"started"})
+                            && record["identity"]["session_id"] == session_id
+                            && record["identity"]["turn_id"] == last_user.as_str()
+                            && record["identity"]["operation_id"] == call_id
+                            && record["identity"]["worker_id"].as_str().unwrap_or("") == worker_id
+                    });
+                    if !present {
+                        continue;
+                    }
+                    refs.push(json!({
+                        "schema":1,"source_id":source_id,"member_id":member,
+                        "relative_member_path":relative,"row_offset":offset,
+                        "row_length":raw.len(),"row_sha256":sha(raw),
+                        "event_id":event_id,"revision":0,
+                        "native_session_id":session_id,"native_turn_id":last_user,
+                        "assistant_row_id":row_id,"block_index":index,
+                        "tool_call_id":call_id,"kind":"pi.shell_command_text"
+                    }));
+                    let envelope = json!({"schema_version":1,"refs":refs});
+                    let encoded = serde_json::to_vec(&envelope).ok()?;
+                    if encoded.len() > MAX_ENVELOPE
+                        || base_len + encoded.len() + b",\"command_refs\":".len() > max_bytes
+                        || base_tokens + structural_tokens(&encoded) + 3
+                            > agenturm_jsonl_source::MAX_STRUCTURAL_TOKENS
+                    {
+                        refs.pop();
+                    } else {
+                        bytes += raw.len();
+                    }
+                    if refs.len() >= MAX_REFS || bytes >= MAX_NOMINATED {
+                        break;
+                    }
+                }
+            }
         }
         offset = end;
     }
     Some(refs)
+}
+
+fn decorate_mode(source: SourceReference<'_>, batch: &mut Value, mode: ReferenceMode) {
+    let refs = nominated(source, batch, mode).unwrap_or_default();
+    batch[mode.envelope_key()] = json!({"schema_version":1,"refs":refs});
+    // Check the actual final serialization once. Any unexpected expansion
+    // withholds refs, preserving the metadata/cursor batch.
+    let valid = serde_json::to_vec(batch).ok().is_some_and(|encoded| {
+        encoded.len() <= source.max_bytes
+            && structural_tokens(&encoded) <= agenturm_jsonl_source::MAX_STRUCTURAL_TOKENS
+    });
+    if !valid {
+        batch[mode.envelope_key()] = json!({"schema_version":1,"refs":[]});
+    }
 }
 
 pub(crate) fn decorate(
@@ -355,18 +483,41 @@ pub(crate) fn decorate(
     batch: &mut Value,
     max_bytes: usize,
 ) {
-    let refs =
-        nominated(root, path, member, prior_cursor, local, batch, max_bytes).unwrap_or_default();
-    batch["content_refs"] = json!({"schema_version":1,"refs":refs});
-    // Check the actual final serialization once. Any unexpected expansion
-    // withholds refs, preserving the metadata/cursor batch.
-    let valid = serde_json::to_vec(batch).ok().is_some_and(|encoded| {
-        encoded.len() <= max_bytes
-            && structural_tokens(&encoded) <= agenturm_jsonl_source::MAX_STRUCTURAL_TOKENS
-    });
-    if !valid {
-        batch["content_refs"] = json!({"schema_version":1,"refs":[]});
-    }
+    decorate_mode(
+        SourceReference {
+            root,
+            path,
+            member,
+            prior_cursor,
+            local,
+            max_bytes,
+        },
+        batch,
+        ReferenceMode::UserText,
+    );
+}
+
+pub(crate) fn decorate_command(
+    root: &Path,
+    path: &Path,
+    member: &str,
+    prior_cursor: &str,
+    local: &Value,
+    batch: &mut Value,
+    max_bytes: usize,
+) {
+    decorate_mode(
+        SourceReference {
+            root,
+            path,
+            member,
+            prior_cursor,
+            local,
+            max_bytes,
+        },
+        batch,
+        ReferenceMode::RequestedCommand,
+    );
 }
 
 #[cfg(test)]
@@ -422,6 +573,16 @@ mod tests {
                 "member_cursor":local["cursor"],"records":local["records"]});
             (local, batch, member)
         }
+
+        fn append_command(&self, path: &Path, name: &str, command: &str) {
+            use std::io::Write;
+            let row = json!({"type":"message","id":"assistant-1",
+                "timestamp":"2026-10-24T12:00:01Z","message":{"role":"assistant",
+                "content":[{"type":"toolCall","id":"call-1","name":name,
+                            "arguments":{"command":command}}]}});
+            let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+            writeln!(file, "{row}").unwrap();
+        }
     }
 
     impl Drop for Scratch {
@@ -461,6 +622,100 @@ mod tests {
         );
         assert!(!batch.to_string().contains("private-0"));
         assert_eq!(refs[0]["row_sha256"].as_str().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn requested_command_nominates_exact_tool_without_text() {
+        let scratch = Scratch::new();
+        let relative = "project/one.jsonl";
+        let path = scratch.file(relative, 1);
+        scratch.append_command(&path, "bash", "password=private-value");
+        let (local, mut batch, member) = scratch.poll(&path, relative);
+        let records = batch["records"].clone();
+        decorate_command(
+            &scratch.0,
+            &path,
+            &member,
+            "",
+            &local,
+            &mut batch,
+            128 * 1024,
+        );
+        assert_eq!(batch["records"], records);
+        let refs = batch["command_refs"]["refs"].as_array().unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0]["kind"], "pi.shell_command_text");
+        assert_eq!(refs[0]["native_turn_id"], "user-0");
+        assert_eq!(refs[0]["tool_call_id"], "call-1");
+        assert_eq!(refs[0]["block_index"], 0);
+        assert!(!batch.to_string().contains("private-value"));
+    }
+
+    #[test]
+    fn requested_command_uses_preceding_acknowledged_user_turn() {
+        let scratch = Scratch::new();
+        let relative = "project/one.jsonl";
+        let path = scratch.file(relative, 1);
+        let (first, _, _) = scratch.poll(&path, relative);
+        let previous = first["cursor"].as_str().unwrap().to_owned();
+        scratch.append_command(&path, "bash", "echo safe");
+        let local = agenturm_jsonl_source::poll_no_follow::<PiFormat<false, true>>(
+            &path,
+            "source",
+            &previous,
+            256,
+            128 * 1024,
+        )
+        .unwrap();
+        let member = sha(relative.as_bytes());
+        let mut batch = json!({"type":"batch","protocol":1,"source_id":"source",
+            "cursor":format!("d1:2:{member}"),"member_id":member,
+            "member_cursor":local["cursor"],"records":local["records"]});
+        decorate_command(
+            &scratch.0,
+            &path,
+            &member,
+            &previous,
+            &local,
+            &mut batch,
+            128 * 1024,
+        );
+        let refs = batch["command_refs"]["refs"].as_array().unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0]["native_turn_id"], "user-0");
+    }
+
+    #[test]
+    fn requested_command_withholds_non_bash_or_changed_source() {
+        let scratch = Scratch::new();
+        let relative = "project/one.jsonl";
+        let path = scratch.file(relative, 1);
+        scratch.append_command(&path, "read", "echo safe");
+        let (local, mut batch, member) = scratch.poll(&path, relative);
+        decorate_command(
+            &scratch.0,
+            &path,
+            &member,
+            "",
+            &local,
+            &mut batch,
+            128 * 1024,
+        );
+        assert!(batch["command_refs"]["refs"].as_array().unwrap().is_empty());
+        scratch.append_command(&path, "bash", "echo safe");
+        let mut batch = json!({"type":"batch","protocol":1,"source_id":"source",
+            "cursor":format!("d1:1:{member}"),"member_id":member,
+            "member_cursor":local["cursor"],"records":local["records"]});
+        decorate_command(
+            &scratch.0,
+            &path,
+            &member,
+            "",
+            &local,
+            &mut batch,
+            128 * 1024,
+        );
+        assert!(batch["command_refs"]["refs"].as_array().unwrap().is_empty());
     }
 
     #[test]

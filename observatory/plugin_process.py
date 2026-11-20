@@ -103,6 +103,7 @@ class PluginProcess:
         if not isinstance(batch_handlers, BatchHandlerRegistry):
             raise TypeError("host batch handler registry required")
         batch_validator = batch_handlers.select(expected)
+        batch_feature = batch_handlers.selected_feature(expected)
         self.manifest = manifest
         self.source_id = source_id
         self.timeout = float(timeout)
@@ -110,6 +111,7 @@ class PluginProcess:
         self.required_features = frozenset(expected)
         self.content_refs_enabled = content_refs_enabled
         self._batch_validator = batch_validator
+        self._batch_feature = batch_feature
         rust_host_artifact(rust_host_executable, rust_host_sha256)
         self.rust_host_executable = rust_host_executable
         self.rust_host_sha256 = rust_host_sha256
@@ -252,6 +254,8 @@ class PluginProcess:
                 child_env["AGENTURM_PLUGIN_DISCOVERY_MODE"] = "1"
             if self.content_refs_enabled:
                 child_env["AGENTURM_PLUGIN_CONTENT_REFS"] = "1"
+            if self._batch_feature is not None:
+                child_env["AGENTURM_PLUGIN_BATCH_FEATURE"] = self._batch_feature
             self.process = subprocess.Popen(
                 command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, cwd=self._temporary.name,
