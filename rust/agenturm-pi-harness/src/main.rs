@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod directory;
 mod pi;
 
 use agenturm_jsonl_source::{Result, SourceFormat};
@@ -39,7 +40,14 @@ impl SourceFormat for PiFormat {
 
 fn main() {
     // The host receives a coarse failure only, never source contents or paths.
-    if agenturm_jsonl_source::run::<PiFormat>().is_err() {
+    let directory_mode = std::env::var_os("AGENTURM_PLUGIN_DISCOVERY_MODE").as_deref()
+        == Some(std::ffi::OsStr::new("1"));
+    let result = if directory_mode {
+        agenturm_source_process::run::<directory::DirectoryPoller>()
+    } else {
+        agenturm_jsonl_source::run::<PiFormat>()
+    };
+    if result.is_err() {
         std::process::exit(2);
     }
 }
