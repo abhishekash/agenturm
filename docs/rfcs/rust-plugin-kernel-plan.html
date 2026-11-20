@@ -3,7 +3,7 @@
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
 </style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-plugin-kernel-plan.md">Markdown source ↗</a></nav><h1>Rust kernel and pluggable Agenturm: execution plan</h1>
-<p>Status: independently reviewed execution plan, prepared 19 November 2026 against <code>ca202c7</code> (main including Kiro support). The implementation ledger is current through PR #175 on 20 November 2026. The remaining gates are still binding; this is not a completed Rust migration. The previously stopped branch cleanup and UI revert are not resumed.</p>
+<p>Status: independently reviewed execution plan, prepared 19 November 2026 against <code>ca202c7</code> (main including Kiro support). The implementation ledger is current through PR #188 on 20 November 2026. The remaining gates are still binding; this is not a completed Rust migration. The previously stopped branch cleanup and UI revert are not resumed.</p>
 <h2>Implementation ledger · 20 November 2026</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -172,6 +172,54 @@
 <tr>
 <td><a href="https://github.com/abhishekash/agenturm/pull/175">#175</a></td>
 <td>Extends the separately installed Rust sample adapter with content-free message, tool and check facts. A real copied release binary exercises HTTP Activity, correction and capture revocation. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-sample-activity.md">Rust Activity checkpoint</a>. It is not a production harness or complete review-turn proof.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/176">#176</a></td>
+<td>Records the architecture checkpoint and open parity gates at #175. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/architecture-status-2026-11-20.md">status report</a>.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/177">#177</a> and <a href="https://github.com/abhishekash/agenturm/pull/180">#180</a></td>
+<td>Bound Rust host control queue/writes, fail closed under pipe backpressure, and clean up child process groups after both timeout and successful close. Rust and installed host regression tests passed.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/178">#178</a></td>
+<td>Admits the inbound connector protocol through generic manifest/handshake/configuration; a loopback installed fixture proves pagination, 429 handling, expired cursors, replay and revocation. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/fake-inbound-connector.md">connector checkpoint</a>. It does not connect to a real account.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/179">#179</a></td>
+<td>Batches same-event revisions across Rust sample polls and enforces the Python structural JSON token budget before sending. Installed correction tests passed.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/181">#181</a></td>
+<td>Correlates process tool operation IDs and exact turn IDs, labels incomplete text export, fixes investigation dirty marking, and makes Pi error-stop provenance consistent. Synthetic Pi native/process tests passed; process evidence remains partial.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/182">#182</a></td>
+<td>Adds a pure Rust lifecycle/usage reducer with strict fixture validation and Python Store differential tests through the 2,000-session capacity. It reads no production database and is not a storage cutover. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-domain-reducer.md">reducer checkpoint</a>.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/183">#183</a></td>
+<td>Runs an independently installed Prompt signals process with exact-scope, host-derived content-free aggregates and a validated generic pane at 60×18. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/capability-process-protocol.md">capability process proof</a>. Normal cockpit activation and production policy composition remain open.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/184">#184</a></td>
+<td>Adds an opt-in Rust reader of one actual Pi session JSONL file with bounded line admission, durable gap generations, content-free Activity and installed receiver conformance. Pi native remains default; full discovery and Review/export parity remain open. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-pi-reader.md">Pi reader checkpoint</a>.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/185">#185</a></td>
+<td>Adds explicit <code>cockpit --capability-config</code> activation for the installed Prompt signals process, with a nonblocking exact-scope health watcher and fail-closed cache. A real HTTP test covers 201 sibling events. Permission freshness is bounded at 250 ms, not atomic revocation. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/capability-cockpit-activation.md">activation checkpoint</a>.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/186">#186</a></td>
+<td>Extracts shared Rust JSONL tail, cursor, gap generation and framed poll/ack runtime behind a format trait; Pi installed tests remain green. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-jsonl-source-runtime.md">shared runtime checkpoint</a>.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/187">#187</a></td>
+<td>Extends the read-only Rust reducer fixture to relationship and content-free Activity parity against Python Store. Version 1 remains stable; live snapshot and storage authority are unchanged. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-domain-relationship-activity.md">domain parity checkpoint</a>.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/abhishekash/agenturm/pull/188">#188</a></td>
+<td>Refreshes stale native reader provenance hashes while retaining the earlier map as history, and accepts an honest 503 when a bounded catch-up test misses its deadline under whole-suite load. The earlier 1,596-test snapshot remains failed; a new full-suite run is required. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/native-fixture-provenance.md">provenance report</a>.</td>
 </tr>
 </tbody>
 </table></div>
