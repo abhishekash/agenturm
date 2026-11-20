@@ -330,8 +330,8 @@ class NativeBootstrapLockPreflightTests(unittest.TestCase):
                 monitor=LocalAgents(store,capture_details=False)
             monitor.sessions[source]=Session(store,source,'Codex',capture_details=False)
             monitor.runtime_updated=time.monotonic()+3600
-            monitor.discover=lambda:None;monitor.opencode.poll=lambda:0
-            monitor.opencode.set_mcp_servers=lambda *args:None
+            monitor.discover=lambda:None;monitor.reader_plugins['opencode'].poll=lambda:0
+            monitor.reader_plugins['opencode'].set_mcp_servers=lambda *args:None
             store.local_agent_monitor=monitor
             store.migration_status={'ready':False,'stage':'Preparing indexed history','processed':0}
             patches=(patch.object(store,'ingest',side_effect=ingest),
