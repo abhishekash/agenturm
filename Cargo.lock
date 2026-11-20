@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "agenturm-codex-harness"
+version = "0.1.0"
+dependencies = [
+ "agenturm-jsonl-source",
+ "serde_json",
+ "sha2",
+ "time",
+]
+
+[[package]]
 name = "agenturm-domain-reducer"
 version = "0.1.0"
 dependencies = [
