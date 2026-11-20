@@ -15,7 +15,6 @@ use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::time::UNIX_EPOCH;
 
 const MAX_LINE: u64 = 1024 * 1024;
 const MAX_SCAN: u64 = 1024 * 1024;
@@ -192,15 +191,6 @@ fn read_line(file: &mut File, offset: u64) -> Result<Option<Vec<u8>>> {
     Ok(Some(line))
 }
 
-fn file_time_ns(metadata: &Metadata) -> String {
-    metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |time| time.as_nanos().min(i64::MAX as u128))
-        .to_string()
-}
-
 pub fn batch(source_id: &str, cursor: &str, records: &[Value]) -> Value {
     json!({"type":"batch","protocol":1,"source_id":source_id,
            "cursor":cursor,"records":records})
@@ -360,8 +350,12 @@ fn poll_inner<F: SourceFormat>(
         let evidence = format!("{}|({}, {})", raw_cursor, device, inode);
         let id = format!("{}:{:x}", F::GAP_EVENT_PREFIX, Sha256::digest(evidence));
         event_ids.insert(id.clone());
+        // The receiver can request the same batch after an ack crash. File
+        // mtime may change without changing the source identity or bytes;
+        // an observational wall timestamp would make exact replay diverge.
+        // Zero means the gap's wall time is unknown, as in the OpenCode reader.
         records.push(json!({"event_id":id,"revision":0,"kind":"diagnostic",
-                            "time_ns":file_time_ns(&metadata),
+                            "time_ns":"0",
                             "payload":{"code":"possible_source_gap","severity":"warning"}}));
     }
     let mut position = offset;
@@ -468,4 +462,109 @@ impl<F: SourceFormat> Poller for JsonlPoller<F> {
 
 pub fn run<F: SourceFormat>() -> Result<()> {
     agenturm_source_process::run::<JsonlPoller<F>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    static NEXT_PATH: AtomicUsize = AtomicUsize::new(0);
+
+    struct EmptyFormat;
+
+    impl SourceFormat for EmptyFormat {
+        type Context = ();
+        const PLUGIN_ID: &'static str = "fixture.jsonl";
+        const GAP_EVENT_PREFIX: &'static str = "fixture-gap";
+
+        fn header_identity(_path: &Path, _raw: &[u8]) -> Result<Self::Context> {
+            Ok(())
+        }
+
+        fn checkpoint(_context: &Self::Context) -> String {
+            String::new()
+        }
+
+        fn restore(_context: &mut Self::Context, checkpoint: &str) -> Result<()> {
+            if checkpoint.is_empty() {
+                Ok(())
+            } else {
+                Err(invalid("unexpected fixture checkpoint"))
+            }
+        }
+
+        fn translate_line(
+            _raw: &[u8],
+            _context: &Self::Context,
+            _origin: &str,
+            _offset: u64,
+        ) -> Result<(Vec<Value>, Self::Context)> {
+            Ok((Vec::new(), ()))
+        }
+    }
+
+    fn fixture_file() -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "agenturm-jsonl-gap-replay-{}-{}",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let file = root.join("source.jsonl");
+        fs::write(&file, b"{\"row\":1}\n").unwrap();
+        (root, file)
+    }
+
+    fn read(file: &Path, cursor: &str) -> Value {
+        poll::<EmptyFormat>(file, "fixture-source", cursor, 16, max_frame_bytes()).unwrap()
+    }
+
+    fn set_mtime(file: &Path, seconds: u64) {
+        OpenOptions::new()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(seconds)))
+            .unwrap();
+    }
+
+    #[test]
+    fn rotated_source_gap_is_identical_after_mtime_changes() {
+        let (root, file) = fixture_file();
+        let initial = read(&file, "");
+        let cursor = initial["cursor"].as_str().unwrap();
+        let replacement = root.join("replacement.jsonl");
+        fs::write(&replacement, b"{\"row\":2}\n").unwrap();
+        fs::rename(&replacement, &file).unwrap();
+        set_mtime(&file, 10);
+        let first = read(&file, cursor);
+        set_mtime(&file, 20);
+        let replay = read(&file, cursor);
+        assert_eq!(first, replay);
+        assert_eq!(first["records"][0]["time_ns"], "0");
+        assert_eq!(
+            first["records"][0]["payload"]["code"],
+            "possible_source_gap"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn in_place_header_rewrite_gap_is_identical_after_mtime_changes() {
+        let (root, file) = fixture_file();
+        let initial = read(&file, "");
+        let cursor = initial["cursor"].as_str().unwrap();
+        fs::write(&file, b"{\"row\":2}\n").unwrap();
+        set_mtime(&file, 30);
+        let first = read(&file, cursor);
+        set_mtime(&file, 40);
+        let replay = read(&file, cursor);
+        assert_eq!(first, replay);
+        assert_eq!(first["records"][0]["time_ns"], "0");
+        fs::remove_dir_all(root).unwrap();
+    }
 }
