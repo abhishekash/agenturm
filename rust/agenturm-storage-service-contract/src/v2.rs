@@ -27,6 +27,11 @@ pub struct Request {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
+    ActivateSource {
+        plugin_id: String,
+        source_id: String,
+        generation: String,
+    },
     AdmitLifecycle {
         lease: SourceLease,
         expected_cursor: String,
@@ -108,8 +113,18 @@ pub struct Reply {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationResult {
+    SourceActivated(SourceActivatedResult),
     LifecycleAdmission(AdmissionResult),
     SourceRevoked(SourceRevokedResult),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceActivatedResult {
+    pub disposition: Disposition,
+    pub lease: SourceLease,
+    pub cursor: String,
+    pub dirty_seq: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -277,6 +292,16 @@ impl Request {
             return Err(ContractError::Invalid("invalid v2 request identity"));
         }
         match &self.operation {
+            Operation::ActivateSource {
+                plugin_id,
+                source_id,
+                generation,
+            } => {
+                if !identity(plugin_id, 256) || !identity(source_id, 256) || !digest(generation, 32)
+                {
+                    return Err(ContractError::Invalid("invalid v2 source activation"));
+                }
+            }
             Operation::AdmitLifecycle {
                 lease,
                 expected_cursor,
@@ -394,17 +419,32 @@ impl Reply {
 
     pub fn validate_for(&self, request: &Request) -> Result<()> {
         let replay = request.replay_identity()?;
-        let cursor = match &request.operation {
-            Operation::AdmitLifecycle { cursor, .. } => cursor,
-            Operation::RevokeSource { cursor, .. } => cursor,
-        };
         if self.version != VERSION
             || self.request_id != request.request_id
             || self.receiver_id != request.receiver_id
             || self.request_digest != replay.digest
             || match (&request.operation, &self.result) {
                 (
+                    Operation::ActivateSource {
+                        plugin_id,
+                        source_id,
+                        generation,
+                    },
+                    OperationResult::SourceActivated(result),
+                ) => {
+                    result.lease.receiver_id != request.receiver_id
+                        || result.lease.plugin_id != *plugin_id
+                        || result.lease.source_id != *source_id
+                        || result.lease.generation != *generation
+                        || result.lease.epoch <= 0
+                        || result.lease.policy_epoch <= 0
+                        || !cursor(&result.cursor)
+                        || result.dirty_seq < 0
+                        || result.disposition == Disposition::Idle
+                }
+                (
                     Operation::AdmitLifecycle {
+                        cursor,
                         batch_digest,
                         expected_cursor,
                         records,
@@ -420,13 +460,14 @@ impl Reply {
                 }
                 (
                     Operation::RevokeSource {
+                        cursor,
                         lease,
                         expected_dirty_seq,
                         ..
                     },
                     OperationResult::SourceRevoked(result),
                 ) => {
-                    Some(result.cursor.as_str()) != Some(cursor.as_str())
+                    result.cursor != *cursor
                         || result.dirty_seq != expected_dirty_seq.checked_add(1).unwrap_or_default()
                         || result.lease_epoch != lease.epoch.checked_add(1).unwrap_or_default()
                         || result.policy_epoch
@@ -645,6 +686,80 @@ mod tests {
                 expected_dirty_seq: 1,
             },
         }
+    }
+
+    fn activation_fixture() -> Request {
+        Request {
+            version: VERSION,
+            request_id: "3123456789abcdef0123456789abcdef".into(),
+            receiver_id: "receiver-one".into(),
+            operation: Operation::ActivateSource {
+                plugin_id: "fixture.plugin".into(),
+                source_id: "source-one".into(),
+                generation: "a".repeat(64),
+            },
+        }
+    }
+
+    #[test]
+    fn activation_contract_returns_request_bound_server_lease() {
+        let request = activation_fixture();
+        let Operation::ActivateSource {
+            plugin_id,
+            source_id,
+            generation,
+        } = &request.operation
+        else {
+            panic!("expected activation request")
+        };
+        let reply = Reply {
+            version: VERSION,
+            request_id: request.request_id.clone(),
+            receiver_id: request.receiver_id.clone(),
+            request_digest: request.replay_identity().unwrap().digest,
+            result: OperationResult::SourceActivated(SourceActivatedResult {
+                disposition: Disposition::Committed,
+                lease: SourceLease {
+                    receiver_id: request.receiver_id.clone(),
+                    plugin_id: plugin_id.clone(),
+                    source_id: source_id.clone(),
+                    generation: generation.clone(),
+                    epoch: 23,
+                    policy_epoch: 1,
+                },
+                cursor: String::new(),
+                dirty_seq: 0,
+            }),
+        };
+        assert_eq!(
+            Reply::from_json(&reply.to_json(&request).unwrap(), &request).unwrap(),
+            reply
+        );
+        let mut mismatched = reply.clone();
+        let OperationResult::SourceActivated(result) = &mut mismatched.result else {
+            unreachable!()
+        };
+        result.lease.epoch = 0;
+        assert!(mismatched.to_json(&request).is_err());
+        let OperationResult::SourceActivated(result) = &mut mismatched.result else {
+            unreachable!()
+        };
+        result.lease.epoch = 23;
+        result.lease.plugin_id = "other.plugin".into();
+        assert!(mismatched.to_json(&request).is_err());
+        let mut wrong_kind = reply;
+        let OperationResult::SourceActivated(result) = wrong_kind.result else {
+            unreachable!()
+        };
+        wrong_kind.result = OperationResult::SourceRevoked(SourceRevokedResult {
+            disposition: Disposition::Committed,
+            cursor: result.cursor,
+            dirty_seq: 1,
+            lease_epoch: 24,
+            policy_epoch: 2,
+            capture_enabled: false,
+        });
+        assert!(wrong_kind.to_json(&request).is_err());
     }
 
     #[test]
