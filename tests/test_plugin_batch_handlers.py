@@ -10,7 +10,7 @@ from observatory.plugin_batch_handlers import (BatchHandlerRegistry,
                                                DEFAULT_BATCH_HANDLERS)
 from observatory.plugin_manifest import PluginManifest
 from observatory.plugin_process import PluginProcess
-from observatory.plugin_wire import ProtocolError, validate_batch
+from observatory.plugin_wire import PollBatch, ProtocolError, validate_batch
 
 
 ORDINARY = {"type": "batch", "protocol": 1, "source_id": "fixture",
@@ -108,6 +108,38 @@ class BatchHandlerTests(unittest.TestCase):
                                required_features=("fixture-envelope/1",),
                                batch_handlers=handlers) as host:
                 self.assertEqual(host.poll("").records, ())
+            def failed_validator(_message, _source_id):
+                raise ValueError("trusted handler failed")
+
+            failing = DEFAULT_BATCH_HANDLERS.with_handler(
+                "fixture-envelope/1", failed_validator)
+            with PluginProcess(manifest, source_id="fixture", timeout=2,
+                               required_features=("fixture-envelope/1",),
+                               batch_handlers=failing) as host:
+                with self.assertRaisesRegex(ValueError, "trusted handler failed"):
+                    host.poll("")
+                self.assertIsNone(host.process)
+                self.assertIsNone(host.pending)
+            wrong_source = DEFAULT_BATCH_HANDLERS.with_handler(
+                "fixture-envelope/1",
+                lambda _message, _source_id: PollBatch("other", "", ()))
+            with PluginProcess(manifest, source_id="fixture", timeout=2,
+                               required_features=("fixture-envelope/1",),
+                               batch_handlers=wrong_source) as host:
+                with self.assertRaisesRegex(ProtocolError, "another source"):
+                    host.poll("")
+                self.assertIsNone(host.process)
+                self.assertIsNone(host.pending)
+            malformed = DEFAULT_BATCH_HANDLERS.with_handler(
+                "fixture-envelope/1",
+                lambda _message, _source_id: PollBatch("fixture", "", None))
+            with PluginProcess(manifest, source_id="fixture", timeout=2,
+                               required_features=("fixture-envelope/1",),
+                               batch_handlers=malformed) as host:
+                with self.assertRaisesRegex(ProtocolError, "invalid records"):
+                    host.poll("")
+                self.assertIsNone(host.process)
+                self.assertIsNone(host.pending)
             # Advertising an unrequired feature does not select its handler.
             with PluginProcess(manifest, source_id="fixture", timeout=2) as host:
                 with self.assertRaisesRegex(ProtocolError, "invalid batch fields"):

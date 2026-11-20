@@ -304,26 +304,29 @@ class PluginProcess:
             batch = self._batch_validator(response, self.source_id)
             if not isinstance(batch, PollBatch):
                 raise ProtocolError("host batch validator returned invalid result")
-        except ProtocolError:
+            if batch.source_id != self.source_id:
+                raise ProtocolError("host batch validator returned another source")
+            if not isinstance(batch.cursor, str) or len(batch.cursor) > MAX_CURSOR_CHARS:
+                raise ProtocolError("host batch validator returned invalid cursor")
+            if not isinstance(batch.records, tuple):
+                raise ProtocolError("host batch validator returned invalid records")
+            if len(batch.records) > max_records:
+                raise ProtocolError("plugin exceeded poll record budget")
+            if "source-discovery/1" in self.required_features:
+                root_gap = ("source-discovery-root-gap/1" in self.required_features
+                            and batch.root_gap)
+                if ((batch.root_gap and not root_gap)
+                        or (not batch.member_id and batch.records and not root_gap)
+                        or (batch.member_id and batch.member_id not in members
+                            and len(members) >= MAX_DISCOVERY_MEMBERS)):
+                    raise ProtocolError("invalid discovery member result")
+            elif batch.member_id or batch.root_gap:
+                raise ProtocolError("unexpected discovery member result")
+            self.pending = batch
+            return batch
+        except BaseException:
             self.close(force=True)
             raise
-        if len(batch.records) > max_records:
-            self.close(force=True)
-            raise ProtocolError("plugin exceeded poll record budget")
-        if "source-discovery/1" in self.required_features:
-            root_gap = ("source-discovery-root-gap/1" in self.required_features
-                        and batch.root_gap)
-            if ((batch.root_gap and not root_gap)
-                    or (not batch.member_id and batch.records and not root_gap)
-                    or (batch.member_id and batch.member_id not in members
-                        and len(members) >= MAX_DISCOVERY_MEMBERS)):
-                self.close(force=True)
-                raise ProtocolError("invalid discovery member result")
-        elif batch.member_id or batch.root_gap:
-            self.close(force=True)
-            raise ProtocolError("unexpected discovery member result")
-        self.pending = batch
-        return batch
 
     def ack(self, committed_cursor: str) -> None:
         if self.pending is None or committed_cursor != self.pending.cursor:
