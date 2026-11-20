@@ -14,7 +14,7 @@ impl SourceFormat for PiFormat {
     const PLUGIN_ID: &'static str = "example.rust-pi-harness";
     const GAP_EVENT_PREFIX: &'static str = "pi-gap";
 
-    fn header_identity(raw: &[u8]) -> Result<Self::Context> {
+    fn header_identity(_path: &std::path::Path, raw: &[u8]) -> Result<Self::Context> {
         pi::header_identity(raw)
     }
 
