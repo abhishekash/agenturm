@@ -950,6 +950,11 @@ fn activate_source_guarded(
          lease_epoch INTEGER NOT NULL,policy_epoch INTEGER NOT NULL,cursor TEXT NOT NULL,\
          dirty_seq INTEGER NOT NULL)",
     )?;
+    reject_cross_operation_request_id(
+        &transaction,
+        &replay.request_id,
+        "storage_source_activate_v2",
+    )?;
     type Stored = (
         String,
         String,
@@ -1020,12 +1025,6 @@ fn activate_source_guarded(
             disposition: "replay",
         });
     }
-    reject_cross_operation_request_id(
-        &transaction,
-        &replay.request_id,
-        "storage_source_activate_v2",
-    )?;
-
     type Source = (
         String,
         String,
@@ -1063,7 +1062,7 @@ fn activate_source_guarded(
         )
         .optional()?;
     let now = now_ns()?;
-    let (epoch, policy, cursor, dirty_seq) = if let Some((
+    let (epoch, policy, cursor, dirty_seq, prior_cursor, last_digest) = if let Some((
         source_receiver,
         stored_plugin,
         stored_generation,
@@ -1099,25 +1098,74 @@ fn activate_source_guarded(
         }
         validate_active_source_history(&transaction, source_id, &cursor, dirty_seq, policy)?;
         let epoch = fresh_lease_epoch(Some(old_epoch))?;
-        transaction.execute(
+        let changed = transaction.execute(
             "UPDATE plugin_source_cursor_v1 SET lease_epoch=?,updated_ns=? WHERE source_id=?",
             params![epoch, now, source_id],
         )?;
-        (epoch, policy, cursor, dirty_seq)
+        if changed != 1 {
+            return Err(reject(
+                "source activation update did not affect exactly one row",
+            ));
+        }
+        (epoch, policy, cursor, dirty_seq, prior_cursor, last_digest)
     } else {
         if activation_has_orphan_rows(&transaction, source_id)? {
             return Err(reject("orphan scratch source history prevents activation"));
         }
         let epoch = fresh_lease_epoch(None)?;
-        transaction.execute(
+        let changed = transaction.execute(
             "INSERT INTO plugin_source_cursor_v1 \
              (source_id,receiver_id,plugin_id,generation,lease_epoch,cursor,prior_cursor,\
               last_batch_digest,dirty_seq,policy_epoch,capture_enabled,content_fingerprint,updated_ns) \
              VALUES(?,?,?,?,?,'','','',0,1,1,'',?)",
             params![source_id, receiver, plugin_id, generation, epoch, now],
         )?;
-        (epoch, 1, String::new(), 0)
+        if changed != 1 {
+            return Err(reject(
+                "source activation insert did not affect exactly one row",
+            ));
+        }
+        (epoch, 1, String::new(), 0, String::new(), String::new())
     };
+    let expected_source: Source = (
+        receiver.clone(),
+        plugin_id.clone(),
+        generation.clone(),
+        epoch,
+        policy,
+        1,
+        String::new(),
+        cursor.clone(),
+        prior_cursor,
+        last_digest,
+        dirty_seq,
+    );
+    let persisted_source: Option<Source> = transaction
+        .query_row(
+            "SELECT receiver_id,plugin_id,generation,lease_epoch,policy_epoch,capture_enabled,\
+             content_fingerprint,cursor,prior_cursor,last_batch_digest,dirty_seq \
+             FROM plugin_source_cursor_v1 WHERE source_id=?",
+            [source_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                ))
+            },
+        )
+        .optional()?;
+    if persisted_source.as_ref() != Some(&expected_source) {
+        return Err(reject("source activation state was not persisted exactly"));
+    }
     let lease = v2::SourceLease {
         receiver_id: receiver.clone(),
         plugin_id: plugin_id.clone(),
@@ -1126,7 +1174,7 @@ fn activate_source_guarded(
         epoch,
         policy_epoch: policy,
     };
-    transaction.execute(
+    let receipt_changed = transaction.execute(
         "INSERT INTO storage_source_activate_v2(request_id,receiver_id,request_digest,\
          source_id,plugin_id,generation,lease_epoch,policy_epoch,cursor,dirty_seq) \
          VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -1142,6 +1190,81 @@ fn activate_source_guarded(
             cursor,
             dirty_seq
         ],
+    )?;
+    if receipt_changed != 1 {
+        return Err(reject(
+            "source activation receipt insert did not affect exactly one row",
+        ));
+    }
+    let persisted_receipt: Option<Stored> = transaction
+        .query_row(
+            "SELECT receiver_id,request_digest,source_id,plugin_id,generation,lease_epoch,\
+             policy_epoch,cursor,dirty_seq FROM storage_source_activate_v2 WHERE request_id=?",
+            [&replay.request_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
+        )
+        .optional()?;
+    if persisted_receipt.as_ref()
+        != Some(&(
+            receiver.clone(),
+            replay.digest.clone(),
+            source_id.clone(),
+            plugin_id.clone(),
+            generation.clone(),
+            epoch,
+            policy,
+            cursor.clone(),
+            dirty_seq,
+        ))
+    {
+        return Err(reject(
+            "source activation receipt was not persisted exactly",
+        ));
+    }
+    let source_after_receipt: Option<Source> = transaction
+        .query_row(
+            "SELECT receiver_id,plugin_id,generation,lease_epoch,policy_epoch,capture_enabled,\
+             content_fingerprint,cursor,prior_cursor,last_batch_digest,dirty_seq \
+             FROM plugin_source_cursor_v1 WHERE source_id=?",
+            [source_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                ))
+            },
+        )
+        .optional()?;
+    if source_after_receipt.as_ref() != Some(&expected_source) {
+        return Err(reject(
+            "source activation state changed while persisting its receipt",
+        ));
+    }
+    reject_cross_operation_request_id(
+        &transaction,
+        &replay.request_id,
+        "storage_source_activate_v2",
     )?;
     transaction.commit()?;
     Ok(SourceActivationReceipt {
@@ -1394,6 +1517,20 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    type TestSourceState = (
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        i64,
+    );
+
     fn fixture() -> Connection {
         fixture_at(Path::new(":memory:"))
     }
@@ -1474,6 +1611,51 @@ mod tests {
             })
             .unwrap();
         (cursor, dirty, count)
+    }
+
+    fn activation_source_state(db: &Connection, source_id: &str) -> Option<TestSourceState> {
+        db.query_row(
+            "SELECT receiver_id,plugin_id,generation,lease_epoch,policy_epoch,capture_enabled,\
+             content_fingerprint,cursor,prior_cursor,last_batch_digest,dirty_seq \
+             FROM plugin_source_cursor_v1 WHERE source_id=?",
+            [source_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                ))
+            },
+        )
+        .optional()
+        .unwrap()
+    }
+
+    fn activation_receipt_count(db: &Connection, request_id: &str) -> Option<i64> {
+        let exists: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' \
+                 AND name='storage_source_activate_v2')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        exists.then(|| {
+            db.query_row(
+                "SELECT COUNT(*) FROM storage_source_activate_v2 WHERE request_id=?",
+                [request_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        })
     }
 
     fn revoke_request(expected_dirty_seq: i64) -> v2::Request {
@@ -2383,6 +2565,191 @@ mod tests {
     }
 
     #[test]
+    fn activation_rejects_receiver_and_unmarked_scratch_before_mutation() {
+        let mut db = fixture();
+        let before = state(&db);
+        let mut wrong_receiver =
+            activation_request("b123456789abcdef0123456789abcdef", "source-one");
+        wrong_receiver.receiver_id = "receiver-two".into();
+        assert!(
+            activate(&mut db, &wrong_receiver)
+                .unwrap_err()
+                .to_string()
+                .contains("receiver identity mismatch")
+        );
+        assert_eq!(state(&db), before);
+
+        db.execute(
+            "DELETE FROM schema_meta WHERE key='storage_admission_scratch_v1'",
+            [],
+        )
+        .unwrap();
+        let unmarked = activation_request("c123456789abcdef0123456789abcdef", "source-one");
+        assert!(
+            activate(&mut db, &unmarked)
+                .unwrap_err()
+                .to_string()
+                .contains("explicit scratch")
+        );
+        assert_eq!(state(&db), before);
+        let receipt_table: Option<String> = db
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='storage_source_activate_v2'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(receipt_table.is_none());
+    }
+
+    #[test]
+    fn activation_ignored_or_mutated_writes_roll_back_without_a_reply() {
+        let mut db = fixture();
+        let original = activation_source_state(&db, "source-one").unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER ignore_activation_update BEFORE UPDATE OF lease_epoch \
+             ON plugin_source_cursor_v1 WHEN OLD.source_id='source-one' \
+             BEGIN SELECT RAISE(IGNORE); END;",
+        )
+        .unwrap();
+        let request = activation_request("d123456789abcdef0123456789abcdef", "source-one");
+        assert!(
+            activate(&mut db, &request)
+                .unwrap_err()
+                .to_string()
+                .contains("update did not affect exactly one row")
+        );
+        assert_eq!(
+            activation_source_state(&db, "source-one"),
+            Some(original.clone())
+        );
+        assert_eq!(activation_receipt_count(&db, &request.request_id), None);
+
+        let mut db = fixture();
+        let before = activation_source_state(&db, "source-one").unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER ignore_activation_insert BEFORE INSERT ON plugin_source_cursor_v1 \
+             WHEN NEW.source_id='fresh-source' BEGIN SELECT RAISE(IGNORE); END;",
+        )
+        .unwrap();
+        let request = activation_request("e123456789abcdef0123456789abcdef", "fresh-source");
+        assert!(
+            activate(&mut db, &request)
+                .unwrap_err()
+                .to_string()
+                .contains("insert did not affect exactly one row")
+        );
+        assert_eq!(activation_source_state(&db, "fresh-source"), None);
+        assert_eq!(activation_source_state(&db, "source-one"), Some(before));
+        assert_eq!(activation_receipt_count(&db, &request.request_id), None);
+
+        let mut db = fixture();
+        let original = activation_source_state(&db, "source-one").unwrap();
+        db.execute_batch(
+            "CREATE TABLE storage_source_activate_v2(\
+             request_id TEXT PRIMARY KEY,receiver_id TEXT NOT NULL,request_digest TEXT NOT NULL,\
+             source_id TEXT NOT NULL,plugin_id TEXT NOT NULL,generation TEXT NOT NULL,\
+             lease_epoch INTEGER NOT NULL,policy_epoch INTEGER NOT NULL,cursor TEXT NOT NULL,\
+             dirty_seq INTEGER NOT NULL);\
+             CREATE TRIGGER ignore_activation_receipt BEFORE INSERT ON storage_source_activate_v2 \
+             BEGIN SELECT RAISE(IGNORE); END;",
+        )
+        .unwrap();
+        let request = activation_request("f123456789abcdef0123456789abcdef", "source-one");
+        assert!(
+            activate(&mut db, &request)
+                .unwrap_err()
+                .to_string()
+                .contains("receipt insert did not affect exactly one row")
+        );
+        assert_eq!(
+            activation_source_state(&db, "source-one"),
+            Some(original.clone())
+        );
+        assert_eq!(activation_receipt_count(&db, &request.request_id), Some(0));
+
+        let mut db = fixture();
+        let original = activation_source_state(&db, "source-one").unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER mutate_activation_update AFTER UPDATE OF lease_epoch \
+             ON plugin_source_cursor_v1 WHEN NEW.source_id='source-one' \
+             BEGIN UPDATE plugin_source_cursor_v1 SET policy_epoch=99 \
+                   WHERE source_id='source-one'; END;",
+        )
+        .unwrap();
+        let request = activation_request("0123456789abcdef0123456789abcdef", "source-one");
+        assert!(
+            activate(&mut db, &request)
+                .unwrap_err()
+                .to_string()
+                .contains("state was not persisted exactly")
+        );
+        assert_eq!(activation_source_state(&db, "source-one"), Some(original));
+        assert_eq!(activation_receipt_count(&db, &request.request_id), None);
+
+        let mut db = fixture();
+        let original = activation_source_state(&db, "source-one").unwrap();
+        db.execute_batch(
+            "CREATE TABLE storage_source_activate_v2(\
+             request_id TEXT PRIMARY KEY,receiver_id TEXT NOT NULL,request_digest TEXT NOT NULL,\
+             source_id TEXT NOT NULL,plugin_id TEXT NOT NULL,generation TEXT NOT NULL,\
+             lease_epoch INTEGER NOT NULL,policy_epoch INTEGER NOT NULL,cursor TEXT NOT NULL,\
+             dirty_seq INTEGER NOT NULL);\
+             CREATE TRIGGER mutate_activation_receipt AFTER INSERT ON storage_source_activate_v2 \
+             BEGIN UPDATE plugin_source_cursor_v1 SET policy_epoch=99 \
+                   WHERE source_id=NEW.source_id; END;",
+        )
+        .unwrap();
+        let request = activation_request("1123456789abcdef0123456789abcdef", "source-one");
+        assert!(
+            activate(&mut db, &request)
+                .unwrap_err()
+                .to_string()
+                .contains("state changed while persisting its receipt")
+        );
+        assert_eq!(activation_source_state(&db, "source-one"), Some(original));
+        assert_eq!(activation_receipt_count(&db, &request.request_id), Some(0));
+
+        let mut db = fixture();
+        let original = activation_source_state(&db, "source-one").unwrap();
+        db.execute_batch(
+            "CREATE TABLE storage_source_activate_v2(\
+             request_id TEXT PRIMARY KEY,receiver_id TEXT NOT NULL,request_digest TEXT NOT NULL,\
+             source_id TEXT NOT NULL,plugin_id TEXT NOT NULL,generation TEXT NOT NULL,\
+             lease_epoch INTEGER NOT NULL,policy_epoch INTEGER NOT NULL,cursor TEXT NOT NULL,\
+             dirty_seq INTEGER NOT NULL);\
+             CREATE TABLE storage_admission_request_v2(\
+             request_id TEXT PRIMARY KEY,receiver_id TEXT NOT NULL,request_digest TEXT NOT NULL,\
+             source_id TEXT NOT NULL,cursor TEXT NOT NULL,batch_digest TEXT NOT NULL,\
+             dirty_seq INTEGER NOT NULL,disposition TEXT NOT NULL);\
+             CREATE TRIGGER collide_activation_receipt AFTER INSERT ON storage_source_activate_v2 \
+             BEGIN INSERT INTO storage_admission_request_v2 \
+               VALUES(NEW.request_id,NEW.receiver_id,NEW.request_digest,NEW.source_id,\
+                      NEW.cursor,'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',\
+                      NEW.dirty_seq,'committed'); END;",
+        )
+        .unwrap();
+        let request = activation_request("2123456789abcdef0123456789abcdef", "source-one");
+        assert!(
+            activate(&mut db, &request)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicting v2 request replay identity")
+        );
+        assert_eq!(activation_source_state(&db, "source-one"), Some(original));
+        assert_eq!(activation_receipt_count(&db, &request.request_id), Some(0));
+        let admission_rows: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+                [&request.request_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(admission_rows, 0);
+    }
+
+    #[test]
     fn activation_rejects_orphan_history_and_receipts_after_cursor_removal() {
         let mut db = fixture();
         let first = activate(
@@ -2502,6 +2869,37 @@ mod tests {
                 .to_string()
                 .contains("conflicting")
         );
+    }
+
+    #[test]
+    fn activation_retry_rejects_cross_operation_request_id_collision() {
+        let mut db = fixture();
+        let request = activation_request("3123456789abcdef0123456789abcdef", "source-one");
+        let activated = activate(&mut db, &request).unwrap();
+        let state_before = activation_source_state(&db, "source-one");
+        db.execute_batch(
+            "CREATE TABLE storage_admission_request_v2(\
+             request_id TEXT PRIMARY KEY,receiver_id TEXT NOT NULL,request_digest TEXT NOT NULL,\
+             source_id TEXT NOT NULL,cursor TEXT NOT NULL,batch_digest TEXT NOT NULL,\
+             dirty_seq INTEGER NOT NULL,disposition TEXT NOT NULL);",
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO storage_admission_request_v2 VALUES(\
+             ?,'receiver-one','dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',\
+             'source-one','','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',0,'committed')",
+            [&request.request_id],
+        )
+        .unwrap();
+        assert!(
+            activate(&mut db, &request)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicting v2 request replay identity")
+        );
+        assert_eq!(activation_source_state(&db, "source-one"), state_before);
+        assert_eq!(activation_receipt_count(&db, &request.request_id), Some(1));
+        assert!(activated.lease.epoch > 0);
     }
 
     #[test]
