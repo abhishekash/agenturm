@@ -22,6 +22,7 @@ from typing import Callable, TYPE_CHECKING
 
 from .agent_hierarchy import AGENT_ID
 from .capability_facts import PromptSignalFacts, prompt_signal_facts
+from .capability_model import ModelRowSpec, model_from_facts, parse_model_rows
 from .plugin_frames import FrameError, read_frame, write_frame
 from .plugin_manifest import PluginManifest, plan_activation
 from .plugin_wire import ProtocolError, decode_message, encode_message
@@ -38,6 +39,7 @@ REFRESH_SECONDS = 2.0
 FEATURE = "capability-adapter/1"
 GRANT = "scoped-aggregate-read"
 _COLUMNS = (("Signal", 40, 2), ("Observed", 14, 0), ("Coverage", 23, 1))
+_V2_HEADINGS = ("Signal", "Observed", "Coverage")
 _ROW_LABELS = {"users": "Recorded user messages", "shell": "Recorded shell actions",
                "first-shell": "First shell action after a user message"}
 
@@ -49,6 +51,7 @@ class CapabilityConfig:
     title: str
     columns: tuple[tuple[str, int, int], ...]
     grants: tuple[str, ...]
+    model_rows: tuple[ModelRowSpec, ...] | None = None
 
 
 def read_capability_config(path: str | Path) -> CapabilityConfig:
@@ -67,8 +70,11 @@ def read_capability_config(path: str | Path) -> CapabilityConfig:
         descriptor = decode_message(raw.decode("utf-8", "strict"))
     except UnicodeError as exc:
         raise ValueError("invalid capability config encoding") from exc
-    if (set(descriptor) != {"schema", "manifest", "pane", "grants"}
-            or type(descriptor["schema"]) is not int or descriptor["schema"] != 1
+    schema = descriptor.get("schema")
+    expected_keys = ({"schema", "manifest", "pane", "grants"} if schema == 1 else
+                     {"schema", "manifest", "pane", "grants", "model"} if schema == 2 else set())
+    if (type(schema) is not int or schema not in (1, 2)
+            or set(descriptor) != expected_keys
             or not isinstance(descriptor["manifest"], str)
             or not Path(descriptor["manifest"]).is_absolute()
             or descriptor["grants"] != [GRANT]
@@ -76,18 +82,34 @@ def read_capability_config(path: str | Path) -> CapabilityConfig:
             or set(descriptor["pane"]) != {"id", "title", "columns"}):
         raise ValueError("invalid capability config")
     pane = descriptor["pane"]
-    if (pane["id"] != "prompt-signals" or pane["title"] != "Prompt signals"
-            or pane["columns"] != [list(column) for column in _COLUMNS]):
-        raise ValueError("unsupported capability pane columns")
+    if schema == 1:
+        if (pane["id"] != "prompt-signals" or pane["title"] != "Prompt signals"
+                or pane["columns"] != [list(column) for column in _COLUMNS]):
+            raise ValueError("unsupported legacy capability pane")
+        columns = _COLUMNS
+    else:
+        raw_columns = pane["columns"]
+        if (not isinstance(raw_columns, list) or len(raw_columns) not in (2, 3)
+                or any(not isinstance(column, list) or len(column) != 3
+                       for column in raw_columns)
+                or [column[0] for column in raw_columns] != list(_V2_HEADINGS[:len(raw_columns)])
+                or any(type(column[1]) is not int or type(column[2]) is not int
+                       for column in raw_columns)):
+            raise ValueError("unsupported capability pane columns")
+        columns = tuple(tuple(column) for column in raw_columns)
+        if sum(column[1] for column in columns) > 54:
+            raise ValueError("capability pane exceeds compact width")
+    model_rows = parse_model_rows(descriptor["model"]) if schema == 2 else None
     manifest = PluginManifest.read(descriptor["manifest"])
     plan_activation({manifest.id: manifest}, (manifest.id,),
                     host_features=("pane-model/1",), allowed_grants=(GRANT,))
     if FEATURE not in manifest.provides or GRANT not in manifest.grants:
         raise ValueError("capability manifest lacks required feature or grant")
-    declaration = PaneContribution(pane["id"], pane["title"], _COLUMNS,
+    declaration = PaneContribution(pane["id"], pane["title"], columns,
                                    lambda _scope: PaneModel("unavailable", "Not started"))
     PaneRegistry((declaration,))
-    return CapabilityConfig(manifest, declaration.id, declaration.title, _COLUMNS, (GRANT,))
+    return CapabilityConfig(manifest, declaration.id, declaration.title, columns,
+                            (GRANT,), model_rows)
 
 
 class CapabilityProcess:
@@ -253,16 +275,20 @@ class CapabilityProcess:
             validate_model(pane, model)
         except ValueError as exc:
             raise ProtocolError("invalid capability PaneModel schema") from exc
-        # This fixture permits only values derived from the host facts. Child
-        # output cannot add free text, unrelated counts or a false coverage.
-        coverage = "complete recent window" if facts.window_complete else "partial recent window"
-        expected = PaneModel(facts.state,
-            f"{facts.observed_events} scoped events · {coverage} · observational signals only",
-            (PaneRow("users", (_ROW_LABELS["users"], str(facts.user_messages), coverage)),
-             PaneRow("shell", (_ROW_LABELS["shell"], str(facts.shell_actions), coverage)),
-             PaneRow("first-shell", (_ROW_LABELS["first-shell"],
-                      f"{facts.first_shell_after_user_ms} ms"
-                      if facts.first_shell_after_user_ms is not None else "unavailable", coverage))))
+        # Every displayed value is recomputed from receiver-owned facts. A v2
+        # descriptor chooses bounded formulas; it cannot authorize child text.
+        if self.config.model_rows is None:
+            coverage = "complete recent window" if facts.window_complete else "partial recent window"
+            expected = PaneModel(facts.state,
+                f"{facts.observed_events} scoped events · {coverage} · observational signals only",
+                (PaneRow("users", (_ROW_LABELS["users"], str(facts.user_messages), coverage)),
+                 PaneRow("shell", (_ROW_LABELS["shell"], str(facts.shell_actions), coverage)),
+                 PaneRow("first-shell", (_ROW_LABELS["first-shell"],
+                          f"{facts.first_shell_after_user_ms} ms"
+                          if facts.first_shell_after_user_ms is not None else "unavailable", coverage))))
+        else:
+            expected = model_from_facts(facts, self.config.model_rows,
+                                        include_coverage=len(self.config.columns) == 3)
         if model != expected:
             raise ProtocolError("capability model differs from scoped facts")
         return model

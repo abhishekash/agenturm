@@ -173,8 +173,10 @@ class ReceiverActivityReader:
                   "capture_scope": 1}
         try:
             page = self.api.get("/api/activity?" + urlencode(params))
+            activity = page.get("activity") if isinstance(page, dict) else None
             if (not isinstance(page, dict) or page.get("receiver_id") != receiver
-                    or not isinstance(page.get("activity"), list)):
+                    or not isinstance(activity, list) or len(activity) > limit
+                    or any(not isinstance(item, dict) for item in activity)):
                 raise ValueError("capability Activity receiver or schema mismatch")
             self.gate.confirm_live(scope)
         except Exception as exc:
