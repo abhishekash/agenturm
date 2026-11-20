@@ -688,7 +688,11 @@ def task_metadata(item, summary=None, *, announced=False, unlinked=False, depth=
     project=clean(item.get('project') or 'SDK')
     if announced:
         return f"{runtime} · Status not yet received"
-    parts=[runtime]+([project] if item.get('project') else [])
+    parts=[runtime]
+    if item.get('source_availability') in {'unavailable', 'pending'}:
+        parts.append('source unavailable' if item['source_availability']=='unavailable'
+                     else 'source not yet refreshed')
+    if item.get('project'):parts.append(project)
     if item.get('_ancestor_context'):parts.append('parent context')
     if summary and summary.get('descendants'):
         count=summary.get('descendants',0)
@@ -3616,6 +3620,11 @@ class ObservatoryApp(App):
                         if item.get('state')=='Interrupted' else item.get('stamp'))
         state.append(' · '+age(status_stamp),style='#b9afc5')
         fields=[('Agent',identity),('Status',state)]
+        if item.get('source_availability') in {'unavailable', 'pending'}:
+            source=item.get('plugin_source_id') or 'Unknown process source'
+            freshness=('Unavailable' if item['source_availability']=='unavailable'
+                       else 'Awaiting a successful poll')
+            fields.append(('Source coverage',f'{source} · {freshness}. The outcome above is last recorded; current source coverage is unconfirmed.'))
         heading=self.query_one('#agent-heading',Static)
         update_status_text(heading,Text(title if expanded else 'Session inspector'))
         heading.tooltip=title

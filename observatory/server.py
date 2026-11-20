@@ -214,27 +214,41 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 try:
                     plugin_status = store.plugin_sessions()
                     local_status = dict(local_status)
-                    if plugin_status["sessions"]:
+                    supervisor = getattr(store, "plugin_supervisor", None)
+                    workers = supervisor.snapshot() if supervisor is not None else []
+                    from .source_coverage import process_source_availability
+                    availability = process_source_availability(workers, plugin_status["sessions"])
+                    local_status["process_source_availability"] = availability
+                    by_source = {item["source_id"]: item for item in availability}
+                    projected_sessions = []
+                    for session in plugin_status["sessions"]:
+                        projected = dict(session)
+                        source = by_source.get(projected.get("plugin_source_id"))
+                        if source is not None and source["availability"] != "ready":
+                            projected["source_availability"] = source["availability"]
+                            projected["source_health_code"] = source["reason_code"]
+                        projected_sessions.append(projected)
+                    if projected_sessions:
                         local_status["sessions"] = [*(local_status.get("sessions") or ()),
-                                                    *plugin_status["sessions"]]
+                                                    *projected_sessions]
                         local_status["enabled"] = True
                     local_status["plugin_projection"] = {
                         "pending_sources": plugin_status["pending_sources"],
                         "omitted_sessions": plugin_status["omitted_sessions"],
                         "retention_gaps": plugin_status["retention_gaps"]}
-                    supervisor = getattr(store, "plugin_supervisor", None)
                     if supervisor is not None:
-                        local_status["plugin_workers"] = supervisor.snapshot()
+                        local_status["plugin_workers"] = workers
                     if (plugin_status["sessions"] or plugin_status["omitted_sessions"] or
                             plugin_status["pending_sources"] or plugin_status["retention_gaps"] or
                             local_status.get("plugin_workers")):
                         omitted = plugin_status["omitted_sessions"]
                         partial = bool(omitted or plugin_status["pending_sources"] or
-                                       plugin_status["retention_gaps"])
+                                       plugin_status["retention_gaps"] or
+                                       any(item["availability"] != "ready" for item in availability))
                         local_status["source_coverage"] = [
                             *(local_status.get("source_coverage") or ()),
                             {"label": "Process adapters", "unit": "sessions",
-                             "active": len(plugin_status["sessions"]),
+                             "active": len(projected_sessions),
                              "omitted": 1 if omitted else 0,
                              "omitted_exact": not omitted,
                              "pending": plugin_status["pending_sources"],

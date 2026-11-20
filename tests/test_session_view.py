@@ -367,6 +367,42 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('1 Native JSONL file omitted', coverage_warning(app.data.local_status))
                 self.assertNotIn('Codex / Claude files', detail)
 
+    async def test_unavailable_process_source_remains_visible_at_narrow_sizes(self):
+        feed = ManualFeed()
+        entry = feed.snapshot.local_status['sessions'][0]
+        entry.update(plugin_source_id='source-a', source_availability='unavailable',
+                     run_state='completed', reported_state='completed')
+        groups = [
+            {'label': 'Process adapters', 'unit': 'sessions', 'active': 1,
+             'omitted': 0, 'state': 'partial'}]
+        statuses = [
+                {'source_id': 'source-a', 'availability': 'unavailable',
+                 'reason_code': 'worker_error', 'retained_sessions': 1}]
+        feed.snapshot.local_status.update(source_coverage=groups,
+                                          process_source_availability=statuses)
+        app = ObservatoryApp(feed, persist_preferences=False)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.refresh_timer.stop()
+            app.select_agent(entry['source_id'])
+            await pilot.press('e')
+            await pilot.pause()
+            for size in ((80, 24), (60, 18)):
+                await pilot.resize_terminal(*size)
+                await pilot.pause()
+                self.assertIn('source-a', app.query_one('#agent-detail').plain_text)
+                self.assertIn('last recorded', ' '.join(app.query_one('#agent-detail').plain_text.split()))
+                await pilot.press('5')
+                await pilot.press('e')
+                await pilot.pause()
+                app.data.local_status.update(source_coverage=groups,
+                                             process_source_availability=statuses)
+                app.render_host()
+                self.assertIn('Process source source-a: unavailable',
+                              ' '.join(app.query_one('#host-detail').plain_text.split()))
+                await pilot.press('1')
+                await pilot.pause()
+
     async def test_server_inventory_includes_older_servers_and_filters_calls(self):
         feed = ManualFeed()
         feed.api.mcp_summary = {'calls': 140, 'tools': 5, 'errors': 2,
