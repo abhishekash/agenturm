@@ -91,6 +91,15 @@ class ShadowSnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "unknown plugin source"):
             capture(self.store, "missing")
 
+    def test_source_gap_is_not_misreported_as_rust_reducer_parity(self):
+        self.populate()
+        commit_batch(self.store, self.lease, "one", PollBatch("shadow-source", "two", (
+            {"event_id": "gap", "revision": 0, "kind": "diagnostic",
+             "time_ns": "0", "payload": {"code": "possible_source_gap",
+                                           "severity": "warning"}},)))
+        project_source(self.store, "shadow-source")
+        self.assertIsNone(capture(self.store, "shadow-source"))
+
     def test_installed_rust_reducer_matches_policy_current_store(self):
         binary = os.environ.get("AGENTURM_RUST_REDUCER_BIN")
         if not binary:
