@@ -1308,6 +1308,12 @@ class LocalAgents:
                 rows = reader.status_sessions()
                 if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
                     raise TypeError("reader status_sessions must return a list of records")
+                # A reader may publish one display row per session while all
+                # rows come from a different, shared evidence source (OpenCode
+                # is one example). Keep that source distinct for scoped reads.
+                evidence_source = getattr(reader, 'source_id', None)
+                if isinstance(evidence_source, str) and evidence_source:
+                    rows = [dict(row, evidence_source_id=evidence_source) for row in rows]
                 reader_observed.extend(rows)
                 reader_diagnostics[spec.id] = reader.diagnostics()
             except Exception as exc:

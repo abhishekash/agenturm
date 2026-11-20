@@ -10,9 +10,11 @@ import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .agent_hierarchy import CAPABILITIES, HierarchyGraph
+from .agent_hierarchy import AGENT_ID, CAPABILITIES, HierarchyGraph
+from .capability_policy import capture_sources
 from .core import Store, IndexNotReady, normalize_native, normalize_otlp, TRACE_ID
 from .otlp_proto import decode_trace_request
 from .logs import normalize_otlp_logs, decode_log_request
@@ -25,6 +27,20 @@ from .response_cache import ResponseCache
 ThreadingHTTPServer = BoundedHTTPServer
 
 MAX_BODY = 8 * 1024 * 1024
+
+
+def _capability_revision_watch(path):
+    """Sample committed SQLite changes without pinning a read transaction."""
+    watch = sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro',
+                            uri=True, timeout=0.1)
+    try:
+        revision = watch.execute('PRAGMA data_version').fetchone()[0]
+        if watch.in_transaction:
+            raise RuntimeError('capability revision watch pinned a read transaction')
+        return watch, revision
+    except BaseException:
+        watch.close()
+        raise
 
 
 def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hosts=()):
@@ -59,6 +75,11 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     receiver = None
             if code == 200 and cache_result and getattr(self, '_cache_version', None) is not None:
                 cache.put(self.path, self._cache_version, data)
+            guard = getattr(self, '_capability_guard', None)
+            if code == 200 and guard is not None and not guard():
+                code = 409
+                data = json.dumps({'error': 'Capability capture policy changed during this read.'}).encode()
+                receiver = None
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
@@ -103,6 +124,7 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
 
         def _read_GET(self):
             self._cache_version = None
+            self._capability_guard = None
             self._get_receiver_id = None
             self._mcp_file_identity = None
             self._activity_file_identity = None
@@ -112,6 +134,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
             if route is None:
                 return
             path = route.path
+            capability_activity = (path == '/api/activity' and
+                'capture_scope' in parse_qs(route.query, keep_blank_values=True))
             # Scope selector presence is conservative, including blank/false
             # values and duplicates. Only raw inventory has this dependency.
             certified_mcp=(path=='/api/mcp'and callable(getattr(store,'certify_initial_mcp',None)))
@@ -162,7 +186,9 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
             if certified_activity:self._activity_file_identity=certificate(store.certify_initial_activity,strict=not indexed_activity)
             if certified_metrics:self._metrics_file_identity=certificate(store.certify_initial_metrics)
             if certified_sessions:self._sessions_file_identity=certificate(store.certify_initial_sessions)
-            if cache.eligible(path)and(not independent_read or independent_cache_ready):
+            # A capability grant is live receiver state, not just SQLite data.
+            # Never serve or retain one through the ordinary response cache.
+            if not capability_activity and cache.eligible(path)and(not independent_read or independent_cache_ready):
                 self._cache_version, cached = cache.get(self.path)
                 if cached is not None:
                     self._json_bytes(200, cached)
@@ -238,8 +264,48 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 try:self._json(200,{'turn':store.review_turn(query.get('trace_id',[''])[0])})
                 except ValueError as exc:self._json(400,{'error':str(exc)})
             elif path == "/api/activity":
-                query = parse_qs(route.query)
+                query = parse_qs(route.query, keep_blank_values=True)
+                provenance_watch = None
                 try:
+                    capability_scope = 'capture_scope' in query
+                    capture_token = None
+                    source_ids = None
+                    if capability_scope:
+                        allowed = {'capture_scope','limit','service','session_id',
+                                   'agent_id','subtree','include_reviews'}
+                        if (set(query) != allowed or any(len(values) != 1 for values in query.values())
+                                or query['capture_scope'] != ['1'] or query['subtree'] != ['0']
+                                or query['include_reviews'] != ['0']
+                                or not query['service'][0] or len(query['service'][0]) > 200
+                                or not query['session_id'][0] or len(query['session_id'][0]) > 200
+                                or not AGENT_ID.fullmatch(query['agent_id'][0])
+                                or not 1 <= int(query['limit'][0]) <= 200):
+                            raise ValueError('invalid capability Activity scope')
+                        monitor = getattr(store, 'local_agent_monitor', None)
+                        def policy_token():
+                            if monitor is None or getattr(store, 'local_agent_monitor', None) is not monitor:
+                                return None
+                            try:
+                                sources = capture_sources(monitor.status(),
+                                    service=query['service'][0], session_id=query['session_id'][0],
+                                    agent_id=query['agent_id'][0])
+                                source_token = (store.capability_source_token(sources)
+                                                if sources is not None else None)
+                            except Exception:
+                                # An adapter status failure must deny this
+                                # optional capability, never widen its scope.
+                                return None
+                            return (monitor, sources, source_token) if source_token is not None else None
+                        capture_token = policy_token()
+                        if capture_token is None:
+                            self._json(403, {'error': 'Capability capture denied for exact scope.'})
+                            return
+                        source_ids = capture_token[1]
+                        # This connection keeps no read transaction. Its
+                        # data_version detects any commit between admission
+                        # and the final response guard, including writes by
+                        # older or external receivers.
+                        provenance_watch, initial_data_version = _capability_revision_watch(store.path)
                     certificate=({'_initial_receiver':self._get_receiver_id,'_initial_file':self._activity_file_identity,
                                   '_strict_read':not indexed_activity}if certified_activity else {})
                     page = store.activity_page(limit=int(query.get("limit", [100])[0]),
@@ -253,10 +319,27 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                         subtree=query.get("subtree", ["0"])[0]=="1",
                         scope_revision=query.get("scope_revision", [None])[0],
                         trace_id=query.get("trace_id", [None])[0], turn_id=query.get("turn_id", [None])[0],
-                        review=query.get("review", ["0"])[0]=="1",**certificate)
+                        review=query.get("review", ["0"])[0]=="1",
+                        _capture_source_ids=source_ids,**certificate)
+                    if capability_scope:
+                        def current_capability_revision():
+                            try:
+                                return (policy_token() == capture_token and
+                                    not provenance_watch.in_transaction and
+                                    provenance_watch.execute('PRAGMA data_version').fetchone()[0]
+                                    == initial_data_version)
+                            except (sqlite3.Error, OSError):
+                                return False
+                        self._capability_guard = current_capability_revision
                     self._json(200, page)
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
+                except (sqlite3.Error, OSError):
+                    self._json(503, {"error": "Capability source revision unavailable. Retry the request."})
+                finally:
+                    self._capability_guard = None
+                    if provenance_watch is not None:
+                        provenance_watch.close()
             elif path == "/api/metrics":
                 certificate=({'_initial_receiver':self._get_receiver_id,'_initial_file':self._metrics_file_identity}if certified_metrics else {})
                 self._json(200, store.metrics(**certificate))

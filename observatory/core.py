@@ -784,6 +784,62 @@ class Store:
                     updated_ns INTEGER NOT NULL,
                     PRIMARY KEY(runtime,source_namespace,native_session_id,native_worker_id));
             """)
+            db.execute("INSERT OR IGNORE INTO schema_meta(key,value) "
+                       "VALUES('agent_connection_capture_epoch','0')")
+            db.execute("""CREATE TRIGGER IF NOT EXISTS agent_connection_capture_insert_v1
+                AFTER INSERT ON agent_connections BEGIN
+                UPDATE schema_meta SET value=CAST(value AS INTEGER)+1
+                WHERE key='agent_connection_capture_epoch'; END""")
+            db.execute("""CREATE TRIGGER IF NOT EXISTS agent_connection_capture_update_v1
+                AFTER UPDATE OF capture_content,service ON agent_connections
+                WHEN NEW.capture_content!=OLD.capture_content OR NEW.service!=OLD.service BEGIN
+                UPDATE schema_meta SET value=CAST(value AS INTEGER)+1
+                WHERE key='agent_connection_capture_epoch'; END""")
+            db.execute("""CREATE TRIGGER IF NOT EXISTS agent_connection_capture_delete_v1
+                AFTER DELETE ON agent_connections BEGIN
+                UPDATE schema_meta SET value=CAST(value AS INTEGER)+1
+                WHERE key='agent_connection_capture_epoch'; END""")
+            # Scope names and resource attributes arrive over OTLP too. Only
+            # accepted in-process native writes may claim a capability source;
+            # any raw replacement clears that claim before a trusted writer
+            # restores it in the same transaction.
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS native_capture_owner_v1 (
+                    kind TEXT NOT NULL, owner_key TEXT NOT NULL, source_id TEXT NOT NULL,
+                    PRIMARY KEY(kind,owner_key));
+                CREATE TRIGGER IF NOT EXISTS native_capture_span_insert_v1
+                    AFTER INSERT ON spans
+                    WHEN NEW.scope_name IN ('observatory.local_agents','observatory.opencode') BEGIN
+                    DELETE FROM native_capture_owner_v1
+                    WHERE kind='span' AND owner_key=NEW.trace_id||':'||NEW.span_id; END;
+                CREATE TRIGGER IF NOT EXISTS native_capture_span_update_v1
+                    AFTER UPDATE ON spans
+                    WHEN OLD.scope_name IN ('observatory.local_agents','observatory.opencode')
+                      OR NEW.scope_name IN ('observatory.local_agents','observatory.opencode') BEGIN
+                    DELETE FROM native_capture_owner_v1 WHERE kind='span'
+                    AND owner_key IN (OLD.trace_id||':'||OLD.span_id,NEW.trace_id||':'||NEW.span_id); END;
+                CREATE TRIGGER IF NOT EXISTS native_capture_span_delete_v1
+                    AFTER DELETE ON spans
+                    WHEN OLD.scope_name IN ('observatory.local_agents','observatory.opencode') BEGIN
+                    DELETE FROM native_capture_owner_v1
+                    WHERE kind='span' AND owner_key=OLD.trace_id||':'||OLD.span_id; END;
+                CREATE TRIGGER IF NOT EXISTS native_capture_log_insert_v1
+                    AFTER INSERT ON logs
+                    WHEN NEW.scope_name IN ('observatory.local_agents','observatory.opencode') BEGIN
+                    DELETE FROM native_capture_owner_v1
+                    WHERE kind='log' AND owner_key=NEW.digest; END;
+                CREATE TRIGGER IF NOT EXISTS native_capture_log_update_v1
+                    AFTER UPDATE ON logs
+                    WHEN OLD.scope_name IN ('observatory.local_agents','observatory.opencode')
+                      OR NEW.scope_name IN ('observatory.local_agents','observatory.opencode') BEGIN
+                    DELETE FROM native_capture_owner_v1 WHERE kind='log'
+                    AND owner_key IN (OLD.digest,NEW.digest); END;
+                CREATE TRIGGER IF NOT EXISTS native_capture_log_delete_v1
+                    AFTER DELETE ON logs
+                    WHEN OLD.scope_name IN ('observatory.local_agents','observatory.opencode') BEGIN
+                    DELETE FROM native_capture_owner_v1
+                    WHERE kind='log' AND owner_key=OLD.digest; END;
+            """)
             finding_columns={row[1] for row in db.execute('PRAGMA table_info(finding_cache)')}
             for name in ('agent_id','session_id','producer','group_key'):
                 if name not in finding_columns:db.execute(f'ALTER TABLE finding_cache ADD COLUMN {name} TEXT')
@@ -1114,6 +1170,29 @@ class Store:
         from .plugin_projection import sessions
         return sessions(self, limit=limit)
 
+    def capability_source_token(self, source_ids: tuple[str, ...]):
+        """Read source capture flags and policy epoch for a scoped capability.
+
+        A native reader may not have registered a connection yet; its live
+        collector status supplies that grant. A registered explicit denial
+        always wins. SQLite triggers fence a revoke/re-enable during a read,
+        including changes made by an older writer using the nine-column table.
+        """
+        if (not isinstance(source_ids, tuple) or not 1 <= len(source_ids) <= 32
+                or not all(isinstance(source, str) and 0 < len(source) <= 200
+                               for source in source_ids)):
+            raise ValueError('invalid capability sources')
+        with self._connect() as db:
+            db.execute('BEGIN')
+            epoch = db.execute("SELECT value FROM schema_meta "
+                               "WHERE key='agent_connection_capture_epoch'").fetchone()[0]
+            rows = db.execute('SELECT source_id,capture_content FROM agent_connections '
+                'WHERE source_id IN ('+','.join('?' for _ in source_ids)+')', source_ids).fetchall()
+        known = {row['source_id']: row['capture_content'] for row in rows}
+        if any(value != 1 for value in known.values()):
+            return None
+        return (epoch, tuple((source, known.get(source)) for source in source_ids))
+
     @contextmanager
     def _connect(self):
         """Yield a SQLite connection and always release its file handle.
@@ -1219,7 +1298,9 @@ class Store:
             raise ValueError("invalid process_id")
         now = time.time_ns()
         with self._write_db() as db:
-            db.execute("""INSERT INTO agent_connections VALUES(?,?,?,?,?,?,?,?,?)
+            db.execute("""INSERT INTO agent_connections
+                (source_id,service,runtime,integrations,capture_content,process_id,
+                 started_ns,last_seen_ns,state) VALUES(?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(source_id) DO UPDATE SET last_seen_ns=excluded.last_seen_ns,
                 state=excluded.state,service=excluded.service,runtime=excluded.runtime,integrations=excluded.integrations,
                 capture_content=excluded.capture_content,process_id=excluded.process_id""", (source_id, service.strip(), runtime,
@@ -2080,13 +2161,22 @@ class Store:
         return current is None or versions!={current}
 
     @staticmethod
-    def _write_ingest_rows(db,sql,records,rows,*,skip_unchanged_native=False):
+    def _write_ingest_rows(db,sql,records,rows,*,skip_unchanged_native=False,
+                           force_rowcount=False):
         # Native ordering fences may deliberately ignore stale replacements.
         # Only accepted writes may update activity/endpoints or derived facts.
-        if not skip_unchanged_native and not any(row.get('scope_name')=='observatory.local_agents' for row in records):
+        if (not skip_unchanged_native and not force_rowcount and
+                not any(row.get('scope_name')=='observatory.local_agents' for row in records)):
             db.executemany(sql,rows)
             return records
         return [record for record,row in zip(records,rows) if db.execute(sql,row).rowcount]
+
+    @staticmethod
+    def _capture_source_from_native(record):
+        if record.get('scope_name') not in {'observatory.local_agents','observatory.opencode'}:
+            return None
+        source=(record.get('resource_attributes') or {}).get('observatory.source_id')
+        return source if isinstance(source,str) and 0<len(source)<=200 else None
 
     @staticmethod
     def _native_noop_guard(table):
@@ -2149,7 +2239,8 @@ class Store:
                 db.execute("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
                     ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",(trace,latest))
 
-    def ingest(self, spans, *, native_retry=False, native_source_path=None,skip_unchanged_native=False):
+    def ingest(self, spans, *, native_retry=False, native_source_path=None,
+               skip_unchanged_native=False, _trusted_native=False):
         spans = list(spans)
         skip_unchanged_native=skip_unchanged_native is True
         published=False
@@ -2182,7 +2273,12 @@ class Store:
                     sql+=self._native_noop_guard('spans')
                     rows=[(*row,flag)for row,flag in zip(rows,flags)]
                     spans=self._write_ingest_rows(db,sql,spans,rows,skip_unchanged_native=True)
-                else:spans=self._write_ingest_rows(db,sql,spans,rows)
+                else:spans=self._write_ingest_rows(db,sql,spans,rows,
+                    force_rowcount=_trusted_native is True)
+                if _trusted_native:
+                    db.executemany("INSERT OR REPLACE INTO native_capture_owner_v1 VALUES('span',?,?)",
+                        ((s['trace_id']+':'+s['span_id'],source) for s in spans
+                         if (source:=self._capture_source_from_native(s)) is not None))
                 db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
                     ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
                     [(s["trace_id"], s["end_unix_nano"]) for s in spans])
@@ -2291,7 +2387,8 @@ class Store:
         deleted["cutoff_unix_nano"] = cutoff_ns
         return deleted
 
-    def ingest_logs(self, records, *, native_retry=False, native_source_path=None, expected_receiver=None,skip_unchanged_native=False):
+    def ingest_logs(self, records, *, native_retry=False, native_source_path=None,
+                    expected_receiver=None,skip_unchanged_native=False,_trusted_native=False):
         records = list(records)
         skip_unchanged_native=skip_unchanged_native is True
         published=False
@@ -2310,6 +2407,7 @@ class Store:
                 stale_generation=self._stale_native_generation(records,native_retry,native_source_path)
                 rows = []
                 native_ids = []
+                trusted_digests = {}
                 for log in records:
                     canonical = json.dumps(log, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
                     digest = hashlib.sha256(canonical.encode()).hexdigest()
@@ -2320,6 +2418,7 @@ class Store:
                     cursor_event_id = log['attributes'].get('cursor.event.id')
                     if isinstance(cursor_event_id, str) and cursor_event_id:
                         digest = hashlib.sha256(('cursor-event:'+cursor_event_id).encode()).hexdigest()
+                    trusted_digests[id(log)] = digest
                     rows.append((digest, log["trace_id"], log["span_id"], log["time_unix_nano"],
                                  log["service"], log["severity_number"], log["severity_text"],
                                  log["event_name"], json.dumps(log["body"]),
@@ -2340,13 +2439,18 @@ class Store:
                     sql+=self._native_noop_guard('logs')
                     rows=[(*row,flag)for row,flag in zip(rows,flags)]
                     records=self._write_ingest_rows(db,sql,records,rows,skip_unchanged_native=True)
-                else:records=self._write_ingest_rows(db,sql,records,rows)
+                else:records=self._write_ingest_rows(db,sql,records,rows,
+                    force_rowcount=_trusted_native is True)
                 accepted_ids={log['attributes'].get('observatory.record_id') for log in records
                               if log['scope_name']=='observatory.local_agents'
                               and isinstance(log['attributes'].get('observatory.record_id'),str)}
                 db.executemany("""DELETE FROM logs WHERE scope_name='observatory.local_agents'
                     AND json_extract(attributes,'$."observatory.record_id"')=? AND digest<>?""",
                     [(record_id,digest) for record_id,digest in native_ids if record_id in accepted_ids])
+                if _trusted_native:
+                    db.executemany("INSERT OR REPLACE INTO native_capture_owner_v1 VALUES('log',?,?)",
+                        ((trusted_digests[id(log)],source) for log in records
+                         if (source:=self._capture_source_from_native(log)) is not None))
                 db.executemany("""INSERT INTO trace_activity(trace_id,last_ns) VALUES(?,?)
                     ON CONFLICT(trace_id) DO UPDATE SET last_ns=MAX(last_ns,excluded.last_ns)""",
                     [(log["trace_id"], log["time_unix_nano"]) for log in records if log["trace_id"]])
@@ -2404,11 +2508,35 @@ class Store:
     def activity_page(self, limit=100, service=None, domain=None, query=None, session_id=None,
                       cursor=None, include_reviews=True, errors_only=False, action=None,
                       agent_id=None, subtree=False, scope_revision=None, trace_id=None, turn_id=None, review=False,
-                      *,_initial_receiver=None,_initial_file=None,_strict_read=False):
+                      *,_initial_receiver=None,_initial_file=None,_strict_read=False,
+                      _capture_source_ids=None):
         """Read indexed source events; never expand historical trace-summary JSON."""
         from .storage_activity import drain
         limit=max(1,min(500,int(limit)));before=self._event_cursor(cursor)
         scope=None;clauses=[];params=[]
+        capture_filter=None;capture_params=()
+        if _capture_source_ids is not None:
+            if (not isinstance(_capture_source_ids, tuple) or not 1 <= len(_capture_source_ids) <= 32
+                    or not all(isinstance(source, str) and 0 < len(source) <= 200
+                               for source in _capture_source_ids)
+                    or not service or not session_id or not agent_id or subtree or include_reviews):
+                raise ValueError('invalid capability source scope')
+            placeholders=','.join('?' for _ in _capture_source_ids)
+            capture_filter=("((kind='log' AND EXISTS(SELECT 1 FROM logs source "
+                            "JOIN native_capture_owner_v1 owner ON owner.kind='log' "
+                            "AND owner.owner_key=source.digest AND owner.source_id="
+                            "json_extract(source.resource_attributes,'$.\"observatory.source_id\"') "
+                            "WHERE source.digest=activity_index_v1.owner_key "
+                            "AND source.scope_name IN ('observatory.local_agents','observatory.opencode') "
+                            "AND owner.source_id "
+                            f"IN ({placeholders}))) OR (kind='span' AND EXISTS(SELECT 1 FROM spans source "
+                            "JOIN native_capture_owner_v1 owner ON owner.kind='span' "
+                            "AND owner.owner_key=source.trace_id||':'||source.span_id AND owner.source_id="
+                            "json_extract(source.resource_attributes,'$.\"observatory.source_id\"') "
+                            "WHERE source.trace_id||':'||source.span_id=activity_index_v1.owner_key "
+                            "AND source.scope_name IN ('observatory.local_agents','observatory.opencode') "
+                            f"AND owner.source_id IN ({placeholders}))))")
+            capture_params=(*_capture_source_ids,*_capture_source_ids)
         if trace_id and turn_id:raise ValueError('Choose an exact trace or a recorded turn, not both')
         if trace_id is not None:trace_id=_id(trace_id,TRACE_ID,'trace_id')
         if turn_id is not None:turn_id=_id(turn_id,TRACE_ID,'turn_id')
@@ -2454,6 +2582,20 @@ class Store:
             if db.execute('SELECT 1 FROM activity_dirty_v1 LIMIT 1').fetchone():
                 db.commit()
                 raise ValueError('Activity index is catching up; retry after receiver migration completes')
+            if capture_filter is not None:
+                # Inspect the bounded candidate window before filtering it.
+                # If older rows exist, the page remains incomplete; no older
+                # row can silently make a complete aggregate look complete.
+                candidate_filter=capture_filter.replace('activity_index_v1.', 'candidate.')
+                foreign=db.execute('SELECT 1 FROM (SELECT kind,owner_key FROM activity_index_v1 '
+                    'WHERE service=? AND session_id=? AND agent_id=? '
+                    'ORDER BY stamp DESC,event_key DESC LIMIT ?) candidate '
+                    'WHERE NOT '+candidate_filter+' LIMIT 1',
+                    (service,session_id,agent_id,limit+1,*capture_params)).fetchone()
+                if foreign is not None:
+                    raise ValueError('capability source ownership is incomplete')
+                clauses.append(capture_filter)
+                params.extend(capture_params)
             if agent_id:
                 scope=self.resolve_agent_scope(agent_id,include_subagents=bool(subtree),_db=db)
                 if not scope['known']:

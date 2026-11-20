@@ -49,7 +49,8 @@ class NativeEvidenceFacade:
                skip_unchanged_native: bool = False) -> object:
         return self._store.ingest(spans, native_retry=native_retry,
                                   native_source_path=native_source_path,
-                                  skip_unchanged_native=skip_unchanged_native)
+                                  skip_unchanged_native=skip_unchanged_native,
+                                  _trusted_native=True)
 
     def ingest_logs(self, records: list[dict], *, native_retry: bool = False,
                     native_source_path: Path | None = None,
@@ -58,4 +59,5 @@ class NativeEvidenceFacade:
         return self._store.ingest_logs(records, native_retry=native_retry,
                                        native_source_path=native_source_path,
                                        expected_receiver=expected_receiver,
-                                       skip_unchanged_native=skip_unchanged_native)
+                                       skip_unchanged_native=skip_unchanged_native,
+                                       _trusted_native=True)
