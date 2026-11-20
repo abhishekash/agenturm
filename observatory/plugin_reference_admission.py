@@ -51,6 +51,13 @@ class ReferenceAdmissionProvider:
     """Host-installed provider; implementations own source-specific SQL/proof."""
     id: str = ""
 
+    def initialize_schema(self, db) -> None:
+        """Install idempotent provider tables under the host's writer gate."""
+
+    def erase_source(self, db, source_id: str) -> None:
+        """Erase every provider-owned row before a source is reset or revoked."""
+        raise NotImplementedError("trusted reference provider must erase source rows")
+
     def prepare(self, refs, grant, batch, lease) -> PreparedReference:
         raise NotImplementedError
 
@@ -81,6 +88,7 @@ class ReferenceAdmissionRegistry:
                 or any(not isinstance(item, ReferenceAdmissionProvider)
                        or type(item.id) is not str
                        or not _PROVIDER_ID.fullmatch(item.id)
+                       or type(item).erase_source is ReferenceAdmissionProvider.erase_source
                        for item in providers)
                 or len({item.id for item in providers}) != len(providers)):
             raise ValueError("invalid trusted reference providers")
@@ -119,6 +127,37 @@ class ReferenceAdmissionRegistry:
     def require_provider(self, provider_id: str | None) -> None:
         if provider_id is not None and provider_id not in self._providers:
             raise ProtocolError("trusted reference admission provider is unavailable")
+
+    def initialize_schema(self, db) -> None:
+        for provider in self.providers:
+            provider.initialize_schema(db)
+
+    def install_schema(self, store) -> None:
+        """Install trusted extension tables before its source can activate."""
+        receiver_id = store.receiver_namespace()
+        with store._source_write(), store._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            receiver = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
+            if receiver is None or receiver[0] != receiver_id:
+                raise ProtocolError("receiver identity changed during provider installation")
+            self.initialize_schema(db)
+
+    def require_source_providers(self, db, source_id: str) -> None:
+        rows = db.execute("SELECT provider_id FROM plugin_reference_owner_v1 "
+                          "WHERE source_id=?", (source_id,)).fetchall()
+        for row in rows:
+            self.require_provider(row[0])
+
+    def erase_source(self, db, source_id: str) -> None:
+        self.require_source_providers(db, source_id)
+        for provider in self.providers:
+            provider.erase_source(db, source_id)
+        db.execute("DELETE FROM plugin_reference_owner_v1 WHERE source_id=?", (source_id,))
+
+    def record_source_providers(self, db, source_id: str) -> None:
+        for provider in self.providers:
+            db.execute("INSERT OR IGNORE INTO plugin_reference_owner_v1(source_id,provider_id) "
+                       "VALUES(?,?)", (source_id, provider.id))
 
 
 from .plugin_pi_reference_admission import (  # noqa: E402 - trusted built-ins
