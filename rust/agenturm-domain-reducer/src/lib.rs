@@ -137,6 +137,8 @@ struct Fixture {
     rows: Vec<Row>,
     #[serde(default)]
     invalidated: Vec<Invalidation>,
+    #[serde(default)]
+    source_gaps: Option<Vec<Invalidation>>,
 }
 
 #[derive(Deserialize)]
@@ -476,7 +478,7 @@ impl Row {
             || self.revision > i32::MAX as u32
             || self.native_session_id.as_deref().is_some_and(|native| {
                 !native.is_empty()
-                    && if schema_version == 2 {
+                    && if schema_version >= 2 {
                         !native_identity(native)
                     } else {
                         !identifier(native)
@@ -741,22 +743,38 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
     if !bounded_nesting(&raw.0, 0) {
         return Err(invalid("fixture nesting exceeds limit"));
     }
+    let has_source_gaps = raw
+        .0
+        .as_object()
+        .is_some_and(|fields| fields.contains_key("source_gaps"));
     let fixture: Fixture =
         serde_json::from_value(raw.0).map_err(|_| invalid("invalid fixture JSON"))?;
-    if !matches!(fixture.schema_version, 1 | 2)
+    if !matches!(fixture.schema_version, 1..=3)
         || !identifier(&fixture.receiver_id)
         || !source_identifier(&fixture.source_id)
-        || (fixture.schema_version == 2
+        || (fixture.schema_version >= 2
             && fixture
                 .plugin_id
                 .as_deref()
                 .is_none_or(|id| !plugin_identifier(id)))
         || (fixture.schema_version == 1 && fixture.plugin_id.is_some())
+        || (fixture.schema_version == 3 && fixture.source_gaps.is_none())
+        || (fixture.schema_version < 3 && has_source_gaps)
         || fixture.policy_epoch > i64::MAX as u64
         || fixture.dirty_seq > i64::MAX as u64
-        || (fixture.dirty_seq == 0 && (!fixture.rows.is_empty() || !fixture.invalidated.is_empty()))
+        || (fixture.dirty_seq == 0
+            && (!fixture.rows.is_empty()
+                || !fixture.invalidated.is_empty()
+                || fixture
+                    .source_gaps
+                    .as_ref()
+                    .is_some_and(|items| !items.is_empty())))
         || fixture.rows.len() > MAX_EVIDENCE
         || fixture.invalidated.len() > MAX_SESSIONS
+        || fixture
+            .source_gaps
+            .as_ref()
+            .is_some_and(|items| items.len() > MAX_SESSIONS)
     {
         return Err(invalid("invalid fixture header or capacity"));
     }
@@ -805,12 +823,12 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
         let Some(native_id) = row.native_session_id.as_deref() else {
             continue;
         };
-        if fixture.schema_version == 2
+        if fixture.schema_version >= 2
             && let Some(activity) = activity_fact(
                 &row,
                 &fixture.receiver_id,
                 &fixture.source_id,
-                fixture.plugin_id.as_deref().expect("v2 plugin ID"),
+                fixture.plugin_id.as_deref().expect("v2+ plugin ID"),
             )
         {
             activity_candidates.push((native_id.to_owned(), activity));
@@ -839,7 +857,7 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
     if sessions.len() > MAX_SESSIONS {
         return Err(invalid("session capacity reached"));
     }
-    let chosen = if fixture.schema_version == 2 {
+    let chosen = if fixture.schema_version >= 2 {
         relationships(&sessions)
     } else {
         BTreeMap::new()
@@ -857,38 +875,75 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
             (native_id, row)
         })
         .collect();
-    let mut invalidated = HashSet::new();
+    let mut invalidated = BTreeMap::new();
     for item in fixture.invalidated {
-        if !identifier(&item.native_session_id)
-            || !invalidated.insert(item.native_session_id.clone())
-        {
+        if !identifier(&item.native_session_id) {
             return Err(invalid("invalid retention invalidation"));
         }
         let last_record_ns = decimal(&item.last_record_ns)?;
-        let row = projected
-            .entry(item.native_session_id.clone())
+        if invalidated
+            .insert(item.native_session_id, last_record_ns)
+            .is_some()
+        {
+            return Err(invalid("duplicate retention invalidation"));
+        }
+    }
+    let mut source_gaps = BTreeMap::new();
+    for item in fixture.source_gaps.unwrap_or_default() {
+        let last_record_ns = decimal(&item.last_record_ns)?;
+        if (item.native_session_id != "*" && !native_identity(&item.native_session_id))
+            || (item.native_session_id == "*" && last_record_ns != 0)
+            || source_gaps
+                .insert(item.native_session_id, last_record_ns)
+                .is_some()
+        {
+            return Err(invalid("invalid source-gap invalidation"));
+        }
+    }
+    let source_wide_gap = source_gaps.remove("*").is_some();
+    if source_wide_gap && !source_gaps.is_empty() {
+        return Err(invalid("mixed source-wide and session source gaps"));
+    }
+    let missing: BTreeSet<_> = invalidated
+        .keys()
+        .chain(source_gaps.keys())
+        .cloned()
+        .collect();
+    for native_id in missing {
+        let last_record_ns = source_gaps
+            .get(&native_id)
+            .or_else(|| invalidated.get(&native_id))
+            .copied()
+            .expect("invalidation entry");
+        projected
+            .entry(native_id.clone())
             .or_insert_with(|| Session {
-                session_key: session_key(
-                    &fixture.receiver_id,
-                    &fixture.source_id,
-                    &item.native_session_id,
-                ),
-                native_session_id: item.native_session_id,
+                session_key: session_key(&fixture.receiver_id, &fixture.source_id, &native_id),
+                native_session_id: native_id,
                 reported_state: String::new(),
                 run_state: String::new(),
                 reason_code: String::new(),
                 state_time_ns: 0,
                 last_record_ns,
                 metadata_usage: BTreeMap::new(),
-                parent_native_session_id: (fixture.schema_version == 2).then(String::new),
-                relationship_kind: (fixture.schema_version == 2).then(|| "unknown".to_owned()),
-                relationship_state: (fixture.schema_version == 2).then(|| "unresolved".to_owned()),
+                parent_native_session_id: (fixture.schema_version >= 2).then(String::new),
+                relationship_kind: (fixture.schema_version >= 2).then(|| "unknown".to_owned()),
+                relationship_state: (fixture.schema_version >= 2).then(|| "unresolved".to_owned()),
             });
+    }
+    for (native_id, row) in &mut projected {
+        let reason = if invalidated.contains_key(native_id) {
+            "retention_gap"
+        } else if source_wide_gap || source_gaps.contains_key(native_id) {
+            "source_gap"
+        } else {
+            continue;
+        };
         row.reported_state = "unknown".to_owned();
         row.run_state = "unknown".to_owned();
-        row.reason_code = "retention_gap".to_owned();
+        row.reason_code = reason.to_owned();
         row.metadata_usage.clear();
-        if fixture.schema_version == 2 {
+        if fixture.schema_version >= 2 {
             row.parent_native_session_id = Some(String::new());
             row.relationship_kind = Some("unknown".to_owned());
             row.relationship_state = Some("unresolved".to_owned());
@@ -897,10 +952,14 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
     if projected.len() > MAX_SESSIONS {
         return Err(invalid("session capacity reached"));
     }
-    let activities = (fixture.schema_version == 2).then(|| {
+    let activities = (fixture.schema_version >= 2).then(|| {
         let mut facts: Vec<_> = activity_candidates
             .into_iter()
-            .filter(|(native, _)| !invalidated.contains(native))
+            .filter(|(native, _)| {
+                !source_wide_gap
+                    && !invalidated.contains_key(native)
+                    && !source_gaps.contains_key(native)
+            })
             .map(|(_, fact)| fact)
             .collect();
         facts.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
@@ -954,6 +1013,38 @@ mod tests {
                 assert!(reduced.is_err(), "accepted case {}", case["name"]);
             }
         }
+    }
+
+    #[test]
+    fn source_gap_goldens_match_and_invalid_inputs_fail() {
+        let corpus: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/rust-domain-reducer-v3.json"
+        ))
+        .unwrap();
+        assert_eq!(corpus["fixture_version"], 3);
+        for case in corpus["cases"].as_array().unwrap() {
+            let reduced = reduce_json(&case["input"].to_string());
+            if let Some(expected) = case.get("expected") {
+                let actual = serde_json::to_value(reduced.unwrap()).unwrap();
+                assert_eq!(actual, *expected, "case {}", case["name"]);
+            } else {
+                assert!(reduced.is_err(), "accepted case {}", case["name"]);
+            }
+        }
+    }
+
+    #[test]
+    fn source_gap_capacity_is_bounded() {
+        let gaps: Vec<_> = (0..=MAX_SESSIONS)
+            .map(|index| {
+                serde_json::json!({"native_session_id": format!("session-{index:04}"),
+                    "last_record_ns": "1"})
+            })
+            .collect();
+        let fixture = serde_json::json!({"schema_version":3,"receiver_id":"receiver-fixture",
+            "source_id":"source-a","plugin_id":"fixture.plugin","policy_epoch":1,
+            "dirty_seq":1,"rows":[],"invalidated":[],"source_gaps":gaps});
+        assert!(reduce_json(&fixture.to_string()).is_err());
     }
 
     #[test]

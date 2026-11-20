@@ -7,7 +7,8 @@ import unittest
 from pathlib import Path
 
 from observatory.core import Store
-from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
+from observatory.plugin_admission import (activate_source, commit_batch, initialize,
+                                          set_source_capture)
 from observatory.plugin_projection import project_source
 from observatory.plugin_wire import PollBatch, ProtocolError
 from observatory.rust_shadow_snapshot import capture, current
@@ -91,14 +92,73 @@ class ShadowSnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "unknown plugin source"):
             capture(self.store, "missing")
 
-    def test_source_gap_is_not_misreported_as_rust_reducer_parity(self):
+    def test_source_gap_snapshot_is_fenced_and_matches_installed_reducer(self):
         self.populate()
+        before = capture(self.store, "shadow-source")
         commit_batch(self.store, self.lease, "one", PollBatch("shadow-source", "two", (
             {"event_id": "gap", "revision": 0, "kind": "diagnostic",
              "time_ns": "0", "payload": {"code": "possible_source_gap",
-                                           "severity": "warning"}},)))
-        project_source(self.store, "shadow-source")
+                                           "severity": "warning"}},
+            fact("new", "lifecycle", {"state": "completed"}, session="new"),
+            fact("new-message", "message", {"role": "assistant"}, session="new"),)))
+        self.assertFalse(current(self.store, before))
         self.assertIsNone(capture(self.store, "shadow-source"))
+        project_source(self.store, "shadow-source")
+        snapshot = capture(self.store, "shadow-source")
+        self.assertTrue(current(self.store, snapshot))
+        self.assertEqual(snapshot.fixture["schema_version"], 3)
+        self.assertEqual({item["native_session_id"] for item in snapshot.fixture["source_gaps"]},
+                         {"parent", "session-one"})
+        by_native = {row["native_session_id"]: row for row in snapshot.expected["sessions"]}
+        self.assertEqual((by_native["session-one"]["reason_code"],
+                          by_native["session-one"]["metadata_usage"],
+                          by_native["session-one"]["relationship_state"]),
+                         ("source_gap", {}, "unresolved"))
+        self.assertEqual(by_native["new"]["run_state"], "completed")
+        self.assertEqual(len(snapshot.expected["activities"]), 1)
+        binary = os.environ.get("AGENTURM_RUST_REDUCER_BIN")
+        if binary:
+            result = subprocess.run([str(Path(binary).resolve())],
+                                    input=json.dumps(snapshot.fixture), text=True,
+                                    capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), snapshot.expected)
+        with self.store._connect() as db:
+            db.execute("UPDATE plugin_source_gap_invalidated_v1 SET native_session_id=? "
+                       "WHERE source_id=? AND native_session_id=?",
+                       ("invalid identity", "shadow-source", "parent"))
+        with self.assertRaisesRegex(ProtocolError, "invalid stored source-gap"):
+            capture(self.store, "shadow-source")
+
+    def test_legacy_source_wide_gap_is_captured_and_fenced(self):
+        self.populate()
+        with self.store._connect() as db:
+            db.execute("DROP TABLE plugin_source_gap_invalidated_v1")
+            db.execute("DELETE FROM schema_meta WHERE key='plugin_source_gap_v1'")
+            db.execute("INSERT INTO plugin_evidence_v1(source_id,event_id_hash,revision,kind,"
+                       "time_ns,payload_json,record_digest,native_session_id,native_worker_id,"
+                       "native_turn_id,native_operation_id,policy_epoch,admitted_ns) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       ("shadow-source", "b" * 64, 0, "diagnostic", 0,
+                        '{"code":"possible_source_gap","severity":"warning"}',
+                        "b" * 64, "", "", "", "", self.lease.policy_epoch, 1))
+            initialize(db)
+        self.assertIsNone(capture(self.store, "shadow-source"))
+        project_source(self.store, "shadow-source")
+        snapshot = capture(self.store, "shadow-source")
+        self.assertTrue(current(self.store, snapshot))
+        self.assertEqual(snapshot.fixture["source_gaps"],
+                         [{"native_session_id": "*", "last_record_ns": "0"}])
+        self.assertEqual(snapshot.expected["activities"], [])
+        self.assertEqual({row["reason_code"] for row in snapshot.expected["sessions"]},
+                         {"source_gap"})
+        binary = os.environ.get("AGENTURM_RUST_REDUCER_BIN")
+        if binary:
+            result = subprocess.run([str(Path(binary).resolve())],
+                                    input=json.dumps(snapshot.fixture), text=True,
+                                    capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), snapshot.expected)
 
     def test_installed_rust_reducer_matches_policy_current_store(self):
         binary = os.environ.get("AGENTURM_RUST_REDUCER_BIN")

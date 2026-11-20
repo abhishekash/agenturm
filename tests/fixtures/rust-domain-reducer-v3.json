@@ -1,0 +1,2266 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "activities": [],
+        "schema_version": 3,
+        "sessions": [
+          {
+            "last_record_ns": 109,
+            "metadata_usage": {},
+            "native_session_id": "child",
+            "parent_native_session_id": "",
+            "reason_code": "source_gap",
+            "relationship_kind": "unknown",
+            "relationship_state": "unresolved",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:41a52852e8cea7db0108bc887edfcd447a42b2ac524b2fa7f53b399e23816c51",
+            "state_time_ns": 0
+          },
+          {
+            "last_record_ns": 107,
+            "metadata_usage": {},
+            "native_session_id": "retired",
+            "parent_native_session_id": "",
+            "reason_code": "retention_gap",
+            "relationship_kind": "unknown",
+            "relationship_state": "unresolved",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:d3a8b23503a026e754513d6ffbaa2b66d32449ecf3b432e3fd652648bb0fc5fb",
+            "state_time_ns": 0
+          },
+          {
+            "last_record_ns": 106,
+            "metadata_usage": {},
+            "native_session_id": "task",
+            "parent_native_session_id": "",
+            "reason_code": "source_gap",
+            "relationship_kind": "unknown",
+            "relationship_state": "unresolved",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:98d37cf12b43ad229646520a489fd404517e532c6406f111b0c3cd195c4706e6",
+            "state_time_ns": 1
+          }
+        ]
+      },
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 3,
+        "source_gaps": [
+          {
+            "last_record_ns": "1010",
+            "native_session_id": "task"
+          },
+          {
+            "last_record_ns": "1020",
+            "native_session_id": "child"
+          }
+        ],
+        "source_id": "source-a"
+      },
+      "name": "concrete_gap_erases_usage_relation_and_activity"
+    },
+    {
+      "expected": {
+        "activities": [
+          {
+            "action": "user",
+            "activity_scope_version": 1,
+            "actor": "fixture.plugin",
+            "agent_id": "ag1_b07353c2ec7ac3f2dbbe0b0f39c11a6d",
+            "capture_content": false,
+            "detail": "",
+            "detail_present": false,
+            "domain": "message",
+            "duration_ms": null,
+            "id": "plugin-event:d4b36aa275b2947dd3b63514632ca6690b0e3245efbb0e3e2142b5538aabfd61",
+            "mcp_server": "",
+            "mcp_tool": "",
+            "metadata": {
+              "capture": "content-free",
+              "coverage": "partial",
+              "native_operation_observed": false,
+              "native_turn_observed": true,
+              "native_worker_observed": false,
+              "plugin_source_id": "source-a"
+            },
+            "operation_id": null,
+            "operation_present": false,
+            "result": "observed",
+            "service": "fixture.plugin",
+            "session_id": "plugin:d3a8b23503a026e754513d6ffbaa2b66d32449ecf3b432e3fd652648bb0fc5fb",
+            "source": "plugin",
+            "source_id": "plugin-event:d4b36aa275b2947dd3b63514632ca6690b0e3245efbb0e3e2142b5538aabfd61",
+            "span_id": null,
+            "subject": "User message recorded",
+            "time_unix_nano": 7,
+            "trace_id": null,
+            "turn_id": "054d7ed8f773a4a85252425df348bdba"
+          }
+        ],
+        "schema_version": 3,
+        "sessions": [
+          {
+            "last_record_ns": 109,
+            "metadata_usage": {
+              "input_tokens": 10
+            },
+            "native_session_id": "child",
+            "parent_native_session_id": "task",
+            "reason_code": "",
+            "relationship_kind": "delegated",
+            "relationship_state": "confirmed",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:41a52852e8cea7db0108bc887edfcd447a42b2ac524b2fa7f53b399e23816c51",
+            "state_time_ns": 0
+          },
+          {
+            "last_record_ns": 123,
+            "metadata_usage": {},
+            "native_session_id": "lost",
+            "parent_native_session_id": "",
+            "reason_code": "retention_gap",
+            "relationship_kind": "unknown",
+            "relationship_state": "unresolved",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:80ed5720520b75c52bb80adc434a2a44cd655f584e2c3c26ba1c3dca322b0a23",
+            "state_time_ns": 0
+          },
+          {
+            "last_record_ns": 107,
+            "metadata_usage": {},
+            "native_session_id": "retired",
+            "parent_native_session_id": "",
+            "reason_code": "",
+            "relationship_kind": "unknown",
+            "relationship_state": "unresolved",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:d3a8b23503a026e754513d6ffbaa2b66d32449ecf3b432e3fd652648bb0fc5fb",
+            "state_time_ns": 0
+          },
+          {
+            "last_record_ns": 106,
+            "metadata_usage": {},
+            "native_session_id": "task",
+            "parent_native_session_id": "",
+            "reason_code": "source_gap",
+            "relationship_kind": "unknown",
+            "relationship_state": "unresolved",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:98d37cf12b43ad229646520a489fd404517e532c6406f111b0c3cd195c4706e6",
+            "state_time_ns": 1
+          }
+        ]
+      },
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "99",
+            "native_session_id": "lost"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 3,
+        "source_gaps": [
+          {
+            "last_record_ns": "123",
+            "native_session_id": "lost"
+          },
+          {
+            "last_record_ns": "1010",
+            "native_session_id": "task"
+          }
+        ],
+        "source_id": "source-a"
+      },
+      "name": "overlap_uses_retention_reason_and_source_timestamp"
+    },
+    {
+      "expected": {
+        "activities": [],
+        "schema_version": 3,
+        "sessions": [
+          {
+            "last_record_ns": 109,
+            "metadata_usage": {},
+            "native_session_id": "child",
+            "parent_native_session_id": "",
+            "reason_code": "source_gap",
+            "relationship_kind": "unknown",
+            "relationship_state": "unresolved",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:41a52852e8cea7db0108bc887edfcd447a42b2ac524b2fa7f53b399e23816c51",
+            "state_time_ns": 0
+          },
+          {
+            "last_record_ns": 107,
+            "metadata_usage": {},
+            "native_session_id": "retired",
+            "parent_native_session_id": "",
+            "reason_code": "retention_gap",
+            "relationship_kind": "unknown",
+            "relationship_state": "unresolved",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:d3a8b23503a026e754513d6ffbaa2b66d32449ecf3b432e3fd652648bb0fc5fb",
+            "state_time_ns": 0
+          },
+          {
+            "last_record_ns": 106,
+            "metadata_usage": {},
+            "native_session_id": "task",
+            "parent_native_session_id": "",
+            "reason_code": "source_gap",
+            "relationship_kind": "unknown",
+            "relationship_state": "unresolved",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:98d37cf12b43ad229646520a489fd404517e532c6406f111b0c3cd195c4706e6",
+            "state_time_ns": 1
+          }
+        ]
+      },
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 3,
+        "source_gaps": [
+          {
+            "last_record_ns": "0",
+            "native_session_id": "*"
+          }
+        ],
+        "source_id": "source-a"
+      },
+      "name": "legacy_source_wide_gap_quarantines_all_evidence"
+    },
+    {
+      "expected": {
+        "activities": [],
+        "schema_version": 3,
+        "sessions": [
+          {
+            "last_record_ns": 104,
+            "metadata_usage": {},
+            "native_session_id": "child",
+            "parent_native_session_id": "p2",
+            "reason_code": "",
+            "relationship_kind": "review",
+            "relationship_state": "confirmed",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:41a52852e8cea7db0108bc887edfcd447a42b2ac524b2fa7f53b399e23816c51",
+            "state_time_ns": 0
+          },
+          {
+            "last_record_ns": 101,
+            "metadata_usage": {},
+            "native_session_id": "p1",
+            "parent_native_session_id": "",
+            "reason_code": "",
+            "relationship_kind": "unknown",
+            "relationship_state": "unresolved",
+            "reported_state": "running",
+            "run_state": "running",
+            "session_key": "plugin:ba94437a5c6673c5c9d5ef760bdf1271f458423056ffa1e1d47e8f73ce4f799f",
+            "state_time_ns": 1
+          },
+          {
+            "last_record_ns": 102,
+            "metadata_usage": {},
+            "native_session_id": "p2",
+            "parent_native_session_id": "",
+            "reason_code": "",
+            "relationship_kind": "unknown",
+            "relationship_state": "unresolved",
+            "reported_state": "running",
+            "run_state": "running",
+            "session_key": "plugin:366de2b7d929d7fc662f71084125e534c075f032d7aaa38276485908248c5b9b",
+            "state_time_ns": 2
+          }
+        ]
+      },
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a",
+            "kind": "lifecycle",
+            "native_session_id": "p1",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "3946ca64ff78d93ca61090a437cbb6b3d2ca0d488f5f9ccf3059608368b27693",
+            "kind": "lifecycle",
+            "native_session_id": "p2",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "68b076be5ba974795f927bf1aa53b0dc2991b90d8d535a9dbaf33bad74a2d3a3",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "p1"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "68b076be5ba974795f927bf1aa53b0dc2991b90d8d535a9dbaf33bad74a2d3a3",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "review",
+              "parent_session_id": "p2"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          }
+        ],
+        "schema_version": 3,
+        "source_gaps": [],
+        "source_id": "source-a"
+      },
+      "name": "empty_gap_matches_v2_behavior"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 3,
+        "source_id": "source-a"
+      },
+      "name": "v3_requires_source_gaps"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 3,
+        "source_gaps": null,
+        "source_id": "source-a"
+      },
+      "name": "v3_rejects_null_source_gaps"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 3,
+        "source_gaps": [
+          {
+            "last_record_ns": "1",
+            "native_session_id": "space id"
+          }
+        ],
+        "source_id": "source-a"
+      },
+      "name": "source_gap_rejects_bad_native_identity"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 3,
+        "source_gaps": [
+          {
+            "last_record_ns": "01",
+            "native_session_id": "task"
+          }
+        ],
+        "source_id": "source-a"
+      },
+      "name": "source_gap_rejects_noncanonical_timestamp"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 3,
+        "source_gaps": [
+          {
+            "last_record_ns": "-1",
+            "native_session_id": "task"
+          }
+        ],
+        "source_id": "source-a"
+      },
+      "name": "source_gap_rejects_negative_timestamp"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 3,
+        "source_gaps": [
+          {
+            "last_record_ns": "1",
+            "native_session_id": "*"
+          }
+        ],
+        "source_id": "source-a"
+      },
+      "name": "source_wide_sentinel_requires_zero_timestamp"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 3,
+        "source_gaps": [
+          {
+            "last_record_ns": "0",
+            "native_session_id": "*"
+          },
+          {
+            "last_record_ns": "1",
+            "native_session_id": "task"
+          }
+        ],
+        "source_id": "source-a"
+      },
+      "name": "source_wide_sentinel_cannot_mix_concrete_ids"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 3,
+        "source_gaps": [
+          {
+            "last_record_ns": "1",
+            "native_session_id": "task"
+          },
+          {
+            "last_record_ns": "2",
+            "native_session_id": "task"
+          }
+        ],
+        "source_id": "source-a"
+      },
+      "name": "source_gap_rejects_duplicate_membership"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 3,
+        "source_gaps": [
+          {
+            "last_record_ns": "1",
+            "native_session_id": "task",
+            "note": "private"
+          }
+        ],
+        "source_id": "source-a"
+      },
+      "name": "source_gap_rejects_extra_fields"
+    },
+    {
+      "input": {
+        "dirty_seq": 0,
+        "invalidated": [],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [],
+        "schema_version": 3,
+        "source_gaps": [
+          {
+            "last_record_ns": "1",
+            "native_session_id": "task"
+          }
+        ],
+        "source_id": "source-a"
+      },
+      "name": "zero_dirty_sequence_rejects_gap"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 2,
+        "source_gaps": [
+          {
+            "last_record_ns": "1010",
+            "native_session_id": "task"
+          },
+          {
+            "last_record_ns": "1020",
+            "native_session_id": "child"
+          }
+        ],
+        "source_id": "source-a"
+      },
+      "name": "v2_rejects_v3_source_gap_field"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "retired"
+          }
+        ],
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "0fcc93dc26d13330de162ad650c1433956d5e39eba37f0d31a9699ce4db5d30a",
+            "kind": "lifecycle",
+            "native_session_id": "task",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "102",
+            "event_id_hash": "04f8996da763b7a969b1028ee3007569eaf3a635486ddab211d512c85b9df8fb",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "2"
+          },
+          {
+            "admitted_ns": "103",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "started"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          },
+          {
+            "admitted_ns": "104",
+            "event_id_hash": "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            "kind": "tool",
+            "native_operation_id": "call-1",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "native_worker_id": "worker-1",
+            "payload": {
+              "category": "shell",
+              "result": "succeeded"
+            },
+            "revision": 1,
+            "time_ns": "4"
+          },
+          {
+            "admitted_ns": "105",
+            "event_id_hash": "20f65c28671b40937c5bf23acc7c6f37e5a5ec0622e347b57685725df5ba9e50",
+            "kind": "check",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "category": "test",
+              "result": "passed"
+            },
+            "revision": 0,
+            "time_ns": "5"
+          },
+          {
+            "admitted_ns": "106",
+            "event_id_hash": "a39a7ffad4a3013f29da97b84f264337f234c1cf9b3c40c7c30c677a8a18609a",
+            "kind": "message",
+            "native_session_id": "task",
+            "native_turn_id": "turn-1",
+            "payload": {
+              "role": "assistant"
+            },
+            "revision": 0,
+            "time_ns": "6"
+          },
+          {
+            "admitted_ns": "107",
+            "event_id_hash": "e0e0d05a10051b21d99f17d64807f4bcaff359ba88fc26dc9130bf422a82e460",
+            "kind": "message",
+            "native_session_id": "retired",
+            "native_turn_id": "turn-2",
+            "payload": {
+              "role": "user"
+            },
+            "revision": 0,
+            "time_ns": "7"
+          },
+          {
+            "admitted_ns": "108",
+            "event_id_hash": "f1d601bd029108216a670e558a29b2d5014c17a5d514682fe633cc888def1241",
+            "kind": "relationship",
+            "native_session_id": "child",
+            "payload": {
+              "kind": "delegated",
+              "parent_session_id": "task"
+            },
+            "revision": 0,
+            "time_ns": "8"
+          },
+          {
+            "admitted_ns": "109",
+            "event_id_hash": "4a1e234f7dc6611a8a3d4d5c64e08f5c700affd3f9bc1df6e8c1aa3997372b3c",
+            "kind": "usage",
+            "native_session_id": "child",
+            "payload": {
+              "input_tokens": 10
+            },
+            "revision": 0,
+            "time_ns": "9"
+          }
+        ],
+        "schema_version": 2,
+        "source_gaps": null,
+        "source_id": "source-a"
+      },
+      "name": "v2_rejects_null_v3_source_gap_field"
+    }
+  ],
+  "fixture_version": 3
+}
