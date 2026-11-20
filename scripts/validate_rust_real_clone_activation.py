@@ -107,6 +107,15 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="agenturm-real-clone-") as temporary:
         root = Path(temporary)
         root.chmod(0o755)
+        # The dropped-UID client cannot traverse the private CI checkout.
+        # Keep its tiny script pair in the public disposable fixture root.
+        fixture = root / Path(__file__).name
+        shutil.copy2(Path(__file__).resolve(), fixture)
+        fixture.chmod(0o644)
+        account_fixture = root / "validate_rust_storage_service_accounts.py"
+        shutil.copy2(Path(__file__).resolve().with_name(account_fixture.name),
+                     account_fixture)
+        account_fixture.chmod(0o644)
         binary = root / "agenturm-storage-service"
         shutil.copy2(binary_source, binary)
         binary.chmod(0o755)
@@ -170,7 +179,7 @@ def main() -> None:
             preexec_fn=lambda: (os.umask(0), drop_to(service_uid, service_gid)()),
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         def run_case(case, uid=client_uid, gid=client_gid):
-            result = subprocess.run([sys.executable, __file__, "--case", case,
+            result = subprocess.run([sys.executable, str(fixture), "--case", case,
                 "--socket", str(socket_path), "--request", str(request_file)],
                 preexec_fn=drop_to(uid, gid), capture_output=True, text=True, timeout=8)
             check(result.returncode == 0, f"{case}: {result.stdout}{result.stderr}")
