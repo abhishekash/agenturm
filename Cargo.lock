@@ -95,7 +95,9 @@ dependencies = [
 name = "agenturm-pi-harness"
 version = "0.1.0"
 dependencies = [
+ "agenturm-directory-source",
  "agenturm-jsonl-source",
+ "agenturm-source-process",
  "serde_json",
  "sha2",
  "time",
