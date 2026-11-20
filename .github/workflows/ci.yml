@@ -40,6 +40,9 @@ jobs:
       - run: python -m unittest tests.test_rust_migration_candidate -v
         env:
           AGENTURM_RUST_MIGRATION_VERIFY_BIN: ${{ github.workspace }}/target/debug/agenturm-migration-verify
+      - run: python -m unittest tests.test_migration_candidate_producer -v
+        env:
+          AGENTURM_RUST_MIGRATION_VERIFY_BIN: ${{ github.workspace }}/target/debug/agenturm-migration-verify
       - run: python -m unittest tests.test_rust_plugin_fixture -v
         env:
           AGENTURM_RUST_FIXTURE_BIN: ${{ github.workspace }}/target/debug/agenturm-fixture-plugin
