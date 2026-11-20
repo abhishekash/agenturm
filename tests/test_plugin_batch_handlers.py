@@ -64,6 +64,8 @@ class BatchHandlerTests(unittest.TestCase):
             DEFAULT_BATCH_HANDLERS.select({"next-content-ref/2"})
         with self.assertRaisesRegex(ProtocolError, "unregistered reference batch"):
             DEFAULT_BATCH_HANDLERS.select({"next-command-ref/2"})
+        with self.assertRaisesRegex(ProtocolError, "unregistered reference batch"):
+            DEFAULT_BATCH_HANDLERS.select({"next-audit-ref/2"})
         with self.assertRaisesRegex(ProtocolError, "conflicting batch envelope"):
             DEFAULT_BATCH_HANDLERS.select({"pi-content-ref/1", "pi-command-ref/1"})
         with self.assertRaisesRegex(ValueError, "duplicate host batch handler"):

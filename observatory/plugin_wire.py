@@ -173,6 +173,37 @@ class CommandPollBatch(PollBatch):
     command_refs: tuple[object, ...] = ()
 
 
+@dataclass(frozen=True)
+class ReferencePollBatch(PollBatch):
+    """Host-selected, bounded reference family; the child cannot name a provider."""
+
+    reference_feature: str = ""
+    reference_refs: tuple[object, ...] = ()
+
+
+def validate_reference_batch(message: dict, *, source_id: str, feature: str,
+                             validate_refs) -> ReferencePollBatch:
+    """Decode a common reference envelope before a trusted family validator."""
+    if not isinstance(message, dict) or "reference_refs" not in message:
+        raise ProtocolError("reference envelope is required")
+    envelope = message["reference_refs"]
+    if (not isinstance(envelope, dict) or set(envelope) != {"schema_version", "refs"}
+            or type(envelope["schema_version"]) is not int
+            or envelope["schema_version"] != 1
+            or not isinstance(envelope["refs"], list)
+            or len(envelope["refs"]) > 48
+            or len(encode_message(envelope).encode("utf-8")) > MAX_CONTROL_FRAME_BYTES):
+        raise ProtocolError("invalid reference envelope")
+    ordinary = {key: value for key, value in message.items() if key != "reference_refs"}
+    batch = validate_batch(ordinary, source_id=source_id)
+    checked = validate_refs(tuple(envelope["refs"]), batch)
+    if type(checked) is not tuple or len(checked) > 48:
+        raise ProtocolError("invalid trusted reference validator result")
+    return ReferencePollBatch(batch.source_id, batch.cursor, batch.records,
+                              batch.member_id, batch.member_cursor, batch.root_gap,
+                              feature, checked)
+
+
 def validate_command_batch(message: dict, *, source_id: str) -> CommandPollBatch:
     """Decode only a bounded command-reference envelope, never command text."""
     from dataclasses import fields
