@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trusted Activity content-preview providers · Agenturm</title>
+<style>
+:root{color-scheme:light dark;font:16px/1.6 system-ui,sans-serif;background:#f7f8fa;color:#202531}
+*{box-sizing:border-box}body{margin:0}main{max-width:900px;margin:auto;padding:clamp(1rem,4vw,3rem)}
+h1{font-size:clamp(1.65rem,4vw,2.45rem);line-height:1.2}h2{font-size:1.2rem;margin-top:2rem}
+p,li{max-width:75ch}code{overflow-wrap:anywhere;background:#e8ecf4;padding:.1em .3em;border-radius:.25em}
+.callout{border-left:4px solid #3c66b8;padding:.5rem 1rem;background:#eaf0fc}
+@media(max-width:600px){main{padding:1rem}h1{font-size:1.6rem}}
+@media(prefers-color-scheme:dark){:root{background:#151922;color:#e5e8ef}code{background:#283142}.callout{background:#202c42;border-color:#88adff}}
+</style></head><body><main>
+<h1>Trusted Activity content-preview providers</h1>
+<p>Recorded 20 November 2026. The cockpit keeps the explicit <code>z</code> preview for one Pi user message. A bounded, trusted registry now selects a provider for an exact Activity row. The built-in Pi provider supplies eligibility, a same-origin <code>/api/plugin-…</code> path and inspector labels. A trusted caller can inject another provider at app construction without editing the central Activity inspector. Ambiguous matches, nonlocal route shapes, malformed IDs and invalid provider output fail closed; a provider's exact receiver route must be registered separately.</p>
+<h2>Privacy boundary</h2>
+<p>The shell checks receiver and exact Activity revision around the HTTP call; the receiver separately proves source and policy before response headers. Only a sanitized 4096-byte response field enters transient inspector state. Selection, receiver, provider or tab changes, revocation recheck and 20-second expiry clear both state and rendered RichLog strips. Copy, export, ReviewHistory and Activity rows remain content-free.</p>
+<p class="callout">A loaded point-in-time preview may remain visible until its 20-second expiry if a same-inode source is edited later without changing its Activity revision.</p>
+<h2>Scope</h2>
+<p>This is an in-process trusted UI contract. It does not discover external UI plugins, expose a Pi requested-command read API, register a production command provider or relax the receiver source gate. A later command provider requires its own reviewed exact-event HTTP route.</p>
+<h2>Verification</h2>
+<p>Headless Textual tests exercise the fixture provider, explicit <code>z</code>, unavailable and loaded states, selection clearing and stable masthead at 60×18 and 80×24. Unit tests cover exact provider selection, ambiguous denial, route validation, response revision and receiver binding, and copy/export isolation. Existing Pi preview delivery and revocation tests are rerun.</p>
+</main></body></html>

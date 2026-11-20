@@ -49,7 +49,7 @@ from .ui_workflow import AttentionLedger, WorkflowScreen, WorkflowController, de
 from .ui_preferences import Preferences
 from .ui_export import (ExportScreen, current_plugin_activity_revision,
                         plugin_activity_provenance)
-from .ui_plugin_content import accepted_preview, eligible as plugin_text_eligible
+from .ui_plugin_content import ContentPreviewRegistry, PI_USER_TEXT, accepted_preview
 from .ui_render import update_status_text
 from .ui_content import metadata_table, prose, write_body, write_section
 from .ui_coverage import analysis_coverage
@@ -1414,9 +1414,11 @@ class ObservatoryApp(App):
               Binding('6','page("metrics")','Metrics',show=False),Binding('7','page("findings")','Findings',show=False)]
 
     def __init__(self,feed,*,preferences_path=None,persist_preferences=None,task_store_path=None,
-                 ui_panes=()):
+                 ui_panes=(),content_preview_providers=()):
         super().__init__()
         self.pane_registry=PaneRegistry(tuple(ui_panes))
+        self.content_preview_registry=ContentPreviewRegistry(
+            (PI_USER_TEXT,*tuple(content_preview_providers)))
         self.extension_models={}
         for name in list(self.available_themes):
             self.unregister_theme(name)
@@ -3387,31 +3389,37 @@ class ObservatoryApp(App):
         self.show_agent()
 
     def action_load_plugin_text(self):
-        """Explicitly load one redacted prompt into transient inspector state."""
+        """Explicitly load one provider-backed preview into transient inspector state."""
         if self.query_one('#pages',TabbedContent).active!='activity':return
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
-        if not plugin_text_eligible(item):
-            self.notify('Select a process user message to check captured text.');return
+        provider=self.content_preview_registry.for_record(item)
+        if provider is None:
+            self.notify('Select an Activity event with a captured text preview.');return
         receiver_id=self.feed.snapshot.receiver_id
         self._clear_plugin_text_visual()
         self.plugin_text_generation+=1
         generation=self.plugin_text_generation
         self.plugin_text_state={'record':deepcopy(item),'receiver_id':receiver_id,
+            'provider_id':provider.id,
             'status':'loading' if receiver_id else 'unavailable','text':'','clipped':False,
             'expires_at':time.monotonic()+20}
         self.show_activity()
-        if receiver_id:self.fetch_plugin_text(generation,deepcopy(item),receiver_id)
+        if receiver_id:self.fetch_plugin_text(generation,deepcopy(item),receiver_id,provider.id)
 
     @work(thread=True,exclusive=True,group='plugin-text',exit_on_error=False)
-    def fetch_plugin_text(self,generation,record,receiver_id):
+    def fetch_plugin_text(self,generation,record,receiver_id,provider_id):
         preview=None
         try:
-            before=current_plugin_activity_revision(self.feed.api,record,receiver_id)
-            if before is not None:
-                response=shared_get(self.feed.api,'/api/plugin-content?'+urlencode(
-                    {'event_id':record['id']}),cancelled=lambda:generation!=self.plugin_text_generation)
+            provider=self.content_preview_registry.get(provider_id)
+            if provider is not None and self.content_preview_registry.for_record(record) is provider:
+                before=current_plugin_activity_revision(self.feed.api,record,receiver_id)
+            else:before=None
+            if before is not None and provider is not None:
+                response=shared_get(self.feed.api,provider.path(record),
+                                    cancelled=lambda:generation!=self.plugin_text_generation)
                 after=current_plugin_activity_revision(self.feed.api,record,receiver_id)
-                accepted=accepted_preview(response,record,receiver_id,before,after)
+                accepted=accepted_preview(response,record,receiver_id,before,after,
+                                          matches=provider.matches)
                 if accepted is not None:preview=(*accepted,after)
         except Exception:
             pass  # An unavailable source never returns text or a source path.
@@ -3424,7 +3432,9 @@ class ObservatoryApp(App):
                 generation!=self.plugin_text_generation or not state or
                 self.query_one('#pages',TabbedContent).active!='activity' or
                 self.feed.snapshot.receiver_id!=receiver_id or
-                self.table_data.get('activity-table',{}).get(self.selected_activity)!=record):
+                self.table_data.get('activity-table',{}).get(self.selected_activity)!=record or
+                (provider:=self.content_preview_registry.for_record(record)) is None or
+                provider.id!=state.get('provider_id')):
             return
         if preview is None:
             state.update(status='unavailable',text='',clipped=False,revision=None)
@@ -3456,7 +3466,9 @@ class ObservatoryApp(App):
                 self.query_one('#pages',TabbedContent).active!='activity' or
                 self.feed.snapshot.receiver_id!=receiver_id or
                 self.table_data.get('activity-table',{}).get(self.selected_activity)!=record or
-                revision is None or revision!=state.get('revision')):
+                revision is None or revision!=state.get('revision') or
+                (provider:=self.content_preview_registry.for_record(record)) is None or
+                provider.id!=state.get('provider_id')):
             state.update(status='unavailable',text='',clipped=False,revision=None)
             self._clear_plugin_text_visual()
             if self.is_mounted and isinstance(self.screen,ObservatoryScreen):self.show_activity()
@@ -3875,8 +3887,10 @@ class ObservatoryApp(App):
     def show_activity(self):
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
         state=self.plugin_text_state
+        provider=self.content_preview_registry.for_record(item)
         if state and (not item or item != state['record'] or
                       self.feed.snapshot.receiver_id != state['receiver_id'] or
+                      provider is None or provider.id != state.get('provider_id') or
                       time.monotonic() >= state['expires_at']):
             self.clear_plugin_text()
         if self.native_page_pending('activity'):return
@@ -3909,23 +3923,8 @@ class ObservatoryApp(App):
         sections=list(details.items()) if isinstance(details,dict) else [('Recorded content',details)]
         if item.get('domain')=='message' and not details and item.get('subject'):
             sections=[('Message preview',item['subject'])]
-        if plugin_text_eligible(item):
-            state=self.plugin_text_state
-            if state and state['status']=='available':
-                text=state['text']
-                sections.insert(0,('Captured user text · redacted',
-                    (text or '(empty message)')+
-                    ('\n… Excerpt clipped; source text remains in the original Pi file.'
-                     if state['clipped'] else '')+
-                    '\nLoaded snapshot · expires in 20s · z Reload'))
-            elif state and state['status']=='loading':
-                sections.insert(0,('Captured user text','Loading exact source proof…'))
-            elif state and state['status']=='unavailable':
-                sections.insert(0,('Captured user text',
-                    'Unavailable now. Capture, source, or evidence may have changed. z Retry.'))
-            else:
-                sections.insert(0,('Captured user text',
-                    'z Check for captured redacted text for this exact event.'))
+        if provider is not None:
+            sections.insert(0,provider.section(self.plugin_text_state))
         if 'detail' not in item:
             sections.insert(0,('Error details','Only a reference is loaded. Waiting for retained details; this error stays unseen until its evidence loads.'))
         if failed(item):

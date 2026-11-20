@@ -16,7 +16,8 @@ from observatory.plugin_supervisor import PluginSupervisor
 from observatory.server import BoundedHTTPServer, handler_for
 from observatory.terminal_ui import ObservatoryApp, ObservatoryScreen, copy_event_text
 from observatory.ui_export import investigation_json
-from observatory.ui_plugin_content import accepted_preview, eligible
+from observatory.ui_plugin_content import (ContentPreviewRegistry, PI_USER_TEXT,
+                                           accepted_preview, eligible)
 
 
 class PluginContentDeliveryTests(unittest.TestCase):
@@ -203,6 +204,7 @@ class PluginContentUiTests(unittest.TestCase):
         screen.screen = ObservatoryScreen()
         screen.plugin_text_generation = 4
         screen.plugin_text_state = {'record': self.row, 'receiver_id': 'receiver',
+                                    'provider_id': 'pi-user-text',
                                     'status': 'loading', 'text': '', 'clipped': False}
         screen.feed = SimpleNamespace(snapshot=SimpleNamespace(receiver_id='receiver'))
         screen.table_data = {'activity-table': {current['id']: current}}
@@ -222,6 +224,7 @@ class PluginContentUiTests(unittest.TestCase):
         screen.screen = ObservatoryScreen()
         screen.plugin_text_generation = 4
         screen.plugin_text_state = {'record': self.row, 'receiver_id': 'receiver',
+                                    'provider_id': 'pi-user-text',
                                     'status': 'available', 'text': 'password=[REDACTED]',
                                     'clipped': False, 'revision': (7, 1, 2)}
         screen.feed = SimpleNamespace(snapshot=SimpleNamespace(receiver_id='receiver'))
@@ -245,8 +248,10 @@ class PluginContentUiTests(unittest.TestCase):
                     selected_activity=selected_id,
                     table_data={'activity-table': {selected_id: {**self.row, 'id': selected_id}}},
                     feed=SimpleNamespace(snapshot=SimpleNamespace(receiver_id=receiver_id)),
+                    content_preview_registry=ContentPreviewRegistry((PI_USER_TEXT,)),
                     plugin_text_generation=4,
                     plugin_text_state={'record': self.row, 'receiver_id': 'receiver',
+                                       'provider_id': 'pi-user-text',
                                        'status': 'available', 'text': 'password=[REDACTED]',
                                        'expires_at': time.monotonic() + 20},
                     native_page_pending=lambda _page: True)
@@ -288,6 +293,7 @@ class PluginContentLayoutTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('Unavailable now', app.query_one('#activity-detail').plain_text)
             self.assertEqual(app.query_one('#masthead').region, header)
             app.plugin_text_state = {'record': row, 'receiver_id': '',
+                                     'provider_id': 'pi-user-text',
                                      'status': 'available', 'text': 'PRIVATE_PREVIEW',
                                      'clipped': False, 'expires_at': time.monotonic() + 20}
             app.show_activity()
@@ -320,6 +326,7 @@ class PluginContentLayoutTests(unittest.IsolatedAsyncioTestCase):
             app.selected_activity = row['id']
             app.plugin_text_generation = 4
             app.plugin_text_state = {'record': row, 'receiver_id': '',
+                                     'provider_id': 'pi-user-text',
                                      'status': 'available', 'text': 'PRIVATE_PREVIEW',
                                      'clipped': False, 'expires_at': time.monotonic() + 20}
             app.show_activity()
