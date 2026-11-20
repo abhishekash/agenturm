@@ -1,10 +1,12 @@
 """Installed current-schema OpenCode reader through real Store admission."""
+import hashlib
 import json
 import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -168,6 +170,74 @@ class RustOpenCodeHarnessTests(unittest.TestCase):
                             1794650400025, 1794650400025, '{"outcome":"succeeded"}'))
             self.drain(worker)
             self.assertEqual(self.projected()[0]["reason_code"], "source_gap")
+
+    def test_same_count_replacement_invalidates_prior_session_and_activity(self):
+        with self.worker() as worker:
+            self.drain(worker)
+            self.assertEqual(self.projected()[0]["run_state"], "completed")
+            with sqlite3.connect(self.source) as db:
+                before = db.execute("SELECT COUNT(*) FROM session_message").fetchone()[0]
+                original = db.execute("SELECT seq,time_created,time_updated,data FROM "
+                                      "session_message WHERE id='msg_idle_two'").fetchone()
+                db.execute("DELETE FROM session_message WHERE id='msg_idle_two'")
+                db.execute("INSERT INTO session_message VALUES(?,?,?,?,?,?,?)",
+                           ("msg_replacement_idle", "ses_schema_fixture", "idle", *original))
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM session_message").fetchone()[0],
+                                 before)
+            batch = worker.poll_once()
+            self.assertEqual(batch.records[0]["payload"]["code"], "possible_source_gap")
+            self.drain(worker)
+            session = self.projected()[0]
+            self.assertEqual((session["run_state"], session["reason_code"]),
+                             ("unknown", "source_gap"))
+            self.assertEqual(self.store.activity_page()["activity"], [])
+
+    def test_equal_size_and_restored_mtime_rewrite_starts_new_sweep(self):
+        with self.worker() as worker:
+            self.drain(worker)
+            before = self.source.stat()
+            time.sleep(0.01)
+            with sqlite3.connect(self.source) as db:
+                db.execute("UPDATE session_message SET data=replace(data,'succeeded','ambiguous') "
+                           "WHERE id='msg_idle_two'")
+            os.utime(self.source, ns=(before.st_atime_ns, before.st_mtime_ns))
+            after = self.source.stat()
+            self.assertEqual((before.st_size, before.st_mtime_ns),
+                             (after.st_size, after.st_mtime_ns))
+            self.assertNotEqual(before.st_ctime_ns, after.st_ctime_ns)
+            batch = worker.poll_once()
+            self.assertTrue(batch.records)
+            self.assertNotEqual(batch.records[0]["kind"], "diagnostic")
+            self.drain(worker)
+            self.assertEqual(self.projected()[0]["reason_code"],
+                             "opencode_idle_outcome_unknown")
+
+    def test_legacy_cursor_migration_emits_conservative_gap(self):
+        with self.worker() as worker:
+            self.drain(worker)
+            current = worker.cursor
+        fields = current.split(":")
+        self.assertEqual(fields[0], "oc2")
+        def old_mark(path):
+            stat = path.stat()
+            return f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"
+        wal = self.source.with_name(self.source.name + "-wal")
+        previous_signature = hashlib.sha256(
+            f"{old_mark(self.source)}|{old_mark(wal) if wal.exists() else ''}".encode()
+        ).hexdigest()
+        self.assertNotEqual(previous_signature, fields[2])
+        legacy = ":".join(["oc1", fields[1], previous_signature, *fields[4:]])
+        with self.store._connect() as db:
+            db.execute("UPDATE plugin_source_cursor_v1 SET cursor=? WHERE source_id=?",
+                       (legacy, self.plugin.source_id))
+        with self.worker() as worker:
+            self.assertEqual(worker.cursor, legacy)
+            batch = worker.poll_once()
+            self.assertEqual(batch.records[0]["payload"]["code"], "possible_source_gap")
+            self.drain(worker)
+            self.assertEqual((self.projected()[0]["run_state"],
+                              self.projected()[0]["reason_code"]),
+                             ("unknown", "source_gap"))
 
     def test_idle_outcome_correction_revises_one_session_status(self):
         with self.worker() as worker:

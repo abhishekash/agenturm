@@ -27,8 +27,10 @@ fn digest(raw: impl AsRef<[u8]>) -> String {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Cursor {
+    legacy: bool,
     epoch: String,
     signature: String,
+    identities: String,
     revision: u32,
     phase: char,
     rowid: i64,
@@ -46,25 +48,32 @@ impl Cursor {
             return Ok(None);
         }
         let parts: Vec<_> = raw.split(':').collect();
-        if parts.len() != 12
-            || parts[0] != "oc1"
+        let legacy = parts.first() == Some(&"oc1");
+        if !matches!(parts.first().copied(), Some("oc1" | "oc2"))
+            || parts.len() != if legacy { 12 } else { 13 }
             || ![parts[1], parts[2]].iter().all(|s| {
                 s.len() == 64
                     && s.bytes()
                         .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
             })
-            || !matches!(parts[4], "m" | "p" | "s" | "d")
+            || (!legacy
+                && (parts[3].len() != 64
+                    || !parts[3]
+                        .bytes()
+                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())))
+            || !matches!(parts[if legacy { 4 } else { 5 }], "m" | "p" | "s" | "d")
         {
             return Err(invalid("invalid OpenCode cursor"));
         }
-        let revision: u32 = parts[3].parse()?;
-        let rowid: i64 = parts[5].parse()?;
-        let message_max: i64 = parts[6].parse()?;
-        let part_max: i64 = parts[7].parse()?;
-        let session_max: i64 = parts[8].parse()?;
-        let message_count: i64 = parts[9].parse()?;
-        let part_count: i64 = parts[10].parse()?;
-        let session_count: i64 = parts[11].parse()?;
+        let offset = usize::from(!legacy);
+        let revision: u32 = parts[3 + offset].parse()?;
+        let rowid: i64 = parts[5 + offset].parse()?;
+        let message_max: i64 = parts[6 + offset].parse()?;
+        let part_max: i64 = parts[7 + offset].parse()?;
+        let session_max: i64 = parts[8 + offset].parse()?;
+        let message_count: i64 = parts[9 + offset].parse()?;
+        let part_count: i64 = parts[10 + offset].parse()?;
+        let session_count: i64 = parts[11 + offset].parse()?;
         if revision > i32::MAX as u32
             || rowid < 0
             || message_max < 0
@@ -77,10 +86,16 @@ impl Cursor {
             return Err(invalid("invalid OpenCode cursor range"));
         }
         Ok(Some(Self {
+            legacy,
             epoch: parts[1].to_owned(),
             signature: parts[2].to_owned(),
+            identities: if legacy {
+                String::new()
+            } else {
+                parts[3].to_owned()
+            },
             revision,
-            phase: parts[4].chars().next().ok_or("missing phase")?,
+            phase: parts[4 + offset].chars().next().ok_or("missing phase")?,
             rowid,
             message_max,
             part_max,
@@ -93,9 +108,10 @@ impl Cursor {
 
     fn encode(&self) -> String {
         format!(
-            "oc1:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            "oc2:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             self.epoch,
             self.signature,
+            self.identities,
             self.revision,
             self.phase,
             self.rowid,
@@ -121,11 +137,12 @@ fn file_mark(path: &Path) -> Result<String> {
     }
     let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(format!(
-        "{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}",
         metadata.dev(),
         metadata.ino(),
         metadata.len(),
-        modified
+        modified,
+        metadata.ctime_nsec() as i128 + metadata.ctime() as i128 * 1_000_000_000
     ))
 }
 
@@ -146,7 +163,9 @@ fn fingerprint(path: &Path) -> Result<(String, String)> {
         String::new()
     };
     // The epoch changes only when the database file identity changes. The
-    // signature tracks ordinary main/WAL changes and triggers a full rescan.
+    // ctime catches ordinary rewrites that restore mtime and length. A
+    // same-user actor able to forge all file metadata is outside this source
+    // trust boundary; full byte hashing on every idle poll is not performed.
     let epoch = digest(main.split(':').take(2).collect::<Vec<_>>().join(":"));
     Ok((epoch, digest(format!("{main}|{wal_mark}"))))
 }
@@ -227,6 +246,46 @@ fn bounded_count(db: &Connection, table: &str, remaining: i64) -> Result<i64> {
         }
     }
     Ok(count)
+}
+
+fn identity_digest(db: &Connection, maxima: (i64, i64, i64)) -> Result<String> {
+    // A changed file signature starts a sweep. Counts alone cannot prove that
+    // its rows are the same: DELETE plus INSERT may preserve every count.
+    // SQLite evaluates the length guard before returning variable-length IDs,
+    // so an oversized native identity never crosses this boundary.
+    const MESSAGE: &str = "SELECT rowid,length(CAST(session_id AS BLOB)),CASE WHEN length(CAST(session_id AS BLOB)) BETWEEN 1 AND 256 THEN session_id END,length(CAST(id AS BLOB)),CASE WHEN length(CAST(id AS BLOB)) BETWEEN 1 AND 512 THEN id END,length(CAST(type AS BLOB)),CASE WHEN length(CAST(type AS BLOB)) BETWEEN 1 AND 32 THEN type END,0 FROM session_message WHERE rowid<=?1 ORDER BY rowid LIMIT 50001";
+    const PART: &str = "SELECT rowid,length(CAST(session_id AS BLOB)),CASE WHEN length(CAST(session_id AS BLOB)) BETWEEN 1 AND 256 THEN session_id END,length(CAST(message_id AS BLOB)),CASE WHEN length(CAST(message_id AS BLOB)) BETWEEN 1 AND 512 THEN message_id END,length(CAST(type AS BLOB)),CASE WHEN length(CAST(type AS BLOB)) BETWEEN 1 AND 32 THEN type END,ordinal FROM session_part WHERE rowid<=?1 ORDER BY rowid LIMIT 50001";
+    const SESSION: &str = "SELECT rowid,length(CAST(id AS BLOB)),CASE WHEN length(CAST(id AS BLOB)) BETWEEN 1 AND 256 THEN id END,0,NULL,0,NULL,0 FROM session_v2 WHERE rowid<=?1 ORDER BY rowid LIMIT 50001";
+    let mut hasher = Sha256::new();
+    let mut total = 0usize;
+    for (tag, sql, maximum) in [
+        (b'm', MESSAGE, maxima.0),
+        (b'p', PART, maxima.1),
+        (b's', SESSION, maxima.2),
+    ] {
+        let mut stmt = db.prepare(sql)?;
+        let mut rows = stmt.query([maximum])?;
+        while let Some(row) = rows.next()? {
+            total += 1;
+            if total > MAX_SOURCE_ROWS as usize {
+                return Err(invalid("OpenCode source row ceiling exceeded"));
+            }
+            let rowid: i64 = row.get(0)?;
+            let order: i64 = row.get(7)?;
+            hasher.update([tag]);
+            hasher.update(rowid.to_be_bytes());
+            hasher.update(order.to_be_bytes());
+            for offset in [1, 3, 5] {
+                let length: i64 = row.get(offset)?;
+                let value: Option<String> = row.get(offset + 1)?;
+                hasher.update(length.to_be_bytes());
+                if let Some(value) = value {
+                    hasher.update(value.as_bytes());
+                }
+            }
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn structural_tokens(raw: &[u8]) -> usize {
@@ -565,7 +624,7 @@ pub fn poll(
     if sweep_finished
         && previous
             .as_ref()
-            .is_some_and(|c| c.signature == signature && !replacement)
+            .is_some_and(|c| c.signature == signature && !replacement && !c.legacy)
     {
         return Ok(batch(source_id, raw_cursor, &[]));
     }
@@ -577,10 +636,23 @@ pub fn poll(
     db.busy_timeout(std::time::Duration::from_millis(250))?;
     db.execute_batch("PRAGMA query_only=ON; BEGIN")?;
     check_schema(&db)?;
-    let start_sweep = previous.is_none() || replacement || sweep_finished;
+    let start_sweep = previous.is_none()
+        || replacement
+        || sweep_finished
+        || previous.as_ref().is_some_and(|c| c.legacy);
     let prior_counts = previous
         .as_ref()
         .map(|c| (c.message_count, c.part_count, c.session_count));
+    let lost_prior_identity = if start_sweep {
+        if let Some(prior) = previous.as_ref().filter(|c| !c.legacy && !replacement) {
+            identity_digest(&db, (prior.message_max, prior.part_max, prior.session_max))?
+                != prior.identities
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     let revision = if let Some(previous) = previous.as_ref().filter(|_| start_sweep) {
         previous
             .revision
@@ -611,9 +683,12 @@ pub fn poll(
             "session_v2",
             MAX_SOURCE_ROWS - message_count - part_count,
         )?;
+        let identities = identity_digest(&db, (message_max, part_max, session_max))?;
         Cursor {
+            legacy: false,
             epoch,
             signature,
+            identities,
             revision,
             phase: 'm',
             rowid: 0,
@@ -625,14 +700,16 @@ pub fn poll(
             session_count,
         }
     } else {
-        previous.unwrap()
+        previous.clone().ok_or("missing OpenCode cursor")?
     };
     let mut records = Vec::new();
     let mut scanned = 0;
     let loss = start_sweep
-        && prior_counts.is_some_and(|(m, p, s)| {
-            cursor.message_count < m || cursor.part_count < p || cursor.session_count < s
-        });
+        && (lost_prior_identity
+            || previous.as_ref().is_some_and(|c| c.legacy)
+            || prior_counts.is_some_and(|(m, p, s)| {
+                cursor.message_count < m || cursor.part_count < p || cursor.session_count < s
+            }));
     if replacement || loss {
         records.push(diagnostic(
             &cursor.epoch,
