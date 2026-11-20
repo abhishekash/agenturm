@@ -154,7 +154,8 @@ class RustOpenCodeHarnessTests(unittest.TestCase):
             self.assertEqual(self.projected()[0]["run_state"], "completed")
             with sqlite3.connect(self.source) as db:
                 db.execute("DELETE FROM session_message WHERE id='msg_idle_two'")
-            self.drain(worker)
+            batches = self.drain(worker)
+            self.assertEqual(batches[0].records[0]["payload"]["code"], "possible_source_gap")
             self.assertEqual(self.projected()[0]["run_state"], "running")
             self.assertEqual(self.projected()[0]["reason_code"], "opencode_latest_assistant")
             with sqlite3.connect(self.source) as db:
@@ -176,6 +177,18 @@ class RustOpenCodeHarnessTests(unittest.TestCase):
                 payloads = "".join(row[0] for row in db.execute("SELECT payload_json FROM plugin_evidence_v1"))
             self.assertIn("oversized_opencode_identity", payloads)
             self.assertNotIn(huge[:1000], payloads)
+
+    def test_row_ceiling_fails_before_ack(self):
+        with sqlite3.connect(self.source) as db:
+            db.executemany("INSERT INTO session_part VALUES(?,?,?,?,?,?,?,?)",
+                (("msg_step_one", "ses_schema_fixture", n + 10, "text", None,
+                  1794650400020, 1794650400020, "{}") for n in range(50_000)))
+        with self.worker() as worker:
+            with self.assertRaises(ProtocolError):
+                worker.poll_once()
+        with self.store._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT cursor FROM plugin_source_cursor_v1").fetchone()[0], "")
 
     def test_installer_rejects_symlinked_source_and_destination_ancestor(self):
         target = self.root / "target"

@@ -15,6 +15,8 @@ use std::time::UNIX_EPOCH;
 const MAX_ROW_BYTES: i64 = 64 * 1024;
 const MAX_SCAN_ROWS: usize = 256;
 const MAX_STRUCTURAL_TOKENS: usize = 8192;
+const MAX_SOURCE_FILE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_SOURCE_ROWS: i64 = 50_000;
 
 fn invalid(message: &'static str) -> Box<dyn Error> {
     message.into()
@@ -33,6 +35,9 @@ struct Cursor {
     message_max: i64,
     part_max: i64,
     session_max: i64,
+    message_count: i64,
+    part_count: i64,
+    session_count: i64,
 }
 
 impl Cursor {
@@ -41,7 +46,7 @@ impl Cursor {
             return Ok(None);
         }
         let parts: Vec<_> = raw.split(':').collect();
-        if parts.len() != 9
+        if parts.len() != 12
             || parts[0] != "oc1"
             || ![parts[1], parts[2]].iter().all(|s| {
                 s.len() == 64
@@ -57,11 +62,17 @@ impl Cursor {
         let message_max: i64 = parts[6].parse()?;
         let part_max: i64 = parts[7].parse()?;
         let session_max: i64 = parts[8].parse()?;
+        let message_count: i64 = parts[9].parse()?;
+        let part_count: i64 = parts[10].parse()?;
+        let session_count: i64 = parts[11].parse()?;
         if revision > i32::MAX as u32
             || rowid < 0
             || message_max < 0
             || part_max < 0
             || session_max < 0
+            || message_count < 0
+            || part_count < 0
+            || session_count < 0
         {
             return Err(invalid("invalid OpenCode cursor range"));
         }
@@ -74,12 +85,15 @@ impl Cursor {
             message_max,
             part_max,
             session_max,
+            message_count,
+            part_count,
+            session_count,
         }))
     }
 
     fn encode(&self) -> String {
         format!(
-            "oc1:{}:{}:{}:{}:{}:{}:{}:{}",
+            "oc1:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             self.epoch,
             self.signature,
             self.revision,
@@ -87,7 +101,10 @@ impl Cursor {
             self.rowid,
             self.message_max,
             self.part_max,
-            self.session_max
+            self.session_max,
+            self.message_count,
+            self.part_count,
+            self.session_count
         )
     }
 }
@@ -98,6 +115,9 @@ fn file_mark(path: &Path) -> Result<String> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_file() {
         return Err(invalid("OpenCode source is not a regular file"));
+    }
+    if metadata.len() > MAX_SOURCE_FILE_BYTES {
+        return Err(invalid("OpenCode source file ceiling exceeded"));
     }
     let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(format!(
@@ -196,6 +216,19 @@ fn check_schema(db: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn bounded_count(db: &Connection, table: &str, remaining: i64) -> Result<i64> {
+    let mut stmt = db.prepare(&format!("SELECT 1 FROM {table} LIMIT ?1"))?;
+    let mut rows = stmt.query([remaining + 1])?;
+    let mut count = 0;
+    while rows.next()?.is_some() {
+        count += 1;
+        if count > remaining {
+            return Err(invalid("OpenCode source row ceiling exceeded"));
+        }
+    }
+    Ok(count)
+}
+
 fn structural_tokens(raw: &[u8]) -> usize {
     let (mut quoted, mut escaped, mut count) = (false, false, 0);
     for byte in raw {
@@ -239,11 +272,8 @@ fn wire_id(epoch: &str, table: &str, session: &str, row: &str, kind: &str) -> St
     format!("oc:{}", opaque(&[epoch, table, session, row, kind]))
 }
 
-fn identity(session: &str, turn: Option<&str>, operation: Option<&str>) -> Value {
+fn identity(session: &str, operation: Option<&str>) -> Value {
     let mut id = json!({"session_id":session});
-    if let Some(turn) = turn {
-        id["turn_id"] = json!(turn);
-    }
     if let Some(operation) = operation {
         id["operation_id"] = json!(operation);
     }
@@ -257,7 +287,6 @@ struct FactScope<'a> {
     row: &'a str,
     revision: u32,
     time_ns: &'a str,
-    turn: Option<&'a str>,
     operation: Option<&'a str>,
 }
 
@@ -265,7 +294,7 @@ impl FactScope<'_> {
     fn record(&self, kind: &str, payload: Value) -> Value {
         json!({"event_id":wire_id(self.epoch,self.table,self.session,self.row,kind),
             "revision":self.revision,"kind":kind,"time_ns":self.time_ns,
-            "identity":identity(self.session,self.turn,self.operation),"payload":payload})
+            "identity":identity(self.session,self.operation),"payload":payload})
     }
 
     fn diagnostic(&self, code: &str) -> Value {
@@ -375,7 +404,6 @@ fn message_facts(cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
         row: row.id,
         revision: cursor.revision,
         time_ns: &time_ns,
-        turn: None,
         operation: None,
     };
     let facts = match row.kind {
@@ -434,7 +462,6 @@ fn part_facts(cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
         row: &part_id,
         revision: cursor.revision,
         time_ns: &time_ns,
-        turn: None,
         operation: Some(&operation),
     };
     let state = raw.get("state").and_then(Value::as_object);
@@ -481,7 +508,7 @@ fn session_fact(db: &Connection, cursor: &Cursor, session: &str) -> Result<Vec<V
         return Err(invalid("invalid OpenCode session identity"));
     }
     let latest: Option<(String,i64,Option<String>)> = db.query_row(
-        "SELECT substr(type,1,33),time_updated,CASE WHEN length(CAST(data AS BLOB))<=65536 AND json_valid(data) THEN substr(json_extract(data,'$.outcome'),1,65) END FROM session_message WHERE session_id=?1 AND rowid<=?2 ORDER BY seq DESC,id DESC LIMIT 1",
+        "SELECT substr(type,1,33),time_updated,CASE WHEN length(CAST(data AS BLOB))<=65536 AND json_valid(data) THEN substr(json_extract(data,'$.outcome'),1,65) END FROM session_message WHERE session_id=?1 AND rowid<=?2 AND type IN ('user','assistant','idle') ORDER BY seq DESC,id DESC LIMIT 1",
         params![session,cursor.message_max],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
     let Some((role, updated, outcome)) = latest else {
         return Ok(Vec::new());
@@ -494,7 +521,6 @@ fn session_fact(db: &Connection, cursor: &Cursor, session: &str) -> Result<Vec<V
         row: session,
         revision: cursor.revision,
         time_ns: &time_ns,
-        turn: None,
         operation: None,
     };
     let (state, reason) = match role.as_str() {
@@ -552,6 +578,9 @@ pub fn poll(
     db.execute_batch("PRAGMA query_only=ON; BEGIN")?;
     check_schema(&db)?;
     let start_sweep = previous.is_none() || replacement || sweep_finished;
+    let prior_counts = previous
+        .as_ref()
+        .map(|c| (c.message_count, c.part_count, c.session_count));
     let revision = if let Some(previous) = previous.as_ref().filter(|_| start_sweep) {
         previous
             .revision
@@ -575,6 +604,13 @@ pub fn poll(
             db.query_row("SELECT COALESCE(MAX(rowid),0) FROM session_v2", [], |r| {
                 r.get(0)
             })?;
+        let message_count = bounded_count(&db, "session_message", MAX_SOURCE_ROWS)?;
+        let part_count = bounded_count(&db, "session_part", MAX_SOURCE_ROWS - message_count)?;
+        let session_count = bounded_count(
+            &db,
+            "session_v2",
+            MAX_SOURCE_ROWS - message_count - part_count,
+        )?;
         Cursor {
             epoch,
             signature,
@@ -584,13 +620,20 @@ pub fn poll(
             message_max,
             part_max,
             session_max,
+            message_count,
+            part_count,
+            session_count,
         }
     } else {
         previous.unwrap()
     };
     let mut records = Vec::new();
     let mut scanned = 0;
-    if replacement {
+    let loss = start_sweep
+        && prior_counts.is_some_and(|(m, p, s)| {
+            cursor.message_count < m || cursor.part_count < p || cursor.session_count < s
+        });
+    if replacement || loss {
         records.push(diagnostic(
             &cursor.epoch,
             "source",
