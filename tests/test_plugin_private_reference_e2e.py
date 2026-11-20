@@ -312,6 +312,7 @@ class PrivateReferenceE2ETests(unittest.TestCase):
         self.addCleanup(restarted.close)
         from observatory.plugin_reference_read import DEFAULT_REFERENCE_READERS
         self.assertIsNone(DEFAULT_REFERENCE_READERS.read_exact(restarted, PROVIDER, event_id))
+        self.assertIsNone(self.readers.read_exact(restarted, PROVIDER, event_id))
         self.assertEqual(self.http(event_id, restarted, self.readers)[0], 404)
         with self.assertRaisesRegex(ProtocolError, "plugin source capture revoked"):
             activate_source(restarted, plugin_id=self.source.manifest.id, source_id=SOURCE_ID,
@@ -339,6 +340,7 @@ class PrivateReferenceE2ETests(unittest.TestCase):
         self.addCleanup(restarted.close)
         from observatory.plugin_reference_read import DEFAULT_REFERENCE_READERS
         self.assertIsNone(DEFAULT_REFERENCE_READERS.read_exact(restarted, PROVIDER, event_id))
+        self.assertIsNone(self.readers.read_exact(restarted, PROVIDER, event_id))
         self.assertEqual(self.http(event_id, restarted, self.readers)[0], 404)
 
 
