@@ -150,8 +150,9 @@ def initialize(db: Connection) -> None:
             db.execute(f"ALTER TABLE plugin_session_projection_v1 ADD COLUMN {name} {declaration}")
     plugin_retention.initialize(db)
     plugin_source_gap.initialize(db)
-    from . import plugin_pi_content
+    from . import plugin_pi_content, plugin_pi_command
     plugin_pi_content.initialize(db)
+    plugin_pi_command.initialize(db)
     # A pre-activity plugin projection cannot certify the new Activity rows.
     # The worker's startup projection pass republishes both from one snapshot.
     if (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'").fetchone()
@@ -225,6 +226,8 @@ def activate_source(store: Store, *, plugin_id: str, source_id: str,
                 db.execute("DELETE FROM plugin_content_v1 WHERE source_id=?", (source_id,))
                 db.execute("DELETE FROM plugin_content_batch_v1 WHERE source_id=?", (source_id,))
                 db.execute("DELETE FROM plugin_content_status_v1 WHERE source_id=?", (source_id,))
+                db.execute("DELETE FROM plugin_command_content_v1 WHERE source_id=?", (source_id,))
+                db.execute("DELETE FROM plugin_command_batch_v1 WHERE source_id=?", (source_id,))
             db.execute("UPDATE plugin_source_cursor_v1 SET lease_epoch=?,content_fingerprint=?,updated_ns=? "
                        "WHERE source_id=?", (epoch, content_fingerprint, now, source_id))
             cursor = row["cursor"]
@@ -262,6 +265,8 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
             db.execute("DELETE FROM plugin_content_v1 WHERE source_id=?", (source_id,))
             db.execute("DELETE FROM plugin_content_batch_v1 WHERE source_id=?", (source_id,))
             db.execute("DELETE FROM plugin_content_status_v1 WHERE source_id=?", (source_id,))
+            db.execute("DELETE FROM plugin_command_content_v1 WHERE source_id=?", (source_id,))
+            db.execute("DELETE FROM plugin_command_batch_v1 WHERE source_id=?", (source_id,))
             db.execute("DELETE FROM plugin_session_projection_v1 WHERE source_id=?", (source_id,))
             db.execute("DELETE FROM activity_index_v1 WHERE kind='plugin' AND owner_key=?",
                        (source_id,))
@@ -419,7 +424,8 @@ def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]
 
 def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                  batch: PollBatch, *, allow_root_gap: bool = False,
-                 content_refs: tuple[dict, ...] = (), content_grant=None) -> str:
+                 content_refs: tuple[dict, ...] = (), content_grant=None,
+                 command_refs=(), command_grant=None) -> str:
     """Commit evidence, cursor and dirty marker together, then permit ack.
 
     Exact replay after a crash is accepted. Any different batch at the same
@@ -429,9 +435,12 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
         raise TypeError("source lease required")
     if not isinstance(expected_cursor, str):
         raise ValueError("expected cursor must be text")
-    from . import plugin_pi_content
+    from . import plugin_pi_content, plugin_pi_command
     digest, rows, batch = _validated(batch, lease.source_id)
     checked_refs = plugin_pi_content.validate_refs(content_refs, batch)
+    checked_commands = plugin_pi_command.validate_refs(command_refs, batch)
+    if checked_refs and checked_commands:
+        raise ProtocolError("Pi content reference families cannot share one batch")
     if checked_refs:
         if (not isinstance(content_grant, plugin_pi_content.PiContentGrant)
                 or (content_grant.source_id, content_grant.plugin_id,
@@ -442,7 +451,20 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
             raise ProtocolError("Pi content grant unavailable")
     elif content_grant is not None:
         raise ProtocolError("Pi content grant without references")
+    if checked_commands:
+        if (not isinstance(command_grant, plugin_pi_command.PiCommandGrant)
+                or (command_grant.source_id, command_grant.plugin_id,
+                    command_grant.generation, command_grant.lease_epoch,
+                    command_grant.policy_epoch, command_grant.fingerprint) !=
+                (lease.source_id, lease.plugin_id, lease.generation,
+                 lease.epoch, lease.policy_epoch, lease.content_fingerprint)):
+            raise ProtocolError("Pi command grant unavailable")
+    elif command_grant is not None:
+        raise ProtocolError("Pi command grant without references")
     refs_digest = hashlib.sha256(encode_message({"refs": list(content_refs)}).encode()).hexdigest()
+    command_digest = hashlib.sha256(json.dumps(
+        [vars(ref) for ref in command_refs], sort_keys=True,
+        separators=(",", ":")).encode()).hexdigest()
     protected_hashes = {item[1] for item in rows}
     incoming_session_ids = {item[7] for item in rows if item[7]}
     gap_hashes = {item[1] for item in rows if item[3] == "diagnostic"
@@ -453,9 +475,10 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
     if batch.member_id and not batch.member_cursor and not gap_hashes:
         raise ProtocolError("removed discovery member requires source-gap evidence")
     verified_content = ()
+    verified_commands = ()
     withheld_reason = plugin_pi_content.withheld_reason(batch) if checked_refs else ""
     preflight_member_cursor = None
-    if checked_refs:
+    if checked_refs or checked_commands:
         with store._connect() as db:
             db.execute("BEGIN")
             source = db.execute("SELECT receiver_id,plugin_id,generation,lease_epoch,"
@@ -477,8 +500,12 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                       and expected_cursor in (source["prior_cursor"], source["cursor"]))
         if not replay:
             try:
-                verified_content = plugin_pi_content.verify_refs(
-                    checked_refs, content_grant, batch, preflight_member_cursor)
+                if checked_refs:
+                    verified_content = plugin_pi_content.verify_refs(
+                        checked_refs, content_grant, batch, preflight_member_cursor)
+                else:
+                    verified_commands = plugin_pi_command.verify_refs(
+                        checked_commands, command_grant, batch, preflight_member_cursor)
             except plugin_pi_content.UnanchoredOrigin:
                 withheld_reason = "unanchored_origin"
     with store._source_write(), store._connect() as db:
@@ -495,7 +522,7 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
             raise ProtocolError("stale plugin source lease")
         if (not rows and not batch.member_id and batch.cursor == row["cursor"]
                 and expected_cursor == row["cursor"]):
-            if checked_refs:
+            if checked_refs or checked_commands:
                 raise ProtocolError("Pi content reference cannot be idle")
             # An idle poll has no durable effect. It still follows lease and
             # source checks before the host may acknowledge it.
@@ -509,6 +536,13 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                         (receipt["cursor"], receipt["refs_digest"]) !=
                         (batch.cursor, refs_digest))):
                 raise ProtocolError("Pi content replay mismatch")
+            command_receipt = db.execute("SELECT cursor,refs_digest FROM plugin_command_batch_v1 "
+                                         "WHERE source_id=?", (lease.source_id,)).fetchone()
+            if ((command_receipt is None and checked_commands)
+                    or (command_receipt is not None and
+                        (command_receipt["cursor"], command_receipt["refs_digest"]) !=
+                        (batch.cursor, command_digest))):
+                raise ProtocolError("Pi command replay mismatch")
             return row["cursor"]
         if expected_cursor != row["cursor"]:
             raise ProtocolError("stale plugin cursor")
@@ -526,7 +560,7 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                                            "WHERE source_id=?", (lease.source_id,)).fetchone()[0]
                 if count_members >= MAX_DISCOVERY_MEMBERS:
                     raise ProtocolError("discovery member limit exceeded")
-            if (checked_refs and (old_member[0] if old_member else "") !=
+            if ((checked_refs or checked_commands) and (old_member[0] if old_member else "") !=
                     preflight_member_cursor):
                 raise ProtocolError("Pi content member checkpoint changed")
         if batch.member_id:
@@ -680,6 +714,25 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
             for event_hash, revision in inserted_content)
         if verified_content:
             capacity_victims = plugin_pi_content.prune_capacity(db, lease.source_id)
+        if verified_commands:
+            for ref, file_dev, file_ino, redacted_command in verified_commands:
+                event_hash = hashlib.sha256(
+                    (lease.source_id + "\0" + ref.event_id).encode()).hexdigest()
+                if event_hash not in inserted_hashes or ref.native_session_id in ambiguous_ids:
+                    continue
+                db.execute("DELETE FROM plugin_command_content_v1 "
+                           "WHERE source_id=? AND event_id_hash=?",
+                           (lease.source_id, event_hash))
+                db.execute("INSERT INTO plugin_command_content_v1 VALUES("
+                           "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                           (lease.source_id, event_hash, ref.revision, ref.kind,
+                            ref.native_session_id, ref.native_turn_id,
+                            ref.tool_call_id, ref.assistant_row_id, ref.block_index,
+                            batch.member_id, ref.row_offset, ref.row_length,
+                            ref.row_sha256, file_dev, file_ino, redacted_command,
+                            lease.policy_epoch, lease.epoch, seq))
+            plugin_pi_command.prune_capacity(db, lease.source_id)
+        plugin_pi_command.prune_orphans(db, lease.source_id)
         reason = withheld_reason or ("invalidated_session" if missing_new_content else
                                     "capacity" if capacity_victims else "")
         if not reason:
@@ -694,4 +747,12 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                    "ON CONFLICT(source_id) DO UPDATE SET cursor=excluded.cursor,"
                    "refs_digest=excluded.refs_digest",
                    (lease.source_id, batch.cursor, refs_digest))
+        if checked_commands:
+            db.execute("INSERT INTO plugin_command_batch_v1(source_id,cursor,refs_digest) "
+                       "VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
+                       "cursor=excluded.cursor,refs_digest=excluded.refs_digest",
+                       (lease.source_id, batch.cursor, command_digest))
+        else:
+            db.execute("DELETE FROM plugin_command_batch_v1 WHERE source_id=?",
+                       (lease.source_id,))
     return batch.cursor
