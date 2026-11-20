@@ -33,7 +33,10 @@ pub trait SourceFormat {
     type Context: Clone;
     const PLUGIN_ID: &'static str;
     const GAP_EVENT_PREFIX: &'static str;
-    fn header_identity(raw: &[u8]) -> Result<Self::Context>;
+    /// Derive initial context from the configured path and first complete
+    /// line. The line may be a metadata header or the first event, depending
+    /// on the harness. It is still passed to `translate_line` for admission.
+    fn header_identity(path: &Path, raw: &[u8]) -> Result<Self::Context>;
     /// Empty or a bounded ASCII identifier accepted by the durable cursor.
     fn checkpoint(context: &Self::Context) -> String;
     fn restore(context: &mut Self::Context, checkpoint: &str) -> Result<()>;
@@ -231,7 +234,7 @@ pub fn poll<F: SourceFormat>(
         return Ok(batch(source_id, raw_cursor, &[]));
     };
     let header_digest = format!("{:x}", Sha256::digest(&header));
-    let mut context = F::header_identity(&header)?;
+    let mut context = F::header_identity(path, &header)?;
     let changed = previous.as_ref().is_some_and(|prior| {
         (prior.device, prior.inode) != (device, inode)
             || prior.offset > metadata.len()
