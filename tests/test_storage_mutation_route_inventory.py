@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = Path(__file__).with_name("storage_mutation_routes.json")
 METHODS = frozenset({"_connect", "_transaction", "_write_db", "_source_write"})
 CONSTRUCTORS = frozenset({"Store", "WorkflowStore", "TaskStore", "OutboundQueue"})
+ALTERNATE_SQLITE_DRIVERS = frozenset({"aiosqlite", "apsw", "pysqlite3", "sqlcipher3", "pysqlcipher3"})
 AUTHORITIES = frozenset({"telemetry", "workflow", "tasks", "outbound", "offline", "read_only"})
 EFFECTS = frozenset({"may_write", "read_only", "backup_target", "external_effect"})
 CLI_ROUTES = {
@@ -126,12 +127,12 @@ def scan_tree(tree: ast.AST, path: str) -> tuple[Counter[tuple[str, str, str]], 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for name in node.names:
-                if (name.name.split(".")[0] in {"aiosqlite", "apsw"}
+                if (name.name.split(".")[0] in ALTERNATE_SQLITE_DRIVERS
                         or name.name.startswith("sqlite3.") and name.asname is not None
                         or name.name == "sqlite3" and name.asname not in (None, "sqlite3")):
                     aliases.append(f"{path}:{node.lineno}: unreviewed SQLite import")
         elif isinstance(node, ast.ImportFrom):
-            if (node.module or "").split(".")[0] in {"aiosqlite", "apsw"} or (
+            if (node.module or "").split(".")[0] in ALTERNATE_SQLITE_DRIVERS or (
                 node.module in {"sqlite3", "sqlite3.dbapi2"}
                 and any(name.name in {"connect", "dbapi2", "*"} for name in node.names)):
                 aliases.append(f"{path}:{node.lineno}: unreviewed SQLite import")
@@ -263,6 +264,10 @@ def new_route():
              "sqlite3.Connection"),
             ("import sqlite3\ndef open_db(): return sqlite3.dbapi2.connect('x.db')",
              "sqlite3.connect"),
+            ("import sqlite3\ndef open_db(): return sqlite3.dbapi2.Connection('x.db')",
+             "sqlite3.Connection"),
+            ("from sqlite3.dbapi2 import Connection\ndef open_db(): return Connection('x.db')",
+             "sqlite3.Connection"),
         ):
             with self.subTest(source=source):
                 sites, aliases = scan_tree(ast.parse(source), "new.py")
@@ -274,6 +279,10 @@ def new_route():
             "import sqlite3\ndef supplier(): return sqlite3.connect",
             "from sqlite3.dbapi2 import connect\nconnect('x.db')",
             "import sqlite3.dbapi2 as db\ndb.connect('x.db')",
+            "import pysqlite3\npysqlite3.connect('x.db')",
+            "from pysqlite3.dbapi2 import connect\nconnect('x.db')",
+            "import sqlcipher3\nsqlcipher3.connect('x.db')",
+            "import pysqlcipher3\npysqlcipher3.connect('x.db')",
             "from sqlite3 import Connection as C\nC('x.db')",
             "from sqlite3 import Connection\nConnection = object\nConnection('x.db')",
         ):
