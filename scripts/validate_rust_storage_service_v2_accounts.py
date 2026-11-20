@@ -13,6 +13,7 @@ import shutil
 import signal
 import socket
 import sqlite3
+import shutil
 import stat
 import struct
 import subprocess
@@ -202,10 +203,10 @@ def main() -> None:
     check(sys.platform == "linux" and os.geteuid() == 0,
           "run this fixture as root in an isolated Linux VM or container")
     check(args.bin is not None and args.bin.is_file(), "pass a built service")
-    binary = args.bin.resolve()
-    rust_client = args.rust_client_bin.resolve() if args.rust_client_bin else None
-    if rust_client is not None:
-        check(rust_client.is_file(), "pass a built Rust client")
+    binary_source = args.bin.resolve()
+    rust_client_source = args.rust_client_bin.resolve() if args.rust_client_bin else None
+    if rust_client_source is not None:
+        check(rust_client_source.is_file(), "pass a built Rust client")
     service_uid, client_uid, wrong_uid, service_gid, client_gid = identities()
     def drop_service() -> None:
         # Deliberately permissive launcher umask: service must impose privacy.
@@ -215,6 +216,14 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="agenturm-v2-accounts-") as temporary:
         root = Path(temporary)
         root.chmod(0o755)
+        binary = root / "agenturm-storage-service"
+        shutil.copy2(binary_source, binary)
+        binary.chmod(0o755)
+        rust_client = None
+        if rust_client_source is not None:
+            rust_client = root / "agenturm-v2-client"
+            shutil.copy2(rust_client_source, rust_client)
+            rust_client.chmod(0o755)
         data = root / "private-data"
         transport = root / "transport"
         data.mkdir(mode=0o700)

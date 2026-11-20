@@ -14,6 +14,7 @@ import pwd
 import signal
 import socket
 import sqlite3
+import shutil
 import stat
 import struct
 import subprocess
@@ -181,12 +182,15 @@ def main() -> None:
     check(sys.platform == "linux" and os.geteuid() == 0,
           "this fixture requires root on Linux inside an isolated VM or container")
     check(args.bin is not None and args.bin.is_file(), "pass a built service with --bin")
-    binary = args.bin.resolve()
+    binary_source = args.bin.resolve()
     service_uid, client_uid, wrong_uid, service_gid, client_gid = identities()
     wrong_gid = service_gid  # Distinct from the admitted primary client GID.
     with tempfile.TemporaryDirectory(prefix="agenturm-accounts-") as temporary:
         root = Path(temporary)
         root.chmod(0o755)
+        binary = root / "agenturm-storage-service"
+        shutil.copy2(binary_source, binary)
+        binary.chmod(0o755)
         data = root / "private-data"
         transport = root / "transport"
         data.mkdir(mode=0o700)
