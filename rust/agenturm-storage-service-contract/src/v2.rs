@@ -34,6 +34,11 @@ pub enum Operation {
         batch_digest: String,
         records: Vec<PreparedLifecycle>,
     },
+    RevokeSource {
+        lease: SourceLease,
+        cursor: String,
+        expected_dirty_seq: i64,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -97,7 +102,14 @@ pub struct Reply {
     pub receiver_id: String,
     /// SHA-256 of canonical request JSON, binding an ack to the entire batch.
     pub request_digest: String,
-    pub result: AdmissionResult,
+    pub result: OperationResult,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OperationResult {
+    LifecycleAdmission(AdmissionResult),
+    SourceRevoked(SourceRevokedResult),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -107,6 +119,17 @@ pub struct AdmissionResult {
     pub cursor: String,
     pub batch_digest: String,
     pub dirty_seq: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceRevokedResult {
+    pub disposition: Disposition,
+    pub cursor: String,
+    pub dirty_seq: i64,
+    pub lease_epoch: i64,
+    pub policy_epoch: i64,
+    pub capture_enabled: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -297,6 +320,26 @@ impl Request {
                     }
                 }
             }
+            Operation::RevokeSource {
+                lease,
+                cursor: current_cursor,
+                expected_dirty_seq,
+            } => {
+                if lease.receiver_id != self.receiver_id
+                    || !identity(&lease.plugin_id, 256)
+                    || !identity(&lease.source_id, 256)
+                    || !digest(&lease.generation, 32)
+                    || lease.epoch <= 0
+                    || lease.policy_epoch <= 0
+                    || !cursor(current_cursor)
+                    || *expected_dirty_seq < 0
+                    || lease.epoch.checked_add(1).is_none()
+                    || lease.policy_epoch.checked_add(1).is_none()
+                    || expected_dirty_seq.checked_add(1).is_none()
+                {
+                    return Err(ContractError::Invalid("invalid v2 capture revocation"));
+                }
+            }
         }
         canonical(self)?;
         Ok(())
@@ -351,22 +394,51 @@ impl Reply {
 
     pub fn validate_for(&self, request: &Request) -> Result<()> {
         let replay = request.replay_identity()?;
-        let Operation::AdmitLifecycle {
-            expected_cursor,
-            cursor,
-            batch_digest,
-            records,
-            ..
-        } = &request.operation;
+        let cursor = match &request.operation {
+            Operation::AdmitLifecycle { cursor, .. } => cursor,
+            Operation::RevokeSource { cursor, .. } => cursor,
+        };
         if self.version != VERSION
             || self.request_id != request.request_id
             || self.receiver_id != request.receiver_id
             || self.request_digest != replay.digest
-            || self.result.cursor != *cursor
-            || self.result.batch_digest != *batch_digest
-            || self.result.dirty_seq < 0
-            || (self.result.disposition == Disposition::Idle
-                && (!records.is_empty() || cursor != expected_cursor))
+            || match (&request.operation, &self.result) {
+                (
+                    Operation::AdmitLifecycle {
+                        batch_digest,
+                        expected_cursor,
+                        records,
+                        ..
+                    },
+                    OperationResult::LifecycleAdmission(result),
+                ) => {
+                    result.cursor != *cursor
+                        || result.batch_digest != *batch_digest
+                        || result.dirty_seq < 0
+                        || result.disposition == Disposition::Idle
+                            && (!records.is_empty() || cursor != expected_cursor)
+                }
+                (
+                    Operation::RevokeSource {
+                        lease,
+                        expected_dirty_seq,
+                        ..
+                    },
+                    OperationResult::SourceRevoked(result),
+                ) => {
+                    Some(result.cursor.as_str()) != Some(cursor.as_str())
+                        || result.dirty_seq != expected_dirty_seq.checked_add(1).unwrap_or_default()
+                        || result.lease_epoch != lease.epoch.checked_add(1).unwrap_or_default()
+                        || result.policy_epoch
+                            != lease.policy_epoch.checked_add(1).unwrap_or_default()
+                        || result.capture_enabled
+                        || result.dirty_seq < 0
+                        || result.lease_epoch <= 0
+                        || result.policy_epoch <= 0
+                        || result.disposition == Disposition::Idle
+                }
+                _ => true,
+            }
         {
             return Err(ContractError::Invalid("v2 reply does not match request"));
         }
@@ -419,7 +491,9 @@ mod tests {
             crate::ReplayRelation::Exact
         );
         let mut changed = request.clone();
-        let Operation::AdmitLifecycle { cursor, .. } = &mut changed.operation;
+        let Operation::AdmitLifecycle { cursor, .. } = &mut changed.operation else {
+            panic!("fixture is lifecycle admission")
+        };
         *cursor = "different".into();
         assert_eq!(
             original.compare(&changed.replay_identity().unwrap()),
@@ -514,18 +588,21 @@ mod tests {
             cursor,
             batch_digest,
             ..
-        } = &request.operation;
+        } = &request.operation
+        else {
+            panic!("fixture is lifecycle admission")
+        };
         let reply = Reply {
             version: VERSION,
             request_id: request.request_id.clone(),
             receiver_id: request.receiver_id.clone(),
             request_digest: digest,
-            result: AdmissionResult {
+            result: OperationResult::LifecycleAdmission(AdmissionResult {
                 disposition: Disposition::Committed,
                 cursor: cursor.clone(),
                 batch_digest: batch_digest.clone(),
                 dirty_seq: 1,
-            },
+            }),
         };
         assert_eq!(
             Reply::from_json(&reply.to_json(&request).unwrap(), &request).unwrap(),
@@ -539,13 +616,88 @@ mod tests {
         assert!(Reply::from_json(&serde_json::to_vec(&unknown).unwrap(), &request).is_err());
         assert!(Reply::from_json(&vec![b' '; MAX_FRAME_BYTES + 1], &request).is_err());
         let mut changed = reply.clone();
-        changed.result.batch_digest = "f".repeat(64);
+        if let OperationResult::LifecycleAdmission(result) = &mut changed.result {
+            result.batch_digest = "f".repeat(64);
+        }
         assert!(changed.to_json(&request).is_err());
         changed = reply;
         changed.request_digest = "f".repeat(64);
         assert!(changed.to_json(&request).is_err());
         changed.request_digest = request.replay_identity().unwrap().digest;
-        changed.result.disposition = Disposition::Idle;
+        if let OperationResult::LifecycleAdmission(result) = &mut changed.result {
+            result.disposition = Disposition::Idle;
+        }
         assert!(changed.to_json(&request).is_err());
+    }
+
+    fn revoke_fixture() -> Request {
+        let (admission, _) = fixture();
+        let Operation::AdmitLifecycle { lease, cursor, .. } = admission.operation else {
+            panic!("fixture is lifecycle admission")
+        };
+        Request {
+            version: VERSION,
+            request_id: "1123456789abcdef0123456789abcdef".into(),
+            receiver_id: admission.receiver_id,
+            operation: Operation::RevokeSource {
+                lease,
+                cursor,
+                expected_dirty_seq: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn revoke_contract_uses_typed_policy_result_and_binds_fence() {
+        let request = revoke_fixture();
+        let Operation::RevokeSource {
+            lease,
+            cursor,
+            expected_dirty_seq,
+        } = &request.operation
+        else {
+            panic!("expected revoke request")
+        };
+        let reply = Reply {
+            version: VERSION,
+            request_id: request.request_id.clone(),
+            receiver_id: request.receiver_id.clone(),
+            request_digest: request.replay_identity().unwrap().digest,
+            result: OperationResult::SourceRevoked(SourceRevokedResult {
+                disposition: Disposition::Committed,
+                cursor: cursor.clone(),
+                dirty_seq: expected_dirty_seq + 1,
+                lease_epoch: lease.epoch + 1,
+                policy_epoch: lease.policy_epoch + 1,
+                capture_enabled: false,
+            }),
+        };
+        let bytes = reply.to_json(&request).unwrap();
+        assert_eq!(Reply::from_json(&bytes, &request).unwrap(), reply);
+
+        let mut wrong = reply.clone();
+        let OperationResult::SourceRevoked(result) = &mut wrong.result else {
+            unreachable!()
+        };
+        result.capture_enabled = true;
+        let _ = result;
+        assert!(wrong.to_json(&request).is_err());
+        let OperationResult::SourceRevoked(result) = &mut wrong.result else {
+            unreachable!()
+        };
+        result.capture_enabled = false;
+        result.policy_epoch += 1;
+        assert!(wrong.to_json(&request).is_err());
+        let mut wrong_kind = reply;
+        let OperationResult::SourceRevoked(result) = wrong_kind.result else {
+            unreachable!()
+        };
+        wrong_kind.result = OperationResult::LifecycleAdmission(AdmissionResult {
+            disposition: Disposition::Committed,
+            cursor: result.cursor,
+            batch_digest: "d".repeat(64),
+            dirty_seq: result.dirty_seq,
+        });
+        assert!(wrong_kind.to_json(&request).is_err());
     }
 }

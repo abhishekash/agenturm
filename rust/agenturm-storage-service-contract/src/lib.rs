@@ -664,18 +664,23 @@ mod local {
                 cursor,
                 batch_digest,
                 ..
-            } = &request.operation;
+            } = &request.operation
+            else {
+                panic!("fixture is lifecycle admission")
+            };
             crate::v2::Reply {
                 version: crate::v2::VERSION,
                 request_id: request.request_id.clone(),
                 receiver_id: request.receiver_id.clone(),
                 request_digest: request.replay_identity().unwrap().digest,
-                result: crate::v2::AdmissionResult {
-                    disposition: crate::v2::Disposition::Committed,
-                    cursor: cursor.clone(),
-                    batch_digest: batch_digest.clone(),
-                    dirty_seq: 1,
-                },
+                result: crate::v2::OperationResult::LifecycleAdmission(
+                    crate::v2::AdmissionResult {
+                        disposition: crate::v2::Disposition::Committed,
+                        cursor: cursor.clone(),
+                        batch_digest: batch_digest.clone(),
+                        dirty_seq: 1,
+                    },
+                ),
             }
         }
 
