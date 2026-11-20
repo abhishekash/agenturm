@@ -5,6 +5,12 @@ import os
 from pathlib import Path
 
 
+def native_ingest_scopes():
+    from ..native_ingest_scopes import NativeIngestScope
+
+    return (NativeIngestScope("observatory.opencode"),)
+
+
 def mcp_config_contributions():
     from ..mcp_config_registry import McpConfigContribution
 
