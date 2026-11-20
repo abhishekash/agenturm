@@ -14,6 +14,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const CONTROL_LIMIT: usize = 64 * 1024;
 const MAX_RECORDS: u64 = 256;
 const MAX_STRUCTURAL_TOKENS: usize = 8192;
+const MAX_CURSOR_CHARS: usize = 800;
 
 fn structural_tokens(raw: &[u8]) -> usize {
     let (mut quoted, mut escaped, mut count) = (false, false, 0);
@@ -93,7 +94,7 @@ fn discovery_members(value: Option<&Value>) -> Result<BTreeMap<String, String>> 
             return Err(invalid("invalid discovery member ID"));
         }
         let cursor = value.as_str().ok_or("invalid discovery member cursor")?;
-        if cursor.len() > 512 || cursor.bytes().any(|b| b < 32 || b == 127) {
+        if cursor.len() > MAX_CURSOR_CHARS || cursor.bytes().any(|b| b < 32 || b == 127) {
             return Err(invalid("invalid discovery member cursor"));
         }
         result.insert(id.to_owned(), cursor.to_owned());
@@ -174,6 +175,11 @@ impl Session {
                     .get("cursor")
                     .and_then(Value::as_str)
                     .ok_or("missing cursor")?;
+                if cursor.len() > MAX_CURSOR_CHARS
+                    || cursor.bytes().any(|byte| byte < 32 || byte == 127)
+                {
+                    return Err(invalid("invalid poll cursor"));
+                }
                 let count = object
                     .get("max_records")
                     .and_then(Value::as_u64)
@@ -433,6 +439,48 @@ mod tests {
         assert_eq!(
             response["content_refs"],
             json!({"schema_version":1,"refs":[]})
+        );
+    }
+
+    #[test]
+    fn poll_cursor_accepts_800_chars_and_rejects_overflow() {
+        assert!(identity(&"s".repeat(200)));
+        assert!(!identity(&"s".repeat(201)));
+        let mut session = Session::default();
+        session
+            .handle::<Content>(
+                json!({"type":"hello","protocol":1,"plugin_id":"fixture.content",
+                "source_id":"source","max_frame_bytes":65536}),
+                Path::new("/tmp"),
+            )
+            .unwrap();
+        let valid = "a".repeat(MAX_CURSOR_CHARS);
+        let batch = session
+            .handle::<Content>(
+                json!({"type":"poll","protocol":1,"source_id":"source",
+                "cursor":valid,"max_records":1,"max_bytes":65536}),
+                Path::new("/tmp"),
+            )
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(batch["cursor"].as_str().unwrap().len(), MAX_CURSOR_CHARS);
+        session
+            .handle::<Content>(
+                json!({"type":"ack","protocol":1,"source_id":"source",
+                "cursor":batch["cursor"]}),
+                Path::new("/tmp"),
+            )
+            .unwrap();
+        let invalid_cursor = "a".repeat(MAX_CURSOR_CHARS + 1);
+        assert!(
+            session
+                .handle::<Content>(
+                    json!({"type":"poll","protocol":1,"source_id":"source",
+                "cursor":invalid_cursor,"max_records":1,"max_bytes":65536}),
+                    Path::new("/tmp"),
+                )
+                .is_err()
         );
     }
 

@@ -24,7 +24,10 @@ const MAX_SCAN: u64 = 1024 * 1024;
 const MAX_VERIFIED_PREFIX: u64 = 512 * 1024 * 1024;
 // Match observatory.plugin_wire.MAX_STRUCTURAL_TOKENS for the serialized batch.
 pub const MAX_STRUCTURAL_TOKENS: usize = 8192;
-pub const MAX_CURSOR: usize = 512;
+pub const MAX_CURSOR: usize = 800;
+// The encoded source cursor adds at most 261 bytes around its adapter
+// checkpoint (three u64 fields, three SHA-256 digests and separators).
+const MAX_CHECKPOINT: usize = MAX_CURSOR - 261;
 
 pub const fn max_frame_bytes() -> usize {
     MAX_FRAME_BYTES
@@ -86,9 +89,9 @@ fn classify_read(error: Box<dyn Error>) -> Box<dyn Error> {
     }
 }
 
-fn identity(value: &str) -> bool {
+fn checkpoint_identity(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= 200
+        && value.len() <= MAX_CHECKPOINT
         && value.as_bytes()[0].is_ascii_alphanumeric()
         && value
             .bytes()
@@ -97,7 +100,7 @@ fn identity(value: &str) -> bool {
 
 fn checked_checkpoint<F: SourceFormat>(context: &F::Context) -> Result<String> {
     let value = F::checkpoint(context);
-    if !value.is_empty() && !identity(&value) {
+    if !value.is_empty() && !checkpoint_identity(&value) {
         return Err(invalid("invalid source checkpoint"));
     }
     Ok(value)
@@ -145,7 +148,7 @@ impl Cursor {
             || !fields[5]
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            || (!fields[6].is_empty() && !identity(fields[6]))
+            || (!fields[6].is_empty() && !checkpoint_identity(fields[6]))
         {
             return Err(invalid("invalid cursor format"));
         }
@@ -634,5 +637,26 @@ mod tests {
         assert_eq!(first, replay);
         assert_eq!(first["records"][0]["time_ns"], "0");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_and_cursor_limits_expand_without_widening_source_ids() {
+        let checkpoint = "a".repeat(MAX_CHECKPOINT);
+        assert!(checkpoint_identity(&checkpoint));
+        assert!(!checkpoint_identity(&format!("{checkpoint}a")));
+        let cursor = Cursor {
+            version: 2,
+            device: u64::MAX,
+            inode: u64::MAX,
+            offset: u64::MAX,
+            digest: "0".repeat(64),
+            header_digest: "1".repeat(64),
+            generation: "2".repeat(64),
+            checkpoint,
+        }
+        .encode();
+        assert_eq!(cursor.len(), MAX_CURSOR);
+        assert!(Cursor::parse(&cursor).unwrap().is_some());
+        assert!(Cursor::parse(&format!("{cursor}x")).is_err());
     }
 }

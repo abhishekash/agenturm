@@ -191,6 +191,14 @@ class ProcessHostTests(unittest.TestCase):
 
 
 class WireTests(unittest.TestCase):
+    def test_cursor_boundary_is_800_characters(self):
+        batch = {"type": "batch", "protocol": 1, "source_id": "source",
+                 "cursor": "x" * 800, "records": []}
+        self.assertEqual(len(validate_batch(batch, source_id="source").cursor), 800)
+        batch["cursor"] += "x"
+        with self.assertRaisesRegex(ProtocolError, "cursor"):
+            validate_batch(batch, source_id="source")
+
     def test_duplicate_keys_nonfinite_numbers_and_depth_are_rejected(self):
         for raw in ('{"x":1,"x":2}', '{"x":NaN}', '{"x":1e9999}',
                     '[' * 21 + '0' + ']' * 21):

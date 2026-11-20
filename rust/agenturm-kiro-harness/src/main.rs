@@ -48,6 +48,7 @@ fn main() {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -96,6 +97,85 @@ mod tests {
             )
             .is_err()
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_pending_call_cursor_promotes_to_k2_on_next_poll() {
+        let root = std::env::temp_dir().join(format!(
+            "agenturm-kiro-k1-migrate-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let session = root.join("sess_11111111-2222-3333-4444-555555555555");
+        fs::create_dir_all(&session).unwrap();
+        let path = session.join("messages.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"id\":\"user-one\",\"timestamp\":\"2026-11-18T12:00:00Z\",\"payload\":{\"type\":\"user\"}}\n",
+                "{\"id\":\"call-row\",\"timestamp\":\"2026-11-18T12:00:01Z\",\"payload\":{\"type\":\"tool_call\",\"toolCallId\":\"opaque-call\",\"toolName\":\"run_command\",\"args\":{\"command\":\"private command\"}}}\n"
+            ),
+        )
+        .unwrap();
+        let first = agenturm_jsonl_source::poll::<KiroFormat>(
+            &path,
+            "source",
+            "",
+            256,
+            agenturm_jsonl_source::max_frame_bytes(),
+        )
+        .unwrap();
+        let current = first["cursor"].as_str().unwrap();
+        let outer: Vec<_> = current
+            .strip_prefix("v2:")
+            .unwrap()
+            .splitn(7, ':')
+            .collect();
+        let fields: Vec<_> = outer[6].split(':').collect();
+        assert_eq!(fields[0], "k2");
+        let current_call = fields[8];
+        assert_eq!(current_call.len(), 66);
+        let legacy_call = format!("{}{}", &current_call[..24], &current_call[64..]);
+        let legacy_checkpoint = format!(
+            "k{}:{}:{}:{}:{}:{}:{}:{}",
+            fields[1],
+            fields[2],
+            fields[3],
+            fields[4],
+            fields[5],
+            fields[6],
+            fields[7],
+            legacy_call
+        );
+        let legacy_cursor = format!("v2:{}:{}", outer[..6].join(":"), legacy_checkpoint);
+        assert!(legacy_cursor.len() <= 800);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"id\":\"result-row\",\"timestamp\":\"2026-11-18T12:00:02Z\",\"payload\":{\"type\":\"tool_result\",\"toolCallId\":\"opaque-call\",\"success\":true}}\n")
+            .unwrap();
+        let migrated = agenturm_jsonl_source::poll::<KiroFormat>(
+            &path,
+            "source",
+            &legacy_cursor,
+            256,
+            agenturm_jsonl_source::max_frame_bytes(),
+        )
+        .unwrap();
+        assert_eq!(migrated["records"][0]["payload"]["result"], "succeeded");
+        let migrated_outer: Vec<_> = migrated["cursor"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("v2:")
+            .unwrap()
+            .splitn(7, ':')
+            .collect();
+        assert!(migrated_outer[6].starts_with("k2:"));
+        let encoded = serde_json::to_string(&migrated).unwrap();
+        assert!(!encoded.contains("private command"));
+        assert!(!migrated_outer[6].contains("opaque-call"));
         fs::remove_dir_all(root).unwrap();
     }
 }
