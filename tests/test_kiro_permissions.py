@@ -9,7 +9,8 @@ from unittest.mock import patch
 from observatory.core import Store
 from observatory.kiro_permissions import parse_yaml, read_rules, standing_sources, workspace_permissions
 from observatory.local_agents import LocalAgents, Session
-from observatory.ui_monitoring import permission_summary
+from observatory.ui_kiro_inspector import KIRO_PERMISSIONS, permission_summary
+from observatory.ui_session_inspector import SessionInspectorRegistry
 
 USER_RULES = """rules:
   - capability: shell
@@ -137,6 +138,10 @@ class KiroSessionPermissionTests(unittest.TestCase):
         agents.poll()
         status = agents.status()
         self.assertEqual(status["kiro_folders"][0]["folder"], "project")
+        inspector = SessionInspectorRegistry((KIRO_PERMISSIONS,)).for_session(
+            status["sessions"][0], status)
+        self.assertNotIn("/work/project", repr(inspector))
+        self.assertIn("Trusted folders (1)", inspector.detail_sections[0][1])
         workspace = next(source for source in status["sessions"][0]["permissions"]["rules"]
                          if source["source"] == "Workspace")
         self.assertEqual(workspace["folder"], "project")

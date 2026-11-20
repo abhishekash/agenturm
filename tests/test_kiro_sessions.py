@@ -405,7 +405,7 @@ class KiroSessionTests(unittest.TestCase):
         self.assertEqual(latest[-1]["subject"], "make test")
         self.assertEqual(latest[-1]["resolved_ns"] - latest[-1]["requested_ns"], 1_000_000_000)
 
-        from observatory.ui_monitoring import permission_summary
+        from observatory.ui_kiro_inspector import permission_summary
         short, details = permission_summary({"permissions": summary})
         self.assertEqual(short, "4 requests: 1 always allowed, 1 denied, 1 cancelled, 1 waiting · autopilot on")
         self.assertIn("Always allowed run_command  make test  (answered after 1s)", details)
