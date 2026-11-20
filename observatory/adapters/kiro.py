@@ -15,6 +15,56 @@ from ..session_text import remember_task
 
 
 SOURCE_PRIORITY = 3
+KIRO_METADATA_BYTES = 64 * 1024
+KIRO_STOP_STATES = {"end_turn": "completed", "cancelled": "interrupted", "error": "failed"}
+KIRO_CREDITS_KEY = "kiro.usage.credits"
+KIRO_PERMISSION_WINDOW = 256
+KIRO_PERMISSION_RECENT = 10
+KIRO_RULES_REFRESH_SECONDS = 10
+KIRO_OPTION_KINDS = {"accept": "allow_once", "always-accept": "allow_always",
+                     "reject": "reject_once", "always-reject": "reject_always",
+                     **{kind: kind for kind in ("allow_once", "allow_always", "reject_once", "reject_always")}}
+
+
+def kiro_credits(payload):
+    """Sum a usage_summary's credit entries; None when none is reported."""
+    values = [item.get("usage") for item in payload.get("promptTurnSummaries") or []
+              if isinstance(item, dict) and item.get("unit") == "credit"]
+    values = [float(value) for value in values
+              if type(value) in {int, float} and math.isfinite(value) and value >= 0]
+    return round(sum(values), 8) if values else None
+
+
+def _kiro_layout(path):
+    """Return the session directory and delegated worker ID for a Kiro file."""
+    from ..local_agents import _safe_identifier
+    path = Path(path)
+    if path.parent.name == "sub-executions":
+        return path.parent.parent, _safe_identifier(path.stem)
+    return path.parent, None
+
+
+def _kiro_interaction_key(payload, row):
+    from ..local_agents import _safe_identifier
+    call_id = _safe_identifier(payload.get("toolCallId"))
+    if not call_id:
+        return None
+    round_ = payload.get("consentRound")
+    return call_id + ":" + str(round_ if type(round_) is int else 0)
+
+
+def _kiro_mcp_attributes(payload):
+    """Kiro records the configured MCP server beside its flattened tool name."""
+    name = str(payload.get("toolName") or "")
+    meta = ((payload.get("_meta") or {}).get("kiro") or {}) if isinstance(payload.get("_meta"), dict) else {}
+    server = meta.get("serverName") if isinstance(meta, dict) else None
+    if not isinstance(server, str) or not server.strip() or not name:
+        return mcp_attributes(name)
+    server = server.strip()[:128]
+    prefix = "mcp_" + "_".join(filter(None, "".join(
+        char if char.isalnum() else " " for char in server.casefold()).split())) + "_"
+    tool = name[len(prefix):] if name.casefold().startswith(prefix) and len(name) > len(prefix) else name
+    return {"mcp.server.name": server, "mcp.tool.name": tool[:128], "mcp.method.name": "tools/call"}
 
 
 def mcp_config_contributions():
@@ -33,7 +83,8 @@ def source_spec():
     return NativeSourceSpec(
         "kiro", "Kiro", lambda: kiro_home() / "sessions", kiro_source,
         lambda name: name not in KIRO_SKIPPED_DIRECTORIES,
-        adapter_factory=KiroAdapter)
+        adapter_factory=KiroAdapter,
+        empty_status_extension=lambda: {"kiro_folders": []})
 
 
 class KiroAdapter:
@@ -46,7 +97,6 @@ class KiroAdapter:
 
     def status_extension(self, capture_details, on_error):
         """Publish bounded workspace permission metadata for active Kiro sources."""
-        from ..local_agents import KIRO_RULES_REFRESH_SECONDS
         if time.monotonic() - self._workspace_checked >= KIRO_RULES_REFRESH_SECONDS:
             self._workspace_checked = time.monotonic()
             from ..kiro_permissions import workspace_permissions
@@ -105,7 +155,7 @@ class KiroAdapter:
 
     def initialize(self, session):
         """Identity comes from the session directory; a worker from sub-executions/."""
-        from ..local_agents import _kiro_layout, MAX_RECENT_CALLS, _safe_identifier
+        from ..local_agents import MAX_RECENT_CALLS, _safe_identifier
         session.kiro_session_dir, worker = _kiro_layout(session.path)
         session.kiro_metadata_mtime_ns = None
         session.kiro_title = ""
@@ -143,14 +193,13 @@ class KiroAdapter:
         self.refresh_metadata(session)
 
     def reset_permissions(self, session):
-        from ..local_agents import KIRO_PERMISSION_WINDOW
         session.kiro_permissions = RecentMap(KIRO_PERMISSION_WINDOW)
         session.kiro_permission_counts = {}
         session.kiro_history_partial = False
 
     def permission(self, session, row, payload, stamp):
         """Record each tool-approval request and the answer Kiro wrote for it."""
-        from ..local_agents import _kiro_interaction_key, _safe_identifier, KIRO_OPTION_KINDS
+        from ..local_agents import _safe_identifier
         event = payload.get("type")
         key = _kiro_interaction_key(payload, row)
         if event == "tool_call":
@@ -206,7 +255,6 @@ class KiroAdapter:
             session.kiro_permission_counts[decision] = session.kiro_permission_counts.get(decision, 0) + 1
 
     def permission_summary(self, session):
-        from ..local_agents import KIRO_PERMISSION_RECENT
         recent = sorted(session.kiro_permissions.values(), key=lambda item: item["requested_ns"], reverse=True)
         return {"autopilot": session.kiro_autopilot, "counts": dict(session.kiro_permission_counts),
                 "complete": not session.kiro_history_partial and not session.kiro_permissions.evictions,
@@ -218,7 +266,6 @@ class KiroAdapter:
 
     def refresh_metadata(self, session):
         """Read bounded session.json fields: title, workspace and model only."""
-        from ..local_agents import KIRO_METADATA_BYTES
         path = session.kiro_session_dir / "session.json"
         try:
             stat = path.stat()
@@ -256,7 +303,6 @@ class KiroAdapter:
 
     def refresh_rules(self, session, force=False):
         """Re-read standing rule files at most every 10 s, and only when they change."""
-        from ..local_agents import KIRO_RULES_REFRESH_SECONDS
         if not force and time.monotonic() - session.kiro_rules_checked < KIRO_RULES_REFRESH_SECONDS:
             return
         session.kiro_rules_checked = time.monotonic()
@@ -292,7 +338,6 @@ class KiroAdapter:
         return None
 
     def observe_state(self, session, row: dict, stamp: int) -> tuple[str, object] | None:
-        from ..local_agents import KIRO_STOP_STATES, _kiro_interaction_key
         payload = row.get("payload") or {}
         if not isinstance(payload, dict):
             return None
@@ -329,7 +374,7 @@ class KiroAdapter:
         return state, request_key
 
     def parse(self, session, row, stamp, prior_models):
-        from ..local_agents import KIRO_STOP_STATES, _safe_identifier, _kiro_mcp_attributes
+        from ..local_agents import _safe_identifier
         payload = row.get("payload") or {}
         if not isinstance(payload, dict):
             return []
@@ -416,7 +461,6 @@ class KiroAdapter:
 
     def usage_span(self, session, row, payload, stamp):
         """One model-usage span per turn: Kiro reports credits, never tokens."""
-        from ..local_agents import KIRO_CREDITS_KEY, kiro_credits
         credits = kiro_credits(payload)
         if credits is None:
             return None
@@ -461,7 +505,6 @@ KIRO_FILE_ACTIONS = {"fs_write": "write", "write_file": "write", "str_replace": 
 
 def _kiro_call(payload, turn):
     """Retain only the bounded call fields that classify its later result."""
-    from ..local_agents import _kiro_mcp_attributes
     args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
     keep = {key: args[key] for key in ("command", "cwd", "run_in_background", "path", "targetFile", "url", "query")
             if isinstance(args.get(key), (str, bool))}
@@ -535,7 +578,6 @@ def _kiro_activity(session, row, stamp):
                         "Approval cancelled" if payload.get("outcome") == "cancelled" else "Approval answered",
                         "", "observed", {"kiro.selected_option": option[:64]} if option else None))
     elif event in {"turn_start", "turn_end"}:
-        from ..local_agents import KIRO_STOP_STATES
         action = "started" if event == "turn_start" else KIRO_STOP_STATES.get(
             str(payload.get("stopReason") or ""), "incomplete")
         out.append(emit(session, row, stamp, "agent", action, session.project or session.runtime,

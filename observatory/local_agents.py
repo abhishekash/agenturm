@@ -768,60 +768,6 @@ class Session:
 
 
 SPAWN_TOOLS = {"spawn_agent", "Task", "Agent"}
-KIRO_METADATA_BYTES = 64 * 1024
-KIRO_STOP_STATES = {"end_turn": "completed", "cancelled": "interrupted", "error": "failed"}
-KIRO_CREDITS_KEY = "kiro.usage.credits"
-KIRO_PERMISSION_WINDOW = 256
-KIRO_PERMISSION_RECENT = 10
-KIRO_RULES_REFRESH_SECONDS = 10
-# Older records omit the option list; these are Kiro's built-in option IDs.
-KIRO_OPTION_KINDS = {"accept": "allow_once", "always-accept": "allow_always",
-                     "reject": "reject_once", "always-reject": "reject_always",
-                     # Some records store the option kind itself as the selection.
-                     **{kind: kind for kind in ("allow_once", "allow_always", "reject_once", "reject_always")}}
-
-
-def kiro_credits(payload):
-    """Sum a usage_summary's credit entries; None when none is reported."""
-    values = [item.get("usage") for item in payload.get("promptTurnSummaries") or []
-              if isinstance(item, dict) and item.get("unit") == "credit"]
-    values = [float(value) for value in values
-              if type(value) in {int, float} and math.isfinite(value) and value >= 0]
-    return round(sum(values), 8) if values else None
-def _kiro_layout(path):
-    """Return (session directory, worker id) for a Kiro messages or sub-execution file.
-
-    <KIRO_HOME>/sessions/<workspace>/sess_<id>/messages.jsonl is a session;
-    <session>/sub-executions/<subSessionId>.jsonl is a worker it delegated to.
-    """
-    path = Path(path)
-    if path.parent.name == "sub-executions":
-        return path.parent.parent, _safe_identifier(path.stem)
-    return path.parent, None
-
-
-def _kiro_interaction_key(payload, row):
-    call_id = _safe_identifier(payload.get("toolCallId"))
-    if not call_id:
-        return None
-    round_ = payload.get("consentRound")
-    return call_id + ":" + str(round_ if type(round_) is int else 0)
-
-
-def _kiro_mcp_attributes(payload):
-    """Kiro records the configured MCP server beside its flattened tool name."""
-    name = str(payload.get("toolName") or "")
-    meta = ((payload.get("_meta") or {}).get("kiro") or {}) if isinstance(payload.get("_meta"), dict) else {}
-    server = meta.get("serverName") if isinstance(meta, dict) else None
-    if not isinstance(server, str) or not server.strip() or not name:
-        return mcp_attributes(name)
-    server = server.strip()[:128]
-    prefix = "mcp_" + "_".join(filter(None, "".join(
-        char if char.isalnum() else " " for char in server.casefold()).split())) + "_"
-    tool = name[len(prefix):] if name.casefold().startswith(prefix) and len(name) > len(prefix) else name
-    return {"mcp.server.name": server, "mcp.tool.name": tool[:128], "mcp.method.name": "tools/call"}
-
-
 def _spawned_agent_id(value):
     """Extract only an exact child identity from a successful spawn result."""
     if isinstance(value, str):
@@ -1108,9 +1054,26 @@ class LocalAgents:
                 extensions.update(fields)
             except Exception as exc:
                 self.record_error(exc, f'Inspecting native adapter {type(peers[0].adapter).__name__}')
-        # Compatibility: existing health clients expect the field even when
-        # the Kiro adapter has no active source.
-        extensions.setdefault('kiro_folders', [])
+        # A source may declare an empty-state shape for clients that inspect
+        # status before that source has any active sessions. Active adapter
+        # output wins; no format name is interpreted by the collector.
+        default_keys = set()
+        for spec in getattr(self, 'source_specs', ()):
+            if spec.empty_status_extension is None:
+                continue
+            try:
+                fields = spec.empty_status_extension()
+                if (not isinstance(fields, dict) or fields.keys() & _HOST_STATUS_TOP_LEVEL
+                        or fields.keys() & default_keys or any(
+                            type(key) is not str or not key or len(key) > 64 for key in fields)):
+                    raise ValueError('native source empty status extension conflicts with host fields')
+                if len(json.dumps(fields, allow_nan=False).encode('utf-8')) > 64 * 1024:
+                    raise ValueError('native source empty status extension exceeds 64 KiB')
+                default_keys.update(fields)
+                for key, value in fields.items():
+                    extensions.setdefault(key, value)
+            except Exception as exc:
+                self.record_error(exc, f'Inspecting native source {spec.id} empty status extension')
         return extensions
 
     def status(self):
