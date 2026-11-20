@@ -429,6 +429,51 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     self._json(400, {'error': str(exc)})
                 except (sqlite3.Error, OSError):
                     self._json(503, {'error': 'Plugin Activity source revision unavailable.'})
+            elif path == "/api/plugin-content":
+                # Explicit, exact-event text access. The active receiver owns
+                # the source grant and never trusts a path supplied by HTTP.
+                from .plugin_activity import _EVENT_KEY
+                from .plugin_pi_content_read import Available, read_exact_pi_user_text
+                from .receiver_state import loopback_host
+                from .workflow_evidence import safe_text
+                if not loopback_host(self.server.server_address[0]) or \
+                        not loopback_host(self.client_address[0]):
+                    self._json(403, {'error': 'Captured text requires a local receiver.'})
+                    return
+                query = parse_qs(route.query, keep_blank_values=True)
+                if set(query) != {'event_id'} or len(query['event_id']) != 1:
+                    self._json(400, {'error': 'One exact plugin Activity event is required.'})
+                    return
+                event_id = query['event_id'][0]
+                if not _EVENT_KEY.fullmatch(event_id):
+                    self._json(400, {'error': 'Invalid plugin Activity event.'})
+                    return
+                selected = read_exact_pi_user_text(store, event_id)
+                if not isinstance(selected, Available):
+                    self._json(404, {'error': 'Captured text unavailable for this exact event.'})
+                    return
+                # Bound the response independently of the retained source row.
+                clean = safe_text(selected.redacted_text)
+                encoded = clean.encode('utf-8')
+                clipped = len(encoded) > 4096
+                preview = encoded[:4096].decode('utf-8', 'ignore') if clipped else clean
+                proof = selected.proof
+                try:self._activity_file_identity = store._source_file_identity('Activity')
+                except (OSError, ValueError, sqlite3.Error):
+                    self._json(503, {'error': 'Plugin source revision unavailable.'})
+                    return
+                self._cache_version = None
+                self._capability_guard = lambda: read_exact_pi_user_text(store, event_id) == selected
+                try:
+                    data = json.dumps({
+                        'receiver_id': proof.receiver_id, 'event_id': event_id,
+                        'redacted_text': preview, 'clipped': clipped,
+                        'revision': [proof.lease_epoch, proof.policy_epoch,
+                                     proof.source_dirty_seq],
+                    }, ensure_ascii=False).encode('utf-8')
+                    self._json_bytes(200, data, body_receiver=proof.receiver_id)
+                finally:
+                    self._capability_guard = None
             elif path == "/api/metrics":
                 certificate=({'_initial_receiver':self._get_receiver_id,'_initial_file':self._metrics_file_identity}if certified_metrics else {})
                 self._json(200, store.metrics(**certificate))
