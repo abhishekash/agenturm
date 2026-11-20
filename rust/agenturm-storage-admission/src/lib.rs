@@ -214,29 +214,52 @@ fn finish(
     Ok(receipt)
 }
 
-fn reject_real_clone_admission_triggers(db: &Connection) -> Result<()> {
+fn reject_clone_write_triggers(
+    db: &Connection,
+    targets: &[&str],
+    error: &'static str,
+) -> Result<()> {
     // A trigger on a write target can mutate another source or receipt table.
     // Per-source readback cannot bound those effects, so reject before writes.
-    const TARGETS: &str = "'plugin_evidence_v1','plugin_source_cursor_v1',\
-        'plugin_evidence_dirty_v1','plugin_content_batch_v1',\
-        'plugin_content_status_v1','storage_admission_request_v2'";
+    let placeholders = vec!["?"; targets.len()].join(",");
     for schema in ["sqlite_master", "sqlite_temp_master"] {
         let trigger: Option<String> = db
             .query_row(
                 &format!(
-                    "SELECT name FROM {schema} WHERE type='trigger' AND tbl_name IN ({TARGETS}) LIMIT 1"
+                    "SELECT name FROM {schema} WHERE type='trigger' AND tbl_name IN ({placeholders}) LIMIT 1"
                 ),
-                [],
+                rusqlite::params_from_iter(targets.iter().copied()),
                 |row| row.get(0),
             )
             .optional()?;
         if trigger.is_some() {
-            return Err(reject(
-                "SQLite triggers on real clone admission write tables are unsupported",
-            ));
+            return Err(reject(error));
         }
     }
     Ok(())
+}
+
+fn reject_real_clone_admission_triggers(db: &Connection) -> Result<()> {
+    reject_clone_write_triggers(
+        db,
+        &[
+            "plugin_evidence_v1",
+            "plugin_source_cursor_v1",
+            "plugin_evidence_dirty_v1",
+            "plugin_content_batch_v1",
+            "plugin_content_status_v1",
+            "storage_admission_request_v2",
+        ],
+        "SQLite triggers on real clone admission write tables are unsupported",
+    )
+}
+
+fn reject_real_clone_activation_triggers(db: &Connection) -> Result<()> {
+    reject_clone_write_triggers(
+        db,
+        &["plugin_source_cursor_v1", "storage_source_activate_v2"],
+        "SQLite triggers on real clone activation write tables are unsupported",
+    )
 }
 
 fn verify_real_clone_lifecycle_commit(
@@ -667,24 +690,35 @@ fn commit_guarded_mode(
     {
         return Err(reject("stale or unsupported source lease"));
     }
-    // This experiment deliberately covers only an ordinary metadata-only
-    // lifecycle source. A scratch copy with discovery, content, retention,
-    // gaps, or prior non-lifecycle evidence must take the Python path.
-    let unsupported: i64 = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_retention_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 \
-                   AND (revision<>0 OR kind<>'lifecycle' OR member_id<>''))",
-        [&request.lease.source_id],
-        |row| row.get(0),
-    )?;
-    if unsupported != 0 {
-        return Err(reject("scratch source has unsupported history"));
+    if real_clone {
+        // A real Store clone must pass the same complete history gate as
+        // activation. Stale or private content receipts cannot be overwritten
+        // by an empty-reference receipt for the next cursor.
+        validate_active_source_history(
+            &transaction,
+            &request.lease.source_id,
+            &current_cursor,
+            dirty_seq,
+            policy,
+        )?;
+    } else {
+        // Preserve the scratch-only replay fixture's historical narrow gate.
+        let unsupported: i64 = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_retention_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 \
+                       AND (revision<>0 OR kind<>'lifecycle' OR member_id<>''))",
+            [&request.lease.source_id],
+            |row| row.get(0),
+        )?;
+        if unsupported != 0 {
+            return Err(reject("scratch source has unsupported history"));
+        }
     }
     let mut existing_v2_receipt = false;
     if let Some(replay) = replay {
@@ -1273,6 +1307,7 @@ fn activate_source_guarded(
     }
     if real_clone {
         require_activation_clone_markers(&transaction)?;
+        reject_real_clone_activation_triggers(&transaction)?;
     } else {
         require_scratch(&transaction)?;
     }
@@ -4037,13 +4072,11 @@ mod tests {
     }
 
     #[test]
-    fn real_clone_activation_rolls_back_if_trigger_removes_authority_marker() {
+    fn real_clone_activation_rejects_marker_trigger_before_mutation() {
         let mut db = fixture();
+        add_real_clone_markers(&db);
         db.execute_batch(
-            "INSERT INTO schema_meta VALUES('storage_activation_clone_v1','enabled'); \
-             INSERT INTO schema_meta VALUES('storage_authority_v1','python-v1'); \
-             INSERT INTO schema_meta VALUES('plugin_sessions_read_schema','1'); \
-             CREATE TRIGGER tamper_activation_clone_marker \
+            "CREATE TRIGGER tamper_activation_clone_marker \
              AFTER UPDATE OF lease_epoch ON plugin_source_cursor_v1 \
              BEGIN DELETE FROM schema_meta WHERE key='storage_activation_clone_v1'; END;",
         )
@@ -4052,7 +4085,11 @@ mod tests {
         let before = activation_source_state(&db, "source-one");
         let replay = request.replay_identity().unwrap();
         let error = activate_source_guarded(&mut db, &request, None, &replay, true).unwrap_err();
-        assert!(error.to_string().contains("activation clone marker"));
+        assert!(
+            error
+                .to_string()
+                .contains("triggers on real clone activation")
+        );
         assert_eq!(activation_source_state(&db, "source-one"), before);
         assert!(matches!(
             activation_receipt_count(&db, &request.request_id),
@@ -4066,6 +4103,94 @@ mod tests {
             )
             .unwrap();
         assert_eq!(marker, "enabled");
+    }
+
+    #[test]
+    fn real_clone_activation_rejects_sibling_capture_trigger() {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        db.execute_batch(
+            "CREATE TRIGGER mutate_activation_victim AFTER INSERT ON plugin_source_cursor_v1 \
+             BEGIN UPDATE plugin_source_cursor_v1 SET capture_enabled=0 \
+             WHERE source_id='source-one'; END;",
+        )
+        .unwrap();
+        let request = activation_request("5123456789abcdef0123456789abcdef", "source-two");
+        let replay = request.replay_identity().unwrap();
+        let victim_before = activation_source_state(&db, "source-one");
+        let error = activate_source_guarded(&mut db, &request, None, &replay, true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("triggers on real clone activation")
+        );
+        assert_eq!(activation_source_state(&db, "source-one"), victim_before);
+        assert_eq!(activation_source_state(&db, "source-two"), None);
+        assert!(matches!(
+            activation_receipt_count(&db, &request.request_id),
+            None | Some(0)
+        ));
+    }
+
+    #[test]
+    fn real_clone_activation_rejects_temp_receiver_trigger() {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        db.execute_batch(
+            "CREATE TEMP TRIGGER mutate_activation_receiver \
+             AFTER UPDATE ON plugin_source_cursor_v1 \
+             BEGIN UPDATE schema_meta SET value='other-receiver' WHERE key='receiver_id'; END;",
+        )
+        .unwrap();
+        let request = activation_request("6123456789abcdef0123456789abcdef", "source-one");
+        let replay = request.replay_identity().unwrap();
+        let source_before = activation_source_state(&db, "source-one");
+        let error = activate_source_guarded(&mut db, &request, None, &replay, true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("triggers on real clone activation")
+        );
+        assert_eq!(activation_source_state(&db, "source-one"), source_before);
+        let receiver: String = db
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key='receiver_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receiver, "receiver-one");
+        assert!(matches!(
+            activation_receipt_count(&db, &request.request_id),
+            None | Some(0)
+        ));
+    }
+
+    #[test]
+    fn real_clone_activation_rejects_receipt_namespace_trigger() {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        db.execute_batch(
+            "CREATE TABLE storage_source_activate_v2( \
+             request_id TEXT PRIMARY KEY,receiver_id TEXT,request_digest TEXT,source_id TEXT, \
+             plugin_id TEXT,generation TEXT,lease_epoch INTEGER,policy_epoch INTEGER, \
+             cursor TEXT,dirty_seq INTEGER); \
+             CREATE TABLE storage_admission_request_v2(request_id TEXT PRIMARY KEY); \
+             CREATE TEMP TRIGGER collide_activation_receipt AFTER INSERT ON storage_source_activate_v2 \
+             BEGIN INSERT INTO storage_admission_request_v2 VALUES(NEW.request_id); END;",
+        )
+        .unwrap();
+        let request = activation_request("7123456789abcdef0123456789abcdef", "source-two");
+        let replay = request.replay_identity().unwrap();
+        let error = activate_source_guarded(&mut db, &request, None, &replay, true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("triggers on real clone activation")
+        );
+        assert_eq!(activation_source_state(&db, "source-two"), None);
+        assert_eq!(activation_receipt_count(&db, &request.request_id), Some(0));
+        assert_eq!(admission_receipt_count(&db, &request.request_id), Some(0));
     }
 
     fn clone_admission_request(request_id: &str, cursor: &str) -> v2::Request {
@@ -4175,6 +4300,38 @@ mod tests {
         assert_eq!(state(&db), after_commit);
         assert_eq!(admission_receipt_count(&db, &wire.request_id), Some(1));
         assert_eq!(after_commit, ("k".repeat(v2::MAX_CURSOR_CHARS), 1, 1));
+    }
+
+    #[test]
+    fn real_clone_admission_rejects_stale_or_nonempty_content_receipts() {
+        for (idx, malformed) in [
+            "INSERT INTO plugin_content_batch_v1 VALUES('source-one','','nonempty-digest')",
+            "INSERT INTO plugin_content_batch_v1 VALUES('source-one','stale-cursor','nonempty-digest')",
+            "INSERT INTO plugin_content_status_v1 VALUES('source-one','','not_requested',1,1)",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut db = fixture();
+            add_real_clone_markers(&db);
+            db.execute(malformed, []).unwrap();
+            let request_id = format!("{:032x}", idx + 1);
+            let wire = clone_admission_request(&request_id, "cursor-one");
+            let replay = wire.replay_identity().unwrap();
+            let prepared = request("cursor-one", "", &[("e".repeat(64).as_str(), "f".repeat(64).as_str())]);
+            let source_before = activation_source_state(&db, "source-one");
+            let error = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true).unwrap_err();
+            assert!(error.to_string().contains("unsupported, or orphan history"), "{malformed}: {error}");
+            assert_eq!(activation_source_state(&db, "source-one"), source_before);
+            assert_eq!(state(&db), (String::new(), 0, 0));
+            assert!(matches!(admission_receipt_count(&db, &request_id), None | Some(0)));
+            let retained: i64 = db.query_row(
+                "SELECT (SELECT COUNT(*) FROM plugin_content_batch_v1 WHERE source_id='source-one') \
+                 + (SELECT COUNT(*) FROM plugin_content_status_v1 WHERE source_id='source-one')",
+                [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(retained, 1, "{malformed}");
+        }
     }
 
     #[test]

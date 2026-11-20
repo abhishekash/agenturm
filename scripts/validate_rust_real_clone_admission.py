@@ -97,6 +97,9 @@ def main(binary: Path) -> None:
                         generation="b" * 64, content_fingerprint="c" * 64)
         activate_source(original, plugin_id="fixture.plugin", source_id="owned-source",
                         generation="d" * 64)
+        for source_id in ("bad-batch-source", "bad-status-source"):
+            activate_source(original, plugin_id="fixture.plugin", source_id=source_id,
+                            generation="e" * 64)
         with original._connect() as db:
             db.execute("INSERT INTO plugin_reference_owner_v1 VALUES('owned-source','pi-content')")
         original.close()
@@ -142,6 +145,9 @@ def main(binary: Path) -> None:
         transport.mkdir(mode=0o700)
         os.chown(transport, service_uid, client_gid)
         transport.chmod(0o2710)
+        client_results = root / "client-results"
+        client_results.mkdir(mode=0o700)
+        os.chown(client_results, client_uid, client_gid)
 
         activation = {"version": 2, "request_id": "1" * 32, "receiver_id": receiver,
                       "operation": {"op": "activate_source", "plugin_id": "fixture.plugin",
@@ -164,7 +170,7 @@ def main(binary: Path) -> None:
 
         service = start_service()
         try:
-            reply_path = root / "activation-reply.json"
+            reply_path = client_results / "activation-reply.json"
             activated = run_client(activation_path, socket_path, uid=client_uid,
                                    gid=client_gid, reply_path=reply_path)
             check(activated is not None and
@@ -203,11 +209,55 @@ def main(binary: Path) -> None:
                     check((after, count_after) == (before, count_before),
                           f"private source {source_id} changed after rejected admission")
 
+            for number, source_id, malformed_sql, malformed_args in (
+                ("6", "bad-batch-source",
+                 "INSERT INTO plugin_content_batch_v1 VALUES(?, '', ?)",
+                 ("bad-batch-source", "f" * 64)),
+                ("7", "bad-status-source",
+                 "INSERT INTO plugin_content_status_v1 VALUES(?, '', 'not_requested', 1, 1)",
+                 ("bad-status-source",)),
+            ):
+                malformed_batch = new_batch(source_id, "receipt-next")
+                malformed_request = request_for(existing_lease(source_id), malformed_batch,
+                                                number * 32, "")
+                malformed_path = root / f"{source_id}.json"
+                malformed_path.write_text(json.dumps(malformed_request))
+                malformed_path.chmod(0o644)
+                with closing(sqlite3.connect(clone)) as db:
+                    db.execute(malformed_sql, malformed_args)
+                    db.commit()
+                    before = db.execute(
+                        "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                        "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                        "WHERE source_id=?", (source_id,)).fetchone()
+                run_client(malformed_path, socket_path, uid=client_uid, gid=client_gid,
+                           reject=True)
+                with closing(sqlite3.connect(clone)) as db:
+                    after = db.execute(
+                        "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                        "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                        "WHERE source_id=?", (source_id,)).fetchone()
+                    evidence = db.execute(
+                        "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
+                        (source_id,)).fetchone()[0]
+                    receipt = db.execute(
+                        "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+                        (malformed_request["request_id"],)).fetchone()[0] if db.execute(
+                            "SELECT 1 FROM sqlite_master WHERE name='storage_admission_request_v2'"
+                        ).fetchone() else 0
+                    malformed_retained = db.execute(
+                        "SELECT COUNT(*) FROM plugin_content_batch_v1 WHERE source_id=?",
+                        (source_id,)).fetchone()[0] + db.execute(
+                        "SELECT COUNT(*) FROM plugin_content_status_v1 WHERE source_id=?",
+                        (source_id,)).fetchone()[0]
+                    check((after, evidence, receipt, malformed_retained) == (before, 0, 0, 1),
+                          f"malformed content receipt changed source {source_id}")
+
             request = request_for(lease, batch, "2" * 32, "")
             request_path = root / "admit.json"
             request_path.write_text(json.dumps(request))
             request_path.chmod(0o644)
-            admit_reply_path = root / "admit-reply.json"
+            admit_reply_path = client_results / "admit-reply.json"
 
             # Deterministically abort an evidence insert and prove SQLite rolls
             # back both the cursor and the request receipt.
@@ -286,6 +336,39 @@ def main(binary: Path) -> None:
                     "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
                     (request["request_id"],)).fetchone()[0]
                 check(receipt_count == 1, "admission replay receipt was duplicated")
+
+            # Exercise the exact shared cursor ceiling across Python request
+            # construction, the Unix service transport, Rust storage, and reply.
+            long_activation = {"version": 2, "request_id": "8" * 32,
+                               "receiver_id": receiver,
+                               "operation": {"op": "activate_source",
+                                             "plugin_id": "fixture.plugin",
+                                             "source_id": "long-source",
+                                             "generation": "a" * 64}}
+            long_activation_path = root / "long-activation.json"
+            long_activation_path.write_text(json.dumps(long_activation))
+            long_activation_path.chmod(0o644)
+            long_activated = run_client(long_activation_path, socket_path, uid=client_uid,
+                                        gid=client_gid, reply_path=client_results / "long-activation-reply.json")
+            check(long_activated["result"]["disposition"] == "committed",
+                  "long-cursor source activation failed")
+            long_cursor = "x" * 800
+            long_batch = new_batch("long-source", long_cursor)
+            long_request = request_for(long_activated["result"]["lease"], long_batch,
+                                       "9" * 32, "")
+            long_path = root / "long-admit.json"
+            long_path.write_text(json.dumps(long_request))
+            long_path.chmod(0o644)
+            long_reply = run_client(long_path, socket_path, uid=client_uid, gid=client_gid,
+                                    reply_path=client_results / "long-admit-reply.json")
+            check(long_reply["result"]["cursor"] == long_cursor,
+                  "800-byte cursor did not round-trip through service reply")
+            with closing(sqlite3.connect(clone)) as db:
+                stored_long_cursor = db.execute(
+                    "SELECT cursor FROM plugin_source_cursor_v1 WHERE source_id='long-source'"
+                ).fetchone()[0]
+                check(stored_long_cursor == long_cursor,
+                      "800-byte cursor was not stored exactly")
 
             # Revoke through Python against the clone while the Rust service is
             # idle, then prove the previously issued Rust lease is stale. The
