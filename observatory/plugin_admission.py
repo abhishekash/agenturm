@@ -364,6 +364,8 @@ def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]
         raise ProtocolError("discovery cursor lacks member identity")
     if batch.member_id:
         wire.update(member_id=batch.member_id, member_cursor=batch.member_cursor)
+    if batch.root_gap:
+        wire["root_gap"] = True
     validated = validate_batch(wire, source_id=source_id)
     rows = []
     for record in validated.records:
@@ -381,12 +383,14 @@ def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]
     if validated.member_id:
         digest_input.update(member_id=validated.member_id,
                             member_cursor=validated.member_cursor)
+    if validated.root_gap:
+        digest_input["root_gap"] = True
     batch_digest = hashlib.sha256(encode_message(digest_input).encode()).hexdigest()
     return batch_digest, tuple(rows)
 
 
 def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
-                 batch: PollBatch) -> str:
+                 batch: PollBatch, *, allow_root_gap: bool = False) -> str:
     """Commit evidence, cursor and dirty marker together, then permit ack.
 
     Exact replay after a crash is accepted. Any different batch at the same
@@ -401,6 +405,9 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
     incoming_session_ids = {item[7] for item in rows if item[7]}
     gap_hashes = {item[1] for item in rows if item[3] == "diagnostic"
                   and json.loads(item[5])["code"] == "possible_source_gap"}
+    if batch.root_gap and (allow_root_gap is not True or batch.member_id
+                           or len(rows) != 1 or len(gap_hashes) != 1):
+        raise ProtocolError("discovery root gap requires configured feature")
     if batch.member_id and not batch.member_cursor and not gap_hashes:
         raise ProtocolError("removed discovery member requires source-gap evidence")
     with store._source_write(), store._connect() as db:

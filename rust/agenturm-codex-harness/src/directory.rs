@@ -5,7 +5,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use agenturm_source_process::{Poller, Result};
 use serde_json::{Value, json};
@@ -122,9 +121,7 @@ fn root_gap_cursor(sequence: u64, last: &str) -> Result<String> {
     ))
 }
 
-fn root_gap_batch(source_id: &str, cursor: &str, max_bytes: usize) -> Result<Value> {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let stamp = u64::try_from(now).map_err(|_| invalid("discovery clock overflow"))?;
+fn root_gap_batch(source_id: &str, cursor: &str, stamp: u64, max_bytes: usize) -> Result<Value> {
     let evidence = format!("{}:{}:root", source_id, cursor);
     let event_id = format!(
         "codex-discovery-gap:{:x}",
@@ -174,7 +171,15 @@ fn poll_directory(
     let discovered = match files(root) {
         Ok(files) => files,
         Err(_error) if !outage => {
-            return root_gap_batch(source_id, &root_gap_cursor(sequence, &last)?, max_bytes);
+            let stamp = sequence
+                .checked_add(1)
+                .ok_or("discovery cursor exhausted")?;
+            return root_gap_batch(
+                source_id,
+                &root_gap_cursor(sequence, &last)?,
+                stamp,
+                max_bytes,
+            );
         }
         Err(error) => return Err(error),
     };
@@ -185,8 +190,9 @@ fn poll_directory(
     // and a new file may coexist; admitting the newcomer first would be
     // refused by the host and could stall the source indefinitely.
     if let Some(member) = members.keys().find(|id| !discovered.contains_key(*id)) {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let stamp = u64::try_from(now).map_err(|_| invalid("discovery clock overflow"))?;
+        let stamp = sequence
+            .checked_add(1)
+            .ok_or("discovery cursor exhausted")?;
         let evidence = format!("{}:{}:{}", source_id, member, cursor);
         let event_id = format!(
             "codex-discovery-gap:{:x}",
@@ -322,6 +328,16 @@ mod tests {
             agenturm_jsonl_source::max_frame_bytes(),
         )
         .unwrap();
+        let replay = poll_directory(
+            &root,
+            "source",
+            cursor,
+            &members,
+            256,
+            agenturm_jsonl_source::max_frame_bytes(),
+        )
+        .unwrap();
+        assert_eq!(gap, replay);
         assert!(gap["cursor"].as_str().unwrap().starts_with("d2:"));
         assert_eq!(gap["root_gap"], true);
         assert_eq!(gap["records"][0]["payload"]["code"], "possible_source_gap");
@@ -399,6 +415,16 @@ mod tests {
             agenturm_jsonl_source::max_frame_bytes(),
         )
         .unwrap();
+        let replay = poll_directory(
+            &root,
+            "source",
+            "",
+            &old,
+            256,
+            agenturm_jsonl_source::max_frame_bytes(),
+        )
+        .unwrap();
+        assert_eq!(batch, replay);
         assert_eq!(batch["member_id"], removed_id);
         assert_eq!(batch["member_cursor"], "");
         assert_eq!(

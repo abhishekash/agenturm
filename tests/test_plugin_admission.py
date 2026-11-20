@@ -51,6 +51,35 @@ class AdmissionTests(unittest.TestCase):
             commit_batch(self.store, self.lease, "next", self.batch(records=[record("other")]))
         self.assertEqual(self.snapshot(), expected)
 
+    def test_discovery_root_gap_requires_explicit_admission_and_exact_replay(self):
+        first = self.batch(records=[{**record(), "identity": {"session_id": "native-one"}}])
+        commit_batch(self.store, self.lease, "", first)
+        before = self.snapshot()
+        diagnostic = {"event_id": "root-gap-one", "revision": 0,
+                      "kind": "diagnostic", "time_ns": "9007199254740994",
+                      "payload": {"code": "possible_source_gap", "severity": "warning"}}
+        root_gap = PollBatch("fixture-source", "d2:2:" + "0" * 64,
+                             (diagnostic,), root_gap=True)
+        with self.assertRaisesRegex(ProtocolError, "configured feature"):
+            commit_batch(self.store, self.lease, "next", root_gap)
+        self.assertEqual(self.snapshot(), before)
+        committed = commit_batch(self.store, self.lease, "next", root_gap,
+                                 allow_root_gap=True)
+        self.assertEqual(committed, root_gap.cursor)
+        with self.store._connect() as db:
+            gaps = db.execute("SELECT native_session_id FROM plugin_source_gap_invalidated_v1 "
+                              "WHERE source_id='fixture-source'").fetchall()
+        self.assertEqual([row[0] for row in gaps], ["native-one"])
+        after = self.snapshot()
+        self.assertEqual(commit_batch(self.store, self.lease, "next", root_gap,
+                                      allow_root_gap=True), committed)
+        self.assertEqual(self.snapshot(), after)
+        malformed = PollBatch("fixture-source", "later", (record("fake"),), root_gap=True)
+        with self.assertRaisesRegex(ProtocolError, "root gap"):
+            commit_batch(self.store, self.lease, committed, malformed,
+                         allow_root_gap=True)
+        self.assertEqual(self.snapshot(), after)
+
     def test_later_conflict_rolls_back_earlier_record_and_cursor(self):
         commit_batch(self.store, self.lease, "", self.batch())
         before = self.snapshot()
