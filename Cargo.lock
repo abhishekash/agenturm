@@ -49,6 +49,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "agenturm-kiro-harness"
+version = "0.1.0"
+dependencies = [
+ "agenturm-jsonl-source",
+ "serde_json",
+ "sha2",
+ "time",
+]
+
+[[package]]
 name = "agenturm-pi-harness"
 version = "0.1.0"
 dependencies = [
