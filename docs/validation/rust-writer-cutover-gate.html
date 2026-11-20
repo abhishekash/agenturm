@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rust writer cutover gate · Agenturm</title>
+<style>
+:root{color-scheme:light dark;font:16px/1.58 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f8fa;color:#202936}
+*{box-sizing:border-box}body{margin:0;padding:clamp(1rem,3vw,2.5rem)}main{max-width:68rem;margin:auto;background:#fff;border:1px solid #dce2e8;border-radius:14px;padding:clamp(1.2rem,4vw,3rem)}
+h1{font-size:clamp(1.8rem,4vw,2.6rem);line-height:1.2;margin:0}h2{font-size:1.3rem;margin:2.1rem 0 .5rem;border-top:1px solid #dce2e8;padding-top:1rem}h3{font-size:1.05rem;margin:1.35rem 0 .3rem}
+p,li{max-width:79ch}p{margin:.7rem 0}ul,ol{padding-left:1.35rem}li{margin:.35rem 0}code{font:0.9em ui-monospace,SFMono-Regular,Consolas,monospace;background:#eff2f5;padding:.1em .3em;border-radius:4px;overflow-wrap:anywhere}
+.meta{color:#536377;margin:.45rem 0 1.7rem}.callout{border-left:4px solid #b65c17;background:#fff8ef;padding:.75rem 1rem;border-radius:4px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,19rem),1fr));gap:1rem}.card{border:1px solid #dce2e8;border-radius:10px;padding:1rem;background:#fbfcfd}.card h3{margin-top:0}
+a{color:#135ca3}a:focus-visible{outline:3px solid #dc9128;outline-offset:3px}
+@media(prefers-color-scheme:dark){:root{background:#111821;color:#e8edf3}main{background:#1b2530;border-color:#354354}h2{border-color:#354354}.meta{color:#a9bacb}code{background:#303e4e}.callout{background:#382a1d;border-color:#e19d59}.card{background:#202d3b;border-color:#354354}a{color:#8bc0ff}}
+</style>
+</head>
+<body><main>
+<h1>Rust writer cutover: ownership gate</h1>
+<p class="meta">Agenturm architecture checkpoint · 20 November 2026 · current through PR #243</p>
+<p class="callout"><strong>Decision:</strong> Python <code>Store</code> remains the only production writer. A cooperating lock is a useful preparatory gate, but cannot prevent older same-user binaries from writing an accessible SQLite file. No performance or cutover result is claimed.</p>
+
+<h2>Current write topology</h2>
+<p><code>Store.__init__</code> performs authority preflight, then mutates file permissions, WAL mode and schema before starting workers. Each later <code>Store._connect()</code> opens a writable connection. The standalone receiver, cockpit <code>LocalReceiver</code>, and some direct CLI commands construct a Store; two processes can address the same database. Outbound delivery writes through Store. Workflow and saved-task databases are separate writer domains.</p>
+<p>The <code>storage_authority_v1</code> marker rejects a foreign owner in current Python startup, but it is a point-in-time check. Older binaries ignore it. Explicit <code>--db</code> symlinks are supported and can be retargeted. Read connections already check pathname identity on checkout; writer connections lack an equivalent lifetime fence.</p>
+
+<h2>Next bounded implementation</h2>
+<div class="grid"><section class="card"><h3>Cooperating lease</h3><p>Acquire a nonblocking exclusive <code>flock</code> before Store construction. For the managed database, use <code>observatory.writer.lock</code> in the private state directory, opened <code>O_NOFOLLOW | O_CLOEXEC | O_CREAT</code> with owner-only permissions. Check regular file, owner, mode and descriptor/path identity before and after locking, and recheck descriptor/path identity on every writer admission.</p></section><section class="card"><h3>Explicit path</h3><p>For <code>--db</code>, derive a sibling lock from the resolved target so aliases contend. Bind both the lexical symlink and resolved database identity. A retarget or atomic replacement fails later writer admission. Share one lease through a process-ID and lock-inode registry across multiple Store objects in one process.</p></section><section class="card"><h3>Limits</h3><p>This is a cooperating process fence while the lock pathname stays stable, not a security sandbox or a stable SQLite handle under adversarial pathname swaps. Python <code>sqlite3</code> does not expose its main-file descriptor. A Rust service should keep a long-lived writer connection and reject a canonical pathname that no longer names its bound database.</p></section></div>
+<p>Release the lock only after proven quiescence. Today <code>Store.close()</code> uses bounded worker joins and can return with a worker alive; <code>ReadConnections.close()</code> does not await active read leases. A future lease must track active work and remain held until all writers and leases end or the process exits. A timeout must not release the lock while a worker can still write.</p>
+<p>Keep the lease opt-in until cockpit fallback, standalone <code>serve</code>, and mutating CLI behavior are tested. Python clients must use the service API for all writes before Rust becomes the writer.</p>
+
+<h2>Lease acceptance tests</h2>
+<ol><li>Two new processes targeting the same managed database or a target/symlink alias: one acquires; the loser changes no main file, WAL, SHM, mode or marker.</li>
+<li>Two Store objects in one process share one lease; another process remains excluded until the last closes. Constructor failure releases it only after any started work has stopped.</li>
+<li>Owner SIGKILL releases the OS lock; restart recovers WAL and cursor/receipt without a concurrent second owner.</li>
+<li>Symlinked, nonregular or replaced lock-file path is rejected before database mutation. Unlink/recreate while the owner lives; its next writer admission must refuse the changed lock pathname. A write already in flight is not fenced by this check.</li>
+<li>Retarget an explicit database symlink or atomically replace the database while open: the next write fails and never recreates or adopts a new target.</li>
+<li>Exercise actual cockpit fallback, a receiver on another port, and mutating CLI commands; record clear behavior before making the lease default. Hold work beyond shutdown timeout and prove the lock remains held until quiescence or exit.</li></ol>
+
+<h2>Legacy writer exclusion</h2>
+<p class="callout">An advisory lock and database marker bind cooperating clients only. A supported older process can ignore both. Triggers can block selected DML but cannot guard all DDL, trigger removal, or an existing open handle. Moving or changing permissions on a file does not revoke an open handle.</p>
+<p>The cutover requires a new versioned canonical path protected by a distinct service principal and platform-qualified directory/file ACLs, with Python clients using the Rust API. Explicit or shared stores stay on Python authority until equivalent exclusion is proven. If deployment cannot enforce it, keep Python authoritative.</p>
+<p>Adversarial acceptance runs each supported old wheel/CLI and direct old <code>Store._connect()</code> code against both canonical and archived stores. Attempt startup, DDL, DML and second accepted receiver creation. Check main file, WAL and SHM state, receiver identity and receipts. A successful legacy mutation blocks cutover.</p>
+
+<h2>Recovery boundary</h2>
+<p>Stop and identify old writers; take a consistent SQLite backup that includes WAL state; archive old files and sidecars under protected ownership. The first post-cutover Rust durable write is the point of no return. Before it, a verified snapshot may restore Python. After it, use forward recovery unless a lossless cross-version journal reconciles tasks, decisions, acknowledgements, configuration, policy tombstones and delivery state. Source replay cannot recreate them.</p>
+
+<h2>Open decisions</h2>
+<ul><li>Which supported platforms can run an isolated storage identity with enforceable ACLs?</li><li>Which UI, CLI, workflow, task and outbound writes must become service API calls?</li><li>Which older executable artifacts are supported for migration and pinned in adversarial tests?</li><li>Should a second receiver attach to the active owner or fail before Store construction?</li></ul>
+<p>Full phase gates: <a href="../rfcs/rust-plugin-kernel-plan.html">Rust kernel plan</a>. This report enables no Rust production write path.</p>
+</main></body></html>
