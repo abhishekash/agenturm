@@ -13,6 +13,15 @@ from ..session_text import local_command_only, remember_task
 SOURCE_PRIORITY = 1
 
 
+def mcp_config_contributions():
+    from ..mcp_config_registry import McpConfigContribution
+
+    return (McpConfigContribution(
+        "claude", "Claude Code", (("mcpServers",),),
+        lambda: (Path.home() / ".claude.json",),
+        lambda root: (root / ".mcp.json",), priority=1),)
+
+
 def source_spec():
     from ..native_sources import NativeSourceSpec
 

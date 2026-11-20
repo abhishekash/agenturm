@@ -17,6 +17,15 @@ from ..session_text import remember_task
 SOURCE_PRIORITY = 3
 
 
+def mcp_config_contributions():
+    from ..mcp_config_registry import McpConfigContribution
+
+    return (McpConfigContribution(
+        "kiro", "Kiro", (("mcpServers",),),
+        lambda: (kiro_home() / "settings" / "mcp.json",),
+        lambda root: (root / ".kiro" / "settings" / "mcp.json",), priority=5),)
+
+
 def source_spec():
     from ..native_sources import (KIRO_SKIPPED_DIRECTORIES, NativeSourceSpec,
                                   kiro_source)
