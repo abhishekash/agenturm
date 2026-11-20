@@ -28,6 +28,16 @@ class PiCommandHTTPDeliveryTests(unittest.TestCase):
         supervisor.store = self.store
         supervisor.sources = (fixture.source,)
         supervisor.stop = threading.Event()
+        # The UI integration also polls /api/health, which snapshots worker
+        # state. Keep this synthetic supervisor complete for that read path.
+        supervisor.lock = threading.Lock()
+        supervisor.statuses = {fixture.source.source_id: {
+            "source_id": fixture.source.source_id,
+            "state": "configured",
+            "last_success_ns": 0,
+            "last_failure_ns": 0,
+            "last_failure_code": "",
+        }}
         self.store.plugin_supervisor = supervisor
         batch, ref = fixture.bundle()
         commit_batch(self.store, fixture.lease, "", batch,
