@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlencode
 
 from rich.text import Text
 from textual import on, work
@@ -17,7 +18,9 @@ FIELDS = {
     'agents': ('runtime', 'service', 'session_id', 'project', 'model', 'task', 'state', 'waiting_for',
                'agent_id', 'parent_agent_id', 'relationship_kind', 'relationship_state',
                'relationship_provenance', 'discovery_state', 'coverage'),
-    'activity': ('id', 'service', 'agent_id', 'session_id', 'trace_id', 'span_id', 'time_unix_nano', 'domain', 'action', 'subject', 'result', 'detail', 'duration_ms', 'presentation', 'context_blocks'),
+    'activity': ('id', 'service', 'agent_id', 'session_id', 'trace_id', 'span_id', 'turn_id',
+                 'operation_id', 'source', 'source_id', 'time_unix_nano', 'domain', 'action',
+                 'subject', 'result', 'detail', 'duration_ms', 'presentation', 'context_blocks'),
     'mcp': ('id', 'service', 'agent_id', 'session_id', 'trace_id', 'span_id', 'time_unix_nano', 'server', 'tool', 'method', 'status', 'arguments', 'output', 'duration_ms'),
     'traces': ('trace_id', 'summary', 'spans', 'logs', 'span_page', 'pagination',
                'evidence_window', 'findings', 'progress', 'outcome'),
@@ -30,9 +33,46 @@ FIELDS = {
 }
 
 
+_TOOL_TURN_RELATIONS = frozenset({
+    'matched_call', 'ambiguous_call', 'unverified_native_turn', 'missing_call',
+    'future_call', 'unproven_order', 'call_turn_unavailable', 'conflicting_turn',
+})
+
+
+def plugin_activity_provenance(record):
+    """Export only receiver-derived, typed process facts; never arbitrary metadata."""
+    if record.get('source') != 'plugin':
+        return None
+    metadata = record.get('metadata')
+    if not isinstance(metadata, dict):
+        metadata = {}
+    provenance = {
+        'capture': 'content-free',
+        'coverage': 'partial',
+        'snapshot_note': ('Frozen loaded Activity row. The cockpit rechecks source policy '
+                          'before writing; a saved JSON file cannot be revalidated.'),
+    }
+    source_id = metadata.get('plugin_source_id')
+    if isinstance(source_id, str) and 0 < len(source_id) <= 256 and source_id.isascii() \
+            and all(character.isalnum() or character in '._:-' for character in source_id):
+        provenance['plugin_source_id'] = source_id
+    for key in ('native_worker_observed', 'native_turn_observed',
+                'native_operation_observed', 'tool_category_conflict'):
+        if type(metadata.get(key)) is bool:
+            provenance[key] = metadata[key]
+    relation = metadata.get('tool_turn_relation')
+    if type(relation) is str and relation in _TOOL_TURN_RELATIONS:
+        provenance['tool_turn_relation'] = relation
+    return provenance
+
+
 def investigation_json(view, record, scope=None):
     """Freeze the exact selected payload before showing the confirmation."""
     evidence = {key: record[key] for key in FIELDS.get(view, ()) if key in record}
+    if view == 'activity':
+        provenance = plugin_activity_provenance(record)
+        if provenance is not None:
+            evidence['source_provenance'] = provenance
     payload = {'format': 'agenturm-investigation-v1', 'view': view,
                'coverage': 'Selected record and currently loaded evidence only; not a complete history export.',
                'evidence': evidence}
@@ -43,6 +83,35 @@ def investigation_json(view, record, scope=None):
             'note': 'Descendant evidence is included only when loaded by the active scoped query; this is not a family-wide export.',
         }
     return json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
+
+
+def current_plugin_activity_revision(api, record, receiver_id):
+    """Match one frozen Activity row to the receiver's current source revision."""
+    if (record.get('source') != 'plugin' or not receiver_id
+            or record.get('receiver_id') != receiver_id
+            or not all(record.get(key) for key in ('id', 'source_id', 'session_id',
+                                                   'agent_id', 'service'))):
+        return None
+    try:
+        response = api.get('/api/plugin-activity-proof?' + urlencode({'event_id': record['id']}))
+    except Exception:
+        return None
+    proof = response.get('proof') if isinstance(response, dict) else None
+    if (not isinstance(proof, dict) or response.get('receiver_id') != receiver_id
+            or proof.get('receiver_id') != receiver_id
+            or not isinstance(proof.get('record'), dict)):
+        return None
+    revision = proof.get('revision')
+    if not (isinstance(revision, list) and len(revision) == 3
+            and all(type(value) is int and value >= 0 for value in revision)):
+        return None
+    current = proof['record']
+    if any(current.get(key) != record[key] for key in
+           ('id', 'source_id', 'session_id', 'agent_id', 'service', 'receiver_id')):
+        return None
+    if investigation_json('activity', current) != investigation_json('activity', record):
+        return None
+    return tuple(revision)
 
 
 def write_investigation(path, content):
@@ -77,10 +146,12 @@ class ExportScreen(ModalScreen):
     '''
     BINDINGS = [('escape', 'dismiss', 'Cancel')]
 
-    def __init__(self, view, record, scope=None, *, content=None, can_export=None):
+    def __init__(self, view, record, scope=None, *, content=None, can_export=None,
+                 poll_policy=True):
         super().__init__()
         self.content = content if content is not None else investigation_json(view, record, scope)
         self.can_export=can_export
+        self.poll_policy=poll_policy
         self._export_invalidated=False
 
     def compose(self) -> ComposeResult:
@@ -98,11 +169,18 @@ class ExportScreen(ModalScreen):
         preview.write(Text(self.content))
         preview.scroll_home(animate=False)
         self.query_one('#export-cancel', Button).focus()
-        if self.can_export is not None:self.set_interval(.25,self.check_export_policy)
+        if self.can_export is not None and self.poll_policy:
+            self.set_interval(.25,self.check_export_policy)
 
     @on(Button.Pressed, '#export-cancel')
     def cancel(self):
         self.dismiss()
+
+    def action_copy_text(self):
+        # Textual's Screen Ctrl+C/Super+C binding bypasses the Write button.
+        # A process Activity preview must pass the exact source proof again.
+        if self.check_export_policy():
+            super().action_copy_text()
 
     @on(Button.Pressed, '#export-confirm')
     def confirm(self):
@@ -176,6 +254,10 @@ class ReceiptExportScreen(ExportScreen):
         except Exception:allowed=False
         if not allowed:self._export_invalidated=True
         return allowed
+
+    def action_copy_text(self):
+        if self.check_receipt_policy():
+            super().action_copy_text()
 
     def check_receipt_policy(self):
         if self.receipt_allowed():return True

@@ -1,5 +1,8 @@
 """Content-free process-plugin facts in the policy-current Activity index."""
+from contextlib import closing
 import json
+import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -7,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.request import urlopen
+from urllib.error import HTTPError
 
 from observatory.core import Store
 from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
@@ -386,6 +390,233 @@ class PluginActivityTests(unittest.TestCase):
         set_source_capture(self.store, source_id="fixture-source", enabled=False)
         self.assertEqual(page(), [])
         self.assertEqual(page(turn_id), [])
+
+    def test_exact_process_export_proof_preserves_only_typed_provenance(self):
+        from observatory.server import BoundedHTTPServer, handler_for
+        from observatory.terminal import Api
+        from observatory.ui_export import current_plugin_activity_revision, investigation_json
+
+        self.commit('', 'one', [
+            fact('call', 'tool', {'category': 'file', 'result': 'started'},
+                 session='source-a-session', turn='original', operation='call-1', stamp='10'),
+            fact('new-user', 'message', {'role': 'user'},
+                 session='source-a-session', turn='later', stamp='20'),
+            fact('result', 'tool', {'category': 'other', 'result': 'failed'},
+                 session='source-a-session', turn=None, operation='call-1', stamp='30')])
+        project_source(self.store, 'fixture-source')
+        other_lease = activate_source(self.store, plugin_id='fixture.plugin',
+                                      source_id='other-source', generation='b' * 64)
+        commit_batch(self.store, other_lease, '', PollBatch('other-source', 'one', (
+            fact('result', 'tool', {'category': 'file', 'result': 'failed'},
+                 session='source-b-session', operation='call-1', stamp='40'),)))
+        project_source(self.store, 'other-source')
+        selected = next(row for row in self.activity(review=True)
+                        if row['metadata']['plugin_source_id'] == 'fixture-source'
+                        and row['domain'] == 'tool')
+        self.assertEqual(self.store.activity_page(session_id=selected['session_id'],
+            review=True)['activity'][0]['id'], selected['id'])
+        handler = handler_for(self.store, quiet=True)
+        self.addCleanup(handler.response_cache.close)
+        server = BoundedHTTPServer(('127.0.0.1', 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 3)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        api = Api(f'http://127.0.0.1:{server.server_port}')
+        receiver = self.store.receiver_namespace()
+        revision = current_plugin_activity_revision(api, selected, receiver)
+        self.assertIsNotNone(revision)
+        exposed = dict(selected)
+        exposed['metadata'] = {**selected['metadata'], 'raw_prompt': 'PRIVATE_PROMPT',
+                               'raw_output': 'PRIVATE_OUTPUT', 'cwd': '/private/work'}
+        exported = json.loads(investigation_json('activity', exposed))['evidence']
+        self.assertEqual(exported['operation_id'], selected['operation_id'])
+        self.assertEqual(exported['turn_id'], selected['turn_id'])
+        self.assertEqual(exported['source_id'], selected['source_id'])
+        self.assertEqual(exported['session_id'], selected['session_id'])
+        self.assertEqual(exported['source_provenance']['plugin_source_id'], 'fixture-source')
+        self.assertEqual(exported['source_provenance']['tool_turn_relation'], 'matched_call')
+        self.assertEqual(exported['source_provenance']['coverage'], 'partial')
+        for private in ('PRIVATE_PROMPT', 'PRIVATE_OUTPUT', '/private/work',
+                        'call-1', 'original', 'later'):
+            self.assertNotIn(private, json.dumps(exported))
+        self.assertEqual(current_plugin_activity_revision(api, exposed, receiver), revision)
+        for changed in ({**selected, 'session_id': 'foreign'},
+                        {**selected, 'source_id': 'foreign'},
+                        {**selected, 'agent_id': 'foreign'}):
+            self.assertIsNone(current_plugin_activity_revision(api, changed, receiver))
+        self.assertIsNone(current_plugin_activity_revision(api, selected, 'foreign-receiver'))
+        self.commit('one', 'two', [fact('result', 'tool',
+            {'category': 'other', 'result': 'denied'}, revision=1,
+            session='source-a-session', turn=None, operation='call-1', stamp='30')])
+        self.assertIsNone(current_plugin_activity_revision(api, selected, receiver))
+        project_source(self.store, 'fixture-source')
+        self.assertIsNone(current_plugin_activity_revision(api, selected, receiver))
+        current = next(row for row in self.activity(review=True)
+                       if row['metadata']['plugin_source_id'] == 'fixture-source'
+                       and row['domain'] == 'tool')
+        fresh_revision = current_plugin_activity_revision(api, current, receiver)
+        self.assertIsNotNone(fresh_revision)
+
+        import asyncio
+        from textual.app import App
+        from textual.widgets import Input, RichLog, Static
+        from observatory.ui_export import ExportScreen
+        worker_entered = threading.Event()
+        worker_release = threading.Event()
+
+        def export_current():
+            if threading.current_thread() is not threading.main_thread():
+                worker_entered.set()
+                worker_release.wait(5)
+            return current_plugin_activity_revision(api, current, receiver) == fresh_revision
+
+        class ExportHarness(App):
+            def compose(self):
+                yield Static('Activity')
+            def on_mount(self):
+                self.push_screen(ExportScreen('activity', current, can_export=export_current,
+                    poll_policy=False))
+
+        target = Path(self.temp.name) / 'stale-export.json'
+        async def revoke_while_open():
+            app = ExportHarness()
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                screen = app.screen
+                self.assertIsInstance(screen, ExportScreen)
+                self.assertIn('plugin_source_id', screen.content)
+                screen.query_one('#export-path', Input).value = str(target)
+                screen.confirm()
+                self.assertTrue(await asyncio.to_thread(worker_entered.wait, 3))
+                set_source_capture(self.store, source_id='fixture-source', enabled=False)
+                worker_release.set()
+                for _ in range(30):
+                    await pilot.pause(.03)
+                    if screen._export_invalidated:
+                        break
+                self.assertTrue(screen._export_invalidated)
+                self.assertFalse(target.exists())
+                with patch.object(screen, 'get_selected_text', return_value='STALE_PREVIEW'), \
+                        patch.object(app, 'copy_to_clipboard') as clipboard:
+                    await pilot.press('ctrl+c')
+                    await pilot.pause()
+                    clipboard.assert_not_called()
+                self.assertEqual(screen.content, '')
+                self.assertFalse(screen.query_one('#export-preview', RichLog).lines)
+        try:
+            asyncio.run(revoke_while_open())
+        finally:
+            worker_release.set()
+        self.assertIsNone(current_plugin_activity_revision(api, selected, receiver))
+        self.assertEqual(self.store.activity_page(session_id=selected['session_id'])['activity'], [])
+
+        other = next(row for row in self.activity(review=True)
+                     if row['metadata']['plugin_source_id'] == 'other-source')
+        other_revision = current_plugin_activity_revision(api, other, receiver)
+        self.assertIsNotNone(other_revision)
+
+        class PreviewHarness(App):
+            def compose(self):
+                yield Static('Activity')
+            def on_mount(self):
+                self.push_screen(ExportScreen('activity', other, can_export=lambda:
+                    current_plugin_activity_revision(api, other, receiver) == other_revision,
+                    poll_policy=False))
+
+        async def revoke_visible_preview():
+            app = PreviewHarness()
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                screen = app.screen
+                self.assertIn('other-source', screen.content)
+                set_source_capture(self.store, source_id='other-source', enabled=False)
+                self.assertIn('other-source', screen.content)  # Still visible before Ctrl+C.
+                with patch.object(screen, 'get_selected_text', return_value='STALE_PREVIEW'), \
+                        patch.object(app, 'copy_to_clipboard') as clipboard:
+                    await pilot.press('ctrl+c')
+                    await pilot.pause()
+                    clipboard.assert_not_called()
+                self.assertTrue(screen._export_invalidated)
+                self.assertEqual(screen.content, '')
+                self.assertFalse(screen.query_one('#export-preview', RichLog).lines)
+        asyncio.run(revoke_visible_preview())
+
+        async def revoked_ctrl_c():
+            from observatory.terminal_ui import ObservatoryApp, ObservatoryScreen
+            from tests.test_terminal_search import ManualFeed
+            from textual.widgets import TabbedContent
+            feed = ManualFeed()
+            feed.api = api
+            feed.snapshot.receiver_id = receiver
+            app = ObservatoryApp(feed, persist_preferences=False)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                app.refresh_timer.stop()
+                app.query_one('#pages', TabbedContent).active = 'activity'
+                await pilot.pause()
+                app.selected_activity = current['id']
+                app.table_data['activity-table'] = {current['id']: current}
+                self.assertIsInstance(app.screen, ObservatoryScreen)
+                with patch.object(app.screen, 'get_selected_text', return_value='STALE_TEXT'), \
+                        patch.object(app, 'copy_to_clipboard') as clipboard:
+                    await pilot.press('ctrl+c')  # Textual Screen default binding.
+                    await pilot.pause()
+                    clipboard.assert_not_called()
+                app.query_one('#pages', TabbedContent).active = 'agents'
+                await pilot.pause()
+                with patch.object(app.screen, 'get_selected_text', return_value='NORMAL_TEXT'), \
+                        patch.object(app, 'copy_to_clipboard') as clipboard:
+                    await pilot.press('ctrl+c')
+                    await pilot.pause()
+                    clipboard.assert_called_once_with('NORMAL_TEXT')
+        asyncio.run(revoked_ctrl_c())
+
+    def test_export_proof_rejects_same_receiver_database_replacement(self):
+        from observatory.server import BoundedHTTPServer, handler_for
+        from observatory.plugin_activity import export_proof
+        self.commit('', 'one', [fact('c', 'check',
+            {'category': 'test', 'result': 'failed'})])
+        project_source(self.store, 'fixture-source')
+        event_id = self.activity()[0]['id']
+        replacement = Path(self.temp.name) / 'replacement.db'
+        with self.store._connect() as source, closing(sqlite3.connect(replacement)) as target:
+            source.backup(target)
+        with closing(sqlite3.connect(replacement)) as copied:
+            self.assertEqual(self.store.receiver_namespace(),
+                copied.execute("SELECT value FROM schema_meta "
+                    "WHERE key='receiver_id'").fetchone()[0])
+
+        def replace_after_proof(store, exact):
+            proof = export_proof(store, exact)
+            os.replace(replacement, self.path)
+            return proof
+
+        handler = handler_for(self.store, quiet=True)
+        self.addCleanup(handler.response_cache.close)
+        server = BoundedHTTPServer(('127.0.0.1', 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 3)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with patch('observatory.plugin_activity.export_proof', side_effect=replace_after_proof):
+            with self.assertRaises(HTTPError) as denied:
+                urlopen(f'http://127.0.0.1:{server.server_port}/api/plugin-activity-proof?'
+                        f'event_id={event_id}', timeout=3)
+        self.assertEqual(denied.exception.code, 409)
+
+    def test_export_proof_rejects_non_object_projected_payload(self):
+        from observatory.plugin_activity import export_proof
+        self.commit('', 'one', [fact('c', 'check',
+            {'category': 'test', 'result': 'failed'})])
+        project_source(self.store, 'fixture-source')
+        event_id = self.activity()[0]['id']
+        with self.store._connect() as db:
+            db.execute('UPDATE activity_index_v1 SET payload=? WHERE event_key=?',
+                       ('[]', event_id))
+        self.assertIsNone(export_proof(self.store, event_id))
 
     def test_retention_invalidation_removes_affected_activity(self):
         with patch("observatory.plugin_admission.MAX_SOURCE_RECORDS", 4):

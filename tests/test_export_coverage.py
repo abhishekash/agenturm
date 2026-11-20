@@ -5,10 +5,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 from observatory.ui_diagnostics import diagnostics_text
-from observatory.ui_export import investigation_json, write_investigation
+from observatory.ui_export import (investigation_json, plugin_activity_provenance,
+                                  write_investigation)
 
 
 class InvestigationCoverageTests(unittest.TestCase):
+    def test_process_source_id_export_matches_admitted_identity_bound(self):
+        maximum = 's' * 256
+        self.assertEqual(plugin_activity_provenance({
+            'source': 'plugin', 'metadata': {'plugin_source_id': maximum}})
+            ['plugin_source_id'], maximum)
+        self.assertNotIn('plugin_source_id', plugin_activity_provenance({
+            'source': 'plugin', 'metadata': {'plugin_source_id': maximum + 's'}}))
+
     def test_partial_trace_export_keeps_page_and_coverage_metadata(self):
         record = {'trace_id': 'selected', 'spans': [{'span_id': 'one'}],
                   'span_page': {'trace_total': 10000, 'next_cursor': 'next'},

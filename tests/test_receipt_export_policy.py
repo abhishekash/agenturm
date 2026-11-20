@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
 import unittest
+from unittest.mock import patch
 
 from textual.app import App
 from textual.widgets import Static,RichLog,Input,Button
@@ -28,6 +29,10 @@ class ReceiptPolicyJourney(unittest.IsolatedAsyncioTestCase):
             allowed[0]=True
             self.assertFalse(screen.receipt_allowed())
             self.assertTrue(screen.query_one('#export-confirm',Button).disabled)
+            with patch.object(screen,'get_selected_text',return_value='PEER_PRIVATE_TEXT'), \
+                    patch.object(app,'copy_to_clipboard') as clipboard:
+                await pilot.press('ctrl+c')
+                clipboard.assert_not_called()
 
     async def test_queued_worker_rechecks_policy_before_any_file_is_created(self):
         allowed=[True];entered=threading.Event();release=threading.Event()
