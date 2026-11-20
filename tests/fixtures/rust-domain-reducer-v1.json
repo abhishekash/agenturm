@@ -1,0 +1,1133 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "schema_version": 1,
+        "sessions": [
+          {
+            "last_record_ns": 30,
+            "metadata_usage": {
+              "input_tokens": 10,
+              "output_tokens": 0
+            },
+            "native_session_id": "one",
+            "reason_code": "normal",
+            "reported_state": "completed",
+            "run_state": "completed",
+            "session_key": "plugin:65e9632c80607107ea0f74ef0e6e46c541a71c615d94032b7785086ebabfe9eb",
+            "state_time_ns": 100
+          }
+        ]
+      },
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "10",
+            "event_id_hash": "4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+            "kind": "lifecycle",
+            "native_session_id": "one",
+            "payload": {
+              "state": "started"
+            },
+            "revision": 0,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "25",
+            "event_id_hash": "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 7,
+              "output_tokens": 0
+            },
+            "revision": 1,
+            "time_ns": "150"
+          },
+          {
+            "admitted_ns": "20",
+            "event_id_hash": "4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+            "kind": "lifecycle",
+            "native_session_id": "one",
+            "payload": {
+              "reason_code": "normal",
+              "state": "completed"
+            },
+            "revision": 1,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "15",
+            "event_id_hash": "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 2
+            },
+            "revision": 0,
+            "time_ns": "150"
+          },
+          {
+            "admitted_ns": "30",
+            "event_id_hash": "187897ce0afcf20b50ba2b37dca84a951b7046f29ed5ab94f010619f69d6e189",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 3
+            },
+            "revision": 0,
+            "time_ns": "160"
+          },
+          {
+            "admitted_ns": "1000",
+            "event_id_hash": "2f183a4e64493af3f377f745eda502363cd3e7ef6e4d266d444758de0a85fcc8",
+            "kind": "usage",
+            "native_session_id": null,
+            "payload": {
+              "input_tokens": 999
+            },
+            "revision": 0,
+            "time_ns": "180"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "corrections_and_absent_counters"
+    },
+    {
+      "expected": {
+        "schema_version": 1,
+        "sessions": [
+          {
+            "last_record_ns": 22,
+            "metadata_usage": {},
+            "native_session_id": "ambiguous",
+            "reason_code": "ambiguous_lifecycle",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:55caed9b95c30caa990dcd7ab213b4766e534514c74fd10a2e9d8bda2484e2e0",
+            "state_time_ns": 200
+          },
+          {
+            "last_record_ns": 24,
+            "metadata_usage": {},
+            "native_session_id": "started",
+            "reason_code": "",
+            "reported_state": "started",
+            "run_state": "running",
+            "session_key": "plugin:95f1b90dd01b6a7371bc7c3bb458040dc38b6f7730ed906bff74404cef7b6bb4",
+            "state_time_ns": 300
+          },
+          {
+            "last_record_ns": 23,
+            "metadata_usage": {
+              "output_tokens": 0
+            },
+            "native_session_id": "usage-only",
+            "reason_code": "",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:60562f4654eabcc4c5c89a4ca0b78e31a93b21c17ce07e303cdf9a4a2e0c8628",
+            "state_time_ns": 0
+          }
+        ]
+      },
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "21",
+            "event_id_hash": "8a0d100fce58ea2637204ec5e851c7a77160a8356149592e4cdad7a11d197240",
+            "kind": "lifecycle",
+            "native_session_id": "ambiguous",
+            "payload": {
+              "reason_code": "normal",
+              "state": "completed"
+            },
+            "revision": 0,
+            "time_ns": "200"
+          },
+          {
+            "admitted_ns": "22",
+            "event_id_hash": "91eee84c8b5a4bc39c2cb1fcba859ce139cf77d3b47098c4eee93b41b336139b",
+            "kind": "lifecycle",
+            "native_session_id": "ambiguous",
+            "payload": {
+              "reason_code": "error",
+              "state": "failed"
+            },
+            "revision": 0,
+            "time_ns": "200"
+          },
+          {
+            "admitted_ns": "23",
+            "event_id_hash": "536bc873f19bf3e08533e917fe365ddb0f548811b65501a17b1e8bc41317336b",
+            "kind": "usage",
+            "native_session_id": "usage-only",
+            "payload": {
+              "output_tokens": 0
+            },
+            "revision": 0,
+            "time_ns": "250"
+          },
+          {
+            "admitted_ns": "24",
+            "event_id_hash": "03494afd4248c42f5fa1237bf2eeebe751ab8d9c977d55405fcb17469dbd91f8",
+            "kind": "lifecycle",
+            "native_session_id": "started",
+            "payload": {
+              "state": "started"
+            },
+            "revision": 0,
+            "time_ns": "300"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "ambiguous_and_unknown_lifecycle"
+    },
+    {
+      "expected": {
+        "schema_version": 1,
+        "sessions": [
+          {
+            "last_record_ns": 13,
+            "metadata_usage": {
+              "input_tokens": "27670116110564327421",
+              "output_tokens": 0
+            },
+            "native_session_id": "large",
+            "reason_code": "",
+            "reported_state": "paused",
+            "run_state": "waiting",
+            "session_key": "plugin:c324f7780ffce5be6e9cae6e27a45aa97fdb32452dd4b4a172a858dcdf0efde2",
+            "state_time_ns": 13
+          }
+        ]
+      },
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "10",
+            "event_id_hash": "87dfe9c685148325ab692aa52834d9af5ef6c1b9a780999eb13b80bfa0b7a82e",
+            "kind": "usage",
+            "native_session_id": "large",
+            "payload": {
+              "input_tokens": 9223372036854775807,
+              "output_tokens": 0
+            },
+            "revision": 0,
+            "time_ns": "10"
+          },
+          {
+            "admitted_ns": "11",
+            "event_id_hash": "81f72370fb517581abcbaca14cced3d74d430b6273f237cf6e3f67ae67ee08e5",
+            "kind": "usage",
+            "native_session_id": "large",
+            "payload": {
+              "input_tokens": 9223372036854775807
+            },
+            "revision": 0,
+            "time_ns": "11"
+          },
+          {
+            "admitted_ns": "12",
+            "event_id_hash": "44bcc220c286543118f5a5a8d3b2c90611760ccebae52a00d50280abde8d0ccd",
+            "kind": "usage",
+            "native_session_id": "large",
+            "payload": {
+              "input_tokens": 9223372036854775807
+            },
+            "revision": 0,
+            "time_ns": "12"
+          },
+          {
+            "admitted_ns": "13",
+            "event_id_hash": "a7a9dc5bcf71adb2edc202814060a5ab6fca515382e9f1133dcc47d52d9090a2",
+            "kind": "lifecycle",
+            "native_session_id": "large",
+            "payload": {
+              "state": "paused"
+            },
+            "revision": 0,
+            "time_ns": "13"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "exact_large_counter_aggregate"
+    },
+    {
+      "expected": {
+        "schema_version": 1,
+        "sessions": [
+          {
+            "last_record_ns": 300,
+            "metadata_usage": {},
+            "native_session_id": "clear",
+            "reason_code": "",
+            "reported_state": "running",
+            "run_state": "running",
+            "session_key": "plugin:cee664d8a3325633ce073eec04fd64d593f9f7f5a589598c6af9ca0a884dca16",
+            "state_time_ns": 120
+          },
+          {
+            "last_record_ns": 555,
+            "metadata_usage": {},
+            "native_session_id": "evicted",
+            "reason_code": "retention_gap",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:ed249d19144729c04d4da0d7b8a857ea65e52184a6efc5d42d73ceaf133b206f",
+            "state_time_ns": 0
+          },
+          {
+            "last_record_ns": 200,
+            "metadata_usage": {},
+            "native_session_id": "kept",
+            "reason_code": "retention_gap",
+            "reported_state": "unknown",
+            "run_state": "unknown",
+            "session_key": "plugin:8335b3a0841be57fff8fc54d5c9e2ad71d18a701577a48af4ce8681a4251ca78",
+            "state_time_ns": 100
+          }
+        ]
+      },
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "999",
+            "native_session_id": "kept"
+          },
+          {
+            "last_record_ns": "555",
+            "native_session_id": "evicted"
+          }
+        ],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "100",
+            "event_id_hash": "8a2105989c5c9a68cbb8b9e010f734a7001a5c8dc6ea27c7c3bf3a39cfa2e223",
+            "kind": "lifecycle",
+            "native_session_id": "kept",
+            "payload": {
+              "state": "completed"
+            },
+            "revision": 0,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "200",
+            "event_id_hash": "6f4be1db9c2e94e31b661e1ce0d875ce2afb7fd9158c693973da7b285e60fe15",
+            "kind": "usage",
+            "native_session_id": "kept",
+            "payload": {
+              "input_tokens": 15
+            },
+            "revision": 0,
+            "time_ns": "110"
+          },
+          {
+            "admitted_ns": "300",
+            "event_id_hash": "f120d07492fd90d8dcc52bbe57833b7175d3e70e1b2a2eadae32714ccdec83e8",
+            "kind": "lifecycle",
+            "native_session_id": "clear",
+            "payload": {
+              "state": "running"
+            },
+            "revision": 0,
+            "time_ns": "120"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "retention_invalidates_existing_and_missing"
+    },
+    {
+      "expected": {
+        "schema_version": 1,
+        "sessions": [
+          {
+            "last_record_ns": 101,
+            "metadata_usage": {},
+            "native_session_id": "same",
+            "reason_code": "normal",
+            "reported_state": "completed",
+            "run_state": "completed",
+            "session_key": "plugin:0cc5e11f55891f52033044da7202902fed3d9205053e291bb00ca22db2c0664f",
+            "state_time_ns": 100
+          }
+        ]
+      },
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "100",
+            "event_id_hash": "8504edd1cf7640f7d8fc63a9ddaed3c7475a860e548a8223ca4923234f85d1c6",
+            "kind": "lifecycle",
+            "native_session_id": "same",
+            "payload": {
+              "reason_code": "normal",
+              "state": "completed"
+            },
+            "revision": 0,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "101",
+            "event_id_hash": "f98bf9a2137db5c986541d421bf2a8cf70b61fb063fd189d1fbc287d6211a225",
+            "kind": "lifecycle",
+            "native_session_id": "same",
+            "payload": {
+              "reason_code": "normal",
+              "state": "completed"
+            },
+            "revision": 0,
+            "time_ns": "100"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "identical_latest_lifecycle_facts"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "1",
+            "event_id_hash": "ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 1
+            },
+            "revision": 0,
+            "time_ns": "1"
+          }
+        ],
+        "schema_version": 2,
+        "source_id": "source-a"
+      },
+      "name": "unsupported_fixture_version"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "1",
+            "event_id_hash": "ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 1
+            },
+            "revision": 0,
+            "time_ns": 1
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "non_text_timestamp"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "1",
+            "event_id_hash": "ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": "1"
+            },
+            "revision": 0,
+            "time_ns": "1"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "string_counter"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "1",
+            "event_id_hash": "ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 9223372036854775808
+            },
+            "revision": 0,
+            "time_ns": "1"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "counter_over_signed_64"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "1",
+            "event_id_hash": "ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "hidden": "private",
+              "input_tokens": 1
+            },
+            "revision": 0,
+            "time_ns": "1"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "unknown_payload_field"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "1",
+            "event_id_hash": "ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 1
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "1",
+            "event_id_hash": "ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 1
+            },
+            "revision": 0,
+            "time_ns": "1"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "duplicate_admitted_revision"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "1",
+            "event_id_hash": "ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 1
+            },
+            "revision": -1,
+            "time_ns": "1"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "negative_revision"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [
+          {
+            "last_record_ns": "2",
+            "native_session_id": "one"
+          },
+          {
+            "last_record_ns": "2",
+            "native_session_id": "one"
+          }
+        ],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "1",
+            "event_id_hash": "ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 1
+            },
+            "revision": 0,
+            "time_ns": "1"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "duplicate_retention_invalidation"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "10",
+            "event_id_hash": "4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+            "kind": "lifecycle",
+            "native_session_id": "one",
+            "payload": {
+              "state": "started"
+            },
+            "revision": 0,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "25",
+            "event_id_hash": "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 7,
+              "output_tokens": 0
+            },
+            "revision": 1,
+            "time_ns": "150"
+          },
+          {
+            "admitted_ns": "20",
+            "event_id_hash": "4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+            "kind": "lifecycle",
+            "native_session_id": "other",
+            "payload": {
+              "reason_code": "normal",
+              "state": "completed"
+            },
+            "revision": 1,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "15",
+            "event_id_hash": "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 2
+            },
+            "revision": 0,
+            "time_ns": "150"
+          },
+          {
+            "admitted_ns": "30",
+            "event_id_hash": "187897ce0afcf20b50ba2b37dca84a951b7046f29ed5ab94f010619f69d6e189",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 3
+            },
+            "revision": 0,
+            "time_ns": "160"
+          },
+          {
+            "admitted_ns": "1000",
+            "event_id_hash": "2f183a4e64493af3f377f745eda502363cd3e7ef6e4d266d444758de0a85fcc8",
+            "kind": "usage",
+            "native_session_id": null,
+            "payload": {
+              "input_tokens": 999
+            },
+            "revision": 0,
+            "time_ns": "180"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "changed_identity_across_revisions"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "10",
+            "event_id_hash": "4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+            "kind": "lifecycle",
+            "native_session_id": "one",
+            "payload": {
+              "state": "started"
+            },
+            "revision": 0,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "25",
+            "event_id_hash": "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 7,
+              "output_tokens": 0
+            },
+            "revision": 1,
+            "time_ns": "150"
+          },
+          {
+            "admitted_ns": "20",
+            "event_id_hash": "4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 1
+            },
+            "revision": 1,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "15",
+            "event_id_hash": "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 2
+            },
+            "revision": 0,
+            "time_ns": "150"
+          },
+          {
+            "admitted_ns": "30",
+            "event_id_hash": "187897ce0afcf20b50ba2b37dca84a951b7046f29ed5ab94f010619f69d6e189",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 3
+            },
+            "revision": 0,
+            "time_ns": "160"
+          },
+          {
+            "admitted_ns": "1000",
+            "event_id_hash": "2f183a4e64493af3f377f745eda502363cd3e7ef6e4d266d444758de0a85fcc8",
+            "kind": "usage",
+            "native_session_id": null,
+            "payload": {
+              "input_tokens": 999
+            },
+            "revision": 0,
+            "time_ns": "180"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "changed_kind_across_revisions"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "10",
+            "event_id_hash": "4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+            "kind": "lifecycle",
+            "native_session_id": "one",
+            "payload": {
+              "state": "started"
+            },
+            "revision": 0,
+            "time_ns": "0100"
+          },
+          {
+            "admitted_ns": "25",
+            "event_id_hash": "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 7,
+              "output_tokens": 0
+            },
+            "revision": 1,
+            "time_ns": "150"
+          },
+          {
+            "admitted_ns": "20",
+            "event_id_hash": "4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+            "kind": "lifecycle",
+            "native_session_id": "one",
+            "payload": {
+              "reason_code": "normal",
+              "state": "completed"
+            },
+            "revision": 1,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "15",
+            "event_id_hash": "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 2
+            },
+            "revision": 0,
+            "time_ns": "150"
+          },
+          {
+            "admitted_ns": "30",
+            "event_id_hash": "187897ce0afcf20b50ba2b37dca84a951b7046f29ed5ab94f010619f69d6e189",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 3
+            },
+            "revision": 0,
+            "time_ns": "160"
+          },
+          {
+            "admitted_ns": "1000",
+            "event_id_hash": "2f183a4e64493af3f377f745eda502363cd3e7ef6e4d266d444758de0a85fcc8",
+            "kind": "usage",
+            "native_session_id": null,
+            "payload": {
+              "input_tokens": 999
+            },
+            "revision": 0,
+            "time_ns": "180"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "leading_zero_timestamp"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "10",
+            "event_id_hash": "4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+            "kind": "lifecycle",
+            "native_session_id": "one",
+            "payload": {
+              "state": "started"
+            },
+            "revision": 0,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "25",
+            "event_id_hash": "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": -1,
+              "output_tokens": 0
+            },
+            "revision": 1,
+            "time_ns": "150"
+          },
+          {
+            "admitted_ns": "20",
+            "event_id_hash": "4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+            "kind": "lifecycle",
+            "native_session_id": "one",
+            "payload": {
+              "reason_code": "normal",
+              "state": "completed"
+            },
+            "revision": 1,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "15",
+            "event_id_hash": "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 2
+            },
+            "revision": 0,
+            "time_ns": "150"
+          },
+          {
+            "admitted_ns": "30",
+            "event_id_hash": "187897ce0afcf20b50ba2b37dca84a951b7046f29ed5ab94f010619f69d6e189",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 3
+            },
+            "revision": 0,
+            "time_ns": "160"
+          },
+          {
+            "admitted_ns": "1000",
+            "event_id_hash": "2f183a4e64493af3f377f745eda502363cd3e7ef6e4d266d444758de0a85fcc8",
+            "kind": "usage",
+            "native_session_id": null,
+            "payload": {
+              "input_tokens": 999
+            },
+            "revision": 0,
+            "time_ns": "180"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "negative_usage_value"
+    },
+    {
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "1",
+            "event_id_hash": "ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 1
+            },
+            "revision": 0,
+            "time_ns": "1"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "../secret"
+      },
+      "name": "invalid_source_id"
+    },
+    {
+      "name": "duplicate_payload_json_key",
+      "raw_input": "{\"dirty_seq\":1,\"invalidated\":[],\"policy_epoch\":1,\"receiver_id\":\"receiver-fixture\",\"rows\":[{\"admitted_ns\":\"1\",\"event_id_hash\":\"ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3\",\"kind\":\"usage\",\"native_session_id\":\"one\",\"payload\":{\"input_tokens\":1,\"input_tokens\":2},\"revision\":0,\"time_ns\":\"1\"}],\"schema_version\":1,\"source_id\":\"source-a\"}"
+    },
+    {
+      "name": "excessive_fixture_nesting",
+      "raw_input": "{\"dirty_seq\":1,\"invalidated\":[],\"policy_epoch\":1,\"receiver_id\":\"receiver-fixture\",\"rows\":[{\"admitted_ns\":\"1\",\"event_id_hash\":\"ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3\",\"kind\":\"usage\",\"native_session_id\":\"one\",\"payload\":{\"input_tokens\":[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]},\"revision\":0,\"time_ns\":\"1\"}],\"schema_version\":1,\"source_id\":\"source-a\"}"
+    },
+    {
+      "name": "unpaired_unicode_surrogate",
+      "raw_input": "{\"dirty_seq\":1,\"invalidated\":[],\"policy_epoch\":1,\"receiver_id\":\"receiver-fixture\",\"rows\":[{\"admitted_ns\":\"1\",\"event_id_hash\":\"ec654fac9599f62e79e2706abef23dfb7c07c08185aa86db4d8695f0b718d1b3\",\"kind\":\"usage\",\"native_session_id\":\"one\",\"payload\":{\"input_tokens\":\"\\ud800\"},\"revision\":0,\"time_ns\":\"1\"}],\"schema_version\":1,\"source_id\":\"source-a\"}"
+    },
+    {
+      "expected": {
+        "schema_version": 1,
+        "sessions": [
+          {
+            "last_record_ns": 3,
+            "metadata_usage": {},
+            "native_session_id": "visible",
+            "reason_code": "",
+            "reported_state": "completed",
+            "run_state": "completed",
+            "session_key": "plugin:f1936d268496db9aad46c0056cce25bb588709b8179c07db4ac5776e7d80434b",
+            "state_time_ns": 3
+          }
+        ]
+      },
+      "input": {
+        "dirty_seq": 1,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "1",
+            "event_id_hash": "5ad38304b535c2987dbd24657c1a11b884984ff600d9f389deb0d4e634fee792",
+            "kind": "usage",
+            "native_session_id": null,
+            "payload": {
+              "input_tokens": 1
+            },
+            "revision": 0,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "2",
+            "event_id_hash": "5ad38304b535c2987dbd24657c1a11b884984ff600d9f389deb0d4e634fee792",
+            "kind": "usage",
+            "native_session_id": "",
+            "payload": {
+              "input_tokens": 2
+            },
+            "revision": 1,
+            "time_ns": "1"
+          },
+          {
+            "admitted_ns": "3",
+            "event_id_hash": "4d4c7eee2e28d03cb2dbf3df639c3290ade66e18755e83caade2d8f37bd8c044",
+            "kind": "lifecycle",
+            "native_session_id": "visible",
+            "payload": {
+              "state": "completed"
+            },
+            "revision": 0,
+            "time_ns": "3"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "absent_and_empty_identity_same_across_revisions"
+    },
+    {
+      "input": {
+        "dirty_seq": 0,
+        "invalidated": [],
+        "policy_epoch": 1,
+        "receiver_id": "receiver-fixture",
+        "rows": [
+          {
+            "admitted_ns": "10",
+            "event_id_hash": "4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+            "kind": "lifecycle",
+            "native_session_id": "one",
+            "payload": {
+              "state": "started"
+            },
+            "revision": 0,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "25",
+            "event_id_hash": "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 7,
+              "output_tokens": 0
+            },
+            "revision": 1,
+            "time_ns": "150"
+          },
+          {
+            "admitted_ns": "20",
+            "event_id_hash": "4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+            "kind": "lifecycle",
+            "native_session_id": "one",
+            "payload": {
+              "reason_code": "normal",
+              "state": "completed"
+            },
+            "revision": 1,
+            "time_ns": "100"
+          },
+          {
+            "admitted_ns": "15",
+            "event_id_hash": "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 2
+            },
+            "revision": 0,
+            "time_ns": "150"
+          },
+          {
+            "admitted_ns": "30",
+            "event_id_hash": "187897ce0afcf20b50ba2b37dca84a951b7046f29ed5ab94f010619f69d6e189",
+            "kind": "usage",
+            "native_session_id": "one",
+            "payload": {
+              "input_tokens": 3
+            },
+            "revision": 0,
+            "time_ns": "160"
+          },
+          {
+            "admitted_ns": "1000",
+            "event_id_hash": "2f183a4e64493af3f377f745eda502363cd3e7ef6e4d266d444758de0a85fcc8",
+            "kind": "usage",
+            "native_session_id": null,
+            "payload": {
+              "input_tokens": 999
+            },
+            "revision": 0,
+            "time_ns": "180"
+          }
+        ],
+        "schema_version": 1,
+        "source_id": "source-a"
+      },
+      "name": "populated_zero_dirty_sequence",
+      "python_empty": true
+    }
+  ],
+  "fixture_version": 1
+}
