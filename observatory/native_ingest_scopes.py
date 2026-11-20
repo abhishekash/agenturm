@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from dataclasses import dataclass
 
 
@@ -75,7 +76,21 @@ class NativeIngestScopes:
             raise ValueError("native ingest scope registry changed; restart this Store")
 
     def install_capture_fences(self, db) -> None:
-        """Atomically replace scope-sensitive triggers on each Store startup.
+        """Read scope state and replace fences under one SQLite writer lock."""
+        # Earlier Store schema setup may have an implicit write transaction.
+        # Commit it before acquiring this lock; executescript previously did
+        # that implicitly and then reopened a race before its own BEGIN.
+        db.commit()
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            self._install_capture_fences_locked(db)
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+
+    def _install_capture_fences_locked(self, db) -> None:
+        """Replace scope-sensitive triggers after locking the writer.
 
         On a scope-set change, prior owner claims are cleared before new
         triggers become visible. Re-ingestion can establish new claims.
@@ -125,6 +140,14 @@ class NativeIngestScopes:
             ddl += "DELETE FROM native_capture_owner_v1;\n"
         ddl += ("INSERT OR REPLACE INTO schema_meta(key,value) "
                 f"VALUES('native_capture_scopes_v1','{current}');\n")
-        # executescript commits any earlier schema setup before BEGIN. This
-        # DDL, claim reset and marker then commit as one SQLite transaction.
-        db.executescript("BEGIN IMMEDIATE;\n" + ddl + "COMMIT;")
+        # sqlite3.Connection.executescript would commit the transaction before
+        # executing the DDL. Execute complete statements one at a time while
+        # retaining BEGIN IMMEDIATE through the marker and claim reset.
+        statement = ""
+        for line in ddl.splitlines(keepends=True):
+            statement += line
+            if sqlite3.complete_statement(statement):
+                db.execute(statement)
+                statement = ""
+        if statement.strip():
+            raise ValueError("incomplete native capture fence DDL")

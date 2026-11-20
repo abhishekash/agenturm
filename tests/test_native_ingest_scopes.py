@@ -1,6 +1,7 @@
 """Trusted scope declarations must fence native capture across Store upgrades."""
 from pathlib import Path
 from types import SimpleNamespace
+from threading import Event, Thread
 from unittest.mock import patch
 import json
 import sqlite3
@@ -133,6 +134,120 @@ class NativeIngestScopeTests(unittest.TestCase):
             recorded = db.execute(
                 "SELECT value FROM schema_meta WHERE key='native_capture_scopes_v1'").fetchone()[0]
         self.assertEqual(tuple(json.loads(recorded)), NativeIngestScopes.bundled().names)
+
+    def test_concurrent_startup_reads_marker_after_writer_lock(self):
+        store = Store(self.path)
+        self.addCleanup(store.close)
+        store.ingest([span()], _trusted_native=True)
+        store.close()
+        expanded = NativeIngestScopes((
+            "observatory.local_agents", "observatory.opencode",
+            "observatory.synthetic"))
+        locked, release, second_read = Event(), Event(), Event()
+        failures = []
+
+        class ConnectionGate:
+            def __init__(self, connection, *, first=False):
+                self.connection = connection
+                self.first = first
+                self.commits = 0
+
+            def execute(self, statement, *args):
+                result = self.connection.execute(statement, *args)
+                if statement == "BEGIN IMMEDIATE" and self.first:
+                    locked.set()
+                    if not release.wait(5):
+                        raise TimeoutError("first startup gate timed out")
+                if statement.startswith("SELECT value FROM schema_meta") and not self.first:
+                    second_read.set()
+                return result
+
+            def commit(self):
+                self.commits += 1
+                if self.first and self.commits == 2:
+                    # Re-establish a real span's claim in the first migration
+                    # transaction before the second initializer can lock.
+                    self.connection.execute(
+                        "INSERT OR REPLACE INTO native_capture_owner_v1 VALUES(?,?,?)",
+                        ("span", TRACE + ":" + SPAN, SOURCE))
+                self.connection.commit()
+
+            def rollback(self):
+                self.connection.rollback()
+
+        first_db = sqlite3.connect(self.path, timeout=5, check_same_thread=False)
+        second_db = sqlite3.connect(self.path, timeout=5, check_same_thread=False)
+        self.addCleanup(first_db.close)
+        self.addCleanup(second_db.close)
+
+        def run(connection):
+            try:
+                expanded.install_capture_fences(connection)
+            except BaseException as error:
+                failures.append(error)
+
+        first = Thread(target=run, args=(ConnectionGate(first_db, first=True),))
+        second = Thread(target=run, args=(ConnectionGate(second_db),))
+        first.start()
+        try:
+            self.assertTrue(locked.wait(5), "first startup did not lock before reading")
+            second.start()
+            self.assertFalse(second_read.wait(.1),
+                             "second startup read the marker before the first committed")
+        finally:
+            release.set()
+            first.join(5)
+            if second.ident is not None:
+                second.join(5)
+        self.assertFalse(first.is_alive() or second.is_alive())
+        self.assertEqual(failures, [])
+        with sqlite3.connect(self.path) as db:
+            claim = db.execute(
+                "SELECT source_id FROM native_capture_owner_v1 "
+                "WHERE kind='span' AND owner_key=?", (TRACE + ":" + SPAN,)).fetchone()
+            marker = db.execute(
+                "SELECT value FROM schema_meta WHERE key='native_capture_scopes_v1'").fetchone()
+        self.assertEqual(claim, (SOURCE,))
+        self.assertEqual(marker, (expanded.marker,))
+
+    def test_failed_trigger_replacement_rolls_back_claims_and_schema(self):
+        store = Store(self.path)
+        self.addCleanup(store.close)
+        store.ingest([span()], _trusted_native=True)
+        original = owners(store)
+        expanded = NativeIngestScopes((
+            "observatory.local_agents", "observatory.opencode",
+            "observatory.synthetic"))
+
+        class FailingConnection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def execute(self, statement, *args):
+                if "CREATE TRIGGER native_capture_log_update_v1" in statement:
+                    raise RuntimeError("injected trigger failure")
+                return self.connection.execute(statement, *args)
+
+            def commit(self):
+                self.connection.commit()
+
+            def rollback(self):
+                self.connection.rollback()
+
+        with sqlite3.connect(self.path) as db:
+            with self.assertRaisesRegex(RuntimeError, "injected trigger failure"):
+                expanded.install_capture_fences(FailingConnection(db))
+            marker = db.execute(
+                "SELECT value FROM schema_meta WHERE key='native_capture_scopes_v1'").fetchone()[0]
+            sql = db.execute(
+                "SELECT sql FROM sqlite_master WHERE name='native_capture_span_update_v1'").fetchone()[0]
+        self.assertEqual(marker, NativeIngestScopes.bundled().marker)
+        self.assertNotIn("observatory.synthetic", sql)
+        self.assertEqual(owners(store), original)
+        with store._connect() as db:
+            db.execute("UPDATE spans SET name='raw replacement' WHERE trace_id=? AND span_id=?",
+                       (TRACE, SPAN))
+        self.assertEqual(owners(store), set())
 
 
 if __name__ == "__main__":
