@@ -12,12 +12,12 @@ from observatory.plugin_pi_command_read import (
 )
 from observatory.plugin_projection import project_source
 from observatory.plugin_supervisor import PluginSupervisor
-from tests.test_plugin_pi_command import PiCommandAdmissionTests
+from tests import test_plugin_pi_command
 
 
 class PiCommandReadTests(unittest.TestCase):
     def setUp(self):
-        self.fixture = PiCommandAdmissionTests("runTest")
+        self.fixture = test_plugin_pi_command.PiCommandAdmissionTests("runTest")
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.store = self.fixture.store
