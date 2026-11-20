@@ -30,6 +30,7 @@ fn identity(value: &str) -> bool {
 pub trait Poller {
     const PLUGIN_ID: &'static str;
     const DISCOVERY: bool = false;
+    const ROOT_GAP: bool = false;
     fn poll(
         path: &Path,
         source_id: &str,
@@ -118,6 +119,9 @@ impl Session {
             let mut features = vec!["source-adapter/1", "configured-root/1"];
             if P::DISCOVERY {
                 features.push("source-discovery/1");
+            }
+            if P::ROOT_GAP {
+                features.push("source-discovery-root-gap/1");
             }
             return Ok(Some((
                 json!({"type":"hello_ack","protocol":1,"plugin_id":P::PLUGIN_ID,

@@ -53,7 +53,8 @@ def main() -> None:
             output.write(chunk)
     artifact.chmod(0o700)
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-    provides = ('["source-adapter/1", "configured-root/1", "source-discovery/1"]'
+    provides = ('["source-adapter/1", "configured-root/1", "source-discovery/1", '
+                '"source-discovery-root-gap/1"]'
                 if args.directory else '["source-adapter/1", "configured-root/1"]')
     with manifest.open("x") as output:
         output.write(
@@ -71,7 +72,8 @@ def main() -> None:
             'grants = ["configured-source-read"]\n'
             'capture = "metadata-only"\npoll_interval = 0.5\ntimeout = 5.0\n'
             f'root = {json.dumps(str(args.source))}\n'
-            + ('requires_features = ["source-discovery/1"]\n' if args.directory else ''))
+            + ('requires_features = ["source-discovery/1", '
+               '"source-discovery-root-gap/1"]\n' if args.directory else ''))
     print(config)
 
 

@@ -96,7 +96,9 @@ class PluginSession:
             raise ProtocolError("plugin session is not running")
         expected = self.cursor
         batch = self.process.poll_commit(expected, lambda received: commit_batch(
-            self.store, self.lease, expected, received), members=self.members)
+            self.store, self.lease, expected, received,
+            allow_root_gap="source-discovery-root-gap/1" in self.process.required_features),
+            members=self.members)
         self.cursor = batch.cursor
         if batch.member_id and self.members is not None:
             if batch.member_cursor:
