@@ -194,7 +194,11 @@ class PluginActivityTests(unittest.TestCase):
             fact("category-call", "tool", {"category": "shell", "result": "started"},
                  operation="category", turn="original", stamp="50"),
             fact("category-result", "tool", {"category": "file", "result": "succeeded"},
-                 operation="category", turn=None, stamp="60")])
+                 operation="category", turn=None, stamp="60"),
+            fact("same-time-call", "tool", {"category": "file", "result": "started"},
+                 operation="same-time", turn="original", stamp="70"),
+            fact("same-time-result", "tool", {"category": "file", "result": "failed"},
+                 operation="same-time", turn=None, stamp="70")])
         project_source(self.store, "fixture-source")
         rows = {row["time_unix_nano"]: row for row in self.activity()}
         self.assertEqual((rows[10]["turn_id"], rows[10]["metadata"]["tool_turn_relation"]),
@@ -204,6 +208,11 @@ class PluginActivityTests(unittest.TestCase):
         self.assertTrue(rows[40]["metadata"]["native_turn_observed"])
         self.assertEqual(rows[60]["action"], "other")
         self.assertTrue(rows[60]["metadata"]["tool_category_conflict"])
+        same_time_result = next(row for row in self.activity() if row["result"] == "failed"
+                                and row["time_unix_nano"] == 70)
+        self.assertEqual((same_time_result["turn_id"],
+                          same_time_result["metadata"]["tool_turn_relation"]),
+                         ("", "unproven_order"))
 
     def test_revocation_clears_correlated_result(self):
         self.commit("", "one", [

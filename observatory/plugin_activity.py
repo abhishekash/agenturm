@@ -89,7 +89,7 @@ def index_rows(rows: list, *, receiver_id: str, source_id: str, plugin_id: str,
         if kind == "tool" and payload["result"] != "started" and operation_id:
             matches = calls.get((native_session, operation_id), [])
             match = matches[0] if len(matches) == 1 else None
-            if (match and match[0] and match[2] <= row["time_ns"]
+            if (match and match[0] and match[2] < row["time_ns"]
                     and match[3] <= row["admitted_ns"]
                     and (not native_turn or native_turn == match[0])):
                 native_turn = match[0]
@@ -103,13 +103,18 @@ def index_rows(rows: list, *, receiver_id: str, source_id: str, plugin_id: str,
                     category_conflict = True
             else:
                 native_turn = ""
-                relation = ("ambiguous_call" if len(matches) > 1 else
-                            "future_call" if match and (match[2] > row["time_ns"]
-                                                        or match[3] > row["admitted_ns"]) else
-                            "conflicting_turn" if match and match[0] and
-                            row["native_turn_id"] and row["native_turn_id"] != match[0] else
-                            "call_turn_unavailable" if match and not match[0] else
-                            "missing_call")
+                if len(matches) > 1:
+                    relation = "ambiguous_call"
+                elif match is None:
+                    relation = "missing_call"
+                elif match[2] > row["time_ns"] or match[3] > row["admitted_ns"]:
+                    relation = "future_call"
+                elif match[2] == row["time_ns"]:
+                    relation = "unproven_order"
+                elif not match[0]:
+                    relation = "call_turn_unavailable"
+                else:
+                    relation = "conflicting_turn"
         turn_id = (_opaque("plugin-turn", receiver_id, source_id, native_session,
                            native_turn)[:32]
                    if native_turn else "")
