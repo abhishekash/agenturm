@@ -23,6 +23,7 @@ from .store_authority import (MARKER as STORAGE_AUTHORITY_MARKER,
                               PYTHON_OWNER, StoreAuthorityError, preflight as authority_preflight,
                               chmod_target as chmod_authority_target,
                               require_python_owner, require_target as require_authority_target)
+from .store_writer_lease import StoreWriterLease
 
 TRACE_ID = re.compile(r"^[0-9a-fA-F]{32}$")
 SPAN_ID = re.compile(r"^[0-9a-fA-F]{16}$")
@@ -639,13 +640,53 @@ class IndexNotReady(RuntimeError):
 
 
 class Store:
-    def __init__(self, path, async_derived_refresh=False, workflow_patterns=None):
+    def __init__(self, path, async_derived_refresh=False, workflow_patterns=None,
+                 *, writer_lease=False):
+        """Initialize the telemetry Store.
+
+        ``writer_lease=True`` opts into a Linux-only cooperating-process fence.
+        It stays off by default and does not exclude legacy binaries.
+        """
+        if type(writer_lease) is not bool:
+            raise TypeError("writer_lease must be a boolean")
+        lexical_path = str(Path(path).absolute())
+        self._writer_lease = StoreWriterLease.acquire(lexical_path) if writer_lease else None
+        try:
+            self._initialize(lexical_path, async_derived_refresh, workflow_patterns)
+        except BaseException:
+            self._release_writer_lease_after_constructor_failure()
+            raise
+
+    def _release_writer_lease_after_constructor_failure(self):
+        lease = self._writer_lease
+        if lease is None:
+            return
+        # Before handoff accounting exists, initialization has not opened a
+        # writer connection or started a worker. Afterwards use the same drain
+        # proof as normal shutdown; a failed proof deliberately retains the
+        # registry's strong reference until later cleanup or process exit.
+        if hasattr(self, "_handoff_condition"):
+            try:
+                if not self.quiesce_for_writer_handoff(60):
+                    return
+            except BaseException:
+                return
+        if lease.release_after_quiescence():
+            self._writer_lease = None
+
+    def _initialize(self, path, async_derived_refresh, workflow_patterns):
         # Bind the lexical path once. A later process-wide cwd change must
         # not redirect a database operation after the authority preflight.
         self.path = str(Path(path).absolute())
-        # This must precede mkdir, chmod, WAL/schema changes and worker startup.
-        # It is a point-in-time guard, not a cross-process writer lock.
+        if self._writer_lease is not None:
+            self._writer_lease.verify()
+        # This preflight precedes mkdir, chmod, WAL/schema changes and worker
+        # startup. The optional cooperating lease is already held here.
         authority_file = authority_preflight(self.path)
+        if (self._writer_lease is not None
+                and self._writer_lease.database_missing_at_acquire
+                and authority_file is not None):
+            raise StoreAuthorityError("Store appeared after writer lease acquisition")
         self._native_ingest_scopes = NativeIngestScopes.bundled()
         from .read_connections import ReadConnections
         self._read_connections = ReadConnections(self.path)
@@ -691,6 +732,8 @@ class Store:
             info = os.fstat(fd)
             authority_file = (info.st_dev, info.st_ino)
             os.close(fd)
+        if self._writer_lease is not None:
+            self._writer_lease.bind_database_identity(authority_file)
         require_authority_target(self.path, authority_file)
         chmod_authority_target(self.path, authority_file)
         require_authority_target(self.path, authority_file)
@@ -1212,6 +1255,9 @@ class Store:
         operations open a connection per query, so leaving closure to garbage
         collection can exhaust file descriptors in a long-running receiver.
         """
+        writer_lease = getattr(self, "_writer_lease", None)
+        if writer_lease is not None:
+            writer_lease.verify()
         # Store creates the main file explicitly during startup. A later
         # connection must never recreate a vanished or replaced pathname.
         with self._handoff_condition:
@@ -1223,7 +1269,11 @@ class Store:
             db = sqlite3.connect(Path(self.path).absolute().as_uri() + '?mode=rw',
                                  uri=True, timeout=10)
             db.row_factory = sqlite3.Row
+            if writer_lease is not None:
+                writer_lease.verify()
             yield db
+            if writer_lease is not None:
+                writer_lease.verify()
             db.commit()
         except BaseException:
             if db is not None:
@@ -1242,11 +1292,20 @@ class Store:
                     self._handoff_connections -= 1
                     self._handoff_condition.notify_all()
 
+    @contextmanager
     def _read(self):
+        writer_lease = getattr(self, "_writer_lease", None)
+        if writer_lease is not None:
+            writer_lease.verify()
         with self._handoff_condition:
             if self._handoff_requested and not self._handoff_worker():
                 raise sqlite3.ProgrammingError('Store writer handoff is in progress')
-        return self._read_connections.read()
+        with self._read_connections.read() as db:
+            if writer_lease is not None:
+                writer_lease.verify()
+            yield db
+            if writer_lease is not None:
+                writer_lease.verify()
 
     def _handoff_worker(self):
         current = threading.current_thread()
@@ -1985,7 +2044,22 @@ class Store:
                     self._notify_derived_progress()
             if backlog:time.sleep(.025)
 
-    def close(self):
+    def close(self, *, timeout=30):
+        writer_lease = getattr(self, "_writer_lease", None)
+        if writer_lease is not None:
+            try:
+                if not self.quiesce_for_writer_handoff(timeout):
+                    return False
+                if writer_lease.release_after_quiescence():
+                    self._writer_lease = None
+                    return True
+                return False
+            except ValueError:
+                raise
+            except Exception:
+                # A close error is not proof that old work stopped. The lease
+                # stays retained by the registry for retry or process exit.
+                return False
         try:self._close_workers()
         finally:self._read_connections.close()
 
