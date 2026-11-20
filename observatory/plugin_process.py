@@ -18,12 +18,12 @@ import time
 from pathlib import Path
 from typing import BinaryIO, Callable
 
+from .plugin_batch_handlers import BatchHandlerRegistry, DEFAULT_BATCH_HANDLERS
 from .plugin_frames import FrameError, MAX_FRAME_BYTES, read_frame, write_frame
 from .plugin_manifest import PluginManifest, plan_activation
 from .plugin_wire import (MAX_BATCH_RECORDS, MAX_CONTROL_FRAME_BYTES, MAX_CURSOR_CHARS,
                           MAX_DISCOVERY_MEMBERS, MEMBER_ID, PROTOCOL_MAJOR, PollBatch, ProtocolError,
-                          ContentPollBatch, decode_message, encode_message, validate_batch,
-                          validate_content_batch,
+                          ContentPollBatch, decode_message, encode_message,
                           validate_hello_ack)
 
 
@@ -63,7 +63,8 @@ class PluginProcess:
                  required_features: tuple[str, ...] = (),
                  rust_host_executable: str | None = None,
                  rust_host_sha256: str | None = None,
-                 content_refs_enabled: bool = False):
+                 content_refs_enabled: bool = False,
+                 batch_handlers: BatchHandlerRegistry = DEFAULT_BATCH_HANDLERS):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         plan_activation({manifest.id: manifest}, (manifest.id,),
@@ -99,12 +100,16 @@ class PluginProcess:
         if type(content_refs_enabled) is not bool or (content_refs_enabled and (
                 "source-discovery/1" not in expected or source_root is None)):
             raise ProtocolError("content references require configured discovery")
+        if not isinstance(batch_handlers, BatchHandlerRegistry):
+            raise TypeError("host batch handler registry required")
+        batch_validator = batch_handlers.select(expected)
         self.manifest = manifest
         self.source_id = source_id
         self.timeout = float(timeout)
         self.source_root = source_root
         self.required_features = frozenset(expected)
         self.content_refs_enabled = content_refs_enabled
+        self._batch_validator = batch_validator
         rust_host_artifact(rust_host_executable, rust_host_sha256)
         self.rust_host_executable = rust_host_executable
         self.rust_host_sha256 = rust_host_sha256
@@ -296,34 +301,32 @@ class PluginProcess:
         self._send(request)
         try:
             response = self._next()
-            if "pi-content-ref/1" in self.required_features:
-                batch = validate_content_batch(response, source_id=self.source_id)
-                # The child nominates only exact same-batch source references;
-                # the receiver later opens and verifies the source itself.
-                from .plugin_pi_content import validate_refs
-                validate_refs(batch.content_refs, batch)
-            else:
-                batch = validate_batch(response, source_id=self.source_id)
-        except ProtocolError:
+            batch = self._batch_validator(response, self.source_id)
+            if not isinstance(batch, PollBatch):
+                raise ProtocolError("host batch validator returned invalid result")
+            if batch.source_id != self.source_id:
+                raise ProtocolError("host batch validator returned another source")
+            if not isinstance(batch.cursor, str) or len(batch.cursor) > MAX_CURSOR_CHARS:
+                raise ProtocolError("host batch validator returned invalid cursor")
+            if not isinstance(batch.records, tuple):
+                raise ProtocolError("host batch validator returned invalid records")
+            if len(batch.records) > max_records:
+                raise ProtocolError("plugin exceeded poll record budget")
+            if "source-discovery/1" in self.required_features:
+                root_gap = ("source-discovery-root-gap/1" in self.required_features
+                            and batch.root_gap)
+                if ((batch.root_gap and not root_gap)
+                        or (not batch.member_id and batch.records and not root_gap)
+                        or (batch.member_id and batch.member_id not in members
+                            and len(members) >= MAX_DISCOVERY_MEMBERS)):
+                    raise ProtocolError("invalid discovery member result")
+            elif batch.member_id or batch.root_gap:
+                raise ProtocolError("unexpected discovery member result")
+            self.pending = batch
+            return batch
+        except BaseException:
             self.close(force=True)
             raise
-        if len(batch.records) > max_records:
-            self.close(force=True)
-            raise ProtocolError("plugin exceeded poll record budget")
-        if "source-discovery/1" in self.required_features:
-            root_gap = ("source-discovery-root-gap/1" in self.required_features
-                        and batch.root_gap)
-            if ((batch.root_gap and not root_gap)
-                    or (not batch.member_id and batch.records and not root_gap)
-                    or (batch.member_id and batch.member_id not in members
-                        and len(members) >= MAX_DISCOVERY_MEMBERS)):
-                self.close(force=True)
-                raise ProtocolError("invalid discovery member result")
-        elif batch.member_id or batch.root_gap:
-            self.close(force=True)
-            raise ProtocolError("unexpected discovery member result")
-        self.pending = batch
-        return batch
 
     def ack(self, committed_cursor: str) -> None:
         if self.pending is None or committed_cursor != self.pending.cursor:

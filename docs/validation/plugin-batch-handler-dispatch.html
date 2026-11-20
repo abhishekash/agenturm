@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trusted batch handler dispatch · Agenturm</title>
+<style>
+:root{color-scheme:light dark;font:16px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f7f8fa;color:#1d2530}
+body{margin:0;padding:clamp(1rem,4vw,3rem)}
+main{max-width:54rem;margin:auto;background:#fff;border:1px solid #dce1e7;border-radius:14px;padding:clamp(1.25rem,4vw,3rem);box-shadow:0 8px 30px #1522320b}
+h1{font-size:clamp(1.7rem,4vw,2.4rem);line-height:1.2;margin:0 0 .45rem}
+h2{font-size:1.15rem;margin:2rem 0 .5rem}
+p,li{max-width:72ch}p{margin:.75rem 0}ul{padding-left:1.3rem}
+.date{color:#596778;margin:0 0 2rem}code{background:#edf0f4;border-radius:4px;padding:.1em .3em;overflow-wrap:anywhere}
+@media(prefers-color-scheme:dark){:root{background:#121821;color:#e7ebf0}main{background:#1b2430;border-color:#344152;box-shadow:none}.date{color:#acbacb}code{background:#303c4c}}
+</style>
+</head>
+<body><main>
+<h1>Trusted batch handler dispatch</h1>
+<p class="date">Agenturm validation · 20 November 2026</p>
+<p>This refactors the transport boundary. It does not create a public plugin SDK or change capture policy.</p>
+<h2>What changed</h2>
+<p><code>PluginProcess</code> resolves one host-owned batch validator from approved <code>required_features</code> before starting a child. Ordinary v1 batches stay strict. <code>pi-content-ref/1</code> selects the existing versioned content envelope and same-batch reference checks. Missing or malformed Pi envelopes close without acknowledgment. An unregistered content-reference feature or conflicting handlers fails before launch. Child-advertised extras cannot select a validator.</p>
+<p>An unexpected trusted-handler error, invalid batch shape, or different source ID closes the child without acknowledging a cursor.</p>
+<p>Trusted host code can compose an immutable <code>BatchHandlerRegistry</code>. A synthetic second handler worked through a real child without changing <code>PluginProcess</code>. Child processes cannot register Python handlers or access Store through this seam.</p>
+<h2>Authority and limits</h2>
+<p><code>PluginSession</code> and Store still own Pi configuration, filesystem proof, capture policy, source lease, durable admission, and redaction. Each new wire envelope needs a reviewed host handler and admission contract. This work grants no arbitrary extension content access and makes no performance claim.</p>
+<h2>Validation</h2>
+<ul><li>37 combined dispatch, transport, and installed Rust Pi emitter/receiver tests passed, with one platform-dependent skip.</li><li><code>git diff --check</code> passed.</li></ul>
+<p>The public UI, default metadata-only capture, and storage writer are unchanged.</p>
+</main></body></html>
