@@ -49,6 +49,7 @@ from .ui_workflow import AttentionLedger, WorkflowScreen, WorkflowController, de
 from .ui_preferences import Preferences
 from .ui_export import (ExportScreen, current_plugin_activity_revision,
                         plugin_activity_provenance)
+from .ui_plugin_content import accepted_preview, eligible as plugin_text_eligible
 from .ui_render import update_status_text
 from .ui_content import metadata_table, prose, write_body, write_section
 from .ui_coverage import analysis_coverage
@@ -1454,6 +1455,8 @@ class ObservatoryApp(App):
         self.inspector_reflow_pending=False
         self.selected_source=None
         self.selected_activity=None
+        self.plugin_text_state=None
+        self.plugin_text_generation=0
         self.activity_fallback_trace=None
         self.activity_fallback_scope=None
         self.selected_mcp=None
@@ -3373,12 +3376,98 @@ class ObservatoryApp(App):
         self.set_session_mode(modes[(modes.index(self.session_mode)+1)%3])
 
     def action_prompt_original(self):
+        if self.query_one('#pages',TabbedContent).active=='activity':
+            self.action_load_plugin_text()
+            return
         if self.query_one('#pages',TabbedContent).active!='agents' or self.session_mode!='prompts':return
         key=self.session_prompts.selected
         if not key:return
         if key in self.prompt_original:self.prompt_original.remove(key)
         else:self.prompt_original.add(key)
         self.show_agent()
+
+    def action_load_plugin_text(self):
+        """Explicitly load one redacted prompt into transient inspector state."""
+        if self.query_one('#pages',TabbedContent).active!='activity':return
+        item=self.table_data.get('activity-table',{}).get(self.selected_activity)
+        if not plugin_text_eligible(item):
+            self.notify('Select a process user message to check captured text.');return
+        receiver_id=self.feed.snapshot.receiver_id
+        self.plugin_text_generation+=1
+        generation=self.plugin_text_generation
+        self.plugin_text_state={'record':deepcopy(item),'receiver_id':receiver_id,
+            'status':'loading' if receiver_id else 'unavailable','text':'','clipped':False,
+            'expires_at':time.monotonic()+20}
+        self.show_activity()
+        if receiver_id:self.fetch_plugin_text(generation,deepcopy(item),receiver_id)
+
+    @work(thread=True,exclusive=True,group='plugin-text',exit_on_error=False)
+    def fetch_plugin_text(self,generation,record,receiver_id):
+        preview=None
+        try:
+            before=current_plugin_activity_revision(self.feed.api,record,receiver_id)
+            if before is not None:
+                response=shared_get(self.feed.api,'/api/plugin-content?'+urlencode(
+                    {'event_id':record['id']}),cancelled=lambda:generation!=self.plugin_text_generation)
+                after=current_plugin_activity_revision(self.feed.api,record,receiver_id)
+                accepted=accepted_preview(response,record,receiver_id,before,after)
+                if accepted is not None:preview=(*accepted,after)
+        except Exception:
+            pass  # An unavailable source never returns text or a source path.
+        try:self.app.call_from_thread(self.finish_plugin_text,generation,record,receiver_id,preview)
+        except RuntimeError:pass
+
+    def finish_plugin_text(self,generation,record,receiver_id,preview):
+        state=self.plugin_text_state
+        if (not self.is_mounted or not isinstance(self.screen,ObservatoryScreen) or
+                generation!=self.plugin_text_generation or not state or
+                self.query_one('#pages',TabbedContent).active!='activity' or
+                self.feed.snapshot.receiver_id!=receiver_id or
+                self.table_data.get('activity-table',{}).get(self.selected_activity)!=record):
+            return
+        if preview is None:
+            state.update(status='unavailable',text='',clipped=False,revision=None)
+        else:
+            state.update(status='available',text=preview[0],clipped=preview[1],
+                         revision=preview[2])
+        self.show_activity()
+        self.set_timer(20,lambda:self.expire_plugin_text(generation))
+        if preview is not None:
+            self.set_timer(2,lambda:self.revalidate_plugin_text(generation))
+
+    def revalidate_plugin_text(self,generation):
+        state=self.plugin_text_state
+        if (generation!=self.plugin_text_generation or not state or
+                state['status']!='available'):return
+        self.check_plugin_text(generation,deepcopy(state['record']),state['receiver_id'])
+
+    @work(thread=True,exclusive=True,group='plugin-text-recheck',exit_on_error=False)
+    def check_plugin_text(self,generation,record,receiver_id):
+        try:revision=current_plugin_activity_revision(self.feed.api,record,receiver_id)
+        except Exception:revision=None
+        try:self.app.call_from_thread(self.finish_plugin_text_recheck,generation,record,receiver_id,revision)
+        except RuntimeError:pass
+
+    def finish_plugin_text_recheck(self,generation,record,receiver_id,revision):
+        state=self.plugin_text_state
+        if generation!=self.plugin_text_generation or not state:return
+        if (not self.is_mounted or not isinstance(self.screen,ObservatoryScreen) or
+                self.query_one('#pages',TabbedContent).active!='activity' or
+                self.feed.snapshot.receiver_id!=receiver_id or
+                self.table_data.get('activity-table',{}).get(self.selected_activity)!=record or
+                revision is None or revision!=state.get('revision')):
+            state.update(status='unavailable',text='',clipped=False,revision=None)
+            if self.is_mounted and isinstance(self.screen,ObservatoryScreen):self.show_activity()
+            return
+        self.set_timer(2,lambda:self.revalidate_plugin_text(generation))
+
+    def expire_plugin_text(self,generation):
+        if generation!=self.plugin_text_generation:return
+        self.plugin_text_generation+=1
+        self.plugin_text_state=None
+        if self.is_mounted and isinstance(self.screen,ObservatoryScreen) and \
+                self.query_one('#pages',TabbedContent).active=='activity':
+            self.show_activity()
 
     def select_prompt(self,key):
         if key not in self.session_prompts.events:return
@@ -3769,6 +3858,12 @@ class ObservatoryApp(App):
     def show_activity(self):
         if self.native_page_pending('activity'):return
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
+        state=self.plugin_text_state
+        if state and (not item or item != state['record'] or
+                      self.feed.snapshot.receiver_id != state['receiver_id'] or
+                      time.monotonic() >= state['expires_at']):
+            self.plugin_text_generation+=1
+            self.plugin_text_state=None
         fallback=self.activity_trace_fallback()
         self.query_one('#activity-trace',Button).disabled=not bool((item or fallback or {}).get('trace_id'))
         if not item:
@@ -3798,6 +3893,23 @@ class ObservatoryApp(App):
         sections=list(details.items()) if isinstance(details,dict) else [('Recorded content',details)]
         if item.get('domain')=='message' and not details and item.get('subject'):
             sections=[('Message preview',item['subject'])]
+        if plugin_text_eligible(item):
+            state=self.plugin_text_state
+            if state and state['status']=='available':
+                text=state['text']
+                sections.insert(0,('Captured user text · redacted',
+                    (text or '(empty message)')+
+                    ('\n… Excerpt clipped; source text remains in the original Pi file.'
+                     if state['clipped'] else '')+
+                    '\nTransient preview · z Reload'))
+            elif state and state['status']=='loading':
+                sections.insert(0,('Captured user text','Loading exact source proof…'))
+            elif state and state['status']=='unavailable':
+                sections.insert(0,('Captured user text',
+                    'Unavailable now. Capture, source, or evidence may have changed. z Retry.'))
+            else:
+                sections.insert(0,('Captured user text',
+                    'z Check for captured redacted text for this exact event.'))
         if 'detail' not in item:
             sections.insert(0,('Error details','Only a reference is loaded. Waiting for retained details; this error stays unseen until its evidence loads.'))
         if failed(item):
@@ -4874,6 +4986,9 @@ class ObservatoryApp(App):
         for page in self.search_queries:self.query_one('#search-'+page,Input).value=''
         self.last_update=-1;self.refresh_data()
     def action_page(self,page):
+        if page!='activity' and self.plugin_text_state is not None:
+            self.plugin_text_generation+=1
+            self.plugin_text_state=None
         self.screen.clear_selection()
         self.collapse(page)
         self.query_one('#pages',TabbedContent).active=page
