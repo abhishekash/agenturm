@@ -159,6 +159,36 @@ class PollBatch:
     root_gap: bool = False
 
 
+@dataclass(frozen=True)
+class ContentPollBatch(PollBatch):
+    """A negotiated Pi reference envelope over an otherwise strict v1 batch."""
+
+    content_refs: tuple[dict, ...] = ()
+
+
+def validate_content_batch(message: dict, *, source_id: str) -> ContentPollBatch:
+    """Require a separately versioned, bounded reference-only envelope.
+
+    The ordinary v1 validator never accepts the extra field. A caller must
+    negotiate ``pi-content-ref/1`` before selecting this path.
+    """
+    if not isinstance(message, dict) or "content_refs" not in message:
+        raise ProtocolError("Pi content reference envelope is required")
+    envelope = message["content_refs"]
+    if (not isinstance(envelope, dict) or set(envelope) != {"schema_version", "refs"}
+            or type(envelope["schema_version"]) is not int
+            or envelope["schema_version"] != 1
+            or not isinstance(envelope["refs"], list)
+            or len(envelope["refs"]) > 48
+            or len(encode_message(envelope).encode("utf-8")) > MAX_CONTROL_FRAME_BYTES):
+        raise ProtocolError("invalid Pi content reference envelope")
+    ordinary = {key: value for key, value in message.items() if key != "content_refs"}
+    batch = validate_batch(ordinary, source_id=source_id)
+    return ContentPollBatch(batch.source_id, batch.cursor, batch.records,
+                            batch.member_id, batch.member_cursor, batch.root_gap,
+                            tuple(envelope["refs"]))
+
+
 def validate_batch(message: dict, *, source_id: str) -> PollBatch:
     fields = {"type", "protocol", "source_id", "cursor", "records"}
     if set(message) not in (fields, fields | {"member_id", "member_cursor"},

@@ -50,8 +50,9 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
         if not isinstance(source_id, str) or not source_id or source_id in seen:
             raise ValueError("invalid or duplicate plugin source ID")
         seen.add(source_id)
-        if row["capture"] != "metadata-only":
-            raise ValueError("plugin capture must be metadata-only")
+        capture_mode = row["capture"]
+        if capture_mode not in ("metadata-only", "pi-review-text-v1"):
+            raise ValueError("unsupported plugin capture mode")
         grants = row["grants"]
         if (not isinstance(grants, list) or len(grants) > 16 or
                 any(not isinstance(value, str) or not PLUGIN_ID.fullmatch(value) for value in grants)
@@ -89,7 +90,20 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
                                         or any(ord(char) < 32 or ord(char) == 127
                                                for char in source_root)):
             raise ValueError("plugin source root must be an absolute path")
+        if capture_mode == "pi-review-text-v1":
+            content_features = {"source-discovery/1", "source-discovery-root-gap/1",
+                                "configured-root/1",
+                                "pi-content-ref/1"}
+            if (replaces != ["pi"] or source_root is None
+                    or "configured-source-read" not in grants
+                    or "configured-source-read" not in manifest.grants
+                    or not content_features <= set(required_features)
+                    or not content_features | {"harness.pi/1"} <= set(manifest.provides)):
+                raise ValueError("Pi content capture requires directory source and grants")
+        elif "pi-content-ref/1" in required_features:
+            raise ValueError("Pi content feature requires explicit capture mode")
         sources.append(PluginSource(manifest, source_id, tuple(grants),
                                     float(row["poll_interval"]), float(row["timeout"]),
-                                    tuple(replaces), source_root, tuple(required_features)))
+                                    tuple(replaces), source_root, tuple(required_features),
+                                    capture_mode))
     return tuple(sources)

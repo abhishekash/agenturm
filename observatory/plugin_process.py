@@ -22,7 +22,8 @@ from .plugin_frames import FrameError, MAX_FRAME_BYTES, read_frame, write_frame
 from .plugin_manifest import PluginManifest, plan_activation
 from .plugin_wire import (MAX_BATCH_RECORDS, MAX_CONTROL_FRAME_BYTES, MAX_CURSOR_CHARS,
                           MAX_DISCOVERY_MEMBERS, MEMBER_ID, PROTOCOL_MAJOR, PollBatch, ProtocolError,
-                          decode_message, encode_message, validate_batch,
+                          ContentPollBatch, decode_message, encode_message, validate_batch,
+                          validate_content_batch,
                           validate_hello_ack)
 
 
@@ -110,7 +111,7 @@ class PluginProcess:
         self._slot_held = False
         self._stderr_bytes = 0
         self._stderr_lock = threading.Lock()
-        self.pending: PollBatch | None = None
+        self.pending: PollBatch | ContentPollBatch | None = None
         self.last_ack: str | None = None
 
     @property
@@ -287,7 +288,15 @@ class PluginProcess:
             raise ValueError("discovery checkpoints require source-discovery/1")
         self._send(request)
         try:
-            batch = validate_batch(self._next(), source_id=self.source_id)
+            response = self._next()
+            if "pi-content-ref/1" in self.required_features:
+                batch = validate_content_batch(response, source_id=self.source_id)
+                # The child nominates only exact same-batch source references;
+                # the receiver later opens and verifies the source itself.
+                from .plugin_pi_content import validate_refs
+                validate_refs(batch.content_refs, batch)
+            else:
+                batch = validate_batch(response, source_id=self.source_id)
         except ProtocolError:
             self.close(force=True)
             raise
