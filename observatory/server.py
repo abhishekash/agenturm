@@ -799,11 +799,17 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
           watch_jsonl=(), watch_service="agent-harness", retention_days=None, local_agents=True, metadata_only=False,
           managed_db=False, no_auth=False, allowed_hosts=(), collector_registry=None,
           plugin_config=None, rust_plugin_host=None, rust_plugin_host_sha256=None,
-          capture_modes=None):
+          capture_modes=None, reference_admissions=None):
     from .plugin_capture_modes import CaptureModeRegistry, DEFAULT_CAPTURE_MODES
+    from .plugin_reference_admission import (DEFAULT_REFERENCE_ADMISSIONS,
+                                             ReferenceAdmissionRegistry)
     capture_modes = DEFAULT_CAPTURE_MODES if capture_modes is None else capture_modes
+    reference_admissions = (DEFAULT_REFERENCE_ADMISSIONS if reference_admissions is None
+                            else reference_admissions)
     if not isinstance(capture_modes, CaptureModeRegistry):
         raise TypeError("trusted capture mode registry required")
+    if not isinstance(reference_admissions, ReferenceAdmissionRegistry):
+        raise TypeError("trusted reference admission registry required")
     if db_path is None:
         from .receiver_state import telemetry_path,prepare_state_directory
         prepare_state_directory();db_path=str(telemetry_path());managed_db=True
@@ -873,7 +879,8 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
                 store, plugin_sources,
                 rust_host_executable=str(rust_plugin_host) if rust_plugin_host else None,
                 rust_host_sha256=rust_plugin_host_sha256,
-                capture_modes=capture_modes).start()
+                capture_modes=capture_modes,
+                reference_admissions=reference_admissions).start()
         server.serve_forever()
     except KeyboardInterrupt:
         pass

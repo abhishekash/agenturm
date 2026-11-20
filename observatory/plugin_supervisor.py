@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .plugin_capture_modes import CaptureModeRegistry, DEFAULT_CAPTURE_MODES
+from .plugin_reference_admission import (DEFAULT_REFERENCE_ADMISSIONS,
+                                         ReferenceAdmissionRegistry)
 from .plugin_manifest import PluginManifest
 from .plugin_process import MAX_PROCESSES
 from .plugin_runtime import PluginSession
@@ -88,7 +90,9 @@ class PluginSupervisor:
                  max_failures: int = 5, backoff_seconds: float = 0.25,
                  rust_host_executable: str | None = None,
                  rust_host_sha256: str | None = None,
-                 capture_modes: CaptureModeRegistry = DEFAULT_CAPTURE_MODES):
+                 capture_modes: CaptureModeRegistry = DEFAULT_CAPTURE_MODES,
+                 reference_admissions: ReferenceAdmissionRegistry =
+                 DEFAULT_REFERENCE_ADMISSIONS):
         sources = tuple(sources)
         if len(sources) > MAX_PROCESSES or len({item.source_id for item in sources}) != len(sources):
             raise ValueError("duplicate or excessive plugin sources")
@@ -98,6 +102,8 @@ class PluginSupervisor:
             raise ValueError("invalid plugin backoff")
         if not isinstance(capture_modes, CaptureModeRegistry):
             raise TypeError("trusted capture mode registry required")
+        if not isinstance(reference_admissions, ReferenceAdmissionRegistry):
+            raise TypeError("trusted reference admission registry required")
         for source in sources:
             if not isinstance(source, PluginSource) or not isinstance(source.manifest, PluginManifest):
                 raise TypeError("plugin source requires a manifest")
@@ -109,6 +115,7 @@ class PluginSupervisor:
                           source_root=source.source_root,
                           required_features=source.runtime_features,
                           capture_source=source, capture_modes=capture_modes,
+                          reference_admissions=reference_admissions,
                           rust_host_executable=rust_host_executable,
                           rust_host_sha256=rust_host_sha256)
         self.store = store
@@ -118,6 +125,7 @@ class PluginSupervisor:
         self.rust_host_executable = rust_host_executable
         self.rust_host_sha256 = rust_host_sha256
         self.capture_modes = capture_modes
+        self.reference_admissions = reference_admissions
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.threads: list[threading.Thread] = []
@@ -162,6 +170,7 @@ class PluginSupervisor:
                                     timeout=source.timeout, source_root=source.source_root,
                                     required_features=source.runtime_features,
                                     capture_source=source, capture_modes=self.capture_modes,
+                                    reference_admissions=self.reference_admissions,
                                     rust_host_executable=self.rust_host_executable,
                                     rust_host_sha256=self.rust_host_sha256)
             try:
