@@ -221,7 +221,7 @@ def main() -> None:
                 service.kill(); _, stderr = service.communicate(timeout=5)
             check(service.returncode == 0, f"service failed: {stderr}")
         # A new process must recover the same durable activation receipt,
-        # including any SQLite WAL state left by the first service.
+        # The receipt must survive a clean service restart.
         restarted = subprocess.Popen([str(binary), "--data-root", str(data),
             "--transport-dir", str(transport), "--receiver-id", receiver,
             "--client-uid", str(client_uid), "--client-gid", str(client_gid),
