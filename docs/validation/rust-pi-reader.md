@@ -38,9 +38,7 @@ No performance gain or full Pi parity is asserted. The Python Store remains the 
 
 ## Verification
 
-- For the late-result correlation slice, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` passed, including the new Rust result identity test. The installed Pi binary passed eight tests. The focused plugin Activity, Pi and admission/projection/retention set passed 66 tests, with eight installed tests skipped in that Python run because the binary was exercised separately. These checks preceded the final rebase and will be repeated there.
-- After rebasing onto main `009a201`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed. The Pi crate had nine passing unit tests; the workspace had 30 passing Rust tests.
-- `cargo build --locked -p agenturm-pi-harness` and `AGENTURM_RUST_PI_BIN=... uv run python -m unittest tests.test_rust_pi_harness_plugin -q` passed six installed SHA-pinned binary tests, including same-inode truncation with a reused native row ID.
-- The native Pi and plugin regression set passed 85 Python tests.
+- On the final rebase onto main `43c4b17`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and `cargo build --locked -p agenturm-pi-harness` passed. The Pi crate passed 13 Rust tests.
+- `AGENTURM_RUST_PI_BIN=... uv run python -m unittest tests.test_rust_pi_harness_plugin -q` passed eight tests against the separately installed current binary. The focused plugin Activity, projection, retention, admission and Pi process boundary set passed 58 Python tests. Those two runs cover 66 tests without a skipped installed fixture.
 
 An independent Rust reviewer inspected the cursor and whole-line acceptance loop and found that rejected lines retain their offset and context and that gap diagnostics page coherently. That review did not cover the entire Pi translation or installed test surface; those behaviors have the targeted checks above and remain subject to broader Pi corpus validation.
