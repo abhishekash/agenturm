@@ -373,6 +373,33 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     self._capability_guard = None
                     if provenance_watch is not None:
                         provenance_watch.close()
+            elif path == "/api/plugin-activity-proof":
+                from .plugin_activity import export_proof
+                query = parse_qs(route.query, keep_blank_values=True)
+                try:
+                    if set(query) != {'event_id'} or len(query['event_id']) != 1:
+                        raise ValueError('one exact plugin Activity event is required')
+                    # The revision watch is tied to its original inode. A DB
+                    # replacement can keep the same receiver ID and leave its
+                    # data_version unchanged, so the response also certifies
+                    # the Activity file identity in _json_bytes.
+                    self._activity_file_identity = store._source_file_identity('Activity')
+                    watch, initial_version = _capability_revision_watch(store.path)
+                    try:
+                        proof = export_proof(store, query['event_id'][0])
+                        if proof is not None and proof['receiver_id'] != self._get_receiver_id:
+                            self._json(409, {'error': 'Plugin source receiver changed.'})
+                            return
+                        self._capability_guard = lambda: (not watch.in_transaction and
+                            watch.execute('PRAGMA data_version').fetchone()[0] == initial_version)
+                        self._json(200, {'receiver_id': self._get_receiver_id, 'proof': proof})
+                    finally:
+                        self._capability_guard = None
+                        watch.close()
+                except ValueError as exc:
+                    self._json(400, {'error': str(exc)})
+                except (sqlite3.Error, OSError):
+                    self._json(503, {'error': 'Plugin Activity source revision unavailable.'})
             elif path == "/api/metrics":
                 certificate=({'_initial_receiver':self._get_receiver_id,'_initial_file':self._metrics_file_identity}if certified_metrics else {})
                 self._json(200, store.metrics(**certificate))

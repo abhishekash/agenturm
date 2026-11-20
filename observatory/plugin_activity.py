@@ -16,6 +16,38 @@ _CHECK_RESULTS = frozenset({"passed", "failed", "skipped", "unknown"})
 _ACTIVITY_KINDS = frozenset({"message", "tool", "check"})
 _LEGACY_PI_PROCESS_ID = "example.rust-pi-harness"
 _OPERATION_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}\Z")
+_EVENT_KEY = re.compile(r"plugin-event:[0-9a-f]{64}\Z")
+
+
+def export_proof(store, event_id: str) -> dict | None:
+    """Read one policy-current projected event and its exact source revision."""
+    if type(event_id) is not str or not _EVENT_KEY.fullmatch(event_id):
+        raise ValueError('invalid plugin Activity event identity')
+    with store._connect() as db:
+        db.execute('BEGIN')
+        row = db.execute('''SELECT a.payload, a.owner_key, c.receiver_id,
+                              c.lease_epoch, c.policy_epoch, c.dirty_seq
+            FROM activity_index_v1 a
+            JOIN plugin_source_cursor_v1 c ON c.source_id=a.owner_key
+            JOIN plugin_projection_cursor_v1 p ON p.source_id=c.source_id
+            WHERE a.event_key=? AND a.kind='plugin' AND c.capture_enabled=1
+              AND c.dirty_seq=p.projected_seq AND c.policy_epoch=p.policy_epoch''',
+            (event_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            record = json.loads(row['payload'])
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(record, dict) or not isinstance(record.get('metadata'), dict):
+            return None
+        if (record.get('id') != event_id or record.get('source') != 'plugin'
+                or record['metadata'].get('plugin_source_id') != row['owner_key']):
+            return None
+        record['receiver_id'] = row['receiver_id']
+        return {'receiver_id': row['receiver_id'],
+                'revision': [row['lease_epoch'], row['policy_epoch'], row['dirty_seq']],
+                'record': record}
 
 
 def validate_metadata(record: dict) -> dict:

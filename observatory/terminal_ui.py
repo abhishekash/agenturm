@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import hashlib
 import json
 import os
@@ -46,7 +47,8 @@ from .ui_layout import column_layout
 from .ui_diagnostics import DiagnosticsScreen, FIRST_RUN
 from .ui_workflow import AttentionLedger, WorkflowScreen, WorkflowController, desktop_notify, terminal_handoff
 from .ui_preferences import Preferences
-from .ui_export import ExportScreen
+from .ui_export import (ExportScreen, current_plugin_activity_revision,
+                        plugin_activity_provenance)
 from .ui_render import update_status_text
 from .ui_content import metadata_table, prose, write_body, write_section
 from .ui_coverage import analysis_coverage
@@ -334,7 +336,16 @@ def copy_event_text(item):
     if item.get('trace_id'):lines.append(f"Trace ID: {item['trace_id']}")
     if item.get('span_id'):lines.append(f"Span ID: {item['span_id']}")
     if item.get('operation_id'):lines.append(f"Operation ID: {item['operation_id']}")
-    if item.get('source')=='plugin':lines.append('Coverage: partial (content-free plugin facts)')
+    if item.get('source')=='plugin':
+        provenance=plugin_activity_provenance(item)
+        lines.append('Coverage: partial (content-free plugin facts)')
+        if provenance.get('plugin_source_id'):
+            lines.append('Process source: '+provenance['plugin_source_id'])
+        if item.get('turn_id'):
+            lines.append('Turn ID: '+item['turn_id'])
+        if provenance.get('tool_turn_relation'):
+            lines.append('Tool turn relation: '+provenance['tool_turn_relation'])
+        lines.append('Loaded snapshot; current source capture policy may have changed.')
     lines.append('\nRecorded content')
     def append_json(value):
         formatted,text_values=format_json(value)
@@ -1108,7 +1119,9 @@ class ObservatoryScreen(Screen):
         if selected is None:
             self.app.notify('Drag across text to select it, then press Ctrl+C.')
             return
-        self.app.copy_to_clipboard(selected)
+        # Textual binds Ctrl+C/Super+C to this Screen action. Route it through
+        # the same exact process-Activity proof as the Copy button/shortcut.
+        self.app.action_copy()
 
 
 class ObservatoryApp(App):
@@ -4543,13 +4556,27 @@ class ObservatoryApp(App):
             scope={'mode':'subtree' if self.feed.scope_subtree else 'exact',
                    'root_agent_id':self.feed.scope_agent_id}
         can_export=None
+        poll_policy=True
         if page=='findings':
             from .ui_findings import finding_capture_allowed
             published_snapshot=self.data
             can_export=lambda:finding_capture_allowed(record,self.feed.snapshot,published_snapshot=published_snapshot)
             if not can_export():
                 self.notify('Finding content withheld: source capture or receiver changed.');return
-        self.push_screen(ExportScreen(page,record,scope,can_export=can_export),self.resume_cockpit)
+        elif page=='activity' and record.get('source')=='plugin':
+            frozen=deepcopy(record)
+            receiver_id=self.feed.snapshot.receiver_id
+            revision=current_plugin_activity_revision(self.feed.api,frozen,receiver_id)
+            if revision is None:
+                self.notify('Process Activity changed or source capture was revoked. Reload Activity.');return
+            record=frozen
+            can_export=lambda:current_plugin_activity_revision(
+                self.feed.api,frozen,receiver_id)==revision
+            # The exact proof is checked again at confirmation and in the
+            # writer thread. Do not block the UI with HTTP polling.
+            poll_policy=False
+        self.push_screen(ExportScreen(page,record,scope,can_export=can_export,
+                                      poll_policy=poll_policy),self.resume_cockpit)
 
     def action_search(self):
         page=self.query_one('#pages',TabbedContent).active
@@ -4673,10 +4700,21 @@ class ObservatoryApp(App):
 
     def action_copy(self):
         if self.history_pending():return
+        page=self.query_one('#pages',TabbedContent).active
+        if page=='activity':
+            current=self.table_data.get('activity-table',{}).get(self.selected_activity)
+            if not current:
+                self.notify('Select a current Activity event to copy.');return
+            if current.get('source')=='plugin':
+                if current_plugin_activity_revision(
+                        self.feed.api,current,self.feed.snapshot.receiver_id) is None:
+                    self.notify('Process Activity changed or source capture was revoked. Reload Activity.');return
+                # Selected inspector text can belong to an older row after a
+                # rapid view change. Copy only the just-proven event.
+                self.copy_to_clipboard(copy_event_text(current));return
         selected=self.screen.get_selected_text()
         if selected:
             self.copy_to_clipboard(selected);return
-        page=self.query_one('#pages',TabbedContent).active
         if page=='agents' and self.session_mode=='prompts' and self.query_one('#agents').has_class('expanded'):
             history=self.session_prompts
             event=history.events.get(history.selected)
