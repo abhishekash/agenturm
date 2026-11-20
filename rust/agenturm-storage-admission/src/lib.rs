@@ -46,6 +46,54 @@ fn cursor(value: &str) -> bool {
     value.len() <= 512 && !value.chars().any(char::is_control)
 }
 
+fn reason_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.as_bytes()[0].is_ascii_lowercase()
+        && value.bytes().skip(1).all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'_' | b'.' | b'/' | b'-')
+        })
+}
+
+fn lifecycle_payload(raw: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    let Some(payload) = value.as_object() else {
+        return false;
+    };
+    if !matches!(payload.len(), 1 | 2)
+        || payload
+            .keys()
+            .any(|key| key != "state" && key != "reason_code")
+        || !payload
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|state| {
+                matches!(
+                    state,
+                    "started"
+                        | "running"
+                        | "paused"
+                        | "completed"
+                        | "failed"
+                        | "interrupted"
+                        | "cancelled"
+                )
+            })
+        || payload
+            .get("reason_code")
+            .is_some_and(|reason| !reason.as_str().is_some_and(reason_code))
+    {
+        return false;
+    }
+    // Host-prepared payloads are already canonical JSON. This also rejects
+    // duplicate-key and alternate-encoding strings that normalize on parse.
+    serde_json::to_string(&value).is_ok_and(|canonical| canonical == raw)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Lease {
@@ -124,8 +172,7 @@ fn validate(request: &Request) -> Result<()> {
             ]
             .into_iter()
             .all(|field| field.is_empty() || identity(field))
-            || !serde_json::from_str::<serde_json::Value>(&row.payload_json)
-                .is_ok_and(|value| value.is_object())
+            || !lifecycle_payload(&row.payload_json)
         {
             return Err(reject("unsupported prepared lifecycle record"));
         }
@@ -227,7 +274,9 @@ fn commit(db: &mut Connection, request: &Request) -> Result<Receipt> {
         "SELECT EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_retention_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=?1) \
+         OR EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 \
                    AND (revision<>0 OR kind<>'lifecycle' OR member_id<>''))",
         [&request.lease.source_id],
@@ -250,6 +299,19 @@ fn commit(db: &mut Connection, request: &Request) -> Result<Receipt> {
         && request.batch_digest == prior_digest
         && (request.expected_cursor == prior_cursor || request.expected_cursor == current_cursor)
     {
+        let receipt: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT cursor,refs_digest FROM plugin_content_batch_v1 WHERE source_id=?",
+                [&request.lease.source_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let expected_digest = format!("{:x}", Sha256::digest(b"{\"refs\":[]}"));
+        if receipt
+            .is_some_and(|(cursor, digest)| cursor != request.cursor || digest != expected_digest)
+        {
+            return Err(reject("scratch empty-content replay receipt mismatch"));
+        }
         return Ok(Receipt {
             cursor: current_cursor,
             disposition: "replay",
@@ -431,7 +493,9 @@ mod tests {
              CREATE TABLE plugin_source_member_cursor_v1(source_id TEXT); \
              CREATE TABLE plugin_content_v1(source_id TEXT); \
              CREATE TABLE plugin_source_gap_invalidated_v1(source_id TEXT); \
+             CREATE TABLE plugin_retention_v1(source_id TEXT); \
              CREATE TABLE plugin_retention_invalidated_v1(source_id TEXT); \
+             CREATE TABLE plugin_session_member_v1(source_id TEXT); \
              CREATE TABLE plugin_content_batch_v1(source_id TEXT PRIMARY KEY,cursor TEXT,refs_digest TEXT); \
              CREATE TABLE plugin_content_status_v1( \
                source_id TEXT PRIMARY KEY,cursor TEXT,reason TEXT,refs_count INTEGER,policy_epoch INTEGER);",
@@ -558,5 +622,55 @@ mod tests {
         let error = commit(&mut db, &request("one", "", &[])).unwrap_err();
         assert!(error.to_string().contains("unsupported history"));
         assert_eq!(state(&db), ("".into(), 0, 0));
+    }
+
+    #[test]
+    fn retention_watermark_and_session_member_are_outside_subset() {
+        for table in ["plugin_retention_v1", "plugin_session_member_v1"] {
+            let mut db = fixture();
+            db.execute(
+                &format!("INSERT INTO {table}(source_id) VALUES('source-one')"),
+                [],
+            )
+            .unwrap();
+            let error = commit(&mut db, &request("one", "", &[])).unwrap_err();
+            assert!(error.to_string().contains("unsupported history"));
+            assert_eq!(state(&db), ("".into(), 0, 0));
+        }
+    }
+
+    #[test]
+    fn replay_checks_present_empty_content_receipt() {
+        let mut db = fixture();
+        let first = request("one", "", &[(&"1".repeat(64), &"2".repeat(64))]);
+        commit(&mut db, &first).unwrap();
+        db.execute("DELETE FROM plugin_content_batch_v1", [])
+            .unwrap();
+        assert_eq!(commit(&mut db, &first).unwrap().disposition, "replay");
+        db.execute(
+            "INSERT INTO plugin_content_batch_v1 VALUES('source-one','one',?)",
+            [&"f".repeat(64)],
+        )
+        .unwrap();
+        let error = commit(&mut db, &first).unwrap_err();
+        assert!(error.to_string().contains("receipt mismatch"));
+        assert_eq!(state(&db), ("one".into(), 1, 1));
+    }
+
+    #[test]
+    fn lifecycle_payload_must_be_canonical_and_coarse() {
+        assert!(lifecycle_payload("{\"state\":\"started\"}"));
+        assert!(lifecycle_payload(
+            "{\"reason_code\":\"source_gap\",\"state\":\"failed\"}"
+        ));
+        for payload in [
+            "{\"state\":\"started\",\"text\":\"prompt\"}",
+            "{\"state\":\"unknown\"}",
+            "{\"reason_code\":\"secret text\",\"state\":\"failed\"}",
+            "{\"state\":\"started\",\"state\":\"failed\"}",
+            "{\"state\": \"started\"}",
+        ] {
+            assert!(!lifecycle_payload(payload));
+        }
     }
 }

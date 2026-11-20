@@ -139,6 +139,38 @@ class RustScratchAdmissionTests(unittest.TestCase):
         self.assertIn("unsupported", self.apply(request, success=False))
         self.assertEqual(self.snapshot(self.rust_store)[0][0], "")
 
+    def test_replay_rejects_present_mismatched_receipt(self):
+        request = self.request(PollBatch(SOURCE, "one", (fact(),)))
+        self.apply(request)
+        with self.rust_store._connect() as db:
+            db.execute("DELETE FROM plugin_content_batch_v1 WHERE source_id=?", (SOURCE,))
+        self.assertEqual(self.apply(request)["disposition"], "replay")
+        with self.rust_store._connect() as db:
+            db.execute("INSERT INTO plugin_content_batch_v1 VALUES(?,?,?)",
+                       (SOURCE, "one", "f" * 64))
+        before = self.snapshot(self.rust_store)
+        self.assertIn("receipt mismatch", self.apply(request, success=False))
+        self.assertEqual(self.snapshot(self.rust_store), before)
+
+    def test_retention_watermark_and_member_map_are_unsupported(self):
+        request = self.request(PollBatch(SOURCE, "one", (fact(),)))
+        with self.rust_store._connect() as db:
+            db.execute("INSERT INTO plugin_retention_v1 VALUES(?,?,?,?)",
+                       (SOURCE, 1, 10, 1))
+        self.assertIn("unsupported history", self.apply(request, success=False))
+        with self.rust_store._connect() as db:
+            db.execute("DELETE FROM plugin_retention_v1 WHERE source_id=?", (SOURCE,))
+            db.execute("INSERT INTO plugin_session_member_v1 VALUES(?,?,?)",
+                       (SOURCE, "native-one", "member"))
+        self.assertIn("unsupported history", self.apply(request, success=False))
+        self.assertEqual(self.snapshot(self.rust_store)[0][0], "")
+
+    def test_lifecycle_payload_is_closed_to_free_text(self):
+        request = self.request(PollBatch(SOURCE, "one", (fact(),)))
+        request["records"][0]["payload_json"] = '{"state":"started","text":"prompt"}'
+        self.assertIn("unsupported prepared lifecycle", self.apply(request, success=False))
+        self.assertEqual(self.snapshot(self.rust_store)[0][0], "")
+
 
 if __name__ == "__main__":
     unittest.main()
