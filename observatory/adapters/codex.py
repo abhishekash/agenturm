@@ -38,6 +38,10 @@ class CodexAdapter:
     continue_prefix_after_task = True
     modern_usage_records = True
 
+    def state_context(self, row):
+        """Codex records cwd and Git details inside its event payload."""
+        return row.get("payload") or {}
+
     def continuation_root(self, row):
         payload = row.get("payload") or {}
         return (isinstance(payload, dict) and isinstance(payload.get("item"), dict)

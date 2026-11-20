@@ -12,6 +12,10 @@ from observatory.core import Store
 from observatory.local_activity import emit
 from observatory.local_agents import LocalAgents, Session
 from observatory.native_sources import NativeSourceSpec, builtin_sources
+from observatory.adapters.codex import CodexAdapter
+from observatory.adapters.claude import ClaudeAdapter
+from observatory.adapters.pi import PiAdapter
+from observatory.adapters.kiro import KiroAdapter
 
 
 class FixtureAdapter:
@@ -44,6 +48,48 @@ class FixtureAdapter:
 
 
 class AdapterTests(unittest.TestCase):
+    def test_state_context_uses_registered_format_hook(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            cases = (
+                ("Codex", CodexAdapter(),
+                 {"type": "session_meta", "payload": {"cwd": str(root / "codex"),
+                  "git": {"branch": "codex-branch"}}}, "codex", "codex-branch"),
+                ("Claude Code", ClaudeAdapter(),
+                 {"type": "user", "message": {}, "cwd": str(root / "claude"),
+                  "gitBranch": "claude-branch",
+                  "payload": {"cwd": str(root / "wrong")}}, "claude", "claude-branch"),
+                ("Pi", PiAdapter(),
+                 {"type": "message", "message": {}, "cwd": str(root / "pi"),
+                  "gitBranch": "pi-branch",
+                  "payload": {"cwd": str(root / "wrong")}}, "pi", "pi-branch"),
+                ("Kiro", KiroAdapter(),
+                 {"type": "unknown", "payload": {}, "cwd": str(root / "kiro"),
+                  "gitBranch": "kiro-branch"}, "kiro", "kiro-branch"),
+            )
+            for runtime, adapter, row, project, branch in cases:
+                with self.subTest(runtime=runtime):
+                    session = Session(None, root / (project + ".jsonl"), runtime,
+                                      adapter=adapter)
+                    session.observe_state(row, 1)
+                    self.assertEqual(session.project, project)
+                    self.assertEqual(session.working_directory, str(root / project))
+                    self.assertEqual(session.branch, branch)
+
+    def test_injected_state_context_honors_capture_policy(self):
+        class NestedAdapter(FixtureAdapter):
+            def state_context(self, row):
+                return row.get("nested") or {}
+
+        with tempfile.TemporaryDirectory() as root:
+            session = Session(None, Path(root) / "fixture.jsonl", "Fixture",
+                              capture_details=False, adapter=NestedAdapter())
+            session.observe_state({"type": "turn", "nested": {
+                "cwd": str(Path(root) / "project"), "gitBranch": "private"}}, 1)
+            self.assertEqual(session.project, "project")
+            self.assertEqual(session.working_directory, "")
+            self.assertEqual(session.branch, "")
+
     def test_bundled_factories_discover_trusted_sources_in_stable_order(self):
         specs = builtin_sources()
         self.assertEqual([spec.id for spec in specs], ["codex", "claude", "pi", "kiro"])
