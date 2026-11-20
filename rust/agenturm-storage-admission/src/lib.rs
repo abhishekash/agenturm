@@ -2,11 +2,13 @@
 //!
 //! This crate is deliberately absent from the receiver and plugin host. Its
 //! CLI requires an explicit marker on a disposable database before opening a
-//! read/write connection. It does not validate plugin wire messages or replace
-//! Python's admission, retention, discovery, content, or policy code.
+//! read/write connection, then holds a cooperating writer lease across its
+//! transaction. It does not validate plugin wire messages or replace Python's
+//! admission, retention, discovery, content, or policy code.
 
 #![forbid(unsafe_code)]
 
+use agenturm_storage_lease::WriterLease;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -200,9 +202,16 @@ fn require_scratch(db: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn commit(db: &mut Connection, request: &Request) -> Result<Receipt> {
+fn commit_guarded(
+    db: &mut Connection,
+    request: &Request,
+    writer_lease: Option<&WriterLease>,
+) -> Result<Receipt> {
     validate(request)?;
     let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if let Some(lease) = writer_lease {
+        lease.verify_admission()?;
+    }
     require_scratch(&transaction)?;
     let receiver: String = transaction.query_row(
         "SELECT value FROM schema_meta WHERE key='receiver_id'",
@@ -442,6 +451,13 @@ fn commit(db: &mut Connection, request: &Request) -> Result<Receipt> {
     })
 }
 
+#[cfg(test)]
+fn commit(db: &mut Connection, request: &Request) -> Result<Receipt> {
+    // In-memory unit fixtures have no filesystem path; the public scratch
+    // entrypoint always supplies a cooperating lease.
+    commit_guarded(db, request, None)
+}
+
 /// Apply one host-prepared lifecycle batch to an explicitly marked disposable
 /// SQLite fixture. This API is feature-off and has no production caller.
 pub fn apply_json(input: &str) -> Result<String> {
@@ -460,8 +476,15 @@ pub fn apply_json(input: &str) -> Result<String> {
     let read = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     require_scratch(&read)?;
     drop(read);
+    // Only an explicitly marked scratch fixture creates a sibling lease file.
+    // The lease binds the lexical and resolved database path and stays alive
+    // until the write connection has closed.
+    let writer_lease = WriterLease::acquire(path)?;
+    writer_lease.verify_admission()?;
     let mut db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    let receipt = commit(&mut db, &request)?;
+    let receipt = commit_guarded(&mut db, &request, Some(&writer_lease))?;
+    drop(db);
+    drop(writer_lease);
     Ok(serde_json::to_string(&receipt)?)
 }
 

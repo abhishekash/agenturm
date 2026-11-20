@@ -1,0 +1,15 @@
+# Scratch Rust admission with a cooperating lease
+
+20 November 2026. This checkpoint composes two feature-off Rust experiments: the narrow lifecycle admission transaction and the Linux cooperative writer lease. Neither is called by Agenturm's receiver or Python Store. Python remains the only production database writer.
+
+## Exact sequence
+
+The standalone scratch CLI first validates its bounded, host-prepared request and checks that the named database already exists as a regular file. It opens SQLite read-only and requires `schema_meta.storage_admission_scratch_v1=enabled` before acquiring a lock. For a stable pathname, an unmarked database is rejected without opening a read/write connection or creating an Agenturm writer-lock file. A pathname swap after that read can change where a lock file is created before the transaction rejects the target. SQLite may also touch its usual read-only WAL/SHM machinery; this is not a no-filesystem-side-effects promise.
+
+For a marked fixture on Linux, `WriterLease::acquire` binds the lexical path, resolved file identity, and a private no-follow sibling lock. The lease rejects hardlinked databases and contends with other cooperating processes. The CLI verifies the binding before its read/write open and again inside `BEGIN IMMEDIATE`, before any transaction write. It rechecks the scratch marker inside that transaction. The lease stays alive through the commit and connection close. A failed or interrupted attempt releases the OS lock when its handle closes. A lost reply after commit can still leave a committed batch; exact replay is the recovery path when the fixture remains available. An unchanged empty poll still has no database write.
+
+The read-only marker preflight and subsequent SQLite connection are separate opens. `rusqlite` does not expose a stable main-file descriptor for this path, so a swap-and-swap-back race cannot be excluded by the lease checks. This is a cooperating scratch fixture protocol, not a production storage authority, a legacy-writer fence, or a security sandbox against same-user filesystem mutation. A Rust service cutover still needs the ownership and old-binary exclusion gates in [the writer cutover report](rust-writer-cutover-gate.md).
+
+## Verification
+
+The installed differential fixture checks Rust versus Python's supported lifecycle rows, cursor, dirty marker, empty-content receipt and replay. Added cases check the private lock mode, absence of a lock file for an unmarked database, another process holding the lock while the scratch CLI refuses without changing stored state, and hardlink and final-symlink alias refusal. The lease crate separately tests symlink and atomic database replacement, lock-file replacement, process crash release, and same-process sharing. On the isolated branch, eight Rust unit tests and ten installed Python differential/contention tests passed; focused Clippy with warnings denied, formatting, and diff checks passed. This slice makes no performance claim and does not enable general plugin evidence, content, corrections, gaps, retention, or a production writer.
