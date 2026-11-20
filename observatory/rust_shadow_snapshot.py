@@ -59,6 +59,12 @@ def capture(store, source_id: str) -> ShadowSnapshot | None:
         revision = _revision(db, source_id)
         if not _ready(revision):
             return None
+        # Reducer schema v2 carries retention invalidation but not durable
+        # source-gap membership. Refuse a misleading parity comparison until
+        # its input contract represents this coverage state.
+        if db.execute("SELECT 1 FROM plugin_source_gap_invalidated_v1 "
+                      "WHERE source_id=? LIMIT 1", (source_id,)).fetchone():
+            return None
         receiver = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
         if receiver is None or receiver[0] != revision[0]:
             raise ProtocolError("receiver identity changed during shadow snapshot")
