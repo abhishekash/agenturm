@@ -8,6 +8,7 @@ use std::path::Path;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+const MAX_CHECKPOINT: usize = 524;
 
 fn invalid(message: &'static str) -> Box<dyn Error> {
     message.into()
@@ -32,7 +33,7 @@ pub(crate) struct Context {
     queued_id: String,
     queued_stamp: String,
     pending_interactions: Vec<String>,
-    open_call: String,
+    open_calls: Vec<String>,
     worker_started: bool,
 }
 
@@ -101,14 +102,16 @@ pub(crate) fn initial_context(path: &Path, raw: &[u8]) -> Result<Context> {
         queued_id: String::new(),
         queued_stamp: "0".to_owned(),
         pending_interactions: Vec::new(),
-        open_call: String::new(),
+        open_calls: Vec::new(),
         worker_started: false,
     })
 }
 
 pub(crate) fn checkpoint(context: &Context) -> String {
+    let mut open_calls = context.open_calls.clone();
+    open_calls.sort();
     format!(
-        "k{}:{}:{}:{}:{}:{}:{}:{}",
+        "k2:{}:{}:{}:{}:{}:{}:{}:{}",
         context.path_hash,
         u8::from(context.turn_open),
         context.turn_id,
@@ -116,12 +119,19 @@ pub(crate) fn checkpoint(context: &Context) -> String {
         context.queued_stamp,
         context.pending_interactions.join("."),
         u8::from(context.worker_started),
-        context.open_call
+        open_calls.join(".")
     )
 }
 
 fn digest_key(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))[..24].to_owned()
+}
+
+// Operation IDs are not persisted. New k2 checkpoints use the full digest;
+// only a pending call restored from legacy k1 retains its historical 96-bit
+// digest until its result arrives.
+fn operation_key(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
 fn interaction_key(payload: &serde_json::Map<String, Value>) -> Result<String> {
@@ -144,40 +154,81 @@ fn digest_field(value: &str) -> bool {
     value.len() == 24 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn valid_call_entry(value: &str) -> bool {
+    let key_len = value.len().saturating_sub(2);
+    matches!(key_len, 24 | 64)
+        && value.is_ascii()
+        && value[..key_len]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        && matches!(&value[key_len..key_len + 1], "s" | "f" | "d")
+        && matches!(&value[key_len + 1..], "m" | "s" | "f" | "o")
+}
+
 pub(crate) fn restore(context: &mut Context, raw: &str) -> Result<()> {
+    if raw.len() > MAX_CHECKPOINT {
+        return Err(invalid("Kiro checkpoint exceeds bounded cursor budget"));
+    }
     let fields: Vec<_> = raw.split(':').collect();
-    if fields.len() != 8
-        || fields[0] != format!("k{}", context.path_hash)
-        || !matches!(fields[1], "0" | "1")
-        || (!fields[2].is_empty() && !identifier(fields[2]))
-        || (!fields[3].is_empty() && !identifier(fields[3]))
-        || fields[4].parse::<u64>().is_err()
-        || (fields[3].is_empty() && fields[4] != "0")
-        || (!fields[5].is_empty()
-            && (fields[5].split('.').count() > 2 || !fields[5].split('.').all(digest_field)))
-        || !matches!(fields[6], "0" | "1")
-        || (!fields[7].is_empty()
-            && (fields[7].len() != 26
-                || !fields[7].is_ascii()
-                || !digest_field(&fields[7][..24])
-                || !matches!(&fields[7][24..25], "s" | "f" | "d")
-                || !matches!(&fields[7][25..26], "m" | "s" | "f" | "o")))
+    let (version, base) = match fields.as_slice() {
+        ["k2", path_hash, ..] if *path_hash == context.path_hash && fields.len() == 9 => (2, 2),
+        [legacy, ..] if *legacy == format!("k{}", context.path_hash) && fields.len() == 8 => (1, 1),
+        _ => (0, 0),
+    };
+    if version == 0 {
+        return Err(invalid(
+            "invalid Kiro checkpoint or configured path changed",
+        ));
+    }
+
+    let turn_open = fields[base];
+    let turn_id = fields[base + 1];
+    let queued_id = fields[base + 2];
+    let queued_stamp = fields[base + 3];
+    let pending = fields[base + 4];
+    let worker_started = fields[base + 5];
+    let calls = fields[base + 6];
+    let parsed_calls: Vec<String> = if calls.is_empty() {
+        Vec::new()
+    } else {
+        calls.split('.').map(str::to_owned).collect()
+    };
+    if !matches!(turn_open, "0" | "1")
+        || (!turn_id.is_empty() && !identifier(turn_id))
+        || (!queued_id.is_empty() && !identifier(queued_id))
+        || queued_stamp.parse::<u64>().is_err()
+        || (queued_id.is_empty() && queued_stamp != "0")
+        || (!pending.is_empty()
+            && (pending.split('.').count() > 2 || !pending.split('.').all(digest_field)))
+        || !matches!(worker_started, "0" | "1")
+        || parsed_calls.len() > 4
+        || (version == 1 && parsed_calls.iter().any(|entry| entry.len() != 26))
+        || (version == 2 && parsed_calls.iter().any(|entry| entry.len() != 66))
+        || parsed_calls.iter().any(|entry| !valid_call_entry(entry))
+        || parsed_calls
+            .iter()
+            .map(|entry| &entry[..entry.len() - 2])
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != parsed_calls.len()
     {
         return Err(invalid(
             "invalid Kiro checkpoint or configured path changed",
         ));
     }
-    context.turn_open = fields[1] == "1";
-    context.turn_id = fields[2].to_owned();
-    context.queued_id = fields[3].to_owned();
-    context.queued_stamp = fields[4].to_owned();
-    context.pending_interactions = if fields[5].is_empty() {
+    // The original eight-field cursor held one unresolved call. Accept it as
+    // version 1 and write the version 2 representation at the next checkpoint.
+    context.turn_open = turn_open == "1";
+    context.turn_id = turn_id.to_owned();
+    context.queued_id = queued_id.to_owned();
+    context.queued_stamp = queued_stamp.to_owned();
+    context.pending_interactions = if pending.is_empty() {
         Vec::new()
     } else {
-        fields[5].split('.').map(str::to_owned).collect()
+        pending.split('.').map(str::to_owned).collect()
     };
-    context.worker_started = fields[6] == "1";
-    context.open_call = fields[7].to_owned();
+    context.worker_started = worker_started == "1";
+    context.open_calls = parsed_calls;
     Ok(())
 }
 
@@ -328,7 +379,7 @@ pub(crate) fn translate_line(
                     "info",
                 ));
             } else {
-                if !next.open_call.is_empty() {
+                if !next.open_calls.is_empty() {
                     return Err(invalid("Kiro turn changed with unresolved tool call"));
                 }
                 next.turn_id = id.to_owned();
@@ -356,7 +407,7 @@ pub(crate) fn translate_line(
         }
         "turn_start" => {
             let id = row_id.ok_or("Kiro turn start lacks ID")?;
-            if !next.turn_open && !next.open_call.is_empty() {
+            if !next.turn_open && !next.open_calls.is_empty() {
                 return Err(invalid("Kiro turn changed with unresolved tool call"));
             }
             if !next.queued_id.is_empty() {
@@ -486,28 +537,50 @@ pub(crate) fn translate_line(
                     "file" => "f",
                     _ => "o",
                 };
-                let key = digest_key(operation);
-                if !next.open_call.is_empty() && !next.open_call.starts_with(&key) {
-                    return Err(invalid(
-                        "multiple unresolved Kiro tool calls are not representable",
-                    ));
-                }
-                next.open_call = format!("{key}{status}{category_code}");
-                let result = if status == "d" {
-                    "denied"
-                } else if status == "f" {
-                    "failed"
+                let key = operation_key(operation);
+                if let Some(existing) = next.open_calls.iter().find(|entry| {
+                    let key_len = entry.len() - 2;
+                    if key_len == 24 {
+                        key.starts_with(&entry[..key_len])
+                    } else {
+                        key == entry[..key_len]
+                    }
+                }) {
+                    let key_len = existing.len() - 2;
+                    if existing[key_len..] != format!("{status}{category_code}") {
+                        return Err(invalid("ambiguous duplicate Kiro tool call identity"));
+                    }
+                    (category, "duplicate")
+                } else if next.open_calls.len() == 4 {
+                    return Err(invalid("too many unresolved Kiro tool calls"));
                 } else {
-                    "started"
-                };
-                (category, result)
-            } else {
-                let key = digest_key(operation);
-                if !next.open_call.starts_with(&key) || next.open_call.len() != 26 {
-                    return Err(invalid("Kiro result has no matching unresolved call"));
+                    next.open_calls
+                        .push(format!("{key}{status}{category_code}"));
+                    let result = if status == "d" {
+                        "denied"
+                    } else if status == "f" {
+                        "failed"
+                    } else {
+                        "started"
+                    };
+                    (category, result)
                 }
-                let status = &next.open_call[24..25];
-                let category = match &next.open_call[25..26] {
+            } else {
+                let key = operation_key(operation);
+                let Some(index) = next.open_calls.iter().position(|entry| {
+                    let key_len = entry.len() - 2;
+                    if key_len == 24 {
+                        key.starts_with(&entry[..key_len])
+                    } else {
+                        key == entry[..key_len]
+                    }
+                }) else {
+                    return Err(invalid("Kiro result has no matching unresolved call"));
+                };
+                let entry = next.open_calls.remove(index);
+                let key_len = entry.len() - 2;
+                let status = &entry[key_len..key_len + 1];
+                let category = match &entry[key_len + 1..] {
                     "m" => "mcp",
                     "s" => "shell",
                     "f" => "file",
@@ -524,18 +597,19 @@ pub(crate) fn translate_line(
                 } else {
                     return Err(invalid("Kiro result lacks explicit success"));
                 };
-                next.open_call.clear();
                 (category, result)
             };
-            facts.push(fact(
-                &base,
-                "tool",
-                "tool",
-                &time_ns,
-                &next,
-                json!({"category":category,"result":result}),
-                Some(operation),
-            ));
+            if result != "duplicate" {
+                facts.push(fact(
+                    &base,
+                    "tool",
+                    "tool",
+                    &time_ns,
+                    &next,
+                    json!({"category":category,"result":result}),
+                    Some(operation),
+                ));
+            }
         }
         "pending_interaction" => {
             let key = interaction_key(payload)?;
@@ -634,7 +708,7 @@ pub(crate) fn translate_line(
             ));
         }
     }
-    if checkpoint(&next).len() > 200 {
+    if checkpoint(&next).len() > MAX_CHECKPOINT {
         return Err(invalid("Kiro checkpoint exceeds bounded cursor budget"));
     }
     Ok((facts, next))
@@ -815,10 +889,200 @@ mod tests {
         let (facts, finished) = translate_line(&result, &restored, "generation", 2).unwrap();
         assert_eq!(facts[0]["payload"]["result"], "denied");
         assert_eq!(facts[0]["payload"]["category"], "shell");
-        assert!(finished.open_call.is_empty());
+        assert!(finished.open_calls.is_empty());
         let end = row("end", 3, json!({"type":"turn_end","stopReason":"end_turn"}));
         let (_, ended) = translate_line(&end, &waiting, "generation", 3).unwrap();
         let next_user = row("u2", 4, json!({"type":"user"}));
         assert!(translate_line(&next_user, &ended, "generation", 4).is_err());
+    }
+
+    #[test]
+    fn four_overlapping_calls_resolve_out_of_order_after_k2_restart() {
+        let first = row("u1", 0, json!({"type":"user"}));
+        let context = initial_context(Path::new("/x/sess_one/messages.jsonl"), &first).unwrap();
+        let (_, running) = translate_line(&first, &context, "generation", 0).unwrap();
+        let mut current = running;
+        for (id, name, second) in [
+            ("call-one", "run_command", 1),
+            ("call-two", "write_file", 2),
+            ("call-three", "mcp_search", 3),
+            ("call-four", "other_tool", 4),
+        ] {
+            let call = row(
+                &format!("row-{id}"),
+                second,
+                json!({"type":"tool_call","toolCallId":id,"toolName":name}),
+            );
+            let (facts, next) =
+                translate_line(&call, &current, "generation", second as u64).unwrap();
+            assert_eq!(facts[0]["payload"]["result"], "started");
+            current = next;
+        }
+        assert_eq!(current.open_calls.len(), 4);
+        let checkpoint = checkpoint(&current);
+        assert!(checkpoint.starts_with("k2:"));
+        assert!(checkpoint.len() <= MAX_CHECKPOINT);
+        assert!(checkpoint.contains(&operation_key("call-one")));
+        let mut restored = context.clone();
+        restore(&mut restored, &checkpoint).unwrap();
+        let mut resolved = Vec::new();
+        for (id, name, second) in [
+            ("call-three", "mcp_search", 5),
+            ("call-one", "run_command", 6),
+            ("call-four", "other_tool", 7),
+            ("call-two", "write_file", 8),
+        ] {
+            let result = row(
+                &format!("result-{id}"),
+                second,
+                json!({"type":"tool_result","toolCallId":id,"success":true}),
+            );
+            let (facts, next) =
+                translate_line(&result, &restored, "generation", second as u64).unwrap();
+            assert_eq!(facts[0]["identity"]["operation_id"], id);
+            assert_eq!(facts[0]["payload"]["category"], category(name));
+            resolved.push(facts[0]["payload"]["result"].as_str().unwrap().to_owned());
+            restored = next;
+        }
+        assert_eq!(resolved, vec!["succeeded"; 4]);
+        assert!(restored.open_calls.is_empty());
+    }
+
+    #[test]
+    fn fifth_and_duplicate_pending_call_fail_closed() {
+        let first = row("u1", 0, json!({"type":"user"}));
+        let context = initial_context(Path::new("/x/sess_one/messages.jsonl"), &first).unwrap();
+        let (_, mut current) = translate_line(&first, &context, "generation", 0).unwrap();
+        for index in 0..4 {
+            let call = row(
+                &format!("call-{index}"),
+                index + 1,
+                json!({"type":"tool_call","toolCallId":format!("op-{index}"),"toolName":"run_command"}),
+            );
+            (_, current) = translate_line(&call, &current, "generation", index as u64).unwrap();
+        }
+        let duplicate = row(
+            "duplicate",
+            5,
+            json!({"type":"tool_call","toolCallId":"op-0","toolName":"run_command"}),
+        );
+        let (duplicate_facts, duplicate_state) =
+            translate_line(&duplicate, &current, "generation", 5).unwrap();
+        assert!(duplicate_facts.is_empty());
+        assert_eq!(duplicate_state.open_calls, current.open_calls);
+        let changed_duplicate = row(
+            "duplicate-changed",
+            5,
+            json!({"type":"tool_call","toolCallId":"op-0","toolName":"write_file"}),
+        );
+        assert!(
+            translate_line(&changed_duplicate, &current, "generation", 5)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous duplicate")
+        );
+        let fifth = row(
+            "call-five",
+            5,
+            json!({"type":"tool_call","toolCallId":"op-4","toolName":"run_command"}),
+        );
+        assert!(
+            translate_line(&fifth, &current, "generation", 5)
+                .unwrap_err()
+                .to_string()
+                .contains("too many unresolved")
+        );
+        assert_eq!(current.open_calls.len(), 4);
+    }
+
+    #[test]
+    fn k1_cursor_migrates_to_k2_and_malformed_or_oversize_states_fail() {
+        let first = row("u1", 0, json!({"type":"user"}));
+        let mut context = initial_context(Path::new("/x/sess_one/messages.jsonl"), &first).unwrap();
+        let legacy_call = format!("{}ss", digest_key("call-one"));
+        let legacy = format!("k{}:1:turn-one::0::0:{legacy_call}", context.path_hash);
+        restore(&mut context, &legacy).unwrap();
+        assert_eq!(context.open_calls, vec![legacy_call]);
+        assert!(checkpoint(&context).starts_with("k2:"));
+        let result = row(
+            "result",
+            1,
+            json!({"type":"tool_result","toolCallId":"call-one","success":true}),
+        );
+        let (facts, after_result) = translate_line(&result, &context, "generation", 1).unwrap();
+        assert_eq!(facts[0]["payload"]["result"], "succeeded");
+        assert!(after_result.open_calls.is_empty());
+
+        let prefix = format!("k2:{}:1:turn-one::0::0:", context.path_hash);
+        let duplicate_key = format!("{}ss", "0".repeat(64));
+        let malformed = [
+            format!("{prefix}bad"),
+            format!("{prefix}{}ss", "0".repeat(63)),
+            format!("{prefix}{duplicate_key}.{duplicate_key}"),
+            format!(
+                "{prefix}{duplicate_key}.{}so.{}sf.{}sm.{}so",
+                "1".repeat(64),
+                "2".repeat(64),
+                "3".repeat(64),
+                "4".repeat(64)
+            ),
+        ];
+        for raw in malformed {
+            assert!(
+                restore(&mut context.clone(), &raw).is_err(),
+                "accepted {raw}"
+            );
+        }
+        assert!(
+            restore(
+                &mut context.clone(),
+                &format!("{prefix}{}", "a".repeat(MAX_CHECKPOINT))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn maximum_four_call_checkpoint_is_bounded_and_restorable() {
+        let first = row("u1", 0, json!({"type":"user"}));
+        let mut context = initial_context(Path::new("/x/sess_one/messages.jsonl"), &first).unwrap();
+        context.turn_id = "t".repeat(80);
+        context.queued_id = "q".repeat(80);
+        context.queued_stamp = u64::MAX.to_string();
+        context.pending_interactions = vec!["a".repeat(24), "b".repeat(24)];
+        context.open_calls = (0..4)
+            .map(|index| format!("{:064x}s{}", index + 1, "m"))
+            .collect();
+        let raw = checkpoint(&context);
+        assert_eq!(raw.len(), MAX_CHECKPOINT);
+        let mut restored =
+            initial_context(Path::new("/x/sess_one/messages.jsonl"), &first).unwrap();
+        restore(&mut restored, &raw).unwrap();
+        assert_eq!(restored.open_calls.len(), 4);
+    }
+
+    #[test]
+    fn results_after_turn_end_keep_original_turn_and_block_next_turn() {
+        let first = row("u1", 0, json!({"type":"user"}));
+        let context = initial_context(Path::new("/x/sess_one/messages.jsonl"), &first).unwrap();
+        let (_, running) = translate_line(&first, &context, "generation", 0).unwrap();
+        let call = row(
+            "call",
+            1,
+            json!({"type":"tool_call","toolCallId":"open","toolName":"run_command"}),
+        );
+        let (_, opened) = translate_line(&call, &running, "generation", 1).unwrap();
+        let end = row("end", 2, json!({"type":"turn_end","stopReason":"end_turn"}));
+        let (_, ended) = translate_line(&end, &opened, "generation", 2).unwrap();
+        let result = row(
+            "result",
+            3,
+            json!({"type":"tool_result","toolCallId":"open","success":true}),
+        );
+        let (facts, resolved) = translate_line(&result, &ended, "generation", 3).unwrap();
+        assert_eq!(facts[0]["identity"]["turn_id"], "u1");
+        let next = row("u2", 4, json!({"type":"user"}));
+        let (_, next_turn) = translate_line(&next, &resolved, "generation", 4).unwrap();
+        assert_eq!(next_turn.turn_id, "u2");
     }
 }

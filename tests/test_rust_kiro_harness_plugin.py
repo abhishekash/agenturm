@@ -218,6 +218,149 @@ class RustKiroHarnessTests(unittest.TestCase):
                            key=lambda item: item["time_unix_nano"])],
                          ["denied", "denied", "failed", "failed"])
 
+    def test_two_overlapping_calls_resolve_out_of_order_across_lost_ack_restart(self):
+        self.append(
+            row("user-one", 0, {"type": "user", "content": "private prompt"}),
+            row("start-one", 1, {"type": "turn_start", "turnId": "turn-one"}),
+            row("call-denied", 2, {"type": "tool_call", "toolCallId": "operation-denied",
+                                   "toolName": "run_command", "status": "denied",
+                                   "args": {"command": "private denied command"}}),
+            row("call-failed", 3, {"type": "tool_call", "toolCallId": "operation-failed",
+                                   "toolName": "fs_write", "status": "failed",
+                                   "args": {"path": "/private/path"}}),
+        )
+        with self.worker() as first:
+            def lose_ack(cursor):
+                first.process.close(force=True)
+                raise OSError("simulated lost ACK after Store commit")
+
+            first.process.ack = lose_ack
+            with self.assertRaisesRegex(OSError, "lost ACK"):
+                first.poll_once()
+            with self.store._connect() as db:
+                committed_cursor = db.execute(
+                    "SELECT cursor FROM plugin_source_cursor_v1 WHERE source_id=?",
+                    (self.plugin.source_id,),
+                ).fetchone()[0]
+                self.assertTrue(committed_cursor)
+                self.assertEqual(db.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
+                    (self.plugin.source_id,),
+                ).fetchone()[0], 5)
+            self.assertNotEqual(first.cursor, committed_cursor)
+
+        with self.worker() as resumed:
+            self.assertEqual(resumed.cursor, committed_cursor)
+            replay = resumed.poll_once()
+            self.assertEqual(replay.records, ())
+
+        self.append(
+            row("result-failed", 4, {"type": "tool_result", "toolCallId": "operation-failed",
+                                     "success": True, "content": "private output"}),
+            row("result-denied", 5, {"type": "tool_result", "toolCallId": "operation-denied",
+                                     "success": True, "content": "private output"}),
+            row("end-one", 6, {"type": "turn_end", "stopReason": "end_turn"}),
+        )
+        native = Store(self.root / "native-overlapping.db")
+        self.addCleanup(native.close)
+        native_reader = Session(native, self.source, "Kiro", capture_details=False)
+        native_reader.poll()
+        with native._connect() as db:
+            native_tools = [(item[0], json.loads(item[1])) for item in db.execute(
+                "SELECT trace_id,attributes FROM logs WHERE service='kiro'")
+                if json.loads(item[1]).get("tool.name") in {"run_command", "fs_write"}]
+        self.assertEqual(len(native_tools), 2)
+        self.assertEqual({trace_id for trace_id, _ in native_tools},
+                         {identity(native_reader.source_id, "user-one")})
+        with native._connect() as db:
+            native_spans = [(item[0], item[1], item[2], json.loads(item[3]))
+                            for item in db.execute(
+                                "SELECT span_id,trace_id,name,attributes FROM spans "
+                                "WHERE service='kiro'")
+                            if item[2] in {"run_command", "fs_write"}]
+        self.assertEqual(len(native_spans), 2)
+        self.assertEqual({span_id for span_id, _, _, _ in native_spans}, {
+            identity(native_reader.source_id, ("tool", "operation-denied"), size=16),
+            identity(native_reader.source_id, ("tool", "operation-failed"), size=16),
+        })
+        self.assertEqual({trace_id for _, trace_id, _, _ in native_spans},
+                         {identity(native_reader.source_id, "user-one")})
+
+        with self.worker() as process:
+            result_batch = process.poll_once()
+            self.assertEqual(len([item for item in result_batch.records if item["kind"] == "tool"]), 2)
+        self.projected()
+        tool_activity = [item for item in self.store.activity_page()["activity"]
+                         if item["domain"] == "tool"]
+        terminal = {item["operation_id"]: item for item in tool_activity
+                    if item["result"] in {"denied", "failed"}}
+        self.assertEqual(len(terminal), 2)
+        self.assertEqual({item["result"] for item in terminal.values()}, {"denied", "failed"})
+        self.assertEqual(len({item["turn_id"] for item in terminal.values()}), 1)
+        with self.store._connect() as db:
+            admitted_operations = {row[0] for row in db.execute(
+                "SELECT DISTINCT native_operation_id FROM plugin_evidence_v1 "
+                "WHERE source_id=? AND kind='tool'", (self.plugin.source_id,))}
+            admitted_turns = {row[0] for row in db.execute(
+                "SELECT DISTINCT native_turn_id FROM plugin_evidence_v1 "
+                "WHERE source_id=? AND kind='tool'", (self.plugin.source_id,))}
+        self.assertEqual(admitted_operations, {"operation-denied", "operation-failed"})
+        self.assertEqual(admitted_turns, {"user-one"})
+        native_by_name = {attributes["tool.name"]: attributes
+                          for _, attributes in native_tools}
+        self.assertEqual({attributes.get("agent.activity.result")
+                          for attributes in native_by_name.values()}, {"denied", "error"})
+        self.assertEqual({item["result"] for item in terminal.values()}, {"denied", "failed"})
+        evidence = json.dumps(tool_activity)
+        for secret in ("private prompt", "private denied command", "/private/path", "private output"):
+            self.assertNotIn(secret, evidence)
+
+    def test_duplicate_identity_and_fifth_call_leave_cursor_and_evidence_unchanged(self):
+        self.append(
+            row("user-one", 0, {"type": "user"}),
+            row("start-one", 1, {"type": "turn_start", "turnId": "turn-one"}),
+            row("call-one", 2, {"type": "tool_call", "toolCallId": "same-operation",
+                                 "toolName": "run_command"}),
+            row("call-duplicate", 3, {"type": "tool_call", "toolCallId": "same-operation",
+                                      "toolName": "write_file"}),
+        )
+        with self.worker() as process:
+            original_cursor = process.cursor
+            with self.assertRaises(ProtocolError):
+                process.poll_once()
+            self.assertEqual(process.cursor, original_cursor)
+        with self.store._connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT cursor FROM plugin_source_cursor_v1 WHERE source_id=?",
+                (self.plugin.source_id,),
+            ).fetchone()[0], "")
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
+                (self.plugin.source_id,),
+            ).fetchone()[0], 0)
+
+        self.source.write_text("")
+        self.append(row("user-one", 0, {"type": "user"}),
+                    row("start-one", 1, {"type": "turn_start", "turnId": "turn-one"}))
+        calls = [row(f"call-{n}", n + 2, {"type": "tool_call", "toolCallId": f"operation-{n}",
+                                             "toolName": "run_command"})
+                 for n in range(5)]
+        self.append(*calls)
+        with self.worker() as process:
+            original_cursor = process.cursor
+            with self.assertRaises(ProtocolError):
+                process.poll_once()
+            self.assertEqual(process.cursor, original_cursor)
+        with self.store._connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT cursor FROM plugin_source_cursor_v1 WHERE source_id=?",
+                (self.plugin.source_id,),
+            ).fetchone()[0], "")
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
+                (self.plugin.source_id,),
+            ).fetchone()[0], 0)
+
     def test_new_turn_with_unresolved_call_fails_before_wrong_attribution(self):
         self.append(row("user-one", 0, {"type": "user"}),
                     row("start-one", 1, {"type": "turn_start"}),

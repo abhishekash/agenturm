@@ -285,7 +285,7 @@ class PluginProcess:
             raise ProtocolError("plugin is not running")
         if self.pending is not None:
             raise ProtocolError("previous batch requires durable acknowledgment")
-        if not isinstance(cursor, str) or len(cursor) > 512:
+        if not isinstance(cursor, str) or len(cursor) > MAX_CURSOR_CHARS:
             raise ValueError("invalid resume cursor")
         if type(max_records) is not int or not 1 <= max_records <= MAX_BATCH_RECORDS:
             raise ValueError("invalid poll record budget")
