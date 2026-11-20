@@ -5,6 +5,7 @@
 
 use agenturm_protocol::{MAX_FRAME_BYTES, read_frame, write_frame};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::io::{self, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -28,6 +29,7 @@ fn identity(value: &str) -> bool {
 
 pub trait Poller {
     const PLUGIN_ID: &'static str;
+    const DISCOVERY: bool = false;
     fn poll(
         path: &Path,
         source_id: &str,
@@ -35,6 +37,42 @@ pub trait Poller {
         max_records: usize,
         max_bytes: usize,
     ) -> Result<Value>;
+
+    fn poll_discovery(
+        _path: &Path,
+        _source_id: &str,
+        _cursor: &str,
+        _members: &BTreeMap<String, String>,
+        _max_records: usize,
+        _max_bytes: usize,
+    ) -> Result<Value> {
+        Err(invalid("source discovery unsupported"))
+    }
+}
+
+fn discovery_members(value: Option<&Value>) -> Result<BTreeMap<String, String>> {
+    let members = value
+        .and_then(Value::as_object)
+        .ok_or("missing discovery members")?;
+    if members.len() > 48 {
+        return Err(invalid("too many discovery members"));
+    }
+    let mut result = BTreeMap::new();
+    for (id, value) in members {
+        if id.len() != 64
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(invalid("invalid discovery member ID"));
+        }
+        let cursor = value.as_str().ok_or("invalid discovery member cursor")?;
+        if cursor.len() > 512 || cursor.bytes().any(|b| b < 32 || b == 127) {
+            return Err(invalid("invalid discovery member cursor"));
+        }
+        result.insert(id.to_owned(), cursor.to_owned());
+    }
+    Ok(result)
 }
 
 #[derive(Default)]
@@ -77,9 +115,13 @@ impl Session {
             }
             self.source_id = source.to_owned();
             self.max_frame = limit as usize;
+            let mut features = vec!["source-adapter/1", "configured-root/1"];
+            if P::DISCOVERY {
+                features.push("source-discovery/1");
+            }
             return Ok(Some((
                 json!({"type":"hello_ack","protocol":1,"plugin_id":P::PLUGIN_ID,
-                "features":["source-adapter/1","configured-root/1"]}),
+                "features":features}),
                 self.max_frame,
             )));
         }
@@ -91,7 +133,7 @@ impl Session {
             return Err(invalid("source mismatch"));
         }
         match kind {
-            "poll" if object.len() == 6 => {
+            "poll" if object.len() == if P::DISCOVERY { 7 } else { 6 } => {
                 if self.pending.is_some() {
                     return Err(invalid("prior poll not acknowledged"));
                 }
@@ -111,13 +153,25 @@ impl Session {
                 {
                     return Err(invalid("invalid poll budget"));
                 }
-                let response = P::poll(
-                    path,
-                    &self.source_id,
-                    cursor,
-                    count as usize,
-                    bytes as usize,
-                )?;
+                let response = if P::DISCOVERY {
+                    let members = discovery_members(object.get("members"))?;
+                    P::poll_discovery(
+                        path,
+                        &self.source_id,
+                        cursor,
+                        &members,
+                        count as usize,
+                        bytes as usize,
+                    )?
+                } else {
+                    P::poll(
+                        path,
+                        &self.source_id,
+                        cursor,
+                        count as usize,
+                        bytes as usize,
+                    )?
+                };
                 self.pending = Some(
                     response["cursor"]
                         .as_str()
@@ -165,5 +219,86 @@ pub fn run<P: Poller>() -> Result<()> {
         if session.stopped {
             return Ok(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Discovery;
+
+    impl Poller for Discovery {
+        const PLUGIN_ID: &'static str = "fixture.discovery";
+        const DISCOVERY: bool = true;
+
+        fn poll(
+            _path: &Path,
+            _source_id: &str,
+            _cursor: &str,
+            _max_records: usize,
+            _max_bytes: usize,
+        ) -> Result<Value> {
+            Err(invalid("single-file poll forbidden"))
+        }
+
+        fn poll_discovery(
+            _path: &Path,
+            source_id: &str,
+            cursor: &str,
+            _members: &BTreeMap<String, String>,
+            _max_records: usize,
+            _max_bytes: usize,
+        ) -> Result<Value> {
+            Ok(json!({"type":"batch","protocol":1,"source_id":source_id,
+                      "cursor":cursor,"records":[]}))
+        }
+    }
+
+    #[test]
+    fn discovery_handshake_and_member_budget_are_explicit() {
+        let mut session = Session::default();
+        let hello = session
+            .handle::<Discovery>(
+                json!({"type":"hello","protocol":1,
+            "plugin_id":"fixture.discovery","source_id":"source",
+            "max_frame_bytes":65536}),
+                Path::new("/tmp"),
+            )
+            .unwrap()
+            .unwrap()
+            .0;
+        assert!(
+            hello["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "source-discovery/1")
+        );
+        let members: BTreeMap<_, _> = (0..49)
+            .map(|n| (format!("{n:064x}"), "cursor".to_owned()))
+            .collect();
+        assert!(
+            session
+                .handle::<Discovery>(
+                    json!({"type":"poll","protocol":1,
+            "source_id":"source","cursor":"","members":members,
+            "max_records":256,"max_bytes":65536}),
+                    Path::new("/tmp")
+                )
+                .is_err()
+        );
+        assert!(session.pending.is_none());
+        let idle = session
+            .handle::<Discovery>(
+                json!({"type":"poll","protocol":1,
+            "source_id":"source","cursor":"","members":{},
+            "max_records":256,"max_bytes":65536}),
+                Path::new("/tmp"),
+            )
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(idle["records"], json!([]));
     }
 }

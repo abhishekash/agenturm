@@ -17,6 +17,7 @@ name = "agenturm-codex-harness"
 version = "0.1.0"
 dependencies = [
  "agenturm-jsonl-source",
+ "agenturm-source-process",
  "serde_json",
  "sha2",
  "time",
@@ -45,6 +46,7 @@ version = "0.1.0"
 dependencies = [
  "agenturm-protocol",
  "agenturm-source-process",
+ "libc",
  "serde_json",
  "sha2",
 ]
