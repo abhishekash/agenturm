@@ -59,3 +59,7 @@ Kiro session setup, bounded metadata and rule refresh, permission records, initi
 ## Required native adapters, 19 November 2026
 
 Every registered JSONL source now requires a factory that yields the four format callbacks. Direct sessions without a known built-in adapter fail before polling. The collector calls the adapter for parsing and activity rather than falling through to a legacy runtime branch. This prevents an unregistered format from being interpreted as Claude Code. The manifest pins the changed collector and source registry; the previous merged hashes remain in history. The focused registry/discovery/source/session suite passed 78 tests locally on Python 3.12. This contract applies to the trusted in-process path and does not yet enable external process plugins.
+
+## Reader hash refresh, 20 November 2026
+
+The architecture extraction changed six registered native reader and adapter files after their previous manifest pin. The manifest now records their exact bytes at merged `90140d8` (PR #184), while retaining the earlier `41a51fa` map in `file_hash_history`. Fixture bytes, immutable upstream source references and unknown observed producer versions are unchanged. This refresh is an integrity correction for the current reader tree, not new producer format certification. The provenance gate and focused native compatibility tests must pass on the refreshed tree; the broad suite run on the earlier `8f75c62` snapshot failed this stale-hash gate and a separate timing-sensitive catch-up assertion, so that run is not a passing full-suite claim.
