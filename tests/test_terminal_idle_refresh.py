@@ -14,9 +14,10 @@ class IdleRefreshTest(unittest.TestCase):
             connection=SimpleNamespace(phase='live'),
             retry_requested=False,
         )
+        screen=SimpleNamespace(selections=[])
         app = SimpleNamespace(
             feed=feed,
-            screen=SimpleNamespace(selections=[]),
+            screen_stack=[screen],
             last_update=1,
             _last_tick_snapshot=snapshot,
             _last_tick_at=time.monotonic(),
@@ -41,9 +42,10 @@ class IdleRefreshTest(unittest.TestCase):
             connection=SimpleNamespace(phase='reconnecting'),
             retry_requested=False,
         )
+        screen=SimpleNamespace(selections=[])
         app = SimpleNamespace(
             feed=feed,
-            screen=SimpleNamespace(selections=[]),
+            screen_stack=[screen],
             last_update=1,
             _last_tick_snapshot=snapshot,
             _last_tick_at=time.monotonic(),
@@ -60,6 +62,23 @@ class IdleRefreshTest(unittest.TestCase):
 
         app.refresh_data.reset_mock()
         feed.retry_requested = False
-        app.screen.selections = [object()]
+        screen.selections = [object()]
         ObservatoryApp.refresh_tick(app)
         app.refresh_data.assert_called_once_with()
+
+
+class ShutdownRefreshTest(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_refresh_tick_after_screen_teardown_is_ignored(self):
+        from observatory.terminal_ui import ObservatoryApp
+        from tests.test_terminal_search import ManualFeed
+
+        app=ObservatoryApp(ManualFeed(),persist_preferences=False)
+        async with app.run_test(size=(80,24)) as pilot:
+            await pilot.pause()
+            app.refresh_timer.stop()
+        self.assertEqual(app.screen_stack,[])
+        refresh=Mock()
+        app.refresh_data=refresh
+        # A timer message queued before teardown can still invoke its callback.
+        ObservatoryApp.refresh_tick(app)
+        refresh.assert_not_called()
