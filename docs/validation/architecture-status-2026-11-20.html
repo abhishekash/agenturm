@@ -3,7 +3,7 @@
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
 </style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/architecture-status-2026-11-20.md">Markdown source ↗</a></nav><h1>Agenturm kernel architecture checkpoint</h1>
-<p>Recorded 20 November 2026 at merged main <code>1bd482d</code> (PR #188). This is an implementation checkpoint for the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-plugin-kernel-plan.md">reviewed Rust kernel plan</a>, not a completion certificate or a speed claim.</p>
+<p>Recorded 20 November 2026 at merged main <code>be9a386</code> (PR #202). This is an implementation checkpoint for the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-plugin-kernel-plan.md">reviewed Rust kernel plan</a>, not a completed migration or a speed claim.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
 <tr>
@@ -15,35 +15,36 @@
 <tbody>
 <tr>
 <td>Harness adapters</td>
-<td>Bundled native readers and JSONL adapters register through trusted factories. Separately installed Python and Rust samples use the versioned process protocol and host-owned admission. An opt-in Rust Pi reader consumes one actual Pi JSONL file with content-free lifecycle, usage and partial Activity. Its durable cursor detects several source changes. A shared Rust JSONL runtime now owns bounded tail, gap and poll/ack logic; Pi supplies format translation. Explicit replacement removes a claimed built-in reader.</td>
-<td>Pi remains native by default. The Rust reader lacks directory discovery, broader Pi version and relationship coverage, and source-to-Review/export parity. Claude Code, Codex, Kiro and OpenCode still need production process adapters and parity before replacement.</td>
+<td>Trusted bundled native readers register source and format contributions. The opt-in Rust process path now has one-file or one-database Pi, Codex, Claude Code, Kiro and OpenCode readers behind framed supervision, Store admission, durable cursor and explicit source replacement. A shared JSONL runtime verifies the full acknowledged prefix and gaps prior sessions on rewrite, rotation or legacy cursor migration. OpenCode's native turn Review query is a bundled contribution.</td>
+<td>Process readers still need bounded multi-session discovery, broader native-format compatibility and complete source-to-Review/export parity. One configured source per process and the small config cap prevent default replacement. Full-prefix verification reads the acknowledged prefix twice per idle poll, up to 1 GiB of reads at the 512 MiB ceiling; its whole-app cost has not been measured.</td>
 </tr>
 <tr>
 <td>Connectors</td>
-<td>A declared inbound loopback source uses the generic connector contract with pagination, rate limits, cursor expiry, replay and capture revocation. A fixture-only action process proves grants, durable outbox, idempotency, uncertain-response lookup, revocation and recovery fencing.</td>
+<td>An isolated inbound loopback fixture proves pagination, rate limits, durable cursor, expiry, replay and capture revocation. A fixture-only action process proves grants, durable outbox, idempotency, uncertain-response lookup and recovery fencing.</td>
 <td>Real destinations, credentials, user controls and production delivery are not enabled.</td>
 </tr>
 <tr>
 <td>Capabilities and UI</td>
-<td>The generic pane registry renders bounded view models without a Textual pane edit. A separately installed Prompt signals process receives exact-scope, host-derived content-free aggregates and supplies a validated pane at 60×18. <code>cockpit --capability-config</code> activates a named descriptor with a nonblocking health watcher and fail-closed cache.</td>
-<td>The current permission approval is at most 250 ms old, not an atomic receiver-side fence; a rendered model may remain until the next watcher result and UI query. A general third-party SDK and receiver-side policy-fenced aggregate API remain open. Prompt signals is observational and does not score efficacy.</td>
+<td>Generic pane registration renders a bounded Prompt signals process model at 60×18. Its receiver-side aggregate endpoint now checks exact native ownership and capture provenance at request time, with a database change watch before response. Native MCP config inventory comes from trusted adapter declarations.</td>
+<td>Capability process activation remains opt-in; UI models refresh asynchronously. Prompt signals reports observations rather than efficacy. General third-party SDK, broader metric capabilities and removal of remaining runtime labels in the UI are open.</td>
 </tr>
 <tr>
 <td>Rust host and distribution</td>
-<td>The opt-in Rust process host runs an installed adapter under Python policy and Store authority. Bounded control writes, queue backpressure and process-group cleanup have regression coverage. A Linux x86_64 wheel bundles a SHA-pinned host and passes isolated installed receiver checks; the pure wheel stays functional.</td>
-<td>Further platform wheels and publication gates remain. The native wheel is a CI artifact; the Python path is still the default.</td>
+<td>The opt-in Rust process host runs installed adapters under Python Store and policy authority. Control writes, backpressure and process-group cleanup have regression coverage. A Linux x86_64 wheel bundles a SHA-pinned host and passes isolated installed receiver checks; the pure wheel remains functional.</td>
+<td>Further platform wheels, publication gates, default activation and a measured whole-app performance result remain.</td>
 </tr>
 <tr>
 <td>Durable authority</td>
-<td>Python Store still owns capture policy, leases, cursor/commit/ack, retention, projection and the sole database writer. A pure Rust reducer matches Python lifecycle, usage, relationship and content-free Activity fixtures, including 2,000-session lifecycle/usage capacity and malformed-input rejection.</td>
-<td>Live snapshot fencing, full reducer coverage, storage compatibility, one-writer cutover and rollback drill remain. No production data is written by a Rust storage authority.</td>
+<td>Python Store owns capture policy, leases, admission, cursor/commit/ack, retention, projection and the sole database writer. A read-only Rust shadow snapshot is fenced by receiver, lease, policy, dirty sequence and published revision. Pure Rust reducer fixtures v1–v3 match Python lifecycle, usage, relationship, Activity and durable source-gap invalidation on the tested corpus.</td>
+<td>Full query/storage compatibility, live Rust authority, legacy writer exclusion, one-writer cutover and rollback drill remain. No production data is written by Rust storage.</td>
 </tr>
 <tr>
-<td>Validation and performance</td>
-<td>Focused Rust workspace, installed-artifact and related Python tests passed locally for these merged slices. The earlier broad Python snapshot ran 1,596 tests with two failures: stale native reader hashes and a timing-sensitive catch-up expectation. PR #188 repaired those gates; a new combined-tree broad run is underway.</td>
-<td>GitHub CI for the latest merges was queued at this checkpoint. The 300-second retained-history under-5% CPU gate, sustained-write gate, complete installed-client matrix and migration drill have not passed. No Rust performance gain is asserted.</td>
+<td>Validation</td>
+<td>Focused Rust workspace and installed receiver tests passed for the merged slices. The broad PR #188 Python snapshot ran 1,639 tests with 43 skips and one failure: the HTTP-tail smoke declined to run below its 4 GiB free-disk reserve; the exact smoke passed alone after disk cleanup.</td>
+<td>This broad snapshot is not green and predates newer merges. GitHub CI for the latest PRs was queued. The retained-history under-5% CPU gate, sustained-write latency gate, full installed-client matrix and migration drill have not passed. No Rust performance gain is asserted.</td>
 </tr>
 </tbody>
 </table></div>
-<p>The next integration boundary is production harness evidence parity through the process protocol, followed by a complete Rust domain and storage compatibility corpus. Keep Python as the sole writer until that boundary and an independent storage cutover review pass. Process adapters, capabilities and connectors must reuse explicit grants, policy epochs, durable checkpoints and visible incomplete coverage.</p>
+<p>An independent Rust architecture review found the crate dependency direction clean: the host depends on the protocol, harness binaries depend on shared source crates, and the domain reducer has no harness dependency. It found no merged Rust path writing directly to Agenturm's Store. The highest-priority gap is discovery and scale: one source per configured process with at most four configured rows. The next slice is a versioned, bounded per-source checkpoint and multi-session discovery path, followed by complete evidence parity for a real harness. Remaining Python compatibility coupling, including source labels in the UI, should leave generic services through registered contributions.</p>
+<p>Python remains the sole writer until source semantics, query compatibility, crash recovery and rollback gates pass. The user chose idiomatic Rust for the implementation; performance is measured separately and is not a prerequisite to continuing the architecture work.</p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
