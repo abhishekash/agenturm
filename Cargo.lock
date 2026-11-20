@@ -149,6 +149,7 @@ dependencies = [
 name = "agenturm-storage-admission"
 version = "0.1.0"
 dependencies = [
+ "agenturm-storage-lease",
  "rusqlite",
  "serde",
  "serde_json",

@@ -1,7 +1,10 @@
 """Feature-off Rust scratch transaction against disposable Python Store fixtures."""
 import json
 import os
+import select
+import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +26,7 @@ def fact(event="first", state="started"):
             "identity": {"session_id": "native-one"}}
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "scratch writer lease is Linux-only")
 class RustScratchAdmissionTests(unittest.TestCase):
     def setUp(self):
         binary = os.environ.get("AGENTURM_RUST_SCRATCH_ADMISSION_BIN")
@@ -94,6 +98,9 @@ class RustScratchAdmissionTests(unittest.TestCase):
         batch = PollBatch(SOURCE, "one", (fact(), fact("second", "completed")))
         request = self.request(batch)
         self.assertEqual(self.apply(request)["disposition"], "committed")
+        lock = self.root / ".rust.db.agenturm-writer.lock"
+        self.assertTrue(lock.is_file())
+        self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
         self.assertEqual(commit_batch(self.python_store, self.python_lease, "", batch), "one")
         expected = self.snapshot(self.python_store)
         self.assertEqual(self.snapshot(self.rust_store), expected)
@@ -127,7 +134,10 @@ class RustScratchAdmissionTests(unittest.TestCase):
         bad["lease"]["epoch"] += 1
         self.assertIn("stale", self.apply(bad, success=False))
         no_mark = self.request(batch, path=self.python_store.path)
+        unmarked_lock = self.root / ".python.db.agenturm-writer.lock"
+        self.assertFalse(unmarked_lock.exists())
         self.assertIn("not an explicit scratch", self.apply(no_mark, success=False))
+        self.assertFalse(unmarked_lock.exists())
         self.assertEqual(self.snapshot(self.python_store)[1], [])
         set_source_capture(self.rust_store, source_id=SOURCE, enabled=False)
         self.assertIn("stale", self.apply(request, success=False))
@@ -169,6 +179,52 @@ class RustScratchAdmissionTests(unittest.TestCase):
         request = self.request(PollBatch(SOURCE, "one", (fact(),)))
         request["records"][0]["payload_json"] = '{"state":"started","text":"prompt"}'
         self.assertIn("unsupported prepared lifecycle", self.apply(request, success=False))
+        self.assertEqual(self.snapshot(self.rust_store)[0][0], "")
+
+    def test_other_process_lock_refuses_scratch_commit_until_release(self):
+        request = self.request(PollBatch(SOURCE, "one", (fact(),)))
+        lock = self.root / ".rust.db.agenturm-writer.lock"
+        lock.touch(mode=0o600)
+        holder = subprocess.Popen([sys.executable, "-c", """
+import fcntl, sys
+with open(sys.argv[1], 'r+b') as stream:
+    fcntl.flock(stream, fcntl.LOCK_EX)
+    print('ready', flush=True)
+    sys.stdin.read(1)
+""", str(lock)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertTrue(select.select([holder.stdout], [], [], 5)[0],
+                            "lock holder did not become ready")
+            self.assertEqual(holder.stdout.readline().strip(), "ready")
+            before = self.snapshot(self.rust_store)
+            self.apply(request, success=False)
+            self.assertEqual(self.snapshot(self.rust_store), before)
+        finally:
+            holder.stdin.close()
+            self.assertEqual(holder.wait(timeout=5), 0,
+                             holder.stderr.read() if holder.stderr else "")
+            holder.stdout.close()
+            holder.stderr.close()
+        self.assertEqual(self.apply(request)["disposition"], "committed")
+
+    def test_hardlink_alias_refuses_scratch_write(self):
+        request = self.request(PollBatch(SOURCE, "one", (fact(),)))
+        alias = self.root / "alias.db"
+        os.link(self.rust_store.path, alias)
+        try:
+            self.apply(request, success=False)
+            self.assertEqual(self.snapshot(self.rust_store)[0][0], "")
+        finally:
+            alias.unlink()
+        self.assertEqual(self.apply(request)["disposition"], "committed")
+
+    def test_symlink_final_path_refuses_before_lease_file(self):
+        alias = self.root / "alias.db"
+        alias.symlink_to(self.rust_store.path)
+        request = self.request(PollBatch(SOURCE, "one", (fact(),)), path=alias)
+        self.assertIn("existing regular file", self.apply(request, success=False))
+        self.assertFalse((self.root / ".rust.db.agenturm-writer.lock").exists())
         self.assertEqual(self.snapshot(self.rust_store)[0][0], "")
 
 
