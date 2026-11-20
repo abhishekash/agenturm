@@ -33,3 +33,10 @@ def reader_spec():
         "opencode",
         lambda store, capture_details: OpenCodeReader(store, capture_details=capture_details),
         mcp_client="OpenCode")
+
+
+def turn_review_spec():
+    from ..native_turn_review import NativeTurnReviewSpec
+    from ..opencode_turn_review import review_turn
+
+    return NativeTurnReviewSpec("opencode", review_turn)
