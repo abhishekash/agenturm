@@ -24,6 +24,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "agenturm-domain-query"
+version = "0.1.0"
+dependencies = [
+ "agenturm-domain-reducer",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "agenturm-domain-reducer"
 version = "0.1.0"
 dependencies = [
