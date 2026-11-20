@@ -6,7 +6,7 @@
 
 #![forbid(unsafe_code)]
 
-use agenturm_domain_reducer::reduce_json;
+use agenturm_domain_reducer::{Session, reduce_json};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json, value::RawValue};
 use std::error::Error;
@@ -30,7 +30,7 @@ struct Request<'a> {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ExactSession {
+pub struct ExactSession {
     kind: String,
     source_id: String,
     native_session_id: String,
@@ -38,7 +38,7 @@ struct ExactSession {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ExactActivity {
+pub struct ExactActivity {
     kind: String,
     source_id: String,
     event_id: String,
@@ -46,9 +46,82 @@ struct ExactActivity {
 
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
-enum ExactQuery {
+pub enum ExactQuery {
     Session(ExactSession),
     Activity(ExactActivity),
+}
+
+impl ExactQuery {
+    /// Validate the exact, source-scoped identity before selecting rows.
+    pub fn source_id(&self) -> Result<&str> {
+        match self {
+            Self::Session(query)
+                if query.kind == "session"
+                    && native_identity(&query.source_id)
+                    && native_identity(&query.native_session_id) =>
+            {
+                Ok(&query.source_id)
+            }
+            Self::Activity(query)
+                if query.kind == "activity"
+                    && native_identity(&query.source_id)
+                    && event_identity(&query.event_id) =>
+            {
+                Ok(&query.source_id)
+            }
+            _ => Err(invalid("invalid exact domain query")),
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Session(_) => "session",
+            Self::Activity(_) => "activity",
+        }
+    }
+}
+
+/// A projected session identity used by the shared exact selector.
+pub trait ProjectedSession: Serialize {
+    fn native_session_id(&self) -> Option<&str>;
+}
+
+impl ProjectedSession for Session {
+    fn native_session_id(&self) -> Option<&str> {
+        Some(&self.native_session_id)
+    }
+}
+
+impl ProjectedSession for Value {
+    fn native_session_id(&self) -> Option<&str> {
+        self["native_session_id"].as_str()
+    }
+}
+
+/// Select from already validated, source-scoped projection rows. The caller
+/// must validate row provenance and source revision before calling this pure
+/// selector; absence means only that the exact row is absent in that snapshot.
+pub fn select_projected<S: ProjectedSession>(
+    query: &ExactQuery,
+    source_id: &str,
+    sessions: &[S],
+    activities: &[Value],
+) -> Result<Option<Value>> {
+    if query.source_id()? != source_id {
+        return Err(invalid("query source differs from snapshot"));
+    }
+    match query {
+        ExactQuery::Session(query) => sessions
+            .iter()
+            .find(|row| row.native_session_id() == Some(&query.native_session_id))
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(Into::into),
+        ExactQuery::Activity(query) => Ok(activities
+            .iter()
+            .find(|row| row["id"].as_str() == Some(&query.event_id))
+            .cloned()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -86,23 +159,7 @@ pub fn query_json(input: &str) -> Result<Value> {
         return Err(invalid("query exceeds byte limit"));
     }
     let request: Request<'_> = serde_json::from_str(input)?;
-    let source_id = match &request.query {
-        ExactQuery::Session(query)
-            if query.kind == "session"
-                && native_identity(&query.source_id)
-                && native_identity(&query.native_session_id) =>
-        {
-            &query.source_id
-        }
-        ExactQuery::Activity(query)
-            if query.kind == "activity"
-                && native_identity(&query.source_id)
-                && event_identity(&query.event_id) =>
-        {
-            &query.source_id
-        }
-        _ => return Err(invalid("invalid exact domain query")),
-    };
+    let source_id = request.query.source_id()?;
     if request.schema_version != 1 {
         return Err(invalid("invalid exact session query"));
     }
@@ -111,7 +168,7 @@ pub fn query_json(input: &str) -> Result<Value> {
         return Err(invalid("query requires a version 3 snapshot"));
     }
     let header: SnapshotHeader = serde_json::from_str(request.snapshot.get())?;
-    if *source_id != header.source_id {
+    if source_id != header.source_id {
         return Err(invalid("query source differs from snapshot"));
     }
     let mut reply = json!({
@@ -124,26 +181,20 @@ pub fn query_json(input: &str) -> Result<Value> {
         "coverage": "partial",
         "query": &request.query,
     });
-    match &request.query {
-        ExactQuery::Session(query) => {
-            reply["session"] = serde_json::to_value(
-                reduced
-                    .sessions
-                    .iter()
-                    .find(|row| row.native_session_id == query.native_session_id),
-            )?;
-        }
-        ExactQuery::Activity(query) => {
-            reply["activity"] = serde_json::to_value(
-                reduced
-                    .activities
-                    .as_ref()
-                    .ok_or_else(|| invalid("missing v3 Activity"))?
-                    .iter()
-                    .find(|row| row["id"].as_str() == Some(query.event_id.as_str())),
-            )?;
-        }
-    }
+    let activities = if request.query.kind() == "activity" {
+        reduced
+            .activities
+            .as_deref()
+            .ok_or_else(|| invalid("missing v3 Activity"))?
+    } else {
+        &[]
+    };
+    reply[request.query.kind()] = serde_json::to_value(select_projected(
+        &request.query,
+        &header.source_id,
+        &reduced.sessions,
+        activities,
+    )?)?;
     Ok(reply)
 }
 
@@ -204,5 +255,29 @@ mod tests {
             "query":{"kind":"activity","source_id":"source","event_id":event_id,
                      "native_session_id":"native-one"}});
         assert!(query_json(&unknown.to_string()).is_err());
+    }
+
+    #[test]
+    fn shared_selector_needs_only_requested_validated_domain() {
+        let session: ExactQuery = serde_json::from_value(json!({
+            "kind":"session","source_id":"source","native_session_id":"native-one"
+        }))
+        .unwrap();
+        let sessions = vec![json!({"native_session_id":"native-one","reported_state":"started"})];
+        assert_eq!(
+            select_projected(&session, "source", &sessions, &[]).unwrap(),
+            Some(sessions[0].clone())
+        );
+        assert!(select_projected(&session, "other", &sessions, &[]).is_err());
+        let activity: ExactQuery = serde_json::from_value(json!({
+            "kind":"activity","source_id":"source",
+            "event_id":format!("plugin-event:{}", "a".repeat(64))
+        }))
+        .unwrap();
+        let activities = vec![json!({"id":format!("plugin-event:{}", "a".repeat(64))})];
+        assert_eq!(
+            select_projected(&activity, "source", &[] as &[Value], &activities).unwrap(),
+            Some(activities[0].clone())
+        );
     }
 }

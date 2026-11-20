@@ -1,0 +1,13 @@
+[package]
+name = "agenturm-backup-query"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+publish = false
+license = "MIT"
+
+[dependencies]
+agenturm-domain-query = { path = "../agenturm-domain-query" }
+agenturm-storage-shadow = { path = "../agenturm-storage-shadow" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
