@@ -577,7 +577,13 @@ fn finish(
         )?;
     }
     if real_clone {
-        verify_real_clone_lifecycle_commit(&transaction, request, &receipt, replay)?;
+        verify_real_clone_lifecycle_commit(
+            &transaction,
+            request,
+            &receipt,
+            replay,
+            existing_v2_receipt,
+        )?;
         let readback = readback.ok_or_else(|| reject("real clone admission snapshot missing"))?;
         verify_fact_admission_readback(&transaction, request, &receipt, &readback)?;
     }
@@ -638,8 +644,10 @@ fn verify_real_clone_lifecycle_commit(
     request: &Request,
     receipt: &Receipt,
     replay: Option<&v2::ReplayIdentity>,
+    existing_v2_receipt: bool,
 ) -> Result<()> {
     require_activation_clone_markers(db)?;
+    let replay = replay.ok_or_else(|| reject("real clone admission requires replay identity"))?;
     let receiver: String = db.query_row(
         "SELECT value FROM schema_meta WHERE key='receiver_id'",
         [],
@@ -700,37 +708,39 @@ fn verify_real_clone_lifecycle_commit(
             "real clone source changed during lifecycle admission",
         ));
     }
-    if let Some(replay) = replay {
-        reject_cross_operation_request_id(db, &replay.request_id, "storage_admission_request_v2")?;
-        type Stored = (String, String, String, String, String, i64, String);
-        let stored: Stored = db.query_row(
-            "SELECT receiver_id,request_digest,source_id,cursor,batch_digest,dirty_seq,disposition \
-             FROM storage_admission_request_v2 WHERE request_id=?",
-            [&replay.request_id],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            },
-        )?;
-        if stored.0 != replay.receiver_id
-            || stored.1 != replay.digest
-            || stored.2 != request.lease.source_id
-            || stored.3 != receipt.cursor
-            || stored.4 != request.batch_digest
-            || stored.5 != receipt.dirty_seq
-            || !matches!(stored.6.as_str(), "committed" | "replay" | "idle")
-        {
-            return Err(reject(
-                "real clone admission receipt changed during transaction",
-            ));
-        }
+    reject_cross_operation_request_id(db, &replay.request_id, "storage_admission_request_v2")?;
+    type Stored = (String, String, String, String, String, i64, String);
+    let stored: Stored = db.query_row(
+        "SELECT receiver_id,request_digest,source_id,cursor,batch_digest,dirty_seq,disposition \
+         FROM storage_admission_request_v2 WHERE request_id=?",
+        [&replay.request_id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        },
+    )?;
+    if stored.0 != replay.receiver_id
+        || stored.1 != replay.digest
+        || stored.2 != request.lease.source_id
+        || stored.3 != receipt.cursor
+        || stored.4 != request.batch_digest
+        || stored.5 != receipt.dirty_seq
+        || (if existing_v2_receipt {
+            !matches!(stored.6.as_str(), "committed" | "replay" | "idle")
+        } else {
+            stored.6 != receipt.disposition
+        })
+    {
+        return Err(reject(
+            "real clone admission receipt changed during transaction",
+        ));
     }
     Ok(())
 }
@@ -5006,7 +5016,7 @@ mod tests {
             "b".repeat(64)
         );
         let error = assert_fact_trigger_rolls_back(&trigger, "7123456789abcdef0123456789abcdef");
-        assert!(error.contains("did not affect exactly one row"));
+        assert!(error.contains("triggers on real clone admission"));
     }
 
     #[test]
@@ -5017,7 +5027,7 @@ mod tests {
              BEGIN SELECT RAISE(IGNORE); END;",
             "8123456789abcdef0123456789abcdef",
         );
-        assert!(error.contains("source update did not affect exactly one row"));
+        assert!(error.contains("triggers on real clone admission"));
     }
 
     #[test]
@@ -5029,7 +5039,7 @@ mod tests {
             "a".repeat(64)
         );
         let error = assert_fact_trigger_rolls_back(&trigger, "9123456789abcdef0123456789abcdef");
-        assert!(error.contains("evidence row was changed by a trigger"));
+        assert!(error.contains("triggers on real clone admission"));
     }
 
     #[test]
@@ -5040,7 +5050,7 @@ mod tests {
              WHERE source_id=NEW.source_id; END;";
         let error =
             assert_fact_receipt_trigger_rolls_back(trigger, "a123456789abcdef0123456789abcdef");
-        assert!(error.contains("source state was not persisted exactly"));
+        assert!(error.contains("triggers on real clone admission"));
     }
 
     #[test]
@@ -5050,7 +5060,7 @@ mod tests {
              SET batch_digest='tampered' WHERE request_id=NEW.request_id; END;";
         let error =
             assert_fact_receipt_trigger_rolls_back(trigger, "d123456789abcdef0123456789abcdef");
-        assert!(error.contains("replay receipt was not persisted exactly"));
+        assert!(error.contains("triggers on real clone admission"));
     }
 
     #[test]
@@ -5059,7 +5069,120 @@ mod tests {
              ON storage_admission_request_v2 BEGIN SELECT RAISE(IGNORE); END;";
         let error =
             assert_fact_receipt_trigger_rolls_back(trigger, "e123456789abcdef0123456789abcdef");
-        assert!(error.contains("replay receipt was not persisted exactly"));
+        assert!(error.contains("triggers on real clone admission"));
+    }
+
+    #[test]
+    fn real_clone_fact_admission_rejects_triggered_competing_receipt_before_mutation() {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        db.execute_batch(
+            "CREATE TABLE storage_source_activate_v2(\
+             request_id TEXT PRIMARY KEY,receiver_id TEXT NOT NULL,request_digest TEXT NOT NULL,\
+             source_id TEXT NOT NULL,plugin_id TEXT NOT NULL,generation TEXT NOT NULL,\
+             lease_epoch INTEGER NOT NULL,policy_epoch INTEGER NOT NULL,cursor TEXT NOT NULL,\
+             dirty_seq INTEGER NOT NULL);\
+             CREATE TRIGGER collide_fact_with_activation AFTER INSERT ON plugin_evidence_v1 \
+             BEGIN INSERT INTO storage_source_activate_v2 VALUES(\
+               'f123456789abcdef0123456789abcdef','receiver-one',\
+               'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',\
+               NEW.source_id,'fixture.plugin',\
+               'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',\
+               7,1,'facts-one',1); END;",
+        )
+        .unwrap();
+        let request_id = "f123456789abcdef0123456789abcdef";
+        let (wire, prepared) = clone_fact_admission_request(request_id, "facts-one");
+        let replay = wire.replay_identity().unwrap();
+        let before = state(&db);
+        let error = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true)
+            .expect_err("triggered competing receipt must fail closed");
+        assert!(error.to_string().contains("triggers on real clone admission"));
+        assert_eq!(state(&db), before);
+        assert_eq!(admission_receipt_count(&db, request_id), None);
+        assert_eq!(activation_receipt_count(&db, request_id), Some(0));
+    }
+
+    #[test]
+    fn real_clone_fact_admission_rejects_sibling_source_trigger_before_mutation() {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        db.execute_batch(
+            "INSERT INTO plugin_source_cursor_v1 SELECT 'source-two',receiver_id,plugin_id,\
+             generation,lease_epoch,policy_epoch,capture_enabled,content_fingerprint,cursor,\
+             prior_cursor,dirty_seq,last_batch_digest,updated_ns \
+             FROM plugin_source_cursor_v1 WHERE source_id='source-one';\
+             INSERT INTO plugin_projection_cursor_v1 VALUES('source-two',4,2);\
+             CREATE TRIGGER mutate_sibling_after_fact AFTER INSERT ON plugin_evidence_v1 \
+             BEGIN UPDATE plugin_source_cursor_v1 SET cursor='tampered' \
+               WHERE source_id='source-two';\
+               UPDATE plugin_projection_cursor_v1 SET projected_seq=99 \
+               WHERE source_id='source-two'; END;",
+        )
+        .unwrap();
+        let sibling_before: (String, i64, i64) = db
+            .query_row(
+                "SELECT s.cursor,s.dirty_seq,p.projected_seq \
+                 FROM plugin_source_cursor_v1 s JOIN plugin_projection_cursor_v1 p \
+                   USING(source_id) WHERE s.source_id='source-two'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let (wire, prepared) =
+            clone_fact_admission_request("0123456789abcdef0123456789abcdef", "facts-one");
+        let replay = wire.replay_identity().unwrap();
+        let before = state(&db);
+        let error = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true)
+            .expect_err("sibling-source trigger must fail closed");
+        assert!(error.to_string().contains("triggers on real clone admission"));
+        assert_eq!(state(&db), before);
+        let sibling_after: (String, i64, i64) = db
+            .query_row(
+                "SELECT s.cursor,s.dirty_seq,p.projected_seq \
+                 FROM plugin_source_cursor_v1 s JOIN plugin_projection_cursor_v1 p \
+                   USING(source_id) WHERE s.source_id='source-two'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(sibling_after, sibling_before);
+        assert!(matches!(
+            admission_receipt_count(&db, &wire.request_id),
+            None | Some(0)
+        ));
+    }
+
+    #[test]
+    fn real_clone_fact_admission_rejects_receiver_mutation_trigger_before_mutation() {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        db.execute_batch(
+            "CREATE TEMP TRIGGER change_receiver_after_fact AFTER INSERT ON plugin_evidence_v1 \
+             BEGIN UPDATE schema_meta SET value='other-receiver' \
+               WHERE key='receiver_id'; END;",
+        )
+        .unwrap();
+        let (wire, prepared) =
+            clone_fact_admission_request("1123456789abcdef0123456789abcdef", "facts-one");
+        let replay = wire.replay_identity().unwrap();
+        let before = state(&db);
+        let error = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true)
+            .expect_err("receiver mutation trigger must fail closed");
+        assert!(error.to_string().contains("triggers on real clone admission"));
+        assert_eq!(state(&db), before);
+        let receiver: String = db
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key='receiver_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receiver, "receiver-one");
+        assert!(matches!(
+            admission_receipt_count(&db, &wire.request_id),
+            None | Some(0)
+        ));
     }
 
     #[test]
