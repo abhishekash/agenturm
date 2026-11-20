@@ -1,0 +1,483 @@
+{
+  "fixture_version": 1,
+  "cases": [
+    {
+      "name": "present",
+      "input": {
+        "schema_version": 1,
+        "snapshot": {
+          "schema_version": 3,
+          "receiver_id": "receiver-fixture",
+          "source_id": "source-a",
+          "plugin_id": "fixture.plugin",
+          "policy_epoch": 4,
+          "dirty_seq": 9,
+          "rows": [
+            {
+              "event_id_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "100",
+              "admitted_ns": "110",
+              "native_session_id": "session-a",
+              "payload": {
+                "state": "completed",
+                "reason_code": "task_complete"
+              }
+            },
+            {
+              "event_id_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": 0,
+              "kind": "usage",
+              "time_ns": "101",
+              "admitted_ns": "111",
+              "native_session_id": "session-a",
+              "payload": {
+                "input_tokens": 5
+              }
+            },
+            {
+              "event_id_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "102",
+              "admitted_ns": "112",
+              "native_session_id": "session-b",
+              "payload": {
+                "state": "paused"
+              }
+            }
+          ],
+          "invalidated": [],
+          "source_gaps": []
+        },
+        "query": {
+          "kind": "session",
+          "native_session_id": "session-a",
+          "source_id": "source-a"
+        }
+      },
+      "expected": {
+        "coverage": "partial",
+        "dirty_seq": "9",
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": "4",
+        "query": {
+          "kind": "session",
+          "native_session_id": "session-a",
+          "source_id": "source-a"
+        },
+        "receiver_id": "receiver-fixture",
+        "schema_version": 1,
+        "session": {
+          "last_record_ns": 111,
+          "metadata_usage": {
+            "input_tokens": 5
+          },
+          "native_session_id": "session-a",
+          "parent_native_session_id": "",
+          "reason_code": "task_complete",
+          "relationship_kind": "unknown",
+          "relationship_state": "unresolved",
+          "reported_state": "completed",
+          "run_state": "completed",
+          "session_key": "plugin:e6dd2eeea4893501163b92487ad24436f1293f0a33e80c061ea383d50e2d2eec",
+          "state_time_ns": 100
+        },
+        "source_id": "source-a"
+      }
+    },
+    {
+      "name": "absent_is_partial",
+      "input": {
+        "schema_version": 1,
+        "snapshot": {
+          "schema_version": 3,
+          "receiver_id": "receiver-fixture",
+          "source_id": "source-a",
+          "plugin_id": "fixture.plugin",
+          "policy_epoch": 4,
+          "dirty_seq": 9,
+          "rows": [
+            {
+              "event_id_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "100",
+              "admitted_ns": "110",
+              "native_session_id": "session-a",
+              "payload": {
+                "state": "completed",
+                "reason_code": "task_complete"
+              }
+            },
+            {
+              "event_id_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": 0,
+              "kind": "usage",
+              "time_ns": "101",
+              "admitted_ns": "111",
+              "native_session_id": "session-a",
+              "payload": {
+                "input_tokens": 5
+              }
+            },
+            {
+              "event_id_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "102",
+              "admitted_ns": "112",
+              "native_session_id": "session-b",
+              "payload": {
+                "state": "paused"
+              }
+            }
+          ],
+          "invalidated": [],
+          "source_gaps": []
+        },
+        "query": {
+          "kind": "session",
+          "native_session_id": "missing",
+          "source_id": "source-a"
+        }
+      },
+      "expected": {
+        "coverage": "partial",
+        "dirty_seq": "9",
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": "4",
+        "query": {
+          "kind": "session",
+          "native_session_id": "missing",
+          "source_id": "source-a"
+        },
+        "receiver_id": "receiver-fixture",
+        "schema_version": 1,
+        "session": null,
+        "source_id": "source-a"
+      }
+    },
+    {
+      "name": "source_gap",
+      "input": {
+        "schema_version": 1,
+        "snapshot": {
+          "schema_version": 3,
+          "receiver_id": "receiver-fixture",
+          "source_id": "source-a",
+          "plugin_id": "fixture.plugin",
+          "policy_epoch": 4,
+          "dirty_seq": 9,
+          "rows": [
+            {
+              "event_id_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "100",
+              "admitted_ns": "110",
+              "native_session_id": "session-a",
+              "payload": {
+                "state": "completed",
+                "reason_code": "task_complete"
+              }
+            },
+            {
+              "event_id_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": 0,
+              "kind": "usage",
+              "time_ns": "101",
+              "admitted_ns": "111",
+              "native_session_id": "session-a",
+              "payload": {
+                "input_tokens": 5
+              }
+            },
+            {
+              "event_id_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "102",
+              "admitted_ns": "112",
+              "native_session_id": "session-b",
+              "payload": {
+                "state": "paused"
+              }
+            }
+          ],
+          "invalidated": [],
+          "source_gaps": [
+            {
+              "native_session_id": "session-a",
+              "last_record_ns": "111"
+            }
+          ]
+        },
+        "query": {
+          "kind": "session",
+          "native_session_id": "session-a",
+          "source_id": "source-a"
+        }
+      },
+      "expected": {
+        "coverage": "partial",
+        "dirty_seq": "9",
+        "plugin_id": "fixture.plugin",
+        "policy_epoch": "4",
+        "query": {
+          "kind": "session",
+          "native_session_id": "session-a",
+          "source_id": "source-a"
+        },
+        "receiver_id": "receiver-fixture",
+        "schema_version": 1,
+        "session": {
+          "last_record_ns": 111,
+          "metadata_usage": {},
+          "native_session_id": "session-a",
+          "parent_native_session_id": "",
+          "reason_code": "source_gap",
+          "relationship_kind": "unknown",
+          "relationship_state": "unresolved",
+          "reported_state": "unknown",
+          "run_state": "unknown",
+          "session_key": "plugin:e6dd2eeea4893501163b92487ad24436f1293f0a33e80c061ea383d50e2d2eec",
+          "state_time_ns": 100
+        },
+        "source_id": "source-a"
+      }
+    },
+    {
+      "name": "invalid_query_schema",
+      "input": {
+        "schema_version": 2,
+        "snapshot": {
+          "schema_version": 3,
+          "receiver_id": "receiver-fixture",
+          "source_id": "source-a",
+          "plugin_id": "fixture.plugin",
+          "policy_epoch": 4,
+          "dirty_seq": 9,
+          "rows": [
+            {
+              "event_id_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "100",
+              "admitted_ns": "110",
+              "native_session_id": "session-a",
+              "payload": {
+                "state": "completed",
+                "reason_code": "task_complete"
+              }
+            },
+            {
+              "event_id_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": 0,
+              "kind": "usage",
+              "time_ns": "101",
+              "admitted_ns": "111",
+              "native_session_id": "session-a",
+              "payload": {
+                "input_tokens": 5
+              }
+            },
+            {
+              "event_id_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "102",
+              "admitted_ns": "112",
+              "native_session_id": "session-b",
+              "payload": {
+                "state": "paused"
+              }
+            }
+          ],
+          "invalidated": [],
+          "source_gaps": []
+        },
+        "query": {
+          "kind": "session",
+          "native_session_id": "session-a",
+          "source_id": "source-a"
+        }
+      }
+    },
+    {
+      "name": "invalid_native_id",
+      "input": {
+        "schema_version": 1,
+        "snapshot": {
+          "schema_version": 3,
+          "receiver_id": "receiver-fixture",
+          "source_id": "source-a",
+          "plugin_id": "fixture.plugin",
+          "policy_epoch": 4,
+          "dirty_seq": 9,
+          "rows": [
+            {
+              "event_id_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "100",
+              "admitted_ns": "110",
+              "native_session_id": "session-a",
+              "payload": {
+                "state": "completed",
+                "reason_code": "task_complete"
+              }
+            },
+            {
+              "event_id_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": 0,
+              "kind": "usage",
+              "time_ns": "101",
+              "admitted_ns": "111",
+              "native_session_id": "session-a",
+              "payload": {
+                "input_tokens": 5
+              }
+            },
+            {
+              "event_id_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "102",
+              "admitted_ns": "112",
+              "native_session_id": "session-b",
+              "payload": {
+                "state": "paused"
+              }
+            }
+          ],
+          "invalidated": [],
+          "source_gaps": []
+        },
+        "query": {
+          "kind": "session",
+          "native_session_id": "bad id",
+          "source_id": "source-a"
+        }
+      }
+    },
+    {
+      "name": "snapshot_v2_refused",
+      "input": {
+        "schema_version": 1,
+        "snapshot": {
+          "schema_version": 2,
+          "receiver_id": "receiver-fixture",
+          "source_id": "source-a",
+          "plugin_id": "fixture.plugin",
+          "policy_epoch": 4,
+          "dirty_seq": 9,
+          "rows": [
+            {
+              "event_id_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "100",
+              "admitted_ns": "110",
+              "native_session_id": "session-a",
+              "payload": {
+                "state": "completed",
+                "reason_code": "task_complete"
+              }
+            },
+            {
+              "event_id_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": 0,
+              "kind": "usage",
+              "time_ns": "101",
+              "admitted_ns": "111",
+              "native_session_id": "session-a",
+              "payload": {
+                "input_tokens": 5
+              }
+            },
+            {
+              "event_id_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "102",
+              "admitted_ns": "112",
+              "native_session_id": "session-b",
+              "payload": {
+                "state": "paused"
+              }
+            }
+          ],
+          "invalidated": []
+        },
+        "query": {
+          "kind": "session",
+          "native_session_id": "session-a",
+          "source_id": "source-a"
+        }
+      }
+    },
+    {
+      "name": "duplicate_outer_key",
+      "raw_input": "{\"schema_version\":1,\"schema_version\":1,\"snapshot\":{\"schema_version\":3,\"receiver_id\":\"receiver-fixture\",\"source_id\":\"source-a\",\"plugin_id\":\"fixture.plugin\",\"policy_epoch\":4,\"dirty_seq\":9,\"rows\":[{\"event_id_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"revision\":0,\"kind\":\"lifecycle\",\"time_ns\":\"100\",\"admitted_ns\":\"110\",\"native_session_id\":\"session-a\",\"payload\":{\"state\":\"completed\",\"reason_code\":\"task_complete\"}},{\"event_id_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"revision\":0,\"kind\":\"usage\",\"time_ns\":\"101\",\"admitted_ns\":\"111\",\"native_session_id\":\"session-a\",\"payload\":{\"input_tokens\":5}},{\"event_id_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"revision\":0,\"kind\":\"lifecycle\",\"time_ns\":\"102\",\"admitted_ns\":\"112\",\"native_session_id\":\"session-b\",\"payload\":{\"state\":\"paused\"}}],\"invalidated\":[],\"source_gaps\":[]},\"query\":{\"kind\":\"session\",\"source_id\":\"source-a\",\"native_session_id\":\"session-a\"}}"
+    },
+    {
+      "name": "wrong_source",
+      "input": {
+        "schema_version": 1,
+        "snapshot": {
+          "schema_version": 3,
+          "receiver_id": "receiver-fixture",
+          "source_id": "source-a",
+          "plugin_id": "fixture.plugin",
+          "policy_epoch": 4,
+          "dirty_seq": 9,
+          "rows": [
+            {
+              "event_id_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "100",
+              "admitted_ns": "110",
+              "native_session_id": "session-a",
+              "payload": {
+                "state": "completed",
+                "reason_code": "task_complete"
+              }
+            },
+            {
+              "event_id_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": 0,
+              "kind": "usage",
+              "time_ns": "101",
+              "admitted_ns": "111",
+              "native_session_id": "session-a",
+              "payload": {
+                "input_tokens": 5
+              }
+            },
+            {
+              "event_id_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "revision": 0,
+              "kind": "lifecycle",
+              "time_ns": "102",
+              "admitted_ns": "112",
+              "native_session_id": "session-b",
+              "payload": {
+                "state": "paused"
+              }
+            }
+          ],
+          "invalidated": [],
+          "source_gaps": []
+        },
+        "query": {
+          "kind": "session",
+          "native_session_id": "session-a",
+          "source_id": "another-source"
+        }
+      }
+    }
+  ]
+}
