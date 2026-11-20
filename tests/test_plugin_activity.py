@@ -199,6 +199,12 @@ class PluginActivityTests(unittest.TestCase):
         self.assertEqual(page()[0]["result"], "failed")  # warm HTTP cache
         turn_id = page()[0]["turn_id"]
         self.assertEqual(len(page(turn_id)), 1)
+        with self.store._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM investigation_dirty_v1 "
+                                        "WHERE kind='plugin'").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM investigation_terms_v1 "
+                                        "WHERE event_key IN (SELECT event_key FROM activity_index_v1 "
+                                        "WHERE kind='plugin')").fetchone()[0], 0)
         self.commit("one", "two", [fact("c", "check", {"category": "test", "result": "passed"},
                                         revision=1)])
         self.assertEqual(page(), [])
