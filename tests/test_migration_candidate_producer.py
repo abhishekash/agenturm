@@ -61,7 +61,8 @@ class CandidateProducerTests(unittest.TestCase):
         self.assertEqual([row["source_id"] for row in manifest["snapshot"]["sources"]],
                          ["real-source"])
         self.assertEqual(json.loads((manifest_path.parent / "state.json").read_text()),
-                         {"format": "migration_candidate_preparation_v1", "state": "verified"})
+                         {"format": "migration_candidate_preparation_v1", "state": "verified",
+                          "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest()})
         for name in ("telemetry", "workflow", "tasks"):
             descriptor = manifest[name]
             path = Path(descriptor["path"])

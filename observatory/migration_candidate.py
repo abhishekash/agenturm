@@ -279,8 +279,9 @@ def prepare_candidate(*, telemetry: os.PathLike[str] | str,
     if reply != {"format": "migration_candidate_verified_v1", "receiver_id": receiver}:
         raise CandidateError("Rust verifier returned an unexpected receiver or format")
     next_state = destination / ".verified-state.tmp"
-    _write_private(next_state,
-                   b'{"format":"migration_candidate_preparation_v1","state":"verified"}\n')
+    verified_state = dict(format="migration_candidate_preparation_v1", state="verified",
+                          manifest_sha256=_digest(manifest_path))
+    _write_private(next_state, (json.dumps(verified_state, separators=(",", ":")) + "\n").encode())
     os.replace(next_state, state)
     _sync_directory(destination)
     return manifest_path
