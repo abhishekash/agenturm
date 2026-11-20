@@ -1188,12 +1188,21 @@ def _run_terminal_app(app):
 
 
 def run_cockpit(*, db_path=None, port=14318, endpoint=None,
-                once=False, new_window=False, local_agents=True, metadata_only=False, managed_db=False, retention_days=None):
+                once=False, new_window=False, local_agents=True, metadata_only=False, managed_db=False,
+                retention_days=None, capability_config=()):
     if db_path is None:
         from .receiver_state import telemetry_path,prepare_state_directory
         prepare_state_directory();db_path=str(telemetry_path());managed_db=True
     if not 1 <= port <= 65535:
         raise CockpitError("Choose a port between 1 and 65535.")
+    if capability_config and once:
+        raise CockpitError("Capability panes require the interactive cockpit; omit --once.")
+    if capability_config:
+        from .capability_process import read_capability_config
+        # Validate declarations before launching another terminal or any
+        # receiver. Discovery never imports or starts a plugin executable.
+        for path in capability_config:
+            read_capability_config(path)
     if new_window:
         command = [sys.executable, "-m", "observatory", "--db", str(Path(db_path).resolve()), "cockpit", "--port", str(port)]
         if managed_db:
@@ -1207,6 +1216,8 @@ def run_cockpit(*, db_path=None, port=14318, endpoint=None,
             command.append("--metadata-only")
         if once:
             command.append("--once")
+        for path in capability_config:
+            command.extend(["--capability-config", str(Path(path).resolve())])
         open_terminal(command)
         return
     if not once and (not sys.stdin.isatty() or not sys.stdout.isatty()):
@@ -1218,6 +1229,7 @@ def run_cockpit(*, db_path=None, port=14318, endpoint=None,
             raise CockpitError("The terminal UI needs Textual. Reinstall the CLI, or install this checkout with: python -m pip install .") from exc
     token = os.environ.get("OBSERVATORY_TOKEN") or None
     receiver = feed = startup = None
+    capability_activations = ()
     api = Api(endpoint or f"http://127.0.0.1:{port}", token)
     try:
         if not once:
@@ -1228,7 +1240,11 @@ def run_cockpit(*, db_path=None, port=14318, endpoint=None,
                 managed_db=managed_db, retention_days=retention_days)
             feed = Feed(api)
             feed.prepare = startup
-            return _run_terminal_app(ObservatoryApp(feed))
+            panes = ()
+            if capability_config:
+                from .capability_activation import activate_capabilities
+                capability_activations, panes = activate_capabilities(tuple(capability_config), api, feed)
+            return _run_terminal_app(ObservatoryApp(feed, ui_panes=panes))
         try:
             health = api.get("/api/health?probe=1")
             if not health.get("ok"):
@@ -1287,6 +1303,8 @@ def run_cockpit(*, db_path=None, port=14318, endpoint=None,
     except KeyboardInterrupt:
         return 130
     finally:
-        complete_cleanup(*([feed.close] if feed is not None else []),
+        complete_cleanup(*(closer for host, gate in reversed(capability_activations)
+                           for closer in (host.close, gate.close)),
+                         *([feed.close] if feed is not None else []),
                          *([startup.close] if startup is not None else []),
                          *([receiver.close] if receiver is not None else []))

@@ -1,6 +1,6 @@
 # Process capability proof: Prompt signals
 
-This is an independently installed, fixture-only capability process. It demonstrates the third architecture block: a declared capability can supply a validated pane through the existing generic UI registry. It is **not** a universal plugin SDK, a production credential interface, or a normal cockpit configuration option yet.
+This is an independently installed, fixture-only capability process. It demonstrates the third architecture block: a declared capability can supply a validated pane through the existing generic UI registry. It is **not** a universal plugin SDK or a production credential interface. The [explicit cockpit activation checkpoint](validation/capability-cockpit-activation.md) adds an opt-in CLI route with bounded, fail-closed policy freshness.
 
 ## Explicit admission and startup
 
@@ -10,7 +10,7 @@ python examples/prompt_signals_process/install.py --destination /absolute/privat
 
 The installer creates three new files: an executable fixture, `prompt-signals.toml`, and `capability.json`. It refuses existing entries and symlinked destination components. The descriptor names one absolute manifest, pane identity, fixed columns, and the `scoped-aggregate-read` grant. The manifest pins the executable SHA-256, provides `capability-adapter/1`, and requires host `pane-model/1`. `read_capability_config` parses the descriptor and manifest without importing or starting the executable. `CapabilityProcess.start` checks the artifact hash again, copies the verified bytes to a private temporary directory, launches with a minimal environment, and requires a framed v1 handshake.
 
-The fixture can be wired by a trusted caller with `PromptCapabilityHost(store, read_capability_config(path), capture_allowed).start()` and passed to the generic shell as `ui_panes=(host.contribution(),)`. The caller must close the host. There is no CLI setting that enables this installed pane in a normal Agenturm cockpit launch; that composition and a production policy service are future work.
+The fixture can be wired by a trusted caller with `PromptCapabilityHost(store, read_capability_config(path), capture_allowed).start()` and passed to the generic shell as `ui_panes=(host.contribution(),)`. The caller must close the host. `agenturm cockpit --capability-config /absolute/capability.json` is an explicit opt-in route; its policy freshness and limits are documented in the linked checkpoint.
 
 ## Host-owned data boundary
 

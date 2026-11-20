@@ -32,6 +32,8 @@ def main():
                          help="disable local Codex / Claude Code session discovery in a receiver started here")
     cockpit.add_argument("--metadata-only", action="store_true", help="omit native session text, commands and outputs")
     cockpit.add_argument("--retention-days", type=float, help="opt in an existing database to age retention")
+    cockpit.add_argument("--capability-config", type=Path, action="append", default=[],
+                         help="activate an explicitly installed capability pane; repeatable")
     server = sub.add_parser("serve", help="run the local OTLP/HTTP receiver used by the terminal cockpit")
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=4318)
@@ -116,7 +118,7 @@ def main():
             parser.exit(status)
     elif args.command in {None, "cockpit"}:
         from .terminal import CockpitError, run_cockpit
-        options = {key: getattr(args, key) for key in ("port", "endpoint", "new_window", "once", "local_agents", "metadata_only", "retention_days")} if args.command else {
+        options = {key: getattr(args, key) for key in ("port", "endpoint", "new_window", "once", "local_agents", "metadata_only", "retention_days", "capability_config")} if args.command else {
             "endpoint": os.environ.get("OBSERVATORY_ENDPOINT"),
         }
         try:
