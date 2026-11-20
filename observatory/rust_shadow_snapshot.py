@@ -10,9 +10,9 @@ import json
 from dataclasses import dataclass
 
 from .plugin_activity import index_rows as activity_index_rows
-from .plugin_admission import _metadata
+from .plugin_admission import _ID, _metadata
 from .plugin_projection import MAX_JSON_SAFE_INTEGER
-from .plugin_wire import ProtocolError, decode_message
+from .plugin_wire import INT64_MAX, ProtocolError, decode_message
 
 
 MAX_EVIDENCE = 50_000
@@ -59,12 +59,6 @@ def capture(store, source_id: str) -> ShadowSnapshot | None:
         revision = _revision(db, source_id)
         if not _ready(revision):
             return None
-        # Reducer schema v2 carries retention invalidation but not durable
-        # source-gap membership. Refuse a misleading parity comparison until
-        # its input contract represents this coverage state.
-        if db.execute("SELECT 1 FROM plugin_source_gap_invalidated_v1 "
-                      "WHERE source_id=? LIMIT 1", (source_id,)).fetchone():
-            return None
         receiver = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
         if receiver is None or receiver[0] != revision[0]:
             raise ProtocolError("receiver identity changed during shadow snapshot")
@@ -91,6 +85,15 @@ def capture(store, source_id: str) -> ShadowSnapshot | None:
             "SELECT native_session_id,last_record_ns FROM plugin_retention_invalidated_v1 "
             "WHERE source_id=? ORDER BY native_session_id LIMIT ?",
             (source_id, MAX_SESSIONS + 1)).fetchall()
+        gap_size = db.execute(
+            "SELECT COUNT(*),COALESCE(SUM(length(CAST(native_session_id AS BLOB))),0) "
+            "FROM plugin_source_gap_invalidated_v1 WHERE source_id=?", (source_id,)).fetchone()
+        if gap_size[0] > MAX_SESSIONS or gap_size[1] > MAX_TABLE_PAYLOAD_BYTES:
+            raise ProtocolError("shadow source gaps exceed bounded read budget")
+        source_gaps = db.execute(
+            "SELECT native_session_id,last_record_ns FROM plugin_source_gap_invalidated_v1 "
+            "WHERE source_id=? ORDER BY native_session_id LIMIT ?",
+            (source_id, MAX_SESSIONS + 1)).fetchall()
         projected = db.execute(
             "SELECT native_session_id,session_key,state,reason_code,state_time_ns,"
             "last_record_ns,usage_json,parent_native_session_id,relationship_kind,"
@@ -101,8 +104,19 @@ def capture(store, source_id: str) -> ShadowSnapshot | None:
             "SELECT payload FROM activity_index_v1 WHERE kind='plugin' AND owner_key=? "
             "ORDER BY event_key LIMIT ?", (source_id, MAX_EVIDENCE + 1)).fetchall()
     if (len(evidence) > MAX_EVIDENCE or len(invalidated) > MAX_SESSIONS
+            or len(source_gaps) > MAX_SESSIONS
             or len(projected) > MAX_SESSIONS or len(activity) > MAX_EVIDENCE):
         raise ProtocolError("shadow snapshot capacity reached")
+    if (any((row["native_session_id"] != "*" and
+             (not isinstance(row["native_session_id"], str)
+              or not _ID.fullmatch(row["native_session_id"])))
+            or type(row["last_record_ns"]) is not int
+            or not 0 <= row["last_record_ns"] <= INT64_MAX
+            or (row["native_session_id"] == "*" and row["last_record_ns"] != 0)
+            for row in source_gaps)
+            or any(row["native_session_id"] == "*" for row in source_gaps)
+            and len(source_gaps) != 1):
+        raise ProtocolError("invalid stored source-gap invalidation")
     if any(row["policy_epoch"] != revision[2] or row["source_dirty_seq"] != revision[3]
            for row in projected):
         raise ProtocolError("shadow projection is not policy-current")
@@ -113,7 +127,8 @@ def capture(store, source_id: str) -> ShadowSnapshot | None:
             ("turn_id", "native_turn_id"), ("operation_id", "native_operation_id"))
             if row[column]}
         payload = decode_message(row["payload_json"])
-        _metadata({"kind": row["kind"], "payload": payload, "identity": identity})
+        _metadata({"kind": row["kind"], "revision": row["revision"],
+                   "payload": payload, "identity": identity})
         rows.append({"event_id_hash": row["event_id_hash"],
                      "revision": row["revision"], "kind": row["kind"],
                      "time_ns": str(row["time_ns"]),
@@ -123,13 +138,17 @@ def capture(store, source_id: str) -> ShadowSnapshot | None:
                      "native_turn_id": row["native_turn_id"] or None,
                      "native_operation_id": row["native_operation_id"] or None,
                      "payload": payload})
-    fixture = {"schema_version": 2, "receiver_id": revision[0],
+    fixture = {"schema_version": 3, "receiver_id": revision[0],
                "source_id": source_id, "plugin_id": plugin,
                "policy_epoch": revision[2], "dirty_seq": revision[3],
                "rows": rows, "invalidated": [
                    {"native_session_id": row["native_session_id"],
                     "last_record_ns": str(row["last_record_ns"])}
-                   for row in invalidated]}
+                   for row in invalidated],
+               "source_gaps": [
+                   {"native_session_id": row["native_session_id"],
+                    "last_record_ns": str(row["last_record_ns"])}
+                   for row in source_gaps]}
     try:
         size = len(json.dumps(fixture, separators=(",", ":"),
                               ensure_ascii=False).encode("utf-8", "strict"))
@@ -163,14 +182,18 @@ def capture(store, source_id: str) -> ShadowSnapshot | None:
                          "relationship_kind": row["relationship_kind"],
                          "relationship_state": row["relationship_state"]})
     facts = [decode_message(row["payload"]) for row in activity]
+    gap_ids = {row["native_session_id"] for row in source_gaps}
+    if "*" in gap_ids:
+        gap_ids.update(row["native_session_id"] for row in evidence
+                       if row["native_session_id"])
     computed = [decode_message(row[-1]) for row in activity_index_rows(
         evidence, receiver_id=revision[0], source_id=source_id,
         plugin_id=plugin,
-        invalidated={row["native_session_id"] for row in invalidated})]
+        invalidated={row["native_session_id"] for row in invalidated} | gap_ids)]
     if sorted(facts, key=lambda fact: fact["id"]) != sorted(
             computed, key=lambda fact: fact["id"]):
         raise ProtocolError("shadow Activity differs from admitted metadata")
-    expected = {"schema_version": 2, "sessions": sessions,
+    expected = {"schema_version": 3, "sessions": sessions,
                 "activities": sorted(facts, key=lambda fact: fact["id"])}
     return ShadowSnapshot(source_id, revision, fixture, expected)
 

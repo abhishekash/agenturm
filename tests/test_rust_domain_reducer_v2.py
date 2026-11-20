@@ -61,6 +61,11 @@ def python_projection(fixture):
                                    "native_session_id,last_record_ns) VALUES(?,?,?)",
                                    (fixture["source_id"], item["native_session_id"],
                                     int(item["last_record_ns"])))
+                    for item in fixture.get("source_gaps", []):
+                        db.execute("INSERT INTO plugin_source_gap_invalidated_v1(source_id,"
+                                   "native_session_id,last_record_ns) VALUES(?,?,?)",
+                                   (fixture["source_id"], item["native_session_id"],
+                                    int(item["last_record_ns"])))
                 project_source(store, fixture["source_id"])
                 with store._connect() as db:
                     sessions = db.execute(
@@ -90,7 +95,7 @@ def python_projection(fixture):
                         "relationship_kind": row["relationship_kind"],
                         "relationship_state": row["relationship_state"],
                     })
-                return {"schema_version": 2,
+                return {"schema_version": fixture["schema_version"],
                         "sessions": sorted(result, key=lambda row: row["native_session_id"]),
                         "activities": sorted((json.loads(row["payload"]) for row in activities),
                                              key=lambda fact: fact["id"])}
