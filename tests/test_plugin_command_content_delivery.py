@@ -80,7 +80,7 @@ class PiCommandHTTPDeliveryTests(unittest.TestCase):
             first_status, first, first_headers = self.get()
             second_status, second, second_headers = self.get()
         self.assertEqual((first_status, second_status), (200, 200))
-        self.assertEqual(read.call_count, 4)  # initial + pre-header gate per request
+        self.assertEqual(read.call_count, 4)  # registry before/after binding + pre-header gate
         self.assertEqual(first, second)
         self.assertEqual(first["event_id"], self.event_id)
         self.assertEqual(first["redacted_text"], "password=[REDACTED] npm test")
@@ -131,6 +131,13 @@ class PiCommandHTTPDeliveryTests(unittest.TestCase):
         self.store.plugin_supervisor = None
         self.assertEqual(self.get()[0], 404)
 
+    def test_unavailable_activity_revision_returns_service_unavailable(self):
+        with patch.object(self.store, "_source_file_identity",
+                          side_effect=OSError("synthetic unavailable revision")):
+            status, body, _ = self.get()
+        self.assertEqual(status, 503)
+        self.assertNotIn("npm test", json.dumps(body))
+
     def test_revocation_between_read_and_headers_withholds_command(self):
         from observatory import plugin_pi_command_read as reader
         original = reader.read_exact_pi_requested_command
@@ -148,7 +155,7 @@ class PiCommandHTTPDeliveryTests(unittest.TestCase):
         with patch.object(reader, "read_exact_pi_requested_command", side_effect=revoke):
             status, body, _ = self.get()
         self.assertEqual(status, 409)
-        self.assertGreaterEqual(calls, 2)
+        self.assertEqual(calls, 1)  # registry post-read binding catches the revocation
         self.assertNotIn("npm test", json.dumps(body))
 
     def test_source_rewrite_between_read_and_headers_withholds_command(self):
@@ -171,7 +178,7 @@ class PiCommandHTTPDeliveryTests(unittest.TestCase):
         with patch.object(reader, "read_exact_pi_requested_command", side_effect=rewrite):
             status, body, _ = self.get()
         self.assertEqual(status, 409)
-        self.assertGreaterEqual(calls, 2)
+        self.assertEqual(calls, 2)  # provider proof and the pre-header capability guard
         self.assertNotIn("npm test", json.dumps(body))
 
     def test_store_replacement_between_read_and_headers_withholds_command(self):
