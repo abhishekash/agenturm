@@ -4,7 +4,7 @@ Recorded 20 November 2026. This refactor extracts the opt-in Pi reader's bounded
 
 The trait supplies a pinned plugin ID, gap event prefix, initial context from the configured path and first complete line, compact checkpoint and line translation. The first line may be a format header or an ordinary event; it is still translated as a source line. The shared runtime admits all facts from a complete JSONL line together or leaves that line unread. Its cursor checks device/inode, offset, preceding bytes and the full first-line digest. Detected replacement, truncation or checked-region rewrite advances the source generation so replayed native row IDs cannot collide with old revisions. A malformed checkpoint fails before cursor acknowledgment.
 
-This is a behavior-preserving extraction for the installed Pi reader. It does not enable another harness, change the default native Pi reader, widen the content-free evidence contract or assert a speed gain. Existing limits remain: one configured file, 1 MiB line and scan caps, 256 records per batch, the receiver's 8,192 structural-token budget and a 512-character cursor. Source edits outside the checked region remain a documented append-only assumption.
+This is a behavior-preserving extraction for the installed Pi reader at this checkpoint. It does not enable another harness, change the default native Pi reader, widen the content-free evidence contract or assert a speed gain. Existing limits remain: one configured file, 1 MiB line and scan caps, 256 records per batch, the receiver's 8,192 structural-token budget and a 512-character cursor. The later [prefix-integrity hardening](rust-jsonl-prefix-integrity.md) replaces the checked-region assumption with a bounded full-prefix digest.
 
 ## Verification
 

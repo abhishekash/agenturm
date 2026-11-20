@@ -67,6 +67,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -203,6 +204,105 @@ mod tests {
         assert_eq!(facts(&after)[0]["payload"]["code"], "possible_source_gap");
         assert_eq!(facts(&after)[1]["identity"]["session_id"], "other");
         assert_ne!(facts(&first)[0]["event_id"], facts(&after)[1]["event_id"]);
+    }
+
+    #[test]
+    fn distant_same_length_body_rewrite_is_a_gap() {
+        let scratch = Scratch::new();
+        let path = scratch.source();
+        append(&path, r#"{"type":"session","id":"first"}"#);
+        append(
+            &path,
+            r#"{"type":"message","id":"user-1","timestamp":"2026-10-24T12:00:00Z","message":{"role":"user"}}"#,
+        );
+        for index in 0..20 {
+            append(
+                &path,
+                &format!(
+                    r#"{{"type":"model_change","id":"model-{index:02}","timestamp":"2026-10-24T12:00:01Z"}}"#
+                ),
+            );
+        }
+        let first = poll(&path, "source", "", 256, max_frame_bytes()).unwrap();
+        let cursor = first["cursor"].as_str().unwrap();
+        assert!(cursor.starts_with("v2:"));
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.len() > 512);
+        fs::write(&path, raw.replacen("model-03", "model-XX", 1)).unwrap();
+        let after = poll(&path, "source", cursor, 256, max_frame_bytes()).unwrap();
+        assert_eq!(facts(&after)[0]["payload"]["code"], "possible_source_gap");
+        assert_ne!(facts(&first)[0]["event_id"], facts(&after)[1]["event_id"]);
+        assert_ne!(cursor, after["cursor"].as_str().unwrap());
+    }
+
+    #[test]
+    fn genuine_tail_digest_v1_cursor_requires_a_gap_before_replay() {
+        let scratch = Scratch::new();
+        let path = scratch.source();
+        append(&path, r#"{"type":"session","id":"first"}"#);
+        for index in 0..20 {
+            append(
+                &path,
+                &format!(
+                    r#"{{"type":"model_change","id":"model-{index:02}","timestamp":"2026-10-24T12:00:01Z"}}"#
+                ),
+            );
+        }
+        let first = poll(&path, "source", "", 256, max_frame_bytes()).unwrap();
+        let encoded = first["cursor"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("v2:")
+            .unwrap();
+        let fields: Vec<_> = encoded.splitn(7, ':').collect();
+        let bytes = fs::read(&path).unwrap();
+        let offset = fields[2].parse::<usize>().unwrap();
+        assert!(offset > 256);
+        let tail = format!("{:x}", Sha256::digest(&bytes[offset - 256..offset]));
+        assert_ne!(tail, fields[3]); // The legacy digest is not the v2 prefix digest.
+        let old_cursor = format!(
+            "{}:{}:{}:{}:{}:{}:{}",
+            fields[0], fields[1], fields[2], tail, fields[4], fields[5], fields[6]
+        );
+        let after = poll(&path, "source", &old_cursor, 256, max_frame_bytes()).unwrap();
+        assert_eq!(facts(&after)[0]["payload"]["code"], "possible_source_gap");
+        assert!(after["cursor"].as_str().unwrap().starts_with("v2:"));
+        let idle = poll(
+            &path,
+            "source",
+            after["cursor"].as_str().unwrap(),
+            256,
+            max_frame_bytes(),
+        )
+        .unwrap();
+        assert_eq!(facts(&idle).len(), 0); // Migration emits one gap, not one per poll.
+    }
+
+    #[test]
+    fn cursor_above_verification_ceiling_fails_before_batch() {
+        let scratch = Scratch::new();
+        let path = scratch.source();
+        append(&path, r#"{"type":"session","id":"first"}"#);
+        let first = poll(&path, "source", "", 256, max_frame_bytes()).unwrap();
+        let encoded = first["cursor"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("v2:")
+            .unwrap();
+        let fields: Vec<_> = encoded.splitn(7, ':').collect();
+        let too_large = 512_u64 * 1024 * 1024 + 1;
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(too_large)
+            .unwrap(); // Sparse growth; no 512 MiB allocation or read.
+        let cursor = format!(
+            "v2:{}:{}:{}:{}:{}:{}:{}",
+            fields[0], fields[1], too_large, fields[3], fields[4], fields[5], fields[6]
+        );
+        let error = poll(&path, "source", &cursor, 256, max_frame_bytes()).unwrap_err();
+        assert!(error.to_string().contains("verification limit"));
     }
 
     #[test]

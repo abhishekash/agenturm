@@ -18,6 +18,9 @@ use std::time::UNIX_EPOCH;
 
 const MAX_LINE: u64 = 1024 * 1024;
 const MAX_SCAN: u64 = 1024 * 1024;
+// Full-prefix verification is intentionally capped. Crossing the ceiling
+// stops this opt-in source before any cursor acknowledgment.
+const MAX_VERIFIED_PREFIX: u64 = 512 * 1024 * 1024;
 // Match observatory.plugin_wire.MAX_STRUCTURAL_TOKENS for the serialized batch.
 pub const MAX_STRUCTURAL_TOKENS: usize = 8192;
 pub const MAX_CURSOR: usize = 512;
@@ -72,6 +75,7 @@ fn checked_checkpoint<F: SourceFormat>(context: &F::Context) -> Result<String> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Cursor {
+    version: u8,
     device: u64,
     inode: u64,
     offset: u64,
@@ -89,7 +93,12 @@ impl Cursor {
         if raw.len() > MAX_CURSOR {
             return Err(invalid("invalid cursor length"));
         }
-        let fields: Vec<_> = raw.splitn(7, ':').collect();
+        let (version, payload) = if let Some(payload) = raw.strip_prefix("v2:") {
+            (2, payload)
+        } else {
+            (1, raw)
+        };
+        let fields: Vec<_> = payload.splitn(7, ':').collect();
         if fields.len() != 7
             || fields[..3]
                 .iter()
@@ -111,6 +120,7 @@ impl Cursor {
             return Err(invalid("invalid cursor format"));
         }
         Ok(Some(Self {
+            version,
             device: fields[0].parse()?,
             inode: fields[1].parse()?,
             offset: fields[2].parse()?,
@@ -123,7 +133,7 @@ impl Cursor {
 
     fn encode(&self) -> String {
         format!(
-            "{}:{}:{}:{}:{}:{}:{}",
+            "v2:{}:{}:{}:{}:{}:{}:{}",
             self.device,
             self.inode,
             self.offset,
@@ -144,12 +154,24 @@ fn file_identity(metadata: &Metadata) -> (u64, u64) {
 #[cfg(not(unix))]
 compile_error!("The JSONL source runtime currently supports POSIX platforms only");
 
-fn tail_digest(file: &mut File, offset: u64) -> Result<String> {
-    let start = offset.saturating_sub(256);
-    file.seek(SeekFrom::Start(start))?;
-    let mut bytes = vec![0; usize::try_from(offset - start)?];
-    file.read_exact(&mut bytes)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+fn prefix_hasher(file: &mut File, offset: u64) -> Result<Sha256> {
+    if offset > MAX_VERIFIED_PREFIX {
+        return Err(invalid("source prefix exceeds verification limit"));
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let mut remaining = offset;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    while remaining > 0 {
+        let limit = usize::try_from(remaining.min(buffer.len() as u64))?;
+        let count = file.read(&mut buffer[..limit])?;
+        if count == 0 {
+            return Err(invalid("source prefix changed during verification"));
+        }
+        hasher.update(&buffer[..count]);
+        remaining -= u64::try_from(count)?;
+    }
+    Ok(hasher)
 }
 
 fn read_line(file: &mut File, offset: u64) -> Result<Option<Vec<u8>>> {
@@ -234,14 +256,22 @@ pub fn poll<F: SourceFormat>(
     };
     let header_digest = format!("{:x}", Sha256::digest(&header));
     let mut context = F::header_identity(path, &header)?;
-    let changed = previous.as_ref().is_some_and(|prior| {
-        (prior.device, prior.inode) != (device, inode)
+    if previous
+        .as_ref()
+        .is_some_and(|prior| prior.offset > MAX_VERIFIED_PREFIX)
+    {
+        return Err(invalid("source prefix exceeds verification limit"));
+    }
+    let mut changed = previous.as_ref().is_some_and(|prior| {
+        prior.version != 2
+            || (prior.device, prior.inode) != (device, inode)
             || prior.offset > metadata.len()
             || prior.header_digest != header_digest
-    }) || previous.as_ref().is_some_and(|prior| {
-        prior.offset <= metadata.len()
-            && tail_digest(&mut file, prior.offset).map_or(true, |digest| digest != prior.digest)
     });
+    if !changed && let Some(prior) = &previous {
+        changed =
+            format!("{:x}", prefix_hasher(&mut file, prior.offset)?.finalize()) != prior.digest;
+    }
     let mut records = Vec::new();
     let mut event_ids = HashSet::new();
     if !changed && let Some(prior) = &previous {
@@ -264,6 +294,7 @@ pub fn poll<F: SourceFormat>(
     } else {
         previous.as_ref().map_or(0, |cursor| cursor.offset)
     };
+    let mut prefix = prefix_hasher(&mut file, offset)?;
     if changed {
         let evidence = format!("{}|({}, {})", raw_cursor, device, inode);
         let id = format!("{}:{:x}", F::GAP_EVENT_PREFIX, Sha256::digest(evidence));
@@ -305,11 +336,17 @@ pub fn poll<F: SourceFormat>(
             break;
         }
         let next_position = position + u64::try_from(line.len())?;
+        if next_position > MAX_VERIFIED_PREFIX {
+            return Err(invalid("source prefix exceeds verification limit"));
+        }
+        let mut candidate_prefix = prefix.clone();
+        candidate_prefix.update(&line);
         let next = Cursor {
+            version: 2,
             device,
             inode,
             offset: next_position,
-            digest: tail_digest(&mut file, next_position)?,
+            digest: format!("{:x}", candidate_prefix.clone().finalize()),
             header_digest: header_digest.clone(),
             generation: generation.clone(),
             checkpoint: checked_checkpoint::<F>(&candidate_context)?,
@@ -327,13 +364,18 @@ pub fn poll<F: SourceFormat>(
         }
         event_ids.extend(candidate_ids);
         position = next_position;
+        prefix = candidate_prefix;
         context = candidate_context;
     }
+    if prefix_hasher(&mut file, position)?.finalize() != prefix.clone().finalize() {
+        return Err(invalid("source changed during poll"));
+    }
     let next = Cursor {
+        version: 2,
         device,
         inode,
         offset: position,
-        digest: tail_digest(&mut file, position)?,
+        digest: format!("{:x}", prefix.finalize()),
         header_digest,
         generation,
         checkpoint: checked_checkpoint::<F>(&context)?,

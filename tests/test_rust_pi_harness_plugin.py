@@ -195,6 +195,32 @@ class RustPiHarnessTests(unittest.TestCase):
                              ("unknown", "source_gap"))
             self.assertEqual(self.store.activity_page()["activity"], [])
 
+    def test_distant_same_length_rewrite_quarantines_prior_evidence(self):
+        self.append({"type": "session", "id": "pi-session"},
+                    row("user-1", 0, {"role": "user"}),
+                    *({"type": "model_change", "id": f"model-{index:02}",
+                       "timestamp": "2026-10-24T12:00:01Z"}
+                      for index in range(20)))
+        inode = self.source.stat().st_ino
+        with self.worker() as worker:
+            first = worker.poll_once()
+            self.projected()
+            self.assertEqual(len(self.store.activity_page()["activity"]), 1)
+            raw = self.source.read_text()
+            self.assertGreater(len(raw), 512)
+            self.source.write_text(raw.replace("model-03", "model-XX", 1))
+            self.assertEqual(self.source.stat().st_ino, inode)
+            self.assertEqual(self.source.stat().st_size, len(raw))
+            second = worker.poll_once()
+            self.assertNotEqual(first.cursor, second.cursor)
+            self.assertEqual(second.records[0]["payload"]["code"],
+                             "possible_source_gap")
+            self.projected()
+            session = self.store.plugin_sessions()["sessions"][0]
+            self.assertEqual((session["run_state"], session["reason_code"]),
+                             ("unknown", "source_gap"))
+            self.assertEqual(self.store.activity_page()["activity"], [])
+
     def test_unsupported_row_is_visible_as_coarse_diagnostic(self):
         self.append({"type": "session", "id": "pi-session"},
                     {"type": "model_change", "id": "model-1",
