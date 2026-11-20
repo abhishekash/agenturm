@@ -40,6 +40,10 @@ def rollout(path, session):
     path.write_text("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows))
 
 
+def discovery_gap_id(evidence):
+    return "codex-discovery-gap:" + hashlib.sha256(evidence.encode()).hexdigest()
+
+
 class CodexDirectoryTests(unittest.TestCase):
     def setUp(self):
         binary = os.environ.get("AGENTURM_RUST_CODEX_BIN")
@@ -155,6 +159,8 @@ class CodexDirectoryTests(unittest.TestCase):
                 self.assertFalse(gap.member_id)
                 self.assertTrue(gap.root_gap)
                 self.assertTrue(gap.cursor.startswith("d2:"))
+                self.assertEqual(gap.records[0]["event_id"],
+                                 discovery_gap_id(f"{self.plugin.source_id}:{gap.cursor}:root"))
                 self.assertEqual(dict(worker.members), old_members)
                 self.assertEqual({row["reason_code"] for row in self.sessions().values()},
                                  {"source_gap"})
@@ -217,8 +223,11 @@ class CodexDirectoryTests(unittest.TestCase):
             self.assertEqual(worker.members, previous)
             self.assertEqual(worker.poll_once().records, ())
             self.first.unlink()
+            previous_cursor = worker.cursor
             missing = worker.poll_once()
             self.assertEqual(missing.records[0]["payload"]["code"], "possible_source_gap")
+            self.assertEqual(missing.records[0]["event_id"],
+                             discovery_gap_id(f"{self.plugin.source_id}:{missing.member_id}:{previous_cursor}"))
             self.assertEqual(missing.member_cursor, "")
             self.assertEqual(len(member_cursors(self.store, worker.lease)), 1)
             invalidated = self.sessions()
@@ -252,6 +261,7 @@ class CodexDirectoryTests(unittest.TestCase):
             try:
                 gap = None
                 for _ in range(3):
+                    previous_cursor = worker.cursor
                     batch = worker.poll_once()
                     if batch.member_id and batch.cursor.startswith("d3:") and batch.records:
                         gap = batch
@@ -259,6 +269,8 @@ class CodexDirectoryTests(unittest.TestCase):
                 self.assertIsNotNone(gap)
                 self.assertEqual(gap.records[0]["payload"]["code"],
                                  "possible_source_gap")
+                self.assertEqual(gap.records[0]["event_id"],
+                                 discovery_gap_id(f"{self.plugin.source_id}:{gap.member_id}:{previous_cursor}"))
                 self.assertEqual(gap.member_cursor, member_before[gap.member_id])
                 self.assertEqual(worker.members, member_before)
                 self.assertEqual(len(member_cursors(self.store, worker.lease)), 2)

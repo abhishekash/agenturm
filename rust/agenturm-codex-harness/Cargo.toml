@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 agenturm-jsonl-source = { path = "../agenturm-jsonl-source" }
+agenturm-directory-source = { path = "../agenturm-directory-source" }
 agenturm-source-process = { path = "../agenturm-source-process" }
 serde_json = "1.0"
 sha2 = "0.10"

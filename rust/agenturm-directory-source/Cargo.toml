@@ -1,0 +1,13 @@
+[package]
+name = "agenturm-directory-source"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+publish = false
+license = "MIT"
+
+[dependencies]
+agenturm-jsonl-source = { path = "../agenturm-jsonl-source" }
+agenturm-source-process = { path = "../agenturm-source-process" }
+serde_json = "1.0"
+sha2 = "0.10"
