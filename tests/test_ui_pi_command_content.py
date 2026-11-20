@@ -64,6 +64,8 @@ class PiCommandProviderTests(unittest.TestCase):
         self.assertTrue(eligible_requested_command(record))
         self.assertNotIn('highly-private', json.dumps(record))
         self.assertNotIn('password=', json.dumps(record))
+        self.assertNotIn('password=', copy_event_text(record))
+        self.assertNotIn('password=', investigation_json('activity', record))
 
     def test_projected_started_shell_only_and_no_content_export(self):
         self.assertTrue(eligible_requested_command(ROW))
@@ -135,6 +137,57 @@ class PiCommandProviderTests(unittest.TestCase):
 
 
 class PiCommandLayoutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_local_route_loads_and_revokes_in_activity(self):
+        from observatory.plugin_admission import set_source_capture
+        from observatory.terminal import Api
+        from tests.test_plugin_command_content_delivery import PiCommandHTTPDeliveryTests
+        from tests.test_terminal_search import ManualFeed
+
+        fixture = PiCommandHTTPDeliveryTests('runTest')
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        api = Api(f'http://127.0.0.1:{fixture.server.server_port}', 'secret')
+        path = '/api/plugin-activity-proof?' + urlencode({'event_id': fixture.event_id})
+        proof = api.get(path)['proof']
+        row = proof['record']
+        self.assertTrue(eligible_requested_command(row))
+        feed = ManualFeed()
+        feed.api = api
+        feed.snapshot.receiver_id = proof['receiver_id']
+        app = ObservatoryApp(feed, persist_preferences=False,
+                             content_preview_providers=(PI_REQUESTED_COMMAND,))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.refresh_timer.stop()
+            await pilot.press('2')
+            await pilot.pause()
+            app.table_data['activity-table'] = {row['id']: row}
+            app.selected_activity = row['id']
+            app.native_page_pending = lambda _page: False
+            app.action_expand()
+            await pilot.pause()
+            app.show_activity()
+            await pilot.press('z')
+            for _ in range(50):
+                if (app.plugin_text_state or {}).get('status') == 'available':
+                    break
+                await pilot.pause(0.05)
+            self.assertEqual(app.plugin_text_state['status'], 'available')
+            self.assertIn('password=[REDACTED] npm test',
+                          app.query_one('#activity-detail').plain_text)
+            self.assertNotIn('highly-private',
+                             app.query_one('#activity-detail').plain_text)
+            set_source_capture(fixture.store, source_id=fixture.fixture.source.source_id,
+                               enabled=False)
+            app.revalidate_plugin_text(app.plugin_text_generation)
+            for _ in range(50):
+                if (app.plugin_text_state or {}).get('status') == 'unavailable':
+                    break
+                await pilot.pause(0.05)
+            self.assertEqual(app.plugin_text_state['status'], 'unavailable')
+            self.assertNotIn('password=',
+                             app.query_one('#activity-detail').plain_text)
+
     async def test_explicit_preview_at_60_and_80_columns(self):
         from tests.test_terminal_search import ManualFeed
 

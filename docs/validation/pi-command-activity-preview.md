@@ -24,10 +24,13 @@ command body. The route and its exact source proof are delivered separately.
   unchanged three-part revision, and safe bounded redacted text.
 - A worker test confirmed the provider requests only the local command-content
   route. A revocation recheck cleared visible text.
+- An authenticated loopback server delivered a real exact Pi command to the
+  Textual Activity inspector after `z`; capture revocation removed the visible
+  command on recheck.
 - Headless inspectors at **60×18** and **80×24** retained the header and showed
   the explicit `z` action, available label, expiry, and selection clearing.
-- The affected UI and content delivery suites passed: 23 tests at the initial
-  integration run; the final focused run is recorded in the PR.
+- The affected UI and content delivery suites, including the command route,
+  passed together after rebasing onto the route implementation: **33 tests**.
 
 ## Scope
 
