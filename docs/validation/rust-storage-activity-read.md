@@ -1,0 +1,15 @@
+# Rust backup-only Activity projection read
+
+Recorded 20 November 2026. This checkpoint adds an optional, bounded read of one process source's published `activity_index_v1` rows to the diagnostic `agenturm-storage-shadow` binary. Callers supply a completed, isolated SQLite backup and request `"include_activity": true`. The existing certificate and `"include_projection": true` session output remain unchanged when Activity is not requested. Python remains the sole production writer, capture-policy owner and live freshness authority; no performance gain is claimed.
+
+## Read boundary
+
+The binary opens the backup `READ_ONLY` with URI `immutable=1` and `query_only`, refuses sidecars, and reads the receiver/source certificate and Activity rows in the same short transaction. It returns `activities` only for a ready source: capture enabled with the source dirty sequence and policy exactly projected. Unknown, pending and disabled sources omit the field. The certificate describes the **backup**, not the live Store. A caller must still compare it with Python's live `rust_shadow_snapshot.current()` before publishing a result.
+
+SQLite first checks at most 50,001 source-owned plugin rows, an 8 MiB aggregate payload ceiling, a 16 MiB aggregate row-text ceiling and a 16 KiB per-row ceiling, before Rust loads the stored JSON. Each selected row must belong to the exact source and match the source cursor's plugin ID. The reader checks event, session, agent and turn IDs; index columns against the payload; fixed v1 message, tool and check action/result/subject vocabularies; source and plugin provenance; typed observation flags and tool-turn relations. It requires content-free fields, null trace/span/duration, and an exact JSON field allowlist. Invalid JSON, a stale/mismatched index column, unexpected metadata or content fields, and oversized rows fail the request. This validates the published v1 projection's shape and ownership; it does not independently re-reduce source evidence.
+
+## Differential gate and limits
+
+Installed tests compare the full Rust `activities` array to Python `rust_shadow_snapshot.capture(...).expected["activities"]` for message, started and late-result tool, and check facts across two sessions. They verify recovered tool-turn relation, exact source scoping, a source-wide gap, pending and revoked capture, a historically ready backup after Python's live fence rejects it, and unchanged backup bytes and sidecar set. Corrupt IDs, subject, source provenance, content flags, extra prompt data, mismatched index columns and an oversized payload fail closed. Rust package tests, Clippy with warnings denied, formatting and eight installed differential tests pass.
+
+The source backup must be finished and quiescent; `immutable=1` cannot prove that another process is not changing it. The current v1 Activity schema is intentionally strict: future projection fields need a versioned compatibility decision. Full live query parity, source-evidence recomputation, a Rust writer, exactly-one-writer cutover, downgrade handling and crash/rollback drills remain open.
