@@ -639,7 +639,7 @@ pub fn poll(
             "source",
             "",
             &cursor.signature,
-            revision,
+            0,
             "0",
             "possible_source_gap",
         ));

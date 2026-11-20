@@ -145,8 +145,11 @@ class RustOpenCodeHarnessTests(unittest.TestCase):
             batch = worker.poll_once()
             self.assertEqual(batch.records[0]["payload"]["code"], "possible_source_gap")
             self.drain(worker)
-            self.assertEqual({s["native_session_id"] for s in self.projected()},
-                             {"ses_schema_fixture", "ses_replacement"})
+            sessions = {s["native_session_id"]: s for s in self.projected()}
+            self.assertEqual(set(sessions), {"ses_schema_fixture", "ses_replacement"})
+            self.assertEqual((sessions["ses_schema_fixture"]["run_state"],
+                              sessions["ses_schema_fixture"]["reason_code"]), ("unknown", "source_gap"))
+            self.assertEqual(sessions["ses_replacement"]["run_state"], "completed")
 
     def test_deleted_terminal_idle_revises_status_and_backfill_does_not_wedge(self):
         with self.worker() as worker:
@@ -156,14 +159,27 @@ class RustOpenCodeHarnessTests(unittest.TestCase):
                 db.execute("DELETE FROM session_message WHERE id='msg_idle_two'")
             batches = self.drain(worker)
             self.assertEqual(batches[0].records[0]["payload"]["code"], "possible_source_gap")
-            self.assertEqual(self.projected()[0]["run_state"], "running")
-            self.assertEqual(self.projected()[0]["reason_code"], "opencode_latest_assistant")
+            self.assertEqual((self.projected()[0]["run_state"],self.projected()[0]["reason_code"]),
+                             ("unknown", "source_gap"))
+            self.assertEqual(self.store.activity_page()["activity"], [])
             with sqlite3.connect(self.source) as db:
                 db.execute("INSERT INTO session_message VALUES(?,?,?,?,?,?,?)",
                            ("msg_backfilled_idle", "ses_schema_fixture", "idle", 25,
                             1794650400025, 1794650400025, '{"outcome":"succeeded"}'))
             self.drain(worker)
-            self.assertEqual(self.projected()[0]["run_state"], "running")
+            self.assertEqual(self.projected()[0]["reason_code"], "source_gap")
+
+    def test_idle_outcome_correction_revises_one_session_status(self):
+        with self.worker() as worker:
+            self.drain(worker)
+            self.assertEqual(self.projected()[0]["run_state"], "completed")
+            with sqlite3.connect(self.source) as db:
+                db.execute("UPDATE session_message SET data=?,time_updated=time_updated+1 WHERE id='msg_idle_two'",
+                           (json.dumps({"outcome": "failed"}),))
+            batches = self.drain(worker)
+            self.assertNotEqual(batches[0].records[0]["kind"], "diagnostic")
+            self.assertEqual((self.projected()[0]["run_state"],self.projected()[0]["reason_code"]),
+                             ("failed", "opencode_idle_failed"))
 
     def test_huge_identifiers_are_skipped_before_materialization(self):
         huge = "x" * (2 * 1024 * 1024)
