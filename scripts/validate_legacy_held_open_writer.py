@@ -21,6 +21,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import zipfile
+
+
+RELEASE_WHEEL_SHA256 = "4fda5471d0a6993e61908949ffc86d7ff28322928071c2463deea774848fba2e"
+RELEASE_VERSION = "0.2.8"
 
 
 def check(condition: bool, message: str) -> None:
@@ -57,6 +62,15 @@ def checksum(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def database_bytes(path: Path) -> dict[str, tuple[int, str] | None]:
+    """Bind the candidate main file and any sidecars before legacy attempts."""
+    result = {}
+    for suffix in ("", "-wal", "-shm"):
+        part = Path(f"{path}{suffix}")
+        result[suffix] = (part.stat().st_size, checksum(part)) if part.exists() else None
+    return result
+
+
 def line(process: subprocess.Popen, expected: str) -> None:
     ready, _, _ = select.select([process.stdout], [], [], 10)
     check(bool(ready), f"legacy writer timed out waiting for {expected!r}")
@@ -69,8 +83,52 @@ def send(process: subprocess.Popen, command: str) -> None:
     process.stdin.flush()
 
 
+def old_store():
+    from observatory import core
+
+    site = os.environ.get("AGENTURM_RELEASE_SITE")
+    if site:
+        expected = Path(site) / "observatory" / "core.py"
+        check(Path(core.__file__).resolve() == expected.resolve(),
+              f"released Store was shadowed by {core.__file__}")
+    return core.Store
+
+
+def release_site(wheel: Path, target: Path) -> None:
+    """Unpack only the pinned, locally rebuilt v0.2.8 wheel for child imports."""
+    check(checksum(wheel) == RELEASE_WHEEL_SHA256,
+          "released wheel digest differs from pinned v0.2.8 fixture")
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        metadata = f"agenturm-{RELEASE_VERSION}.dist-info/METADATA"
+        check(metadata in names and
+              f"Name: agenturm\nVersion: {RELEASE_VERSION}\n" in
+              archive.read(metadata).decode("utf-8"), "released wheel metadata mismatch")
+        check("observatory/core.py" in names and
+              "observatory/__main__.py" in names,
+              "released wheel lacks Store or CLI")
+        for name in names:
+            parts = Path(name).parts
+            check(parts and not name.startswith("/") and ".." not in parts,
+                  "unsafe released wheel member")
+        archive.extractall(target)
+
+
+def permission_denied(error: BaseException) -> bool:
+    current = error
+    while current is not None:
+        if isinstance(current, OSError) and current.errno in (errno.EACCES, errno.EPERM):
+            return True
+        if isinstance(current, sqlite3.OperationalError) and any(
+                phrase in str(current).lower() for phrase in
+                ("unable to open database file", "attempt to write a readonly database")):
+            return True
+        current = current.__cause__
+    return False
+
+
 def legacy_holder(path: Path) -> None:
-    from observatory.core import Store
+    Store = old_store()
 
     store = Store(path)
     try:
@@ -95,22 +153,25 @@ def legacy_holder(path: Path) -> None:
 
 
 def fresh_legacy_denials(data: Path) -> None:
-    from observatory.core import Store
-    from observatory.store_authority import StoreAuthorityError
+    Store = old_store()
 
     for name in ("canonical.db", "archived.db"):
         path = data / name
         try:
             Store(path)
-        except StoreAuthorityError as error:
-            cause = error.__cause__
-            check(isinstance(cause, OSError) and cause.errno in (errno.EACCES, errno.EPERM),
-                  f"Store failed for an unrelated reason: {error}")
-        except OSError as error:
-            check(error.errno in (errno.EACCES, errno.EPERM),
-                  f"Store failed for an unrelated reason: {error}")
+        except Exception as error:
+            check(permission_denied(error), f"Store failed for an unrelated reason: {error}")
         else:
             raise AssertionError(f"legacy Store opened protected {name}")
+        if os.environ.get("AGENTURM_RELEASE_SITE"):
+            cli = subprocess.run(
+                [sys.executable, "-m", "observatory.__main__", "--db", str(path),
+                 "prune", "--older-than-days", "1"],
+                cwd="/", capture_output=True, text=True, timeout=10)
+            check(cli.returncode != 0 and
+                  ("unable to open database file" in cli.stderr.lower()
+                   or "permission denied" in cli.stderr.lower()),
+                  f"released CLI failed for an unrelated reason: {cli.stderr}")
         try:
             with sqlite3.connect(path.as_uri() + "?mode=rw", uri=True) as db:
                 db.execute("CREATE TABLE forbidden_ddl(value TEXT)")
@@ -129,6 +190,7 @@ def main() -> None:
     parser.add_argument("--case", choices=("holder", "fresh"))
     parser.add_argument("--database", type=Path)
     parser.add_argument("--data", type=Path)
+    parser.add_argument("--release-wheel", type=Path)
     args = parser.parse_args()
     if args.case == "holder":
         legacy_holder(args.database)
@@ -150,7 +212,14 @@ def main() -> None:
         os.chown(private, service_uid, service_gid)
         database = old / "legacy.db"
         env = os.environ.copy()
-        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+        if args.release_wheel:
+            site = root / "released-site"
+            site.mkdir(mode=0o755)
+            release_site(args.release_wheel, site)
+            env["AGENTURM_RELEASE_SITE"] = str(site)
+            env["PYTHONPATH"] = str(site)
+        else:
+            env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
         holder = subprocess.Popen(
             [sys.executable, __file__, "--case", "holder", "--database", str(database)],
             preexec_fn=drop_to(legacy_uid, legacy_gid), env=env,
@@ -165,12 +234,13 @@ def main() -> None:
                     source.backup(target)
             os.chown(canonical, service_uid, service_gid)
             canonical.chmod(0o600)
-            with closing(sqlite3.connect(canonical)) as copied:
+            with closing(sqlite3.connect(canonical.as_uri() + "?mode=ro&immutable=1",
+                                         uri=True)) as copied:
                 check(copied.execute("SELECT value FROM held_open_legacy_v1").fetchall() ==
                       [("before",)], "WAL-inclusive backup missed committed row")
                 receiver = copied.execute("SELECT value FROM schema_meta "
                                           "WHERE key='receiver_id'").fetchone()[0]
-            baseline = checksum(canonical)
+            baseline = database_bytes(canonical)
             send(holder, "BEGIN")
             line(holder, "TRANSACTION_OPEN")
 
@@ -190,9 +260,10 @@ def main() -> None:
             before_archive = {p.name: checksum(p) for p in moved}
             send(holder, "WRITE")
             line(holder, "COMMITTED")
-            check(checksum(canonical) == baseline,
-                  "held legacy writer changed protected new canonical bytes")
-            with closing(sqlite3.connect(canonical)) as copied:
+            check(database_bytes(canonical) == baseline,
+                  "held legacy writer changed protected new canonical or sidecar bytes")
+            with closing(sqlite3.connect(canonical.as_uri() + "?mode=ro&immutable=1",
+                                         uri=True)) as copied:
                 check(copied.execute("SELECT value FROM schema_meta "
                                      "WHERE key='receiver_id'").fetchone()[0] == receiver,
                       "new canonical receiver identity changed")
@@ -208,8 +279,11 @@ def main() -> None:
             )
             check(fresh.returncode == 0,
                   f"fresh legacy denial failed: {fresh.stdout}{fresh.stderr}")
-            check(checksum(canonical) == baseline,
-                  "fresh legacy attempts changed new canonical bytes")
+            check(database_bytes(canonical) == baseline,
+                  "fresh legacy attempts changed canonical or sidecar bytes")
+            if args.release_wheel:
+                print("PASS pinned v0.2.8 Store, CLI, and direct SQLite denied protected paths",
+                      flush=True)
             print("PASS fresh old Store/SQLite denied canonical and archive", flush=True)
             print("PASS held-open old transaction mutated archived inode after chmod", flush=True)
             print("PASS protected canonical preserved receiver identity and WAL snapshot", flush=True)
@@ -226,9 +300,12 @@ def main() -> None:
                 check(old_copy.execute("SELECT value FROM schema_meta WHERE key='receiver_id'"
                                        ).fetchone()[0] == "receiver:legacy-second",
                       "held writer did not change archived receiver identity")
-            with closing(sqlite3.connect(canonical.as_uri() + "?mode=ro", uri=True)) as new_copy:
+            with closing(sqlite3.connect(canonical.as_uri() + "?mode=ro&immutable=1",
+                                         uri=True)) as new_copy:
                 check(new_copy.execute("SELECT value FROM held_open_legacy_v1").fetchall() ==
                       [("before",)], "canonical took a post-backup legacy write")
+            check(database_bytes(canonical) == baseline,
+                  "final candidate or sidecar bytes differ from protected baseline")
         finally:
             if holder.poll() is None:
                 holder.kill()

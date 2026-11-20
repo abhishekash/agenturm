@@ -91,6 +91,8 @@ jobs:
         run: sudo -n /usr/bin/python3 scripts/validate_rust_storage_service_accounts.py --bin target/debug/agenturm-storage-service
       - name: Demonstrate held-open legacy SQLite writer hazard
         run: sudo -n /usr/bin/python3 scripts/validate_legacy_held_open_writer.py
+      - name: Exercise pinned v0.2.8 Store and CLI against protected paths
+        run: sudo -n /usr/bin/python3 scripts/validate_legacy_held_open_writer.py --release-wheel tests/fixtures/legacy/agenturm-0.2.8-py3-none-any.whl
       - name: Prove experimental v2 scratch dispatch across accounts
         run: sudo -n /usr/bin/python3 scripts/validate_rust_storage_service_v2_accounts.py --bin target/debug/agenturm-storage-service --rust-client-bin target/debug/examples/v2_client
 
