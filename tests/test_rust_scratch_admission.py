@@ -84,6 +84,18 @@ class RustScratchAdmissionTests(unittest.TestCase):
                               "batch_digest": prepared["batch_digest"],
                               "records": prepared["records"]}}
 
+    def v2_revoke_request(self, *, cursor, dirty_seq, request_id="3" * 32):
+        lease = {"receiver_id": self.rust_lease.receiver_id,
+                 "plugin_id": self.rust_lease.plugin_id,
+                 "source_id": self.rust_lease.source_id,
+                 "generation": self.rust_lease.generation,
+                 "epoch": self.rust_lease.epoch,
+                 "policy_epoch": self.rust_lease.policy_epoch}
+        return {"version": 2, "request_id": request_id,
+                "receiver_id": self.rust_lease.receiver_id,
+                "operation": {"op": "revoke_source", "lease": lease,
+                              "cursor": cursor, "expected_dirty_seq": dirty_seq}}
+
     def apply_v2(self, request, *, path=None, success=True):
         raw = request if isinstance(request, str) else json.dumps(request)
         result = subprocess.run([self.binary, "--v2-scratch-path",
@@ -104,7 +116,8 @@ class RustScratchAdmissionTests(unittest.TestCase):
         self.assertEqual(reply, {"version": 2, "request_id": first["request_id"],
                                  "receiver_id": first["receiver_id"],
                                  "request_digest": digest,
-                                 "result": {"disposition": "committed", "cursor": "one",
+                                 "result": {"kind": "lifecycle_admission",
+                                            "disposition": "committed", "cursor": "one",
                                             "batch_digest": first["operation"]["batch_digest"],
                                             "dirty_seq": 1}})
         committed = self.snapshot(self.rust_store)
@@ -162,6 +175,73 @@ class RustScratchAdmissionTests(unittest.TestCase):
         set_source_capture(self.rust_store, source_id=SOURCE, enabled=False)
         self.assertIn("stale or unsupported source lease",
                       self.apply_v2(request, success=False))
+
+    def test_v2_revoke_cleans_projects_fences_and_replays_across_process_restart(self):
+        from observatory.plugin_projection import project_source
+
+        admission = self.v2_request(PollBatch(SOURCE, "one", (fact(),)), request_id="4" * 32)
+        self.apply_v2(admission)
+        project_source(self.rust_store, SOURCE)
+        with self.rust_store._connect() as db:
+            source = db.execute("SELECT cursor,dirty_seq,policy_epoch,lease_epoch,capture_enabled,"
+                                "content_fingerprint FROM plugin_source_cursor_v1 WHERE source_id=?",
+                                (SOURCE,)).fetchone()
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_session_projection_v1 "
+                                        "WHERE source_id=?", (SOURCE,)).fetchone()[0], 1)
+        cursor, dirty_seq, policy_epoch, lease_epoch, enabled, fingerprint = tuple(source)
+        self.assertEqual((cursor, enabled), ("one", 1))
+        revoke = self.v2_revoke_request(cursor=cursor, dirty_seq=dirty_seq)
+        request_digest = hashlib.sha256(json.dumps(
+            revoke, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        reply = self.apply_v2(revoke)
+        self.assertEqual(reply, {"version": 2, "request_id": revoke["request_id"],
+                                 "receiver_id": revoke["receiver_id"],
+                                 "request_digest": request_digest,
+                                 "result": {"kind": "source_revoked", "disposition": "committed",
+                                            "cursor": cursor, "dirty_seq": dirty_seq + 1,
+                                            "lease_epoch": lease_epoch + 1,
+                                            "policy_epoch": policy_epoch + 1,
+                                            "capture_enabled": False}})
+        with self.rust_store._connect() as db:
+            revoked = tuple(db.execute("SELECT cursor,dirty_seq,policy_epoch,lease_epoch,"
+                                       "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                                       "WHERE source_id=?", (SOURCE,)).fetchone())
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
+                                        (SOURCE,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_session_projection_v1 WHERE source_id=?",
+                                        (SOURCE,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM activity_index_v1 "
+                                        "WHERE kind='plugin' AND owner_key=?", (SOURCE,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_content_batch_v1 WHERE source_id=?",
+                                        (SOURCE,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM plugin_content_status_v1 WHERE source_id=?",
+                                        (SOURCE,)).fetchone()[0], 0)
+            stored = tuple(db.execute("SELECT request_digest,source_id,cursor,dirty_seq,lease_epoch,"
+                                      "policy_epoch,capture_enabled FROM storage_source_revoke_v2 "
+                                      "WHERE request_id=?", (revoke["request_id"],)).fetchone())
+        self.assertEqual(revoked, (cursor, dirty_seq + 1, policy_epoch + 1,
+                                   lease_epoch + 1, 0, ""))
+        self.assertEqual(stored, (request_digest, SOURCE, cursor, dirty_seq + 1,
+                                  lease_epoch + 1, policy_epoch + 1, 0))
+
+        # Each call launches a new process, exercising the persisted receipt after restart.
+        replay = self.apply_v2(revoke)
+        self.assertEqual(replay["result"]["disposition"], "replay")
+        self.assertEqual(replay["result"]["policy_epoch"], policy_epoch + 1)
+        self.assertIn("stale or unsupported source lease", self.apply_v2(admission, success=False))
+        conflict = json.loads(json.dumps(revoke))
+        conflict["operation"]["expected_dirty_seq"] += 1
+        self.assertIn("conflicting v2 source revocation request",
+                      self.apply_v2(conflict, success=False))
+        reused = json.loads(json.dumps(admission))
+        reused["request_id"] = revoke["request_id"]
+        self.assertIn("conflicting v2 request replay identity",
+                      self.apply_v2(reused, success=False))
+        with self.rust_store._connect() as db:
+            final = tuple(db.execute(
+                "SELECT cursor,dirty_seq,policy_epoch,lease_epoch,capture_enabled,content_fingerprint "
+                "FROM plugin_source_cursor_v1 WHERE source_id=?", (SOURCE,)).fetchone())
+        self.assertEqual(final, revoked)
 
     @staticmethod
     def snapshot(store):
