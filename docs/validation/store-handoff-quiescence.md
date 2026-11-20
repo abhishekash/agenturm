@@ -1,0 +1,11 @@
+# Store handoff quiescence checkpoint
+
+20 November 2026. This is a feature-off shutdown primitive for a future Rust writer handoff. It has no production caller, does not enable Rust storage authority, and releases no writer lease.
+
+`Store.quiesce_for_writer_handoff(timeout)` accepts a positive timeout of at most 60 seconds. It marks the Store for handoff, rejecting new external `_connect()` and pooled `_read()` admissions. Already started migration and derived workers may finish their Store operations; the method signals both to stop and retains references to workers that outlive a join. It then closes the read pool and waits for checked-out read leases, active `_connect()` contexts, and the bounded direct read in `_incoming_status()` to finish. A later call may retry after a timeout; the admission fence stays in place. Any tracked connection or pool cleanup failure makes success impossible for that Store instance.
+
+Worker joins, the timed read-pool lock acquisition in `ReadConnections.begin_close()`, and condition waits use one monotonic deadline. SQLite handle close runs synchronously after that lock is acquired and cannot be safely interrupted; that call may exceed the requested time. The method checks the deadline afterward and returns **false** if it overran. This is a fail-closed result with bounded waits, not a hard wall-clock latency guarantee.
+
+The tests hold a writer context, a pooled read lease, a direct incoming-status read, and a worker past the deadline. They verify that new external admissions fail, no held work is silently discarded, and retry succeeds only after release. A slow idle close, a held pool lock, and an injected writer close failure cannot yield a false success. An ordinary `close()` that times out keeps a reference to a still-live derived worker. The focused Store handoff, read-pool, and idle-history suites passed: 28 tests.
+
+This proves only the tracked handles and workers of one Store instance. Other Store instances, direct SQLite users outside these paths, `WorkflowStore`, `TaskStore`, outbound state, and old processes with already-open writable handles remain separate cutover gates. A protected service-owned canonical path, full mutation routing, migration and forward recovery are still required before a Rust production writer.

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Store handoff quiescence checkpoint</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.55 system-ui, sans-serif; background: #f6f8fb; color: #17202d; }
+    body { margin: 0; padding: clamp(1rem, 4vw, 3rem); }
+    main { max-width: 56rem; margin: auto; padding: clamp(1.2rem, 3vw, 2.5rem); border-radius: 1rem; background: #fff; box-shadow: 0 8px 32px #0b1b3312; }
+    h1 { line-height: 1.2; margin: 0 0 .5rem; }
+    h2 { font-size: 1.1rem; margin-top: 1.7rem; }
+    p { margin: .8rem 0; }
+    code { overflow-wrap: anywhere; padding: .1em .3em; border-radius: .25rem; background: #e9eef5; }
+    .meta { color: #526275; }
+    @media (prefers-color-scheme: dark) {
+      :root { background: #111722; color: #e7edf7; }
+      main { background: #1b2533; box-shadow: none; }
+      code { background: #304054; }
+      .meta { color: #aabbd0; }
+    }
+  </style>
+</head>
+<body><main>
+  <h1>Store handoff quiescence checkpoint</h1>
+  <p class="meta">20 November 2026 · Feature-off primitive; Rust writer remains off.</p>
+  <h2>What the gate proves</h2>
+  <p><code>Store.quiesce_for_writer_handoff(timeout)</code> accepts a positive timeout of at most 60 seconds. It rejects new external Store connection and pooled-read admissions, signals migration and derived workers to stop, and keeps references to workers still alive after a join. It waits for pooled read leases, active Store connection contexts, and the direct incoming-status read. Timeouts leave admission fenced for a later retry. A tracked cleanup failure prevents success.</p>
+  <h2>Deadline behavior</h2>
+  <p>Worker joins, timed read-pool lock acquisition through <code>ReadConnections.begin_close()</code>, and condition waits share one monotonic deadline. SQLite handle close runs synchronously after that lock is acquired and cannot be safely interrupted; it may exceed the requested time. The gate checks the deadline afterward and returns <strong>false</strong> on overrun. This is a fail-closed result with bounded waits, not a hard wall-clock latency guarantee.</p>
+  <h2>Evidence</h2>
+  <p>Tests hold a writer, a pooled read, a direct incoming-status read, and a worker past the deadline. They verify blocked new admission and successful retry only after release. A slow idle close, held pool lock, and injected writer close error cannot report success. An ordinary close preserves the reference to a still-live worker. The focused Store handoff, read-pool, and idle-history suites passed: 28 tests.</p>
+  <h2>Remaining gates</h2>
+  <p>This covers one Store instance's tracked handles and workers. Other Store instances, direct SQLite users, workflow and task databases, outbound state, and legacy processes holding writable handles remain outside this proof. Full service mutation routing, a protected canonical path, migration, and forward recovery are required before Rust storage authority can be enabled.</p>
+  <p><a href="store-handoff-quiescence.md">Markdown source</a> · <a href="rust-writer-cutover-gate.html">Writer cutover gate</a></p>
+</main></body></html>

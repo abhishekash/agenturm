@@ -658,6 +658,12 @@ class Store:
         # Coordinate local writer admission per transaction, never across the
         # history-wide derivation lock or its inter-chunk fairness sleeps.
         self._writer_gate = threading.RLock()
+        # Explicit writer-handoff proof only. Ordinary Store.close() retains
+        # its existing behavior; no production path activates this fence.
+        self._handoff_condition = threading.Condition()
+        self._handoff_requested = False
+        self._handoff_connections = 0
+        self._handoff_cleanup_failed = False
         self._derived_pending = {}
         self._derived_inflight = set()
         self._compat_cursor = ''
@@ -1053,6 +1059,13 @@ class Store:
             return state,False
         remaining=deadline-time.monotonic()
         if remaining<=0:return None,False
+        # This bounded direct read does not use the pooled read leases. Count
+        # it too, so a handoff cannot mistake its open WAL snapshot for drain.
+        with self._handoff_condition:
+            if self._handoff_requested:
+                state.update(ready=False,stage='Receiver is stopping')
+                return state,False
+            self._handoff_connections += 1
         path=Path(self.path).absolute()
         db=None
         try:
@@ -1084,7 +1097,16 @@ class Store:
             state.update(ready=False,stage='Incoming index readiness is unavailable')
             return state,False
         finally:
-            if db is not None:db.close()
+            try:
+                if db is not None:db.close()
+            except BaseException:
+                with self._handoff_condition:
+                    self._handoff_cleanup_failed = True
+                raise
+            finally:
+                with self._handoff_condition:
+                    self._handoff_connections -= 1
+                    self._handoff_condition.notify_all()
 
     def catch_up_incoming(self, indexing):
         """One 75 ms demand budget; a fresh guarded read remains authoritative."""
@@ -1192,20 +1214,86 @@ class Store:
         """
         # Store creates the main file explicitly during startup. A later
         # connection must never recreate a vanished or replaced pathname.
-        db = sqlite3.connect(Path(self.path).absolute().as_uri() + '?mode=rw',
-                             uri=True, timeout=10)
-        db.row_factory = sqlite3.Row
+        with self._handoff_condition:
+            if self._handoff_requested and not self._handoff_worker():
+                raise sqlite3.ProgrammingError('Store writer handoff is in progress')
+            self._handoff_connections += 1
+        db = None
         try:
+            db = sqlite3.connect(Path(self.path).absolute().as_uri() + '?mode=rw',
+                                 uri=True, timeout=10)
+            db.row_factory = sqlite3.Row
             yield db
             db.commit()
         except BaseException:
-            db.rollback()
+            if db is not None:
+                db.rollback()
             raise
         finally:
-            db.close()
+            try:
+                if db is not None:
+                    db.close()
+            except BaseException:
+                with self._handoff_condition:
+                    self._handoff_cleanup_failed = True
+                raise
+            finally:
+                with self._handoff_condition:
+                    self._handoff_connections -= 1
+                    self._handoff_condition.notify_all()
 
     def _read(self):
+        with self._handoff_condition:
+            if self._handoff_requested and not self._handoff_worker():
+                raise sqlite3.ProgrammingError('Store writer handoff is in progress')
         return self._read_connections.read()
+
+    def _handoff_worker(self):
+        current = threading.current_thread()
+        return current is self._migration_thread or current is self._derived_thread
+
+    def quiesce_for_writer_handoff(self, timeout: float) -> bool:
+        """Feature-off proof of tracked Store handles and worker drain.
+
+        A false result keeps external Store admission fenced; callers may retry
+        after a held worker or handle exits. This does not cover other stores,
+        direct SQLite users, or legacy processes and never releases a lease.
+        """
+        if type(timeout) not in (int, float) or not 0 < timeout <= 60:
+            raise ValueError('Store handoff requires a timeout above 0 and at most 60 seconds')
+        deadline = time.monotonic() + timeout
+        with self._handoff_condition:
+            self._handoff_requested = True
+        self._migration_stop.set()
+        with self._derived_condition:
+            self._derived_stopping = True
+            self._derived_condition.notify_all()
+        for worker in (self._migration_thread, self._derived_thread):
+            if worker is not None and worker.is_alive():
+                if worker is threading.current_thread():
+                    return False
+                worker.join(timeout=max(0.0, deadline - time.monotonic()))
+                if worker.is_alive():
+                    return False
+        try:
+            if not self._read_connections.begin_close(max(0.0, deadline - time.monotonic())):
+                return False
+        except BaseException:
+            return False
+        # SQLite close is synchronous and cannot be preempted safely. If it
+        # overran the deadline, report failure even when handles did close.
+        if time.monotonic() > deadline:
+            return False
+        if not self._read_connections.wait_closed(max(0.0, deadline - time.monotonic())):
+            return False
+        if time.monotonic() > deadline:
+            return False
+        with self._handoff_condition:
+            drained = self._handoff_condition.wait_for(
+                lambda: self._handoff_connections == 0 or self._handoff_cleanup_failed,
+                timeout=max(0.0, deadline - time.monotonic()),
+            ) and self._handoff_connections == 0 and not self._handoff_cleanup_failed
+            return drained and time.monotonic() <= deadline
 
     def native_model_usage(self, source_id: str, trace_id: str, span_id: str) -> dict:
         """Return a persisted native model's usage only to its exact source."""
@@ -1918,7 +2006,8 @@ class Store:
                 self._derived_thread.join(timeout=min(1, max(0, deadline - time.monotonic())))
             except KeyboardInterrupt:
                 continue
-        self._derived_thread = None
+        if not self._derived_thread.is_alive():
+            self._derived_thread = None
 
     def _finding_logs(self, trace_id):
         with self._connect() as db:
