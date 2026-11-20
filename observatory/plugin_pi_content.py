@@ -214,7 +214,8 @@ def _path(value):
     except UnicodeError as exc:
         raise ProtocolError("invalid Pi member path") from exc
     if (not isinstance(value, str) or not value or length > 1024
-            or value.startswith("/") or "\\" in value or "\x00" in value):
+            or value.startswith("/") or "\\" in value
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)):
         raise ProtocolError("invalid Pi member path")
     parts = value.split("/")
     if (len(parts) > 7 or any(part in ("", ".", "..") for part in parts)
@@ -234,7 +235,8 @@ def validate_refs(refs, batch):
     seen = set()
     size = 0
     for ref in refs:
-        if not isinstance(ref, dict) or set(ref) != _FIELDS or ref["schema"] != 1:
+        if (not isinstance(ref, dict) or set(ref) != _FIELDS
+                or type(ref["schema"]) is not int or ref["schema"] != 1):
             raise ProtocolError("invalid Pi content reference fields")
         if (ref["source_id"] != batch.source_id or ref["member_id"] != batch.member_id
                 or ref["kind"] != "pi.user_text"
@@ -246,7 +248,8 @@ def validate_refs(refs, batch):
         parts = _path(ref["relative_member_path"])
         if hashlib.sha256(ref["relative_member_path"].encode()).hexdigest() != ref["member_id"]:
             raise ProtocolError("Pi member path does not match member identity")
-        if (type(ref["row_offset"]) is not int or ref["row_offset"] < 0
+        if (type(ref["row_offset"]) is not int
+                or not 0 <= ref["row_offset"] <= 2**63 - 1
                 or type(ref["row_length"]) is not int
                 or not 1 <= ref["row_length"] <= MAX_ROW_BYTES
                 or type(ref["revision"]) is not int or not 0 <= ref["revision"] <= 2**31 - 1

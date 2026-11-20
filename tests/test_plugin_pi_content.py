@@ -163,6 +163,8 @@ class PiContentTests(unittest.TestCase):
         before = self.snapshot()
         for altered in ({**ref, "event_id": "pi:fake:user-1:message"},
                         {**ref, "revision": 1},
+                        {**ref, "schema": True},
+                        {**ref, "row_offset": 2**100},
                         {**ref, "row_offset": len(self.header) - 1}):
             with self.assertRaises(ProtocolError):
                 self.admit(batch, altered)
