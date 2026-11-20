@@ -21,12 +21,18 @@ class NativeReaderSpec:
     id: str
     factory: Callable[[object, bool], NativeReader]
     mcp_client: str | None = None
+    label: str | None = None
+    coverage: Callable[[NativeReader], dict] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]*", self.id):
             raise ValueError("invalid native reader ID")
-        if not callable(self.factory) or (self.mcp_client is not None and
-                (not isinstance(self.mcp_client, str) or not self.mcp_client)):
+        if (not callable(self.factory) or
+                (self.label is not None and (not isinstance(self.label, str) or
+                                             not self.label.strip() or len(self.label) > 40)) or
+                (self.coverage is not None and not callable(self.coverage)) or
+                (self.mcp_client is not None and
+                 (not isinstance(self.mcp_client, str) or not self.mcp_client))):
             raise ValueError("invalid native reader specification")
 
     def build(self, store: object, capture_details: bool) -> NativeReader:

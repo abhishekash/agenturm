@@ -234,10 +234,19 @@ class PluginProjectionTests(unittest.TestCase):
 
         self.assertEqual(health()["plugin_projection"]["pending_sources"], 1)
         self.assertEqual(health().get("sessions", []), [])
+        self.assertEqual(health()["source_coverage"][-1]["pending"], 1)
+        self.assertEqual(health()["source_coverage"][-1]["state"], "partial")
         project_source(self.store, "source-a")
         self.assertEqual(health()["sessions"][0]["run_state"], "completed")
+        self.assertEqual(health()["source_coverage"][-1]["active"], 1)
         self.assertEqual(health()["sessions"][0]["metadata_usage"],
                          {"input_tokens": 7})
+        from unittest.mock import patch
+        with patch.object(self.store, "plugin_sessions", side_effect=ValueError("broken projection")):
+            unavailable = health()
+        self.assertEqual(unavailable["plugin_projection"]["error"], "ValueError")
+        self.assertEqual(unavailable["source_coverage"][-1]["state"], "unavailable")
+        self.assertIsNone(unavailable["source_coverage"][-1]["active"])
 
     def test_missing_identity_does_not_create_a_session(self):
         row = lifecycle("a", "completed")

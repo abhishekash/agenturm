@@ -33,6 +33,7 @@ from .agent_hierarchy import (AGENT_ID, HierarchyGraph, branch_marker, canonical
 from .session_status import session_health, session_phase, today_bucket
 from .source_projection import (review_session,unique_agents,prepare_sources,SourcePreparation,
                                 sources,input_required,attention_required,recorded_message_text)
+from .source_coverage import coverage_warning, coverage_summary, coverage_detail
 from .feed_requests import shared_get
 from .workflow_evidence import ReviewCache, ReviewHistory, scope_for
 from .error_reminders import reminders, outcome_event
@@ -838,19 +839,6 @@ def session_navigation_hints(mode, focus=''):
         if focus=='agent-prompts':return '↑↓ Choose  Enter Read  [ ] Prompt  Tab  F1 Help  Esc Back'
         return '↑↓ Scroll  ← Prompts  [ ] Prompt  Tab  F1 Help  Esc Back'
     return '↑↓ Scroll  Tab Controls  Ctrl+R Review  F1 Help  Esc Back'
-
-
-def coverage_warning(local_status):
-    """Report discovery caps so a partial session list is not mistaken for all agents."""
-    omitted=[]
-    if local_status.get('omitted_sources'):
-        omitted.append(f"{local_status['omitted_sources']} older Codex/Claude sessions beyond the {local_status.get('max_sources',50)}-session limit")
-    if local_status.get('opencode_omitted_sessions'):
-        omitted.append(f"{local_status['opencode_omitted_sessions']} older OpenCode sessions beyond the 50-session limit")
-    hierarchy=local_status.get('hierarchy') or {}
-    if hierarchy.get('coverage')=='partial':
-        omitted.append(f"{hierarchy.get('announced',0)} spawn announcements or partial child evidence; relationship coverage is incomplete")
-    return 'Coverage limited: '+'; '.join(omitted) if omitted else ''
 
 
 class AttentionSummary(Static, can_focus=True):
@@ -2928,11 +2916,12 @@ class ObservatoryApp(App):
         self.fill('host-table',[(str(item['pid']),[cell(item['name']),cell(item['pid']),cell(item.get('project') or '—'),cell(item['state']),cell(f"{item['memory_rss_kib']/1024:.0f} MiB"),cell(f"{item['cpu_seconds']:.1f} s")],item) for item in visible_processes])
         self.search_status('host',len(visible_processes),'process','processes')
         runtime=data.local_status.get('runtime') or {}
-        opencode_sessions=sum(entry.get('runtime')=='OpenCode' for entry in data.local_status.get('sessions',[]))
         self.inspect('host-detail','Host & collection status',[
             ('Host',runtime.get('host','Not reported')),('Platform',str(runtime.get('os',''))+' / '+str(runtime.get('architecture',''))),
             ('Load average',', '.join(str(value) for value in runtime.get('load_average',[])) or 'Unavailable'),
-            ('Sources',f"{data.local_status.get('sources',0)} Codex / Claude files · {opencode_sessions} OpenCode sessions · lookback {data.local_status.get('lookback_hours',24)}h · read errors {data.local_status.get('read_errors',0)+data.local_status.get('opencode_read_errors',0)}"),
+            ('Sources',coverage_summary(data.local_status)),
+            ('Source groups',coverage_detail(data.local_status)),
+            ('Native scan',f"Lookback {data.local_status.get('lookback_hours',24)}h · read errors {data.local_status.get('collection_read_errors',data.local_status.get('read_errors',0))}"),
              ('Coverage','Source logs can be partial. Costs and model-call latency are unavailable unless reported. CPU is cumulative process time.')],[])
 
     def render_metrics(self):

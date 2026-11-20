@@ -213,8 +213,8 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                 local_status = local.status() if local else {"enabled": False}
                 try:
                     plugin_status = store.plugin_sessions()
+                    local_status = dict(local_status)
                     if plugin_status["sessions"]:
-                        local_status = dict(local_status)
                         local_status["sessions"] = [*(local_status.get("sessions") or ()),
                                                     *plugin_status["sessions"]]
                         local_status["enabled"] = True
@@ -225,8 +225,27 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                     supervisor = getattr(store, "plugin_supervisor", None)
                     if supervisor is not None:
                         local_status["plugin_workers"] = supervisor.snapshot()
+                    if (plugin_status["sessions"] or plugin_status["omitted_sessions"] or
+                            plugin_status["pending_sources"] or plugin_status["retention_gaps"] or
+                            local_status.get("plugin_workers")):
+                        omitted = plugin_status["omitted_sessions"]
+                        partial = bool(omitted or plugin_status["pending_sources"] or
+                                       plugin_status["retention_gaps"])
+                        local_status["source_coverage"] = [
+                            *(local_status.get("source_coverage") or ()),
+                            {"label": "Process adapters", "unit": "sessions",
+                             "active": len(plugin_status["sessions"]),
+                             "omitted": 1 if omitted else 0,
+                             "omitted_exact": not omitted,
+                             "pending": plugin_status["pending_sources"],
+                             "state": "partial" if partial else "ready"}]
                 except (sqlite3.Error, ValueError) as exc:
+                    local_status = dict(local_status)
                     local_status["plugin_projection"] = {"error": type(exc).__name__}
+                    local_status["source_coverage"] = [
+                        *(local_status.get("source_coverage") or ())[:23],
+                        {"label": "Process adapters", "unit": "sessions",
+                         "active": None, "omitted": None, "state": "unavailable"}]
                 self._json(200, {"ok": True,"observed_time_unix_nano":time.time_ns(), "receiver_id": store.receiver_namespace() if hasattr(store,"receiver_namespace") else None, "review_trace_filter": True, "review_turn_filter": True, "review_run_summary": True,
                     "investigation_index_v1":getattr(store,'investigation_index_v1',False),
                     "native_lifecycle_v1":callable(getattr(store,'native_lifecycle_inventory',None)),

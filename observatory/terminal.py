@@ -1113,10 +1113,9 @@ def print_snapshot(feed, *, refresh=True):
         return number(record.get(key))
     print("AGENTURM  " + feed.api.endpoint)
     if snapshot.local_status.get("enabled"):
+        from .source_coverage import coverage_summary
         mode = "bounded, redacted content" if snapshot.local_status.get('capture_content') else "metadata only"
-        opencode_count=sum(entry.get('runtime')=='OpenCode' for entry in snapshot.local_status.get('sessions',[]))
-        print(f"Sources: local Codex / Claude Code logs · {snapshot.local_status.get('sources', 0)} files · "
-              f"OpenCode · {opencode_count} recent sessions · {mode}")
+        print(f"Sources: {coverage_summary(snapshot.local_status)} · {mode}")
     known_cost = totals.get('known_cost_usd')
     cost_text = 'Not reported' if known_cost is None else f'${known_cost:.4f}'
     print(f"Runs {number(totals.get('runs'))}  Spans {number(totals.get('spans'))}  "
