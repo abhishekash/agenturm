@@ -6,8 +6,6 @@ import hashlib
 import json
 import os
 import queue
-import re
-import shutil
 import threading
 import time
 import unittest
@@ -17,6 +15,7 @@ from unittest.mock import patch
 
 from examples.action_observations_process.install import install as install_actions
 from examples.count_observations_process.install import install as install_counts
+from examples.count_observations_process.install_rust import install as install_rust_counts
 from examples.prompt_signals_process.install import install as install_prompt
 from observatory.agent_hierarchy import canonical_agent_id
 from observatory.capability_activation import activate_capabilities
@@ -77,17 +76,7 @@ class CountCapabilityTests(unittest.TestCase):
         binary = os.environ.get("AGENTURM_RUST_COUNT_OBSERVATIONS_BIN")
         if not binary:
             return False
-        artifact = self.root / "count" / "count-observations"
-        shutil.copyfile(binary, artifact)
-        artifact.chmod(0o700)
-        manifest = self.root / "count" / "count-observations.toml"
-        raw = artifact.read_bytes()
-        manifest_data, replaced = re.subn(
-            r'artifact_sha256 = "[0-9a-f]{64}"',
-            f'artifact_sha256 = "{hashlib.sha256(raw).hexdigest()}"',
-            manifest.read_text())
-        self.assertEqual(replaced, 1)
-        manifest.write_text(manifest_data)
+        self.path = install_rust_counts(Path(binary), self.root / "count-rust")
         self.config = read_capability_config(self.path)
         return True
 
@@ -348,6 +337,12 @@ class CountCapabilityTests(unittest.TestCase):
                 time.sleep(0.02)
             self.assertEqual(len(timed_out), 1)
             failed_process = timed_out[0]
+            deadline = time.monotonic() + 2
+            while (time.monotonic() < deadline and
+                   (host.model is None or host.model.state != "unavailable")):
+                panes[0].query(self.scope)
+                time.sleep(0.02)
+            self.assertIsNotNone(host.model)
             self.assertEqual(host.model.state, "unavailable")
             host.model_at = 0
             panes[0].query(self.scope)

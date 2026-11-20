@@ -41,6 +41,7 @@ jobs:
       - run: python -m unittest tests.test_plugin_reference_wire_spi -v
       - run: python -m unittest tests.test_plugin_private_reference_e2e -v
       - run: python -m unittest tests.test_store_writer_lease -v
+      - run: python -m unittest tests.test_rust_count_capability_installer -v
       - run: python -m unittest tests.test_declarative_count_capability -v
         env:
           AGENTURM_RUST_COUNT_OBSERVATIONS_BIN: ${{ github.workspace }}/target/debug/agenturm-count-observations
