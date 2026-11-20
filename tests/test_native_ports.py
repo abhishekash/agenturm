@@ -9,6 +9,7 @@ from observatory.local_agents import LocalAgents
 from observatory.native_ports import NativeEvidenceFacade
 from observatory.native_readers import NativeReaderSpec
 from observatory.native_sources import NativeSourceSpec
+from observatory.native_sources import builtin_sources
 from observatory.adapters.pi import PiAdapter
 
 
@@ -67,16 +68,41 @@ class NativePortTests(unittest.TestCase):
         collector.record_error = lambda exc, operation: errors.append((type(exc).__name__, operation))
         peers = [SimpleNamespace(adapter=Broken()), SimpleNamespace(adapter=Healthy())]
         self.assertEqual(collector.adapter_status_extensions(peers),
-                         {'fixture_status': 'metadata', 'kiro_folders': []})
+                         {'fixture_status': 'metadata'})
         self.assertEqual(errors[0][0], 'ValueError')
         peers[0].adapter.status_extension = lambda _capture, _on_error: {'sessions': []}
         self.assertEqual(collector.adapter_status_extensions(peers),
-                         {'fixture_status': 'metadata', 'kiro_folders': []})
+                         {'fixture_status': 'metadata'})
         self.assertEqual(errors[-1][0], 'ValueError')
         peers[0].adapter.status_extension = lambda _capture, _on_error: {'bad': object()}
         self.assertEqual(collector.adapter_status_extensions(peers),
-                         {'fixture_status': 'metadata', 'kiro_folders': []})
+                         {'fixture_status': 'metadata'})
         self.assertEqual(errors[-1][0], 'TypeError')
+
+    def test_empty_status_shape_comes_from_registered_source(self):
+        errors = []
+        collector = object.__new__(LocalAgents)
+        collector.capture_details = False
+        collector.record_error = lambda exc, operation: errors.append((type(exc).__name__, operation))
+        collector.source_specs = builtin_sources()
+        self.assertEqual(collector.adapter_status_extensions([]), {'kiro_folders': []})
+        self.assertEqual(errors, [])
+
+        fixture = NativeSourceSpec('fixture', 'Fixture', lambda: Path('/unused'),
+            adapter_factory=PiAdapter,
+            empty_status_extension=lambda: {'fixture_status': 'empty'})
+        collector.source_specs = (fixture,)
+        self.assertEqual(collector.adapter_status_extensions([]), {'fixture_status': 'empty'})
+        active = SimpleNamespace(adapter=SimpleNamespace(
+            status_extension=lambda _capture, _on_error: {'fixture_status': 'active'}))
+        self.assertEqual(collector.adapter_status_extensions([active]), {'fixture_status': 'active'})
+
+        broken = NativeSourceSpec('broken', 'Broken', lambda: Path('/unused'),
+            adapter_factory=PiAdapter,
+            empty_status_extension=lambda: {'sessions': ['spoofed']})
+        collector.source_specs = (fixture, broken)
+        self.assertEqual(collector.adapter_status_extensions([]), {'fixture_status': 'empty'})
+        self.assertEqual(errors[-1][0], 'ValueError')
 
     def test_collector_injects_narrow_host_facade_into_both_reader_types(self):
         with tempfile.TemporaryDirectory() as root:

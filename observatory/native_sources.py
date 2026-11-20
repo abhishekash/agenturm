@@ -41,6 +41,7 @@ class NativeSourceSpec:
     accepts_file: Callable[[str | Path], bool] = lambda _path: True
     accepts_directory: Callable[[str], bool] = lambda _name: True
     adapter_factory: Callable[[], NativeSessionAdapter] | None = None
+    empty_status_extension: Callable[[], dict] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]*", self.id):
@@ -50,6 +51,8 @@ class NativeSourceSpec:
             raise ValueError("invalid native source specification")
         if not callable(self.adapter_factory):
             raise ValueError("native source requires an adapter factory")
+        if self.empty_status_extension is not None and not callable(self.empty_status_extension):
+            raise ValueError("native source empty status extension must be callable")
 
     def build_adapter(self) -> NativeSessionAdapter:
         adapter = self.adapter_factory()
