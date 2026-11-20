@@ -7,6 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .plugin_capture_modes import CaptureModeRegistry, DEFAULT_CAPTURE_MODES
 from .plugin_manifest import PluginManifest
 from .plugin_process import MAX_PROCESSES
 from .plugin_runtime import PluginSession
@@ -86,7 +87,8 @@ class PluginSupervisor:
     def __init__(self, store: Store, sources: tuple[PluginSource, ...], *,
                  max_failures: int = 5, backoff_seconds: float = 0.25,
                  rust_host_executable: str | None = None,
-                 rust_host_sha256: str | None = None):
+                 rust_host_sha256: str | None = None,
+                 capture_modes: CaptureModeRegistry = DEFAULT_CAPTURE_MODES):
         sources = tuple(sources)
         if len(sources) > MAX_PROCESSES or len({item.source_id for item in sources}) != len(sources):
             raise ValueError("duplicate or excessive plugin sources")
@@ -94,6 +96,8 @@ class PluginSupervisor:
             raise ValueError("invalid plugin failure limit")
         if type(backoff_seconds) not in (int, float) or not 0.01 <= backoff_seconds <= 30:
             raise ValueError("invalid plugin backoff")
+        if not isinstance(capture_modes, CaptureModeRegistry):
+            raise TypeError("trusted capture mode registry required")
         for source in sources:
             if not isinstance(source, PluginSource) or not isinstance(source.manifest, PluginManifest):
                 raise TypeError("plugin source requires a manifest")
@@ -104,10 +108,7 @@ class PluginSupervisor:
                           allowed_grants=source.allowed_grants, timeout=source.timeout,
                           source_root=source.source_root,
                           required_features=source.runtime_features,
-                          content_source=(source if source.capture_mode == "pi-review-text-v1"
-                                          else None),
-                          command_source=(source if source.capture_mode == "pi-review-text-command-v1"
-                                          else None),
+                          capture_source=source, capture_modes=capture_modes,
                           rust_host_executable=rust_host_executable,
                           rust_host_sha256=rust_host_sha256)
         self.store = store
@@ -116,6 +117,7 @@ class PluginSupervisor:
         self.backoff_seconds = float(backoff_seconds)
         self.rust_host_executable = rust_host_executable
         self.rust_host_sha256 = rust_host_sha256
+        self.capture_modes = capture_modes
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.threads: list[threading.Thread] = []
@@ -159,10 +161,7 @@ class PluginSupervisor:
                                     allowed_grants=source.allowed_grants,
                                     timeout=source.timeout, source_root=source.source_root,
                                     required_features=source.runtime_features,
-                                    content_source=(source if source.capture_mode == "pi-review-text-v1"
-                                                    else None),
-                                    command_source=(source if source.capture_mode == "pi-review-text-command-v1"
-                                                    else None),
+                                    capture_source=source, capture_modes=self.capture_modes,
                                     rust_host_executable=self.rust_host_executable,
                                     rust_host_sha256=self.rust_host_sha256)
             try:

@@ -798,7 +798,12 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
 def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
           watch_jsonl=(), watch_service="agent-harness", retention_days=None, local_agents=True, metadata_only=False,
           managed_db=False, no_auth=False, allowed_hosts=(), collector_registry=None,
-          plugin_config=None, rust_plugin_host=None, rust_plugin_host_sha256=None):
+          plugin_config=None, rust_plugin_host=None, rust_plugin_host_sha256=None,
+          capture_modes=None):
+    from .plugin_capture_modes import CaptureModeRegistry, DEFAULT_CAPTURE_MODES
+    capture_modes = DEFAULT_CAPTURE_MODES if capture_modes is None else capture_modes
+    if not isinstance(capture_modes, CaptureModeRegistry):
+        raise TypeError("trusted capture mode registry required")
     if db_path is None:
         from .receiver_state import telemetry_path,prepare_state_directory
         prepare_state_directory();db_path=str(telemetry_path());managed_db=True
@@ -819,7 +824,7 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
         if not loopback_host(host):
             raise ValueError("plugin adapters require a loopback receiver")
         from .plugin_config import read_plugin_config
-        plugin_sources = read_plugin_config(plugin_config)
+        plugin_sources = read_plugin_config(plugin_config, capture_modes=capture_modes)
         # Activation validation is inert. Fail before opening the Store or
         # disabling a trusted source if a configured child cannot be admitted.
         from .plugin_process import PluginProcess
@@ -867,7 +872,8 @@ def serve(db_path=None, host="127.0.0.1", port=4318, token=None,
             plugin_supervisor = PluginSupervisor(
                 store, plugin_sources,
                 rust_host_executable=str(rust_plugin_host) if rust_plugin_host else None,
-                rust_host_sha256=rust_plugin_host_sha256).start()
+                rust_host_sha256=rust_plugin_host_sha256,
+                capture_modes=capture_modes).start()
         server.serve_forever()
     except KeyboardInterrupt:
         pass
