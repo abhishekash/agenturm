@@ -14,6 +14,7 @@ _TOOL_RESULTS = frozenset({"started", "succeeded", "failed", "denied"})
 _CHECK_CATEGORIES = frozenset({"test", "lint", "build", "review", "other"})
 _CHECK_RESULTS = frozenset({"passed", "failed", "skipped", "unknown"})
 _ACTIVITY_KINDS = frozenset({"message", "tool", "check"})
+_LEGACY_PI_PROCESS_ID = "example.rust-pi-harness"
 _OPERATION_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}\Z")
 
 
@@ -102,18 +103,30 @@ def index_rows(rows: list, *, receiver_id: str, source_id: str, plugin_id: str,
                     category = "other"
                     category_conflict = True
             else:
-                native_turn = ""
                 if len(matches) > 1:
+                    native_turn = ""
                     relation = "ambiguous_call"
                 elif match is None:
-                    relation = "missing_call"
+                    # Other adapters can report a turn directly even when a
+                    # terminal tool fact has no separate started fact. Older
+                    # bundled Pi results borrowed the current user turn, so
+                    # their raw turn cannot be trusted without a call.
+                    if native_turn and plugin_id != _LEGACY_PI_PROCESS_ID:
+                        relation = "unverified_native_turn"
+                    else:
+                        native_turn = ""
+                        relation = "missing_call"
                 elif match[2] > row["time_ns"] or match[3] > row["admitted_ns"]:
+                    native_turn = ""
                     relation = "future_call"
                 elif match[2] == row["time_ns"]:
+                    native_turn = ""
                     relation = "unproven_order"
                 elif not match[0]:
+                    native_turn = ""
                     relation = "call_turn_unavailable"
                 else:
+                    native_turn = ""
                     relation = "conflicting_turn"
         turn_id = (_opaque("plugin-turn", receiver_id, source_id, native_session,
                            native_turn)[:32]

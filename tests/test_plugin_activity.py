@@ -171,8 +171,8 @@ class PluginActivityTests(unittest.TestCase):
         rows = {row["time_unix_nano"]: row for row in self.activity()}
         self.assertEqual(rows[30]["turn_id"], "")
         self.assertEqual(rows[30]["metadata"]["tool_turn_relation"], "ambiguous_call")
-        self.assertEqual(rows[40]["turn_id"], "")
-        self.assertEqual(rows[40]["metadata"]["tool_turn_relation"], "missing_call")
+        self.assertTrue(rows[40]["turn_id"])
+        self.assertEqual(rows[40]["metadata"]["tool_turn_relation"], "unverified_native_turn")
         self.assertEqual(len(self.store.activity_page(review=True)["activity"]), 2)
         self.commit("one", "two", [
             fact("second", "tool", {"category": "file", "result": "succeeded"},
@@ -180,6 +180,35 @@ class PluginActivityTests(unittest.TestCase):
         project_source(self.store, "fixture-source")
         self.assertEqual(next(row for row in self.activity() if row["time_unix_nano"] == 30)
                          ["metadata"]["tool_turn_relation"], "matched_call")
+
+    def test_legacy_pi_result_without_call_does_not_retain_guessed_turn(self):
+        from observatory.plugin_activity import index_rows
+        row = {"event_id_hash": "event", "kind": "tool", "native_session_id": "pi",
+               "payload_json": '{"category":"file","result":"failed"}',
+               "native_operation_id": "call", "native_turn_id": "later-user",
+               "native_worker_id": "", "time_ns": 20, "admitted_ns": 20}
+        result = index_rows([row], receiver_id="receiver", source_id="source",
+                            plugin_id="example.rust-pi-harness", invalidated=set())
+        fact = json.loads(result[0][-1])
+        self.assertEqual(fact["turn_id"], "")
+        self.assertEqual(fact["metadata"]["tool_turn_relation"], "missing_call")
+        self.assertTrue(fact["metadata"]["native_turn_observed"])
+
+    def test_terminal_call_without_started_phase_keeps_producer_turn(self):
+        self.commit("", "one", [
+            fact("kiro-denied-call", "tool", {"category": "shell", "result": "denied"},
+                 operation="denied", turn="original", stamp="10"),
+            fact("kiro-denied-result", "tool", {"category": "shell", "result": "denied"},
+                 operation="denied", turn="original", stamp="20")])
+        project_source(self.store, "fixture-source")
+        rows = self.activity()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len({row["turn_id"] for row in rows}), 1)
+        self.assertTrue(rows[0]["turn_id"])
+        self.assertTrue(all(row["metadata"]["tool_turn_relation"] == "unverified_native_turn"
+                            for row in rows))
+        self.assertEqual(len(self.store.activity_page(turn_id=rows[0]["turn_id"],
+                                                      review=True)["activity"]), 2)
 
     def test_future_call_or_conflicting_producer_turn_stays_unavailable(self):
         self.commit("", "one", [
