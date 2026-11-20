@@ -161,6 +161,13 @@ def initialize(db: Connection) -> None:
             .fetchone() is None):
         db.execute("DELETE FROM plugin_projection_cursor_v1")
         db.execute("INSERT INTO schema_meta(key,value) VALUES('plugin_activity_projection_v2','1')")
+    # Tool results must be reprojected against the retained call snapshot;
+    # older rows may have borrowed a later user turn from the process reader.
+    if (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'").fetchone()
+            and db.execute("SELECT 1 FROM schema_meta WHERE key='plugin_activity_projection_v3'")
+            .fetchone() is None):
+        db.execute("DELETE FROM plugin_projection_cursor_v1")
+        db.execute("INSERT INTO schema_meta(key,value) VALUES('plugin_activity_projection_v3','1')")
 
 
 def _identity(value: str, name: str) -> str:

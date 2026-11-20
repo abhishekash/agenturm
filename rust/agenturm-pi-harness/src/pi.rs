@@ -297,11 +297,16 @@ pub(crate) fn translate_line(
                 .get("toolName")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            // The current user turn may have advanced since this call began.
+            // The host can relate a result to the original turn only from one
+            // policy-current, admitted call fact with this operation ID.
+            let mut result_context = next.clone();
+            result_context.turn_id.clear();
             facts.push(fact(
                 format!("{base}:tool-result"),
                 "tool",
                 &time_ns,
-                &next,
+                &result_context,
                 json!({"category":category(name),
                                           "result":if failed {"failed"} else {"succeeded"}}),
                 Some(operation),
@@ -377,5 +382,26 @@ mod tests {
         assert_eq!(facts[0]["identity"]["session_id"], "session-1");
         assert_eq!(facts[0]["identity"]["worker_id"], "worker-1");
         assert_eq!(next.turn_id, "user-1");
+    }
+
+    #[test]
+    fn result_does_not_borrow_current_turn_from_a_later_user() {
+        let context = Context {
+            session_id: "pi-1".into(),
+            worker_id: String::new(),
+            turn_id: "user-2".into(),
+        };
+        let (facts, next) = translate_line(
+            br#"{"type":"message","id":"result-1","timestamp":"2026-10-24T12:00:03Z","message":{"role":"toolResult","toolCallId":"call-1","toolName":"read","isError":true,"content":"private output"}}"#,
+            &context,
+            "file",
+            100,
+        )
+        .unwrap();
+        assert_eq!(facts[0]["identity"]["operation_id"], "call-1");
+        assert!(facts[0]["identity"].get("turn_id").is_none());
+        assert_eq!(facts[1]["identity"]["turn_id"], "user-2");
+        assert_eq!(next, context);
+        assert!(!serde_json::to_string(&facts).unwrap().contains("private"));
     }
 }

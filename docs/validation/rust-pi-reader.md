@@ -8,6 +8,21 @@ The installed-artifact conformance fixture uses Pi `session` and `message` rows 
 
 The parser emits all facts from a complete Pi line as one cursor unit. At a record, byte or structural budget boundary, it leaves the whole line unread and acknowledges only prior complete lines. A single line that cannot fit fails visibly without advancing the durable cursor. The cursor checks file identity, offset, preceding 256-byte digest and full header digest. The header digest prevents a distant session-header rewrite from inheriting a prior turn. A durable source generation changes at each detected gap, separating event IDs even when same-inode truncation reuses a native Pi row ID. An installed test exercises that case through host admission. Unsupported row kinds and roles emit coarse diagnostics. A malformed explicit result flag prevents an invented success. Capture revocation erases the projected data and fences the old worker.
 
+## Late tool result correlation · 20 November 2026
+
+A Pi result can appear after another user message. The Pi process reader now omits `turn_id` on the result fact instead of assigning the current, later turn. The host reconstructs the result's turn from exactly one policy-current, retained, admitted `started` tool fact with the same source, native session and operation ID. The call must precede the result in source and admission time. A missing, reused, future or conflicting call leaves the result turn unavailable and exposes `tool_turn_relation` as `missing_call`, `ambiguous_call`, `future_call`, `conflicting_turn` or `call_turn_unavailable`. A successful link says `matched_call`. The original raw turn remains distinguishable via `native_turn_observed`; the host does not store a second mutable call map or put call IDs into the process cursor. Derived Activity and Review use the same policy-current projection, and text export still labels process coverage partial. Category can be recovered from the call when the result reports `other`; contradictory coarse categories publish `other` with a conflict marker. A correction rebuilds the relation from latest retained revisions; revocation and source gaps remove it with the Activity row. The `plugin_activity_projection_v3` upgrade marker hides old projected Activity until it is rebuilt from retained evidence, without requiring a new source write.
+
+The installed fixture compares one native Pi file with the restarted Rust process reader. Both report the same running lifecycle after a late failed result, and the native `execute_tool` span stays with its original call trace. The process result shares its opaque turn and operation with the original call, not with the later user message. The fixture also pins a pre-existing native inconsistency: the native *log* result Activity entry follows the newer user's trace even though its tool span follows the original call trace; native Activity exposes no `turn_id` for these entries. This slice does not claim native Activity trace parity or repair that native path.
+
+| Source evidence | Process Activity / Review status | Remaining limit |
+| --- | --- | --- |
+| Session header and user turn IDs | Opaque session/turn identity and exact turn filtering | One configured file; no directory discovery. |
+| Assistant message and reported usage | Content-free assistant role and typed session usage counters | No model name, text or native model Activity row. |
+| Tool call/result IDs and explicit outcome | Opaque operation link; original turn only with one verified retained call; failed result is reviewable | No native span or trace membership; missing/ambiguous calls retain an unknown turn. |
+| Explicit stop/error | Completed/interrupted lifecycle | No terminal state inferred from a tool result or PR. |
+| Source rewrite, retention, revocation | Gap/unknown state or withheld Activity, according to source policy | Lost source history cannot be reconstructed. |
+| Prompt, arguments, path, output | Never admitted or exported by this process contract | Full source-backed Review/export needs a separately approved capture policy and transport. |
+
 ## Remaining parity gates
 
 | Area | Current slice | Required before a production Pi replacement |
@@ -23,6 +38,7 @@ No performance gain or full Pi parity is asserted. The Python Store remains the 
 
 ## Verification
 
+- For the late-result correlation slice, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` passed, including the new Rust result identity test. The installed Pi binary passed eight tests. The focused plugin Activity, Pi and admission/projection/retention set passed 66 tests, with eight installed tests skipped in that Python run because the binary was exercised separately. These checks preceded the final rebase and will be repeated there.
 - After rebasing onto main `009a201`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed. The Pi crate had nine passing unit tests; the workspace had 30 passing Rust tests.
 - `cargo build --locked -p agenturm-pi-harness` and `AGENTURM_RUST_PI_BIN=... uv run python -m unittest tests.test_rust_pi_harness_plugin -q` passed six installed SHA-pinned binary tests, including same-inode truncation with a reused native row ID.
 - The native Pi and plugin regression set passed 85 Python tests.

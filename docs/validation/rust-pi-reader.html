@@ -4,9 +4,53 @@
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
 </style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-pi-reader.md">Markdown source ↗</a></nav><h1>Rust Pi process reader vertical slice</h1>
 <p>Recorded 20 November 2026. This checkpoint adds <code>rust/agenturm-pi-harness</code>, a separately installed Rust reader for one explicitly configured actual Pi session JSONL file. It uses the existing framed process protocol, host admission, one Python Store writer, policy-current projection and opt-in manifest. It does not replace the built-in Pi reader.</p>
-<p>The bounded JSONL tail, cursor and poll/ack machinery now live in the shared <a href="rust-jsonl-source-runtime.html">agenturm-jsonl-source runtime</a>; Pi retains its format translator and executable binding.</p>
+<p>The bounded JSONL tail, cursor and poll/ack machinery now live in the shared <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-jsonl-source-runtime.md"><code>agenturm-jsonl-source</code> runtime</a>; Pi retains only its format translator and executable binding.</p>
 <p>The installed-artifact conformance fixture uses Pi <code>session</code> and <code>message</code> rows with a user turn, an assistant message containing reported usage and two tool calls, two tool results, and an explicit error stop. A native Pi session and the Rust process path both report an interrupted session and four tool Activity observations. The process path reports the supported usage counters, correlates call/result phases through opaque operation IDs, and exposes exact turn Activity and a partial Review subset. It sends no prompt, argument, tool name, path or output into the host Store. A restart keeps the last user turn through the durable cursor; a subsequent explicit stop belongs to that turn. Replacement emits a coarse gap diagnostic and starts a new session and turn.</p>
 <p>The parser emits all facts from a complete Pi line as one cursor unit. At a record, byte or structural budget boundary, it leaves the whole line unread and acknowledges only prior complete lines. A single line that cannot fit fails visibly without advancing the durable cursor. The cursor checks file identity, offset, preceding 256-byte digest and full header digest. The header digest prevents a distant session-header rewrite from inheriting a prior turn. A durable source generation changes at each detected gap, separating event IDs even when same-inode truncation reuses a native Pi row ID. An installed test exercises that case through host admission. Unsupported row kinds and roles emit coarse diagnostics. A malformed explicit result flag prevents an invented success. Capture revocation erases the projected data and fences the old worker.</p>
+<h2>Late tool result correlation · 20 November 2026</h2>
+<p>A Pi result can appear after another user message. The Pi process reader now omits <code>turn_id</code> on the result fact instead of assigning the current, later turn. The host reconstructs the result's turn from exactly one policy-current, retained, admitted <code>started</code> tool fact with the same source, native session and operation ID. The call must precede the result in source and admission time. A missing, reused, future or conflicting call leaves the result turn unavailable and exposes <code>tool_turn_relation</code> as <code>missing_call</code>, <code>ambiguous_call</code>, <code>future_call</code>, <code>conflicting_turn</code> or <code>call_turn_unavailable</code>. A successful link says <code>matched_call</code>. The original raw turn remains distinguishable via <code>native_turn_observed</code>; the host does not store a second mutable call map or put call IDs into the process cursor. Derived Activity and Review use the same policy-current projection, and text export still labels process coverage partial. Category can be recovered from the call when the result reports <code>other</code>; contradictory coarse categories publish <code>other</code> with a conflict marker. A correction rebuilds the relation from latest retained revisions; revocation and source gaps remove it with the Activity row. The <code>plugin_activity_projection_v3</code> upgrade marker hides old projected Activity until it is rebuilt from retained evidence, without requiring a new source write.</p>
+<p>The installed fixture compares one native Pi file with the restarted Rust process reader. Both report the same running lifecycle after a late failed result, and the native <code>execute_tool</code> span stays with its original call trace. The process result shares its opaque turn and operation with the original call, not with the later user message. The fixture also pins a pre-existing native inconsistency: the native <em>log</em> result Activity entry follows the newer user's trace even though its tool span follows the original call trace; native Activity exposes no <code>turn_id</code> for these entries. This slice does not claim native Activity trace parity or repair that native path.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Source evidence</th>
+<th>Process Activity / Review status</th>
+<th>Remaining limit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Session header and user turn IDs</td>
+<td>Opaque session/turn identity and exact turn filtering</td>
+<td>One configured file; no directory discovery.</td>
+</tr>
+<tr>
+<td>Assistant message and reported usage</td>
+<td>Content-free assistant role and typed session usage counters</td>
+<td>No model name, text or native model Activity row.</td>
+</tr>
+<tr>
+<td>Tool call/result IDs and explicit outcome</td>
+<td>Opaque operation link; original turn only with one verified retained call; failed result is reviewable</td>
+<td>No native span or trace membership; missing/ambiguous calls retain an unknown turn.</td>
+</tr>
+<tr>
+<td>Explicit stop/error</td>
+<td>Completed/interrupted lifecycle</td>
+<td>No terminal state inferred from a tool result or PR.</td>
+</tr>
+<tr>
+<td>Source rewrite, retention, revocation</td>
+<td>Gap/unknown state or withheld Activity, according to source policy</td>
+<td>Lost source history cannot be reconstructed.</td>
+</tr>
+<tr>
+<td>Prompt, arguments, path, output</td>
+<td>Never admitted or exported by this process contract</td>
+<td>Full source-backed Review/export needs a separately approved capture policy and transport.</td>
+</tr>
+</tbody>
+</table></div>
 <h2>Remaining parity gates</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -52,6 +96,7 @@
 <p>No performance gain or full Pi parity is asserted. The Python Store remains the sole database writer.</p>
 <h2>Verification</h2>
 <ul>
+<li>For the late-result correlation slice, <code>cargo fmt --all -- --check</code>, <code>cargo clippy --workspace --all-targets --locked -- -D warnings</code> and <code>cargo test --workspace --locked</code> passed, including the new Rust result identity test. The installed Pi binary passed eight tests. The focused plugin Activity, Pi and admission/projection/retention set passed 66 tests, with eight installed tests skipped in that Python run because the binary was exercised separately. These checks preceded the final rebase and will be repeated there.</li>
 <li>After rebasing onto main <code>009a201</code>, <code>cargo fmt --all -- --check</code>, <code>cargo clippy --workspace --all-targets --locked -- -D warnings</code>, and <code>cargo test --workspace --locked</code> passed. The Pi crate had nine passing unit tests; the workspace had 30 passing Rust tests.</li>
 <li><code>cargo build --locked -p agenturm-pi-harness</code> and <code>AGENTURM_RUST_PI_BIN=... uv run python -m unittest tests.test_rust_pi_harness_plugin -q</code> passed six installed SHA-pinned binary tests, including same-inode truncation with a reused native row ID.</li>
 <li>The native Pi and plugin regression set passed 85 Python tests.</li>

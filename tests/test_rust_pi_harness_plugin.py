@@ -162,6 +162,66 @@ class RustPiHarnessTests(unittest.TestCase):
                              {"pi-session", "next-session"})
             self.assertNotEqual(self.store.activity_page()["activity"][0]["turn_id"], turn)
 
+    def test_late_result_matches_native_original_turn_after_process_restart(self):
+        self.append(
+            {"type": "session", "id": "pi-session"},
+            row("user-1", 0, {"role": "user", "content": "private first prompt"}),
+            row("assistant-1", 1, {"role": "assistant", "stopReason": "toolUse",
+                                 "content": [{"type": "toolCall", "id": "call-1", "name": "read",
+                                              "arguments": {"path": "/private/work"}}]}))
+        with self.worker() as first:
+            first.poll_once()
+            self.projected()
+            call = next(item for item in self.store.activity_page()["activity"]
+                        if item["result"] == "started")
+        self.append(
+            row("user-2", 2, {"role": "user", "content": "private second prompt"}),
+            row("tool-1", 3, {"role": "toolResult", "toolCallId": "call-1",
+                              "toolName": "read", "isError": True,
+                              "content": "private tool output"}))
+        native = Store(self.root / "native-late.db")
+        self.addCleanup(native.close)
+        native_reader = Session(native, self.source, "Pi", capture_details=False)
+        native_reader.poll()
+        native_tools = [item for item in native.activity_page()["activity"]
+                        if item["domain"] == "tool"]
+        self.assertEqual({item["action"] for item in native_tools},
+                         {"call", "result", "execute_tool"})
+        native_call = next(item for item in native_tools if item["action"] == "call")
+        native_span = next(item for item in native_tools if item["action"] == "execute_tool")
+        native_result = next(item for item in native_tools if item["action"] == "result")
+        native_later_user = max((item for item in native.activity_page()["activity"]
+                                 if item["domain"] == "message" and item["action"] == "user"),
+                                key=lambda item: item["time_unix_nano"])
+        self.assertEqual(native_call["trace_id"], native_span["trace_id"])
+        # Pinned native gap: its log result is attached to the newer trace,
+        # despite the tool span retaining the call's original trace.
+        self.assertEqual(native_result["trace_id"], native_later_user["trace_id"])
+        self.assertNotEqual(native_result["trace_id"], native_span["trace_id"])
+        with self.worker() as resumed:
+            resumed.poll_once()
+            self.projected()
+        activity = self.store.activity_page()["activity"]
+        result = next(item for item in activity if item["domain"] == "tool"
+                      and item["result"] == "failed")
+        later_user = max((item for item in activity if item["domain"] == "message"
+                          and item["action"] == "user"),
+                         key=lambda item: item["time_unix_nano"])
+        self.assertEqual(result["turn_id"], call["turn_id"])
+        self.assertNotEqual(result["turn_id"], later_user["turn_id"])
+        self.assertEqual(result["operation_id"], call["operation_id"])
+        self.assertEqual(result["metadata"]["tool_turn_relation"], "matched_call")
+        self.assertEqual(result["action"], "file")
+        self.assertEqual(native_reader.run_state,
+                         self.store.plugin_sessions()["sessions"][0]["run_state"])
+        self.assertNotIn("private", json.dumps(activity))
+        with self.store._connect() as db:
+            result_row = db.execute("SELECT native_turn_id,payload_json FROM plugin_evidence_v1 "
+                                    "WHERE kind='tool' AND native_operation_id='call-1' "
+                                    "ORDER BY time_ns DESC LIMIT 1").fetchone()
+        self.assertEqual(result_row[0], "")
+        self.assertNotIn("private", result_row[1])
+
     def test_bad_pi_result_fails_before_cursor_ack(self):
         self.append({"type": "session", "id": "pi-session"},
                     row("tool-1", 1, {"role": "toolResult", "toolCallId": "call-1",
