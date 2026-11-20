@@ -177,7 +177,9 @@ class RustCodexHarnessTests(unittest.TestCase):
             second = worker.poll_once()
             self.assertEqual(second.records[0]["payload"]["code"], "possible_source_gap")
             self.assertNotEqual(first.records[0]["event_id"], second.records[1]["event_id"])
-            self.assertEqual(self.projected()[0]["run_state"], "interrupted")
+            session = self.projected()[0]
+            self.assertEqual((session["run_state"], session["reason_code"]),
+                             ("unknown", "source_gap"))
 
     def test_installer_refuses_existing_symlinked_artifact(self):
         destination = self.root / "other-install"

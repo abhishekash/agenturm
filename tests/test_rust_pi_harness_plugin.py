@@ -190,9 +190,10 @@ class RustPiHarnessTests(unittest.TestCase):
             self.assertEqual(len(second.records), 3)
             self.assertNotEqual(first.records[0]["event_id"], second.records[1]["event_id"])
             self.projected()
-            self.assertEqual(self.store.plugin_sessions()["sessions"][0]["run_state"], "completed")
-            self.assertEqual({item["action"] for item in self.store.activity_page()["activity"]},
-                             {"user", "assistant"})
+            session = self.store.plugin_sessions()["sessions"][0]
+            self.assertEqual((session["run_state"], session["reason_code"]),
+                             ("unknown", "source_gap"))
+            self.assertEqual(self.store.activity_page()["activity"], [])
 
     def test_unsupported_row_is_visible_as_coarse_diagnostic(self):
         self.append({"type": "session", "id": "pi-session"},

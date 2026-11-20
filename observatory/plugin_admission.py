@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .plugin_wire import PollBatch, ProtocolError, encode_message, validate_batch
-from . import plugin_retention
+from . import plugin_retention, plugin_source_gap
 from .plugin_activity import validate_metadata as validate_activity_metadata
 
 if TYPE_CHECKING:
@@ -131,6 +131,7 @@ def initialize(db: Connection) -> None:
         if name not in projection_columns:
             db.execute(f"ALTER TABLE plugin_session_projection_v1 ADD COLUMN {name} {declaration}")
     plugin_retention.initialize(db)
+    plugin_source_gap.initialize(db)
     # A pre-activity plugin projection cannot certify the new Activity rows.
     # The worker's startup projection pass republishes both from one snapshot.
     if (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'").fetchone()
@@ -223,6 +224,7 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
             db.execute("DELETE FROM investigation_dirty_v1 WHERE kind='plugin' AND owner_key=?",
                        (source_id,))
             plugin_retention.revoke(db, source_id)
+            plugin_source_gap.revoke(db, source_id)
         dirty_seq = row["dirty_seq"] + 1
         db.execute("UPDATE plugin_source_cursor_v1 SET capture_enabled=?,policy_epoch=?,"
                    "lease_epoch=?,dirty_seq=?,updated_ns=? WHERE source_id=?",
@@ -279,6 +281,9 @@ def _metadata(record: dict) -> dict:
                 or not isinstance(payload.get("severity"), str)
                 or payload["severity"] not in _SEVERITIES):
             raise ProtocolError("invalid diagnostic metadata")
+        if payload["code"] == "possible_source_gap" and (
+                record["revision"] != 0 or record.get("identity")):
+            raise ProtocolError("source gap must be a new source-wide diagnostic")
     elif kind == "relationship":
         if (set(payload) != {"parent_session_id", "kind"}
                 or not isinstance(payload.get("parent_session_id"), str)
@@ -332,6 +337,8 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
     digest, rows = _validated(batch, lease.source_id)
     protected_hashes = {item[1] for item in rows}
     incoming_session_ids = {item[7] for item in rows if item[7]}
+    gap_hashes = {item[1] for item in rows if item[3] == "diagnostic"
+                  and json.loads(item[5])["code"] == "possible_source_gap"}
     with store._source_write(), store._connect() as db:
         db.execute("BEGIN IMMEDIATE")
         receiver = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
@@ -382,8 +389,12 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                                      (*item[:2], item[2])).rowcount
                 count -= deleted
             else:
-                plugin_retention.reject_unseen(db, lease.source_id,
-                                               revision=item[2], time_ns=item[4])
+                if item[1] in gap_hashes:
+                    plugin_source_gap.invalidate_existing(db, lease.source_id,
+                                                          incoming_session_ids)
+                else:
+                    plugin_retention.reject_unseen(db, lease.source_id,
+                                                   revision=item[2], time_ns=item[4])
             if count >= MAX_SOURCE_RECORDS:
                 count -= plugin_retention.prune(db, lease.source_id,
                                                 policy_epoch=lease.policy_epoch,
@@ -391,7 +402,7 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                                                 incoming_session_ids=incoming_session_ids,
                                                 max_records=MAX_SOURCE_RECORDS)
                 # A newly established watermark may fence this very batch.
-                if latest is None:
+                if latest is None and item[1] not in gap_hashes:
                     plugin_retention.reject_unseen(db, lease.source_id,
                                                    revision=item[2], time_ns=item[4])
             db.execute("INSERT INTO plugin_evidence_v1 "

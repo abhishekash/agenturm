@@ -128,27 +128,41 @@ def project_source(store: Store, source_id: str) -> int:
         invalidated = {row[0]: row[1] for row in db.execute(
             "SELECT native_session_id,last_record_ns FROM plugin_retention_invalidated_v1 "
             "WHERE source_id=?", (source_id,))}
+        source_gaps = {row[0]: row[1] for row in db.execute(
+            "SELECT native_session_id,last_record_ns FROM plugin_source_gap_invalidated_v1 "
+            "WHERE source_id=?", (source_id,))}
         policy_epoch, dirty_seq = source["policy_epoch"], source["dirty_seq"]
         revision = (source["lease_epoch"], policy_epoch, dirty_seq)
     # Release the read snapshot before CPU work so a large source cannot pin WAL.
     projected = _reduce(rows, receiver_id, source_id, policy_epoch, dirty_seq)
-    projected = [((*row[:3], "unknown", "retention_gap", *row[5:9], "{}",
+    source_wide_gap = "*" in source_gaps
+    def gap_reason(native_id: str) -> str:
+        if native_id in invalidated:
+            return "retention_gap"
+        if source_wide_gap or native_id in source_gaps:
+            return "source_gap"
+        return ""
+    projected = [((*row[:3], "unknown", gap_reason(row[1]), *row[5:9], "{}",
                    "", "unknown", "unresolved")
-                  if row[1] in invalidated else row) for row in projected]
+                  if gap_reason(row[1]) else row) for row in projected]
     present = {row[1] for row in projected}
-    for native_id, last_record_ns in invalidated.items():
+    for native_id, last_record_ns in (invalidated | {
+            key: value for key, value in source_gaps.items() if key != "*"}).items():
         if native_id in present:
             continue
         session_key = "plugin:" + hashlib.sha256(
             (receiver_id + "\0" + source_id + "\0" + native_id).encode()).hexdigest()
-        projected.append((source_id, native_id, session_key, "unknown", "retention_gap",
+        projected.append((source_id, native_id, session_key, "unknown", gap_reason(native_id),
                           0, last_record_ns, policy_epoch, dirty_seq, "{}",
                           "", "unknown", "unresolved"))
     if len(projected) > MAX_PROJECTION_SESSIONS:
         raise ProtocolError("plugin session projection capacity reached")
     activity_rows = activity_index_rows(rows, receiver_id=receiver_id,
                                         source_id=source_id, plugin_id=source["plugin_id"],
-                                        invalidated=set(invalidated))
+                                        invalidated=(set(invalidated) | set(source_gaps) |
+                                                     ({row["native_session_id"] for row in rows
+                                                       if row["native_session_id"]}
+                                                      if source_wide_gap else set())))
     with store._source_write(), store._connect() as db:
         db.execute("BEGIN IMMEDIATE")
         current = db.execute("SELECT receiver_id,lease_epoch,policy_epoch,dirty_seq,"
