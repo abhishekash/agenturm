@@ -105,6 +105,19 @@ class RustScratchAdmissionTests(unittest.TestCase):
                 "operation": {"op": "activate_source", "plugin_id": plugin_id,
                               "source_id": source_id, "generation": generation}}
 
+    @staticmethod
+    def v2_capture_request(lease, *, enabled, expected_enabled, cursor, dirty_seq,
+                           request_id):
+        lease_data = {"receiver_id": lease.receiver_id, "plugin_id": lease.plugin_id,
+                      "source_id": lease.source_id, "generation": lease.generation,
+                      "epoch": lease.epoch, "policy_epoch": lease.policy_epoch}
+        return {"version": 2, "request_id": request_id,
+                "receiver_id": lease.receiver_id,
+                "operation": {"op": "set_source_capture", "lease": lease_data,
+                              "enabled": enabled, "expected_cursor": cursor,
+                              "expected_dirty_seq": dirty_seq,
+                              "expected_capture_enabled": expected_enabled}}
+
     def apply_v2(self, request, *, path=None, success=True):
         raw = request if isinstance(request, str) else json.dumps(request)
         result = subprocess.run([self.binary, "--v2-scratch-path",
@@ -333,6 +346,120 @@ class RustScratchAdmissionTests(unittest.TestCase):
         fresh_after_revoke = self.v2_activate_request(
             source_id, request_id="f123456789abcdef0123456789abcdef")
         self.assertIn("revoked", self.apply_v2(fresh_after_revoke, success=False))
+
+    def test_v2_capture_noop_disable_enable_and_replay_fence_supported_history(self):
+        from observatory.plugin_projection import project_source
+
+        no_op = self.v2_capture_request(
+            self.rust_lease, enabled=True, expected_enabled=True, cursor="", dirty_seq=0,
+            request_id="8123456789abcdef0123456789abcdef")
+        idle = self.apply_v2(no_op)
+        self.assertEqual(idle["result"]["kind"], "source_capture_set")
+        self.assertEqual(idle["result"]["disposition"], "idle")
+        self.assertEqual(idle["result"]["lease"]["epoch"], self.rust_lease.epoch)
+        with self.rust_store._connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM plugin_evidence_dirty_v1 WHERE source_id=?", (SOURCE,)
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM plugin_projection_cursor_v1 WHERE source_id=?", (SOURCE,)
+            ).fetchone()[0], 0)
+        self.assertEqual(self.apply_v2(no_op)["result"]["disposition"], "replay")
+
+        admission = self.v2_request(
+            PollBatch(SOURCE, "cursor-one", (fact(),)), request_id="9123456789abcdef0123456789abcdef")
+        self.apply_v2(admission)
+        project_source(self.rust_store, SOURCE)
+        disable = self.v2_capture_request(
+            self.rust_lease, enabled=False, expected_enabled=True, cursor="cursor-one",
+            dirty_seq=1, request_id="a123456789abcdef0123456789abcdef")
+        disabled = self.apply_v2(disable)["result"]
+        self.assertEqual(disabled["disposition"], "committed")
+        self.assertFalse(disabled["enabled"])
+        self.assertEqual(disabled["cursor"], "cursor-one")
+        self.assertEqual(disabled["dirty_seq"], 2)
+        disabled_lease = type("Lease", (), disabled["lease"])()
+        with self.rust_store._connect() as db:
+            source = tuple(db.execute(
+                "SELECT cursor,dirty_seq,policy_epoch,lease_epoch,capture_enabled,content_fingerprint "
+                "FROM plugin_source_cursor_v1 WHERE source_id=?", (SOURCE,)).fetchone())
+            self.assertEqual(source, ("cursor-one", 2, 2, disabled["lease"]["epoch"], 0, ""))
+            for table in ("plugin_evidence_v1", "plugin_session_projection_v1",
+                          "activity_index_v1", "investigation_dirty_v1"):
+                self.assertEqual(db.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE source_id=?" if table not in
+                    ("activity_index_v1", "investigation_dirty_v1") else
+                    f"SELECT COUNT(*) FROM {table} WHERE kind='plugin' AND owner_key=?",
+                    (SOURCE,)).fetchone()[0], 0, table)
+        stale = self.v2_request(PollBatch(SOURCE, "cursor-two", (fact("second"),)),
+                                "cursor-one", request_id="b123456789abcdef0123456789abcdef")
+        self.assertIn("stale or unsupported source lease", self.apply_v2(stale, success=False))
+
+        enable = self.v2_capture_request(
+            disabled_lease, enabled=True, expected_enabled=False, cursor="cursor-one",
+            dirty_seq=2, request_id="c123456789abcdef0123456789abcdef")
+        enabled = self.apply_v2(enable)["result"]
+        self.assertEqual(enabled["disposition"], "committed")
+        self.assertTrue(enabled["enabled"])
+        self.assertEqual(enabled["dirty_seq"], 3)
+        self.assertEqual(enabled["lease"]["policy_epoch"], 3)
+        with self.rust_store._connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?", (SOURCE,)
+            ).fetchone()[0], 0)
+            current = tuple(db.execute(
+                "SELECT cursor,dirty_seq,policy_epoch,lease_epoch,capture_enabled "
+                "FROM plugin_source_cursor_v1 WHERE source_id=?", (SOURCE,)).fetchone())
+        # Both old operations replay their first committed replies after later
+        # transitions; the command starts a fresh process for every invocation.
+        no_op_replay = self.apply_v2(no_op)["result"]
+        self.assertEqual(no_op_replay["disposition"], "replay")
+        self.assertEqual(no_op_replay["lease"]["epoch"], self.rust_lease.epoch)
+        disable_replay = self.apply_v2(disable)["result"]
+        self.assertEqual(disable_replay["disposition"], "replay")
+        self.assertEqual(disable_replay["lease"], disabled["lease"])
+        with self.rust_store._connect() as db:
+            self.assertEqual(tuple(db.execute(
+                "SELECT cursor,dirty_seq,policy_epoch,lease_epoch,capture_enabled "
+                "FROM plugin_source_cursor_v1 WHERE source_id=?", (SOURCE,)).fetchone()), current)
+        changed = self.v2_capture_request(
+            self.rust_lease, enabled=False, expected_enabled=True, cursor="different-cursor",
+            dirty_seq=1, request_id=disable["request_id"])
+        self.assertIn("conflicting v2 source capture request",
+                      self.apply_v2(changed, success=False))
+
+    def test_v2_capture_explicitly_reenables_revoked_source_without_restoring_evidence(self):
+        revoke = self.v2_revoke_request(cursor="", dirty_seq=0,
+                                        request_id="d123456789abcdef0123456789abcdef")
+        revoked = self.apply_v2(revoke)["result"]
+        self.assertEqual(revoked["disposition"], "committed")
+        revoked_lease = type("Lease", (), {
+            "receiver_id": self.rust_lease.receiver_id,
+            "plugin_id": self.rust_lease.plugin_id,
+            "source_id": self.rust_lease.source_id,
+            "generation": self.rust_lease.generation,
+            "epoch": revoked["lease_epoch"],
+            "policy_epoch": revoked["policy_epoch"],
+        })()
+        enabled = self.apply_v2(self.v2_capture_request(
+            revoked_lease, enabled=True, expected_enabled=False, cursor="", dirty_seq=1,
+            request_id="e123456789abcdef0123456789abcdef"))["result"]
+        self.assertEqual(enabled["disposition"], "committed")
+        self.assertTrue(enabled["enabled"])
+        self.assertNotEqual(enabled["lease"]["epoch"], revoked["lease_epoch"])
+        self.assertEqual(enabled["lease"]["policy_epoch"], revoked["policy_epoch"] + 1)
+        self.assertEqual(enabled["dirty_seq"], 2)
+        with self.rust_store._connect() as db:
+            source = tuple(db.execute(
+                "SELECT capture_enabled,cursor,dirty_seq,policy_epoch,lease_epoch "
+                "FROM plugin_source_cursor_v1 WHERE source_id=?", (SOURCE,)).fetchone())
+            self.assertEqual(source, (1, "", 2, 3, enabled["lease"]["epoch"]))
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?", (SOURCE,)
+            ).fetchone()[0], 0)
+        stale = self.v2_request(PollBatch(SOURCE, "next", (fact(),)),
+                                request_id="f123456789abcdef0123456789abcdef")
+        self.assertIn("stale or unsupported source lease", self.apply_v2(stale, success=False))
 
     @staticmethod
     def snapshot(store):

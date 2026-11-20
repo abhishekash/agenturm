@@ -44,6 +44,13 @@ pub enum Operation {
         cursor: String,
         expected_dirty_seq: i64,
     },
+    SetSourceCapture {
+        lease: SourceLease,
+        enabled: bool,
+        expected_cursor: String,
+        expected_dirty_seq: i64,
+        expected_capture_enabled: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -116,6 +123,7 @@ pub enum OperationResult {
     SourceActivated(SourceActivatedResult),
     LifecycleAdmission(AdmissionResult),
     SourceRevoked(SourceRevokedResult),
+    SourceCaptureSet(SourceCaptureSetResult),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -145,6 +153,16 @@ pub struct SourceRevokedResult {
     pub lease_epoch: i64,
     pub policy_epoch: i64,
     pub capture_enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceCaptureSetResult {
+    pub disposition: Disposition,
+    pub lease: SourceLease,
+    pub enabled: bool,
+    pub cursor: String,
+    pub dirty_seq: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -365,6 +383,28 @@ impl Request {
                     return Err(ContractError::Invalid("invalid v2 capture revocation"));
                 }
             }
+            Operation::SetSourceCapture {
+                lease,
+                enabled,
+                expected_cursor,
+                expected_dirty_seq,
+                expected_capture_enabled,
+            } => {
+                if lease.receiver_id != self.receiver_id
+                    || !identity(&lease.plugin_id, 256)
+                    || !identity(&lease.source_id, 256)
+                    || !digest(&lease.generation, 32)
+                    || lease.epoch <= 0
+                    || lease.policy_epoch <= 0
+                    || !cursor(expected_cursor)
+                    || *expected_dirty_seq < 0
+                    || enabled != expected_capture_enabled
+                        && (lease.policy_epoch.checked_add(1).is_none()
+                            || expected_dirty_seq.checked_add(1).is_none())
+                {
+                    return Err(ContractError::Invalid("invalid v2 source capture update"));
+                }
+            }
         }
         canonical(self)?;
         Ok(())
@@ -477,6 +517,42 @@ impl Reply {
                         || result.lease_epoch <= 0
                         || result.policy_epoch <= 0
                         || result.disposition == Disposition::Idle
+                }
+                (
+                    Operation::SetSourceCapture {
+                        lease,
+                        enabled,
+                        expected_cursor,
+                        expected_dirty_seq,
+                        expected_capture_enabled,
+                    },
+                    OperationResult::SourceCaptureSet(result),
+                ) => {
+                    let identity_mismatch = result.lease.receiver_id != request.receiver_id
+                        || result.lease.plugin_id != lease.plugin_id
+                        || result.lease.source_id != lease.source_id
+                        || result.lease.generation != lease.generation
+                        || result.lease.epoch <= 0
+                        || result.lease.policy_epoch <= 0
+                        || result.enabled != *enabled
+                        || result.cursor != *expected_cursor
+                        || result.dirty_seq < 0;
+                    if identity_mismatch {
+                        true
+                    } else if enabled == expected_capture_enabled {
+                        (result.disposition != Disposition::Idle
+                            && result.disposition != Disposition::Replay)
+                            || result.lease != *lease
+                            || result.dirty_seq != *expected_dirty_seq
+                    } else {
+                        result.disposition != Disposition::Committed
+                            && result.disposition != Disposition::Replay
+                            || result.lease.epoch == lease.epoch
+                            || result.lease.policy_epoch
+                                != lease.policy_epoch.checked_add(1).unwrap_or_default()
+                            || result.dirty_seq
+                                != expected_dirty_seq.checked_add(1).unwrap_or_default()
+                    }
                 }
                 _ => true,
             }
@@ -699,6 +775,114 @@ mod tests {
                 generation: "a".repeat(64),
             },
         }
+    }
+
+    fn set_capture_fixture(request_id: &str, current: bool, target: bool) -> Request {
+        Request {
+            version: VERSION,
+            request_id: request_id.into(),
+            receiver_id: "receiver-one".into(),
+            operation: Operation::SetSourceCapture {
+                lease: SourceLease {
+                    receiver_id: "receiver-one".into(),
+                    plugin_id: "fixture.plugin".into(),
+                    source_id: "source-one".into(),
+                    generation: "a".repeat(64),
+                    epoch: 11,
+                    policy_epoch: 3,
+                },
+                enabled: target,
+                expected_cursor: "cursor-one".into(),
+                expected_dirty_seq: 4,
+                expected_capture_enabled: current,
+            },
+        }
+    }
+
+    #[test]
+    fn source_capture_contract_binds_transition_and_stable_noop() {
+        let no_op = set_capture_fixture("4123456789abcdef0123456789abcdef", true, true);
+        let Operation::SetSourceCapture { lease, .. } = &no_op.operation else {
+            unreachable!()
+        };
+        let reply = Reply {
+            version: VERSION,
+            request_id: no_op.request_id.clone(),
+            receiver_id: no_op.receiver_id.clone(),
+            request_digest: no_op.replay_identity().unwrap().digest,
+            result: OperationResult::SourceCaptureSet(SourceCaptureSetResult {
+                disposition: Disposition::Idle,
+                lease: lease.clone(),
+                enabled: true,
+                cursor: "cursor-one".into(),
+                dirty_seq: 4,
+            }),
+        };
+        assert_eq!(
+            Reply::from_json(&reply.to_json(&no_op).unwrap(), &no_op).unwrap(),
+            reply
+        );
+        let mut replay = reply.clone();
+        if let OperationResult::SourceCaptureSet(result) = &mut replay.result {
+            result.disposition = Disposition::Replay;
+        }
+        assert!(replay.to_json(&no_op).is_ok());
+        let mut invalid_noop = reply.clone();
+        let OperationResult::SourceCaptureSet(result) = &mut invalid_noop.result else {
+            unreachable!()
+        };
+        result.lease.epoch += 1;
+        assert!(invalid_noop.to_json(&no_op).is_err());
+
+        let transition = set_capture_fixture("5123456789abcdef0123456789abcdef", true, false);
+        let Operation::SetSourceCapture { lease, .. } = &transition.operation else {
+            unreachable!()
+        };
+        let reply = Reply {
+            version: VERSION,
+            request_id: transition.request_id.clone(),
+            receiver_id: transition.receiver_id.clone(),
+            request_digest: transition.replay_identity().unwrap().digest,
+            result: OperationResult::SourceCaptureSet(SourceCaptureSetResult {
+                disposition: Disposition::Committed,
+                lease: SourceLease {
+                    epoch: 12,
+                    policy_epoch: 4,
+                    ..lease.clone()
+                },
+                enabled: false,
+                cursor: "cursor-one".into(),
+                dirty_seq: 5,
+            }),
+        };
+        assert_eq!(
+            Reply::from_json(&reply.to_json(&transition).unwrap(), &transition).unwrap(),
+            reply
+        );
+        let mut replay = reply.clone();
+        if let OperationResult::SourceCaptureSet(result) = &mut replay.result {
+            result.disposition = Disposition::Replay;
+        }
+        assert!(replay.to_json(&transition).is_ok());
+        let mut wrong_result = reply.clone();
+        let OperationResult::SourceCaptureSet(result) = &mut wrong_result.result else {
+            unreachable!()
+        };
+        result.dirty_seq = 7;
+        assert!(wrong_result.to_json(&transition).is_err());
+        let mut wrong_kind = reply;
+        let OperationResult::SourceCaptureSet(result) = wrong_kind.result else {
+            unreachable!()
+        };
+        wrong_kind.result = OperationResult::SourceRevoked(SourceRevokedResult {
+            disposition: Disposition::Committed,
+            cursor: result.cursor,
+            dirty_seq: 5,
+            lease_epoch: 12,
+            policy_epoch: 4,
+            capture_enabled: false,
+        });
+        assert!(wrong_kind.to_json(&transition).is_err());
     }
 
     #[test]
