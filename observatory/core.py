@@ -19,6 +19,10 @@ from .agent_hierarchy import (AGENT_ID, HierarchyGraph, canonical_agent_id, norm
                               provenance)
 from .findings import _safe_text, analyze, mcp_result_error
 from .native_ingest_scopes import NativeIngestScopes
+from .store_authority import (MARKER as STORAGE_AUTHORITY_MARKER,
+                              PYTHON_OWNER, StoreAuthorityError, preflight as authority_preflight,
+                              chmod_target as chmod_authority_target,
+                              require_python_owner, require_target as require_authority_target)
 
 TRACE_ID = re.compile(r"^[0-9a-fA-F]{32}$")
 SPAN_ID = re.compile(r"^[0-9a-fA-F]{16}$")
@@ -636,10 +640,15 @@ class IndexNotReady(RuntimeError):
 
 class Store:
     def __init__(self, path, async_derived_refresh=False, workflow_patterns=None):
-        self.path = str(path)
+        # Bind the lexical path once. A later process-wide cwd change must
+        # not redirect a database operation after the authority preflight.
+        self.path = str(Path(path).absolute())
+        # This must precede mkdir, chmod, WAL/schema changes and worker startup.
+        # It is a point-in-time guard, not a cross-process writer lock.
+        authority_file = authority_preflight(self.path)
         self._native_ingest_scopes = NativeIngestScopes.bundled()
         from .read_connections import ReadConnections
-        self._read_connections = ReadConnections(path)
+        self._read_connections = ReadConnections(self.path)
         self.workflow_patterns = (os.environ.get("AGENTURM_WORKFLOW_PATTERNS", "0") == "1"
                                   if workflow_patterns is None else bool(workflow_patterns))
         self._async_derived_refresh = bool(async_derived_refresh)
@@ -660,18 +669,29 @@ class Store:
         self._migration_stop=threading.Event()
         self._migration_thread=None
         self.migration_status={"ready":False,"stage":"Preparing indexed history","processed":0}
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        require_authority_target(self.path, authority_file)
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        require_authority_target(self.path, authority_file)
         # SQLite otherwise creates the file using the process umask, exposing
         # captured content until the chmod at the end of initialization.
         try:
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
+            if authority_file is None:
+                raise StoreAuthorityError("Store appeared after authority preflight")
             self.created_new=False
         else:
             self.created_new=True
+            info = os.fstat(fd)
+            authority_file = (info.st_dev, info.st_ino)
             os.close(fd)
-        os.chmod(self.path, 0o600)
+        require_authority_target(self.path, authority_file)
+        chmod_authority_target(self.path, authority_file)
+        require_authority_target(self.path, authority_file)
         with self._connect() as db:
+            require_authority_target(self.path, authority_file)
+            # Check the file this connection opened before the first SQL write.
+            require_python_owner(db)
             # Readers bind ownership and content to one snapshot while native
             # ingestion continues; SQLite manages checkpointing and sidecars.
             db.execute("PRAGMA journal_mode=WAL")
@@ -786,6 +806,8 @@ class Store:
                     updated_ns INTEGER NOT NULL,
                     PRIMARY KEY(runtime,source_namespace,native_session_id,native_worker_id));
             """)
+            db.execute("INSERT OR IGNORE INTO schema_meta(key,value) VALUES(?,?)",
+                       (STORAGE_AUTHORITY_MARKER, PYTHON_OWNER))
             db.execute("INSERT OR IGNORE INTO schema_meta(key,value) "
                        "VALUES('agent_connection_capture_epoch','0')")
             db.execute("""CREATE TRIGGER IF NOT EXISTS agent_connection_capture_insert_v1
@@ -888,7 +910,7 @@ class Store:
                         UNION ALL SELECT trace_id,ingested_ns FROM outcomes
                     ) GROUP BY trace_id""")
                 db.execute("INSERT INTO schema_meta(key,value) VALUES('trace_activity_v1','1')")
-        os.chmod(self.path, 0o600)
+        chmod_authority_target(self.path, authority_file)
         from .storage_activity import initialize as initialize_activity, drain
         with self._connect() as db:
             from .native_policy import initialize as initialize_native_policy
@@ -1168,7 +1190,10 @@ class Store:
         operations open a connection per query, so leaving closure to garbage
         collection can exhaust file descriptors in a long-running receiver.
         """
-        db = sqlite3.connect(self.path, timeout=10)
+        # Store creates the main file explicitly during startup. A later
+        # connection must never recreate a vanished or replaced pathname.
+        db = sqlite3.connect(Path(self.path).absolute().as_uri() + '?mode=rw',
+                             uri=True, timeout=10)
         db.row_factory = sqlite3.Row
         try:
             yield db
