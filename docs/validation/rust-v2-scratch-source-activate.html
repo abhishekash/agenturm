@@ -11,7 +11,7 @@ body{font:16px/1.55 system-ui,sans-serif;max-width:960px;margin:2rem auto;paddin
 <body>
 <main>
 <h1>Rust v2 scratch source activation</h1>
-<p>20 November 2026. Implementation code is in commit <code>8c5fd44</code>; the open PR also includes a later documentation-only ledger/status refresh. Local checks below ran against the implementation commit. This checkpoint covers a PR-only <code>ActivateSource</code> slice. It is available only through the explicitly marked Rust scratch path; it does not route production callers, replace Python <code>Store</code>, or claim a performance gain.</p>
+<p>20 November 2026. PR #295 merged at <code>402d389</code>; its final PR head was <code>ab2cf4b</code>, and implementation code is in commit <code>8c5fd44</code>. Local checks below ran against the implementation commit. This checkpoint covers the merged <code>ActivateSource</code> slice. It is available only through the explicitly marked Rust scratch path; it does not route production callers, replace Python <code>Store</code>, or claim a performance gain.</p>
 
 <h2>Contract and boundary</h2>
 <p>The typed v2 operation takes a plugin ID, source ID, and generation. Under <code>BEGIN IMMEDIATE</code>, it verifies the scratch marker, receiver identity, and the cooperating writer lease when the CLI provides one. A new source receives a server-generated positive lease epoch and explicit Python-compatible defaults: empty cursor/prior cursor/digest/fingerprint, dirty sequence 0, policy epoch 1, and capture enabled.</p>
@@ -20,7 +20,7 @@ body{font:16px/1.55 system-ui,sans-serif;max-width:960px;margin:2rem auto;paddin
 <aside>This operation does not clean private providers and does not add a provider cleanup SPI. Python <code>Store</code> remains production authority.</aside>
 
 <h2>Validation</h2>
-<p>Rust 1.100.0 local checks on the PR head:</p>
+<p>Rust 1.100.0 local checks on implementation commit <code>8c5fd44</code> (before the final documentation-only refresh):</p>
 <pre><code>cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
@@ -39,10 +39,10 @@ AGENTURM_RUST_STORAGE_SERVICE_BIN="$PWD/target/debug/agenturm-storage-service" p
 <tr><td>Installed storage service integration</td><td>10 passed</td></tr>
 </tbody>
 </table>
-<p>The scratch integration exercises first activation defaults, persisted replay, changed-request conflict, real <code>Store</code> lifecycle admission/projection, reactivation lease fencing and cursor/policy/dirty preservation, stale-lease rejection, retry of the earlier activation after reactivation and after revoke, and refusal to re-enable after revocation. Rust trigger tests also cover ignored update/insert/receipt writes and source/request-ID mutation by post-write triggers. The CI workflow already runs the installed scratch admission module after building the Rust binary; no production dispatch or CI authority change is part of this slice. GitHub CI is separate from local evidence.</p>
+<p>The scratch integration exercises first activation defaults, persisted replay, changed-request conflict, real <code>Store</code> lifecycle admission/projection, reactivation lease fencing and cursor/policy/dirty preservation, stale-lease rejection, retry of the earlier activation after reactivation and after revoke, and refusal to re-enable after revocation. Rust trigger tests also cover ignored update/insert/receipt writes and source/request-ID mutation by post-write triggers. The CI workflow already runs the installed scratch admission module after building the Rust binary; no production dispatch or CI authority change is part of this slice. All 14 GitHub checks were queued at merge, so queued CI is not recorded as passing.</p>
 
 <h2>Remaining boundary</h2>
-<p>The Rust operation is an experimental marked-scratch writer only. It is not exposed to canonical/production callers; production capture policy and Store authority remain in Python. No private-provider cleanup, general source lifecycle service, cutover safety, or speed claim follows from this checkpoint.</p>
+<p>The merged Rust operation is an experimental marked-scratch writer only. It is not exposed to canonical/production callers; production capture policy and Store authority remain in Python. No private-provider cleanup, general source lifecycle service, cutover safety, or speed claim follows from this checkpoint.</p>
 </main>
 </body>
 </html>
