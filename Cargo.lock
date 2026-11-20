@@ -156,6 +156,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "agenturm-storage-lease"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "agenturm-storage-shadow"
 version = "0.1.0"
 dependencies = [

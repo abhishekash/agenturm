@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rust cooperative writer lease experiment · Agenturm</title>
+<style>
+:root{color-scheme:light dark;font:16px/1.58 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f8fa;color:#202936}
+*{box-sizing:border-box}body{margin:0;padding:clamp(1rem,3vw,2.5rem)}main{max-width:68rem;margin:auto;background:#fff;border:1px solid #dce2e8;border-radius:14px;padding:clamp(1.2rem,4vw,3rem)}
+h1{font-size:clamp(1.8rem,4vw,2.5rem);line-height:1.2;margin:0}h2{font-size:1.25rem;margin:2rem 0 .5rem;border-top:1px solid #dce2e8;padding-top:1rem}p,li{max-width:79ch}p{margin:.7rem 0}ul{padding-left:1.35rem}li{margin:.35rem 0}code{font:.9em ui-monospace,SFMono-Regular,Consolas,monospace;background:#eff2f5;padding:.1em .3em;border-radius:4px;overflow-wrap:anywhere}.meta{color:#536377;margin:.45rem 0 1.7rem}.callout{border-left:4px solid #b65c17;background:#fff8ef;padding:.75rem 1rem;border-radius:4px}a{color:#135ca3}a:focus-visible{outline:3px solid #dc9128;outline-offset:3px}
+@media(prefers-color-scheme:dark){:root{background:#111821;color:#e8edf3}main{background:#1b2530;border-color:#354354}h2{border-color:#354354}.meta{color:#a9bacb}code{background:#303e4e}.callout{background:#382a1d;border-color:#e19d59}a{color:#8bc0ff}}
+</style>
+</head>
+<body><main>
+<h1>Rust cooperative writer lease experiment</h1>
+<p class="meta">Agenturm validation · 20 November 2026</p>
+<p class="callout">This Linux-only crate is feature off. Python Store remains the only production database writer. The receiver, launcher, plugin host and scratch-admission CLI do not call it.</p>
+<h2>Contract</h2>
+<p><code>WriterLease::acquire</code> binds an existing absolute fixture path, its lexical symlink, resolved regular target and device/inode, plus a private sibling lock derived from that target. It rejects multiply linked database inodes so hardlink aliases cannot select different locks. It rejects existing nonregular lock entries before open, then uses nofollow, nonblocking and close-on-exec flags, verifies owner-only permissions and pathname identity, and takes a nonblocking standard-library file lock. Repeated acquisitions within one process share the same open descriptor until the final handle drops.</p>
+<p><code>verify_admission()</code> checks the lock pathname, database path and target link count again immediately before a prospective write. Lock-file replacement, a new hard link, symlink retargeting and database inode replacement cause the next admission to fail.</p>
+<h2>Focused tests</h2>
+<ul><li>Two processes, including a database symlink alias, cannot hold the same cooperative lock; fixture bytes and SQLite sidecars remain untouched.</li><li>A hardlink alias cannot derive another lock for the same inode, and adding a hard link invalidates the next admission.</li><li>Same-process handles retain the lock until the final drop; killing the owner releases it.</li><li>Symlinked, nonregular, nonprivate or replaced lock files fail, as do changed database targets.</li></ul>
+<h2>Limits</h2>
+<p>The check is point-in-time. It does not stop an already in-flight write or an old binary that ignores the lock, and it does not exclude a deliberate swap-and-swap-back race. Manual fork with an inherited handle is unsupported; exec closes the descriptor. No Store worker quiescence or production cutover is implemented, and no performance gain is asserted.</p>
+<p>See the <a href="rust-writer-cutover-gate.html">writer cutover gate</a> for the remaining legacy-binary and recovery requirements.</p>
+</main></body></html>
