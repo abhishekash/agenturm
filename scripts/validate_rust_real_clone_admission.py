@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from validate_rust_real_clone_activation import send
@@ -63,6 +64,7 @@ def request_for(lease: dict, batch, request_id: str, expected_cursor: str) -> di
     records = [{
         "event_id_hash": row[1],
         "revision": row[2],
+        "kind": "lifecycle",
         "time_ns": row[4],
         "payload_json": row[5],
         "record_digest": row[6],
@@ -288,10 +290,19 @@ def main(binary: Path) -> None:
             # replay idempotent.
             run_client(request_path, socket_path, uid=client_uid, gid=client_gid,
                        drop_reply=True)
-            with closing(sqlite3.connect(clone)) as db:
-                cursor = db.execute("SELECT cursor FROM plugin_source_cursor_v1 "
-                                    "WHERE source_id='batch-source'").fetchone()[0]
-                check(cursor == "cursor-one", "lost reply did not commit cursor")
+            deadline = time.monotonic() + 5
+            while True:
+                with closing(sqlite3.connect(clone)) as db:
+                    cursor = db.execute("SELECT cursor FROM plugin_source_cursor_v1 "
+                                        "WHERE source_id='batch-source'").fetchone()[0]
+                    receipt_count = db.execute(
+                        "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+                        (request["request_id"],)).fetchone()[0]
+                if cursor == "cursor-one" and receipt_count == 1:
+                    break
+                check(time.monotonic() < deadline and service.poll() is None,
+                      "lost reply did not durably commit cursor and receipt")
+                time.sleep(0.02)
             replay = run_client(request_path, socket_path, uid=client_uid, gid=client_gid,
                                 reply_path=admit_reply_path)
             check(replay["result"]["disposition"] == "replay",
