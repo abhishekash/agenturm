@@ -1,0 +1,13 @@
+[package]
+name = "agenturm-opencode-harness"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+publish = false
+license = "MIT"
+
+[dependencies]
+agenturm-source-process = { path = "../agenturm-source-process" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde_json = "1.0"
+sha2 = "0.10"

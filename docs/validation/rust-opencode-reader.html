@@ -1,0 +1,56 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Opencode Reader</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-opencode-reader.md">Markdown source ↗</a></nav><h1>Rust OpenCode SQLite reader checkpoint</h1>
+<p>Recorded 20 November 2026. The opt-in <code>agenturm-opencode-harness</code> reads one explicitly configured OpenCode SQLite database using the current <code>session_v2</code>, <code>session_message</code> and <code>session_part</code> column contract. It shares the format-independent framed hello/poll/ack runner with the existing JSONL adapters. Python Store admission, cursor, lease, capture policy and projection remain authoritative. The bundled OpenCode reader remains the default.</p>
+<h2>Evidence and semantics</h2>
+<p>The adapter sends only content-free user/assistant roles, tool category and reported result, usage counters, lifecycle state and coarse reason, plus opaque session and tool-operation identities. The process facts omit turn identity because a later idle backfill can change the boundary for an already admitted row; Store revisions cannot safely rewrite that identity. Current-schema idle outcomes <code>succeeded</code>, <code>failed</code> and <code>interrupted</code> map to completed, failed and interrupted. Assistant <code>finish: stop</code> does not establish a terminal outcome. An unknown idle outcome is paused with an explicit coarse reason. Tool <code>completed</code> maps to success unless native shell metadata reports a nonzero exit, timeout, signal or still-running background command. Unknown tool status becomes a diagnostic, not success. Current OpenCode token components are disjoint: input includes input plus cache read/write; output includes output plus reasoning. Derived totals require every component.</p>
+<p>The installed receiver test loads the committed OpenCode 2.2.5 schema fixture, compares final lifecycle with the bundled native reader, checks usage and tool Activity with turn identity absent, and searches the admitted payloads for private prompt, result, command and path examples. Other tests cover assistant output before idle, a changed tool revision, a deleted terminal idle that revises Completed to Running, backfilled idle without admission conflict, huge identifier preflight, durable restart, capture revocation, unsupported schema failure before ack, installer symlink rejection, path retarget rejection, and a live WAL writer appending between bounded pages. Pi and Codex tests exercise the extracted shared process runner.</p>
+<h2>Source and snapshot boundary</h2>
+<p>Each poll opens the database with SQLite read-only flags and <code>PRAGMA query_only=ON</code>, then reads a single transaction snapshot. Rows with payloads over 64 KiB or oversized identity fields are reported as coarse diagnostics without materializing those fields. A sweep pins message, part and session rowid high watermarks, scans at most 256 rows per poll and stops before exceeding the receiver's record, byte or structural-token budget. A later main/WAL file metadata change starts a new sweep with a higher record revision after the current sweep finishes. A database inode change additionally emits a source-gap diagnostic. One stable lifecycle event per session is revised from the latest message/idle in each sweep; deleting a terminal idle therefore removes stale Completed status for retained sessions. Tool results also revise without rewinding an active sweep under continuous appends. Deleted sessions and Activity rows do not yet have a full retraction contract. Equal-size, equal-time source rewrites can escape file-metadata detection.</p>
+<p>SQLite's <a href="https://www.sqlite.org/wal.html#readonly">WAL read-only rules</a> can create sidecars when the source directory is writable. The adapter checks the database header first and refuses WAL mode unless both <code>-wal</code> and <code>-shm</code> already exist. Adapter SQL never updates the source database; SQLite can still coordinate through an existing SHM file. The adapter does not delete or checkpoint source files.</p>
+<h2>Coverage still required for replacement</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Current coverage</th>
+<th>Remaining gate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Discovery</td>
+<td>One configured database</td>
+<td>Versioned database discovery and multi-source lifecycle</td>
+</tr>
+<tr>
+<td>Schema</td>
+<td>Current split message/part layout</td>
+<td>Older layouts and future migrations</td>
+</tr>
+<tr>
+<td>Activity</td>
+<td>Content-free role and tool metadata</td>
+<td>Native action, trace and Review/export parity</td>
+</tr>
+<tr>
+<td>Turn proof</td>
+<td>Idle outcome reason only; no process turn ID</td>
+<td>Revision-safe mutable boundary and native membership proof</td>
+</tr>
+<tr>
+<td>Source changes</td>
+<td>Bounded revision sweeps, session status correction and inode gap</td>
+<td>Deleted session/Activity retraction and same-stat rewrites</td>
+</tr>
+<tr>
+<td>Packaging</td>
+<td>POSIX implementation, Linux test</td>
+<td>Platform and release matrix</td>
+</tr>
+</tbody>
+</table></div>
+<p>This checkpoint is not a production replacement or a performance result. The native Python reader remains the source of richer OpenCode evidence.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
