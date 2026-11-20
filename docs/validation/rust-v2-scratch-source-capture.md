@@ -1,6 +1,6 @@
 # Rust v2 scratch source capture policy
 
-20 November 2026. This PR #297 checkpoint is based on merged main `c841568` (PRs #262–#296). The implementation commit after rebase is `0600dec`; local checks below were run against the rebased code. The operation is available only through the explicitly marked Rust scratch path. It does not route production callers, replace Python `Store`, or claim a performance gain.
+20 November 2026. PR #297 merged as `f1f60aa`; its final PR head was `1760c10`, and implementation code is commit `0600dec`. Local checks below ran against the rebased implementation commit. This checkpoint is based on main through PR #297. The operation is available only through the explicitly marked Rust scratch path. It does not route production callers, replace Python `Store`, or claim a performance gain.
 
 ## Contract and boundary
 
@@ -27,7 +27,7 @@ AGENTURM_RUST_SCRATCH_ADMISSION_BIN="$PWD/target/debug/agenturm-storage-admissio
 
 Results: workspace formatting and Clippy passed; 163 Rust workspace tests passed with no failures. The focused admission and service-contract crates passed 39 and 26 tests. The installed Python scratch-admission suite passed all 17 tests. It exercises same-state no-op and retry with absent markers, disable→enable, revoke→explicit enable, stale lease rejection, no evidence restoration, retries after a later transition, cleanup rollback, and changed-request conflict. Rust regressions cover independent-connection duplicate requests, cross-operation request-ID reuse in both directions, malformed flags, stale cursor/dirty/state/lease fences, private and unsupported state, overflow, ignored or mutated writes, receipt-trigger injection, and trigger-created namespace collisions.
 
-The existing CI workflow builds the scratch binary and runs `tests.test_rust_scratch_admission`; no production dispatch or CI authority change is part of this slice. GitHub checks for PR #297 are pending and are not recorded as passing.
+The existing CI workflow builds the scratch binary and runs `tests.test_rust_scratch_admission`; no production dispatch or CI authority change is part of this slice. GitHub checks were queued at merge. They are not recorded here as passing CI evidence.
 
 ## Remaining boundary
 
