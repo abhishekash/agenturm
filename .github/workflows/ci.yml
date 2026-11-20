@@ -23,6 +23,7 @@ jobs:
       - run: cargo build --locked --bin agenturm-pi-harness
       - run: cargo build --locked --bin agenturm-codex-harness
       - run: cargo build --locked --bin agenturm-claude-harness
+      - run: cargo build --locked --bin agenturm-kiro-harness
       - run: cargo build --locked --bin agenturm-plugin-host
       - run: cargo build --locked --bin agenturm-domain-reducer
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -44,6 +45,9 @@ jobs:
       - run: python -m unittest tests.test_rust_claude_harness_plugin -v
         env:
           AGENTURM_RUST_CLAUDE_BIN: ${{ github.workspace }}/target/debug/agenturm-claude-harness
+      - run: python -m unittest tests.test_rust_kiro_harness_plugin -v
+        env:
+          AGENTURM_RUST_KIRO_BIN: ${{ github.workspace }}/target/debug/agenturm-kiro-harness
       - run: python -m unittest tests.test_rust_plugin_host -v
         env:
           AGENTURM_RUST_PLUGIN_HOST_BIN: ${{ github.workspace }}/target/debug/agenturm-plugin-host
