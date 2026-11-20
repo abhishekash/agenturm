@@ -14,7 +14,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .plugin_wire import PollBatch, ProtocolError, encode_message, validate_batch
+from .plugin_wire import (MAX_CURSOR_CHARS, MAX_DISCOVERY_MEMBERS, MEMBER_ID, PollBatch,
+                          ProtocolError, encode_message, validate_batch)
 from . import plugin_retention, plugin_source_gap
 from .plugin_activity import validate_metadata as validate_activity_metadata
 
@@ -61,6 +62,12 @@ def initialize(db: Connection) -> None:
             policy_epoch INTEGER NOT NULL DEFAULT 1,
             capture_enabled INTEGER NOT NULL DEFAULT 1,
             updated_ns INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS plugin_source_member_cursor_v1 (
+            source_id TEXT NOT NULL,
+            member_id TEXT NOT NULL,
+            cursor TEXT NOT NULL,
+            PRIMARY KEY(source_id,member_id),
+            FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
         CREATE TABLE IF NOT EXISTS plugin_evidence_v1 (
             source_id TEXT NOT NULL,
             event_id_hash TEXT NOT NULL,
@@ -254,6 +261,36 @@ def last_source_diagnostic(store: Store, lease: SourceLease) -> dict:
             if row is not None else {})
 
 
+def member_cursors(store: Store, lease: SourceLease) -> dict[str, str]:
+    """Return a bounded snapshot of opaque per-file checkpoints for one lease."""
+    with store._connect() as db:
+        row = db.execute("SELECT receiver_id,plugin_id,generation,lease_epoch,policy_epoch,"
+                         "capture_enabled FROM plugin_source_cursor_v1 WHERE source_id=?",
+                         (lease.source_id,)).fetchone()
+        if (row is None or not row["capture_enabled"] or tuple(row[:5]) !=
+                (lease.receiver_id, lease.plugin_id, lease.generation,
+                 lease.epoch, lease.policy_epoch)):
+            raise ProtocolError("stale plugin source lease")
+        invalid = db.execute(
+            "SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=? AND "
+            "(length(CAST(member_id AS BLOB))>64 OR "
+            "length(CAST(cursor AS BLOB))>?) LIMIT 1",
+            (lease.source_id, MAX_CURSOR_CHARS)).fetchone()
+        if invalid is not None:
+            raise ProtocolError("discovery checkpoint limit exceeded")
+        rows = db.execute(
+            "SELECT member_id,cursor FROM plugin_source_member_cursor_v1 "
+            "WHERE source_id=? ORDER BY member_id LIMIT ?",
+            (lease.source_id, MAX_DISCOVERY_MEMBERS + 1)).fetchall()
+    if (len(rows) > MAX_DISCOVERY_MEMBERS or any(
+            not isinstance(member, str) or not MEMBER_ID.fullmatch(member)
+            or not isinstance(cursor, str) or len(cursor) > MAX_CURSOR_CHARS
+            or any(ord(char) < 32 or ord(char) == 127 for char in cursor)
+            for member, cursor in rows)):
+        raise ProtocolError("discovery checkpoint limit exceeded")
+    return dict(rows)
+
+
 def _metadata(record: dict) -> dict:
     """Allow only typed, coarse facts; no prompts, output, paths or free text."""
     kind = record["kind"]
@@ -304,9 +341,14 @@ def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]
         raise TypeError("validated plugin batch required")
     # Revalidate because PollBatch contains mutable dictionaries and callers can
     # construct it directly. This also bounds the whole batch before SQL writes.
-    validated = validate_batch({"type": "batch", "protocol": 1,
-                                "source_id": batch.source_id, "cursor": batch.cursor,
-                                "records": list(batch.records)}, source_id=source_id)
+    wire = {"type": "batch", "protocol": 1,
+            "source_id": batch.source_id, "cursor": batch.cursor,
+            "records": list(batch.records)}
+    if batch.member_cursor and not batch.member_id:
+        raise ProtocolError("discovery cursor lacks member identity")
+    if batch.member_id:
+        wire.update(member_id=batch.member_id, member_cursor=batch.member_cursor)
+    validated = validate_batch(wire, source_id=source_id)
     rows = []
     for record in validated.records:
         payload = _metadata(record)
@@ -318,8 +360,11 @@ def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]
                      encode_message(payload), hashlib.sha256(canonical.encode()).hexdigest(),
                      identity.get("session_id", ""), identity.get("worker_id", ""),
                      identity.get("turn_id", ""), identity.get("operation_id", "")))
-    batch_digest = hashlib.sha256(encode_message({"cursor": validated.cursor,
-                                                  "records": list(validated.records)}).encode()).hexdigest()
+    digest_input = {"cursor": validated.cursor, "records": list(validated.records)}
+    if validated.member_id:
+        digest_input.update(member_id=validated.member_id,
+                            member_cursor=validated.member_cursor)
+    batch_digest = hashlib.sha256(encode_message(digest_input).encode()).hexdigest()
     return batch_digest, tuple(rows)
 
 
@@ -339,6 +384,8 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
     incoming_session_ids = {item[7] for item in rows if item[7]}
     gap_hashes = {item[1] for item in rows if item[3] == "diagnostic"
                   and json.loads(item[5])["code"] == "possible_source_gap"}
+    if batch.member_id and not batch.member_cursor and not gap_hashes:
+        raise ProtocolError("removed discovery member requires source-gap evidence")
     with store._source_write(), store._connect() as db:
         db.execute("BEGIN IMMEDIATE")
         receiver = db.execute("SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
@@ -351,7 +398,8 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                 (lease.receiver_id, lease.plugin_id, lease.generation, lease.epoch,
                  lease.policy_epoch)):
             raise ProtocolError("stale plugin source lease")
-        if not rows and batch.cursor == row["cursor"] and expected_cursor == row["cursor"]:
+        if (not rows and not batch.member_id and batch.cursor == row["cursor"]
+                and expected_cursor == row["cursor"]):
             # An idle poll has no durable effect. It still follows lease and
             # source checks before the host may acknowledge it.
             return row["cursor"]
@@ -362,6 +410,17 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
             raise ProtocolError("stale plugin cursor")
         if batch.cursor == expected_cursor:
             raise ProtocolError("plugin cursor did not advance")
+        if batch.member_id:
+            old_member = db.execute("SELECT cursor FROM plugin_source_member_cursor_v1 "
+                                    "WHERE source_id=? AND member_id=?",
+                                    (lease.source_id, batch.member_id)).fetchone()
+            if not batch.member_cursor and old_member is None:
+                raise ProtocolError("unknown discovery member removal")
+            if old_member is None and batch.member_cursor:
+                count_members = db.execute("SELECT COUNT(*) FROM plugin_source_member_cursor_v1 "
+                                           "WHERE source_id=?", (lease.source_id,)).fetchone()[0]
+                if count_members >= MAX_DISCOVERY_MEMBERS:
+                    raise ProtocolError("discovery member limit exceeded")
         count = db.execute("SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
                            (lease.source_id,)).fetchone()[0]
         admitted_ns = time.time_ns()
@@ -371,6 +430,10 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                                 "native_worker_id,native_turn_id,native_operation_id FROM plugin_evidence_v1 "
                                 "WHERE source_id=? AND event_id_hash=? "
                                 "ORDER BY revision DESC LIMIT 1", item[:2]).fetchone()
+            if item[1] in gap_hashes and latest is not None:
+                # A prior possible-gap record cannot invalidate sessions
+                # admitted after that earlier gap. Exact replay returned above.
+                raise ProtocolError("source-gap evidence must be new")
             if latest is not None:
                 if tuple(latest[2:]) != (item[3], item[7], item[8], item[9], item[10]):
                     raise ProtocolError("plugin event identity or kind changed")
@@ -416,6 +479,16 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
         db.execute("UPDATE plugin_source_cursor_v1 SET cursor=?,prior_cursor=?,last_batch_digest=?,"
                    "dirty_seq=?,updated_ns=? WHERE source_id=?",
                    (batch.cursor, expected_cursor, digest, seq, time.time_ns(), lease.source_id))
+        if batch.member_id:
+            if batch.member_cursor:
+                db.execute("INSERT INTO plugin_source_member_cursor_v1(source_id,member_id,cursor) "
+                           "VALUES(?,?,?) ON CONFLICT(source_id,member_id) DO UPDATE SET "
+                           "cursor=excluded.cursor",
+                           (lease.source_id, batch.member_id, batch.member_cursor))
+            else:
+                db.execute("DELETE FROM plugin_source_member_cursor_v1 "
+                           "WHERE source_id=? AND member_id=?",
+                           (lease.source_id, batch.member_id))
         if inserted:
             db.execute("INSERT INTO plugin_evidence_dirty_v1(source_id,dirty_seq) VALUES(?,?) "
                        "ON CONFLICT(source_id) DO UPDATE SET dirty_seq=excluded.dirty_seq",

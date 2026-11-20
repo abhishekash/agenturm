@@ -10,7 +10,8 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
-from .plugin_admission import SourceLease, activate_source, commit_batch, last_source_diagnostic
+from .plugin_admission import (SourceLease, activate_source, commit_batch,
+                               last_source_diagnostic, member_cursors)
 from .plugin_manifest import PluginManifest
 from .plugin_process import PluginProcess
 from .plugin_projection import project_source
@@ -37,6 +38,7 @@ class PluginSession:
                                      rust_host_sha256=rust_host_sha256)
         self.lease: SourceLease | None = None
         self.cursor: str | None = None
+        self.members: dict[str, str] | None = None
         self.projection_error: str | None = None
         self.last_diagnostic: dict = {}
         self._projection_event = threading.Event()
@@ -70,10 +72,17 @@ class PluginSession:
         self.cursor = self.lease.cursor
         try:
             self.process.start()
+            if "source-discovery/1" in self.process.required_features:
+                self.members = member_cursors(self.store, self.lease)
             self.last_diagnostic = last_source_diagnostic(self.store, self.lease)
         except BaseException:
+            try:
+                self.process.close(force=True)
+            except BaseException:
+                pass  # Preserve the startup error after best-effort cleanup.
             self.lease = None
             self.cursor = None
+            self.members = None
             raise
         self._projection_stop.clear()
         self._projection_thread = threading.Thread(target=self._projection_loop,
@@ -87,8 +96,13 @@ class PluginSession:
             raise ProtocolError("plugin session is not running")
         expected = self.cursor
         batch = self.process.poll_commit(expected, lambda received: commit_batch(
-            self.store, self.lease, expected, received))
+            self.store, self.lease, expected, received), members=self.members)
         self.cursor = batch.cursor
+        if batch.member_id and self.members is not None:
+            if batch.member_cursor:
+                self.members[batch.member_id] = batch.member_cursor
+            else:
+                self.members.pop(batch.member_id, None)
         for record in batch.records:
             if record["kind"] == "diagnostic":
                 self.last_diagnostic = {**record["payload"],
@@ -108,6 +122,7 @@ class PluginSession:
         self.process.close()
         self.lease = None
         self.cursor = None
+        self.members = None
 
     def __enter__(self) -> PluginSession:
         return self.start()

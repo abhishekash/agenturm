@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod codex;
+mod directory;
 
 use agenturm_jsonl_source::{Result, SourceFormat};
 use serde_json::Value;
@@ -39,7 +40,14 @@ impl SourceFormat for CodexFormat {
 
 fn main() {
     // The host receives a coarse failure only, never source contents or paths.
-    if agenturm_jsonl_source::run::<CodexFormat>().is_err() {
+    let directory_mode = std::env::var_os("AGENTURM_PLUGIN_SOURCE_ROOT")
+        .is_some_and(|root| std::path::Path::new(&root).is_dir());
+    let result = if directory_mode {
+        agenturm_source_process::run::<directory::DirectoryPoller>()
+    } else {
+        agenturm_jsonl_source::run::<CodexFormat>()
+    };
+    if result.is_err() {
         std::process::exit(2);
     }
 }

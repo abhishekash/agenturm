@@ -11,8 +11,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::error::Error;
-use std::fs::{File, Metadata};
+use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -233,8 +234,59 @@ pub fn poll<F: SourceFormat>(
     max_records: usize,
     max_bytes: usize,
 ) -> Result<Value> {
+    poll_inner::<F>(
+        path,
+        source_id,
+        raw_cursor,
+        max_records,
+        max_bytes,
+        false,
+        MAX_STRUCTURAL_TOKENS,
+    )
+}
+
+/// Directory discovery refuses a final-component symlink after scanning.
+/// Explicit single-file sources keep their existing path semantics.
+pub fn poll_no_follow<F: SourceFormat>(
+    path: &Path,
+    source_id: &str,
+    raw_cursor: &str,
+    max_records: usize,
+    max_bytes: usize,
+) -> Result<Value> {
+    // The directory envelope adds member_id and member_cursor fields.
+    poll_inner::<F>(
+        path,
+        source_id,
+        raw_cursor,
+        max_records,
+        max_bytes,
+        true,
+        MAX_STRUCTURAL_TOKENS - 32,
+    )
+}
+
+fn poll_inner<F: SourceFormat>(
+    path: &Path,
+    source_id: &str,
+    raw_cursor: &str,
+    max_records: usize,
+    max_bytes: usize,
+    no_follow: bool,
+    token_limit: usize,
+) -> Result<Value> {
     let previous = Cursor::parse(raw_cursor)?;
-    let mut file = match File::open(path) {
+    // A directory-discovered file swapped to a symlink after scanning must
+    // not redirect the reader to a different final file.
+    let opened = if no_follow {
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+    } else {
+        File::open(path)
+    };
+    let mut file = match opened {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound && previous.is_none() => {
             return Ok(batch(source_id, raw_cursor, &[]));
@@ -244,6 +296,15 @@ pub fn poll<F: SourceFormat>(
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(invalid("source is not a regular file"));
+    }
+    if no_follow {
+        let path_metadata = path.symlink_metadata()?;
+        if path_metadata.file_type().is_symlink()
+            || !path_metadata.is_file()
+            || file_identity(&metadata) != file_identity(&path_metadata)
+        {
+            return Err(invalid("source identity changed during open"));
+        }
     }
     let (device, inode) = file_identity(&metadata);
     let Some(header) = read_line(&mut file, 0)? else {
@@ -355,7 +416,7 @@ pub fn poll<F: SourceFormat>(
         let before = records.len();
         records.extend(candidates);
         let encoded = serde_json::to_vec(&batch(source_id, &next, &records))?;
-        if encoded.len() > max_bytes || structural_tokens(&encoded) > MAX_STRUCTURAL_TOKENS {
+        if encoded.len() > max_bytes || structural_tokens(&encoded) > token_limit {
             records.truncate(before);
             if before == 0 {
                 return Err(invalid("source line exceeds batch budget"));
@@ -383,7 +444,7 @@ pub fn poll<F: SourceFormat>(
     .encode();
     let response = batch(source_id, &next, &records);
     let encoded = serde_json::to_vec(&response)?;
-    if encoded.len() > max_bytes || structural_tokens(&encoded) > MAX_STRUCTURAL_TOKENS {
+    if encoded.len() > max_bytes || structural_tokens(&encoded) > token_limit {
         return Err(invalid("source diagnostic exceeds batch budget"));
     }
     Ok(response)

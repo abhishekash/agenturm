@@ -11,3 +11,4 @@ agenturm-source-process = { path = "../agenturm-source-process" }
 agenturm-protocol = { path = "../agenturm-protocol" }
 serde_json = "1.0"
 sha2 = "0.10"
+libc = "0.2"

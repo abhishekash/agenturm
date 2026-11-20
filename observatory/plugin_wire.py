@@ -21,6 +21,8 @@ MAX_BATCH_RECORDS = 256
 MAX_CONTROL_FRAME_BYTES = 64 * 1024
 MAX_RECORD_BYTES = 16 * 1024
 MAX_CURSOR_CHARS = 512
+MAX_DISCOVERY_MEMBERS = 48
+MEMBER_ID = re.compile(r"[0-9a-f]{64}\Z")
 MAX_ID_CHARS = 256
 INT64_MAX = 2**63 - 1
 DECIMAL_NS = re.compile(r"(?:0|[1-9][0-9]{0,18})\Z")
@@ -152,10 +154,13 @@ class PollBatch:
     source_id: str
     cursor: str
     records: tuple[dict, ...]
+    member_id: str = ""
+    member_cursor: str = ""
 
 
 def validate_batch(message: dict, *, source_id: str) -> PollBatch:
-    if set(message) != {"type", "protocol", "source_id", "cursor", "records"}:
+    fields = {"type", "protocol", "source_id", "cursor", "records"}
+    if set(message) not in (fields, fields | {"member_id", "member_cursor"}):
         raise ProtocolError("invalid batch fields")
     if (message["type"] != "batch" or type(message["protocol"]) is not int
             or message["protocol"] != PROTOCOL_MAJOR or message["source_id"] != source_id):
@@ -197,4 +202,14 @@ def validate_batch(message: dict, *, source_id: str) -> PollBatch:
             raise ProtocolError("record payload must be an object")
         if len(encode_message(record).encode("utf-8")) > MAX_RECORD_BYTES:
             raise ProtocolError("record exceeds byte limit")
-    return PollBatch(source_id, cursor, tuple(records))
+    member_id = message.get("member_id", "")
+    member_cursor = message.get("member_cursor", "")
+    if member_id:
+        if not isinstance(member_id, str) or not MEMBER_ID.fullmatch(member_id):
+            raise ProtocolError("invalid discovery member ID")
+        if not isinstance(member_cursor, str) or len(member_cursor) > MAX_CURSOR_CHARS or any(
+                ord(char) < 32 or ord(char) == 127 for char in member_cursor):
+            raise ProtocolError("invalid discovery member cursor")
+    elif "member_id" in message:
+        raise ProtocolError("invalid discovery member ID")
+    return PollBatch(source_id, cursor, tuple(records), member_id, member_cursor)

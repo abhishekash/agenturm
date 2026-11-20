@@ -20,7 +20,8 @@ from typing import BinaryIO, Callable
 
 from .plugin_frames import FrameError, MAX_FRAME_BYTES, read_frame, write_frame
 from .plugin_manifest import PluginManifest, plan_activation
-from .plugin_wire import (MAX_BATCH_RECORDS, MAX_CONTROL_FRAME_BYTES, PROTOCOL_MAJOR, PollBatch, ProtocolError,
+from .plugin_wire import (MAX_BATCH_RECORDS, MAX_CONTROL_FRAME_BYTES, MAX_CURSOR_CHARS,
+                          MAX_DISCOVERY_MEMBERS, MEMBER_ID, PROTOCOL_MAJOR, PollBatch, ProtocolError,
                           decode_message, encode_message, validate_batch,
                           validate_hello_ack)
 
@@ -256,7 +257,8 @@ class PluginProcess:
             self.close(force=True)
             raise
 
-    def poll(self, cursor: str, *, max_records: int = MAX_BATCH_RECORDS) -> PollBatch:
+    def poll(self, cursor: str, *, max_records: int = MAX_BATCH_RECORDS,
+             members: dict[str, str] | None = None) -> PollBatch:
         if self.process is None or self.process.poll() is not None:
             raise ProtocolError("plugin is not running")
         if self.pending is not None:
@@ -265,9 +267,20 @@ class PluginProcess:
             raise ValueError("invalid resume cursor")
         if type(max_records) is not int or not 1 <= max_records <= MAX_BATCH_RECORDS:
             raise ValueError("invalid poll record budget")
-        self._send({"type": "poll", "protocol": PROTOCOL_MAJOR,
-                    "source_id": self.source_id, "cursor": cursor,
-                    "max_records": max_records, "max_bytes": MAX_FRAME_BYTES})
+        request = {"type": "poll", "protocol": PROTOCOL_MAJOR,
+                   "source_id": self.source_id, "cursor": cursor,
+                   "max_records": max_records, "max_bytes": MAX_FRAME_BYTES}
+        if "source-discovery/1" in self.required_features:
+            if (not isinstance(members, dict) or len(members) > MAX_DISCOVERY_MEMBERS
+                    or any(not isinstance(key, str) or not MEMBER_ID.fullmatch(key)
+                           or not isinstance(value, str) or len(value) > MAX_CURSOR_CHARS
+                           or any(ord(char) < 32 or ord(char) == 127 for char in value)
+                           for key, value in members.items())):
+                raise ValueError("invalid discovery checkpoint snapshot")
+            request["members"] = members
+        elif members is not None:
+            raise ValueError("discovery checkpoints require source-discovery/1")
+        self._send(request)
         try:
             batch = validate_batch(self._next(), source_id=self.source_id)
         except ProtocolError:
@@ -276,6 +289,15 @@ class PluginProcess:
         if len(batch.records) > max_records:
             self.close(force=True)
             raise ProtocolError("plugin exceeded poll record budget")
+        if "source-discovery/1" in self.required_features:
+            if ((not batch.member_id and batch.records)
+                    or (batch.member_id and batch.member_id not in members
+                        and len(members) >= MAX_DISCOVERY_MEMBERS)):
+                self.close(force=True)
+                raise ProtocolError("invalid discovery member result")
+        elif batch.member_id:
+            self.close(force=True)
+            raise ProtocolError("unexpected discovery member result")
         self.pending = batch
         return batch
 
@@ -288,8 +310,9 @@ class PluginProcess:
         self.pending = None
 
     def poll_commit(self, cursor: str, commit: Callable[[PollBatch], str], *,
-                    max_records: int = MAX_BATCH_RECORDS) -> PollBatch:
-        batch = self.poll(cursor, max_records=max_records)
+                    max_records: int = MAX_BATCH_RECORDS,
+                    members: dict[str, str] | None = None) -> PollBatch:
+        batch = self.poll(cursor, max_records=max_records, members=members)
         try:
             committed_cursor = commit(batch)
             if committed_cursor != batch.cursor:
