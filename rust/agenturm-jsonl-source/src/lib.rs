@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::error::Error;
+use std::fmt;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::OpenOptionsExt;
@@ -54,6 +55,35 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 fn invalid(message: &'static str) -> Box<dyn Error> {
     message.into()
+}
+
+#[derive(Debug)]
+struct ContinuityError(&'static str);
+
+impl fmt::Display for ContinuityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl Error for ContinuityError {}
+
+fn continuity(message: &'static str) -> Box<dyn Error> {
+    Box::new(ContinuityError(message))
+}
+
+/// A discovered member can lose continuity after enumeration but before or
+/// during its bounded read. This excludes cursor, format and budget errors.
+pub fn is_continuity_error(error: &(dyn Error + 'static)) -> bool {
+    error.is::<ContinuityError>()
+}
+
+fn classify_read(error: Box<dyn Error>) -> Box<dyn Error> {
+    if error.is::<io::Error>() {
+        continuity("source read unavailable")
+    } else {
+        error
+    }
 }
 
 fn identity(value: &str) -> bool {
@@ -166,7 +196,7 @@ fn prefix_hasher(file: &mut File, offset: u64) -> Result<Sha256> {
         let limit = usize::try_from(remaining.min(buffer.len() as u64))?;
         let count = file.read(&mut buffer[..limit])?;
         if count == 0 {
-            return Err(invalid("source prefix changed during verification"));
+            return Err(continuity("source prefix changed during verification"));
         }
         hasher.update(&buffer[..count]);
         remaining -= u64::try_from(count)?;
@@ -278,30 +308,36 @@ fn poll_inner<F: SourceFormat>(
     };
     let mut file = match opened {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound && previous.is_none() => {
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound && previous.is_none() && !no_follow =>
+        {
             return Ok(batch(source_id, raw_cursor, &[]));
         }
-        Err(_) => return Err(invalid("source file unavailable")),
+        Err(_) => return Err(continuity("source file unavailable")),
     };
-    let metadata = file.metadata()?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| continuity("source metadata unavailable"))?;
     if !metadata.is_file() {
-        return Err(invalid("source is not a regular file"));
+        return Err(continuity("source is not a regular file"));
     }
     if no_follow {
-        let path_metadata = path.symlink_metadata()?;
+        let path_metadata = path
+            .symlink_metadata()
+            .map_err(|_| continuity("source path metadata unavailable"))?;
         if path_metadata.file_type().is_symlink()
             || !path_metadata.is_file()
             || file_identity(&metadata) != file_identity(&path_metadata)
         {
-            return Err(invalid("source identity changed during open"));
+            return Err(continuity("source identity changed during open"));
         }
     }
     let (device, inode) = file_identity(&metadata);
-    let Some(header) = read_line(&mut file, 0)? else {
+    let Some(header) = read_line(&mut file, 0).map_err(classify_read)? else {
         // A previously observed source without a complete header is a gap,
         // not an idle poll. Keep its durable cursor and fail visibly.
         if previous.is_some() {
-            return Err(invalid("observed source header unavailable"));
+            return Err(continuity("observed source header unavailable"));
         }
         return Ok(batch(source_id, raw_cursor, &[]));
     };
@@ -320,8 +356,12 @@ fn poll_inner<F: SourceFormat>(
             || prior.header_digest != header_digest
     });
     if !changed && let Some(prior) = &previous {
-        changed =
-            format!("{:x}", prefix_hasher(&mut file, prior.offset)?.finalize()) != prior.digest;
+        changed = format!(
+            "{:x}",
+            prefix_hasher(&mut file, prior.offset)
+                .map_err(classify_read)?
+                .finalize()
+        ) != prior.digest;
     }
     let mut records = Vec::new();
     let mut event_ids = HashSet::new();
@@ -345,7 +385,7 @@ fn poll_inner<F: SourceFormat>(
     } else {
         previous.as_ref().map_or(0, |cursor| cursor.offset)
     };
-    let mut prefix = prefix_hasher(&mut file, offset)?;
+    let mut prefix = prefix_hasher(&mut file, offset).map_err(classify_read)?;
     if changed {
         let evidence = format!("{}|({}, {})", raw_cursor, device, inode);
         let id = format!("{}:{:x}", F::GAP_EVENT_PREFIX, Sha256::digest(evidence));
@@ -360,7 +400,7 @@ fn poll_inner<F: SourceFormat>(
     }
     let mut position = offset;
     while records.len() < max_records && position - offset < MAX_SCAN {
-        let Some(line) = read_line(&mut file, position)? else {
+        let Some(line) = read_line(&mut file, position).map_err(classify_read)? else {
             break;
         };
         if line.len() as u64 > MAX_SCAN - (position - offset) {
@@ -422,8 +462,12 @@ fn poll_inner<F: SourceFormat>(
         prefix = candidate_prefix;
         context = candidate_context;
     }
-    if prefix_hasher(&mut file, position)?.finalize() != prefix.clone().finalize() {
-        return Err(invalid("source changed during poll"));
+    if prefix_hasher(&mut file, position)
+        .map_err(classify_read)?
+        .finalize()
+        != prefix.clone().finalize()
+    {
+        return Err(continuity("source changed during poll"));
     }
     let next = Cursor {
         version: 2,

@@ -93,7 +93,8 @@ class CodexDirectoryTests(unittest.TestCase):
             self.fail(f"source did not reach expected condition: {manager.snapshot()}")
 
         healthy = until(lambda status: status["state"] == "running"
-                        and status["last_success_ns"] > 0)
+                        and status["last_success_ns"] > 0
+                        and set(self.sessions()) == {"session-one", "session-two"})
         self.assertEqual({row["run_state"] for row in self.sessions().values()},
                          {"completed"})
         moved = self.root / "sessions-unavailable"
@@ -237,6 +238,56 @@ class CodexDirectoryTests(unittest.TestCase):
             retained = "".join(row[0] for row in db.execute(
                 "SELECT payload_json FROM plugin_evidence_v1"))
         self.assertNotIn(str(self.sources), retained)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
+                     "root can read a permission-denied test file")
+    def test_unreadable_discovered_file_gaps_its_member_and_recovers(self):
+        with self.worker() as worker:
+            worker.poll_once()
+            worker.poll_once()
+            self.assertEqual({row["run_state"] for row in self.sessions().values()},
+                             {"completed"})
+            member_before = dict(worker.members)
+            self.first.chmod(0)
+            try:
+                gap = None
+                for _ in range(3):
+                    batch = worker.poll_once()
+                    if batch.member_id and batch.cursor.startswith("d3:") and batch.records:
+                        gap = batch
+                        break
+                self.assertIsNotNone(gap)
+                self.assertEqual(gap.records[0]["payload"]["code"],
+                                 "possible_source_gap")
+                self.assertEqual(gap.member_cursor, member_before[gap.member_id])
+                self.assertEqual(worker.members, member_before)
+                self.assertEqual(len(member_cursors(self.store, worker.lease)), 2)
+                self.assertEqual({key: row["run_state"] for key, row in
+                                  self.sessions().items()},
+                                 {"session-one": "unknown", "session-two": "completed"})
+                self.assertEqual(len(self.store.activity_page()["activity"]), 1)
+                with self.assertRaises(ProtocolError):
+                    for _ in range(3):
+                        worker.poll_once()
+            finally:
+                self.first.chmod(0o600)
+        self.first.write_text(self.first.read_text().replace(
+            '"task_complete"', '"task_aborted"'))
+        third = self.sources / "2026" / "11" / "three.jsonl"
+        rollout(third, "session-three")
+        with self.worker() as worker:
+            self.assertEqual(worker.members, member_before)
+            self.assertTrue(worker.cursor.startswith("d3:"))
+            rewritten = worker.poll_once()
+            self.assertTrue(rewritten.cursor.startswith("d1:"))
+            self.assertTrue(any(row["kind"] == "diagnostic" for row in rewritten.records))
+            for _ in range(4):
+                worker.poll_once()
+                if "session-three" in self.sessions():
+                    break
+            self.assertEqual(self.sessions()["session-three"]["run_state"], "completed")
+            self.assertEqual(self.sessions()["session-one"]["run_state"], "unknown")
+            self.assertEqual(self.sessions()["session-two"]["run_state"], "completed")
 
     def test_same_length_rewrite_of_one_file_reports_gap(self):
         with self.worker() as worker:
