@@ -9,6 +9,7 @@ import hashlib
 import os
 import stat
 from dataclasses import dataclass
+from typing import ClassVar
 
 from .local_activity import safe
 from .plugin_pi_content import (
@@ -45,6 +46,8 @@ class PiCommandRef:
 @dataclass(frozen=True)
 class PiCommandGrant(PiContentGrant):
     """A separate trusted grant for the explicit Pi command capture mode."""
+
+    grant_label: ClassVar[str] = "Pi command"
 
     @staticmethod
     def binding_for_source(source):
