@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 import threading
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 
 from .capability_process import PromptCapabilityHost, read_capability_config
@@ -97,6 +98,13 @@ class LiveCaptureGate:
                 self._denied = True
                 self._approved_at = 0.0
 
+    def _invalidate(self, scope: PaneScope):
+        """Expire an uncertain read; let the health watcher reapprove later."""
+        with self._lock:
+            if scope == self._scope:
+                self._approved_at = 0.0
+        self._wake.set()
+
     def _health(self, scope: PaneScope, receiver: str) -> None:
         health = self.api.get("/api/health")
         if (not isinstance(health, dict) or health.get("receiver_id") != receiver
@@ -161,15 +169,19 @@ class ReceiverActivityReader:
         scope = PaneScope(agent_id, service, session_id)
         receiver = self.gate.confirm_live(scope)
         params = {"limit": limit, "service": service, "session_id": session_id,
-                  "agent_id": agent_id, "subtree": 0, "include_reviews": 0}
+                  "agent_id": agent_id, "subtree": 0, "include_reviews": 0,
+                  "capture_scope": 1}
         try:
             page = self.api.get("/api/activity?" + urlencode(params))
             if (not isinstance(page, dict) or page.get("receiver_id") != receiver
                     or not isinstance(page.get("activity"), list)):
                 raise ValueError("capability Activity receiver or schema mismatch")
             self.gate.confirm_live(scope)
-        except Exception:
-            self.gate._deny(scope)
+        except Exception as exc:
+            if isinstance(exc, HTTPError) and exc.code == 409:
+                self.gate._invalidate(scope)
+            else:
+                self.gate._deny(scope)
             raise
         return page
 
