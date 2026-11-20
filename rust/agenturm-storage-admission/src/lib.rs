@@ -9,7 +9,10 @@
 #![forbid(unsafe_code)]
 
 use agenturm_storage_lease::WriterLease;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use agenturm_storage_service_contract::v2;
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -141,6 +144,34 @@ struct Receipt {
     dirty_seq: i64,
 }
 
+fn finish(
+    transaction: Transaction<'_>,
+    receipt: Receipt,
+    request: &Request,
+    replay: Option<&v2::ReplayIdentity>,
+    existing_v2_receipt: bool,
+) -> Result<Receipt> {
+    if let Some(replay) = replay.filter(|_| !existing_v2_receipt) {
+        transaction.execute(
+            "INSERT INTO storage_admission_request_v2 \
+             (request_id,receiver_id,request_digest,source_id,cursor,batch_digest,dirty_seq,disposition) \
+             VALUES(?,?,?,?,?,?,?,?)",
+            params![
+                replay.request_id,
+                replay.receiver_id,
+                replay.digest,
+                request.lease.source_id,
+                receipt.cursor,
+                request.batch_digest,
+                receipt.dirty_seq,
+                receipt.disposition,
+            ],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(receipt)
+}
+
 fn validate(request: &Request) -> Result<()> {
     let lease = &request.lease;
     if request.schema_version != 1
@@ -206,6 +237,7 @@ fn commit_guarded(
     db: &mut Connection,
     request: &Request,
     writer_lease: Option<&WriterLease>,
+    replay: Option<&v2::ReplayIdentity>,
 ) -> Result<Receipt> {
     validate(request)?;
     let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -294,15 +326,61 @@ fn commit_guarded(
     if unsupported != 0 {
         return Err(reject("scratch source has unsupported history"));
     }
+    let mut existing_v2_receipt = false;
+    if let Some(replay) = replay {
+        // The request identity is committed in the same scratch transaction as
+        // the cursor/evidence. A process crash cannot leave a successful v2
+        // admission without its conflict fence.
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS storage_admission_request_v2( \
+             request_id TEXT PRIMARY KEY, receiver_id TEXT NOT NULL, \
+             request_digest TEXT NOT NULL, source_id TEXT NOT NULL, \
+             cursor TEXT NOT NULL, batch_digest TEXT NOT NULL, \
+             dirty_seq INTEGER NOT NULL, disposition TEXT NOT NULL)",
+        )?;
+        type StoredReceipt = (String, String, String, String, String, i64, String);
+        let stored: Option<StoredReceipt> = transaction
+            .query_row(
+                "SELECT receiver_id,source_id,request_digest,cursor,batch_digest,dirty_seq,disposition \
+                 FROM storage_admission_request_v2 \
+                 WHERE request_id=?",
+                [&replay.request_id],
+                |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
+                        row.get(4)?, row.get(5)?, row.get(6)?))
+                },
+            )
+            .optional()?;
+        if let Some((receiver, source, digest, cursor, batch, recorded_dirty, disposition)) = stored
+        {
+            if receiver != replay.receiver_id
+                || source != request.lease.source_id
+                || digest != replay.digest
+                || cursor != request.cursor
+                || batch != request.batch_digest
+                || recorded_dirty != dirty_seq
+                || !matches!(disposition.as_str(), "committed" | "replay" | "idle")
+            {
+                return Err(reject("conflicting v2 request replay identity"));
+            }
+            existing_v2_receipt = true;
+        }
+    }
     if request.records.is_empty()
         && request.cursor == current_cursor
         && request.expected_cursor == current_cursor
     {
-        return Ok(Receipt {
-            cursor: current_cursor,
-            disposition: "idle",
-            dirty_seq,
-        });
+        return finish(
+            transaction,
+            Receipt {
+                cursor: current_cursor,
+                disposition: "idle",
+                dirty_seq,
+            },
+            request,
+            replay,
+            existing_v2_receipt,
+        );
     }
     if request.cursor == current_cursor
         && request.batch_digest == prior_digest
@@ -321,11 +399,17 @@ fn commit_guarded(
         {
             return Err(reject("scratch empty-content replay receipt mismatch"));
         }
-        return Ok(Receipt {
-            cursor: current_cursor,
-            disposition: "replay",
-            dirty_seq,
-        });
+        return finish(
+            transaction,
+            Receipt {
+                cursor: current_cursor,
+                disposition: "replay",
+                dirty_seq,
+            },
+            request,
+            replay,
+            existing_v2_receipt,
+        );
     }
     if request.expected_cursor != current_cursor {
         return Err(reject("stale source cursor"));
@@ -443,19 +527,24 @@ fn commit_guarded(
             request.lease.policy_epoch
         ],
     )?;
-    transaction.commit()?;
-    Ok(Receipt {
-        cursor: request.cursor.clone(),
-        disposition: "committed",
-        dirty_seq: next_dirty,
-    })
+    finish(
+        transaction,
+        Receipt {
+            cursor: request.cursor.clone(),
+            disposition: "committed",
+            dirty_seq: next_dirty,
+        },
+        request,
+        replay,
+        existing_v2_receipt,
+    )
 }
 
 #[cfg(test)]
 fn commit(db: &mut Connection, request: &Request) -> Result<Receipt> {
     // In-memory unit fixtures have no filesystem path; the public scratch
     // entrypoint always supplies a cooperating lease.
-    commit_guarded(db, request, None)
+    commit_guarded(db, request, None, None)
 }
 
 /// Apply one host-prepared lifecycle batch to an explicitly marked disposable
@@ -467,7 +556,17 @@ pub fn apply_json(input: &str) -> Result<String> {
     let request: Request = serde_json::from_str(input)?;
     validate(&request)?;
     let path = Path::new(&request.sqlite_path);
-    if request.sqlite_path.len() > 4096
+    let receipt = with_marked_scratch(path, |db, lease| {
+        commit_guarded(db, &request, Some(lease), None)
+    })?;
+    Ok(serde_json::to_string(&receipt)?)
+}
+
+fn with_marked_scratch<T>(
+    path: &Path,
+    apply: impl FnOnce(&mut Connection, &WriterLease) -> Result<T>,
+) -> Result<T> {
+    if path.as_os_str().as_encoded_bytes().len() > 4096
         || !path.is_absolute()
         || !fs::symlink_metadata(path)?.file_type().is_file()
     {
@@ -482,10 +581,81 @@ pub fn apply_json(input: &str) -> Result<String> {
     let writer_lease = WriterLease::acquire(path)?;
     writer_lease.verify_admission()?;
     let mut db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    let receipt = commit_guarded(&mut db, &request, Some(&writer_lease))?;
+    let result = apply(&mut db, &writer_lease)?;
     drop(db);
     drop(writer_lease);
-    Ok(serde_json::to_string(&receipt)?)
+    Ok(result)
+}
+
+/// Apply a strict v2 lifecycle request to an explicit disposable scratch path.
+/// The path is a CLI/library argument, never accepted from the untrusted v2
+/// frame. No service listener, receiver, or production Store calls this API.
+pub fn apply_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
+    let request = v2::Request::from_json(input)?;
+    let replay = request.replay_identity()?;
+    let v2::Operation::AdmitLifecycle {
+        lease,
+        expected_cursor,
+        cursor,
+        batch_digest,
+        records,
+    } = &request.operation;
+    let prepared = Request {
+        schema_version: 1,
+        sqlite_path: path
+            .to_str()
+            .ok_or_else(|| reject("scratch path must be UTF-8"))?
+            .to_owned(),
+        lease: Lease {
+            receiver_id: lease.receiver_id.clone(),
+            plugin_id: lease.plugin_id.clone(),
+            source_id: lease.source_id.clone(),
+            generation: lease.generation.clone(),
+            epoch: lease.epoch,
+            policy_epoch: lease.policy_epoch,
+        },
+        expected_cursor: expected_cursor.clone(),
+        cursor: cursor.clone(),
+        batch_digest: batch_digest.clone(),
+        records: records
+            .iter()
+            .map(|row| PreparedRecord {
+                event_id_hash: row.event_id_hash.clone(),
+                revision: row.revision,
+                kind: "lifecycle".to_owned(),
+                time_ns: row.time_ns,
+                payload_json: row.payload_json.clone(),
+                record_digest: row.record_digest.clone(),
+                native_session_id: row.native_session_id.clone(),
+                native_worker_id: row.native_worker_id.clone(),
+                native_turn_id: row.native_turn_id.clone(),
+                native_operation_id: row.native_operation_id.clone(),
+            })
+            .collect(),
+    };
+    let receipt = with_marked_scratch(path, |db, writer_lease| {
+        commit_guarded(db, &prepared, Some(writer_lease), Some(&replay))
+    })?;
+    let disposition = match receipt.disposition {
+        "committed" => v2::Disposition::Committed,
+        "replay" => v2::Disposition::Replay,
+        "idle" => v2::Disposition::Idle,
+        _ => return Err(reject("unexpected scratch disposition")),
+    };
+    v2::Reply {
+        version: v2::VERSION,
+        request_id: request.request_id.clone(),
+        receiver_id: request.receiver_id.clone(),
+        request_digest: replay.digest,
+        result: v2::AdmissionResult {
+            disposition,
+            cursor: receipt.cursor,
+            batch_digest: batch_digest.clone(),
+            dirty_seq: receipt.dirty_seq,
+        },
+    }
+    .to_json(&request)
+    .map_err(Into::into)
 }
 
 #[cfg(test)]
