@@ -1402,7 +1402,7 @@ class ObservatoryApp(App):
               Binding('m','session_mode','Inspector mode',show=False),
               Binding('ctrl+left','inspector_mode(-1)','Previous inspector section',show=False),
               Binding('ctrl+right','inspector_mode(1)','Next inspector section',show=False),
-              Binding('z','prompt_original','Original prompt text',show=False),
+              Binding('z','prompt_original','Source text',show=False),
               Binding('alt+up','inspect_parent','Inspect parent',show=False),
               Binding('alt+down','inspect_first_child','Inspect child',show=False),
               Binding('alt+right','inspect_next_attention','Next descendant needing attention',show=False),
@@ -1714,7 +1714,7 @@ class ObservatoryApp(App):
             ('Session prompts','Read one recorded request at a time',lambda:self.open_session_mode('prompts')),
             ('Session details','Inspect identifiers, usage and collection evidence',lambda:self.open_session_mode('details')),
             ('Review recorded work','Load exactly scoped checks, edits and errors',self.action_review_work),
-            ('Original prompt text','Toggle original/readable text for this request · z',self.action_prompt_original),
+            ('Source text','Agents: toggle original/readable request. Activity: check selected process user text · z',self.action_prompt_original),
             ('Previous prompt','Select the preceding captured request · [',lambda:self.navigate_prompt('older')),
             ('Next prompt','Select the following captured request · ]',lambda:self.navigate_prompt('newer')),
             ('Latest prompt','Select the latest loaded request · l',lambda:self.navigate_prompt('latest')),
@@ -3393,6 +3393,7 @@ class ObservatoryApp(App):
         if not plugin_text_eligible(item):
             self.notify('Select a process user message to check captured text.');return
         receiver_id=self.feed.snapshot.receiver_id
+        self._clear_plugin_text_visual()
         self.plugin_text_generation+=1
         generation=self.plugin_text_generation
         self.plugin_text_state={'record':deepcopy(item),'receiver_id':receiver_id,
@@ -3457,14 +3458,30 @@ class ObservatoryApp(App):
                 self.table_data.get('activity-table',{}).get(self.selected_activity)!=record or
                 revision is None or revision!=state.get('revision')):
             state.update(status='unavailable',text='',clipped=False,revision=None)
+            self._clear_plugin_text_visual()
             if self.is_mounted and isinstance(self.screen,ObservatoryScreen):self.show_activity()
             return
         self.set_timer(2,lambda:self.revalidate_plugin_text(generation))
 
-    def expire_plugin_text(self,generation):
-        if generation!=self.plugin_text_generation:return
+    def _clear_plugin_text_visual(self):
+        """Remove old RichLog strips as well as the cached inspector payload."""
+        if not self.is_mounted:return
+        cockpit=next((screen for screen in self.screen_stack
+                      if isinstance(screen,ObservatoryScreen)),None)
+        if cockpit is None:return
+        cockpit.query_one('#activity-detail',RichLog).clear()
+        self.inspector_payloads.pop('activity-detail',None)
+        self.inspector_signatures.pop('activity-detail',None)
+
+    def clear_plugin_text(self):
+        if self.plugin_text_state is None:return
         self.plugin_text_generation+=1
         self.plugin_text_state=None
+        self._clear_plugin_text_visual()
+
+    def expire_plugin_text(self,generation):
+        if generation!=self.plugin_text_generation:return
+        self.clear_plugin_text()
         if self.is_mounted and isinstance(self.screen,ObservatoryScreen) and \
                 self.query_one('#pages',TabbedContent).active=='activity':
             self.show_activity()
@@ -3856,14 +3873,13 @@ class ObservatoryApp(App):
         self.inspect('agent-detail',title,fields,sections,identity=(item['id'],'overview'),context_in_header=True)
 
     def show_activity(self):
-        if self.native_page_pending('activity'):return
         item=self.table_data.get('activity-table',{}).get(self.selected_activity)
         state=self.plugin_text_state
         if state and (not item or item != state['record'] or
                       self.feed.snapshot.receiver_id != state['receiver_id'] or
                       time.monotonic() >= state['expires_at']):
-            self.plugin_text_generation+=1
-            self.plugin_text_state=None
+            self.clear_plugin_text()
+        if self.native_page_pending('activity'):return
         fallback=self.activity_trace_fallback()
         self.query_one('#activity-trace',Button).disabled=not bool((item or fallback or {}).get('trace_id'))
         if not item:
@@ -3901,7 +3917,7 @@ class ObservatoryApp(App):
                     (text or '(empty message)')+
                     ('\n… Excerpt clipped; source text remains in the original Pi file.'
                      if state['clipped'] else '')+
-                    '\nTransient preview · z Reload'))
+                    '\nLoaded snapshot · expires in 20s · z Reload'))
             elif state and state['status']=='loading':
                 sections.insert(0,('Captured user text','Loading exact source proof…'))
             elif state and state['status']=='unavailable':
@@ -4279,6 +4295,7 @@ class ObservatoryApp(App):
 
     @on(TabbedContent.TabActivated,'#pages')
     def page_activated(self,event):
+        if event.pane.id!='activity':self.clear_plugin_text()
         self.preference_view=event.pane.id
         page_changed=self.feed.active_page!=event.pane.id
         self.feed.active_page=event.pane.id
@@ -4986,9 +5003,7 @@ class ObservatoryApp(App):
         for page in self.search_queries:self.query_one('#search-'+page,Input).value=''
         self.last_update=-1;self.refresh_data()
     def action_page(self,page):
-        if page!='activity' and self.plugin_text_state is not None:
-            self.plugin_text_generation+=1
-            self.plugin_text_state=None
+        if page!='activity':self.clear_plugin_text()
         self.screen.clear_selection()
         self.collapse(page)
         self.query_one('#pages',TabbedContent).active=page

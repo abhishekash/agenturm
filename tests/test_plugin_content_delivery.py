@@ -1,6 +1,7 @@
 """Explicit Pi user-text delivery remains exact, transient, and content-free elsewhere."""
 import json
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -76,6 +77,8 @@ class PluginContentDeliveryTests(unittest.TestCase):
         self.assertEqual(self.get('/api/plugin-content?event_id=invalid')[0], 400)
         with patch('observatory.receiver_state.loopback_host', return_value=False):
             self.assertEqual(self.get(self.path())[0], 403)
+        with patch('observatory.receiver_state.loopback_host', side_effect=[True, False]):
+            self.assertEqual(self.get(self.path())[0], 403)
         self.store.plugin_supervisor = None
         status, denied = self.get(self.path())
         self.assertEqual(status, 404)
@@ -95,6 +98,28 @@ class PluginContentDeliveryTests(unittest.TestCase):
             return result
 
         with patch.object(reader, 'read_exact_pi_user_text', side_effect=revoke):
+            status, denied = self.get(self.path())
+        self.assertEqual(status, 409)
+        self.assertGreaterEqual(count, 2)
+        self.assertNotIn('password=', json.dumps(denied))
+
+    def test_same_inode_rewrite_between_proofs_withholds_body(self):
+        from observatory import plugin_pi_content_read as reader
+        original = reader.read_exact_pi_user_text
+        count = 0
+        inode = self.fixture.file.stat().st_ino
+
+        def rewrite(store, event_id):
+            nonlocal count
+            result = original(store, event_id)
+            count += 1
+            if count == 1 and isinstance(result, Available):
+                self.fixture.file.write_bytes(self.fixture.header + self.fixture.user.replace(
+                    b'highly-private', b'another-secret'))
+                self.assertEqual(self.fixture.file.stat().st_ino, inode)
+            return result
+
+        with patch.object(reader, 'read_exact_pi_user_text', side_effect=rewrite):
             status, denied = self.get(self.path())
         self.assertEqual(status, 409)
         self.assertGreaterEqual(count, 2)
@@ -206,10 +231,32 @@ class PluginContentUiTests(unittest.TestCase):
         updated = []
         screen.show_activity = lambda: updated.append('shown')
         screen.set_timer = lambda *_args: updated.append('timer')
+        screen._clear_plugin_text_visual = lambda: updated.append('cleared')
         ObservatoryApp.finish_plugin_text_recheck(screen, 4, self.row, 'receiver', None)
         self.assertEqual(screen.plugin_text_state['status'], 'unavailable')
         self.assertEqual(screen.plugin_text_state['text'], '')
-        self.assertEqual(updated, ['shown'])
+        self.assertEqual(updated, ['cleared', 'shown'])
+
+    def test_pending_activity_invalidates_selection_and_receiver_before_return(self):
+        for selected_id, receiver_id in ((('plugin-event:' + 'b' * 64), 'receiver'),
+                                         (self.row['id'], 'different')):
+            with self.subTest(selected_id=selected_id, receiver_id=receiver_id):
+                screen = SimpleNamespace(
+                    selected_activity=selected_id,
+                    table_data={'activity-table': {selected_id: {**self.row, 'id': selected_id}}},
+                    feed=SimpleNamespace(snapshot=SimpleNamespace(receiver_id=receiver_id)),
+                    plugin_text_generation=4,
+                    plugin_text_state={'record': self.row, 'receiver_id': 'receiver',
+                                       'status': 'available', 'text': 'password=[REDACTED]',
+                                       'expires_at': time.monotonic() + 20},
+                    native_page_pending=lambda _page: True)
+                visual = []
+                screen.clear_plugin_text = lambda: ObservatoryApp.clear_plugin_text(screen)
+                screen._clear_plugin_text_visual = lambda: visual.append('cleared')
+                ObservatoryApp.show_activity(screen)
+                self.assertIsNone(screen.plugin_text_state)
+                self.assertEqual(screen.plugin_text_generation, 5)
+                self.assertEqual(visual, ['cleared'])
 
 
 class PluginContentLayoutTests(unittest.IsolatedAsyncioTestCase):
@@ -240,6 +287,54 @@ class PluginContentLayoutTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertIn('Unavailable now', app.query_one('#activity-detail').plain_text)
             self.assertEqual(app.query_one('#masthead').region, header)
+            app.plugin_text_state = {'record': row, 'receiver_id': '',
+                                     'status': 'available', 'text': 'PRIVATE_PREVIEW',
+                                     'clipped': False, 'expires_at': time.monotonic() + 20}
+            app.show_activity()
+            await pilot.pause()
+            self.assertIn('PRIVATE_PREVIEW', app.query_one('#activity-detail').plain_text)
+            app.native_page_pending = lambda _page: True
+            app.selected_activity = 'plugin-event:' + 'b' * 64
+            app.show_activity()
+            await pilot.pause()
+            self.assertIsNone(app.plugin_text_state)
+            self.assertNotIn('PRIVATE_PREVIEW', app.query_one('#activity-detail').plain_text)
+            self.assertEqual(app.query_one('#masthead').region, header)
+
+    async def test_direct_tab_click_discards_preview_before_return(self):
+        from tests.test_terminal_search import ManualFeed
+        feed = ManualFeed()
+        app = ObservatoryApp(feed, persist_preferences=False)
+        row = {'source': 'plugin', 'domain': 'message', 'action': 'user',
+               'id': 'plugin-event:' + 'a' * 64, 'source_id': 'plugin-event:' + 'a' * 64,
+               'receiver_id': '', 'session_id': 'session', 'agent_id': 'agent',
+               'service': 'fixture.pi', 'time_unix_nano': 1,
+               'subject': 'User message recorded', 'detail': ''}
+        async with app.run_test(size=(120, 32)) as pilot:
+            await pilot.pause()
+            app.refresh_timer.stop()
+            await pilot.click('#--content-tab-activity')
+            await pilot.pause()
+            app.native_page_pending = lambda _page: False
+            app.table_data['activity-table'] = {row['id']: row}
+            app.selected_activity = row['id']
+            app.plugin_text_generation = 4
+            app.plugin_text_state = {'record': row, 'receiver_id': '',
+                                     'status': 'available', 'text': 'PRIVATE_PREVIEW',
+                                     'clipped': False, 'expires_at': time.monotonic() + 20}
+            app.show_activity()
+            await pilot.pause()
+            self.assertIn('PRIVATE_PREVIEW', app.query_one('#activity-detail').plain_text)
+            await pilot.click('#--content-tab-agents')
+            await pilot.pause()
+            self.assertIsNone(app.plugin_text_state)
+            await pilot.click('#--content-tab-activity')
+            await pilot.pause()
+            app.table_data['activity-table'] = {row['id']: row}
+            app.selected_activity = row['id']
+            app.show_activity()
+            await pilot.pause()
+            self.assertNotIn('PRIVATE_PREVIEW', app.query_one('#activity-detail').plain_text)
 
 
 if __name__ == '__main__':
