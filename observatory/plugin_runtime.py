@@ -15,10 +15,11 @@ from .plugin_admission import (SourceLease, activate_source, commit_batch,
 from .plugin_manifest import PluginManifest
 from .plugin_process import PluginProcess
 from .plugin_projection import project_source
-from .plugin_wire import PollBatch, ProtocolError
+from .plugin_wire import ContentPollBatch, PollBatch, ProtocolError
 
 if TYPE_CHECKING:
     from .core import Store
+    from .plugin_supervisor import PluginSource
 
 
 class PluginSession:
@@ -27,7 +28,8 @@ class PluginSession:
                  source_root: str | None = None,
                  required_features: tuple[str, ...] = (),
                  rust_host_executable: str | None = None,
-                 rust_host_sha256: str | None = None):
+                 rust_host_sha256: str | None = None,
+                 content_source: PluginSource | None = None):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         self.store = store
@@ -36,6 +38,22 @@ class PluginSession:
                                      source_root=source_root, required_features=required_features,
                                      rust_host_executable=rust_host_executable,
                                      rust_host_sha256=rust_host_sha256)
+        self.content_source = None
+        self.content_grant = None
+        if content_source is not None:
+            from .plugin_supervisor import PluginSource
+            if (not isinstance(content_source, PluginSource)
+                    or content_source.manifest != manifest
+                    or content_source.source_id != source_id
+                    or content_source.source_root != source_root
+                    or set(content_source.allowed_grants) != set(allowed_grants)
+                    or set(content_source.runtime_features) != set(required_features)
+                    or content_source.capture_mode != "pi-review-text-v1"
+                    or "pi-content-ref/1" not in self.process.required_features):
+                raise ProtocolError("Pi content source differs from trusted process configuration")
+            self.content_source = content_source
+        elif "pi-content-ref/1" in self.process.required_features:
+            raise ProtocolError("Pi content feature requires trusted configuration")
         self.lease: SourceLease | None = None
         self.cursor: str | None = None
         self.members: dict[str, str] | None = None
@@ -66,12 +84,18 @@ class PluginSession:
         if self.lease is not None:
             raise ProtocolError("plugin session already started")
         manifest = self.process.manifest
+        from .plugin_pi_content import PiContentGrant
+        fingerprint = (PiContentGrant.fingerprint_for_source(self.content_source)
+                       if self.content_source is not None else "")
         self.lease = activate_source(self.store, plugin_id=manifest.id,
                                      source_id=self.process.source_id,
-                                     generation=manifest.artifact_sha256)
+                                     generation=manifest.artifact_sha256,
+                                     content_fingerprint=fingerprint)
         self.cursor = self.lease.cursor
         try:
             self.process.start()
+            if self.content_source is not None:
+                self.content_grant = PiContentGrant.from_source(self.content_source, self.lease)
             if "source-discovery/1" in self.process.required_features:
                 self.members = member_cursors(self.store, self.lease)
             self.last_diagnostic = last_source_diagnostic(self.store, self.lease)
@@ -83,6 +107,7 @@ class PluginSession:
             self.lease = None
             self.cursor = None
             self.members = None
+            self.content_grant = None
             raise
         self._projection_stop.clear()
         self._projection_thread = threading.Thread(target=self._projection_loop,
@@ -97,7 +122,12 @@ class PluginSession:
         expected = self.cursor
         batch = self.process.poll_commit(expected, lambda received: commit_batch(
             self.store, self.lease, expected, received,
-            allow_root_gap="source-discovery-root-gap/1" in self.process.required_features),
+            allow_root_gap="source-discovery-root-gap/1" in self.process.required_features,
+            content_refs=(received.content_refs
+                          if isinstance(received, ContentPollBatch) else ()),
+            content_grant=(self.content_grant
+                           if isinstance(received, ContentPollBatch) and received.content_refs
+                           else None)),
             members=self.members)
         self.cursor = batch.cursor
         if batch.member_id and self.members is not None:
@@ -125,6 +155,7 @@ class PluginSession:
         self.lease = None
         self.cursor = None
         self.members = None
+        self.content_grant = None
 
     def __enter__(self) -> PluginSession:
         return self.start()

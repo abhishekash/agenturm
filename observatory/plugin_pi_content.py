@@ -54,10 +54,12 @@ class PiContentGrant:
     def binding_for_source(source):
         from .plugin_supervisor import PluginSource
 
-        required = {"harness.pi/1", "source-discovery/1", "configured-root/1",
+        required = {"harness.pi/1", "source-discovery/1",
+                    "source-discovery-root-gap/1", "configured-root/1",
                     "pi-content-ref/1"}
         if (not isinstance(source, PluginSource)
                 or source.capture_mode != "pi-review-text-v1"
+                or source.replaces != ("pi",)
                 or not source.source_root
                 or not required <= set(source.manifest.provides)
                 or not required <= set(source.runtime_features)

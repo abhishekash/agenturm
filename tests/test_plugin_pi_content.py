@@ -40,12 +40,15 @@ class PiContentTests(unittest.TestCase):
         self.addCleanup(self.store.close)
         manifest = PluginManifest(
             "fixture.pi", "1.0.0", 1, 1, ("/unused",), "a" * 64,
-            ("harness.pi/1", "source-discovery/1", "configured-root/1",
+            ("harness.pi/1", "source-discovery/1", "source-discovery-root-gap/1",
+             "configured-root/1",
              "pi-content-ref/1"), (), (), ("configured-source-read",), self.root)
         self.source = PluginSource(manifest, "pi-directory",
                               allowed_grants=("configured-source-read",),
+                              replaces=("pi",),
                               source_root=str(self.sources),
-                              required_features=("source-discovery/1", "configured-root/1",
+                              required_features=("source-discovery/1", "source-discovery-root-gap/1",
+                                                 "configured-root/1",
                                                  "harness.pi/1", "pi-content-ref/1"),
                               capture_mode="pi-review-text-v1")
         self.lease = activate_source(self.store, plugin_id="fixture.pi",
