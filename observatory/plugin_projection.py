@@ -197,37 +197,39 @@ def project_source(store: Store, source_id: str) -> int:
     return len(projected)
 
 
-def sessions(store: Store, *, limit: int = 200) -> dict:
-    """Return only policy-current, fully projected rows and coverage state."""
+def session_rows(db, receiver_id: str, *, limit: int = 200) -> tuple:
+    """Read one policy-current plugin projection under a caller-owned transaction."""
     if type(limit) is not int or not 1 <= limit <= 1_000:
         raise ValueError("invalid plugin session limit")
-    receiver_id = store.receiver_namespace()
-    with store._connect() as db:
-        db.execute("BEGIN")
-        if db.execute("SELECT 1 FROM plugin_source_cursor_v1 LIMIT 1").fetchone() is None:
-            return {"sessions": [], "pending_sources": 0, "omitted_sessions": False,
-                    "retention_gaps": []}
-        gaps = [{"source_id": row["source_id"], "watermark_ns": str(row["watermark_ns"]),
-                 "dropped_events": (row["dropped_events"] if row["dropped_events"]
-                                    <= MAX_JSON_SAFE_INTEGER else str(row["dropped_events"]))}
-                for row in db.execute(
-            "SELECT r.source_id,r.watermark_ns,r.dropped_events "
-            "FROM plugin_retention_v1 r JOIN plugin_source_cursor_v1 c USING(source_id) "
-            "WHERE c.receiver_id=? AND c.capture_enabled=1 AND r.policy_epoch=c.policy_epoch "
-            "ORDER BY r.source_id LIMIT 32", (receiver_id,))]
-        pending = db.execute("SELECT COUNT(*) FROM plugin_source_cursor_v1 c "
-                             "LEFT JOIN plugin_projection_cursor_v1 p USING(source_id) "
-                             "WHERE c.receiver_id=? AND c.capture_enabled=1 AND c.dirty_seq>0 "
-                             "AND (p.projected_seq IS NULL OR p.projected_seq!=c.dirty_seq "
-                             "OR p.policy_epoch!=c.policy_epoch)", (receiver_id,)).fetchone()[0]
-        rows = db.execute("SELECT p.*,c.plugin_id FROM plugin_session_projection_v1 p "
-                          "JOIN plugin_source_cursor_v1 c USING(source_id) "
-                          "JOIN plugin_projection_cursor_v1 pc USING(source_id) "
-                          "WHERE c.receiver_id=? AND c.capture_enabled=1 "
-                          "AND p.policy_epoch=c.policy_epoch AND p.source_dirty_seq=c.dirty_seq "
-                          "AND pc.policy_epoch=c.policy_epoch AND pc.projected_seq=c.dirty_seq "
-                          "ORDER BY p.last_record_ns DESC,p.session_key LIMIT ?",
-                          (receiver_id, limit + 1)).fetchall()
+    if db.execute("SELECT 1 FROM plugin_source_cursor_v1 LIMIT 1").fetchone() is None:
+        return [], 0, []
+    gaps = [{"source_id": row["source_id"], "watermark_ns": str(row["watermark_ns"]),
+             "dropped_events": (row["dropped_events"] if row["dropped_events"]
+                                <= MAX_JSON_SAFE_INTEGER else str(row["dropped_events"]))}
+            for row in db.execute(
+        "SELECT r.source_id,r.watermark_ns,r.dropped_events "
+        "FROM plugin_retention_v1 r JOIN plugin_source_cursor_v1 c USING(source_id) "
+        "WHERE c.receiver_id=? AND c.capture_enabled=1 AND r.policy_epoch=c.policy_epoch "
+        "ORDER BY r.source_id LIMIT 32", (receiver_id,))]
+    pending = db.execute("SELECT COUNT(*) FROM plugin_source_cursor_v1 c "
+                         "LEFT JOIN plugin_projection_cursor_v1 p USING(source_id) "
+                         "WHERE c.receiver_id=? AND c.capture_enabled=1 AND c.dirty_seq>0 "
+                         "AND (p.projected_seq IS NULL OR p.projected_seq!=c.dirty_seq "
+                         "OR p.policy_epoch!=c.policy_epoch)", (receiver_id,)).fetchone()[0]
+    rows = db.execute("SELECT p.*,c.plugin_id FROM plugin_session_projection_v1 p "
+                      "JOIN plugin_source_cursor_v1 c USING(source_id) "
+                      "JOIN plugin_projection_cursor_v1 pc USING(source_id) "
+                      "WHERE c.receiver_id=? AND c.capture_enabled=1 "
+                      "AND p.policy_epoch=c.policy_epoch AND p.source_dirty_seq=c.dirty_seq "
+                      "AND pc.policy_epoch=c.policy_epoch AND pc.projected_seq=c.dirty_seq "
+                      "ORDER BY p.last_record_ns DESC,p.session_key LIMIT ?",
+                      (receiver_id, limit + 1)).fetchall()
+    return rows, pending, gaps
+
+
+def render_session_view(snapshot: tuple, *, limit: int = 200) -> dict:
+    """Render already fetched rows without holding the Store read transaction."""
+    rows, pending, gaps = snapshot
     result = []
     for row in rows[:limit]:
         reported = {"started": "running", "paused": "waiting",
@@ -259,3 +261,14 @@ def sessions(store: Store, *, limit: int = 200) -> dict:
                        "No parent relationship was reported"})
     return {"sessions": result, "pending_sources": pending,
             "omitted_sessions": len(rows) > limit, "retention_gaps": gaps}
+
+
+def sessions(store: Store, *, limit: int = 200) -> dict:
+    """Return only policy-current, fully projected rows and coverage state."""
+    if type(limit) is not int or not 1 <= limit <= 1_000:
+        raise ValueError("invalid plugin session limit")
+    receiver_id = store.receiver_namespace()
+    with store._connect() as db:
+        db.execute("BEGIN")
+        snapshot = session_rows(db, receiver_id, limit=limit)
+    return render_session_view(snapshot, limit=limit)
