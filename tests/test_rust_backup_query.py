@@ -151,6 +151,37 @@ class RustBackupQueryTests(unittest.TestCase):
                                  capture_output=True, timeout=5)
         self.assertEqual((process.returncode, process.stdout), (2, ""))
 
+    def test_revision_fence_does_not_authenticate_a_structurally_valid_backup(self):
+        lease = activate_source(self.store, plugin_id="fixture.plugin",
+                                source_id=SOURCE, generation="a" * 64)
+        commit_batch(self.store, lease, "", PollBatch(SOURCE, "one", (
+            {"event_id": "start", "revision": 0, "kind": "lifecycle",
+             "time_ns": "10", "payload": {"state": "started"},
+             "identity": {"session_id": "native-one"}},
+        )))
+        project_source(self.store, SOURCE)
+        snapshot = capture(self.store, SOURCE)
+        self.assertTrue(current(self.store, snapshot))
+        altered = self.backup()
+        with closing(sqlite3.connect(altered)) as db:
+            db.execute("UPDATE plugin_session_projection_v1 SET state='completed' "
+                       "WHERE source_id=? AND native_session_id='native-one'", (SOURCE,))
+            db.commit()
+        result = self.result(altered, "session", "native-one")
+        self.assertEqual((result["state"], result["coverage"]), ("ready", "partial"))
+        self.assertEqual(result["receiver_id"], snapshot.revision[0])
+        self.assertEqual(result["revision"], {
+            "lease_epoch": str(snapshot.revision[1]),
+            "policy_epoch": str(snapshot.revision[2]),
+            "dirty_seq": str(snapshot.revision[3]),
+            "capture_enabled": True,
+            "projected_seq": str(snapshot.revision[5]),
+            "projected_policy": str(snapshot.revision[6]),
+        })
+        self.assertTrue(current(self.store, snapshot))
+        self.assertEqual(result["session"]["reported_state"], "completed")
+        self.assertNotEqual(result["session"], snapshot.expected["sessions"][0])
+
     def test_unrequested_corrupt_projection_does_not_block_exact_query(self):
         lease = activate_source(self.store, plugin_id="fixture.plugin",
                                 source_id=SOURCE, generation="a" * 64)

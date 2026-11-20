@@ -3,6 +3,10 @@
 //! Storage shadow validates the bounded, already-published projection under
 //! one SQLite read transaction. Domain query supplies the shared exact-row
 //! selector. Neither component grants live freshness or writer authority.
+//! The supplied backup must be trusted: its revision is not an authenticity
+//! proof. For live publication, Python must compare the selected row (or exact
+//! absence) with `rust_shadow_snapshot.capture(...).expected`, then call
+//! `rust_shadow_snapshot.current()` after the Rust result.
 
 #![forbid(unsafe_code)]
 
@@ -84,8 +88,10 @@ pub struct HistoricalResult {
     pub activity: Option<Option<Value>>,
 }
 
-/// The result is historical even when `state` is ready. A Python caller must
-/// check `rust_shadow_snapshot.current()` against the live Store before use.
+/// The result is historical even when `state` is ready. The backup must be
+/// trusted. A Python caller publishing live data must match receiver, full
+/// revision, and selected row or exact absence with its captured expected
+/// projection, then call `rust_shadow_snapshot.current()` before publication.
 pub fn query(input: &str) -> Result<HistoricalResult> {
     if input.len() > MAX_QUERY_BYTES {
         return Err(invalid("backup query exceeds byte limit"));
