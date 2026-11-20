@@ -173,6 +173,12 @@ def initialize(db: Connection) -> None:
             .fetchone() is None):
         db.execute("DELETE FROM plugin_projection_cursor_v1")
         db.execute("INSERT INTO schema_meta(key,value) VALUES('plugin_activity_projection_v3','1')")
+    # A read-only client may consume the bounded plugin session view only
+    # after a writer has installed every column used by that view. Future
+    # incompatible writers must change this contract value before publishing.
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'").fetchone():
+        db.execute("INSERT OR IGNORE INTO schema_meta(key,value) "
+                   "VALUES('plugin_sessions_read_schema','1')")
 
 
 def _identity(value: str, name: str) -> str:
