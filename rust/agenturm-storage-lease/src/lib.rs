@@ -45,8 +45,10 @@ mod linux {
             let path_identity = identity(&fs::symlink_metadata(path)?);
             let target = fs::canonicalize(path)?;
             let target_metadata = fs::metadata(&target)?;
-            if !target_metadata.is_file() {
-                return Err(denied("writer lease target is not a regular file"));
+            if !target_metadata.is_file() || target_metadata.nlink() != 1 {
+                return Err(denied(
+                    "writer lease target is not singly linked regular file",
+                ));
             }
             let binding = Self {
                 path: path.to_path_buf(),
@@ -68,6 +70,8 @@ mod linux {
             let target = fs::metadata(&self.target)?;
             if !reached.is_file()
                 || !target.is_file()
+                || reached.nlink() != 1
+                || target.nlink() != 1
                 || identity(&reached) != self.target_identity
                 || identity(&target) != self.target_identity
             {
@@ -116,7 +120,8 @@ mod linux {
                 return Err(denied("writer lease lock file changed"));
             }
             let target = fs::metadata(&self.target)?;
-            if !target.is_file() || identity(&target) != self.target_identity {
+            if !target.is_file() || target.nlink() != 1 || identity(&target) != self.target_identity
+            {
                 return Err(denied("writer lease database target changed"));
             }
             Ok(())
@@ -171,12 +176,23 @@ mod linux {
                 lexical.verify()?;
                 return Ok(Self { inner, lexical });
             }
+            // An existing FIFO/device could block or have side effects on
+            // open. The nofollow and nonblocking flags still cover a change
+            // between this check and open; fstat closes the remaining race.
+            match fs::symlink_metadata(&lock_path) {
+                Ok(metadata) if !metadata.is_file() => {
+                    return Err(denied("writer lease lock path is not a regular file"));
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+                Ok(_) => {}
+            }
             let file = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
                 .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
                 .open(&lock_path)?;
             let lock_identity = identity(&file.metadata()?);
             let inner = Arc::new(Inner {

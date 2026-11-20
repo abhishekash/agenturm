@@ -145,12 +145,36 @@ fn lock_symlink_or_replacement_is_rejected() {
     symlink(&other, &lock_path).unwrap();
     assert!(WriterLease::acquire(&fixture.db).is_err());
     fs::remove_file(&lock_path).unwrap();
+    fs::create_dir(&lock_path).unwrap();
+    assert!(WriterLease::acquire(&fixture.db).is_err());
+    fs::remove_dir(&lock_path).unwrap();
     let lease = WriterLease::acquire(&fixture.db).unwrap();
     lease.verify_admission().unwrap();
     fs::rename(&lock_path, fixture.root.join("held.lock")).unwrap();
     assert!(lease.verify_admission().is_err());
     File::create(&lock_path).unwrap();
     assert!(lease.verify_admission().is_err());
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn hardlink_alias_cannot_select_another_process_lock() {
+    let fixture = Fixture::new();
+    let alias = fixture.root.join("hardlink.db");
+    let child = start_holder(&fixture.db);
+    fs::hard_link(&fixture.db, &alias).unwrap();
+    // The child already holds the original lock. A second process must not
+    // derive a different sibling lock from this alias to the same inode.
+    assert!(WriterLease::acquire(&alias).is_err());
+    stop_holder(child);
+    assert!(WriterLease::acquire(&fixture.db).is_err());
+    fs::remove_file(&alias).unwrap();
+
+    let lease = WriterLease::acquire(&fixture.db).unwrap();
+    fs::hard_link(&fixture.db, &alias).unwrap();
+    assert!(lease.verify_admission().is_err());
+    fs::remove_file(&alias).unwrap();
+    lease.verify_admission().unwrap();
     fixture.assert_unchanged();
 }
 
