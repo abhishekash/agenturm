@@ -1,4 +1,4 @@
-//! Pure, bounded lifecycle and usage reduction for admitted plugin snapshots.
+//! Pure, bounded domain reduction for admitted plugin snapshots.
 //!
 //! This crate reads a versioned test/interchange fixture. It has no Store,
 //! filesystem, process, or policy authority and is not on the receiver path.
@@ -132,6 +132,8 @@ struct Fixture {
     source_id: String,
     policy_epoch: u64,
     dirty_seq: u64,
+    #[serde(default)]
+    plugin_id: Option<String>,
     rows: Vec<Row>,
     #[serde(default)]
     invalidated: Vec<Invalidation>,
@@ -146,6 +148,12 @@ struct Row {
     time_ns: String,
     admitted_ns: String,
     native_session_id: Option<String>,
+    #[serde(default)]
+    native_worker_id: Option<String>,
+    #[serde(default)]
+    native_turn_id: Option<String>,
+    #[serde(default)]
+    native_operation_id: Option<String>,
     payload: Value,
 }
 
@@ -154,6 +162,11 @@ struct Row {
 enum Kind {
     Lifecycle,
     Usage,
+    Relationship,
+    Message,
+    Tool,
+    Check,
+    Diagnostic,
 }
 
 #[derive(Deserialize)]
@@ -164,8 +177,21 @@ struct Invalidation {
 }
 
 enum Fact {
-    Lifecycle { state: String, reason: String },
+    Lifecycle {
+        state: String,
+        reason: String,
+    },
     Usage(BTreeMap<String, u64>),
+    Relationship {
+        parent: String,
+        kind: String,
+    },
+    Activity {
+        kind: &'static str,
+        action: String,
+        result: String,
+    },
+    Diagnostic,
 }
 
 struct Admitted {
@@ -174,6 +200,9 @@ struct Admitted {
     time_ns: u64,
     admitted_ns: u64,
     native_session_id: Option<String>,
+    native_worker_id: Option<String>,
+    native_turn_id: Option<String>,
+    native_operation_id: Option<String>,
     fact: Fact,
 }
 
@@ -182,12 +211,15 @@ struct SessionFacts {
     last_record_ns: u64,
     lifecycle: Vec<(u64, String, String)>,
     usage: BTreeMap<String, u128>,
+    relationships: Vec<(u64, String, String)>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Output {
     pub schema_version: u32,
     pub sessions: Vec<Session>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activities: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -200,6 +232,12 @@ pub struct Session {
     pub state_time_ns: u64,
     pub last_record_ns: u64,
     pub metadata_usage: BTreeMap<String, Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_native_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relationship_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relationship_state: Option<String>,
 }
 
 fn identifier(value: &str) -> bool {
@@ -217,6 +255,26 @@ fn source_identifier(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn plugin_identifier(value: &str) -> bool {
+    if value.is_empty() || value.len() > 256 || !value.as_bytes()[0].is_ascii_lowercase() {
+        return false;
+    }
+    let mut separator = false;
+    for byte in value.bytes() {
+        if matches!(byte, b'.' | b'-') {
+            if separator {
+                return false;
+            }
+            separator = true;
+        } else if byte.is_ascii_lowercase() || byte.is_ascii_digit() {
+            separator = false;
+        } else {
+            return false;
+        }
+    }
+    !separator
 }
 
 fn decimal(raw: &str) -> Result<u64, ReduceError> {
@@ -245,6 +303,30 @@ fn reason_code(raw: &str) -> bool {
                 || byte.is_ascii_digit()
                 || matches!(byte, b'_' | b'.' | b'/' | b'-')
         })
+}
+
+fn native_identity(raw: &str) -> bool {
+    !raw.is_empty()
+        && raw.len() <= 256
+        && raw.as_bytes()[0].is_ascii_alphanumeric()
+        && raw
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn one_of<'a>(
+    fields: &'a serde_json::Map<String, Value>,
+    key: &str,
+    choices: &[&str],
+) -> Result<&'a str, ReduceError> {
+    let value = fields
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("missing typed metadata"))?;
+    if !choices.contains(&value) {
+        return Err(invalid("invalid typed metadata"));
+    }
+    Ok(value)
 }
 
 fn parse_fact(kind: Kind, payload: Value) -> Result<Fact, ReduceError> {
@@ -313,23 +395,118 @@ fn parse_fact(kind: Kind, payload: Value) -> Result<Fact, ReduceError> {
             }
             Ok(Fact::Usage(counters))
         }
+        Kind::Relationship => {
+            if fields.len() != 2
+                || !fields.contains_key("parent_session_id")
+                || !fields.contains_key("kind")
+            {
+                return Err(invalid("invalid relationship payload fields"));
+            }
+            let parent = fields
+                .get("parent_session_id")
+                .and_then(Value::as_str)
+                .filter(|value| native_identity(value))
+                .ok_or_else(|| invalid("invalid parent identity"))?;
+            let relation = one_of(fields, "kind", &["delegated", "review"])?;
+            Ok(Fact::Relationship {
+                parent: parent.to_owned(),
+                kind: relation.to_owned(),
+            })
+        }
+        Kind::Message | Kind::Tool | Kind::Check => {
+            let (name, first_key, first, second_key, second) = match kind {
+                Kind::Message => ("message", "role", &["user", "assistant"][..], "", &[][..]),
+                Kind::Tool => (
+                    "tool",
+                    "category",
+                    &["shell", "file", "mcp", "other"][..],
+                    "result",
+                    &["started", "succeeded", "failed", "denied"][..],
+                ),
+                Kind::Check => (
+                    "check",
+                    "category",
+                    &["test", "lint", "build", "review", "other"][..],
+                    "result",
+                    &["passed", "failed", "skipped", "unknown"][..],
+                ),
+                _ => unreachable!(),
+            };
+            if fields.len() != if second_key.is_empty() { 1 } else { 2 }
+                || !fields.contains_key(first_key)
+                || (!second_key.is_empty() && !fields.contains_key(second_key))
+            {
+                return Err(invalid("invalid activity payload fields"));
+            }
+            let action = one_of(fields, first_key, first)?.to_owned();
+            let result = if second_key.is_empty() {
+                "observed".to_owned()
+            } else {
+                one_of(fields, second_key, second)?.to_owned()
+            };
+            Ok(Fact::Activity {
+                kind: name,
+                action,
+                result,
+            })
+        }
+        Kind::Diagnostic => {
+            if fields.len() != 2 || !fields.contains_key("code") || !fields.contains_key("severity")
+            {
+                return Err(invalid("invalid diagnostic payload fields"));
+            }
+            fields
+                .get("code")
+                .and_then(Value::as_str)
+                .filter(|value| reason_code(value))
+                .ok_or_else(|| invalid("invalid diagnostic code"))?;
+            one_of(fields, "severity", &["info", "warning", "error"])?;
+            Ok(Fact::Diagnostic)
+        }
     }
 }
 
 impl Row {
-    fn admit(self) -> Result<Admitted, ReduceError> {
+    fn admit(self, schema_version: u32) -> Result<Admitted, ReduceError> {
         if self.event_id_hash.len() != 64
             || !self
                 .event_id_hash
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
             || self.revision > i32::MAX as u32
+            || self.native_session_id.as_deref().is_some_and(|native| {
+                !native.is_empty()
+                    && if schema_version == 2 {
+                        !native_identity(native)
+                    } else {
+                        !identifier(native)
+                    }
+            })
             || self
-                .native_session_id
+                .native_worker_id
                 .as_deref()
-                .is_some_and(|native| !native.is_empty() && !identifier(native))
+                .is_some_and(|value| !value.is_empty() && !native_identity(value))
+            || self
+                .native_turn_id
+                .as_deref()
+                .is_some_and(|value| !value.is_empty() && !native_identity(value))
+            || self
+                .native_operation_id
+                .as_deref()
+                .is_some_and(|value| !value.is_empty() && !native_identity(value))
         {
             return Err(invalid("invalid admitted row identity or revision"));
+        }
+        let fact = parse_fact(self.kind, self.payload)?;
+        if (matches!(fact, Fact::Relationship { .. } | Fact::Activity { .. })
+            && self.native_session_id.as_deref().is_none_or(str::is_empty))
+            || (self
+                .native_operation_id
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+                && !matches!(fact, Fact::Activity { kind: "tool", .. }))
+        {
+            return Err(invalid("invalid fact identity"));
         }
         Ok(Admitted {
             event_id_hash: self.event_id_hash,
@@ -339,7 +516,10 @@ impl Row {
             // Admission stores both absent and empty identity as the same
             // empty native_session_id. Corrections must compare that form.
             native_session_id: self.native_session_id.filter(|value| !value.is_empty()),
-            fact: parse_fact(self.kind, self.payload)?,
+            native_worker_id: self.native_worker_id.filter(|value| !value.is_empty()),
+            native_turn_id: self.native_turn_id.filter(|value| !value.is_empty()),
+            native_operation_id: self.native_operation_id.filter(|value| !value.is_empty()),
+            fact,
         })
     }
 }
@@ -368,6 +548,7 @@ fn output_session(
     source_id: &str,
     native_id: String,
     facts: SessionFacts,
+    relationship: Option<(String, String, String)>,
 ) -> Session {
     let state_time_ns = facts.lifecycle.iter().map(|item| item.0).max().unwrap_or(0);
     let latest: BTreeSet<_> = facts
@@ -405,7 +586,149 @@ fn output_session(
         state_time_ns,
         last_record_ns: facts.last_record_ns,
         metadata_usage,
+        parent_native_session_id: relationship.as_ref().map(|item| item.0.clone()),
+        relationship_kind: relationship.as_ref().map(|item| item.1.clone()),
+        relationship_state: relationship.as_ref().map(|item| item.2.clone()),
     }
+}
+
+fn relationships(
+    sessions: &BTreeMap<String, SessionFacts>,
+) -> BTreeMap<String, (String, String, String)> {
+    let mut chosen = BTreeMap::new();
+    for (native_id, facts) in sessions {
+        let Some(newest) = facts.relationships.iter().map(|row| row.0).max() else {
+            chosen.insert(
+                native_id.clone(),
+                (String::new(), "unknown".to_owned(), "unresolved".to_owned()),
+            );
+            continue;
+        };
+        let latest: BTreeSet<_> = facts
+            .relationships
+            .iter()
+            .filter(|row| row.0 == newest)
+            .map(|row| (&row.1, &row.2))
+            .collect();
+        if latest.len() != 1 {
+            chosen.insert(
+                native_id.clone(),
+                (String::new(), "unknown".to_owned(), "conflicted".to_owned()),
+            );
+        } else {
+            let (parent, kind) = latest.into_iter().next().expect("one relation");
+            chosen.insert(
+                native_id.clone(),
+                (parent.clone(), kind.clone(), "unresolved".to_owned()),
+            );
+        }
+    }
+    for native_id in sessions.keys() {
+        let (parent, _, state) = chosen.get(native_id).expect("chosen relation");
+        if parent.is_empty() || state == "conflicted" {
+            continue;
+        }
+        let parent = parent.clone();
+        let mut seen = HashSet::from([native_id.as_str()]);
+        let mut cursor = parent.as_str();
+        while sessions.contains_key(cursor) && !seen.contains(cursor) {
+            seen.insert(cursor);
+            cursor = chosen.get(cursor).expect("chosen parent").0.as_str();
+        }
+        let state = if seen.contains(cursor) {
+            "invalid"
+        } else if sessions.contains_key(&parent) {
+            "confirmed"
+        } else {
+            "unresolved"
+        };
+        chosen.get_mut(native_id).expect("chosen relation").2 = state.to_owned();
+    }
+    chosen
+}
+
+fn opaque(parts: &[&str]) -> String {
+    let mut hasher = Sha256::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index != 0 {
+            hasher.update([0]);
+        }
+        hasher.update(part.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn activity_fact(
+    row: &Admitted,
+    receiver_id: &str,
+    source_id: &str,
+    plugin_id: &str,
+) -> Option<Value> {
+    let Fact::Activity {
+        kind,
+        action,
+        result,
+    } = &row.fact
+    else {
+        return None;
+    };
+    let native = row.native_session_id.as_deref()?;
+    let event_key = format!(
+        "plugin-event:{}",
+        opaque(&[receiver_id, source_id, &row.event_id_hash])
+    );
+    let session_key = session_key(receiver_id, source_id, native);
+    let agent_material = opaque(&[plugin_id, &format!("plugin:{source_id}"), native, ""]);
+    let agent_id = format!("ag1_{}", &agent_material[..32]);
+    let turn_id = row.native_turn_id.as_deref().map_or(String::new(), |turn| {
+        opaque(&["plugin-turn", receiver_id, source_id, native, turn])[..32].to_owned()
+    });
+    let operation_key = if *kind == "tool" {
+        row.native_operation_id.as_deref().map(|operation| {
+            format!(
+                "plugin-operation:{}",
+                opaque(&[receiver_id, source_id, native, operation])
+            )
+        })
+    } else {
+        None
+    };
+    let subject = if *kind == "message" {
+        format!(
+            "{} message recorded",
+            if action == "user" {
+                "User"
+            } else {
+                "Assistant"
+            }
+        )
+    } else {
+        let capital = format!("{}{}", action[..1].to_ascii_uppercase(), &action[1..]);
+        format!(
+            "{} {} recorded",
+            capital,
+            if *kind == "check" {
+                "check"
+            } else {
+                "operation"
+            }
+        )
+    };
+    Some(serde_json::json!({
+        "activity_scope_version": 1, "id": event_key, "time_unix_nano": row.time_ns,
+        "domain": kind, "action": action, "subject": subject, "result": result,
+        "actor": plugin_id, "agent_id": agent_id, "session_id": session_key,
+        "service": plugin_id, "source": "plugin", "source_id": event_key,
+        "span_id": null, "trace_id": null, "turn_id": turn_id,
+        "operation_id": operation_key, "detail": "", "mcp_server": "", "mcp_tool": "",
+        "duration_ms": null,
+        "metadata": {"plugin_source_id": source_id,
+            "native_worker_observed": row.native_worker_id.is_some(),
+            "native_turn_observed": row.native_turn_id.is_some(),
+            "native_operation_observed": row.native_operation_id.is_some(),
+            "capture": "content-free", "coverage": "partial"},
+        "capture_content": false, "detail_present": false, "operation_present": false
+    }))
 }
 
 /// Reduce a fixture without opening a database or writing any file.
@@ -420,9 +743,15 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
     }
     let fixture: Fixture =
         serde_json::from_value(raw.0).map_err(|_| invalid("invalid fixture JSON"))?;
-    if fixture.schema_version != 1
+    if !matches!(fixture.schema_version, 1 | 2)
         || !identifier(&fixture.receiver_id)
         || !source_identifier(&fixture.source_id)
+        || (fixture.schema_version == 2
+            && fixture
+                .plugin_id
+                .as_deref()
+                .is_none_or(|id| !plugin_identifier(id)))
+        || (fixture.schema_version == 1 && fixture.plugin_id.is_some())
         || fixture.policy_epoch > i64::MAX as u64
         || fixture.dirty_seq > i64::MAX as u64
         || (fixture.dirty_seq == 0 && (!fixture.rows.is_empty() || !fixture.invalidated.is_empty()))
@@ -434,14 +763,35 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
     let mut seen_revisions = HashSet::new();
     let mut latest = BTreeMap::<String, Admitted>::new();
     for row in fixture.rows {
-        let row = row.admit()?;
+        if fixture.schema_version == 1
+            && (row.native_worker_id.is_some()
+                || row.native_turn_id.is_some()
+                || row.native_operation_id.is_some())
+        {
+            return Err(invalid("new identity requires fixture version 2"));
+        }
+        let row = row.admit(fixture.schema_version)?;
+        if fixture.schema_version == 1
+            && matches!(
+                row.fact,
+                Fact::Relationship { .. } | Fact::Activity { .. } | Fact::Diagnostic
+            )
+        {
+            return Err(invalid("new fact requires fixture version 2"));
+        }
         if !seen_revisions.insert((row.event_id_hash.clone(), row.revision)) {
             return Err(invalid("duplicate admitted revision"));
         }
         let old = latest.get(&row.event_id_hash);
         if old.is_some_and(|old| {
             old.native_session_id != row.native_session_id
+                || old.native_worker_id != row.native_worker_id
+                || old.native_turn_id != row.native_turn_id
+                || old.native_operation_id != row.native_operation_id
                 || std::mem::discriminant(&old.fact) != std::mem::discriminant(&row.fact)
+                || matches!((&old.fact, &row.fact),
+                    (Fact::Activity { kind: left, .. }, Fact::Activity { kind: right, .. })
+                    if left != right)
         }) {
             return Err(invalid("event kind or identity changed across revisions"));
         }
@@ -450,11 +800,22 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
         }
     }
     let mut sessions = BTreeMap::<String, SessionFacts>::new();
+    let mut activity_candidates = Vec::<(String, Value)>::new();
     for row in latest.into_values() {
-        let Some(native_id) = row.native_session_id.filter(|value| !value.is_empty()) else {
+        let Some(native_id) = row.native_session_id.as_deref() else {
             continue;
         };
-        let entry = sessions.entry(native_id).or_default();
+        if fixture.schema_version == 2
+            && let Some(activity) = activity_fact(
+                &row,
+                &fixture.receiver_id,
+                &fixture.source_id,
+                fixture.plugin_id.as_deref().expect("v2 plugin ID"),
+            )
+        {
+            activity_candidates.push((native_id.to_owned(), activity));
+        }
+        let entry = sessions.entry(native_id.to_owned()).or_default();
         entry.last_record_ns = entry.last_record_ns.max(row.admitted_ns);
         match row.fact {
             Fact::Lifecycle { state, reason } => {
@@ -468,11 +829,21 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
                         .ok_or_else(|| invalid("usage aggregate overflow"))?;
                 }
             }
+            Fact::Relationship { parent, kind } => {
+                entry.relationships.push((row.time_ns, parent, kind))
+            }
+            Fact::Activity { .. } => {}
+            Fact::Diagnostic => {}
         }
     }
     if sessions.len() > MAX_SESSIONS {
         return Err(invalid("session capacity reached"));
     }
+    let chosen = if fixture.schema_version == 2 {
+        relationships(&sessions)
+    } else {
+        BTreeMap::new()
+    };
     let mut projected: BTreeMap<_, _> = sessions
         .into_iter()
         .map(|(native_id, facts)| {
@@ -481,6 +852,7 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
                 &fixture.source_id,
                 native_id.clone(),
                 facts,
+                chosen.get(&native_id).cloned(),
             );
             (native_id, row)
         })
@@ -508,18 +880,36 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
                 state_time_ns: 0,
                 last_record_ns,
                 metadata_usage: BTreeMap::new(),
+                parent_native_session_id: (fixture.schema_version == 2).then(String::new),
+                relationship_kind: (fixture.schema_version == 2).then(|| "unknown".to_owned()),
+                relationship_state: (fixture.schema_version == 2).then(|| "unresolved".to_owned()),
             });
         row.reported_state = "unknown".to_owned();
         row.run_state = "unknown".to_owned();
         row.reason_code = "retention_gap".to_owned();
         row.metadata_usage.clear();
+        if fixture.schema_version == 2 {
+            row.parent_native_session_id = Some(String::new());
+            row.relationship_kind = Some("unknown".to_owned());
+            row.relationship_state = Some("unresolved".to_owned());
+        }
     }
     if projected.len() > MAX_SESSIONS {
         return Err(invalid("session capacity reached"));
     }
+    let activities = (fixture.schema_version == 2).then(|| {
+        let mut facts: Vec<_> = activity_candidates
+            .into_iter()
+            .filter(|(native, _)| !invalidated.contains(native))
+            .map(|(_, fact)| fact)
+            .collect();
+        facts.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+        facts
+    });
     Ok(Output {
-        schema_version: 1,
+        schema_version: fixture.schema_version,
         sessions: projected.into_values().collect(),
+        activities,
     })
 }
 
@@ -539,6 +929,24 @@ mod tests {
                 .as_str()
                 .map_or_else(|| case["input"].to_string(), str::to_owned);
             let reduced = reduce_json(&input);
+            if let Some(expected) = case.get("expected") {
+                let actual = serde_json::to_value(reduced.unwrap()).unwrap();
+                assert_eq!(actual, *expected, "case {}", case["name"]);
+            } else {
+                assert!(reduced.is_err(), "accepted case {}", case["name"]);
+            }
+        }
+    }
+
+    #[test]
+    fn relationship_and_activity_goldens_match_and_invalid_inputs_fail() {
+        let corpus: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/rust-domain-reducer-v2.json"
+        ))
+        .unwrap();
+        assert_eq!(corpus["fixture_version"], 2);
+        for case in corpus["cases"].as_array().unwrap() {
+            let reduced = reduce_json(&case["input"].to_string());
             if let Some(expected) = case.get("expected") {
                 let actual = serde_json::to_value(reduced.unwrap()).unwrap();
                 assert_eq!(actual, *expected, "case {}", case["name"]);
