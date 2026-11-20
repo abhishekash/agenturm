@@ -236,7 +236,8 @@ class CapabilityCockpitActivationTests(unittest.TestCase):
             status_sessions=lambda: [{"source_id": "display-session", "service": "svc",
                 "session_id": self.scope.session_id, "agent_id": self.scope.agent_id,
                 "capture_content": True}], diagnostics=lambda: {})
-        collector.reader_specs = (SimpleNamespace(id="external-reader"),)
+        collector.reader_specs = (SimpleNamespace(id="external-reader", coverage=None,
+                                                 label="External reader"),)
         collector.reader_plugins = {"external-reader": reader}
         local = collector.status()
         self.assertEqual(local["sessions"][0]["evidence_source_id"], "physical-source")
@@ -365,6 +366,19 @@ class CapabilityCockpitActivationTests(unittest.TestCase):
                     agent_id=scope.agent_id, subtree=False, include_reviews=False)
                 self.assertEqual(len(page["activity"]), 1)
                 self.assertEqual(page["activity"][0]["agent_id"], native.agent_id)
+                self.assertRegex(page["capture_revision"], r"^[0-9a-f]{64}$")
+                replacement = LocalAgents(store, source_specs=(), reader_specs=())
+                replacement.sessions[native.source_id] = native
+                replacement.runtime_updated = collector.runtime_updated
+                store.local_agent_monitor = replacement
+                try:
+                    changed_monitor = ReceiverActivityReader(api, gate).activity_page(limit=200,
+                        service=scope.service, session_id=scope.session_id,
+                        agent_id=scope.agent_id, subtree=False, include_reviews=False)
+                    self.assertNotEqual(changed_monitor["capture_revision"],
+                                        page["capture_revision"])
+                finally:
+                    store.local_agent_monitor = collector
                 scoped_path = ("/api/activity?capture_scope=1&limit=200&service=pi&"
                     f"session_id=session-one&agent_id={native.agent_id}&subtree=0&include_reviews=0")
                 watches = []
@@ -407,7 +421,9 @@ class CapabilityCockpitActivationTests(unittest.TestCase):
                 self.assertEqual(denied.exception.code, 403)
                 self.assertNotIn('"activity"', denied.exception.read().decode())
                 store.register_connection(connection)
-                self.assertEqual(len(api.get(scoped_path)["activity"]), 1)
+                regranted = api.get(scoped_path)
+                self.assertEqual(len(regranted["activity"]), 1)
+                self.assertNotEqual(regranted["capture_revision"], page["capture_revision"])
                 native.capture_details = False
                 with self.assertRaises(urllib.error.HTTPError) as denied:
                     api.get(scoped_path)
@@ -449,6 +465,7 @@ class CapabilityCockpitActivationTests(unittest.TestCase):
                 self.assertNotIn('"activity"', outcome.get("body", ""))
                 unscoped = api.get("/api/activity?limit=200&service=pi&session_id=session-one")
                 self.assertEqual(len(unscoped["activity"]), 200)
+                self.assertNotIn("capture_revision", unscoped)
                 self.assertFalse(any(row["agent_id"] == native.agent_id
                                      for row in unscoped["activity"]))
 

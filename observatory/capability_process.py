@@ -22,6 +22,8 @@ from typing import Callable, TYPE_CHECKING
 
 from .agent_hierarchy import AGENT_ID
 from .capability_facts import PromptSignalFacts, prompt_signal_facts
+from .capability_counts import (CountFacts, CountProfile, count_facts,
+                                model_from_count_facts, parse_count_profile)
 from .capability_model import ModelRowSpec, model_from_facts, parse_model_rows
 from .plugin_frames import FrameError, read_frame, write_frame
 from .plugin_manifest import PluginManifest, plan_activation
@@ -52,6 +54,7 @@ class CapabilityConfig:
     columns: tuple[tuple[str, int, int], ...]
     grants: tuple[str, ...]
     model_rows: tuple[ModelRowSpec, ...] | None = None
+    count_profile: CountProfile | None = None
 
 
 def read_capability_config(path: str | Path) -> CapabilityConfig:
@@ -72,8 +75,10 @@ def read_capability_config(path: str | Path) -> CapabilityConfig:
         raise ValueError("invalid capability config encoding") from exc
     schema = descriptor.get("schema")
     expected_keys = ({"schema", "manifest", "pane", "grants"} if schema == 1 else
-                     {"schema", "manifest", "pane", "grants", "model"} if schema == 2 else set())
-    if (type(schema) is not int or schema not in (1, 2)
+                     {"schema", "manifest", "pane", "grants", "model"} if schema == 2 else
+                     {"schema", "manifest", "pane", "grants", "facts", "model"}
+                     if schema == 3 else set())
+    if (type(schema) is not int or schema not in (1, 2, 3)
             or set(descriptor) != expected_keys
             or not isinstance(descriptor["manifest"], str)
             or not Path(descriptor["manifest"]).is_absolute()
@@ -99,7 +104,12 @@ def read_capability_config(path: str | Path) -> CapabilityConfig:
         columns = tuple(tuple(column) for column in raw_columns)
         if sum(column[1] for column in columns) > 54:
             raise ValueError("capability pane exceeds compact width")
+        if schema == 3 and (len(columns) != 2 or columns[0][1] < 32
+                            or columns[1][1] < 10):
+            raise ValueError("declarative count pane needs two readable columns")
     model_rows = parse_model_rows(descriptor["model"]) if schema == 2 else None
+    count_profile = (parse_count_profile(descriptor["facts"], descriptor["model"])
+                     if schema == 3 else None)
     manifest = PluginManifest.read(descriptor["manifest"])
     plan_activation({manifest.id: manifest}, (manifest.id,),
                     host_features=("pane-model/1",), allowed_grants=(GRANT,))
@@ -109,7 +119,7 @@ def read_capability_config(path: str | Path) -> CapabilityConfig:
                                    lambda _scope: PaneModel("unavailable", "Not started"))
     PaneRegistry((declaration,))
     return CapabilityConfig(manifest, declaration.id, declaration.title, columns,
-                            (GRANT,), model_rows)
+                            (GRANT,), model_rows, count_profile)
 
 
 class CapabilityProcess:
@@ -240,23 +250,32 @@ class CapabilityProcess:
             self.close()
             raise
 
-    def query(self, facts: PromptSignalFacts) -> PaneModel:
+    def query(self, facts: PromptSignalFacts | CountFacts) -> PaneModel:
         if self.process is None or self.process.returncode is not None:
             raise ProtocolError("capability child is not running")
         if facts.state not in ("ready", "degraded"):
             raise ValueError("unavailable facts cannot reach child")
+        if self.config.count_profile is None:
+            if not isinstance(facts, PromptSignalFacts):
+                raise ValueError("capability fact profile mismatch")
+            wire_facts = {"state": facts.state, "observed_events": facts.observed_events,
+                          "user_messages": facts.user_messages,
+                          "shell_actions": facts.shell_actions,
+                          "first_shell_after_user_ms": facts.first_shell_after_user_ms,
+                          "window_complete": facts.window_complete}
+        else:
+            if not isinstance(facts, CountFacts):
+                raise ValueError("capability fact profile mismatch")
+            wire_facts = facts.wire()
         self.sequence += 1
         seq = self.sequence
         self._send({"type": "facts", "protocol": 1, "seq": seq,
-                    "facts": {"state": facts.state, "observed_events": facts.observed_events,
-                              "user_messages": facts.user_messages,
-                              "shell_actions": facts.shell_actions,
-                              "first_shell_after_user_ms": facts.first_shell_after_user_ms,
-                              "window_complete": facts.window_complete}}, timeout=self.timeout)
+                    "facts": wire_facts}, timeout=self.timeout)
         reply = self._next(timeout=self.timeout)
         return self._validated_model(reply, seq, facts)
 
-    def _validated_model(self, reply: dict, seq: int, facts: PromptSignalFacts) -> PaneModel:
+    def _validated_model(self, reply: dict, seq: int,
+                         facts: PromptSignalFacts | CountFacts) -> PaneModel:
         if (set(reply) != {"type", "protocol", "seq", "state", "summary", "rows"}
                 or reply["type"] != "model" or type(reply["protocol"]) is not int
                 or reply["protocol"] != 1 or type(reply["seq"]) is not int
@@ -277,7 +296,12 @@ class CapabilityProcess:
             raise ProtocolError("invalid capability PaneModel schema") from exc
         # Every displayed value is recomputed from receiver-owned facts. A v2
         # descriptor chooses bounded formulas; it cannot authorize child text.
-        if self.config.model_rows is None:
+        if self.config.count_profile is not None:
+            if not isinstance(facts, CountFacts):
+                raise ProtocolError("capability fact profile mismatch")
+            expected = model_from_count_facts(facts, self.config.count_profile,
+                                              include_coverage=len(self.config.columns) == 3)
+        elif self.config.model_rows is None:
             coverage = "complete recent window" if facts.window_complete else "partial recent window"
             expected = PaneModel(facts.state,
                 f"{facts.observed_events} scoped events · {coverage} · observational signals only",
@@ -425,10 +449,14 @@ class PromptCapabilityHost:
                 continue
             try:
                 allowed = self.capture_allowed(scope) is True
-                facts = prompt_signal_facts(self.store, scope, capture_allowed=allowed)
+                if self.config.count_profile is None:
+                    facts = prompt_signal_facts(self.store, scope, capture_allowed=allowed)
+                else:
+                    facts = count_facts(self.store, scope, self.config.count_profile,
+                                        capture_allowed=allowed)
                 if self.stop.is_set():
                     break
-                if facts.state == "unavailable":
+                if facts is None or facts.state == "unavailable":
                     model = PaneModel("unavailable", "Content capture or exact agent scope unavailable")
                 else:
                     if self.capture_allowed(scope) is not True:
@@ -438,6 +466,14 @@ class PromptCapabilityHost:
                     if self.stop.is_set():
                         break
                     model = self.process.query(facts)
+                    if self.config.count_profile is not None:
+                        # A new scoped read rechecks the receiver's policy
+                        # generation and selected page after child work. The
+                        # proof stays in the host; it never enters the pipe.
+                        current = count_facts(self.store, scope, self.config.count_profile,
+                            capture_allowed=self.capture_allowed(scope) is True)
+                        if current != facts:
+                            model = PaneModel("unavailable", "Capability source changed; retry")
                 if self.capture_allowed(scope) is not True:
                     model = PaneModel("unavailable", "Content capture or exact agent scope unavailable")
                 failed = False

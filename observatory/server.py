@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 import gzip
 import io
 import json
 import os
 import sqlite3
+import secrets
 import threading
 import time
+import weakref
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -27,6 +30,22 @@ from .response_cache import ResponseCache
 ThreadingHTTPServer = BoundedHTTPServer
 
 MAX_BODY = 8 * 1024 * 1024
+_CAPABILITY_PROCESS_INSTANCE = secrets.token_hex(16)
+_CAPABILITY_MONITOR_TOKENS = weakref.WeakKeyDictionary()
+_CAPABILITY_MONITOR_LOCK = threading.Lock()
+
+
+def _capability_monitor_token(monitor):
+    """Give each live collector instance a nonce without retaining it forever."""
+    try:
+        with _CAPABILITY_MONITOR_LOCK:
+            token = _CAPABILITY_MONITOR_TOKENS.get(monitor)
+            if token is None:
+                token = secrets.token_hex(16)
+                _CAPABILITY_MONITOR_TOKENS[monitor] = token
+            return token
+    except TypeError:
+        return None
 
 
 def _capability_revision_watch(path):
@@ -355,6 +374,16 @@ def handler_for(store: Store, token: str | None = None, quiet=False, allowed_hos
                         review=query.get("review", ["0"])[0]=="1",
                         _capture_source_ids=source_ids,**certificate)
                     if capability_scope:
+                        # Opaque to UI consumers. This identifies the receiver
+                        # process and durable capture-policy generation, not
+                        # the Activity page's contents or source IDs.
+                        monitor_token = _capability_monitor_token(capture_token[0])
+                        if monitor_token is not None:
+                            revision = json.dumps((self._get_receiver_id,
+                                _CAPABILITY_PROCESS_INSTANCE, monitor_token,
+                                capture_token[1], capture_token[2]), separators=(',', ':'))
+                            page = {**page, 'capture_revision':
+                                hashlib.sha256(revision.encode()).hexdigest()}
                         def current_capability_revision():
                             try:
                                 return (policy_token() == capture_token and
