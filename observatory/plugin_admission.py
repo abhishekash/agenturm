@@ -355,6 +355,8 @@ def _metadata(record: dict) -> dict:
 def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]]:
     if not isinstance(batch, PollBatch):
         raise TypeError("validated plugin batch required")
+    if type(batch.root_gap) is not bool:
+        raise ProtocolError("invalid discovery root gap marker")
     # Revalidate because PollBatch contains mutable dictionaries and callers can
     # construct it directly. This also bounds the whole batch before SQL writes.
     wire = {"type": "batch", "protocol": 1,
