@@ -4,7 +4,9 @@ Recorded 20 November 2026. Pi's Rust process reader can now use the shared `agen
 
 ## Extension and authority boundary
 
-`PiFormat` retains the existing per-file parser and turn checkpoint. Its new `DirectoryFormat` binding adds only the stable `pi-discovery-gap` diagnostic namespace. The binary selects `DirectoryPoller<PiFormat>` only when the process host sets `AGENTURM_PLUGIN_DISCOVERY_MODE=1` after negotiating `source-discovery/1`. The installer writes that feature and `source-discovery-root-gap/1` only with `--directory`; it requires an existing, non-symlink directory. The host still owns process startup and feature negotiation. Python Store owns source policy, lease, per-member checkpoints, admission, invalidation, projection, and acknowledgment.
+`PiFormat` retains the existing per-file parser and turn checkpoint. Its new `DirectoryFormat` binding adds only the stable `pi-discovery-gap` diagnostic namespace. When the host configuration requests `source-discovery/1`, it sets `AGENTURM_PLUGIN_DISCOVERY_MODE=1` before starting the binary; the process then advertises the negotiated discovery feature. The installer writes that feature and `source-discovery-root-gap/1` only with `--directory`; it requires an existing, non-symlink directory. The host still owns process startup and feature negotiation. Python Store owns source policy, lease, per-member checkpoints, admission, invalidation, projection, and acknowledgment.
+
+The installer defaults to `rust-pi-directory-source` for `--directory` and preserves `rust-pi-source` for single-file mode. These modes have incompatible durable cursor formats. Changing an existing source between modes requires a new source ID; explicitly reusing the same ID fails visibly without advancing its checkpoint. The installer validates the directory path at install time. As with the shared Codex reader, intermediate path components can race with later traversal; this configured process is not a filesystem security sandbox.
 
 The shared engine accepts at most 48 JSONL members across 256 directories and 4,096 entries at depth six. It scans at most four files per poll. Member IDs are SHA-256 of their paths relative to the configured root. Each file must begin with a Pi session header. A session identity cannot switch files within one source. Unrecognized Pi rows become coarse diagnostics; malformed Pi headers or record and budget errors fail the poll without being reclassified as a continuity gap. Source text, prompts, tool arguments and outputs stay out of process facts.
 
@@ -16,7 +18,7 @@ Deletion followed by reappearance under the same path and identity is still a so
 
 ## Verification
 
-Focused Rust tests pass 13/13 and Clippy with warnings denied passes. Installed Pi directory tests pass 6/6 through the Python Store and include the Rust process host path, exact root/removal/read-gap diagnostic IDs, durable restart, sibling isolation, recovery, malformed format behavior, and installer rejection of unsafe directory inputs. Existing installed single-file Pi tests pass 8/8. Formatting and diff checks pass.
+Focused Rust tests pass 13/13 and Clippy with warnings denied passes. Installed Pi directory tests cover the Rust process host path, exact root/removal/read-gap diagnostic IDs, durable restart, sibling isolation, recovery, malformed format behavior, installer rejection of unsafe directory inputs, and fail-closed mode switches. Existing installed single-file Pi tests pass 8/8. Formatting and diff checks pass.
 
 ```sh
 RUSTUP_HOME=/tmp/agenturm-rustup-home CARGO_HOME=/tmp/agenturm-cargo-home \

@@ -22,7 +22,7 @@ def main() -> None:
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--directory", action="store_true",
                         help="read up to 48 Pi session JSONL files below an existing directory")
-    parser.add_argument("--source-id", default="rust-pi-source")
+    parser.add_argument("--source-id", help="stable source ID (defaults to a distinct ID per mode)")
     args = parser.parse_args()
     if os.name != "posix":
         parser.error("the Rust Pi executable currently supports POSIX hosts")
@@ -37,7 +37,9 @@ def main() -> None:
             parser.error("directory source must already exist")
     elif args.source.is_dir():
         parser.error("use --directory for a directory source")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", args.source_id):
+    source_id = (args.source_id if args.source_id is not None else
+                 ("rust-pi-directory-source" if args.directory else "rust-pi-source"))
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", source_id):
         parser.error("invalid source ID")
     destination = args.destination
     if destination.is_symlink():
@@ -68,7 +70,7 @@ def main() -> None:
         output.write(
             'schema = 1\n[[sources]]\n'
             f'manifest = {json.dumps(str(manifest))}\n'
-            f'source_id = {json.dumps(args.source_id)}\n'
+            f'source_id = {json.dumps(source_id)}\n'
             'grants = ["configured-source-read"]\n'
             'capture = "metadata-only"\npoll_interval = 0.5\ntimeout = 5.0\n'
             f'root = {json.dumps(str(args.source))}\n'

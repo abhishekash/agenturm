@@ -56,6 +56,7 @@ class PiDirectoryTests(unittest.TestCase):
              "--destination", str(self.root / "installed"), "--source", str(self.sources),
              "--directory"], check=True, capture_output=True, text=True)
         self.plugin = read_plugin_config(result.stdout.strip())[0]
+        self.assertEqual(self.plugin.source_id, "rust-pi-directory-source")
         self.assertEqual(self.plugin.required_features,
                          ("source-discovery/1", "source-discovery-root-gap/1"))
         self.store = Store(self.root / "store.db")
@@ -242,6 +243,62 @@ class PiDirectoryTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertNotEqual(failed.returncode, 0)
         self.assertFalse((self.root / "invalid").exists())
+        default_single = subprocess.run(
+            [sys.executable, str(INSTALLER), "--binary", self.binary,
+             "--destination", str(self.root / "default-single"),
+             "--source", str(self.first)], check=True, capture_output=True, text=True)
+        self.assertEqual(read_plugin_config(default_single.stdout.strip())[0].source_id,
+                         "rust-pi-source")
+
+    def test_mode_switch_with_explicit_reused_source_id_keeps_checkpoint(self):
+        result = subprocess.run(
+            [sys.executable, str(INSTALLER), "--binary", self.binary,
+             "--destination", str(self.root / "single-installed"),
+             "--source", str(self.first), "--source-id", self.plugin.source_id],
+            check=True, capture_output=True, text=True)
+        single = read_plugin_config(result.stdout.strip())[0]
+        self.assertEqual(single.source_id, self.plugin.source_id)
+        self.assertEqual(single.required_features, ())
+
+        def single_worker(store):
+            return PluginSession(store, single.manifest, source_id=single.source_id,
+                                 allowed_grants=single.allowed_grants,
+                                 source_root=single.source_root,
+                                 required_features=single.runtime_features)
+
+        def durable_state(store):
+            with store._connect() as db:
+                row = db.execute("SELECT cursor,dirty_seq,policy_epoch "
+                                 "FROM plugin_source_cursor_v1 WHERE source_id=?",
+                                 (self.plugin.source_id,)).fetchone()
+                evidence = db.execute("SELECT COUNT(*) FROM plugin_evidence_v1 "
+                                      "WHERE source_id=?", (self.plugin.source_id,)).fetchone()[0]
+                return (*row, evidence)
+
+        # A directory checkpoint cannot be consumed by the single-file parser.
+        self.admit_two()
+        directory_state = durable_state(self.store)
+        self.assertTrue(directory_state[0].startswith("d1:"))
+        with single_worker(self.store) as worker:
+            with self.assertRaises(ProtocolError):
+                worker.poll_once()
+        self.assertEqual(durable_state(self.store), directory_state)
+
+        # The reverse switch also fails visibly without acknowledging a cursor.
+        other_store = Store(self.root / "single-first.db")
+        self.addCleanup(other_store.close)
+        with single_worker(other_store) as worker:
+            worker.poll_once()
+        single_state = durable_state(other_store)
+        self.assertTrue(single_state[0].startswith("v2:"))
+        with PluginSession(other_store, self.plugin.manifest,
+                           source_id=self.plugin.source_id,
+                           allowed_grants=self.plugin.allowed_grants,
+                           source_root=self.plugin.source_root,
+                           required_features=self.plugin.runtime_features) as worker:
+            with self.assertRaises(ProtocolError):
+                worker.poll_once()
+        self.assertEqual(durable_state(other_store), single_state)
 
 
 if __name__ == "__main__":
