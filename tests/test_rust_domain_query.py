@@ -87,6 +87,121 @@ class RustDomainQueryTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_exact_activity_matches_pi_correlation_correction_and_gap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(str(Path(directory) / "store.db"))
+            try:
+                lease = activate_source(store, plugin_id="example.rust-pi-harness",
+                                        source_id="pi-query", generation="a" * 64)
+                def fact(event, kind, payload, stamp, *, turn=None, operation=None,
+                         revision=0):
+                    identity = {"session_id": "pi-native"}
+                    if turn is not None:
+                        identity["turn_id"] = turn
+                    if operation is not None:
+                        identity["operation_id"] = operation
+                    return {"event_id": event, "revision": revision, "kind": kind,
+                            "time_ns": str(stamp), "identity": identity, "payload": payload}
+                commit_batch(store, lease, "", PollBatch("pi-query", "one", (
+                    fact("user-one", "message", {"role": "user"}, 10, turn="first"),
+                    fact("call", "tool", {"category": "file", "result": "started"},
+                         11, turn="first", operation="shared"))))
+                commit_batch(store, lease, "one", PollBatch("pi-query", "two", (
+                    fact("user-two", "message", {"role": "user"}, 20, turn="second"),
+                    fact("result", "tool", {"category": "other", "result": "failed"},
+                         21, operation="shared"))))
+                project_source(store, "pi-query")
+                before = capture(store, "pi-query")
+                self.assertTrue(current(store, before))
+                expected = next(row for row in before.expected["activities"]
+                                if row["result"] == "failed")
+                self.assertEqual(expected["metadata"]["tool_turn_relation"], "matched_call")
+                request = {"schema_version": 1, "snapshot": before.fixture,
+                           "query": {"kind": "activity", "source_id": "pi-query",
+                                     "event_id": expected["id"]}}
+                queried = self.query(request)
+                self.assertEqual(queried.returncode, 0, queried.stderr)
+                self.assertEqual(json.loads(queried.stdout)["activity"], expected)
+                self.assertEqual(json.loads(queried.stdout)["coverage"], "partial")
+                commit_batch(store, lease, "two", PollBatch("pi-query", "three", (
+                    fact("result", "tool", {"category": "other", "result": "succeeded"},
+                         21, operation="shared", revision=1),)))
+                self.assertFalse(current(store, before))
+                project_source(store, "pi-query")
+                corrected = capture(store, "pi-query")
+                request["snapshot"] = corrected.fixture
+                after = self.query(request)
+                self.assertEqual(after.returncode, 0, after.stderr)
+                self.assertEqual(json.loads(after.stdout)["activity"]["result"], "succeeded")
+                gap = {"event_id": "gap", "revision": 0, "kind": "diagnostic",
+                       "time_ns": "30", "payload": {"code": "possible_source_gap",
+                                                   "severity": "warning"}}
+                commit_batch(store, lease, "three", PollBatch("pi-query", "four", (gap,)))
+                project_source(store, "pi-query")
+                gapped = capture(store, "pi-query")
+                request["snapshot"] = gapped.fixture
+                missing = self.query(request)
+                self.assertEqual(missing.returncode, 0, missing.stderr)
+                self.assertIsNone(json.loads(missing.stdout)["activity"])
+                self.assertEqual(json.loads(missing.stdout)["coverage"], "partial")
+            finally:
+                store.close()
+
+    def test_exact_activity_preserves_uncorrelated_non_pi_turn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(str(Path(directory) / "store.db"))
+            try:
+                lease = activate_source(store, plugin_id="example.rust-kiro-harness",
+                                        source_id="kiro-query", generation="a" * 64)
+                records = tuple({
+                    "event_id": event, "revision": 0, "kind": "tool",
+                    "time_ns": str(stamp), "identity": {
+                        "session_id": "kiro-native", "turn_id": "original",
+                        "operation_id": "denied"},
+                    "payload": {"category": "shell", "result": "denied"}}
+                    for event, stamp in (("call", 10), ("result", 20)))
+                commit_batch(store, lease, "", PollBatch("kiro-query", "one", records))
+                project_source(store, "kiro-query")
+                snapshot = capture(store, "kiro-query")
+                self.assertTrue(current(store, snapshot))
+                for expected in snapshot.expected["activities"]:
+                    self.assertEqual(expected["metadata"]["tool_turn_relation"],
+                                     "unverified_native_turn")
+                    request = {"schema_version": 1, "snapshot": snapshot.fixture,
+                               "query": {"kind": "activity", "source_id": "kiro-query",
+                                         "event_id": expected["id"]}}
+                    result = self.query(request)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout)["activity"], expected)
+            finally:
+                store.close()
+
+    def test_exact_activity_quarantines_legacy_pi_result_without_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(str(Path(directory) / "store.db"))
+            try:
+                lease = activate_source(store, plugin_id="example.rust-pi-harness",
+                                        source_id="old-pi-query", generation="a" * 64)
+                old_result = {"event_id": "old-result", "revision": 0, "kind": "tool",
+                              "time_ns": "20", "identity": {
+                                  "session_id": "pi-native", "turn_id": "later-user",
+                                  "operation_id": "call"},
+                              "payload": {"category": "file", "result": "failed"}}
+                commit_batch(store, lease, "", PollBatch("old-pi-query", "one", (old_result,)))
+                project_source(store, "old-pi-query")
+                snapshot = capture(store, "old-pi-query")
+                expected = snapshot.expected["activities"][0]
+                self.assertEqual(expected["turn_id"], "")
+                self.assertEqual(expected["metadata"]["tool_turn_relation"], "missing_call")
+                request = {"schema_version": 1, "snapshot": snapshot.fixture,
+                           "query": {"kind": "activity", "source_id": "old-pi-query",
+                                     "event_id": expected["id"]}}
+                result = self.query(request)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["activity"], expected)
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

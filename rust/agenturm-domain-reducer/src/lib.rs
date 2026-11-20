@@ -208,6 +208,13 @@ struct Admitted {
     fact: Fact,
 }
 
+struct ToolCall {
+    turn_id: Option<String>,
+    category: String,
+    time_ns: u64,
+    admitted_ns: u64,
+}
+
 #[derive(Default)]
 struct SessionFacts {
     last_record_ns: u64,
@@ -665,6 +672,8 @@ fn activity_fact(
     receiver_id: &str,
     source_id: &str,
     plugin_id: &str,
+    calls: &BTreeMap<(String, String), Vec<ToolCall>>,
+    correlate_tool_results: bool,
 ) -> Option<Value> {
     let Fact::Activity {
         kind,
@@ -675,6 +684,62 @@ fn activity_fact(
         return None;
     };
     let native = row.native_session_id.as_deref()?;
+    let mut action = action.clone();
+    let mut native_turn = row.native_turn_id.clone().unwrap_or_default();
+    let mut relation = None;
+    let mut category_conflict = false;
+    if correlate_tool_results
+        && *kind == "tool"
+        && result != "started"
+        && let Some(operation) = row.native_operation_id.as_deref()
+    {
+        let matches = calls.get(&(native.to_owned(), operation.to_owned()));
+        match matches.map_or(0, Vec::len) {
+            1 => {
+                let call = &matches.expect("one call")[0];
+                let call_turn = call.turn_id.as_deref().unwrap_or("");
+                if !call_turn.is_empty()
+                    && call.time_ns < row.time_ns
+                    && call.admitted_ns <= row.admitted_ns
+                    && (native_turn.is_empty() || native_turn == call_turn)
+                {
+                    native_turn = call_turn.to_owned();
+                    relation = Some("matched_call");
+                    if action == "other" {
+                        action.clone_from(&call.category);
+                    } else if action != call.category && call.category != "other" {
+                        action = "other".to_owned();
+                        category_conflict = true;
+                    }
+                } else {
+                    native_turn.clear();
+                    relation = Some(
+                        if call.time_ns > row.time_ns || call.admitted_ns > row.admitted_ns {
+                            "future_call"
+                        } else if call.time_ns == row.time_ns {
+                            "unproven_order"
+                        } else if call_turn.is_empty() {
+                            "call_turn_unavailable"
+                        } else {
+                            "conflicting_turn"
+                        },
+                    );
+                }
+            }
+            0 => {
+                if !native_turn.is_empty() && plugin_id != "example.rust-pi-harness" {
+                    relation = Some("unverified_native_turn");
+                } else {
+                    native_turn.clear();
+                    relation = Some("missing_call");
+                }
+            }
+            _ => {
+                native_turn.clear();
+                relation = Some("ambiguous_call");
+            }
+        }
+    }
     let event_key = format!(
         "plugin-event:{}",
         opaque(&[receiver_id, source_id, &row.event_id_hash])
@@ -682,9 +747,11 @@ fn activity_fact(
     let session_key = session_key(receiver_id, source_id, native);
     let agent_material = opaque(&[plugin_id, &format!("plugin:{source_id}"), native, ""]);
     let agent_id = format!("ag1_{}", &agent_material[..32]);
-    let turn_id = row.native_turn_id.as_deref().map_or(String::new(), |turn| {
-        opaque(&["plugin-turn", receiver_id, source_id, native, turn])[..32].to_owned()
-    });
+    let turn_id = if native_turn.is_empty() {
+        String::new()
+    } else {
+        opaque(&["plugin-turn", receiver_id, source_id, native, &native_turn])[..32].to_owned()
+    };
     let operation_key = if *kind == "tool" {
         row.native_operation_id.as_deref().map(|operation| {
             format!(
@@ -716,7 +783,7 @@ fn activity_fact(
             }
         )
     };
-    Some(serde_json::json!({
+    let mut fact = serde_json::json!({
         "activity_scope_version": 1, "id": event_key, "time_unix_nano": row.time_ns,
         "domain": kind, "action": action, "subject": subject, "result": result,
         "actor": plugin_id, "agent_id": agent_id, "session_id": session_key,
@@ -730,7 +797,14 @@ fn activity_fact(
             "native_operation_observed": row.native_operation_id.is_some(),
             "capture": "content-free", "coverage": "partial"},
         "capture_content": false, "detail_present": false, "operation_present": false
-    }))
+    });
+    if let Some(relation) = relation {
+        fact["metadata"]["tool_turn_relation"] = Value::String(relation.to_owned());
+    }
+    if category_conflict {
+        fact["metadata"]["tool_category_conflict"] = Value::Bool(true);
+    }
+    Some(fact)
 }
 
 /// Reduce a fixture without opening a database or writing any file.
@@ -817,6 +891,35 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
             latest.insert(row.event_id_hash.clone(), row);
         }
     }
+    let mut calls = BTreeMap::<(String, String), Vec<ToolCall>>::new();
+    if fixture.schema_version >= 3 {
+        for row in latest.values() {
+            if let (
+                Some(native),
+                Some(operation),
+                Fact::Activity {
+                    kind: "tool",
+                    action: category,
+                    result,
+                },
+            ) = (
+                row.native_session_id.as_deref(),
+                row.native_operation_id.as_deref(),
+                &row.fact,
+            ) && result == "started"
+            {
+                calls
+                    .entry((native.to_owned(), operation.to_owned()))
+                    .or_default()
+                    .push(ToolCall {
+                        turn_id: row.native_turn_id.clone(),
+                        category: category.clone(),
+                        time_ns: row.time_ns,
+                        admitted_ns: row.admitted_ns,
+                    });
+            }
+        }
+    }
     let mut sessions = BTreeMap::<String, SessionFacts>::new();
     let mut activity_candidates = Vec::<(String, Value)>::new();
     for row in latest.into_values() {
@@ -829,6 +932,8 @@ pub fn reduce_json(input: &str) -> Result<Output, ReduceError> {
                 &fixture.receiver_id,
                 &fixture.source_id,
                 fixture.plugin_id.as_deref().expect("v2+ plugin ID"),
+                &calls,
+                fixture.schema_version >= 3,
             )
         {
             activity_candidates.push((native_id.to_owned(), activity));
