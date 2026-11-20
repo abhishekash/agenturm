@@ -15,7 +15,8 @@ from observatory.plugin_projection import project_source
 from observatory.plugin_supervisor import PluginSupervisor
 from observatory.server import BoundedHTTPServer, handler_for
 from observatory.terminal_ui import ObservatoryApp, ObservatoryScreen, copy_event_text
-from observatory.ui_export import investigation_json
+from observatory.ui_export import (current_plugin_activity_revision, investigation_json,
+                                   review_investigation_json)
 from observatory.ui_plugin_content import (ContentPreviewRegistry, PI_USER_TEXT,
                                            accepted_preview, eligible)
 
@@ -71,6 +72,39 @@ class PluginContentDeliveryTests(unittest.TestCase):
         status, denied = self.get(self.path())
         self.assertEqual(status, 404)
         self.assertNotIn('password=', json.dumps(denied))
+
+    def test_review_json_requires_opt_in_and_exports_exact_redacted_pi_user_text(self):
+        from observatory.terminal import Api
+        from observatory.ui_review import pi_review_request_record
+        rows=self.store.activity_page(limit=10,review=True)['activity']
+        record=next(row for row in rows if row.get('id')==self.event_id)
+        scope=type('Scope',(),{'matches':lambda _self,row:
+                               row.get('session_id')==record['session_id']})()
+        history=type('History',(),{'events':{record['id']:record}})()
+        selected=pi_review_request_record(history,{},scope)
+        self.assertEqual(selected['id'],self.event_id)
+        api=Api(f'http://127.0.0.1:{self.server.server_port}','secret')
+        receiver=self.store.receiver_namespace()
+        before=current_plugin_activity_revision(api,selected,receiver)
+        self.assertIsNotNone(before)
+        response=api.get(PI_USER_TEXT.path(selected))
+        after=current_plugin_activity_revision(api,selected,receiver)
+        accepted=accepted_preview(response,selected,receiver,before,after,
+                                  matches=PI_USER_TEXT.matches)
+        self.assertEqual(accepted,('password=[REDACTED]',False))
+        projection={'format':'agenturm-review-v1','scope':{'session_id':record['session_id']}}
+        opted_out=review_investigation_json(projection)
+        self.assertNotIn('password=',opted_out)
+        exported=review_investigation_json(projection,{
+            'source':{key:selected[key] for key in
+                      ('id','source_id','service','agent_id','session_id','receiver_id')
+                      if selected.get(key) is not None},
+            'text':accepted[0],'clipped':accepted[1],'revision':after})
+        self.assertIn('password=[REDACTED]',exported)
+        self.assertNotIn('highly-private',exported)
+        self.assertNotIn('requested_command',exported)
+        self.assertIsNone(current_plugin_activity_revision(api,{**selected,'turn_id':'wrong-turn'},receiver))
+        self.assertIsNone(current_plugin_activity_revision(api,{**selected,'source_id':'wrong-source'},receiver))
 
     def test_exact_query_and_source_grant_are_required(self):
         self.assertEqual(self.get('/api/plugin-content')[0], 400)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 from copy import deepcopy
 import json
+import time
 from rich.text import Text
 from textual import on, work
 from textual.binding import Binding
@@ -11,12 +12,28 @@ from textual.widgets import Button, DataTable, RichLog, Static,Input
 from .feed_requests import shared_get
 from .workflow_evidence import ReviewHistory, scope_for, render_review
 from .review_facts import refreshed_review_item, review_capture_policy
-from .ui_export import ReceiptExportScreen
+from .ui_export import (ExportScreen, ReceiptExportScreen,
+                        current_plugin_activity_revision, review_investigation_json)
 from .ui_content import ContentLog, report_document
 
 
 class ReviewLog(ContentLog):
     can_focus = True
+
+
+def pi_review_request_record(history, projection, scope):
+    """Select only an exact in-scope Pi user-message Activity row."""
+    from .ui_plugin_content import PI_USER_TEXT
+    request=(projection or {}).get('request') or {}
+    event_id=(request.get('source') or {}).get('id')
+    candidates=[row for row in history.events.values()
+                if PI_USER_TEXT.matches(row) is True and scope.matches(row)]
+    exact=next((row for row in candidates if isinstance(event_id,str)
+                and row.get('id')==event_id),None)
+    selected=exact or max(candidates,key=lambda row:(row.get('time_unix_nano') or 0,
+                                                       str(row.get('id') or '')),
+                          default=None)
+    return deepcopy(selected) if selected else None
 
 
 class ReviewScreen(ModalScreen):
@@ -35,7 +52,8 @@ class ReviewScreen(ModalScreen):
     ReviewScreen.too-small #review-floor { display: block; }
     '''
     BINDINGS = [Binding('escape','dismiss','Back'), Binding('c','copy','Copy brief'), Binding('j','copy_json','Copy JSON'),
-                Binding('x','export','Export'), Binding('R','refresh','Refresh'),Binding('g','git','Capture Git'),Binding('m','map_workspace','Map checkout'),Binding('d','draft_task','Draft task')]
+                Binding('x','export','Export'), Binding('p','pi_text','Load Pi text'),
+                Binding('E','export_json','Export JSON'), Binding('R','refresh','Refresh'),Binding('g','git','Capture Git'),Binding('m','map_workspace','Map checkout'),Binding('d','draft_task','Draft task')]
 
     def __init__(self, owner, item):
         super().__init__()
@@ -51,6 +69,7 @@ class ReviewScreen(ModalScreen):
         self.generation = 0
         self.started_snapshot = snapshot.updated
         self.workspace_observation=None;self.git_generation=0;self.git_busy=False
+        self.pi_text=None;self.pi_text_generation=0
         if not hasattr(owner,'review_git_comparisons'):owner.review_git_comparisons={}
 
     def compose(self):
@@ -68,8 +87,10 @@ class ReviewScreen(ModalScreen):
                 yield Button('Draft · d',id='review-draft')
                 yield Button('Git · g',id='review-git')
                 yield Button('Excerpt',id='review-excerpt')
+                yield Button('Pi text · p',id='review-pi-text')
+                yield Button('JSON · E',id='review-json')
                 yield Button('Back',id='review-back')
-            yield Static('↑↓ Scroll · Tab · g Git · d Draft · m Map · c Brief · j JSON · Esc Back',id='review-hints',markup=False)
+            yield Static('↑↓ Scroll · Tab · p Pi text · E JSON · g Git · d Draft · m Map · c Brief · j JSON · Esc Back',id='review-hints',markup=False)
 
     def on_mount(self):
         self.on_resize()
@@ -85,11 +106,12 @@ class ReviewScreen(ModalScreen):
             compact=self.app.size.width<80
             for key,wide,narrow in (('earlier','Earlier','Older'),('refresh','Refresh','Reload'),('save','Save task','Save'),('excerpt','Excerpt','Draft')):
                 self.query_one('#review-'+key,Button).label=narrow if compact else wide
-            self.query_one('#review-hints',Static).update('↑↓ Scroll · Tab · g Git · d Draft · m Map · c Brief · j JSON · Esc Back' if compact else '↑↓ PgUp/PgDn · Tab · g Git · d Draft · m Map · c Brief · j JSON · x Export · Esc Back')
+            self.query_one('#review-hints',Static).update('↑↓ Scroll · Tab · p Pi text · E JSON · g Git · d Draft · m Map · c Brief · Esc Back' if compact else '↑↓ PgUp/PgDn · Tab · p Pi text · E JSON · g Git · d Draft · m Map · c Brief · j JSON · x Export · Esc Back')
             self.call_after_refresh(self.render_projection)
 
     def on_unmount(self):
         self.generation += 1;self.git_generation+=1
+        self.pi_text_generation+=1;self.pi_text=None
         self.history.busy = False
 
     def freshness(self):
@@ -107,6 +129,7 @@ class ReviewScreen(ModalScreen):
             # authorizing egress. Never retag or share that old captured body.
             policy={**policy,'capture_content':False}
         if policy.get('capture_content') is False and (self.item.get('capture_content') is not False or self.history.events):
+            self.pi_text=None;self.pi_text_generation+=1
             self.item.update(policy);self.generation+=1;self.git_generation+=1;self.workspace_observation=None;self.git_busy=False
             self.item['task']='Selected execution (metadata-only)'
             self.history=ReviewHistory(self.scope,self.history.revision,False,loaded=True)
@@ -125,6 +148,10 @@ class ReviewScreen(ModalScreen):
 
     def render_projection(self):
         self.projection = self.history.projection(self.item)
+        if self.pi_text and (self._pi_request_record()!=self.pi_text.get('record') or
+                             self.owner.feed.snapshot.receiver_id!=self.scope.receiver or
+                             self.current_policy().get('capture_content') is False):
+            self.pi_text=None;self.pi_text_generation+=1
         if self.workspace_observation and self.item.get('capture_content') is not False:
             from .review_continuity import freeze_workspace
             self.projection=freeze_workspace(self.projection,self.workspace_observation)
@@ -134,6 +161,10 @@ class ReviewScreen(ModalScreen):
         log=self.query_one('#review-body',RichLog)
         scroll=log.scroll_y
         text=render_review(self.projection).split('\n',1)[-1].lstrip()
+        if self.pi_text:
+            text+='\n\nCAPTURED PI USER TEXT · REDACTED\n'+self.pi_text['text']
+            if self.pi_text['clipped']:text+='\n… Excerpt clipped; the original Pi file contains the remaining text.'
+            text+='\nLoaded transiently · expires in 20s · p reloads'
         if self.workspace_observation:
             from .review_continuity import render_workspace
             text+='\n\n'+render_workspace(self.workspace_observation)
@@ -150,6 +181,8 @@ class ReviewScreen(ModalScreen):
         self.query_one('#review-refresh',Button).disabled=self.history.busy
         self.query_one('#review-git',Button).disabled=self.git_busy or self.history.busy or self.item.get('capture_content') is False
         self.query_one('#review-excerpt',Button).disabled=self.item.get('capture_content') is False or not any(self.projection[k] for k in ('checks','edits','errors','context_events'))
+        self.query_one('#review-pi-text',Button).disabled=self._pi_request_record() is None
+        self.query_one('#review-json',Button).disabled=self.projection is None
         self.freshness()
 
     def request_page(self, *, refresh=False):
@@ -331,6 +364,132 @@ class ReviewScreen(ModalScreen):
     def current_policy(self):
         return review_capture_policy(self.item,self.owner.feed.snapshot,self.scope)
 
+    def _pi_request_record(self):
+        """Find the exact source Activity row behind the latest Review request."""
+        return pi_review_request_record(self.history,self.projection,self.scope)
+
+    def action_pi_text(self):
+        if self.apply_capture_policy().get('capture_content') is False:return
+        record=self._pi_request_record()
+        if record is None:
+            self.notify('No exact Pi user message is available in this Review.',severity='warning');return
+        self.pi_text_generation+=1;generation=self.pi_text_generation
+        self.pi_text=None
+        self.read_pi_text(generation,record,self.scope.receiver)
+
+    @work(thread=True,exclusive=True,group='review-pi-text',exit_on_error=False)
+    def read_pi_text(self,generation,record,receiver_id):
+        result=None
+        try:
+            from .ui_plugin_content import PI_USER_TEXT,accepted_preview
+            provider=PI_USER_TEXT
+            before=current_plugin_activity_revision(self.owner.feed.api,record,receiver_id)
+            if before is not None:
+                response=shared_get(self.owner.feed.api,provider.path(record),
+                                    cancelled=lambda:not self.is_mounted or generation!=self.pi_text_generation)
+                after=current_plugin_activity_revision(self.owner.feed.api,record,receiver_id)
+                accepted=accepted_preview(response,record,receiver_id,before,after,matches=provider.matches)
+                if accepted is not None:
+                    result={'record':record,'source':{key:record[key] for key in
+                            ('id','source_id','service','agent_id','session_id','receiver_id','turn_id','time_unix_nano')
+                            if record.get(key) is not None},'text':accepted[0],
+                            'clipped':accepted[1],'revision':after}
+        except Exception:
+            pass
+        try:self.app.call_from_thread(self.finish_pi_text,generation,result)
+        except RuntimeError:pass
+
+    def finish_pi_text(self,generation,result):
+        if not self.is_mounted or generation!=self.pi_text_generation:return
+        record=self._pi_request_record()
+        if (result is None or record!=result.get('record') or
+                self.owner.feed.snapshot.receiver_id!=self.scope.receiver or
+                self.current_policy().get('capture_content') is False):
+            self.pi_text=None
+            self.notify('Pi text unavailable: exact source or capture policy changed.',severity='warning')
+        else:
+            result['expires_at']=time.monotonic()+20
+            self.pi_text=result
+            self.set_timer(20,lambda:self.expire_pi_text(generation))
+            self.set_timer(2,lambda:self.revalidate_pi_text(generation))
+            self.notify('Redacted Pi user text loaded for this Review · expires in 20s.')
+        self.render_projection()
+
+    def revalidate_pi_text(self,generation):
+        text=self.pi_text
+        if generation!=self.pi_text_generation or not text:return
+        self.check_pi_text(generation,text['record'],text['revision'])
+
+    @work(thread=True,exclusive=True,group='review-pi-text-recheck',exit_on_error=False)
+    def check_pi_text(self,generation,record,revision):
+        current=None
+        try:
+            from .ui_plugin_content import PI_USER_TEXT,accepted_preview
+            before=current_plugin_activity_revision(self.owner.feed.api,record,self.scope.receiver)
+            if before==revision:
+                response=shared_get(self.owner.feed.api,PI_USER_TEXT.path(record),
+                                    cancelled=lambda:not self.is_mounted or generation!=self.pi_text_generation)
+                after=current_plugin_activity_revision(self.owner.feed.api,record,self.scope.receiver)
+                accepted=accepted_preview(response,record,self.scope.receiver,before,after,
+                                          matches=PI_USER_TEXT.matches)
+                if accepted is not None and after==revision:
+                    current=(accepted[0],accepted[1],after)
+        except Exception:pass
+        try:self.app.call_from_thread(self.finish_pi_text_recheck,generation,record,revision,current)
+        except RuntimeError:pass
+
+    def finish_pi_text_recheck(self,generation,record,revision,current):
+        if generation!=self.pi_text_generation or not self.pi_text:return
+        if (not self.is_mounted or self._pi_request_record()!=record or
+                self.owner.feed.snapshot.receiver_id!=self.scope.receiver or
+                self.current_policy().get('capture_content') is False or
+                current!=(self.pi_text['text'],self.pi_text['clipped'],revision) or
+                time.monotonic()>=self.pi_text['expires_at']):
+            self.pi_text=None;self.pi_text_generation+=1;self.render_projection();return
+        self.set_timer(2,lambda:self.revalidate_pi_text(generation))
+
+    def expire_pi_text(self,generation):
+        if generation==self.pi_text_generation and self.pi_text:
+            self.pi_text=None;self.pi_text_generation+=1;self.render_projection()
+
+    def action_export_json(self):
+        self.apply_capture_policy()
+        projection=deepcopy(self.projection)
+        pi_text=deepcopy(self.pi_text)
+        record=pi_text.get('record') if pi_text else None
+        pi_generation=self.pi_text_generation
+        if pi_text and (record!=self._pi_request_record() or self.current_policy().get('capture_content') is False):
+            self.pi_text=None;self.notify('Pi text withheld: source or capture policy changed.',severity='warning');return
+        content=review_investigation_json(projection,pi_text)
+        def preview_valid():
+            return (pi_text is None or
+                    self.is_mounted and self.pi_text_generation==pi_generation and
+                    self.pi_text is not None and self.pi_text.get('record')==record and
+                    time.monotonic()<pi_text['expires_at'] and
+                    self._pi_request_record()==record and
+                    self.owner.feed.snapshot.receiver_id==self.scope.receiver and
+                    self.current_policy().get('capture_content') is not False)
+        def valid():
+            if not self.is_mounted or self.owner.feed.snapshot.receiver_id!=self.scope.receiver:
+                return False
+            if pi_text is None:return self.current_policy().get('capture_content') is not False
+            if not preview_valid():return False
+            try:
+                from .ui_plugin_content import PI_USER_TEXT,accepted_preview
+                before=current_plugin_activity_revision(self.owner.feed.api,record,self.scope.receiver)
+                if before!=pi_text['revision']:return False
+                response=shared_get(self.owner.feed.api,PI_USER_TEXT.path(record))
+                after=current_plugin_activity_revision(self.owner.feed.api,record,self.scope.receiver)
+                accepted=accepted_preview(response,record,self.scope.receiver,before,after,matches=PI_USER_TEXT.matches)
+                return accepted is not None and accepted==(pi_text['text'],pi_text['clipped'])
+            except Exception:return False
+        if not valid():
+            self.pi_text=None;self.notify('Source content changed; refresh Review before exporting.',severity='warning');return
+        self.app.push_screen(ExportScreen('review',{},content=content,can_export=valid,
+                                          poll_policy=pi_text is not None,
+                                          preview_valid=preview_valid if pi_text is not None else None,
+                                          allow_clipboard=False))
+
     def start_receipt(self,export):
         from .ui_saved_tasks import projection_policy_state
         projection=deepcopy(self.projection)
@@ -373,6 +532,8 @@ class ReviewScreen(ModalScreen):
         elif action=='review-export':self.action_export()
         elif action=='review-excerpt':
             self.app.push_screen(ReviewExcerptScreen(self.owner,self.projection,self.item))
+        elif action=='review-pi-text':self.action_pi_text()
+        elif action=='review-json':self.action_export_json()
         elif action=='review-git':self.action_git()
         elif action=='review-draft':self.action_draft_task()
         elif action=='review-save':
