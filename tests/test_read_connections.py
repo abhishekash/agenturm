@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from observatory.read_connections import ReadConnections
 
@@ -42,6 +43,124 @@ class ReadConnectionTests(unittest.TestCase):
         with self.assertRaises(sqlite3.ProgrammingError):active.execute('SELECT 1')
         with self.assertRaises(sqlite3.ProgrammingError):
             with self.pool.read():pass
+        self.assertTrue(self.pool.wait_closed(0))
+
+    def test_close_waits_for_every_checked_out_read_without_revoking_it(self):
+        entered = (threading.Event(), threading.Event())
+        release = (threading.Event(), threading.Event())
+
+        def hold(index):
+            with self.pool.read() as lease:
+                connection = lease._db
+                cursor = lease.execute('SELECT value FROM facts')
+                entered[index].set()
+                self.assertTrue(release[index].wait(5), 'reader was never released')
+                self.assertEqual(cursor.fetchone()[0], 1)
+            return connection, cursor
+
+        self.assertFalse(self.pool.wait_closed(0))
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            readers = [executor.submit(hold, index) for index in range(2)]
+            self.assertTrue(all(event.wait(5) for event in entered))
+            try:
+                self.pool.close()
+                self.assertFalse(self.pool.wait_closed(0.02))
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    with self.pool.read():
+                        pass
+                release[0].set()
+                first_connection, first_cursor = readers[0].result(timeout=5)
+                self.assertFalse(self.pool.wait_closed(0.02))
+                release[1].set()
+                second_connection, second_cursor = readers[1].result(timeout=5)
+                self.assertTrue(self.pool.wait_closed(0.1))
+            finally:
+                for event in release:
+                    event.set()
+        for connection, cursor in ((first_connection, first_cursor),
+                                   (second_connection, second_cursor)):
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute('SELECT 1')
+            with self.assertRaises(sqlite3.ProgrammingError):
+                cursor.fetchone()
+
+    def test_wait_closed_rejects_unbounded_deadlines(self):
+        for timeout in (None, True, -1, float('inf'), float('nan'), 61, 1e308):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                self.pool.wait_closed(timeout)
+        self.pool.close()
+        self.assertTrue(self.pool.wait_closed(0))
+
+    def test_idle_close_failure_never_reports_drain(self):
+        with self.pool.read() as lease:
+            self.assertEqual(lease.execute('SELECT value FROM facts').fetchone()[0], 1)
+        connection = self.pool.idle.pop()
+        self.addCleanup(connection.close)
+
+        class FailingClose:
+            def close(self):
+                raise OSError('injected idle close failure')
+
+        class TrackedClose:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        remaining = TrackedClose()
+        self.pool.idle.extend((FailingClose(), remaining))
+        with self.assertRaisesRegex(OSError, 'injected idle close failure'):
+            self.pool.close()
+        self.assertTrue(remaining.closed, 'later idle handles must still be closed')
+        self.assertFalse(self.pool.wait_closed(0))
+        self.pool.close()
+        self.assertFalse(self.pool.wait_closed(0))
+
+    def test_leased_close_failure_never_reports_drain(self):
+        connection = sqlite3.connect(self.path, check_same_thread=False)
+        self.addCleanup(connection.close)
+
+        class FailingClose:
+            def __init__(self, real):
+                self.real = real
+
+            def __getattr__(self, name):
+                return getattr(self.real, name)
+
+            @property
+            def row_factory(self):
+                return self.real.row_factory
+
+            @row_factory.setter
+            def row_factory(self, value):
+                self.real.row_factory = value
+
+            def close(self):
+                raise OSError('injected leased close failure')
+
+        with patch('observatory.read_connections.sqlite3.connect', return_value=FailingClose(connection)):
+            with self.assertRaisesRegex(OSError, 'injected leased close failure'):
+                with self.pool.read() as lease:
+                    self.assertEqual(lease.execute('SELECT value FROM facts').fetchone()[0], 1)
+                    self.pool.close()
+        self.assertFalse(self.pool.wait_closed(0))
+
+    def test_lease_cursor_cleanup_failure_never_reports_drain(self):
+        class FailingRollback:
+            def __init__(self, real):
+                self.real = real
+
+            def __getattr__(self, name):
+                return getattr(self.real, name)
+
+            def rollback(self):
+                raise OSError('injected lease finish failure')
+
+        with self.assertRaisesRegex(OSError, 'injected lease finish failure'):
+            with self.pool.read() as lease:
+                lease._db = FailingRollback(lease._db)
+                self.pool.close()
+        self.assertFalse(self.pool.wait_closed(0))
 
     def replacement(self):
         replacement=self.path.with_suffix('.new')
