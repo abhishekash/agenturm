@@ -2,7 +2,7 @@
   "observatory/__main__.py | main.local_store | Store()": {"count": 1, "authority": "telemetry", "effect": "may_write"},
   "observatory/attention_cli.py | run_attention_command | WorkflowStore()": {"count": 2, "authority": "workflow", "effect": "may_write"},
   "observatory/attention_cli.py | run_watch | WorkflowStore()": {"count": 1, "authority": "workflow", "effect": "may_write"},
-  "observatory/core.py | Store.__init__ | _connect": {"count": 5, "authority": "telemetry", "effect": "may_write"},
+  "observatory/core.py | Store._initialize | _connect": {"count": 5, "authority": "telemetry", "effect": "may_write"},
   "observatory/core.py | Store._backfill_endpoints | _connect": {"count": 1, "authority": "telemetry", "effect": "may_write"},
   "observatory/core.py | Store._backfill_endpoints | _write_db": {"count": 2, "authority": "telemetry", "effect": "may_write"},
   "observatory/core.py | Store._backfill_summaries | _connect": {"count": 4, "authority": "telemetry", "effect": "may_write"},
