@@ -319,9 +319,53 @@ class SessionViewTests(unittest.IsolatedAsyncioTestCase):
     def test_discovery_caps_are_visible_as_partial_coverage(self):
         warning = coverage_warning({'omitted_sources': 3, 'max_sources': 50,
                                     'opencode_omitted_sessions': 2})
-        self.assertIn('3 older Codex/Claude sessions', warning)
-        self.assertIn('2 older OpenCode sessions', warning)
+        self.assertIn('3 Native JSONL files omitted', warning)
+        self.assertIn('2 Legacy reader sessions omitted', warning)
         self.assertEqual(coverage_warning({}), '')
+
+    def test_plain_snapshot_uses_generic_source_groups(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from observatory.terminal import print_snapshot
+
+        feed = ManualFeed()
+        feed.snapshot.agents = []
+        feed.snapshot.local_status.update(enabled=True, source_coverage=[
+            {'label': 'Native JSONL', 'unit': 'files', 'active': 2,
+             'omitted': 0, 'state': 'ready'},
+            {'label': 'Eclipse', 'unit': 'sessions', 'active': 3,
+             'omitted': 0, 'state': 'ready'},
+        ])
+        output = StringIO()
+        with redirect_stdout(output):
+            print_snapshot(feed, refresh=False)
+        self.assertIn('2 files observed, 3 sessions observed', output.getvalue())
+        self.assertNotIn('Codex / Claude Code logs', output.getvalue())
+
+    async def test_host_coverage_uses_declared_reader_labels_at_narrow_sizes(self):
+        feed = ManualFeed()
+        groups = [
+            {'label': 'Native JSONL', 'unit': 'files', 'active': 2,
+             'omitted': 1, 'limit': 50, 'state': 'partial'},
+            {'label': 'Eclipse', 'unit': 'sessions', 'active': 3,
+             'omitted': 0, 'state': 'ready'},
+        ]
+        app = ObservatoryApp(feed, persist_preferences=False)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.refresh_timer.stop()
+            await pilot.press('5')
+            await pilot.press('e')
+            await pilot.pause()
+            app.data.local_status['source_coverage'] = groups
+            for size in ((80, 24), (60, 18)):
+                await pilot.resize_terminal(*size)
+                app.render_host()
+                await pilot.pause()
+                detail = app.query_one('#host-detail').plain_text
+                self.assertIn('Eclipse: 3 sessions', ' '.join(detail.split()))
+                self.assertIn('1 Native JSONL file omitted', coverage_warning(app.data.local_status))
+                self.assertNotIn('Codex / Claude files', detail)
 
     async def test_server_inventory_includes_older_servers_and_filters_calls(self):
         feed = ManualFeed()

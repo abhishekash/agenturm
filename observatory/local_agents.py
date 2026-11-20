@@ -866,7 +866,8 @@ _HOST_STATUS_TOP_LEVEL = frozenset({
     'max_sources', 'opencode_discovered_sessions', 'opencode_omitted_sessions',
     'opencode_diagnostics', 'reader_plugins', 'runtime', 'mcp_configurations',
     'mcp_config_errors', 'mcp_config_updated', 'hierarchy', 'sessions',
-    'opencode_read_errors',
+    'opencode_read_errors', 'source_coverage', 'source_coverage_overflow',
+    'collection_read_errors',
 })
 
 
@@ -1156,6 +1157,8 @@ class LocalAgents:
                      "bytes_read": session.offset} for session in sessions]
         reader_observed = []
         reader_diagnostics = {}
+        reader_counts = {}
+        reader_failed = set()
         for spec in self.reader_specs:
             reader = self.reader_plugins[spec.id]
             try:
@@ -1169,10 +1172,43 @@ class LocalAgents:
                 if isinstance(evidence_source, str) and evidence_source:
                     rows = [dict(row, evidence_source_id=evidence_source) for row in rows]
                 reader_observed.extend(rows)
+                reader_counts[spec.id] = len(rows)
                 reader_diagnostics[spec.id] = reader.diagnostics()
             except Exception as exc:
+                reader_failed.add(spec.id)
                 self.record_error(exc, f"Inspecting native reader {spec.id}")
         observed.extend(reader_observed)
+        source_coverage = [{"label": "Native JSONL", "unit": "files",
+                            "active": len(sessions), "discovered": self.discovered_sources,
+                            "omitted": self.omitted_sources, "limit": MAX_SOURCES,
+                            "state": "partial" if self.omitted_sources or self.ambiguous_sources else "ready"}]
+        # Reserve one of the 24 display slots for a process-adapter group
+        # appended by the HTTP host after native collection.
+        for spec in self.reader_specs[:22]:
+            details = {}
+            if spec.coverage and spec.id not in reader_failed:
+                try:
+                    details = spec.coverage(self.reader_plugins[spec.id])
+                    if (not isinstance(details, dict) or
+                            not details.keys() <= {"discovered", "omitted", "limit"} or any(
+                            type(value) is not int or value < 0 or value > 1_000_000_000
+                            for value in details.values())):
+                        raise ValueError("native reader coverage is invalid")
+                except Exception as exc:
+                    reader_failed.add(spec.id)
+                    self.record_error(exc, f"Inspecting native reader coverage {spec.id}")
+                    details = {}
+            source_coverage.append({"label": spec.label or spec.id, "unit": "sessions",
+                                    "active": reader_counts.get(spec.id),
+                                    "omitted": details.get("omitted"),
+                                    "limit": details.get("limit"),
+                                    "state": "unavailable" if spec.id in reader_failed else
+                                             "partial" if details.get("omitted") is None or details.get("omitted") else "ready"})
+        collection_read_errors = self.errors + sum(
+            value for diagnostics in reader_diagnostics.values()
+            if isinstance(diagnostics, dict)
+            for value in (diagnostics.get("read_errors"),)
+            if type(value) is int and 0 <= value <= 1_000_000_000)
         nodes, announced = self.hierarchy_nodes(sessions)
         observed_ids = {item.get("agent_id") for item in observed}
         nodes.extend(item for item in reader_observed
@@ -1232,6 +1268,7 @@ class LocalAgents:
         extensions = self.adapter_status_extensions(sessions)
         return {"enabled": True, "initial_poll_complete": self.initial_poll_complete, "sources": len(sessions), "discovered_sources": self.discovered_sources,
                 "omitted_sources": self.omitted_sources, "read_errors": self.errors,
+                "collection_read_errors": collection_read_errors,
                 "ambiguous_sources": self.ambiguous_sources,
                 "last_read_error": self.last_error,
                 "skipped_records": sum(session.skipped for session in sessions),
@@ -1243,6 +1280,8 @@ class LocalAgents:
                 "opencode_omitted_sessions": getattr(self.opencode, "omitted_sessions", 0),
                 "opencode_diagnostics": reader_diagnostics.get("opencode", {}),
                 "reader_plugins": reader_diagnostics,
+                "source_coverage": source_coverage,
+                "source_coverage_overflow": max(0, len(self.reader_specs) - 22),
                 **extensions,
                 "runtime": self.runtime_snapshot,
                 "mcp_configurations": list(self.mcp_configurations),

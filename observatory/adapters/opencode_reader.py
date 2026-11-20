@@ -27,12 +27,15 @@ def mcp_config_contributions():
 
 def reader_spec():
     from ..native_readers import NativeReaderSpec
-    from ..opencode import OpenCodeReader
+    from ..opencode import MAX_SESSIONS, OpenCodeReader
 
     return NativeReaderSpec(
         "opencode",
         lambda store, capture_details: OpenCodeReader(store, capture_details=capture_details),
-        mcp_client="OpenCode")
+        mcp_client="OpenCode", label="OpenCode",
+        coverage=lambda reader: {"discovered": reader.discovered_sessions,
+                                 "omitted": reader.omitted_sessions,
+                                 "limit": MAX_SESSIONS})
 
 
 def turn_review_spec():

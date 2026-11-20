@@ -60,7 +60,8 @@ class RegistryTests(unittest.TestCase):
             try:
                 reader = FixtureReader()
                 spec = NativeReaderSpec("fixture", lambda _store, _capture: reader,
-                                        mcp_client="Fixture")
+                                        mcp_client="Fixture", label="Fixture harness",
+                                        coverage=lambda _reader: {"omitted": 2, "limit": 10})
                 monitor = LocalAgents(store, source_specs=(), reader_specs=(spec,))
                 self.assertIsNone(monitor.opencode)
                 monitor.discover = lambda: None
@@ -75,12 +76,22 @@ class RegistryTests(unittest.TestCase):
                 result = monitor.status()
                 self.assertEqual(reader.servers, ("fixture-mcp",))
                 self.assertEqual(result["reader_plugins"]["fixture"], {"polls": 1})
+                self.assertEqual(result["source_coverage"][1],
+                                 {"label": "Fixture harness", "unit": "sessions",
+                                  "active": 1, "omitted": 2, "limit": 10,
+                                  "state": "partial"})
                 self.assertEqual([row["agent_id"] for row in result["sessions"]],
                                  ["fixture-agent"])
                 self.assertEqual(result["opencode_discovered_sessions"], 0)
                 disabled = LocalAgents(store, source_specs=(), reader_specs=())
                 self.assertEqual(disabled.reader_plugins, {})
                 self.assertEqual(disabled.status()["sessions"], [])
+                unknown = LocalAgents(store, source_specs=(), reader_specs=(
+                    NativeReaderSpec("unknown", lambda _store, _capture: FixtureReader()),))
+                unknown_coverage = unknown.status()["source_coverage"][1]
+                self.assertEqual(unknown_coverage["active"], 1)
+                self.assertIsNone(unknown_coverage["omitted"])
+                self.assertEqual(unknown_coverage["state"], "partial")
             finally:
                 store.close()
 
@@ -96,6 +107,24 @@ class RegistryTests(unittest.TestCase):
                 NativeReaderSpec("invalid", lambda _store, _capture: object()),))
         with self.assertRaisesRegex(ValueError, "invalid native reader ID"):
             NativeReaderSpec("", lambda _store, _capture: FixtureReader())
+        with self.assertRaisesRegex(ValueError, "invalid native reader specification"):
+            NativeReaderSpec("fixture", lambda _store, _capture: FixtureReader(),
+                             coverage="not callable")
+
+    def test_broken_reader_coverage_is_isolated(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = Store(Path(root) / "agenturm.db")
+            try:
+                spec = NativeReaderSpec("fixture", lambda _store, _capture: FixtureReader(),
+                                        coverage=lambda _reader: {"omitted": -1})
+                monitor = LocalAgents(store, source_specs=(), reader_specs=(spec,))
+                result = monitor.status()
+                self.assertEqual(result["source_coverage"][1]["state"], "unavailable")
+                self.assertEqual(result["source_coverage"][1]["active"], 1)
+                self.assertEqual(result["source_coverage"][1]["omitted"], None)
+                self.assertEqual(result["read_errors"], 1)
+            finally:
+                store.close()
 
 
 if __name__ == "__main__":
