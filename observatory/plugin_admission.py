@@ -68,6 +68,12 @@ def initialize(db: Connection) -> None:
             cursor TEXT NOT NULL,
             PRIMARY KEY(source_id,member_id),
             FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
+        CREATE TABLE IF NOT EXISTS plugin_session_member_v1 (
+            source_id TEXT NOT NULL,
+            native_session_id TEXT NOT NULL,
+            member_id TEXT NOT NULL,
+            PRIMARY KEY(source_id,native_session_id),
+            FOREIGN KEY(source_id) REFERENCES plugin_source_cursor_v1(source_id));
         CREATE TABLE IF NOT EXISTS plugin_evidence_v1 (
             source_id TEXT NOT NULL,
             event_id_hash TEXT NOT NULL,
@@ -80,6 +86,7 @@ def initialize(db: Connection) -> None:
             native_worker_id TEXT NOT NULL DEFAULT '',
             native_turn_id TEXT NOT NULL DEFAULT '',
             native_operation_id TEXT NOT NULL DEFAULT '',
+            member_id TEXT NOT NULL DEFAULT '',
             policy_epoch INTEGER NOT NULL DEFAULT 1,
             admitted_ns INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(source_id,event_id_hash,revision),
@@ -117,6 +124,7 @@ def initialize(db: Connection) -> None:
                               ("native_worker_id", "TEXT NOT NULL DEFAULT ''"),
                               ("native_turn_id", "TEXT NOT NULL DEFAULT ''"),
                               ("native_operation_id", "TEXT NOT NULL DEFAULT ''"),
+                              ("member_id", "TEXT NOT NULL DEFAULT ''"),
                               ("policy_epoch", "INTEGER NOT NULL DEFAULT 1"),
                               ("admitted_ns", "INTEGER NOT NULL DEFAULT 0")):
         if name not in columns:
@@ -232,6 +240,7 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
                        (source_id,))
             plugin_retention.revoke(db, source_id)
             plugin_source_gap.revoke(db, source_id)
+            db.execute("DELETE FROM plugin_session_member_v1 WHERE source_id=?", (source_id,))
         dirty_seq = row["dirty_seq"] + 1
         db.execute("UPDATE plugin_source_cursor_v1 SET capture_enabled=?,policy_epoch=?,"
                    "lease_epoch=?,dirty_seq=?,updated_ns=? WHERE source_id=?",
@@ -359,7 +368,8 @@ def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]
                      record["revision"], record["kind"], int(record["time_ns"]),
                      encode_message(payload), hashlib.sha256(canonical.encode()).hexdigest(),
                      identity.get("session_id", ""), identity.get("worker_id", ""),
-                     identity.get("turn_id", ""), identity.get("operation_id", "")))
+                     identity.get("turn_id", ""), identity.get("operation_id", ""),
+                     validated.member_id))
     digest_input = {"cursor": validated.cursor, "records": list(validated.records)}
     if validated.member_id:
         digest_input.update(member_id=validated.member_id,
@@ -410,6 +420,7 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
             raise ProtocolError("stale plugin cursor")
         if batch.cursor == expected_cursor:
             raise ProtocolError("plugin cursor did not advance")
+        ambiguous_ids: set[str] = set()
         if batch.member_id:
             old_member = db.execute("SELECT cursor FROM plugin_source_member_cursor_v1 "
                                     "WHERE source_id=? AND member_id=?",
@@ -421,13 +432,62 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                                            "WHERE source_id=?", (lease.source_id,)).fetchone()[0]
                 if count_members >= MAX_DISCOVERY_MEMBERS:
                     raise ProtocolError("discovery member limit exceeded")
+        if batch.member_id:
+            mapped_count = db.execute("SELECT COUNT(*) FROM plugin_session_member_v1 "
+                                      "WHERE source_id=?", (lease.source_id,)).fetchone()[0]
+            for native_id in sorted(incoming_session_ids):
+                mapped = db.execute("SELECT member_id FROM plugin_session_member_v1 "
+                                    "WHERE source_id=? AND native_session_id=?",
+                                    (lease.source_id, native_id)).fetchone()
+                if mapped is not None:
+                    if mapped[0] == "":
+                        ambiguous_ids.add(native_id)
+                    elif mapped[0] != batch.member_id:
+                        raise ProtocolError("plugin session changed discovery member")
+                    continue
+                # A historic identity cannot silently acquire a new member
+                # after its evidence was pruned or its old source reconfigured.
+                legacy = db.execute(
+                    "SELECT 1 FROM plugin_evidence_v1 WHERE source_id=? "
+                    "AND native_session_id=? LIMIT 1",
+                    (lease.source_id, native_id)).fetchone()
+                retired = db.execute(
+                    "SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=? "
+                    "AND native_session_id=? LIMIT 1",
+                    (lease.source_id, native_id)).fetchone()
+                gapped = db.execute(
+                    "SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=? "
+                    "AND native_session_id=? LIMIT 1",
+                    (lease.source_id, native_id)).fetchone()
+                if mapped_count >= plugin_retention.MAX_INVALIDATED_SESSIONS:
+                    raise ProtocolError("plugin session member capacity reached")
+                owner = "" if legacy or retired or gapped else batch.member_id
+                db.execute("INSERT INTO plugin_session_member_v1 "
+                           "(source_id,native_session_id,member_id) VALUES(?,?,?)",
+                           (lease.source_id, native_id, owner))
+                if not owner:
+                    ambiguous_ids.add(native_id)
+                mapped_count += 1
+        else:
+            for native_id in incoming_session_ids:
+                mapped = db.execute("SELECT member_id FROM plugin_session_member_v1 "
+                                    "WHERE source_id=? AND native_session_id=?",
+                                    (lease.source_id, native_id)).fetchone()
+                if mapped is not None and mapped[0]:
+                    raise ProtocolError("plugin session changed discovery member")
         count = db.execute("SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
                            (lease.source_id,)).fetchone()[0]
         admitted_ns = time.time_ns()
         inserted = False
-        for item in rows:
+        for raw_item in rows:
+            # An upgraded directory source may keep reporting an older native
+            # session. Preserve that session's unowned provenance on every
+            # revision; assigning its new facts to this file would silently
+            # turn a later member gap into a false exact-scope claim.
+            item = (*raw_item[:11], "") if raw_item[7] in ambiguous_ids else raw_item
             latest = db.execute("SELECT revision,record_digest,kind,native_session_id,"
-                                "native_worker_id,native_turn_id,native_operation_id FROM plugin_evidence_v1 "
+                                "native_worker_id,native_turn_id,native_operation_id,member_id "
+                                "FROM plugin_evidence_v1 "
                                 "WHERE source_id=? AND event_id_hash=? "
                                 "ORDER BY revision DESC LIMIT 1", item[:2]).fetchone()
             if item[1] in gap_hashes and latest is not None:
@@ -435,7 +495,7 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                 # admitted after that earlier gap. Exact replay returned above.
                 raise ProtocolError("source-gap evidence must be new")
             if latest is not None:
-                if tuple(latest[2:]) != (item[3], item[7], item[8], item[9], item[10]):
+                if tuple(latest[2:]) != (item[3], item[7], item[8], item[9], item[10], item[11]):
                     raise ProtocolError("plugin event identity or kind changed")
                 if item[2] < latest[0]:
                     raise ProtocolError("stale plugin event revision")
@@ -454,7 +514,8 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
             else:
                 if item[1] in gap_hashes:
                     plugin_source_gap.invalidate_existing(db, lease.source_id,
-                                                          incoming_session_ids)
+                                                          incoming_session_ids,
+                                                          member_id=batch.member_id)
                 else:
                     plugin_retention.reject_unseen(db, lease.source_id,
                                                    revision=item[2], time_ns=item[4])
@@ -470,9 +531,9 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                                                    revision=item[2], time_ns=item[4])
             db.execute("INSERT INTO plugin_evidence_v1 "
                        "(source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest,"
-                       "native_session_id,native_worker_id,native_turn_id,native_operation_id,"
+                       "native_session_id,native_worker_id,native_turn_id,native_operation_id,member_id,"
                        "policy_epoch,admitted_ns) "
-                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (*item, lease.policy_epoch, admitted_ns))
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (*item, lease.policy_epoch, admitted_ns))
             count += 1
             inserted = True
         seq = row["dirty_seq"] + int(inserted)
