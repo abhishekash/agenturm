@@ -1,5 +1,6 @@
 """Feature-off Rust scratch transaction against disposable Python Store fixtures."""
 import json
+import hashlib
 import os
 import select
 import stat
@@ -72,6 +73,95 @@ class RustScratchAdmissionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("scratch admission rejected", result.stderr)
         return result.stderr
+
+    def v2_request(self, batch, expected="", *, request_id="1" * 32):
+        prepared = self.request(batch, expected)
+        return {"version": 2, "request_id": request_id,
+                "receiver_id": prepared["lease"]["receiver_id"],
+                "operation": {"op": "admit_lifecycle", "lease": prepared["lease"],
+                              "expected_cursor": prepared["expected_cursor"],
+                              "cursor": prepared["cursor"],
+                              "batch_digest": prepared["batch_digest"],
+                              "records": prepared["records"]}}
+
+    def apply_v2(self, request, *, path=None, success=True):
+        raw = request if isinstance(request, str) else json.dumps(request)
+        result = subprocess.run([self.binary, "--v2-scratch-path",
+                                 str(path or self.rust_store.path)],
+                                input=raw, text=True, capture_output=True, timeout=10)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("scratch admission rejected", result.stderr)
+        return result.stderr
+
+    def test_v2_durable_receipt_exact_replay_and_conflict(self):
+        first = self.v2_request(PollBatch(SOURCE, "one", (fact(),)))
+        digest = hashlib.sha256(json.dumps(first, sort_keys=True, separators=(",", ":"),
+                                           ensure_ascii=False).encode()).hexdigest()
+        reply = self.apply_v2(first)
+        self.assertEqual(reply, {"version": 2, "request_id": first["request_id"],
+                                 "receiver_id": first["receiver_id"],
+                                 "request_digest": digest,
+                                 "result": {"disposition": "committed", "cursor": "one",
+                                            "batch_digest": first["operation"]["batch_digest"],
+                                            "dirty_seq": 1}})
+        committed = self.snapshot(self.rust_store)
+        with self.rust_store._connect() as db:
+            receipt = tuple(db.execute(
+                "SELECT request_digest,cursor,batch_digest,dirty_seq,disposition "
+                "FROM storage_admission_request_v2 WHERE request_id=?",
+                (first["request_id"],)).fetchone())
+        self.assertEqual(receipt, (digest, "one", first["operation"]["batch_digest"],
+                                   1, "committed"))
+        replay = self.apply_v2(first)
+        self.assertEqual(replay["result"]["disposition"], "replay")
+        self.assertEqual(replay["request_digest"], digest)
+        self.assertEqual(self.snapshot(self.rust_store), committed)
+        # The same request ID cannot be reused for a different valid batch.
+        changed = self.v2_request(PollBatch(SOURCE, "two", (fact("second"),)), "one")
+        self.assertIn("conflicting v2 request replay identity",
+                      self.apply_v2(changed, success=False))
+        self.assertEqual(self.snapshot(self.rust_store), committed)
+        changed["request_id"] = "2" * 32
+        self.assertEqual(self.apply_v2(changed)["result"]["disposition"], "committed")
+        # A much older exact request cannot replay after the source advanced.
+        self.apply_v2(first, success=False)
+
+    def test_v2_rejects_hostile_frame_and_unmarked_path_before_write(self):
+        request = self.v2_request(PollBatch(SOURCE, "one", (fact(),)))
+        unknown = json.loads(json.dumps(request))
+        unknown["operation"]["records"][0]["output"] = "secret"
+        self.apply_v2(unknown, success=False)
+        raw = json.dumps(request).replace('"version": 2',
+                                          '"version": 2, "version": 2', 1)
+        self.apply_v2(raw, success=False)
+        self.assertIn("not an explicit scratch",
+                      self.apply_v2(request, path=self.python_store.path, success=False))
+        self.assertFalse((self.root / ".python.db.agenturm-writer.lock").exists())
+        with self.rust_store._connect() as db:
+            self.assertIsNone(db.execute(
+                "SELECT name FROM sqlite_master WHERE name='storage_admission_request_v2'"
+            ).fetchone())
+        self.assertEqual(self.snapshot(self.rust_store)[1], [])
+
+    def test_v2_receipt_tamper_and_revoked_source_fail_closed(self):
+        request = self.v2_request(PollBatch(SOURCE, "one", (fact(),)))
+        self.apply_v2(request)
+        before = self.snapshot(self.rust_store)
+        with self.rust_store._connect() as db:
+            db.execute("UPDATE storage_admission_request_v2 SET dirty_seq=99 WHERE request_id=?",
+                       (request["request_id"],))
+        self.assertIn("conflicting v2 request replay identity",
+                      self.apply_v2(request, success=False))
+        self.assertEqual(self.snapshot(self.rust_store), before)
+        with self.rust_store._connect() as db:
+            db.execute("UPDATE storage_admission_request_v2 SET dirty_seq=1 WHERE request_id=?",
+                       (request["request_id"],))
+        set_source_capture(self.rust_store, source_id=SOURCE, enabled=False)
+        self.assertIn("stale or unsupported source lease",
+                      self.apply_v2(request, success=False))
 
     @staticmethod
     def snapshot(store):
