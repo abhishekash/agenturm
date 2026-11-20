@@ -15,6 +15,15 @@ from ..session_text import remember_task
 SOURCE_PRIORITY = 0
 
 
+def mcp_config_contributions():
+    from ..mcp_config_registry import McpConfigContribution
+
+    return (McpConfigContribution(
+        "codex", "Codex", (("mcp_servers",),),
+        lambda: (Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "config.toml",),
+        lambda _root: (), priority=0),)
+
+
 def source_spec():
     from ..native_sources import NativeSourceSpec
 

@@ -14,7 +14,6 @@ import platform
 import socket
 import threading
 import time
-import tomllib
 from datetime import datetime
 from pathlib import Path
 
@@ -32,7 +31,6 @@ MAX_LINE = 2 * 1024 * 1024
 MAX_SOURCES = 50
 MAX_TASK_PREFIX_BYTES = 512 * 1024
 MAX_TASK_PREFIX_RECORDS = 256
-MAX_CONFIG_BYTES = 1024 * 1024
 MAX_RECENT_TURNS = 64
 MAX_RECENT_CALLS = 512
 MAX_RECENT_USAGE = 256
@@ -67,156 +65,12 @@ def count(value):
         return 0
 
 
-def _server_names(data, field):
-    """Return configured MCP server names without exposing their settings."""
-    servers = data.get(field) if isinstance(data, dict) else None
-    # OpenCode v1 places names directly under `mcp`; v2 nests them in
-    # `mcp.servers`. Accept both so the inventory follows the user's config.
-    if field == "mcp" and isinstance(servers, dict) and isinstance(servers.get("servers"), dict):
-        servers = servers["servers"]
-    if not isinstance(servers, dict):
-        return []
-    return [str(name).strip()[:128] for name, value in servers.items()
-            if isinstance(name, str) and name.strip() and isinstance(value, dict)][:500]
-
-
-def _decode_json_or_jsonc(raw, jsonc=False):
-    """Parse JSONC without stripping comment markers inside quoted strings."""
-    text = raw.decode("utf-8")
-    if jsonc:
-        output = []
-        index = 0
-        quoted = escaped = False
-        while index < len(text):
-            char = text[index]
-            following = text[index + 1] if index + 1 < len(text) else ""
-            if quoted:
-                output.append(char)
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    quoted = False
-                index += 1
-                continue
-            if char == '"':
-                quoted = True
-                output.append(char)
-                index += 1
-            elif char == "/" and following == "/":
-                index += 2
-                while index < len(text) and text[index] not in "\r\n":
-                    index += 1
-            elif char == "/" and following == "*":
-                end = text.find("*/", index + 2)
-                if end < 0:
-                    raise ValueError("unterminated JSONC comment")
-                output.extend(" " for item in text[index:end + 2] if item in "\r\n")
-                index = end + 2
-            else:
-                output.append(char)
-                index += 1
-        text = "".join(output)
-        # OpenCode's JSONC examples permit trailing commas.
-        output = []
-        index = 0
-        quoted = escaped = False
-        while index < len(text):
-            char = text[index]
-            if quoted:
-                output.append(char)
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    quoted = False
-            elif char == '"':
-                quoted = True
-                output.append(char)
-            elif char == ",":
-                lookahead = index + 1
-                while lookahead < len(text) and text[lookahead].isspace():
-                    lookahead += 1
-                if lookahead == len(text) or text[lookahead] not in "]}":
-                    output.append(char)
-            else:
-                output.append(char)
-            index += 1
-        text = "".join(output)
-    return json.loads(text)
-
-
 def discover_mcp_configurations(global_paths=None, project_directories=(), on_error=None):
-    """Read known client config files and return names only, never server values."""
-    home = Path.home()
-    paths = list(global_paths) if global_paths is not None else [
-        (Path(os.environ.get("CODEX_HOME", home / ".codex")) / "config.toml", "Codex", "User"),
-        (home / ".claude.json", "Claude Code", "User"),
-        (Path(os.environ.get("CURSOR_CONFIG_DIR", home / ".cursor")) / "mcp.json", "Cursor", "User"),
-        (Path(os.environ.get("GEMINI_CLI_HOME", home / ".gemini")) / "settings.json", "Gemini CLI", "User"),
-        (Path(os.environ.get("GEMINI_CLI_SYSTEM_SETTINGS_PATH", "/etc/gemini-cli/settings.json")),
-         "Gemini CLI", "System"),
-        (Path(os.environ.get("COPILOT_HOME", home / ".copilot")) / "mcp-config.json",
-         "GitHub Copilot CLI", "User"),
-        (kiro_home() / "settings" / "mcp.json", "Kiro", "User"),
-    ]
-    if global_paths is None:
-        config_file = os.environ.get("OPENCODE_CONFIG")
-        xdg_config_home = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
-        config_dir = Path(os.environ.get("OPENCODE_CONFIG_DIR") or (xdg_config_home / "opencode"))
-        if config_file:
-            paths.append((Path(config_file), "OpenCode", "User"))
-        else:
-            paths.extend((config_dir / filename, "OpenCode", "User")
-                         for filename in ("opencode.json", "opencode.jsonc"))
-    candidates = [(Path(path), client, scope) for path, client, scope in paths]
-    for directory in project_directories:
-        if not directory:
-            continue
-        root = Path(directory)
-        candidates.extend([
-            (root / ".mcp.json", "Claude Code", "Project"),
-            (root / ".cursor" / "mcp.json", "Cursor", "Project"),
-            (root / ".vscode" / "mcp.json", "VS Code", "Project"),
-            (root / ".gemini" / "settings.json", "Gemini CLI", "Project"),
-            (root / "opencode.json", "OpenCode", "Project"),
-            (root / "opencode.jsonc", "OpenCode", "Project"),
-            (root / ".opencode" / "opencode.json", "OpenCode", "Project"),
-            (root / ".opencode" / "opencode.jsonc", "OpenCode", "Project"),
-            (root / ".kiro" / "settings" / "mcp.json", "Kiro", "Project"),
-        ])
+    """Compatibility entry point for trusted adapter MCP config contributors."""
+    from .mcp_config_registry import discover
 
-    found, seen = [], set()
-    for path, client, scope in candidates:
-        try:
-            if not path.is_file():
-                continue
-            if path.stat().st_size > MAX_CONFIG_BYTES:
-                if on_error:
-                    on_error()
-                continue
-            raw = path.read_bytes()
-            if path.suffix.lower() == ".toml":
-                data = tomllib.loads(raw.decode("utf-8"))
-                field = "mcp_servers"
-            else:
-                data = _decode_json_or_jsonc(raw, path.suffix.lower() == ".jsonc")
-                field = ("servers" if client == "VS Code" else
-                         "mcp" if client == "OpenCode" else "mcpServers")
-            for name in _server_names(data, field):
-                key = (client, scope, name)
-                if key in seen:
-                    continue
-                seen.add(key)
-                found.append({"client": client, "scope": scope, "server": name,
-                              "config": path.name})
-        except (OSError, UnicodeError, ValueError, tomllib.TOMLDecodeError):
-            if on_error:
-                on_error()
-            continue
-    return sorted(found, key=lambda item: (item["client"].casefold(), item["scope"], item["server"].casefold()))
+    return discover(global_paths=global_paths, project_directories=project_directories,
+                    on_error=on_error)
 
 
 class Session:
