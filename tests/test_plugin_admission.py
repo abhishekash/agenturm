@@ -78,6 +78,10 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "root gap"):
             commit_batch(self.store, self.lease, committed, malformed,
                          allow_root_gap=True)
+        with self.assertRaisesRegex(ProtocolError, "root gap marker"):
+            commit_batch(self.store, self.lease, committed,
+                         PollBatch("fixture-source", "later", (diagnostic,), root_gap=1),
+                         allow_root_gap=True)
         self.assertEqual(self.snapshot(), after)
 
     def test_later_conflict_rolls_back_earlier_record_and_cursor(self):
