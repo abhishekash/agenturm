@@ -72,6 +72,7 @@ def initialize(db: Connection) -> None:
             native_session_id TEXT NOT NULL DEFAULT '',
             native_worker_id TEXT NOT NULL DEFAULT '',
             native_turn_id TEXT NOT NULL DEFAULT '',
+            native_operation_id TEXT NOT NULL DEFAULT '',
             policy_epoch INTEGER NOT NULL DEFAULT 1,
             admitted_ns INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(source_id,event_id_hash,revision),
@@ -108,6 +109,7 @@ def initialize(db: Connection) -> None:
     for name, declaration in (("native_session_id", "TEXT NOT NULL DEFAULT ''"),
                               ("native_worker_id", "TEXT NOT NULL DEFAULT ''"),
                               ("native_turn_id", "TEXT NOT NULL DEFAULT ''"),
+                              ("native_operation_id", "TEXT NOT NULL DEFAULT ''"),
                               ("policy_epoch", "INTEGER NOT NULL DEFAULT 1"),
                               ("admitted_ns", "INTEGER NOT NULL DEFAULT 0")):
         if name not in columns:
@@ -136,6 +138,13 @@ def initialize(db: Connection) -> None:
             .fetchone() is None):
         db.execute("DELETE FROM plugin_projection_cursor_v1")
         db.execute("INSERT INTO schema_meta(key,value) VALUES('plugin_activity_projection_v1','1')")
+    # Earlier Activity projections did not carry an operation correlation key.
+    # Hide them until the policy-current source snapshot republishes both views.
+    if (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'").fetchone()
+            and db.execute("SELECT 1 FROM schema_meta WHERE key='plugin_activity_projection_v2'")
+            .fetchone() is None):
+        db.execute("DELETE FROM plugin_projection_cursor_v1")
+        db.execute("INSERT INTO schema_meta(key,value) VALUES('plugin_activity_projection_v2','1')")
 
 
 def _identity(value: str, name: str) -> str:
@@ -211,6 +220,8 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool) -> int:
             db.execute("DELETE FROM plugin_session_projection_v1 WHERE source_id=?", (source_id,))
             db.execute("DELETE FROM activity_index_v1 WHERE kind='plugin' AND owner_key=?",
                        (source_id,))
+            db.execute("DELETE FROM investigation_dirty_v1 WHERE kind='plugin' AND owner_key=?",
+                       (source_id,))
             plugin_retention.revoke(db, source_id)
         dirty_seq = row["dirty_seq"] + 1
         db.execute("UPDATE plugin_source_cursor_v1 SET capture_enabled=?,policy_epoch=?,"
@@ -245,6 +256,9 @@ def _metadata(record: dict) -> dict:
     """Allow only typed, coarse facts; no prompts, output, paths or free text."""
     kind = record["kind"]
     payload = record["payload"]
+    operation_id = record.get("identity", {}).get("operation_id")
+    if operation_id and (kind != "tool" or not _ID.fullmatch(operation_id)):
+        raise ProtocolError("invalid plugin tool operation identity")
     if kind == "lifecycle":
         if (set(payload) not in ({"state"}, {"state", "reason_code"})
                 or not isinstance(payload.get("state"), str)
@@ -298,7 +312,7 @@ def _validated(batch: PollBatch, source_id: str) -> tuple[str, tuple[tuple, ...]
                      record["revision"], record["kind"], int(record["time_ns"]),
                      encode_message(payload), hashlib.sha256(canonical.encode()).hexdigest(),
                      identity.get("session_id", ""), identity.get("worker_id", ""),
-                     identity.get("turn_id", "")))
+                     identity.get("turn_id", ""), identity.get("operation_id", "")))
     batch_digest = hashlib.sha256(encode_message({"cursor": validated.cursor,
                                                   "records": list(validated.records)}).encode()).hexdigest()
     return batch_digest, tuple(rows)
@@ -347,11 +361,11 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
         inserted = False
         for item in rows:
             latest = db.execute("SELECT revision,record_digest,kind,native_session_id,"
-                                "native_worker_id,native_turn_id FROM plugin_evidence_v1 "
+                                "native_worker_id,native_turn_id,native_operation_id FROM plugin_evidence_v1 "
                                 "WHERE source_id=? AND event_id_hash=? "
                                 "ORDER BY revision DESC LIMIT 1", item[:2]).fetchone()
             if latest is not None:
-                if tuple(latest[2:]) != (item[3], item[7], item[8], item[9]):
+                if tuple(latest[2:]) != (item[3], item[7], item[8], item[9], item[10]):
                     raise ProtocolError("plugin event identity or kind changed")
                 if item[2] < latest[0]:
                     raise ProtocolError("stale plugin event revision")
@@ -382,8 +396,9 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                                                    revision=item[2], time_ns=item[4])
             db.execute("INSERT INTO plugin_evidence_v1 "
                        "(source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest,"
-                       "native_session_id,native_worker_id,native_turn_id,policy_epoch,admitted_ns) "
-                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (*item, lease.policy_epoch, admitted_ns))
+                       "native_session_id,native_worker_id,native_turn_id,native_operation_id,"
+                       "policy_epoch,admitted_ns) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (*item, lease.policy_epoch, admitted_ns))
             count += 1
             inserted = True
         seq = row["dirty_seq"] + int(inserted)

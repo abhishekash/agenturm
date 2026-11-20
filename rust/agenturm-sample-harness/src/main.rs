@@ -117,6 +117,10 @@ struct SourceRow {
     category: Option<String>,
     #[serde(default, deserialize_with = "no_null")]
     result: Option<String>,
+    #[serde(default, deserialize_with = "no_null")]
+    turn_id: Option<String>,
+    #[serde(default, deserialize_with = "no_null")]
+    operation_id: Option<String>,
 }
 
 fn identity(value: &str) -> bool {
@@ -152,6 +156,12 @@ fn source_record(raw: &[u8]) -> Result<Value> {
             .parse::<u64>()
             .map_or(true, |value| value > i64::MAX as u64)
         || row.revision.is_some_and(|value| value > i32::MAX as u32)
+        || row.turn_id.as_deref().is_some_and(|value| !identity(value))
+        || row
+            .operation_id
+            .as_deref()
+            .is_some_and(|value| !identity(value))
+        || (row.operation_id.is_some() && row.kind != "tool")
     {
         return Err(invalid("invalid source identity, timestamp or revision"));
     }
@@ -248,9 +258,16 @@ fn source_record(raw: &[u8]) -> Result<Value> {
         }
         _ => return Err(invalid("unsupported source record kind or fields")),
     };
+    let mut source_identity = json!({"session_id": row.session});
+    if let Some(turn) = row.turn_id {
+        source_identity["turn_id"] = json!(turn);
+    }
+    if let Some(operation) = row.operation_id {
+        source_identity["operation_id"] = json!(operation);
+    }
     Ok(json!({"event_id": format!("rust-sample:{}", row.id),
               "revision": row.revision.unwrap_or(0), "kind": row.kind,
-              "time_ns": row.at_ns, "identity": {"session_id": row.session},
+              "time_ns": row.at_ns, "identity": source_identity,
               "payload": payload}))
 }
 
@@ -661,11 +678,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(message["payload"], json!({"role":"user"}));
-        let tool = source_record(br#"{"id":"call","session":"child","at_ns":"5","kind":"tool","category":"shell","result":"failed"}"#).unwrap();
+        let tool = source_record(br#"{"id":"call","session":"child","at_ns":"5","kind":"tool","category":"shell","result":"failed","turn_id":"turn-1","operation_id":"call-1"}"#).unwrap();
         assert_eq!(
             tool["payload"],
             json!({"category":"shell","result":"failed"})
         );
+        assert_eq!(tool["identity"]["operation_id"], "call-1");
+        assert_eq!(tool["identity"]["turn_id"], "turn-1");
         let check = source_record(br#"{"id":"test","session":"child","at_ns":"6","kind":"check","category":"test","result":"passed"}"#).unwrap();
         assert_eq!(
             check["payload"],
@@ -685,6 +704,8 @@ mod tests {
             r#"{"id":"x","session":"child","at_ns":"1","kind":"tool","category":"shell","result":"passed"}"#,
             r#"{"id":"x","session":"child","at_ns":"1","kind":"check","category":"test"}"#,
             r#"{"id":"x","session":"child","at_ns":"1","kind":"check","category":"test","result":"failed","output":"secret"}"#,
+            r#"{"id":"x","session":"child","at_ns":"1","kind":"message","role":"user","operation_id":"call-1"}"#,
+            r#"{"id":"x","session":"child","at_ns":"1","kind":"tool","category":"shell","result":"started","operation_id":"../secret"}"#,
         ] {
             assert!(source_record(bad.as_bytes()).is_err(), "accepted {bad}");
         }

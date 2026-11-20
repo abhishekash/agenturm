@@ -140,6 +140,9 @@ class PiAdapter:
             if message.get("stopReason") == "stop":
                 state = "completed"
                 session.pending_tools.clear()
+            elif message.get("stopReason") == "error":
+                state = "interrupted"
+                session.pending_tools.clear()
             else:
                 state = "running"
         elif role == "toolResult":

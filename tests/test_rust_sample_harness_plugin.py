@@ -215,6 +215,40 @@ class RustSampleHarnessTests(unittest.TestCase):
             with self.assertRaisesRegex(ProtocolError, "stale plugin source lease"):
                 worker.poll_once()
 
+    def test_installed_rust_adapter_correlates_tool_phases_without_content(self):
+        self.append(
+            {"id": "request", "session": "pi-session", "at_ns": "100",
+             "kind": "message", "role": "user", "turn_id": "pi-user-1"},
+            {"id": "call", "session": "pi-session", "at_ns": "110",
+             "kind": "tool", "category": "file", "result": "started",
+             "turn_id": "pi-user-1", "operation_id": "pi-call-1"},
+            {"id": "result", "session": "pi-session", "at_ns": "120",
+             "kind": "tool", "category": "file", "result": "failed",
+             "turn_id": "pi-user-1", "operation_id": "pi-call-1"})
+        with self.session() as worker:
+            self.assertEqual(len(worker.poll_once().records), 3)
+            self.projected()
+            rows = self.store.activity_page()["activity"]
+            self.assertEqual([row["result"] for row in rows],
+                             ["failed", "started", "observed"])
+            self.assertEqual(rows[0]["operation_id"], rows[1]["operation_id"])
+            self.assertTrue(rows[0]["operation_id"].startswith("plugin-operation:"))
+            self.assertEqual(rows[0]["turn_id"], rows[2]["turn_id"])
+            self.assertNotIn("pi-call-1", json.dumps(rows))
+            self.assertEqual(len(self.store.activity_page(review=True)["activity"]), 2)
+            self.append({"id": "result", "session": "pi-session", "at_ns": "120",
+                         "kind": "tool", "category": "file", "result": "succeeded",
+                         "revision": 1, "turn_id": "pi-user-1",
+                         "operation_id": "pi-call-1"})
+            worker.poll_once()
+            self.assertEqual(self.store.activity_page()["activity"], [])
+            self.projected()
+            corrected = self.store.activity_page()["activity"]
+            self.assertEqual(corrected[0]["result"], "succeeded")
+            self.assertEqual(corrected[0]["operation_id"], rows[0]["operation_id"])
+            set_source_capture(self.store, source_id=self.source.source_id, enabled=False)
+            self.assertEqual(self.store.activity_page()["activity"], [])
+
     def test_source_replacement_reports_gap_and_revocation_erases_evidence(self):
         self.append({"id": "first", "session": "a", "at_ns": "10",
                      "kind": "lifecycle", "state": "started"})
