@@ -297,6 +297,66 @@ class OutboundProcess:
         self.close()
 
 
+def _handoff_path_proof(database: Path) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Bind a direct private database and parent before handoff lock creation."""
+    try:
+        if not database.is_absolute() or database.resolve(strict=True) != database:
+            raise ProtocolError("outbound handoff requires a direct database path")
+        db = database.lstat()
+        parent = database.parent.lstat()
+        if (not stat.S_ISREG(db.st_mode) or db.st_nlink != 1
+                or db.st_uid != os.geteuid() or db.st_mode & 0o7777 != 0o600
+                or not stat.S_ISDIR(parent.st_mode)
+                or parent.st_uid != os.geteuid() or parent.st_mode & 0o077):
+            raise ProtocolError("outbound handoff requires a private database and parent")
+        for ancestor in database.parent.parents:
+            info = ancestor.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or
+                    info.st_mode & 0o022 and not
+                    (info.st_uid == 0 and info.st_mode & 0o1000)):
+                raise ProtocolError("outbound handoff ancestor permits replacement")
+    except OSError as exc:
+        raise ProtocolError("outbound handoff database path is unavailable") from exc
+    return (parent.st_dev, parent.st_ino), (db.st_dev, db.st_ino)
+
+
+class _DispatchLock:
+    """Opened lock identity that must still name the held inode."""
+
+    def __init__(self, path: Path, descriptor: int, database: Path | None,
+                 parent_identity: tuple[int, int] | None):
+        self.path = path
+        self.descriptor = descriptor
+        self.identity = self._identity(os.fstat(descriptor))
+        self.database = database
+        self.database_identity = (self._identity(database.lstat())
+                                  if database is not None else None)
+        self.parent_identity = parent_identity
+
+    @staticmethod
+    def _identity(info):
+        return info.st_dev, info.st_ino
+
+    def verify(self) -> None:
+        """Refuse a replaced, linked, or permission-changed lock pathname."""
+        try:
+            opened = os.fstat(self.descriptor)
+            named = self.path.lstat()
+            valid = (stat.S_ISREG(opened.st_mode) and stat.S_ISREG(named.st_mode)
+                     and self._identity(opened) == self.identity == self._identity(named)
+                     and opened.st_nlink == named.st_nlink == 1
+                     and opened.st_uid == named.st_uid == os.geteuid()
+                     and opened.st_mode & 0o7777 == named.st_mode & 0o7777 == 0o600)
+            if self.database is not None:
+                parent, current = _handoff_path_proof(self.database)
+                valid = (valid and parent == self.parent_identity
+                         and current == self.database_identity)
+        except OSError as exc:
+            raise ProtocolError("outbound dispatch lock or database path changed") from exc
+        if not valid:
+            raise ProtocolError("outbound dispatch lock or database path changed")
+
+
 class OutboundQueue:
     """A host-owned fixture outbox. No method dispatches on enqueue."""
 
@@ -398,25 +458,63 @@ class OutboundQueue:
         return dict(row)
 
     @contextmanager
-    def _dispatch_lease(self, *, exclusive: bool):
-        """Fence recovery against a live local dispatch, including other processes."""
+    def _dispatch_lease(self, *, exclusive: bool, timeout: float = 0,
+                        handoff: bool = False):
+        """Fence dispatch and reconciliation before taking a Store writer.
+
+        Only the explicit handoff path waits for another owner. Ordinary
+        dispatch/recovery retain their nonblocking behavior.
+        """
         try:
             import fcntl
         except ImportError as exc:
             raise RuntimeError("outbound fixture requires POSIX file locks") from exc
-        path = self.store.path + ".outbound-dispatch.lock"
-        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        if type(timeout) not in (int, float) or not 0 <= timeout <= 60:
+            raise ValueError("outbound dispatch lock requires a 0–60 second timeout")
+        database = Path(self.store.path)
+        parent_identity = _handoff_path_proof(database)[0] if handoff else None
+        path = Path(self.store.path + ".outbound-dispatch.lock")
         try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise ProtocolError("invalid outbound dispatch lock")
+            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 0o600)
+        except OSError as exc:
+            raise ProtocolError("outbound dispatch lock cannot be opened safely") from exc
+        try:
+            guard = _DispatchLock(path, descriptor,
+                                  database if handoff else None, parent_identity)
+            guard.verify()
+            deadline = time.monotonic() + timeout
+            while True:
+                guard.verify()
+                try:
+                    fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+                                | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    if time.monotonic() >= deadline:
+                        raise ProtocolError("outbound dispatch or recovery is active") from exc
+                    time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+            guard.verify()
+            if handoff and time.monotonic() > deadline:
+                raise ProtocolError("outbound handoff lock deadline expired")
             try:
-                fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
-                            | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise ProtocolError("outbound dispatch or recovery is active") from exc
-            yield
+                yield guard
+            finally:
+                guard.verify()
         finally:
             os.close(descriptor)
+
+    @contextmanager
+    def dispatch_handoff_guard(self, timeout: float):
+        """Hold cross-process dispatch exclusion for a future writer handoff.
+
+        Acquire this guard before asking Store to quiesce. It does not fence
+        grant/revoke/enqueue or certify that uncertain deliveries are settled.
+        """
+        if type(timeout) not in (int, float) or not 0 < timeout <= 60:
+            raise ValueError("outbound handoff requires a positive timeout up to 60 seconds")
+        with self._dispatch_lease(exclusive=True, timeout=timeout, handoff=True) as guard:
+            yield guard
 
     def recover_in_flight(self):
         """Mark stranded claims uncertain only when no dispatch holds the lease."""
@@ -504,6 +602,13 @@ class OutboundQueue:
     def reconcile(self, delivery_id: str, process: OutboundProcess,
                   *, now_ns: int | None = None) -> dict:
         now = _timestamp(now_ns)
+        # Lookup may make an external request after the first Store read and
+        # before the final Store write. Keep it visible to a handoff guard.
+        with self._dispatch_lease(exclusive=False):
+            return self._reconcile_locked(delivery_id, process, now)
+
+    def _reconcile_locked(self, delivery_id: str, process: OutboundProcess,
+                          now: int) -> dict:
         with self.store._connect() as db:
             row = db.execute("SELECT d.*,p.endpoint,p.plugin_id,p.artifact_sha256,"
                              "p.enabled,p.policy_epoch AS current_epoch FROM outbound_delivery_v1 d "
