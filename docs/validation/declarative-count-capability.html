@@ -12,6 +12,11 @@ p,li{max-width:75ch}p{margin:.75rem 0}ul{padding-left:1.3rem}pre{white-space:pre
 <p>An explicitly installed third process contributes a <strong>Count observations</strong> pane. Existing Prompt signals and Action observations configurations remain valid. Counts and ratios describe a bounded Activity page; they are not prompt efficacy or quality scores.</p>
 <h2>Activate explicitly</h2><pre><code>python examples/count_observations_process/install.py --destination /absolute/private/counts
 agenturm cockpit --capability-config /absolute/private/counts/capability.json</code></pre>
+<h2>Rust executable example</h2><p>The Rust alternative installs an already-built executable and never runs Cargo; the Python installer above remains unchanged.</p><pre><code>cargo build --locked --bin agenturm-count-observations
+python examples/count_observations_process/install_rust.py \
+  --binary "$PWD/target/debug/agenturm-count-observations" \
+  --destination /absolute/private/counts-rust
+agenturm cockpit --capability-config /absolute/private/counts-rust/capability.json</code></pre><p>The installer rejects symlinked source or destination paths and existing capability files, copies the binary, and pins the copied bytes in the manifest. Activation remains explicit. This demonstrates an extension capability process; it does not migrate harnesses or declare a stable ABI.</p>
 <p>The inert schema-v3 descriptor declares up to six exact domain/action count selectors and six count or ratio rows. It cannot contain SQL, regular expressions or executable host code. Labels use at most 14 single-cell ASCII characters so ratio names fit the required compact two-column pane. The pinned executable asks only for scoped aggregate read access. The existing pane registry renders it without a new UI branch.</p>
 <h2>What crosses the boundary</h2>
 <p>The host fetches at most 200 events for one exact service, session and agent, then sends only named counts, observed-event count, state and a page-completeness flag to the child. No prompt, tool output, path, event ID, source ID, session ID, agent ID, policy revision or page signature crosses the process pipe. Every displayed value and label must match host recomputation. Zero denominators render <strong>unavailable</strong>.</p>

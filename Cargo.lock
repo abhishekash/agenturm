@@ -35,6 +35,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "agenturm-count-observations"
+version = "0.1.0"
+dependencies = [
+ "agenturm-protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "agenturm-directory-source"
 version = "0.1.0"
 dependencies = [

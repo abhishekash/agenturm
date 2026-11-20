@@ -9,6 +9,20 @@ python examples/count_observations_process/install.py --destination /absolute/pr
 agenturm cockpit --capability-config /absolute/private/counts/capability.json
 ```
 
+## Rust executable example
+
+The Rust alternative installs an already-built executable; the installer does not run Cargo. The Python installer above remains unchanged.
+
+```sh
+cargo build --locked --bin agenturm-count-observations
+python examples/count_observations_process/install_rust.py \
+  --binary "$PWD/target/debug/agenturm-count-observations" \
+  --destination /absolute/private/counts-rust
+agenturm cockpit --capability-config /absolute/private/counts-rust/capability.json
+```
+
+The Rust installer rejects symlinked source or destination paths and existing capability files, copies the binary, and pins the copied bytes in the manifest. Activation remains explicit. This demonstrates an extension capability process; it does not migrate harnesses or declare a stable ABI.
+
 The inert schema-v3 descriptor declares at most six exact `(domain, action)` selectors and at most six count or ratio rows. Selector keys are unique; domains and actions are bounded identifier tokens, not SQL or regular expressions. Labels use up to 14 single-cell ASCII characters so a ratio label fits the required two-column compact pane. The manifest pins one executable SHA-256 and asks only for `scoped-aggregate-read`. Startup remains explicit. The third process uses the existing `PaneRegistry` and Textual table; no central UI dispatch or layout branch was added.
 
 For each selected service, session and canonical agent, the host requests at most 200 Activity events through the existing capture-scoped receiver endpoint. It counts only exact domain/action matches. A zero ratio denominator renders **unavailable**. The count describes the returned page; even a page without a next cursor can have incomplete source evidence. The pane says “page complete; source may be partial” or “recent page partial,” and labels all figures as observations.
