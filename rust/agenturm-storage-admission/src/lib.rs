@@ -1,10 +1,12 @@
-//! Scratch-only SQLite admission experiment for host-prepared lifecycle facts.
+//! Feature-off SQLite admission for host-prepared metadata-only plugin facts.
 //!
 //! This crate is deliberately absent from the receiver and plugin host. Its
 //! CLI requires an explicit marker on a disposable database before opening a
 //! read/write connection, then holds a cooperating writer lease across its
 //! transaction. It does not validate plugin wire messages or replace Python's
-//! admission, retention, discovery, content, or policy code.
+//! admission, retention, discovery, content, or policy code. The generic fact
+//! subset is enabled only for an explicitly marked detached real-Store clone;
+//! the scratch JSON adapter remains lifecycle-only.
 
 #![forbid(unsafe_code)]
 
@@ -153,6 +155,372 @@ struct Receipt {
     dirty_seq: i64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceState {
+    receiver_id: String,
+    plugin_id: String,
+    generation: String,
+    lease_epoch: i64,
+    policy_epoch: i64,
+    capture_enabled: i64,
+    content_fingerprint: String,
+    cursor: String,
+    prior_cursor: String,
+    dirty_seq: i64,
+    last_batch_digest: String,
+    updated_ns: i64,
+}
+
+fn source_state(db: &Connection, source_id: &str) -> Result<SourceState> {
+    Ok(db.query_row(
+        "SELECT receiver_id,plugin_id,generation,lease_epoch,policy_epoch,capture_enabled,\
+         content_fingerprint,cursor,prior_cursor,dirty_seq,last_batch_digest,updated_ns \
+         FROM plugin_source_cursor_v1 WHERE source_id=?",
+        [source_id],
+        |row| {
+            Ok(SourceState {
+                receiver_id: row.get(0)?,
+                plugin_id: row.get(1)?,
+                generation: row.get(2)?,
+                lease_epoch: row.get(3)?,
+                policy_epoch: row.get(4)?,
+                capture_enabled: row.get(5)?,
+                content_fingerprint: row.get(6)?,
+                cursor: row.get(7)?,
+                prior_cursor: row.get(8)?,
+                dirty_seq: row.get(9)?,
+                last_batch_digest: row.get(10)?,
+                updated_ns: row.get(11)?,
+            })
+        },
+    )?)
+}
+
+#[derive(Clone, Debug)]
+struct AdmissionSnapshot {
+    evidence_count: i64,
+    dirty_marker_before: Option<i64>,
+    tables: Vec<(&'static str, &'static str, &'static str, bool)>,
+}
+
+type StoredFactRow = (
+    String,
+    String,
+    i64,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+);
+
+struct AdmissionReadback<'a> {
+    snapshot: &'a AdmissionSnapshot,
+    expected_source: &'a SourceState,
+    inserted_hashes: &'a HashSet<String>,
+    admitted_ns: Option<i64>,
+}
+
+impl AdmissionSnapshot {
+    fn capture(db: &Connection, source_id: &str) -> Result<Self> {
+        let dirty_marker_before = db
+            .query_row(
+                "SELECT dirty_seq FROM plugin_evidence_dirty_v1 WHERE source_id=?",
+                [source_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let specs: [(&str, &str, &str, bool); 7] = [
+            (
+                "_agenturm_fact_before_evidence",
+                "plugin_evidence_v1",
+                "source_id=?",
+                false,
+            ),
+            (
+                "_agenturm_fact_before_session_projection",
+                "plugin_session_projection_v1",
+                "source_id=?",
+                true,
+            ),
+            (
+                "_agenturm_fact_before_projection_cursor",
+                "plugin_projection_cursor_v1",
+                "source_id=?",
+                true,
+            ),
+            (
+                "_agenturm_fact_before_activity_index",
+                "activity_index_v1",
+                "kind='plugin' AND owner_key=?",
+                true,
+            ),
+            (
+                "_agenturm_fact_before_investigation_dirty",
+                "investigation_dirty_v1",
+                "kind='plugin' AND owner_key=?",
+                true,
+            ),
+            (
+                "_agenturm_fact_before_content_batch",
+                "plugin_content_batch_v1",
+                "source_id=?",
+                false,
+            ),
+            (
+                "_agenturm_fact_before_content_status",
+                "plugin_content_status_v1",
+                "source_id=?",
+                false,
+            ),
+        ];
+        let mut tables = Vec::new();
+        for (snapshot, table, filter, verify_unchanged) in specs {
+            let exists: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+                [table],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                continue;
+            }
+            db.execute_batch(&format!("DROP TABLE IF EXISTS temp.{snapshot}"))?;
+            db.execute(
+                &format!("CREATE TEMP TABLE {snapshot} AS SELECT * FROM {table} WHERE {filter}"),
+                [source_id],
+            )?;
+            tables.push((snapshot, table, filter, verify_unchanged));
+        }
+        let evidence_count = db.query_row(
+            "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
+            [source_id],
+            |row| row.get(0),
+        )?;
+        Ok(Self {
+            evidence_count,
+            dirty_marker_before,
+            tables,
+        })
+    }
+
+    fn verify_unchanged_table(
+        db: &Connection,
+        snapshot: &str,
+        table: &str,
+        filter: &str,
+        source_id: &str,
+    ) -> Result<()> {
+        let differs: bool = db.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT * FROM temp.{snapshot} EXCEPT \
+                 SELECT * FROM {table} WHERE {filter}) OR \
+                 EXISTS(SELECT * FROM {table} WHERE {filter} EXCEPT \
+                 SELECT * FROM temp.{snapshot})"
+            ),
+            params![source_id, source_id],
+            |row| row.get(0),
+        )?;
+        if differs {
+            return Err(format!("admission trigger changed protected {table} rows").into());
+        }
+        Ok(())
+    }
+
+    fn verify_snapshot_rows_preserved(
+        db: &Connection,
+        snapshot: &str,
+        table: &str,
+        filter: &str,
+        source_id: &str,
+    ) -> Result<()> {
+        let missing_or_changed: bool = db.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT * FROM temp.{snapshot} EXCEPT \
+                 SELECT * FROM {table} WHERE {filter})"
+            ),
+            [source_id],
+            |row| row.get(0),
+        )?;
+        if missing_or_changed {
+            return Err(format!("admission trigger changed existing {table} rows").into());
+        }
+        Ok(())
+    }
+
+    fn verify_preserved(&self, db: &Connection, source_id: &str) -> Result<()> {
+        for (snapshot, table, filter, verify_unchanged) in &self.tables {
+            if *verify_unchanged {
+                Self::verify_unchanged_table(db, snapshot, table, filter, source_id)?;
+            }
+        }
+        Self::verify_snapshot_rows_preserved(
+            db,
+            "_agenturm_fact_before_evidence",
+            "plugin_evidence_v1",
+            "source_id=?",
+            source_id,
+        )?;
+        Ok(())
+    }
+
+    fn verify_exact_evidence_count(
+        &self,
+        db: &Connection,
+        source_id: &str,
+        inserted: i64,
+    ) -> Result<()> {
+        let actual: i64 = db.query_row(
+            "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
+            [source_id],
+            |row| row.get(0),
+        )?;
+        if actual != self.evidence_count + inserted {
+            return Err(reject(
+                "admission changed an unexpected number of evidence rows",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn verify_fact_admission_readback(
+    db: &Connection,
+    request: &Request,
+    receipt: &Receipt,
+    readback: &AdmissionReadback<'_>,
+) -> Result<()> {
+    let actual_source = source_state(db, &request.lease.source_id)?;
+    if &actual_source != readback.expected_source {
+        return Err(reject("admission source state was not persisted exactly"));
+    }
+
+    readback
+        .snapshot
+        .verify_preserved(db, &request.lease.source_id)?;
+    readback.snapshot.verify_exact_evidence_count(
+        db,
+        &request.lease.source_id,
+        readback.inserted_hashes.len() as i64,
+    )?;
+    for row in &request.records {
+        let stored: Option<StoredFactRow> = db
+            .query_row(
+                "SELECT source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest,\
+                 native_session_id,native_worker_id,native_turn_id,native_operation_id,\
+                 member_id,policy_epoch,admitted_ns FROM plugin_evidence_v1 \
+                 WHERE source_id=? AND event_id_hash=? AND revision=?",
+                params![request.lease.source_id, row.event_id_hash, row.revision],
+                |found| {
+                    Ok((
+                        found.get(0)?,
+                        found.get(1)?,
+                        found.get(2)?,
+                        found.get(3)?,
+                        found.get(4)?,
+                        found.get(5)?,
+                        found.get(6)?,
+                        found.get(7)?,
+                        found.get(8)?,
+                        found.get(9)?,
+                        found.get(10)?,
+                        found.get(11)?,
+                        found.get(12)?,
+                        found.get(13)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some(stored) = stored else {
+            return Err(reject("admission evidence row was ignored or removed"));
+        };
+        if stored.0 != request.lease.source_id
+            || stored.1 != row.event_id_hash
+            || stored.2 != row.revision
+            || stored.3 != row.kind
+            || stored.4 != row.time_ns
+            || stored.5 != row.payload_json
+            || stored.6 != row.record_digest
+            || stored.7 != row.native_session_id
+            || stored.8 != row.native_worker_id
+            || stored.9 != row.native_turn_id
+            || stored.10 != row.native_operation_id
+            || !stored.11.is_empty()
+            || stored.12 != request.lease.policy_epoch
+            || (readback.inserted_hashes.contains(&row.event_id_hash)
+                && Some(stored.13) != readback.admitted_ns)
+        {
+            return Err(reject("admission evidence row was changed by a trigger"));
+        }
+    }
+
+    let expected_dirty_marker = if readback.inserted_hashes.is_empty() {
+        readback.snapshot.dirty_marker_before
+    } else {
+        Some(receipt.dirty_seq)
+    };
+    let actual_dirty_marker: Option<i64> = db
+        .query_row(
+            "SELECT dirty_seq FROM plugin_evidence_dirty_v1 WHERE source_id=?",
+            [&request.lease.source_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if actual_dirty_marker != expected_dirty_marker {
+        return Err(reject("admission dirty marker was not persisted exactly"));
+    }
+
+    if receipt.disposition == "committed" {
+        let empty_refs_digest = format!("{:x}", Sha256::digest(b"{\"refs\":[]}"));
+        let content_batch: Option<(String, String)> = db
+            .query_row(
+                "SELECT cursor,refs_digest FROM plugin_content_batch_v1 WHERE source_id=?",
+                [&request.lease.source_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let content_status: Option<(String, String, i64, i64)> = db
+            .query_row(
+                "SELECT cursor,reason,refs_count,policy_epoch \
+                 FROM plugin_content_status_v1 WHERE source_id=?",
+                [&request.lease.source_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        if content_batch != Some((request.cursor.clone(), empty_refs_digest))
+            || content_status
+                != Some((
+                    request.cursor.clone(),
+                    "not_requested".to_owned(),
+                    0,
+                    request.lease.policy_epoch,
+                ))
+        {
+            return Err(reject(
+                "admission content receipts were not persisted exactly",
+            ));
+        }
+    } else {
+        for (snapshot_name, table, filter, _) in &readback.snapshot.tables {
+            if *table == "plugin_content_batch_v1" || *table == "plugin_content_status_v1" {
+                AdmissionSnapshot::verify_unchanged_table(
+                    db,
+                    snapshot_name,
+                    table,
+                    filter,
+                    &request.lease.source_id,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct SourceRevocationReceipt {
     cursor: String,
@@ -189,6 +557,7 @@ fn finish(
     replay: Option<&v2::ReplayIdentity>,
     existing_v2_receipt: bool,
     real_clone: bool,
+    readback: Option<AdmissionReadback<'_>>,
 ) -> Result<Receipt> {
     if let Some(replay) = replay.filter(|_| !existing_v2_receipt) {
         transaction.execute(
@@ -209,6 +578,8 @@ fn finish(
     }
     if real_clone {
         verify_real_clone_lifecycle_commit(&transaction, request, &receipt, replay)?;
+        let readback = readback.ok_or_else(|| reject("real clone admission snapshot missing"))?;
+        verify_fact_admission_readback(&transaction, request, &receipt, &readback)?;
     }
     transaction.commit()?;
     Ok(receipt)
@@ -364,7 +735,7 @@ fn verify_real_clone_lifecycle_commit(
     Ok(())
 }
 
-fn validate(request: &Request) -> Result<()> {
+fn validate(request: &Request, allow_plugin_facts: bool) -> Result<()> {
     let lease = &request.lease;
     if request.schema_version != 1
         || !identity(&lease.receiver_id)
@@ -382,10 +753,37 @@ fn validate(request: &Request) -> Result<()> {
     }
     let mut seen = HashSet::new();
     for row in &request.records {
+        let fact_kind = match row.kind.as_str() {
+            "message" => Some(v2::FactKind::Message),
+            "tool" => Some(v2::FactKind::Tool),
+            "check" => Some(v2::FactKind::Check),
+            "usage" => Some(v2::FactKind::Usage),
+            _ => None,
+        };
+        let payload_valid = if row.kind == "lifecycle" {
+            lifecycle_payload(&row.payload_json)
+        } else {
+            allow_plugin_facts
+                && fact_kind.is_some_and(|kind| v2::fact_payload_is_valid(kind, &row.payload_json))
+        };
+        let identity_policy_valid = match row.kind.as_str() {
+            "lifecycle" => true,
+            "message" | "tool" | "check" => allow_plugin_facts && !row.native_session_id.is_empty(),
+            "usage" => {
+                allow_plugin_facts
+                    && ((row.native_session_id.is_empty()
+                        && row.native_worker_id.is_empty()
+                        && row.native_turn_id.is_empty()
+                        && row.native_operation_id.is_empty())
+                        || !row.native_session_id.is_empty())
+            }
+            _ => false,
+        } && (row.kind == "tool"
+            || row.kind == "lifecycle"
+            || row.native_operation_id.is_empty());
         if !hash(&row.event_id_hash)
             || !seen.insert(&row.event_id_hash)
             || row.revision != 0
-            || row.kind != "lifecycle"
             || row.time_ns < 0
             || row.payload_json.len() > 4096
             || !hash(&row.record_digest)
@@ -397,9 +795,10 @@ fn validate(request: &Request) -> Result<()> {
             ]
             .into_iter()
             .all(|field| field.is_empty() || identity(field))
-            || !lifecycle_payload(&row.payload_json)
+            || !payload_valid
+            || !identity_policy_valid
         {
-            return Err(reject("unsupported prepared lifecycle record"));
+            return Err(reject("unsupported prepared plugin fact"));
         }
     }
     Ok(())
@@ -513,6 +912,7 @@ fn validate_active_source_history(
     cursor: &str,
     dirty_seq: i64,
     policy_epoch: i64,
+    allow_plugin_facts: bool,
 ) -> Result<()> {
     let unsupported: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
@@ -523,7 +923,9 @@ fn validate_active_source_history(
          OR EXISTS(SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 \
-                   AND (revision<>0 OR kind<>'lifecycle' OR member_id<>'' OR policy_epoch<>?2)) \
+                   AND (revision<>0 OR member_id<>'' OR policy_epoch<>?2 \
+                     OR (?6=0 AND kind<>'lifecycle') \
+                     OR (?6=1 AND kind NOT IN('lifecycle','message','tool','check','usage')))) \
          OR EXISTS(SELECT 1 FROM plugin_session_projection_v1 p WHERE p.source_id=?1 \
                    AND (p.policy_epoch<>?2 OR p.source_dirty_seq>?3 OR NOT EXISTS(\
                        SELECT 1 FROM plugin_evidence_v1 e WHERE e.source_id=p.source_id \
@@ -549,6 +951,7 @@ fn validate_active_source_history(
             dirty_seq,
             cursor,
             format!("{:x}", Sha256::digest(b"{\"refs\":[]}")),
+            i64::from(allow_plugin_facts),
         ],
         |row| row.get(0),
     )?;
@@ -609,7 +1012,7 @@ fn commit_guarded_mode(
     replay: Option<&v2::ReplayIdentity>,
     real_clone: bool,
 ) -> Result<Receipt> {
-    validate(request)?;
+    validate(request, real_clone)?;
     let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if let Some(lease) = writer_lease {
         lease.verify_admission()?;
@@ -632,53 +1035,21 @@ fn commit_guarded_mode(
             "storage_admission_request_v2",
         )?;
     }
-    type Source = (
-        String,
-        String,
-        String,
-        i64,
-        i64,
-        i64,
-        String,
-        String,
-        String,
-        i64,
-        String,
-    );
-    let source: Source = transaction.query_row(
-        "SELECT receiver_id,plugin_id,generation,lease_epoch,policy_epoch,capture_enabled,\
-         content_fingerprint,cursor,prior_cursor,dirty_seq,last_batch_digest \
-         FROM plugin_source_cursor_v1 WHERE source_id=?",
-        [&request.lease.source_id],
-        |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-                row.get(7)?,
-                row.get(8)?,
-                row.get(9)?,
-                row.get(10)?,
-            ))
-        },
-    )?;
-    let (
-        source_receiver,
-        plugin,
+    let source = source_state(&transaction, &request.lease.source_id)?;
+    let SourceState {
+        receiver_id: source_receiver,
+        plugin_id: plugin,
         generation,
-        epoch,
-        policy,
-        enabled,
-        fingerprint,
-        current_cursor,
+        lease_epoch: epoch,
+        policy_epoch: policy,
+        capture_enabled: enabled,
+        content_fingerprint: fingerprint,
+        cursor: current_cursor,
         prior_cursor,
         dirty_seq,
-        prior_digest,
-    ) = source;
+        last_batch_digest: prior_digest,
+        updated_ns: _,
+    } = source.clone();
     if receiver != request.lease.receiver_id
         || source_receiver != receiver
         || plugin != request.lease.plugin_id
@@ -700,6 +1071,7 @@ fn commit_guarded_mode(
             &current_cursor,
             dirty_seq,
             policy,
+            true,
         )?;
     } else {
         // Preserve the scratch-only replay fixture's historical narrow gate.
@@ -760,6 +1132,15 @@ fn commit_guarded_mode(
             existing_v2_receipt = true;
         }
     }
+    let snapshot = if real_clone {
+        Some(AdmissionSnapshot::capture(
+            &transaction,
+            &request.lease.source_id,
+        )?)
+    } else {
+        None
+    };
+    let empty_inserted_hashes = HashSet::new();
     if request.records.is_empty()
         && request.cursor == current_cursor
         && request.expected_cursor == current_cursor
@@ -775,6 +1156,12 @@ fn commit_guarded_mode(
             replay,
             existing_v2_receipt,
             real_clone,
+            snapshot.as_ref().map(|snapshot| AdmissionReadback {
+                snapshot,
+                expected_source: &source,
+                inserted_hashes: &empty_inserted_hashes,
+                admitted_ns: None,
+            }),
         );
     }
     if request.cursor == current_cursor
@@ -805,6 +1192,12 @@ fn commit_guarded_mode(
             replay,
             existing_v2_receipt,
             real_clone,
+            snapshot.as_ref().map(|snapshot| AdmissionReadback {
+                snapshot,
+                expected_source: &source,
+                inserted_hashes: &empty_inserted_hashes,
+                admitted_ns: None,
+            }),
         );
     }
     if request.expected_cursor != current_cursor {
@@ -820,6 +1213,7 @@ fn commit_guarded_mode(
     )?;
     let admitted_ns = now_ns()?;
     let mut inserted = false;
+    let mut inserted_hashes = HashSet::new();
     for row in &request.records {
         type Existing = (i64, String, String, String, String, String, String, String);
         let latest: Option<Existing> = transaction
@@ -859,7 +1253,7 @@ fn commit_guarded_mode(
         if count >= MAX_SOURCE_RECORDS {
             return Err(reject("scratch evidence capacity reached"));
         }
-        transaction.execute(
+        let changed = transaction.execute(
             "INSERT INTO plugin_evidence_v1 \
              (source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest,\
              native_session_id,native_worker_id,native_turn_id,native_operation_id,member_id,\
@@ -881,13 +1275,20 @@ fn commit_guarded_mode(
                 admitted_ns
             ],
         )?;
+        if changed != 1 {
+            return Err(reject(
+                "admission evidence insert did not affect exactly one row",
+            ));
+        }
         count += 1;
         inserted = true;
+        inserted_hashes.insert(row.event_id_hash.clone());
     }
     let next_dirty = dirty_seq
         .checked_add(i64::from(inserted))
         .ok_or_else(|| reject("dirty sequence overflow"))?;
-    transaction.execute(
+    let updated_ns = now_ns()?;
+    let source_changed = transaction.execute(
         "UPDATE plugin_source_cursor_v1 SET cursor=?,prior_cursor=?,last_batch_digest=?,\
          dirty_seq=?,updated_ns=? WHERE source_id=?",
         params![
@@ -895,10 +1296,15 @@ fn commit_guarded_mode(
             request.expected_cursor,
             request.batch_digest,
             next_dirty,
-            now_ns()?,
+            updated_ns,
             request.lease.source_id
         ],
     )?;
+    if source_changed != 1 {
+        return Err(reject(
+            "admission source update did not affect exactly one row",
+        ));
+    }
     if inserted {
         transaction.execute(
             "INSERT INTO plugin_evidence_dirty_v1(source_id,dirty_seq) VALUES(?,?) \
@@ -923,6 +1329,16 @@ fn commit_guarded_mode(
             request.lease.policy_epoch
         ],
     )?;
+    let mut expected_source = source.clone();
+    expected_source.cursor.clone_from(&request.cursor);
+    expected_source
+        .prior_cursor
+        .clone_from(&request.expected_cursor);
+    expected_source
+        .last_batch_digest
+        .clone_from(&request.batch_digest);
+    expected_source.dirty_seq = next_dirty;
+    expected_source.updated_ns = updated_ns;
     finish(
         transaction,
         Receipt {
@@ -934,6 +1350,12 @@ fn commit_guarded_mode(
         replay,
         existing_v2_receipt,
         real_clone,
+        snapshot.as_ref().map(|snapshot| AdmissionReadback {
+            snapshot,
+            expected_source: &expected_source,
+            inserted_hashes: &inserted_hashes,
+            admitted_ns: Some(admitted_ns),
+        }),
     )
 }
 
@@ -951,7 +1373,7 @@ pub fn apply_json(input: &str) -> Result<String> {
         return Err(reject("scratch request exceeds byte limit"));
     }
     let request: Request = serde_json::from_str(input)?;
-    validate(&request)?;
+    validate(&request, false)?;
     let path = Path::new(&request.sqlite_path);
     let receipt = with_marked_scratch(path, |db, lease| {
         commit_guarded(db, &request, Some(lease), None)
@@ -1050,8 +1472,8 @@ fn with_marked_activation_clone<T>(
     Ok(result)
 }
 
-/// Mutate only source activation and metadata-only lifecycle admission on a
-/// detached real-schema clone. No production caller.
+/// Mutate only source activation and bounded metadata-only admissions on an
+/// explicitly marked detached real-schema clone. No production caller.
 pub fn apply_activation_clone_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
     let request = v2::Request::from_json(input)?;
     let replay = request.replay_identity()?;
@@ -1123,6 +1545,62 @@ pub fn apply_activation_clone_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u
                 _ => return Err(reject("unexpected activation-clone admission disposition")),
             };
             v2::OperationResult::LifecycleAdmission(v2::AdmissionResult {
+                disposition,
+                cursor: receipt.cursor,
+                batch_digest: batch_digest.clone(),
+                dirty_seq: receipt.dirty_seq,
+            })
+        }
+        v2::Operation::AdmitFacts {
+            lease,
+            expected_cursor,
+            cursor,
+            batch_digest,
+            records,
+        } => {
+            let prepared = Request {
+                schema_version: 1,
+                sqlite_path: path
+                    .to_str()
+                    .ok_or_else(|| reject("activation clone path must be UTF-8"))?
+                    .to_owned(),
+                lease: Lease {
+                    receiver_id: lease.receiver_id.clone(),
+                    plugin_id: lease.plugin_id.clone(),
+                    source_id: lease.source_id.clone(),
+                    generation: lease.generation.clone(),
+                    epoch: lease.epoch,
+                    policy_epoch: lease.policy_epoch,
+                },
+                expected_cursor: expected_cursor.clone(),
+                cursor: cursor.clone(),
+                batch_digest: batch_digest.clone(),
+                records: records
+                    .iter()
+                    .map(|row| PreparedRecord {
+                        event_id_hash: row.event_id_hash.clone(),
+                        revision: row.revision,
+                        kind: row.kind.as_str().to_owned(),
+                        time_ns: row.time_ns,
+                        payload_json: row.payload_json.clone(),
+                        record_digest: row.record_digest.clone(),
+                        native_session_id: row.native_session_id.clone(),
+                        native_worker_id: row.native_worker_id.clone(),
+                        native_turn_id: row.native_turn_id.clone(),
+                        native_operation_id: row.native_operation_id.clone(),
+                    })
+                    .collect(),
+            };
+            let receipt = with_marked_activation_clone(path, |db, lease| {
+                commit_guarded_mode(db, &prepared, Some(lease), Some(&replay), true)
+            })?;
+            let disposition = match receipt.disposition {
+                "committed" => v2::Disposition::Committed,
+                "replay" => v2::Disposition::Replay,
+                "idle" => v2::Disposition::Idle,
+                _ => return Err(reject("unexpected activation-clone fact disposition")),
+            };
+            v2::OperationResult::FactAdmission(v2::AdmissionResult {
                 disposition,
                 cursor: receipt.cursor,
                 batch_digest: batch_digest.clone(),
@@ -1224,6 +1702,9 @@ pub fn apply_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
                 batch_digest: batch_digest.clone(),
                 dirty_seq: receipt.dirty_seq,
             })
+        }
+        v2::Operation::AdmitFacts { .. } => {
+            return Err(reject("scratch mode accepts lifecycle admission only"));
         }
         v2::Operation::RevokeSource {
             cursor,
@@ -1472,7 +1953,14 @@ fn activate_source_guarded(
         {
             return Err(reject("scratch source state is malformed"));
         }
-        validate_active_source_history(&transaction, source_id, &cursor, dirty_seq, policy)?;
+        validate_active_source_history(
+            &transaction,
+            source_id,
+            &cursor,
+            dirty_seq,
+            policy,
+            real_clone,
+        )?;
         let epoch = fresh_lease_epoch(Some(old_epoch))?;
         let changed = transaction.execute(
             "UPDATE plugin_source_cursor_v1 SET lease_epoch=?,updated_ns=? WHERE source_id=?",
@@ -2293,6 +2781,7 @@ fn set_source_capture_guarded(
             &cursor,
             dirty_seq,
             current_policy,
+            false,
         )?;
     } else {
         validate_disabled_capture_state(
@@ -2577,6 +3066,7 @@ fn validate_capture_set_persisted_state(
             cursor,
             expected_source.10,
             expected_source.4,
+            false,
         )?;
         if require_empty_lifecycle {
             let residual: bool = db.query_row(
@@ -4226,6 +4716,110 @@ mod tests {
         }
     }
 
+    fn clone_fact_admission_request(request_id: &str, cursor: &str) -> (v2::Request, Request) {
+        let lease = v2::SourceLease {
+            receiver_id: "receiver-one".to_owned(),
+            plugin_id: "fixture.plugin".to_owned(),
+            source_id: "source-one".to_owned(),
+            generation: "a".repeat(64),
+            epoch: 7,
+            policy_epoch: 1,
+        };
+        let records = vec![
+            v2::PreparedFact {
+                event_id_hash: "a".repeat(64),
+                revision: 0,
+                kind: v2::FactKind::Message,
+                time_ns: 100,
+                payload_json: "{\"role\":\"assistant\"}".to_owned(),
+                record_digest: "1".repeat(64),
+                native_session_id: "native-one".to_owned(),
+                native_worker_id: String::new(),
+                native_turn_id: String::new(),
+                native_operation_id: String::new(),
+            },
+            v2::PreparedFact {
+                event_id_hash: "b".repeat(64),
+                revision: 0,
+                kind: v2::FactKind::Tool,
+                time_ns: 110,
+                payload_json: "{\"category\":\"shell\",\"result\":\"started\"}".to_owned(),
+                record_digest: "2".repeat(64),
+                native_session_id: "native-one".to_owned(),
+                native_worker_id: String::new(),
+                native_turn_id: "turn-one".to_owned(),
+                native_operation_id: "op-one".to_owned(),
+            },
+            v2::PreparedFact {
+                event_id_hash: "c".repeat(64),
+                revision: 0,
+                kind: v2::FactKind::Check,
+                time_ns: 120,
+                payload_json: "{\"category\":\"test\",\"result\":\"passed\"}".to_owned(),
+                record_digest: "3".repeat(64),
+                native_session_id: "native-one".to_owned(),
+                native_worker_id: String::new(),
+                native_turn_id: String::new(),
+                native_operation_id: String::new(),
+            },
+            v2::PreparedFact {
+                event_id_hash: "d".repeat(64),
+                revision: 0,
+                kind: v2::FactKind::Usage,
+                time_ns: 130,
+                payload_json: "{\"input_tokens\":5,\"total_tokens\":5}".to_owned(),
+                record_digest: "4".repeat(64),
+                native_session_id: String::new(),
+                native_worker_id: String::new(),
+                native_turn_id: String::new(),
+                native_operation_id: String::new(),
+            },
+        ];
+        let wire = v2::Request {
+            version: v2::VERSION,
+            request_id: request_id.to_owned(),
+            receiver_id: lease.receiver_id.clone(),
+            operation: v2::Operation::AdmitFacts {
+                lease: lease.clone(),
+                expected_cursor: String::new(),
+                cursor: cursor.to_owned(),
+                batch_digest: "d".repeat(64),
+                records: records.clone(),
+            },
+        };
+        let prepared = Request {
+            schema_version: 1,
+            sqlite_path: "/tmp/real-clone.db".to_owned(),
+            lease: Lease {
+                receiver_id: lease.receiver_id,
+                plugin_id: lease.plugin_id,
+                source_id: lease.source_id,
+                generation: lease.generation,
+                epoch: lease.epoch,
+                policy_epoch: lease.policy_epoch,
+            },
+            expected_cursor: String::new(),
+            cursor: cursor.to_owned(),
+            batch_digest: "d".repeat(64),
+            records: records
+                .into_iter()
+                .map(|row| PreparedRecord {
+                    event_id_hash: row.event_id_hash,
+                    revision: row.revision,
+                    kind: row.kind.as_str().to_owned(),
+                    time_ns: row.time_ns,
+                    payload_json: row.payload_json,
+                    record_digest: row.record_digest,
+                    native_session_id: row.native_session_id,
+                    native_worker_id: row.native_worker_id,
+                    native_turn_id: row.native_turn_id,
+                    native_operation_id: row.native_operation_id,
+                })
+                .collect(),
+        };
+        (wire, prepared)
+    }
+
     fn add_real_clone_markers(db: &Connection) {
         db.execute_batch(
             "INSERT INTO schema_meta VALUES('storage_activation_clone_v1','enabled'); \
@@ -4354,6 +4948,189 @@ mod tests {
             )
             .unwrap();
         assert_eq!(marker, "enabled");
+    }
+
+    fn assert_fact_trigger_rolls_back(trigger: &str, request_id: &str) -> String {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        db.execute_batch(trigger).unwrap();
+        let (wire, prepared) = clone_fact_admission_request(request_id, "facts-one");
+        assert!(wire.validate().is_ok());
+        let replay = wire.replay_identity().unwrap();
+        let before = state(&db);
+        let error = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true)
+            .expect_err("trigger must reject the fact transaction");
+        assert_eq!(state(&db), before);
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id='source-one'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        assert!(matches!(
+            admission_receipt_count(&db, request_id),
+            None | Some(0)
+        ));
+        error.to_string()
+    }
+
+    fn assert_fact_receipt_trigger_rolls_back(trigger: &str, request_id: &str) -> String {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        db.execute_batch(
+            "CREATE TABLE storage_admission_request_v2(\
+             request_id TEXT PRIMARY KEY,receiver_id TEXT NOT NULL,\
+             request_digest TEXT NOT NULL,source_id TEXT NOT NULL,cursor TEXT NOT NULL,\
+             batch_digest TEXT NOT NULL,dirty_seq INTEGER NOT NULL,disposition TEXT NOT NULL);",
+        )
+        .unwrap();
+        db.execute_batch(trigger).unwrap();
+        let (wire, prepared) = clone_fact_admission_request(request_id, "facts-one");
+        let replay = wire.replay_identity().unwrap();
+        let before = state(&db);
+        let error = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true)
+            .expect_err("receipt trigger must reject the fact transaction");
+        assert_eq!(state(&db), before);
+        assert_eq!(admission_receipt_count(&db, request_id), Some(0));
+        error.to_string()
+    }
+
+    #[test]
+    fn real_clone_fact_admission_rejects_ignored_second_insert_atomically() {
+        let trigger = format!(
+            "CREATE TRIGGER ignore_second_fact BEFORE INSERT ON plugin_evidence_v1 \
+             WHEN NEW.event_id_hash='{}' BEGIN SELECT RAISE(IGNORE); END;",
+            "b".repeat(64)
+        );
+        let error = assert_fact_trigger_rolls_back(&trigger, "7123456789abcdef0123456789abcdef");
+        assert!(error.contains("did not affect exactly one row"));
+    }
+
+    #[test]
+    fn real_clone_fact_admission_rejects_ignored_source_update_atomically() {
+        let error = assert_fact_trigger_rolls_back(
+            "CREATE TRIGGER ignore_fact_cursor BEFORE UPDATE OF cursor ON \
+             plugin_source_cursor_v1 WHEN NEW.source_id='source-one' \
+             BEGIN SELECT RAISE(IGNORE); END;",
+            "8123456789abcdef0123456789abcdef",
+        );
+        assert!(error.contains("source update did not affect exactly one row"));
+    }
+
+    #[test]
+    fn real_clone_fact_admission_rejects_after_insert_evidence_mutation() {
+        let trigger = format!(
+            "CREATE TRIGGER mutate_fact_after_insert AFTER INSERT ON plugin_evidence_v1 \
+             WHEN NEW.event_id_hash='{}' BEGIN UPDATE plugin_evidence_v1 SET payload_json='{{}}' \
+             WHERE source_id=NEW.source_id AND event_id_hash=NEW.event_id_hash; END;",
+            "a".repeat(64)
+        );
+        let error = assert_fact_trigger_rolls_back(&trigger, "9123456789abcdef0123456789abcdef");
+        assert!(error.contains("evidence row was changed by a trigger"));
+    }
+
+    #[test]
+    fn real_clone_fact_admission_rejects_after_receipt_source_mutation() {
+        let trigger = "CREATE TRIGGER mutate_fact_after_receipt \
+             AFTER INSERT ON storage_admission_request_v2 \
+             BEGIN UPDATE plugin_source_cursor_v1 SET prior_cursor='triggered' \
+             WHERE source_id=NEW.source_id; END;";
+        let error =
+            assert_fact_receipt_trigger_rolls_back(trigger, "a123456789abcdef0123456789abcdef");
+        assert!(error.contains("source state was not persisted exactly"));
+    }
+
+    #[test]
+    fn real_clone_fact_admission_rejects_after_receipt_mutation() {
+        let trigger = "CREATE TRIGGER mutate_fact_receipt AFTER INSERT \
+             ON storage_admission_request_v2 BEGIN UPDATE storage_admission_request_v2 \
+             SET batch_digest='tampered' WHERE request_id=NEW.request_id; END;";
+        let error =
+            assert_fact_receipt_trigger_rolls_back(trigger, "d123456789abcdef0123456789abcdef");
+        assert!(error.contains("replay receipt was not persisted exactly"));
+    }
+
+    #[test]
+    fn real_clone_fact_admission_rejects_ignored_receipt_insert() {
+        let trigger = "CREATE TRIGGER ignore_fact_receipt BEFORE INSERT \
+             ON storage_admission_request_v2 BEGIN SELECT RAISE(IGNORE); END;";
+        let error =
+            assert_fact_receipt_trigger_rolls_back(trigger, "e123456789abcdef0123456789abcdef");
+        assert!(error.contains("replay receipt was not persisted exactly"));
+    }
+
+    #[test]
+    fn real_clone_fact_request_ids_share_lifecycle_namespace_and_bind_source() {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        let request_id = "b123456789abcdef0123456789abcdef";
+        let (wire, prepared) = clone_fact_admission_request(request_id, "facts-one");
+        let replay = wire.replay_identity().unwrap();
+        let committed = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true)
+            .expect("valid metadata fact batch commits");
+        assert_eq!(committed.disposition, "committed");
+        let before_conflict = state(&db);
+
+        let lifecycle = clone_admission_request(request_id, "facts-two");
+        let lifecycle_replay = lifecycle.replay_identity().unwrap();
+        let lifecycle_prepared = Request {
+            schema_version: 1,
+            sqlite_path: "/tmp/real-clone.db".to_owned(),
+            lease: Lease {
+                receiver_id: prepared.lease.receiver_id.clone(),
+                plugin_id: prepared.lease.plugin_id.clone(),
+                source_id: prepared.lease.source_id.clone(),
+                generation: prepared.lease.generation.clone(),
+                epoch: prepared.lease.epoch,
+                policy_epoch: prepared.lease.policy_epoch,
+            },
+            expected_cursor: "facts-one".to_owned(),
+            cursor: "facts-two".to_owned(),
+            batch_digest: "e".repeat(64),
+            records: vec![PreparedRecord {
+                event_id_hash: "e".repeat(64),
+                revision: 0,
+                kind: "lifecycle".to_owned(),
+                time_ns: 200,
+                payload_json: "{\"state\":\"completed\"}".to_owned(),
+                record_digest: "f".repeat(64),
+                native_session_id: "native-two".to_owned(),
+                native_worker_id: String::new(),
+                native_turn_id: String::new(),
+                native_operation_id: String::new(),
+            }],
+        };
+        let error = commit_guarded_mode(
+            &mut db,
+            &lifecycle_prepared,
+            None,
+            Some(&lifecycle_replay),
+            true,
+        )
+        .expect_err("request ID cannot be reused for lifecycle admission");
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting v2 request replay identity")
+        );
+        assert_eq!(state(&db), before_conflict);
+
+        let (mut wrong_wire, mut wrong_prepared) =
+            clone_fact_admission_request("c123456789abcdef0123456789abcdef", "facts-two");
+        let v2::Operation::AdmitFacts { lease, .. } = &mut wrong_wire.operation else {
+            unreachable!()
+        };
+        lease.source_id = "missing-source".to_owned();
+        wrong_prepared.lease.source_id = "missing-source".to_owned();
+        assert!(wrong_wire.validate().is_ok());
+        let wrong_replay = wrong_wire.replay_identity().unwrap();
+        let error = commit_guarded_mode(&mut db, &wrong_prepared, None, Some(&wrong_replay), true)
+            .expect_err("source ID must resolve to the leased source");
+        assert!(error.to_string().contains("Query returned no rows"));
+        assert_eq!(state(&db), before_conflict);
     }
 
     #[test]

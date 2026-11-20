@@ -508,8 +508,12 @@ mod linux {
                     }
                 }
             } else if config.experimental_real_clone_activation {
-                if let Ok(request) =
-                    read_authorized_v2_request(&mut stream, policy, &config.receiver_id)
+                // Recheck the service-startup inode proof before opening the
+                // clone for mutation. A post-write check alone can reject the
+                // reply after a replacement file has already been changed.
+                if data.verify().is_ok()
+                    && let Ok(request) =
+                        read_authorized_v2_request(&mut stream, policy, &config.receiver_id)
                 {
                     let clone = data.path.join(CLONE_NAME);
                     if let Ok(reply) = agenturm_storage_admission::apply_activation_clone_v2_json(
