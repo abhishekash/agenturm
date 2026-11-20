@@ -85,6 +85,42 @@ def investigation_json(view, record, scope=None):
     return json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
 
 
+def review_investigation_json(projection, pi_user_text=None):
+    """Serialize a Review snapshot, optionally with one exact Pi user message.
+
+    The optional text is transient delivery data: callers must provide it only
+    after the Pi reference reader accepted an exact source proof. It is never
+    added to Activity, evidence history, or the ordinary Review projection.
+    """
+    payload = {'format': 'agenturm-investigation-v1', 'view': 'review',
+               'coverage': 'Selected Review and currently loaded evidence only.',
+               'evidence': projection}
+    if pi_user_text is not None:
+        if (not isinstance(pi_user_text, dict) or
+                not isinstance(pi_user_text.get('source'), dict) or
+                not isinstance(pi_user_text.get('text'), str) or
+                not isinstance(pi_user_text.get('revision'), (list, tuple)) or
+                len(pi_user_text['revision']) != 3):
+            raise ValueError('invalid exact Pi user-text reference')
+        from .plugin_activity import _EVENT_KEY
+        from .workflow_evidence import safe_text
+        source=pi_user_text['source'];text=pi_user_text['text']
+        if (not isinstance(source.get('id'),str) or not _EVENT_KEY.fullmatch(source['id']) or
+                source.get('source_id')!=source.get('id') or
+                not all(isinstance(source.get(key),str) and source[key]
+                        for key in ('service','session_id','receiver_id')) or
+                safe_text(text)!=text or len(text.encode('utf-8'))>4096 or
+                any(type(value) is not int or value<0 for value in pi_user_text['revision'])):
+            raise ValueError('invalid exact Pi user-text reference')
+        payload['pi_user_text'] = {
+            'source': pi_user_text['source'],
+            'redacted_text': pi_user_text['text'],
+            'revision': list(pi_user_text['revision']),
+            'capture': 'opt-in source-backed redacted text',
+        }
+    return json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
+
+
 def current_plugin_activity_revision(api, record, receiver_id):
     """Match one frozen Activity row to the receiver's current source revision."""
     if (record.get('source') != 'plugin' or not receiver_id
@@ -147,11 +183,12 @@ class ExportScreen(ModalScreen):
     BINDINGS = [('escape', 'dismiss', 'Cancel')]
 
     def __init__(self, view, record, scope=None, *, content=None, can_export=None,
-                 poll_policy=True):
+                 poll_policy=True, allow_clipboard=True):
         super().__init__()
         self.content = content if content is not None else investigation_json(view, record, scope)
         self.can_export=can_export
         self.poll_policy=poll_policy
+        self.allow_clipboard=allow_clipboard
         self._export_invalidated=False
 
     def compose(self) -> ComposeResult:
@@ -179,6 +216,7 @@ class ExportScreen(ModalScreen):
     def action_copy_text(self):
         # Textual's Screen Ctrl+C/Super+C binding bypasses the Write button.
         # A process Activity preview must pass the exact source proof again.
+        if not self.allow_clipboard:return
         if self.check_export_policy():
             super().action_copy_text()
 

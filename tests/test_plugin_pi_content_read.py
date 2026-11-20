@@ -159,6 +159,23 @@ class PiContentReadTests(unittest.TestCase):
         self.assertEqual(read_exact_pi_user_text(self.store, key),
                          Unavailable("activity_changed"))
 
+    def test_wrong_source_session_or_turn_never_returns_the_message(self):
+        key = self.publish()
+        with self.store._connect() as db:
+            original = db.execute("SELECT native_session_id,native_turn_id FROM "
+                                  "plugin_evidence_v1 WHERE source_id='pi-directory'").fetchone()
+            db.execute("UPDATE plugin_evidence_v1 SET native_session_id='other-session' "
+                       "WHERE source_id='pi-directory'")
+        self.assertIsInstance(read_exact_pi_user_text(self.store, key), Unavailable)
+
+        with self.store._connect() as db:
+            db.execute("UPDATE plugin_evidence_v1 SET native_session_id=?,native_turn_id='other-turn' "
+                       "WHERE source_id='pi-directory'", (original[0],))
+        self.assertIsInstance(read_exact_pi_user_text(self.store, key), Unavailable)
+
+        self.assertIsInstance(read_exact_pi_user_text(
+            self.store, 'plugin-event:' + 'f' * 64), Unavailable)
+
     def test_empty_user_text_is_available(self):
         self.fixture.user = self.fixture.user_line("user-1", "")
         self.fixture.file.write_bytes(self.fixture.header + self.fixture.user)
