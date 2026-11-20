@@ -155,9 +155,38 @@ def run_child(case: str, *, uid: int, gid: int, root: Path,
     print(f"PASS v2 {case}: uid={uid} gid={gid}", flush=True)
 
 
+def run_rust_client(binary: Path, request: dict, *, socket_path: Path,
+                    service_uid: int, service_gid: int,
+                    client_uid: int, client_gid: int,
+                    expect_denied: bool = False) -> None:
+    result = subprocess.run(
+        [str(binary), str(socket_path), str(service_uid), str(service_gid)],
+        input=json.dumps(request, separators=(",", ":")), text=True,
+        preexec_fn=drop_to(client_uid, client_gid), capture_output=True, timeout=8)
+    if expect_denied:
+        check(result.returncode != 0 and not result.stdout and
+              "peer denied" in result.stderr,
+              f"Rust client sent to the wrong service: {result.stdout}{result.stderr}")
+        print("PASS v2 Rust client denied wrong service identity", flush=True)
+        return
+    check(result.returncode == 0,
+          f"Rust v2 client failed: {result.stdout}{result.stderr}")
+    reply = json.loads(result.stdout)
+    expected_digest = hashlib.sha256(json.dumps(
+        request, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    check(reply["request_digest"] == expected_digest and
+          reply["request_id"] == request["request_id"] and
+          reply["receiver_id"] == request["receiver_id"] and
+          reply["result"]["disposition"] == "replay" and
+          reply["result"]["cursor"] == "one",
+          f"Rust client accepted an unbound reply: {reply!r}")
+    print("PASS v2 Rust client across distinct accounts", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin", type=Path)
+    parser.add_argument("--rust-client-bin", type=Path)
     parser.add_argument("--case", choices=("store", "valid", "replay", "conflict",
                                            "wrong_receiver", "wrong_uid", "wrong_gid",
                                            "same_uid", "v1_probe", "oversized",
@@ -174,6 +203,9 @@ def main() -> None:
           "run this fixture as root in an isolated Linux VM or container")
     check(args.bin is not None and args.bin.is_file(), "pass a built service")
     binary = args.bin.resolve()
+    rust_client = args.rust_client_bin.resolve() if args.rust_client_bin else None
+    if rust_client is not None:
+        check(rust_client.is_file(), "pass a built Rust client")
     service_uid, client_uid, wrong_uid, service_gid, client_gid = identities()
     def drop_service() -> None:
         # Deliberately permissive launcher umask: service must impose privacy.
@@ -199,7 +231,8 @@ def main() -> None:
         command = [str(binary), "--data-root", str(data),
             "--transport-dir", str(transport), "--receiver-id", request["receiver_id"],
             "--client-uid", str(client_uid), "--client-gid", str(client_gid),
-            "--max-connections", "11", "--experimental-v2-scratch", "enabled"]
+            "--max-connections", "13" if rust_client else "11",
+            "--experimental-v2-scratch", "enabled"]
         socket_path = transport / SOCKET_NAME
         service = subprocess.Popen(command, preexec_fn=drop_service,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
@@ -210,6 +243,14 @@ def main() -> None:
                   "scratch file not service-owned")
             run_child("store", uid=client_uid, gid=client_gid, root=root)
             run_child("valid", uid=client_uid, gid=client_gid, root=root)
+            if rust_client is not None:
+                run_rust_client(rust_client, request, socket_path=socket_path,
+                                service_uid=wrong_uid, service_gid=service_gid,
+                                client_uid=client_uid, client_gid=client_gid,
+                                expect_denied=True)
+                run_rust_client(rust_client, request, socket_path=socket_path,
+                                service_uid=service_uid, service_gid=service_gid,
+                                client_uid=client_uid, client_gid=client_gid)
             run_child("replay", uid=client_uid, gid=client_gid, root=root)
             run_child("drop_reply", uid=client_uid, gid=client_gid, root=root)
             run_child("replay_second", uid=client_uid, gid=client_gid, root=root)
