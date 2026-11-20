@@ -6,6 +6,7 @@ import stat
 import tomllib
 from pathlib import Path
 
+from .plugin_capture_modes import CaptureModeRegistry, DEFAULT_CAPTURE_MODES
 from .plugin_manifest import FEATURE, PLUGIN_ID, PluginManifest
 from .plugin_process import MAX_PROCESSES
 from .plugin_supervisor import PluginSource
@@ -13,8 +14,12 @@ from .plugin_supervisor import PluginSource
 MAX_CONFIG_BYTES = 64 * 1024
 
 
-def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
+def read_plugin_config(path: str | Path, *,
+                       capture_modes: CaptureModeRegistry = DEFAULT_CAPTURE_MODES
+                       ) -> tuple[PluginSource, ...]:
     """Parse only a named file; never search project directories for code."""
+    if not isinstance(capture_modes, CaptureModeRegistry):
+        raise TypeError("trusted capture mode registry required")
     try:
         path = Path(path).resolve(strict=True)
     except OSError as exc:
@@ -51,9 +56,7 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
             raise ValueError("invalid or duplicate plugin source ID")
         seen.add(source_id)
         capture_mode = row["capture"]
-        if capture_mode not in ("metadata-only", "pi-review-text-v1",
-                                "pi-review-text-command-v1"):
-            raise ValueError("unsupported plugin capture mode")
+        capture_modes.get(capture_mode)
         grants = row["grants"]
         if (not isinstance(grants, list) or len(grants) > 16 or
                 any(not isinstance(value, str) or not PLUGIN_ID.fullmatch(value) for value in grants)
@@ -91,29 +94,10 @@ def read_plugin_config(path: str | Path) -> tuple[PluginSource, ...]:
                                         or any(ord(char) < 32 or ord(char) == 127
                                                for char in source_root)):
             raise ValueError("plugin source root must be an absolute path")
-        if capture_mode == "pi-review-text-v1":
-            content_features = {"source-discovery/1", "source-discovery-root-gap/1",
-                                "configured-root/1",
-                                "pi-content-ref/1"}
-            if (replaces != ["pi"] or source_root is None
-                    or "configured-source-read" not in grants
-                    or "configured-source-read" not in manifest.grants
-                    or not content_features <= set(required_features)
-                    or not content_features | {"harness.pi/1"} <= set(manifest.provides)):
-                raise ValueError("Pi content capture requires directory source and grants")
-        elif capture_mode == "pi-review-text-command-v1":
-            command_features = {"source-discovery/1", "source-discovery-root-gap/1",
-                                "configured-root/1", "pi-command-ref/1"}
-            if (replaces != ["pi"] or source_root is None
-                    or "configured-source-read" not in grants
-                    or "configured-source-read" not in manifest.grants
-                    or not command_features <= set(required_features)
-                    or not command_features | {"harness.pi/1"} <= set(manifest.provides)):
-                raise ValueError("Pi command capture requires directory source and grants")
-        if ("pi-content-ref/1" in required_features) != (capture_mode == "pi-review-text-v1"):
-            raise ValueError("Pi content feature requires matching explicit capture mode")
-        if ("pi-command-ref/1" in required_features) != (capture_mode == "pi-review-text-command-v1"):
-            raise ValueError("Pi command feature requires matching explicit capture mode")
+        capture_modes.validate_config(
+            capture_mode, manifest, replaces=tuple(replaces),
+            source_root=source_root, grants=tuple(grants),
+            features=tuple(required_features))
         sources.append(PluginSource(manifest, source_id, tuple(grants),
                                     float(row["poll_interval"]), float(row["timeout"]),
                                     tuple(replaces), source_root, tuple(required_features),

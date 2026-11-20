@@ -10,6 +10,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+from .plugin_capture_modes import CaptureModeRegistry, DEFAULT_CAPTURE_MODES
 from .plugin_admission import (SourceLease, activate_source, commit_batch,
                                last_source_diagnostic, member_cursors)
 from .plugin_manifest import PluginManifest
@@ -30,50 +31,52 @@ class PluginSession:
                  rust_host_executable: str | None = None,
                  rust_host_sha256: str | None = None,
                  content_source: PluginSource | None = None,
-                 command_source: PluginSource | None = None):
+                 command_source: PluginSource | None = None,
+                 capture_source: PluginSource | None = None,
+                 capture_modes: CaptureModeRegistry = DEFAULT_CAPTURE_MODES):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
+        if not isinstance(capture_modes, CaptureModeRegistry):
+            raise TypeError("trusted capture mode registry required")
         self.store = store
-        self.content_source = None
+        self.capture_source = None
+        self.capture_grant = None
         self.content_grant = None
-        self.command_source = None
         self.command_grant = None
+        self.content_source = None
+        self.command_source = None
         if content_source is not None and command_source is not None:
-            raise ProtocolError("Pi reference capture modes are mutually exclusive")
-        if content_source is not None:
+            raise ProtocolError("reference capture modes are mutually exclusive")
+        if capture_source is not None and (content_source is not None or command_source is not None):
+            raise ProtocolError("capture source cannot be supplied twice")
+        legacy_family = ("content" if content_source is not None else
+                         "command" if command_source is not None else None)
+        source = capture_source or content_source or command_source
+        if source is not None:
             from .plugin_supervisor import PluginSource
-            if (not isinstance(content_source, PluginSource)
-                    or content_source.manifest != manifest
-                    or content_source.source_id != source_id
-                    or content_source.source_root != source_root
-                    or set(content_source.allowed_grants) != set(allowed_grants)
-                    or set(content_source.runtime_features) != set(required_features)
-                    or content_source.capture_mode != "pi-review-text-v1"
-                    or "pi-content-ref/1" not in required_features):
-                raise ProtocolError("Pi content source differs from trusted process configuration")
-            self.content_source = content_source
-        elif "pi-content-ref/1" in required_features:
-            raise ProtocolError("Pi content feature requires trusted configuration")
-        if command_source is not None:
-            from .plugin_supervisor import PluginSource
-            if (not isinstance(command_source, PluginSource)
-                    or command_source.manifest != manifest
-                    or command_source.source_id != source_id
-                    or command_source.source_root != source_root
-                    or set(command_source.allowed_grants) != set(allowed_grants)
-                    or set(command_source.runtime_features) != set(required_features)
-                    or command_source.capture_mode != "pi-review-text-command-v1"
-                    or "pi-command-ref/1" not in required_features):
-                raise ProtocolError("Pi command source differs from trusted process configuration")
-            self.command_source = command_source
-        elif "pi-command-ref/1" in required_features:
-            raise ProtocolError("Pi command feature requires trusted configuration")
+            if (not isinstance(source, PluginSource)
+                    or source.manifest != manifest
+                    or source.source_id != source_id
+                    or source.source_root != source_root
+                    or set(source.allowed_grants) != set(allowed_grants)
+                    or set(source.runtime_features) != set(required_features)):
+                raise ProtocolError("capture source differs from trusted process configuration")
+        mode = capture_modes.select_session(source, required_features)
+        if legacy_family is not None and mode.reference_family != legacy_family:
+            raise ProtocolError("reference source differs from trusted capture mode")
+        self.capture_source = source
+        self.capture_mode = mode
+        self.capture_modes = capture_modes
+        if mode.reference_family == "content":
+            self.content_source = source
+        elif mode.reference_family == "command":
+            self.command_source = source
         self.process = PluginProcess(manifest, source_id=source_id,
                                      allowed_grants=allowed_grants, timeout=timeout,
                                      source_root=source_root, required_features=required_features,
                                      rust_host_executable=rust_host_executable,
                                      rust_host_sha256=rust_host_sha256,
-                                     content_refs_enabled=self.content_source is not None)
+                                     content_refs_enabled=mode.reference_family == "content")
         self.lease: SourceLease | None = None
         self.cursor: str | None = None
         self.members: dict[str, str] | None = None
@@ -104,12 +107,10 @@ class PluginSession:
         if self.lease is not None:
             raise ProtocolError("plugin session already started")
         manifest = self.process.manifest
-        from .plugin_pi_content import PiContentGrant
-        from .plugin_pi_command import PiCommandGrant
-        fingerprint = (PiContentGrant.fingerprint_for_source(self.content_source)
-                       if self.content_source is not None else
-                       PiCommandGrant.fingerprint_for_source(self.command_source)
-                       if self.command_source is not None else "")
+        fingerprint = (self.capture_mode.fingerprint(self.capture_source)
+                       if self.capture_source is not None else "")
+        if self.capture_source is not None:
+            self.capture_modes.require_source(self.capture_mode, self.capture_source)
         self.lease = activate_source(self.store, plugin_id=manifest.id,
                                      source_id=self.process.source_id,
                                      generation=manifest.artifact_sha256,
@@ -117,10 +118,12 @@ class PluginSession:
         self.cursor = self.lease.cursor
         try:
             self.process.start()
-            if self.content_source is not None:
-                self.content_grant = PiContentGrant.from_source(self.content_source, self.lease)
-            if self.command_source is not None:
-                self.command_grant = PiCommandGrant.from_source(self.command_source, self.lease)
+            if self.capture_source is not None:
+                self.capture_grant = self.capture_mode.grant(self.capture_source, self.lease)
+            if self.capture_mode.reference_family == "content":
+                self.content_grant = self.capture_grant
+            elif self.capture_mode.reference_family == "command":
+                self.command_grant = self.capture_grant
             if "source-discovery/1" in self.process.required_features:
                 self.members = member_cursors(self.store, self.lease)
             self.last_diagnostic = last_source_diagnostic(self.store, self.lease)
@@ -132,6 +135,7 @@ class PluginSession:
             self.lease = None
             self.cursor = None
             self.members = None
+            self.capture_grant = None
             self.content_grant = None
             self.command_grant = None
             raise
@@ -186,6 +190,7 @@ class PluginSession:
         self.lease = None
         self.cursor = None
         self.members = None
+        self.capture_grant = None
         self.content_grant = None
         self.command_grant = None
 
