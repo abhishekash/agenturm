@@ -47,15 +47,20 @@ class RustStorageShadowTests(unittest.TestCase):
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         return path
 
-    def inspect(self, path, source=SOURCE, *, include_projection=False):
+    def inspect(self, path, source=SOURCE, *, include_projection=False,
+                include_activity=False):
         request = {"schema_version": 1, "sqlite_path": str(path), "source_id": source}
         if include_projection:
             request["include_projection"] = True
+        if include_activity:
+            request["include_activity"] = True
         return subprocess.run([self.binary], input=json.dumps(request), text=True,
                               capture_output=True, timeout=5)
 
-    def certificate(self, path, source=SOURCE, *, include_projection=False):
-        result = self.inspect(path, source, include_projection=include_projection)
+    def certificate(self, path, source=SOURCE, *, include_projection=False,
+                    include_activity=False):
+        result = self.inspect(path, source, include_projection=include_projection,
+                              include_activity=include_activity)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -255,6 +260,126 @@ class RustStorageShadowTests(unittest.TestCase):
                 self.assertEqual(self.inspect(backup, include_projection=True).returncode, 2)
         self.assertEqual(self.inspect(self.root / "missing.db").returncode, 2)
         self.assertFalse((self.root / "missing.db").exists())
+
+    def test_activity_read_matches_python_and_stays_historical_after_gap(self):
+        lease = activate_source(self.store, plugin_id="fixture.plugin",
+                                source_id=SOURCE, generation="a" * 64)
+        facts = (
+            {"event_id": "message-one", "revision": 0, "kind": "message",
+             "time_ns": "10", "payload": {"role": "user"},
+             "identity": {"session_id": "native-one", "turn_id": "first"}},
+            {"event_id": "call", "revision": 0, "kind": "tool",
+             "time_ns": "11", "payload": {"category": "file", "result": "started"},
+             "identity": {"session_id": "native-one", "turn_id": "first",
+                          "operation_id": "op-one"}},
+            {"event_id": "message-two", "revision": 0, "kind": "message",
+             "time_ns": "20", "payload": {"role": "user"},
+             "identity": {"session_id": "native-one", "turn_id": "second"}},
+            {"event_id": "result", "revision": 0, "kind": "tool",
+             "time_ns": "30", "payload": {"category": "other", "result": "failed"},
+             "identity": {"session_id": "native-one", "operation_id": "op-one"}},
+            {"event_id": "check", "revision": 0, "kind": "check",
+             "time_ns": "40", "payload": {"category": "test", "result": "failed"},
+             "identity": {"session_id": "native-two"}},
+        )
+        commit_batch(self.store, lease, "", PollBatch(SOURCE, "one", facts))
+        pending = self.certificate(self.backup(), include_activity=True)
+        self.assertEqual(pending["state"], "pending")
+        self.assertNotIn("activities", pending)
+        project_source(self.store, SOURCE)
+        snapshot = capture(self.store, SOURCE)
+        self.assertIsNotNone(snapshot)
+        backup = self.backup()
+        before = hashlib.sha256(backup.read_bytes()).digest()
+        before_files = {entry.name for entry in self.root.iterdir()}
+        ready = self.certificate(backup, include_activity=True,
+                                 include_projection=True)
+        self.assertEqual(ready["activities"], snapshot.expected["activities"])
+        self.assertEqual(ready["sessions"], snapshot.expected["sessions"])
+        self.assertEqual(len(ready["activities"]), 5)
+        result = next(row for row in ready["activities"] if row["result"] == "failed"
+                      and row["domain"] == "tool")
+        self.assertEqual(result["metadata"]["tool_turn_relation"], "matched_call")
+        self.assertEqual(result["action"], "file")
+        self.assertEqual(before, hashlib.sha256(backup.read_bytes()).digest())
+        self.assertEqual(before_files, {entry.name for entry in self.root.iterdir()})
+        self.assertNotIn("activities", self.certificate(backup))
+        self.assertNotIn("activities", self.certificate(backup, include_projection=True))
+
+        other = activate_source(self.store, plugin_id="fixture.plugin",
+                                source_id="other-source", generation="b" * 64)
+        commit_batch(self.store, other, "", PollBatch("other-source", "one", (
+            {"event_id": "other-check", "revision": 0, "kind": "check",
+             "time_ns": "50", "payload": {"category": "build", "result": "passed"},
+             "identity": {"session_id": "native-other"}},)))
+        project_source(self.store, "other-source")
+        self.assertEqual(len(self.certificate(self.backup(), include_activity=True)
+                             ["activities"]), 5)
+        commit_batch(self.store, lease, "one", PollBatch(SOURCE, "two", (
+            {"event_id": "gap", "revision": 0, "kind": "diagnostic",
+             "time_ns": "0", "payload": {"code": "possible_source_gap",
+                                           "severity": "warning"}},)))
+        project_source(self.store, SOURCE)
+        current_gap = capture(self.store, SOURCE)
+        gap = self.certificate(self.backup(), include_activity=True)
+        self.assertEqual(gap["activities"], current_gap.expected["activities"])
+        self.assertEqual(gap["activities"], [])
+        self.assertFalse(current(self.store, snapshot))
+        self.assertEqual(self.certificate(backup, include_activity=True,
+                                          include_projection=True), ready)
+        set_source_capture(self.store, source_id=SOURCE, enabled=False)
+        disabled = self.certificate(self.backup(), include_activity=True)
+        self.assertEqual(disabled["state"], "disabled")
+        self.assertNotIn("activities", disabled)
+
+    def test_activity_corruption_and_payload_budget_fail_closed(self):
+        lease = activate_source(self.store, plugin_id="fixture.plugin",
+                                source_id=SOURCE, generation="a" * 64)
+        commit_batch(self.store, lease, "", PollBatch(SOURCE, "one", (
+            {"event_id": "message", "revision": 0, "kind": "message",
+             "time_ns": "10", "payload": {"role": "user"},
+             "identity": {"session_id": "native-one"}},)))
+        project_source(self.store, SOURCE)
+        cases = (
+            ("id", "plugin-event:" + "0" * 64),
+            ("subject", "Untrusted prompt"),
+            ("detail", "private output"),
+            ("capture_content", True),
+            ("metadata.plugin_source_id", "other-source"),
+            ("metadata.tool_turn_relation", "invented"),
+            ("prompt", "private prompt"),
+        )
+        for path, value in cases:
+            with self.subTest(path=path):
+                copy = self.backup()
+                with closing(sqlite3.connect(copy)) as db:
+                    key, payload = db.execute(
+                        "SELECT event_key,payload FROM activity_index_v1 "
+                        "WHERE kind='plugin' AND owner_key=?", (SOURCE,)).fetchone()
+                    item = json.loads(payload)
+                    if path.startswith("metadata."):
+                        item["metadata"][path.split(".", 1)[1]] = value
+                    else:
+                        item[path] = value
+                    db.execute("UPDATE activity_index_v1 SET payload=? WHERE event_key=?",
+                               (json.dumps(item), key))
+                    db.commit()
+                self.assertEqual(self.inspect(copy, include_activity=True).returncode, 2)
+        for column, value in (("service", "foreign.plugin"), ("stamp", 11),
+                              ("session_id", "plugin:wrong"), ("trace_id", "x")):
+            with self.subTest(column=column):
+                copy = self.backup()
+                with closing(sqlite3.connect(copy)) as db:
+                    db.execute(f"UPDATE activity_index_v1 SET {column}=? "
+                               "WHERE kind='plugin' AND owner_key=?", (value, SOURCE))
+                    db.commit()
+                self.assertEqual(self.inspect(copy, include_activity=True).returncode, 2)
+        oversized = self.backup()
+        with closing(sqlite3.connect(oversized)) as db:
+            db.execute("UPDATE activity_index_v1 SET payload=payload||? "
+                       "WHERE kind='plugin' AND owner_key=?", (" " * 20_000, SOURCE))
+            db.commit()
+        self.assertEqual(self.inspect(oversized, include_activity=True).returncode, 2)
 
 
 if __name__ == "__main__":

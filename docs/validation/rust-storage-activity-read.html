@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rust backup-only Activity projection read · Agenturm</title>
+<style>
+:root{color-scheme:light dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.6;background:#f8fafc;color:#162234}
+body{margin:0;padding:clamp(1rem,4vw,3rem)}
+main{max-width:860px;margin:auto;background:#fff;border:1px solid #d5dce6;border-radius:16px;padding:clamp(1.2rem,4vw,3rem);box-shadow:0 8px 32px #1622340a}
+h1,h2{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(1.8rem,4vw,2.6rem);margin-top:0}h2{margin-top:2rem;border-top:1px solid #d5dce6;padding-top:1.1rem}
+p,li{max-width:76ch}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:#eef2f7;border-radius:4px;padding:.08em .3em;overflow-wrap:anywhere}
+.eyebrow{font-size:.85rem;text-transform:uppercase;letter-spacing:.09em;color:#576981;font-weight:700}.note{border-left:4px solid #5775c5;padding:.7rem 1rem;background:#f1f5ff;border-radius:0 8px 8px 0}
+@media(max-width:600px){main{border-radius:0;border-left:0;border-right:0;box-shadow:none}body{padding:0}}
+@media(prefers-color-scheme:dark){:root{background:#0d1522;color:#e7edf7}main{background:#142031;border-color:#32445b;box-shadow:none}h2{border-color:#32445b}code{background:#25364b}.eyebrow{color:#a8bee0}.note{background:#1d2d4b;border-color:#92aaff}}
+</style>
+</head>
+<body><main>
+<p class="eyebrow">Agenturm validation · 20 November 2026</p>
+<h1>Rust backup-only Activity projection read</h1>
+<p>The diagnostic <code>agenturm-storage-shadow</code> binary can now read one process source’s published <code>activity_index_v1</code> rows from a completed, isolated SQLite backup when a caller sets <code>"include_activity": true</code>. The default certificate and optional session output remain unchanged without this option. Python still owns production writes, capture policy and live freshness. No performance gain is claimed.</p>
+<h2>Read boundary</h2>
+<p>The binary opens the backup <code>READ_ONLY</code> with URI <code>immutable=1</code> and <code>query_only</code>, refuses sidecars, and reads the receiver/source certificate and Activity rows in one short transaction. It returns <code>activities</code> only when capture is enabled and source dirty sequence and policy match the published projection. Unknown, pending and disabled sources omit the field. This certificate describes the backup; Python’s live <code>rust_shadow_snapshot.current()</code> check is still required before publishing a result.</p>
+<p>SQLite preflights at most 50,001 source-owned plugin rows, 8 MiB of aggregate JSON payload, 16 MiB of aggregate row text and 16 KiB per row before Rust loads the JSON. Each row must match the exact source and the source cursor’s plugin ID. Rust checks event, session, agent and turn IDs; index columns against the payload; fixed v1 message, tool and check vocabulary and subject; typed provenance and tool-turn relations; content-free fields; and an exact field allowlist. Invalid JSON, mismatched fields, extra content metadata or oversized rows fail closed. The reader validates the published v1 projection; it does not independently re-reduce source evidence.</p>
+<h2>Differential gate and limits</h2>
+<p>Installed tests compare full Rust Activity arrays to Python’s <code>rust_shadow_snapshot.capture(...).expected["activities"]</code> for messages, started and late-result tools, and checks across two sessions. They cover recovered tool-turn relation, exact source scope, source-wide gap, pending and revoked capture, historical backups, unchanged backup files and no sidecars. Corrupt IDs, subject, provenance, flags, extra prompt data, index columns and oversized payloads fail closed. Rust package tests, Clippy with warnings denied, formatting and eight installed differential tests pass.</p>
+<p class="note">The supplied backup must be finished and quiescent; <code>immutable=1</code> cannot prove another process is not changing it. The v1 field allowlist is intentionally strict, so later Activity fields need a versioned compatibility decision. Live query parity, independent evidence recomputation, a Rust writer, one-writer cutover, downgrade handling and crash/rollback drills remain open.</p>
+</main></body></html>
