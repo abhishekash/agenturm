@@ -42,7 +42,8 @@ def main() -> None:
     elif args.source.is_dir():
         parser.error("use --directory for a directory source")
     source_id = (args.source_id if args.source_id is not None else
-                 ("rust-pi-directory-source" if args.directory else "rust-pi-source"))
+                 ("rust-pi-content-source" if args.content_refs else
+                  "rust-pi-directory-source" if args.directory else "rust-pi-source"))
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", source_id):
         parser.error("invalid source ID")
     destination = args.destination

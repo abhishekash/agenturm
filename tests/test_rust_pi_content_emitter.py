@@ -117,6 +117,7 @@ class RustPiContentEmitterTests(unittest.TestCase):
 
     def test_default_directory_stays_metadata_only(self):
         source = self.install(content=False)
+        self.assertEqual(source.source_id, "rust-pi-directory-source")
         self.assertEqual(source.capture_mode, "metadata-only")
         self.assertNotIn("pi-content-ref/1", source.runtime_features)
         with self.worker(source) as worker:
@@ -124,6 +125,20 @@ class RustPiContentEmitterTests(unittest.TestCase):
             self.assertNotIsInstance(batch, ContentPollBatch)
             self.assertTrue(batch.records)
         self.assertEqual(self.content(), ([], ("not_requested", 0)))
+
+    def test_content_mode_has_separate_default_durable_source(self):
+        metadata = self.install(content=False)
+        content = self.install()
+        self.assertEqual(content.source_id, "rust-pi-content-source")
+        self.assertNotEqual(metadata.source_id, content.source_id)
+        with self.worker(metadata) as worker:
+            metadata_cursor = worker.poll_once().cursor
+        with self.worker(content) as worker:
+            content_cursor = worker.poll_once().cursor
+        with self.store._connect() as db:
+            cursors = dict(db.execute("SELECT source_id,cursor FROM plugin_source_cursor_v1"))
+        self.assertEqual(cursors[metadata.source_id], metadata_cursor)
+        self.assertEqual(cursors[content.source_id], content_cursor)
 
     def test_gap_withholds_refs_and_invalidates_content(self):
         source = self.install()
@@ -185,6 +200,75 @@ class RustPiContentEmitterTests(unittest.TestCase):
                 self.assertEqual(self.content()[0], [])
             finally:
                 moved.rename(self.sources)
+
+    def test_receiver_header_bound_withholds_refs_but_admits_metadata(self):
+        self.file.write_bytes(row({"type": "session", "id": "pi-one",
+                                   "extra": "x" * 8200}) + self.user + self.assistant)
+        source = self.install()
+        with self.worker(source) as worker:
+            batch = worker.poll_once()
+            self.assertTrue(batch.member_cursor)
+            self.assertEqual(batch.content_refs, ())
+            self.assertTrue(any(record["kind"] == "message" and
+                                record["payload"]["role"] == "user"
+                                for record in batch.records))
+            self.assertEqual(worker.poll_once().records, ())
+        self.assertEqual(self.content()[0], [])
+
+    def test_null_session_id_withholds_refs_but_admits_metadata(self):
+        self.file.write_bytes(row({"type": "session", "id": "pi-one",
+                                   "sessionId": None}) + self.user + self.assistant)
+        source = self.install()
+        with self.worker(source) as worker:
+            batch = worker.poll_once()
+            self.assertEqual(batch.content_refs, ())
+            self.assertTrue(any(record["kind"] == "message" for record in batch.records))
+        self.assertEqual(self.content()[0], [])
+
+    def test_null_agent_id_withholds_refs_but_admits_metadata(self):
+        self.file.write_bytes(row({"type": "session", "id": "pi-one",
+                                   "agentId": None}) + self.user + self.assistant)
+        source = self.install()
+        with self.worker(source) as worker:
+            batch = worker.poll_once()
+            self.assertEqual(batch.content_refs, ())
+            self.assertTrue(any(record["kind"] == "message" for record in batch.records))
+        self.assertEqual(self.content()[0], [])
+
+    def test_oversized_integer_withholds_refs_but_admits_metadata(self):
+        oversized = b"18446744073709551616"
+        user = self.user.rstrip(b"\n")
+        self.file.write_bytes(self.header + user[:-1] + b',"extra":' + oversized + b'}\n'
+                              + self.assistant)
+        source = self.install()
+        with self.worker(source) as worker:
+            batch = worker.poll_once()
+            self.assertEqual(batch.content_refs, ())
+            self.assertTrue(any(record["kind"] == "message" for record in batch.records))
+        self.assertEqual(self.content()[0], [])
+
+    def test_long_fraction_timestamp_withholds_refs_but_admits_metadata(self):
+        self.file.write_bytes(self.header +
+                              self.user.replace(b"12:00:00Z", b"12:00:00.1234567890Z") +
+                              self.assistant)
+        source = self.install()
+        with self.worker(source) as worker:
+            batch = worker.poll_once()
+            self.assertEqual(batch.content_refs, ())
+            self.assertTrue(any(record["kind"] == "message" for record in batch.records))
+        self.assertEqual(self.content()[0], [])
+
+    def test_leap_second_withholds_refs_but_admits_metadata(self):
+        self.file.write_bytes(self.header +
+                              self.user.replace(b"2026-10-24T12:00:00Z",
+                                                b"2016-12-31T23:59:60Z") +
+                              self.assistant)
+        source = self.install()
+        with self.worker(source) as worker:
+            batch = worker.poll_once()
+            self.assertEqual(batch.content_refs, ())
+            self.assertTrue(any(record["kind"] == "message" for record in batch.records))
+        self.assertEqual(self.content()[0], [])
 
     def test_content_requires_directory_and_rust_host_forwards_feature(self):
         self.install(directory=False)

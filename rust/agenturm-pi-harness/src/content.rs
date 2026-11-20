@@ -38,10 +38,10 @@ impl<'de> Deserialize<'de> for Unique {
             fn visit_u64<E: de::Error>(self, value: u64) -> Result<Unique, E> {
                 Ok(Unique(Value::Number(Number::from(value))))
             }
-            fn visit_f64<E: de::Error>(self, value: f64) -> Result<Unique, E> {
-                Number::from_f64(value)
-                    .map(|number| Unique(Value::Number(number)))
-                    .ok_or_else(|| E::custom("non-finite Pi number"))
+            fn visit_f64<E: de::Error>(self, _value: f64) -> Result<Unique, E> {
+                // serde_json may coerce an integer beyond the receiver's
+                // i64..u64 range into f64. Withhold on every float.
+                Err(E::custom("unproven Pi number"))
             }
             fn visit_str<E: de::Error>(self, value: &str) -> Result<Unique, E> {
                 Ok(Unique(Value::String(value.to_owned())))
@@ -106,6 +106,45 @@ fn identifier(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
+fn host_timestamp_compatible(value: &str) -> bool {
+    let raw = value.as_bytes();
+    if raw.len() < 20
+        || raw[4] != b'-'
+        || raw[7] != b'-'
+        || raw[10] != b'T'
+        || raw[13] != b':'
+        || raw[16] != b':'
+        || [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18]
+            .iter()
+            .any(|index| !raw[*index].is_ascii_digit())
+        || raw[17] > b'5'
+    {
+        return false;
+    }
+    let mut position = 19;
+    if raw.get(position) == Some(&b'.') {
+        position += 1;
+        let start = position;
+        while raw.get(position).is_some_and(u8::is_ascii_digit) {
+            position += 1;
+        }
+        if !(1..=9).contains(&(position - start)) {
+            return false;
+        }
+    }
+    if raw.get(position) == Some(&b'Z') {
+        return position + 1 == raw.len();
+    }
+    if !matches!(raw.get(position), Some(b'+' | b'-')) || position + 6 != raw.len() {
+        return false;
+    }
+    raw[position + 1].is_ascii_digit()
+        && raw[position + 2].is_ascii_digit()
+        && raw[position + 3] == b':'
+        && raw[position + 4].is_ascii_digit()
+        && raw[position + 5].is_ascii_digit()
+}
+
 fn member_path(root: &Path, path: &Path, member: &str) -> Option<String> {
     let relative = path.strip_prefix(root).ok()?.to_str()?;
     let parts: Vec<_> = relative.split('/').collect();
@@ -155,7 +194,11 @@ fn nominated(
     let source_id = batch["source_id"].as_str()?;
     let relative = member_path(root, path, member)?;
     let current = cursor_proof(local["cursor"].as_str()?).ok()??;
-    if current.version != 2 || current.offset > MAX_PREFIX {
+    if current.version != 2
+        || current.offset > MAX_PREFIX
+        || current.device > i64::MAX as u64
+        || current.inode > i64::MAX as u64
+    {
         return None;
     }
     let prior = cursor_proof(prior_cursor).ok()?;
@@ -186,6 +229,11 @@ fn nominated(
         return None;
     }
     let header_end = prefix.iter().position(|byte| *byte == b'\n')? + 1;
+    // The receiver only searches its first MAX_ROW_BYTES for the newline.
+    // A valid metadata header beyond that bound cannot carry content refs.
+    if header_end > MAX_ROW {
+        return None;
+    }
     let header = serde_json::from_slice::<Unique>(&prefix[..header_end])
         .ok()?
         .0;
@@ -193,6 +241,17 @@ fn nominated(
         || sha(&prefix[..header_end]) != current.header_digest
         || !identifier(header["id"].as_str()?)
     {
+        return None;
+    }
+    let session_id = match header.get("sessionId") {
+        Some(value) => value.as_str().filter(|value| identifier(value))?,
+        None => header["id"].as_str()?,
+    };
+    let worker_id = match header.get("agentId") {
+        Some(value) => value.as_str()?,
+        None => "",
+    };
+    if !worker_id.is_empty() && !identifier(worker_id) {
         return None;
     }
     let canonical = sha(format!(
@@ -244,6 +303,9 @@ fn nominated(
             let row_id = row["id"].as_str();
             if row["type"] == "message"
                 && row["message"]["role"] == "user"
+                && row["timestamp"]
+                    .as_str()
+                    .is_some_and(host_timestamp_compatible)
                 && let Some(row_id) = row_id.filter(|id| identifier(id))
             {
                 let event_id = format!("pi:{canonical}:{row_id}:message");
@@ -254,6 +316,7 @@ fn nominated(
                         && record["payload"] == json!({"role":"user"})
                         && record["identity"]["turn_id"] == row_id
                 }) && let Some(session) = record["identity"]["session_id"].as_str()
+                    && session == session_id
                 {
                     let reference = json!({
                         "schema":1,"source_id":source_id,"member_id":member,
@@ -461,6 +524,28 @@ mod tests {
 
         let path = scratch.file("project/bad\\name.jsonl", 1);
         let (local, mut batch, member) = scratch.poll(&path, "project/bad\\name.jsonl");
+        decorate(
+            &scratch.0,
+            &path,
+            &member,
+            "",
+            &local,
+            &mut batch,
+            128 * 1024,
+        );
+        assert!(batch["content_refs"]["refs"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn receiver_file_identity_bound_withholds_references() {
+        let scratch = Scratch::new();
+        let relative = "project/one.jsonl";
+        let path = scratch.file(relative, 1);
+        let (mut local, mut batch, member) = scratch.poll(&path, relative);
+        let cursor = local["cursor"].as_str().unwrap();
+        let mut fields: Vec<_> = cursor.split(':').map(str::to_owned).collect();
+        fields[1] = (i64::MAX as u64 + 1).to_string();
+        local["cursor"] = json!(fields.join(":"));
         decorate(
             &scratch.0,
             &path,
