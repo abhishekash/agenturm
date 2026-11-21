@@ -844,6 +844,69 @@ class RustScratchAdmissionTests(unittest.TestCase):
         self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
                          committed_binding)
 
+    def test_normal_clone_dispatch_rejects_all_metadata_subset_writes(self):
+        from tests.support.rust_metadata_adapter import logical_clone_snapshot
+
+        source_id = "normal-subset-dispatch-source"
+        generation = "c" * 64
+        canonical_path = self.root / "normal-subset-canonical.db"
+        clone_path = self.root / "normal-subset-clone.db"
+        canonical = Store(str(canonical_path))
+        receiver_id = canonical.receiver_id
+        activate_source(canonical, plugin_id=PLUGIN, source_id="normal-subset-seed",
+                        generation=GENERATION)
+        canonical.close()
+        with closing(sqlite3.connect(canonical_path)) as original:
+            with closing(sqlite3.connect(clone_path)) as clone:
+                original.backup(clone)
+        with closing(sqlite3.connect(clone_path)) as clone:
+            clone.execute("INSERT INTO schema_meta(key,value) VALUES(?,?)",
+                          ("storage_activation_clone_v1", "enabled"))
+            clone.commit()
+        activation = {"version": 2, "request_id": "a" * 32,
+                      "receiver_id": receiver_id,
+                      "operation": {"op": "activate_source", "plugin_id": PLUGIN,
+                                    "source_id": source_id, "generation": generation}}
+        lease = self.apply_activation_clone_v2(
+            activation, path=clone_path)["result"]["lease"]
+        requests = (
+            ("AdmitBatch", self.mixed_batch_request(
+                PollBatch(source_id, "cursor-1", (fact("normal-dispatch"),)),
+                lease, "b" * 32, ""),
+             "mixed admission is unavailable through the storage service path"),
+            ("SetSourceCapture", self.clone_capture_request(
+                lease, enabled=False, expected_enabled=True, cursor="", dirty_seq=0,
+                request_id="c" * 32),
+             "real-schema clone accepts only activation or admission"),
+            ("RevokeSource", self.clone_revoke_request(
+                lease, cursor="", dirty_seq=0, request_id="d" * 32),
+             "clone revocation is unavailable through the storage service path"),
+        )
+        for label, request, reason in requests:
+            with self.subTest(operation=label):
+                full_before = logical_clone_snapshot(clone_path)
+                source_before = self.batch_source_snapshot(clone_path, source_id)
+                state_before = self.clone_policy_state_snapshot(clone_path, source_id)
+                binding_before = self.batch_binding_snapshot(clone_path, source_id)
+                admission_before = self.admission_receipts_snapshot(clone_path, source_id)
+                capture_before = self.policy_receipts_snapshot(
+                    clone_path, "storage_source_capture_set_v2", source_id)
+                revoke_before = self.policy_receipts_snapshot(
+                    clone_path, "storage_source_revoke_v2", source_id)
+                failure = self.apply_activation_clone_v2(
+                    request, path=clone_path, success=False)
+                self.assertIn(reason, failure)
+                self.assertEqual(self.batch_source_snapshot(clone_path, source_id), source_before)
+                self.assertEqual(self.clone_policy_state_snapshot(clone_path, source_id), state_before)
+                self.assertEqual(self.batch_binding_snapshot(clone_path, source_id), binding_before)
+                self.assertEqual(self.admission_receipts_snapshot(clone_path, source_id),
+                                 admission_before)
+                self.assertEqual(self.policy_receipts_snapshot(
+                    clone_path, "storage_source_capture_set_v2", source_id), capture_before)
+                self.assertEqual(self.policy_receipts_snapshot(
+                    clone_path, "storage_source_revoke_v2", source_id), revoke_before)
+                self.assertEqual(logical_clone_snapshot(clone_path), full_before)
+
     def test_marked_clone_capture_revoke_and_reactivation_match_python(self):
         from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
         from observatory.plugin_projection import project_source
