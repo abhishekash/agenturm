@@ -12,10 +12,12 @@ use agenturm_kernel::{
 };
 use agenturm_protocol::{read_frame, write_frame};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::io::BufReader;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +29,7 @@ const PROTOCOL_VERSION: u64 = 1;
 const CONTROL_FRAME_LIMIT: usize = 64 * 1024;
 const DATA_FRAME_LIMIT: usize = 64 * 1024;
 const MAX_SOURCE_CURSOR_BYTES: usize = 800;
+const MAX_PLUGIN_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_POLL_RECORDS: u16 = 256;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const CODEX_PLUGIN_ID: &str = "example.rust-codex-harness";
@@ -96,6 +99,8 @@ pub struct ProcessConfig {
     pub plugin_id: String,
     pub timeout: Duration,
     pub stop_flag: Option<Arc<AtomicBool>>,
+    expected_sha256: Option<String>,
+    expected_features: Option<Vec<String>>,
 }
 
 impl ProcessConfig {
@@ -115,6 +120,8 @@ impl ProcessConfig {
             plugin_id: plugin_id.into(),
             timeout: DEFAULT_TIMEOUT,
             stop_flag: None,
+            expected_sha256: None,
+            expected_features: None,
         }
     }
 
@@ -122,6 +129,18 @@ impl ProcessConfig {
     /// process group is terminated on cancellation and is not restarted.
     pub fn with_stop_flag(mut self, stop_flag: Arc<AtomicBool>) -> Self {
         self.stop_flag = Some(stop_flag);
+        self
+    }
+
+    /// Pins the adapter executable and verifies it before every host launch.
+    pub fn with_artifact_sha256(mut self, sha256: impl Into<String>) -> Self {
+        self.expected_sha256 = Some(sha256.into());
+        self
+    }
+
+    /// Requires the child handshake to advertise exactly the catalog features.
+    pub fn with_expected_features(mut self, features: Vec<String>) -> Self {
+        self.expected_features = Some(features);
         self
     }
 
@@ -171,6 +190,9 @@ impl ProcessSource {
         decoder: Arc<dyn SourceBatchDecoder>,
     ) -> Result<Self> {
         validate_process_config(&config)?;
+        if let Some(expected_sha256) = &config.expected_sha256 {
+            verify_artifact_sha256(&config.adapter, expected_sha256)?;
+        }
         #[cfg(not(unix))]
         return Err(RuntimeError::new(
             "supervised harness ingestion currently requires Unix process groups",
@@ -256,6 +278,7 @@ impl ProcessSource {
                 .features
                 .iter()
                 .any(|feature| feature == "configured-root/1")
+            || config_features_mismatch(&self.config, &ack.features)
         {
             return Err(RuntimeError::new("source adapter handshake mismatch"));
         }
@@ -289,6 +312,67 @@ impl ProcessSource {
             Err(ReplyWaitError::Cancelled) => Err(RuntimeError::new("source operation cancelled")),
         }
     }
+}
+
+fn config_features_mismatch(config: &ProcessConfig, actual: &[String]) -> bool {
+    let Some(expected_values) = &config.expected_features else {
+        return false;
+    };
+    let expected = expected_values
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_set = actual.iter().collect::<std::collections::BTreeSet<_>>();
+    expected != actual_set
+        || expected.len() != expected_values.len()
+        || actual_set.len() != actual.len()
+}
+
+/// Verifies an adapter file against a lower-case SHA-256 pin without loading
+/// the entire artifact into memory. This is an integrity check, not a sandbox.
+pub fn verify_artifact_sha256(path: &Path, expected: &str) -> Result<()> {
+    if expected.len() != 64
+        || !expected
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(RuntimeError::new("adapter SHA-256 pin is invalid"));
+    }
+    let file =
+        File::open(path).map_err(|_| RuntimeError::new("adapter artifact is unavailable"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| RuntimeError::new("adapter artifact metadata is unavailable"))?;
+    if !metadata.is_file() || metadata.len() > MAX_PLUGIN_ARTIFACT_BYTES {
+        return Err(RuntimeError::new(
+            "adapter artifact is not a bounded regular file",
+        ));
+    }
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|_| RuntimeError::new("adapter artifact could not be read"))?;
+        if count == 0 {
+            break;
+        }
+        total = total.saturating_add(count as u64);
+        if total > MAX_PLUGIN_ARTIFACT_BYTES {
+            return Err(RuntimeError::new("adapter artifact exceeds the size limit"));
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let actual = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if actual != expected {
+        return Err(RuntimeError::new("adapter artifact SHA-256 mismatch"));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -518,7 +602,46 @@ fn validate_process_config(config: &ProcessConfig) -> Result<()> {
     if config.timeout.is_zero() {
         return Err(RuntimeError::new("source timeout must be positive"));
     }
+    if config.expected_sha256.as_ref().is_some_and(|digest| {
+        digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }) {
+        return Err(RuntimeError::new("adapter SHA-256 pin is invalid"));
+    }
+    if config.expected_features.as_ref().is_some_and(|features| {
+        features.len() > 64
+            || features
+                .iter()
+                .any(|feature| !valid_plugin_feature(feature))
+            || features
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != features.len()
+            || !features.iter().any(|feature| feature == "source-adapter/1")
+            || !features
+                .iter()
+                .any(|feature| feature == "configured-root/1")
+    }) {
+        return Err(RuntimeError::new("adapter feature declaration is invalid"));
+    }
     Ok(())
+}
+
+fn valid_plugin_feature(value: &str) -> bool {
+    let Some((name, version)) = value.split_once('/') else {
+        return false;
+    };
+    !name.is_empty()
+        && name.as_bytes()[0].is_ascii_lowercase()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte))
+        && !version.is_empty()
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+        && !version.starts_with('0')
 }
 
 fn valid_plugin_id(value: &str) -> bool {
@@ -1123,6 +1246,53 @@ fn parse_decimal_timestamp(value: &str) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artifact_hash_verification_accepts_only_matching_regular_files_and_lowercase_pins() {
+        let path = std::env::temp_dir().join(format!(
+            "agenturm-plugin-artifact-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"adapter-artifact").unwrap();
+        let expected = format!("{:x}", Sha256::digest(b"adapter-artifact"));
+        assert!(verify_artifact_sha256(&path, &expected).is_ok());
+        assert!(verify_artifact_sha256(&path, &"0".repeat(64)).is_err());
+        assert!(verify_artifact_sha256(&path, &expected.to_uppercase()).is_err());
+        assert!(verify_artifact_sha256(&path, "not-a-pin").is_err());
+        assert!(verify_artifact_sha256(&path.with_extension("missing"), &expected).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn catalog_feature_handshake_is_exact_and_rejects_duplicate_ack_features() {
+        let config =
+            ProcessConfig::new("/host", "/adapter", "/root", "harness.test", "example.test")
+                .with_expected_features(vec![
+                    "source-adapter/1".into(),
+                    "configured-root/1".into(),
+                ]);
+        let expected = [
+            "source-adapter/1".to_owned(),
+            "configured-root/1".to_owned(),
+        ];
+        assert!(!config_features_mismatch(&config, &expected));
+        assert!(config_features_mismatch(
+            &config,
+            &["source-adapter/1".into(), "source-adapter/1".into()]
+        ));
+        assert!(config_features_mismatch(
+            &config,
+            &[
+                "source-adapter/1".into(),
+                "configured-root/1".into(),
+                "extra/1".into()
+            ]
+        ));
+    }
 
     #[test]
     fn reply_wait_observes_stop_flag_before_long_deadline() {

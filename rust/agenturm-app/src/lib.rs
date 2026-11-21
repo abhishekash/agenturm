@@ -26,6 +26,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_COLLECTION_CONFIG_BYTES: u64 = 256 * 1024;
+const MAX_PLUGIN_CATALOG_BYTES: u64 = 64 * 1024;
 const MAX_CONFIGURED_SOURCES: usize = 16;
 const INSPECT_PAGE_SIZE: usize = 500;
 
@@ -166,16 +167,46 @@ pub struct WatchReport {
 struct CollectionConfigFile {
     version: u32,
     plugin_host: PathBuf,
-    sources: Vec<ConfiguredSource>,
+    #[serde(default)]
+    plugin_catalog: Option<PathBuf>,
+    sources: Vec<CollectionSourceInput>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CollectionSourceInput {
+    plugin_id: String,
+    #[serde(default)]
+    adapter: Option<PathBuf>,
+    source_root: PathBuf,
+    source_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdapterCatalogFile {
+    version: u32,
+    plugins: Vec<AdapterCatalogEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdapterCatalogEntry {
+    plugin_id: String,
+    adapter: PathBuf,
+    sha256: String,
+    protocol: u32,
+    features: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
 struct ConfiguredSource {
     plugin_id: String,
     adapter: PathBuf,
     source_root: PathBuf,
     source_id: String,
+    artifact_sha256: Option<String>,
+    features: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1019,6 +1050,12 @@ impl ConfiguredCollector {
                 source.source_id,
                 source.plugin_id,
             );
+            if let Some(sha256) = source.artifact_sha256 {
+                process_config = process_config.with_artifact_sha256(sha256);
+            }
+            if let Some(features) = source.features {
+                process_config = process_config.with_expected_features(features);
+            }
             if let Some(stop) = stop {
                 process_config = process_config.with_stop_flag(Arc::clone(stop));
             }
@@ -1237,7 +1274,7 @@ fn load_collection_config(path: &std::path::Path) -> Result<ValidatedCollectionC
     }
     let mut config: CollectionConfigFile = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid collection config: {error}"))?;
-    if config.version != 1 {
+    if !matches!(config.version, 1 | 2) {
         return Err("unsupported collection config version".into());
     }
     if config.sources.is_empty() || config.sources.len() > MAX_CONFIGURED_SOURCES {
@@ -1274,9 +1311,25 @@ fn load_collection_config(path: &std::path::Path) -> Result<ValidatedCollectionC
         );
     }
 
+    let catalog = match (config.version, config.plugin_catalog.take()) {
+        (1, None) => BTreeMap::new(),
+        (1, Some(_)) => {
+            return Err("collection config v1 cannot declare a plugin catalog".into());
+        }
+        (2, Some(catalog_path)) => {
+            let catalog_path = resolve(catalog_path);
+            load_adapter_catalog(&catalog_path)?
+        }
+        (2, None) => {
+            return Err("collection config v2 requires plugin_catalog".into());
+        }
+        _ => unreachable!("collection config version was validated"),
+    };
+
+    let mut sources = Vec::with_capacity(config.sources.len());
     let mut seen_source_ids = BTreeSet::new();
     let mut seen_collection_targets = BTreeSet::new();
-    for source in &mut config.sources {
+    for mut source in config.sources {
         ExtensionId::parse(source.source_id.clone())
             .map_err(|error| format!("invalid source ID: {error}"))?;
         ExtensionId::parse(source.plugin_id.clone())
@@ -1284,14 +1337,47 @@ fn load_collection_config(path: &std::path::Path) -> Result<ValidatedCollectionC
         if !seen_source_ids.insert(source.source_id.clone()) {
             return Err(format!("duplicate source ID: {}", source.source_id));
         }
-        if source.adapter.as_os_str().is_empty() || source.source_root.as_os_str().is_empty() {
+        let (adapter, artifact_sha256, features) = match config.version {
+            1 => {
+                if catalog.contains_key(&source.plugin_id) {
+                    return Err("collection config v1 cannot select catalog plugins".into());
+                }
+                let adapter = source
+                    .adapter
+                    .take()
+                    .ok_or_else(|| "collection config v1 source requires adapter".to_owned())?;
+                if adapter.as_os_str().is_empty() {
+                    return Err("adapter and source-root paths must not be empty".into());
+                }
+                (resolve(adapter), None, None)
+            }
+            2 => {
+                if source.adapter.is_some() {
+                    return Err(
+                        "collection config v2 sources select adapters by plugin_id only".into(),
+                    );
+                }
+                let plugin = catalog.get(&source.plugin_id).ok_or_else(|| {
+                    format!(
+                        "plugin ID is not present in the selected catalog: {}",
+                        source.plugin_id
+                    )
+                })?;
+                (
+                    plugin.adapter.clone(),
+                    Some(plugin.sha256.clone()),
+                    Some(plugin.features.clone()),
+                )
+            }
+            _ => unreachable!("collection config version was validated"),
+        };
+        if source.source_root.as_os_str().is_empty() {
             return Err("adapter and source-root paths must not be empty".into());
         }
-        source.adapter = resolve(std::mem::take(&mut source.adapter));
         source.source_root = resolve(std::mem::take(&mut source.source_root));
-        if !valid_config_path(&source.adapter)
+        if !valid_config_path(&adapter)
             || !valid_config_path(&source.source_root)
-            || !source.adapter.is_absolute()
+            || !adapter.is_absolute()
             || !source.source_root.is_absolute()
         {
             return Err(
@@ -1300,21 +1386,132 @@ fn load_collection_config(path: &std::path::Path) -> Result<ValidatedCollectionC
             );
         }
         let target_identity = (
-            normalized_path_identity(&source.adapter),
+            normalized_path_identity(&adapter),
             normalized_path_identity(&source.source_root),
         );
         if !seen_collection_targets.insert(target_identity) {
             return Err("the same adapter and source-root pair cannot be configured twice".into());
         }
+        sources.push(ConfiguredSource {
+            plugin_id: source.plugin_id,
+            adapter,
+            source_root: source.source_root,
+            source_id: source.source_id,
+            artifact_sha256,
+            features,
+        });
     }
     Ok(ValidatedCollectionConfig {
         plugin_host: config.plugin_host,
-        sources: config.sources,
+        sources,
     })
+}
+
+fn load_adapter_catalog(
+    path: &std::path::Path,
+) -> Result<BTreeMap<String, AdapterCatalogEntry>, String> {
+    let file = File::open(path).map_err(|_| "cannot open plugin catalog".to_owned())?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| "cannot inspect plugin catalog".to_owned())?;
+    if !metadata.is_file() {
+        return Err("plugin catalog must be a regular file".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PLUGIN_CATALOG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "cannot read plugin catalog".to_owned())?;
+    if bytes.len() as u64 > MAX_PLUGIN_CATALOG_BYTES {
+        return Err("plugin catalog exceeds the 64 KiB limit".into());
+    }
+    let catalog: AdapterCatalogFile =
+        serde_json::from_slice(&bytes).map_err(|_| "plugin catalog is invalid JSON".to_owned())?;
+    if catalog.version != 1 || catalog.plugins.is_empty() || catalog.plugins.len() > 64 {
+        return Err("unsupported or empty plugin catalog".into());
+    }
+    let base = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    let base = if base.is_absolute() {
+        base.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| "cannot resolve plugin catalog directory".to_owned())?
+            .join(base)
+    };
+    let mut plugins = BTreeMap::new();
+    for mut plugin in catalog.plugins {
+        ExtensionId::parse(plugin.plugin_id.clone())
+            .map_err(|_| "plugin catalog contains an invalid plugin ID".to_owned())?;
+        if plugin.protocol != 1 {
+            return Err(format!(
+                "unsupported plugin protocol for {}",
+                plugin.plugin_id
+            ));
+        }
+        if plugin.sha256.len() != 64
+            || !plugin
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(format!("invalid SHA-256 for {}", plugin.plugin_id));
+        }
+        if plugin.features.is_empty()
+            || plugin.features.len() > 64
+            || plugin
+                .features
+                .iter()
+                .any(|feature| !valid_plugin_feature(feature))
+            || plugin.features.iter().collect::<BTreeSet<_>>().len() != plugin.features.len()
+            || !plugin
+                .features
+                .iter()
+                .any(|feature| feature == "source-adapter/1")
+            || !plugin
+                .features
+                .iter()
+                .any(|feature| feature == "configured-root/1")
+        {
+            return Err(format!(
+                "invalid source adapter features for {}",
+                plugin.plugin_id
+            ));
+        }
+        if !plugin.adapter.is_absolute() {
+            plugin.adapter = base.join(plugin.adapter);
+        }
+        if !valid_config_path(&plugin.adapter) || !plugin.adapter.is_absolute() {
+            return Err(format!("invalid adapter path for {}", plugin.plugin_id));
+        }
+        plugin.adapter = std::fs::canonicalize(&plugin.adapter)
+            .map_err(|_| format!("adapter artifact is unavailable for {}", plugin.plugin_id))?;
+        agenturm_runtime::verify_artifact_sha256(&plugin.adapter, &plugin.sha256)
+            .map_err(|_| format!("adapter artifact hash mismatch for {}", plugin.plugin_id))?;
+        if plugins.insert(plugin.plugin_id.clone(), plugin).is_some() {
+            return Err("plugin catalog contains duplicate plugin IDs".into());
+        }
+    }
+    Ok(plugins)
 }
 
 fn valid_config_path(path: &std::path::Path) -> bool {
     !path.as_os_str().is_empty() && path.to_string_lossy().len() <= 4_096
+}
+
+fn valid_plugin_feature(value: &str) -> bool {
+    let Some((name, version)) = value.split_once('/') else {
+        return false;
+    };
+    !name.is_empty()
+        && name.as_bytes()[0].is_ascii_lowercase()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte))
+        && !version.is_empty()
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+        && !version.starts_with('0')
 }
 
 fn normalized_path_identity(path: &std::path::Path) -> PathBuf {
@@ -2238,6 +2435,8 @@ mod tests {
             adapter: PathBuf::from("/bin/true"),
             source_root: source_alias.join("new-source-root"),
             source_id: "harness.pi".into(),
+            artifact_sha256: None,
+            features: None,
         };
         assert!(
             validate_service_database_isolation(
@@ -2473,6 +2672,111 @@ mod tests {
             load_collection_config(&config_path)
                 .unwrap_err()
                 .contains("256 KiB limit")
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn version_two_collection_config_resolves_and_pins_catalog_plugins_before_store_open() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-plugin-catalog-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let adapter = directory.join("adapter.bin");
+        std::fs::write(&adapter, b"adapter-artifact").unwrap();
+        let catalog_path = directory.join("plugins.json");
+        let catalog = serde_json::json!({
+            "version": 1,
+            "plugins": [{
+                "plugin_id": "example.rust-pi-harness",
+                "adapter": "adapter.bin",
+                "sha256": "2de1f3a1752dc35308e48cde8ee2e146620d022fa0974ffbd4acf078bcb665f0",
+                "protocol": 1,
+                "features": ["source-adapter/1", "configured-root/1"]
+            }]
+        });
+        std::fs::write(&catalog_path, serde_json::to_vec(&catalog).unwrap()).unwrap();
+        let config_path = directory.join("sources.json");
+        let config = serde_json::json!({
+            "version": 2,
+            "plugin_host": "plugin-host",
+            "plugin_catalog": "plugins.json",
+            "sources": [{
+                "plugin_id": "example.rust-pi-harness",
+                "source_root": "sessions",
+                "source_id": "harness.pi"
+            }]
+        });
+        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+
+        let loaded = load_collection_config(&config_path).unwrap();
+        assert_eq!(loaded.sources.len(), 1);
+        assert_eq!(
+            loaded.sources[0].adapter,
+            std::fs::canonicalize(&adapter).unwrap()
+        );
+        assert_eq!(
+            loaded.sources[0].artifact_sha256.as_deref(),
+            Some("2de1f3a1752dc35308e48cde8ee2e146620d022fa0974ffbd4acf078bcb665f0")
+        );
+        assert_eq!(loaded.sources[0].features.as_ref().unwrap().len(), 2);
+
+        let db = directory.join("should-not-open.sqlite");
+        let options = ConfiguredCollectOptions {
+            config: config_path.clone(),
+            db: db.clone(),
+            watch_interval: None,
+        };
+
+        let unknown_plugin = serde_json::json!({
+            "version": 2,
+            "plugin_host": "plugin-host",
+            "plugin_catalog": "plugins.json",
+            "sources": [{"plugin_id":"example.unknown","source_root":"sessions","source_id":"harness.unknown"}]
+        });
+        std::fs::write(&config_path, serde_json::to_vec(&unknown_plugin).unwrap()).unwrap();
+        assert!(
+            load_collection_config(&config_path)
+                .unwrap_err()
+                .contains("not present")
+        );
+        assert!(ConfiguredCollector::open(&options).is_err());
+        assert!(
+            !db.exists(),
+            "invalid plugin selection must fail before opening the store"
+        );
+
+        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let duplicate_catalog = serde_json::json!({
+            "version": 1,
+            "plugins": [catalog["plugins"][0].clone(), catalog["plugins"][0].clone()]
+        });
+        std::fs::write(
+            &catalog_path,
+            serde_json::to_vec(&duplicate_catalog).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            load_collection_config(&config_path)
+                .unwrap_err()
+                .contains("duplicate plugin IDs")
+        );
+        std::fs::write(&catalog_path, serde_json::to_vec(&catalog).unwrap()).unwrap();
+        std::fs::write(&adapter, b"tampered-adapter").unwrap();
+        assert!(
+            load_collection_config(&config_path)
+                .unwrap_err()
+                .contains("hash mismatch")
+        );
+        assert!(ConfiguredCollector::open(&options).is_err());
+        assert!(
+            !db.exists(),
+            "tampered adapter must fail before opening the store"
         );
         std::fs::remove_dir_all(directory).unwrap();
     }
