@@ -8,7 +8,7 @@ The shared source decoder now stores lifecycle evidence as a source-neutral obse
 
 Codex task aborts and Pi stop errors now remain visible after collection and store reopen. The `agenturm query` JSON returns the typed state and reason code. The generic Overview pane shows the newest lifecycle observation with harness and session identity and labels it as evidence, rather than deriving a live task status from it.
 
-Store format v5 persists the added variant. Existing v2 stores upgrade through v3, v4 and v5; v3 stores upgrade through v4 and v5; v4 stores upgrade to v5. Each marker/version transition is transactional and each intermediate schema shape is validated.
+Store format v5 persists the added variant. Existing v2 stores upgrade through v3, v4 and v5; v3 stores upgrade through v4 and v5; v4 stores upgrade to v5. Each marker/version transition is transactional and each intermediate schema shape is validated. Lifecycle facts collected before v5 cannot be reconstructed because they were not previously stored and the source cursor has advanced.
 
 ## Validation
 

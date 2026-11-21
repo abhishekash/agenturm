@@ -267,6 +267,10 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         .iter()
         .filter(|row| matches!(row.kind, ObservationKind::Lifecycle { .. }))
         .count();
+    let checks = observations
+        .iter()
+        .filter(|row| matches!(row.kind, ObservationKind::Check { .. }))
+        .count();
     let latest_lifecycle = observations
         .iter()
         .filter_map(|row| match &row.kind {
@@ -314,6 +318,10 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         MetricRow {
             label: "Lifecycle observations".into(),
             value: lifecycle.to_string(),
+        },
+        MetricRow {
+            label: "Check observations".into(),
+            value: checks.to_string(),
         },
         MetricRow {
             label: "Latest lifecycle evidence".into(),
@@ -785,6 +793,9 @@ pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
                 }
                 ObservationKind::Lifecycle { state, reason_code } => {
                     serde_json::json!({"kind":"lifecycle", "state":state, "reason_code":reason_code})
+                }
+                ObservationKind::Check { category, result } => {
+                    serde_json::json!({"kind":"check", "category":category, "result":result})
                 }
                 ObservationKind::Usage {
                     input_tokens,
@@ -1835,6 +1846,11 @@ mod tests {
                 total_tokens: Some(15),
             },
         };
+        let mut check_event = make_event("event-1", 10);
+        check_event.kind = StoredKind::Check {
+            category: "lint".into(),
+            result: "passed".into(),
+        };
         let mut lifecycle_event = make_event("event-2", 20);
         lifecycle_event.kind = StoredKind::Lifecycle {
             state: "interrupted".into(),
@@ -1851,7 +1867,7 @@ mod tests {
                 source_id: "harness.codex".into(),
                 expected_cursor: None,
                 next_cursor: "cursor-1".into(),
-                observations: vec![make_event("event-1", 10), lifecycle_event, tool_event],
+                observations: vec![check_event, lifecycle_event, tool_event],
             })
             .unwrap();
         drop(store);
@@ -1906,6 +1922,9 @@ mod tests {
         assert_eq!(older["has_more"], false);
         assert!(older["next_before"].is_null());
         assert_eq!(older["observations"][0]["event_id"], "event-1");
+        assert_eq!(older["observations"][0]["observation"]["kind"], "check");
+        assert_eq!(older["observations"][0]["observation"]["category"], "lint");
+        assert_eq!(older["observations"][0]["observation"]["result"], "passed");
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
