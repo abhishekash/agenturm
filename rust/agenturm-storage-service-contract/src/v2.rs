@@ -14,6 +14,7 @@ pub const MAX_FRAME_BYTES: usize = crate::MAX_FRAME_BYTES;
 pub const MAX_RECORDS: usize = 48;
 /// Matches the bounded shared Rust JSONL cursor and Python source host.
 pub const MAX_CURSOR_CHARS: usize = 800;
+pub const MAX_DISCOVERY_MEMBERS: usize = 48;
 
 type Result<T> = std::result::Result<T, ContractError>;
 
@@ -55,6 +56,8 @@ pub enum Operation {
         cursor: String,
         batch_digest: String,
         records: Vec<PreparedBatchRecord>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member_update: Option<MemberCursor>,
     },
     RevokeSource {
         lease: SourceLease,
@@ -70,6 +73,15 @@ pub enum Operation {
     },
     /// Fixture-only, source-scoped read of the latest policy-current diagnostic.
     ReadLastSourceDiagnostic { lease: SourceLease },
+    /// Fixture-only read of the bounded per-member source checkpoints.
+    ReadSourceMemberCursors { lease: SourceLease },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberCursor {
+    pub member_id: String,
+    pub cursor: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -238,6 +250,13 @@ pub enum OperationResult {
     SourceRevoked(SourceRevokedResult),
     SourceCaptureSet(SourceCaptureSetResult),
     SourceDiagnosticRead(SourceDiagnosticReadResult),
+    SourceMemberCursorsRead(SourceMemberCursorsReadResult),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceMemberCursorsReadResult {
+    pub cursors: Vec<MemberCursor>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -319,6 +338,17 @@ fn digest(value: &str, bytes: usize) -> bool {
 
 fn cursor(value: &str) -> bool {
     value.len() <= MAX_CURSOR_CHARS && !value.chars().any(char::is_control)
+}
+
+pub fn member_id_is_valid(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+pub fn member_cursor_is_valid(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_CURSOR_CHARS && !value.chars().any(char::is_control)
 }
 
 fn reason_code(value: &str) -> bool {
@@ -632,6 +662,7 @@ impl Request {
                 cursor: next_cursor,
                 batch_digest,
                 records,
+                member_update,
             } => {
                 if lease.receiver_id != self.receiver_id
                     || !identity(&lease.plugin_id, 256)
@@ -644,6 +675,10 @@ impl Request {
                     || !digest(batch_digest, 32)
                     || records.len() > MAX_RECORDS
                     || (next_cursor.is_empty() && !records.is_empty())
+                    || member_update.as_ref().is_some_and(|member| {
+                        !member_id_is_valid(&member.member_id)
+                            || !member_cursor_is_valid(&member.cursor)
+                    })
                 {
                     return Err(ContractError::Invalid(
                         "invalid v2 source lease or mixed admission batch",
@@ -758,6 +793,19 @@ impl Request {
                 {
                     return Err(ContractError::Invalid(
                         "invalid v2 source diagnostic read lease",
+                    ));
+                }
+            }
+            Operation::ReadSourceMemberCursors { lease } => {
+                if lease.receiver_id != self.receiver_id
+                    || !identity(&lease.plugin_id, 256)
+                    || !identity(&lease.source_id, 256)
+                    || !digest(&lease.generation, 32)
+                    || lease.epoch <= 0
+                    || lease.policy_epoch <= 0
+                {
+                    return Err(ContractError::Invalid(
+                        "invalid v2 source member cursor read lease",
                     ));
                 }
             }
@@ -952,6 +1000,20 @@ impl Reply {
                             .parse::<i64>()
                             .is_ok_and(|time| time < 0 || time.to_string() != diagnostic.time_ns)
                 }),
+                (
+                    Operation::ReadSourceMemberCursors { .. },
+                    OperationResult::SourceMemberCursorsRead(result),
+                ) => {
+                    result.cursors.len() > MAX_DISCOVERY_MEMBERS
+                        || result.cursors.iter().any(|entry| {
+                            !member_id_is_valid(&entry.member_id)
+                                || !member_cursor_is_valid(&entry.cursor)
+                        })
+                        || result
+                            .cursors
+                            .windows(2)
+                            .any(|pair| pair[0].member_id >= pair[1].member_id)
+                }
                 _ => true,
             }
         {
@@ -1087,6 +1149,7 @@ mod tests {
                 cursor: "mixed-one".to_owned(),
                 batch_digest: "f".repeat(64),
                 records: vec![lifecycle_record, fact],
+                member_update: None,
             },
         }
     }
@@ -1778,5 +1841,36 @@ mod tests {
         let mut changed = reply;
         changed.request_digest = "f".repeat(64);
         assert!(changed.to_json(&request).is_err());
+    }
+
+    #[test]
+    fn member_cursor_limit_is_utf8_bytes_and_legacy_batch_wire_is_unchanged() {
+        assert!(member_cursor_is_valid(&"é".repeat(400)));
+        assert!(!member_cursor_is_valid(&"é".repeat(401)));
+        assert!(!member_cursor_is_valid(""));
+        assert!(!member_cursor_is_valid("bad\ncheckpoint"));
+
+        let mut request = mixed_fixture();
+        let legacy = serde_json::to_value(&request).unwrap();
+        assert!(legacy["operation"].get("member_update").is_none());
+
+        if let Operation::AdmitBatch { member_update, .. } = &mut request.operation {
+            *member_update = Some(MemberCursor {
+                member_id: "a".repeat(64),
+                cursor: "member-checkpoint".into(),
+            });
+        } else {
+            unreachable!()
+        }
+        assert!(request.validate().is_ok());
+        if let Operation::AdmitBatch { member_update, .. } = &mut request.operation {
+            *member_update = Some(MemberCursor {
+                member_id: "a".repeat(64),
+                cursor: String::new(),
+            });
+        } else {
+            unreachable!()
+        }
+        assert!(request.validate().is_err());
     }
 }
