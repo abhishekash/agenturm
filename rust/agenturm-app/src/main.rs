@@ -1,6 +1,6 @@
 use agenturm_app::{
-    AgenturmApp, Command, execute_collect, execute_ingest, execute_inspect, execute_watch,
-    parse_command, render,
+    AgenturmApp, Command, execute_collect, execute_ingest, execute_inspect, execute_service,
+    execute_watch, parse_command, render,
 };
 use std::process::ExitCode;
 
@@ -63,6 +63,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Service(action) => match execute_service(&action) {
+            Ok(message) => print!("{message}"),
+            Err(message) => {
+                eprintln!("service command failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
         command => {
             if command == Command::Status {
                 let mut app = AgenturmApp::empty_composition();

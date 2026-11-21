@@ -9,6 +9,7 @@ license = "MIT"
 [dependencies]
 agenturm-kernel = { path = "../agenturm-kernel" }
 agenturm-runtime = { path = "../agenturm-runtime" }
+agenturm-service = { path = "../agenturm-service" }
 agenturm-store = { path = "../agenturm-store" }
 agenturm-ui = { path = "../agenturm-ui" }
 serde = { version = "1.0", features = ["derive"] }
