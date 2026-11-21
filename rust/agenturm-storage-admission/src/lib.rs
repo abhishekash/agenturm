@@ -788,9 +788,7 @@ fn validate(request: &Request, allow_plugin_facts: bool) -> Result<()> {
                         || !row.native_session_id.is_empty())
             }
             _ => false,
-        } && (row.kind == "tool"
-            || row.kind == "lifecycle"
-            || row.native_operation_id.is_empty());
+        } && (row.kind == "tool" || row.native_operation_id.is_empty());
         if !hash(&row.event_id_hash)
             || !seen.insert(&row.event_id_hash)
             || row.revision != 0
@@ -943,8 +941,10 @@ fn validate_active_source_history(
          OR EXISTS(SELECT 1 FROM plugin_session_projection_v1 p WHERE p.source_id=?1 \
                    AND (p.policy_epoch<>?2 OR p.source_dirty_seq>?3 OR NOT EXISTS(\
                        SELECT 1 FROM plugin_evidence_v1 e WHERE e.source_id=p.source_id \
-                         AND e.native_session_id=p.native_session_id AND e.kind='lifecycle' \
-                         AND e.revision=0 AND e.member_id=''))) \
+                         AND e.native_session_id=p.native_session_id \
+                         AND e.policy_epoch=?2 AND e.revision=0 AND e.member_id='' \
+                         AND ((?6=0 AND e.kind='lifecycle') OR (?6=1 AND \
+                           e.kind IN('lifecycle','message','tool','check','usage')))))) \
          OR EXISTS(SELECT 1 FROM plugin_content_batch_v1 WHERE source_id=?1 \
                    AND (cursor<>?4 OR refs_digest<>?5)) \
          OR (?4<>'' AND NOT EXISTS(SELECT 1 FROM plugin_content_batch_v1 \
@@ -1489,6 +1489,25 @@ fn with_marked_activation_clone<T>(
 /// Mutate only source activation and bounded metadata-only admissions on an
 /// explicitly marked detached real-schema clone. No production caller.
 pub fn apply_activation_clone_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
+    apply_activation_clone_v2_json_inner(path, input, false)
+}
+
+/// Fixture-only mixed-batch entry point. The experimental storage service
+/// deliberately uses `apply_activation_clone_v2_json`, which rejects this
+/// operation; only the separately invoked admission fixture binary opts in.
+pub fn apply_activation_clone_mixed_batch_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
+    let request = v2::Request::from_json(input)?;
+    if !matches!(request.operation, v2::Operation::AdmitBatch { .. }) {
+        return Err(reject("fixture entry point accepts mixed admission only"));
+    }
+    apply_activation_clone_v2_json_inner(path, input, true)
+}
+
+fn apply_activation_clone_v2_json_inner(
+    path: &Path,
+    input: &[u8],
+    allow_mixed_batch_fixture: bool,
+) -> Result<Vec<u8>> {
     let request = v2::Request::from_json(input)?;
     let replay = request.replay_identity()?;
     let result = match &request.operation {
@@ -1621,6 +1640,76 @@ pub fn apply_activation_clone_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u
                 dirty_seq: receipt.dirty_seq,
             })
         }
+        v2::Operation::AdmitBatch {
+            lease,
+            expected_cursor,
+            cursor,
+            batch_digest,
+            records,
+        } => {
+            if !allow_mixed_batch_fixture {
+                return Err(reject(
+                    "mixed admission is unavailable through the storage service path",
+                ));
+            }
+            let prepared = Request {
+                schema_version: 1,
+                sqlite_path: path
+                    .to_str()
+                    .ok_or_else(|| reject("activation clone path must be UTF-8"))?
+                    .to_owned(),
+                lease: Lease {
+                    receiver_id: lease.receiver_id.clone(),
+                    plugin_id: lease.plugin_id.clone(),
+                    source_id: lease.source_id.clone(),
+                    generation: lease.generation.clone(),
+                    epoch: lease.epoch,
+                    policy_epoch: lease.policy_epoch,
+                },
+                expected_cursor: expected_cursor.clone(),
+                cursor: cursor.clone(),
+                batch_digest: batch_digest.clone(),
+                records: records
+                    .iter()
+                    .map(|row| PreparedRecord {
+                        event_id_hash: row.event_id_hash.clone(),
+                        revision: row.revision,
+                        kind: row.kind.as_str().to_owned(),
+                        time_ns: row.time_ns,
+                        payload_json: row.payload_json.clone(),
+                        record_digest: row.record_digest.clone(),
+                        native_session_id: row.native_session_id.clone(),
+                        native_worker_id: row.native_worker_id.clone(),
+                        native_turn_id: row.native_turn_id.clone(),
+                        native_operation_id: row.native_operation_id.clone(),
+                    })
+                    .collect(),
+            };
+            let receipt = with_marked_activation_clone(path, |db, writer_lease| {
+                commit_guarded_mode(db, &prepared, Some(writer_lease), Some(&replay), true)
+            })?;
+            let disposition = match receipt.disposition {
+                "committed" => v2::Disposition::Committed,
+                "replay" => v2::Disposition::Replay,
+                "idle" => v2::Disposition::Idle,
+                _ => {
+                    return Err(reject(
+                        "unexpected activation-clone mixed batch disposition",
+                    ));
+                }
+            };
+            v2::OperationResult::BatchAdmission(v2::AdmissionResult {
+                disposition,
+                cursor: receipt.cursor,
+                batch_digest: batch_digest.clone(),
+                dirty_seq: receipt.dirty_seq,
+            })
+        }
+        v2::Operation::RevokeSource { .. } => {
+            return Err(reject(
+                "clone revocation is unavailable through the storage service path",
+            ));
+        }
         _ => {
             return Err(reject(
                 "real-schema clone accepts only activation or admission",
@@ -1717,7 +1806,7 @@ pub fn apply_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
                 dirty_seq: receipt.dirty_seq,
             })
         }
-        v2::Operation::AdmitFacts { .. } => {
+        v2::Operation::AdmitFacts { .. } | v2::Operation::AdmitBatch { .. } => {
             return Err(reject("scratch mode accepts lifecycle admission only"));
         }
         v2::Operation::RevokeSource {

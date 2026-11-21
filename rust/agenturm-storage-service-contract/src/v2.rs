@@ -48,6 +48,14 @@ pub enum Operation {
         batch_digest: String,
         records: Vec<PreparedFact>,
     },
+    /// Atomically admit lifecycle evidence and supported typed facts in one cursor advance.
+    AdmitBatch {
+        lease: SourceLease,
+        expected_cursor: String,
+        cursor: String,
+        batch_digest: String,
+        records: Vec<PreparedBatchRecord>,
+    },
     RevokeSource {
         lease: SourceLease,
         cursor: String,
@@ -103,6 +111,45 @@ pub struct PreparedFact {
     pub native_worker_id: String,
     pub native_turn_id: String,
     pub native_operation_id: String,
+}
+
+/// A record in an atomic mixed lifecycle/fact admission batch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedBatchRecord {
+    pub event_id_hash: String,
+    pub revision: i64,
+    pub kind: BatchRecordKind,
+    pub time_ns: i64,
+    /// Canonical, content-free JSON validated again by the storage service.
+    pub payload_json: String,
+    pub record_digest: String,
+    pub native_session_id: String,
+    pub native_worker_id: String,
+    pub native_turn_id: String,
+    pub native_operation_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchRecordKind {
+    Lifecycle,
+    Message,
+    Tool,
+    Check,
+    Usage,
+}
+
+impl BatchRecordKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lifecycle => "lifecycle",
+            Self::Message => "message",
+            Self::Tool => "tool",
+            Self::Check => "check",
+            Self::Usage => "usage",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -168,6 +215,7 @@ pub enum OperationResult {
     SourceActivated(SourceActivatedResult),
     LifecycleAdmission(AdmissionResult),
     FactAdmission(AdmissionResult),
+    BatchAdmission(AdmissionResult),
     SourceRevoked(SourceRevokedResult),
     SourceCaptureSet(SourceCaptureSetResult),
 }
@@ -522,6 +570,82 @@ impl Request {
                     }
                 }
             }
+            Operation::AdmitBatch {
+                lease,
+                expected_cursor,
+                cursor: next_cursor,
+                batch_digest,
+                records,
+            } => {
+                if lease.receiver_id != self.receiver_id
+                    || !identity(&lease.plugin_id, 256)
+                    || !identity(&lease.source_id, 256)
+                    || !digest(&lease.generation, 32)
+                    || lease.epoch <= 0
+                    || lease.policy_epoch <= 0
+                    || !cursor(expected_cursor)
+                    || !cursor(next_cursor)
+                    || !digest(batch_digest, 32)
+                    || records.is_empty()
+                    || records.len() > MAX_RECORDS
+                {
+                    return Err(ContractError::Invalid(
+                        "invalid v2 source lease or mixed admission batch",
+                    ));
+                }
+                let mut seen = HashSet::new();
+                for row in records {
+                    let identity_fields = [
+                        &row.native_session_id,
+                        &row.native_worker_id,
+                        &row.native_turn_id,
+                        &row.native_operation_id,
+                    ];
+                    let identity_valid = identity_fields
+                        .iter()
+                        .all(|field| field.is_empty() || identity(field, 256));
+                    let has_identity = identity_fields.iter().any(|field| !field.is_empty());
+                    let payload_valid = match row.kind {
+                        BatchRecordKind::Lifecycle => payload(&row.payload_json),
+                        BatchRecordKind::Message => {
+                            fact_payload_is_valid(FactKind::Message, &row.payload_json)
+                        }
+                        BatchRecordKind::Tool => {
+                            fact_payload_is_valid(FactKind::Tool, &row.payload_json)
+                        }
+                        BatchRecordKind::Check => {
+                            fact_payload_is_valid(FactKind::Check, &row.payload_json)
+                        }
+                        BatchRecordKind::Usage => {
+                            fact_payload_is_valid(FactKind::Usage, &row.payload_json)
+                        }
+                    };
+                    let fact_identity_valid = match row.kind {
+                        BatchRecordKind::Lifecycle => true,
+                        BatchRecordKind::Message
+                        | BatchRecordKind::Tool
+                        | BatchRecordKind::Check => !row.native_session_id.is_empty(),
+                        BatchRecordKind::Usage => {
+                            !has_identity || !row.native_session_id.is_empty()
+                        }
+                    } && (row.kind == BatchRecordKind::Tool
+                        || row.native_operation_id.is_empty());
+                    if !digest(&row.event_id_hash, 32)
+                        || !seen.insert(row.event_id_hash.as_str())
+                        || row.revision != 0
+                        || row.time_ns < 0
+                        || !digest(&row.record_digest, 32)
+                        || row.payload_json.len() > 4096
+                        || !identity_valid
+                        || !payload_valid
+                        || !fact_identity_valid
+                    {
+                        return Err(ContractError::Invalid(
+                            "unsupported v2 prepared mixed admission evidence",
+                        ));
+                    }
+                }
+            }
             Operation::RevokeSource {
                 lease,
                 cursor: current_cursor,
@@ -664,6 +788,19 @@ impl Reply {
                         ..
                     },
                     OperationResult::FactAdmission(result),
+                ) => {
+                    result.cursor != *cursor
+                        || result.batch_digest != *batch_digest
+                        || result.dirty_seq < 0
+                        || result.disposition == Disposition::Idle
+                }
+                (
+                    Operation::AdmitBatch {
+                        cursor,
+                        batch_digest,
+                        ..
+                    },
+                    OperationResult::BatchAdmission(result),
                 ) => {
                     result.cursor != *cursor
                         || result.batch_digest != *batch_digest
@@ -821,6 +958,50 @@ mod tests {
         }
     }
 
+    fn mixed_fixture() -> Request {
+        let (lifecycle, _) = fixture();
+        let Operation::AdmitLifecycle { lease, records, .. } = lifecycle.operation else {
+            panic!("fixture is lifecycle admission")
+        };
+        let lifecycle_record = &records[0];
+        let fact = PreparedBatchRecord {
+            event_id_hash: "9".repeat(64),
+            revision: 0,
+            kind: BatchRecordKind::Message,
+            time_ns: 101,
+            payload_json: "{\"role\":\"assistant\"}".to_owned(),
+            record_digest: "8".repeat(64),
+            native_session_id: "native-one".to_owned(),
+            native_worker_id: String::new(),
+            native_turn_id: String::new(),
+            native_operation_id: String::new(),
+        };
+        let lifecycle_record = PreparedBatchRecord {
+            event_id_hash: lifecycle_record.event_id_hash.clone(),
+            revision: lifecycle_record.revision,
+            kind: BatchRecordKind::Lifecycle,
+            time_ns: lifecycle_record.time_ns,
+            payload_json: lifecycle_record.payload_json.clone(),
+            record_digest: lifecycle_record.record_digest.clone(),
+            native_session_id: lifecycle_record.native_session_id.clone(),
+            native_worker_id: lifecycle_record.native_worker_id.clone(),
+            native_turn_id: lifecycle_record.native_turn_id.clone(),
+            native_operation_id: lifecycle_record.native_operation_id.clone(),
+        };
+        Request {
+            version: VERSION,
+            request_id: "e".repeat(32),
+            receiver_id: lease.receiver_id.clone(),
+            operation: Operation::AdmitBatch {
+                lease,
+                expected_cursor: String::new(),
+                cursor: "mixed-one".to_owned(),
+                batch_digest: "f".repeat(64),
+                records: vec![lifecycle_record, fact],
+            },
+        }
+    }
+
     #[test]
     fn python_prepared_fixture_has_same_canonical_replay_digest() {
         let (request, expected) = fixture();
@@ -829,6 +1010,75 @@ mod tests {
             Request::from_json(&request.to_json().unwrap()).unwrap(),
             request
         );
+    }
+
+    #[test]
+    fn mixed_lifecycle_and_fact_batch_round_trips_and_rejects_invalid_rows() {
+        let request = mixed_fixture();
+        let bytes = request.to_json().unwrap();
+        assert_eq!(Request::from_json(&bytes).unwrap(), request);
+        let Operation::AdmitBatch { records, .. } = &request.operation else {
+            panic!("fixture is mixed admission")
+        };
+        assert_eq!(records[0].kind, BatchRecordKind::Lifecycle);
+        assert_eq!(records[1].kind, BatchRecordKind::Message);
+
+        let mut duplicate = request.clone();
+        let Operation::AdmitBatch { records, .. } = &mut duplicate.operation else {
+            unreachable!()
+        };
+        records[1].event_id_hash = records[0].event_id_hash.clone();
+        assert!(duplicate.validate().is_err());
+
+        let mut operation_identity = request.clone();
+        let Operation::AdmitBatch { records, .. } = &mut operation_identity.operation else {
+            unreachable!()
+        };
+        records[0].native_operation_id = "operation-one".to_owned();
+        assert!(operation_identity.validate().is_err());
+
+        let mut private = request;
+        let Operation::AdmitBatch { records, .. } = &mut private.operation else {
+            unreachable!()
+        };
+        records[1].payload_json = "{\"role\":\"assistant\",\"content\":\"private\"}".to_owned();
+        assert!(private.validate().is_err());
+    }
+
+    #[test]
+    fn mixed_batch_reply_is_bound_to_the_single_transaction() {
+        let request = mixed_fixture();
+        let Operation::AdmitBatch {
+            cursor,
+            batch_digest,
+            ..
+        } = &request.operation
+        else {
+            panic!("fixture is mixed admission")
+        };
+        let reply = Reply {
+            version: VERSION,
+            request_id: request.request_id.clone(),
+            receiver_id: request.receiver_id.clone(),
+            request_digest: request.replay_identity().unwrap().digest,
+            result: OperationResult::BatchAdmission(AdmissionResult {
+                disposition: Disposition::Committed,
+                cursor: cursor.clone(),
+                batch_digest: batch_digest.clone(),
+                dirty_seq: 1,
+            }),
+        };
+        let encoded = reply.to_json(&request).unwrap();
+        assert_eq!(Reply::from_json(&encoded, &request).unwrap(), reply);
+
+        let mut wrong_kind = reply;
+        wrong_kind.result = OperationResult::FactAdmission(AdmissionResult {
+            disposition: Disposition::Committed,
+            cursor: cursor.clone(),
+            batch_digest: batch_digest.clone(),
+            dirty_seq: 1,
+        });
+        assert!(wrong_kind.to_json(&request).is_err());
     }
 
     #[test]
