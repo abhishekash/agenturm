@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.1.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-linux-bundle.md">Markdown source ↗</a></nav><h1>Agenturm Rust bundle for Linux</h1>
+</style></head><body><main><nav><strong>Agenturm / 0.2.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-linux-bundle.md">Markdown source ↗</a></nav><h1>Agenturm Rust bundle for Linux</h1>
 <p>The bundle contains the Agenturm CLI and inspector, the process host, the
 Codex and Pi adapters, and their SHA-256-pinned adapter catalog. The runtime
 requires a compatible Linux system and does not require Python or Rust.
@@ -38,15 +38,40 @@ collection is available on Linux systems without a user manager.</p>
 <p>From a source checkout on Linux with the pinned Rust toolchain and a native C
 build toolchain, run <code>scripts/build-rust-linux-bundle.sh ./dist</code>. The script
 builds for the local Linux architecture and emits a tarball and checksum.</p>
-<p>From the directory containing the archive and its checksum, run:</p>
-<pre><code class="language-sh">sha256sum -c agenturm-0.1.0-linux-x86_64.tar.gz.sha256
+<p>From the directory containing the archive and its checksum, set the version
+and use the archive name for your architecture.</p>
+<pre><code class="language-sh">archive=&quot;agenturm-VERSION-linux-x86_64.tar.gz&quot;
+sha256sum -c &quot;$archive.sha256&quot;
 mkdir -p &quot;$HOME/.local/opt&quot;
-tar -xzf agenturm-0.1.0-linux-x86_64.tar.gz -C &quot;$HOME/.local/opt&quot;
-agenturm=&quot;$HOME/.local/opt/agenturm-0.1.0-linux-x86_64/bin/agenturm&quot;
+tar -xzf &quot;$archive&quot; -C &quot;$HOME/.local/opt&quot;
+agenturm=&quot;$HOME/.local/opt/${archive%.tar.gz}/bin/agenturm&quot;
 &quot;$agenturm&quot; --version
 </code></pre>
 <p>Use the archive and directory names produced by the build for your version and
 architecture. Keep the catalog and binaries in the extracted directory.</p>
+<h2>Open the cockpit</h2>
+<p>From a terminal, run the installed binary.</p>
+<pre><code class="language-sh">&quot;$agenturm&quot;
+</code></pre>
+<p>The cockpit opens on Agents. It uses
+<code>${XDG_STATE_HOME:-$HOME/.local/state}/agenturm-rust/history.sqlite</code>.
+It starts session-owned Pi and Codex collection when the default database is
+available for writing. When another writer owns the database, the cockpit
+reads the same history. The collector started by the cockpit stops on quit.</p>
+<p>Use <code>↑</code> and <code>↓</code> to choose a session, <code>/</code> to search the loaded roster,
+and Enter to open its Overview. The newest roster page refreshes while open.
+Press <code>r</code> in Agents to refresh it immediately. Open Activity with <code>a</code> or
+Review with <code>v</code>, and open the selected session’s Usage with <code>u</code>. Press
+<code>y</code> in Review to acknowledge the displayed evidence. The acknowledgement
+is stored next to the history database and applies to the reviewed version.</p>
+<p>From Agents, <code>g</code> opens the cross-source Overview. Use <code>2</code> for Activity,
+<code>3</code> for MCP, <code>4</code> for Operations, <code>5</code> for Findings, <code>6</code> for Host, and
+<code>7</code> for Usage. Press <code>t</code> in a history view to select a recorded turn,
+<code>?</code> for keyboard help, and <code>q</code> to quit. The available evidence varies by
+source. The MCP view lists recorded tool outcomes and operation IDs.</p>
+<p>Use <code>&quot;$agenturm&quot; cockpit --db &lt;path&gt;</code> or <code>&quot;$agenturm&quot; inspect --db &lt;path&gt;</code>
+to open a specific existing Rust store without starting local collection.
+For collection between cockpit sessions, set up the managed collector below.</p>
 <h2>Discover, collect, and inspect</h2>
 <pre><code class="language-sh">state=&quot;${XDG_STATE_HOME:-$HOME/.local/state}/agenturm-rust&quot;
 mkdir -m 700 -p &quot;$state&quot;
@@ -74,12 +99,10 @@ first and replace the config only after discovery succeeds.</p>
 <p>To restart the managed collector, run
 <code>systemctl --user restart agenturm-collector.service</code>. If there is no user
 manager, use <code>&quot;$agenturm&quot; collect --config &quot;$state/sources.json&quot; --db &quot;$state/history.sqlite&quot; --watch</code> instead of installing the service.</p>
-<p>In the inspector, press <code>t</code> when the header offers Turns. The view
-lists recorded turns on the current history page. Use the arrow keys to
-choose a turn, then press Enter to open its scoped observations. Press
-<code>Esc</code> to return to the turn list, then press it again to return to history.
-A recorded pull request appears as a work result alongside the native
-lifecycle state.</p>
+<p>The turn picker lists the recorded turns on the current history page.
+Use the arrow keys to choose a turn, then press Enter to open its scoped
+observations. A recorded pull request appears as a work result alongside
+the native lifecycle state.</p>
 <h2>Back up history</h2>
 <p>Run <code>&quot;$agenturm&quot; backup --db &quot;$state/history.sqlite&quot; --output &quot;$state/history-backup.sqlite&quot;</code> while collection is running or stopped.
 The output path must be new. Query or inspect the backup by passing its
@@ -97,13 +120,15 @@ release tag. The Linux CI workflow accepts Rust tags in the form
 The workflow verifies the tag matches the version in the archive and retains
 the qualified archive and checksum as workflow artifacts. Python releases use
 the separate <code>v&lt;version&gt;</code> tag family.</p>
-<pre><code class="language-sh">scripts/verify-rust-linux-bundle.sh ./dist/agenturm-0.1.0-linux-x86_64.tar.gz
+<pre><code class="language-sh">scripts/verify-rust-linux-bundle.sh &quot;./dist/$archive&quot;
 </code></pre>
 <p>The verifier extracts the checksum-verified archive into a fresh state
 directory. It discovers and collects fixture sessions with an empty PATH,
 checks that reopening and replay preserve history, opens recorded turn
-activity in a PTY, and reopens a backup. It uses Bash, jq, GNU coreutils,
-GNU tar, and util-linux <code>script</code> as qualification tools.</p>
+activity in a PTY, and reopens a backup. A narrow-PTY run starts the cockpit
+with empty state, adds fixtures while it is open, refreshes the roster, and
+verifies the next collector can reopen the history after quit. Qualification
+uses Bash, jq, GNU coreutils, GNU tar, and util-linux <code>script</code>.</p>
 <p>On a dedicated Ubuntu 24.04 x86-64 account with a running systemd user
 manager and no Agenturm collector unit, pass <code>--systemd-user</code> to verify
 managed install, restart, inspection, and retained data after uninstall.
@@ -115,7 +140,7 @@ checks that the current bundle retains its history and resumes its cursors.</p>
 <h2>Publish a qualified archive</h2>
 <p>After the tag run succeeds, download the archive and checksum from that
 specific run. Set <code>run_id</code> to the successful run for the release tag.</p>
-<pre><code class="language-sh">tag=rust-v0.1.0
+<pre><code class="language-sh">tag=rust-vVERSION
 asset=&quot;agenturm-${tag#rust-v}-linux-x86_64.tar.gz&quot;
 gh run download &quot;$run_id&quot; --name agenturm-rust-linux-x86_64 --dir ./release
 scripts/verify-rust-linux-bundle.sh &quot;./release/$asset&quot; --systemd-user

@@ -14,10 +14,17 @@
 mod backup;
 mod content_grant;
 mod retention;
+mod review_ledger;
+mod session_catalog;
 
 pub use backup::BackupError;
 pub use content_grant::{ContentGrant, ContentGrantScope, ContentKind, PiUserTextEvidence};
 pub use retention::RetentionOutcome;
+pub use review_ledger::{ReviewError, ReviewKey, ReviewLedger, ReviewVersion};
+pub use session_catalog::{
+    MAX_SESSION_PAGE_SIZE, SessionLifecycle, SessionPage, SessionPosition, SessionQuery,
+    SessionSummary,
+};
 
 use agenturm_kernel::{
     MAX_DURABLE_SNAPSHOT_OBSERVATIONS, Observation, ObservationKind as KernelObservationKind,
@@ -1124,7 +1131,7 @@ impl Store {
     /// Reads one filtered, keyset-paginated page in chronological order.
     /// `before` is exclusive and uses the full stable sort key.
     pub fn query_observations(&self, query: &ObservationQuery) -> Result<ObservationPage> {
-        self.query_history(query, None)
+        self.query_history(query, None, None)
     }
 
     /// Reads a bounded history page for one exact native turn.
@@ -1133,19 +1140,25 @@ impl Store {
         query: &ObservationQuery,
         turn_id: &str,
     ) -> Result<ObservationPage> {
-        if query.harness_id.is_none() || query.session_id.is_none() {
-            return Err(StoreError::Invalid(
-                "turn history requires a source and session",
-            ));
-        }
-        validate_identifier(turn_id, MAX_SESSION_KEY_BYTES, "turn ID")?;
-        self.query_history(query, Some(turn_id))
+        self.query_history(query, Some(turn_id), None)
+    }
+
+    /// Reads a turn for one exact worker anchor. `None` selects rows whose
+    /// native worker identity is absent.
+    pub fn query_worker_turn_observations(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+        worker_id: Option<&str>,
+    ) -> Result<ObservationPage> {
+        self.query_history(query, Some(turn_id), Some(worker_id))
     }
 
     fn query_history(
         &self,
         query: &ObservationQuery,
         turn_id: Option<&str>,
+        worker_filter: Option<Option<&str>>,
     ) -> Result<ObservationPage> {
         if query.limit == 0 || query.limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
             return Err(StoreError::Invalid("observation page limit is invalid"));
@@ -1157,6 +1170,17 @@ impl Store {
         }
         if let Some(session_id) = &query.session_id {
             validate_identifier(session_id, MAX_SESSION_KEY_BYTES, "session ID")?;
+        }
+        if let Some(turn_id) = turn_id {
+            if query.harness_id.is_none() || query.session_id.is_none() {
+                return Err(StoreError::Invalid(
+                    "turn history requires a source and session",
+                ));
+            }
+            validate_identifier(turn_id, MAX_SESSION_KEY_BYTES, "turn ID")?;
+        }
+        if let Some(Some(worker_id)) = worker_filter {
+            validate_identifier(worker_id, MAX_SESSION_KEY_BYTES, "worker ID")?;
         }
         if let Some(before) = &query.before {
             validate_identifier(&before.harness_id, MAX_SOURCE_ID_BYTES, "harness ID")?;
@@ -1175,26 +1199,8 @@ impl Store {
         // Use the same SQLite snapshot for the retention barrier, receipt head,
         // and result rows so a concurrent prune cannot shift an active page.
         let transaction = self.connection.unchecked_transaction()?;
-        let state = retention::read_state(&transaction)?;
-        let newest_snapshot_id = retention::snapshot_id(
-            retention::receipt_head(&transaction)?,
-            state.snapshot_offset,
-        )?;
-        let snapshot_id = query
-            .snapshot_id
-            .map(i64::try_from)
-            .transpose()
-            .map_err(|_| StoreError::Invalid("query snapshot ID is invalid"))?
-            .unwrap_or(newest_snapshot_id);
-        if snapshot_id > newest_snapshot_id {
-            return Err(StoreError::Invalid("query snapshot ID is from the future"));
-        }
-        if snapshot_id < state.minimum_snapshot_id {
-            return Err(StoreError::ExpiredHistorySnapshot {
-                minimum_snapshot_id: state.minimum_snapshot_id as u64,
-            });
-        }
-        let receipt_watermark = snapshot_id - state.snapshot_offset;
+        let (snapshot_id, receipt_watermark) =
+            retention::resolve_read_snapshot(&transaction, query.snapshot_id)?;
         let mut statement = transaction.prepare(
             "SELECT observation.source_id, observation.event_id, observation.revision,
                     observation.scope, observation.session_id, observation.worker_id, observation.turn_id,
@@ -1209,6 +1215,7 @@ impl Store {
                AND (?2 IS NULL OR observation.source_id=?2)
                AND (?3 IS NULL OR observation.session_id=?3)
                AND (?9 IS NULL OR observation.turn_id=?9)
+               AND (?10 = 0 OR observation.worker_id IS ?11)
                AND (?4 IS NULL OR
                     (observation.observed_at_unix_ns,observation.source_id,
                      observation.event_id,observation.revision) <
@@ -1231,6 +1238,8 @@ impl Store {
                 before.map(|position| i64::from(position.revision)),
                 read_limit,
                 turn_id,
+                worker_filter.is_some(),
+                worker_filter.flatten(),
             ],
             |row| {
                 let revision: i64 = row.get(2)?;
@@ -1353,7 +1362,7 @@ impl Store {
         Ok(ObservationPage {
             observations,
             has_more,
-            snapshot_id: snapshot_id as u64,
+            snapshot_id,
         })
     }
 
@@ -1393,6 +1402,16 @@ impl ObservationStore for Store {
         turn_id: &str,
     ) -> std::result::Result<ObservationPage, String> {
         Store::query_turn_observations(self, query, turn_id).map_err(|error| error.to_string())
+    }
+
+    fn query_worker_turn_observations(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+        worker_id: Option<&str>,
+    ) -> std::result::Result<ObservationPage, String> {
+        Store::query_worker_turn_observations(self, query, turn_id, worker_id)
+            .map_err(|error| error.to_string())
     }
 
     fn commit(
@@ -2524,6 +2543,291 @@ mod tests {
             })
             .unwrap();
         assert!(session_page.observations.is_empty());
+    }
+
+    #[test]
+    fn session_catalog_pages_source_scoped_sessions_with_pinned_lifecycle() {
+        let db = TempDb::new();
+        let mut writer = Store::open_collector(&db.0).unwrap();
+        let lifecycle = |id, timestamp, state: &str| {
+            let mut row = event(id, "shared-session", timestamp);
+            row.identity.operation_id = None;
+            row.kind = ObservationKind::Lifecycle {
+                state: state.into(),
+                reason_code: Some("example_reason".into()),
+            };
+            row
+        };
+        let relationship = |id, timestamp, parent: &str, kind| {
+            let mut row = event(id, "shared-session", timestamp);
+            row.identity.turn_id = None;
+            row.identity.operation_id = None;
+            row.kind = ObservationKind::Relationship {
+                relationship_kind: kind,
+                parent_session_id: parent.into(),
+            };
+            row
+        };
+        let mut source_gap = event("source-gap", "unused", 100);
+        source_gap.identity = ObservationIdentity {
+            scope: StoredScope::Source,
+            session_id: None,
+            worker_id: None,
+            turn_id: None,
+            operation_id: None,
+        };
+        source_gap.kind = ObservationKind::Diagnostic {
+            code: "possible_source_gap".into(),
+            severity: "warning".into(),
+        };
+        writer
+            .commit_batch(&batch(
+                "session-catalog",
+                vec![
+                    event("recent", "recent-session", 30),
+                    event("activity", "shared-session", 20),
+                    lifecycle("lifecycle-initial", 10, "interrupted"),
+                    relationship(
+                        "relationship-initial",
+                        15,
+                        "parent-a",
+                        agenturm_kernel::RelationshipKind::Delegated,
+                    ),
+                    source_gap,
+                ],
+            ))
+            .unwrap();
+        let mut pi = batch(
+            "pi-session-catalog",
+            vec![event("pi-event", "shared-session", 20)],
+        );
+        pi.source_id = "harness.pi".into();
+        writer.commit_batch(&pi).unwrap();
+        let reader = Store::open_read_only(&db.0).unwrap();
+        let first = reader.query_sessions(&SessionQuery::latest(1)).unwrap();
+        assert_eq!(first.sessions[0].session_id, "recent-session");
+        assert_eq!(first.sessions[0].observed_at_unix_ns, 30);
+
+        writer
+            .commit_batch(&batch_after(
+                "catalog-new-data",
+                "cursor-1",
+                "cursor-2",
+                vec![
+                    lifecycle("lifecycle-new", 60, "completed"),
+                    relationship(
+                        "relationship-new",
+                        65,
+                        "parent-b",
+                        agenturm_kernel::RelationshipKind::Forked,
+                    ),
+                    event("new-session", "new-session", 70),
+                ],
+            ))
+            .unwrap();
+
+        let second = reader
+            .query_sessions(&SessionQuery {
+                before: first.next_before,
+                snapshot_id: Some(first.snapshot_id),
+                ..SessionQuery::latest(1)
+            })
+            .unwrap();
+        let third = reader
+            .query_sessions(&SessionQuery {
+                before: second.next_before,
+                snapshot_id: Some(first.snapshot_id),
+                ..SessionQuery::latest(1)
+            })
+            .unwrap();
+        assert!(third.next_before.is_none());
+        let pi = &second.sessions[0];
+        let codex = &third.sessions[0];
+        assert_eq!(pi.harness_id.as_str(), "harness.pi");
+        assert_eq!(codex.harness_id.as_str(), "harness.codex");
+        assert_eq!(pi.session_id, codex.session_id);
+        assert!(pi.parent_session_id.is_none());
+        assert!(pi.relationship_kind.is_none());
+        assert_eq!(codex.parent_session_id.as_deref(), Some("parent-a"));
+        assert_eq!(
+            codex.relationship_kind,
+            Some(agenturm_kernel::RelationshipKind::Delegated)
+        );
+        assert_eq!(codex.observed_at_unix_ns, 20);
+        assert_eq!(
+            codex.lifecycle,
+            Some(SessionLifecycle {
+                observed_at_unix_ns: 10,
+                state: "interrupted".into(),
+                reason_code: Some("example_reason".into()),
+                worker_id: Some("worker-1".into()),
+                turn_id: Some("turn-1".into()),
+            })
+        );
+        let fresh = reader
+            .query_sessions(&SessionQuery {
+                harness_id: Some("harness.codex".into()),
+                ..SessionQuery::latest(10)
+            })
+            .unwrap();
+        assert_eq!(fresh.sessions.len(), 3);
+        assert_eq!(fresh.sessions[0].session_id, "new-session");
+        assert_eq!(
+            fresh.sessions[1].parent_session_id.as_deref(),
+            Some("parent-b")
+        );
+        assert_eq!(
+            fresh.sessions[1].relationship_kind,
+            Some(agenturm_kernel::RelationshipKind::Forked)
+        );
+        assert_eq!(
+            fresh.sessions[1].lifecycle.as_ref().unwrap().state,
+            "completed"
+        );
+    }
+
+    #[test]
+    fn session_catalog_rejects_expired_snapshots_and_discards_fully_pruned_sessions() {
+        let db = TempDb::new();
+        let mut writer = Store::open_collector(&db.0).unwrap();
+        let reader = Store::open_read_only(&db.0).unwrap();
+        assert_eq!(
+            reader.query_sessions(&SessionQuery::latest(1)).unwrap(),
+            SessionPage::default()
+        );
+        writer
+            .commit_batch(&batch(
+                "session-retention",
+                vec![event("keep", "keep", 20), event("prune", "prune", 10)],
+            ))
+            .unwrap();
+        let page = reader.query_sessions(&SessionQuery::latest(1)).unwrap();
+        writer.prune_observations_before(20).unwrap();
+        let continuation = SessionQuery {
+            snapshot_id: Some(page.snapshot_id),
+            before: page.next_before,
+            ..SessionQuery::latest(1)
+        };
+        assert!(matches!(
+            reader.query_sessions(&continuation),
+            Err(StoreError::ExpiredHistorySnapshot { .. })
+        ));
+        let fresh = reader.query_sessions(&SessionQuery::latest(2)).unwrap();
+        assert_eq!(fresh.sessions.len(), 1);
+        assert_eq!(fresh.sessions[0].session_id, "keep");
+        assert!(fresh.next_before.is_none());
+    }
+
+    #[test]
+    fn session_review_version_tracks_changed_evidence_even_when_event_time_does_not_move() {
+        let db = TempDb::new();
+        let mut writer = Store::open_collector(&db.0).unwrap();
+        let version = |store: &Store| {
+            let page = store.query_sessions(&SessionQuery::latest(10)).unwrap();
+            let target = page
+                .sessions
+                .iter()
+                .find(|row| row.session_id == "target")
+                .unwrap();
+            assert_eq!(target.observed_at_unix_ns, 100);
+            target.review_version
+        };
+        writer
+            .commit_batch(&batch(
+                "initial-review",
+                vec![event("target-1", "target", 100)],
+            ))
+            .unwrap();
+        let initial = version(&writer);
+        writer
+            .commit_batch(&batch_after(
+                "unrelated-review",
+                "cursor-1",
+                "cursor-2",
+                vec![event("different", "different", 200)],
+            ))
+            .unwrap();
+        assert_eq!(version(&writer), initial);
+
+        writer
+            .commit_batch(&batch_after(
+                "late-review",
+                "cursor-2",
+                "cursor-3",
+                vec![event("target-2", "target", 10)],
+            ))
+            .unwrap();
+        let changed = version(&writer);
+        assert!(changed.receipt_sequence > initial.receipt_sequence);
+        assert_eq!(changed.retained_observations, 2);
+        writer.prune_observations_before(50).unwrap();
+        assert_eq!(version(&writer), initial);
+    }
+
+    #[test]
+    fn worker_turn_history_filters_reused_turn_ids_before_pagination() {
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        let occurrence = |event_id, timestamp, worker: Option<&str>| {
+            let mut row = event(event_id, "session", timestamp);
+            row.identity.worker_id = worker.map(str::to_owned);
+            row
+        };
+        store
+            .commit_batch(&batch(
+                "worker-turn",
+                vec![
+                    occurrence("worker-a-older", 10, Some("worker-a")),
+                    occurrence("worker-b-older", 20, Some("worker-b")),
+                    occurrence("worker-a-newer", 30, Some("worker-a")),
+                    occurrence("root", 40, None),
+                    occurrence("worker-b-newer", 50, Some("worker-b")),
+                ],
+            ))
+            .unwrap();
+        let query = ObservationQuery {
+            harness_id: Some("harness.codex".into()),
+            session_id: Some("session".into()),
+            ..ObservationQuery::latest(1)
+        };
+        let mut kernel = agenturm_kernel::Kernel::new();
+        let first = kernel.refresh_worker_turn_with_store(
+            &store,
+            query.clone(),
+            "turn-1",
+            Some("worker-a"),
+        );
+        assert!(first.failures.is_empty());
+        assert!(first.observations_truncated);
+        assert_eq!(first.observations[0].event_id, "worker-a-newer");
+        let cursor = ObservationPosition {
+            observed_at_unix_ns: first.observations[0].observed_at_unix_ns,
+            harness_id: "harness.codex".into(),
+            event_id: first.observations[0].event_id.clone(),
+            revision: first.observations[0].revision,
+            snapshot_id: first.history_snapshot_id,
+        };
+        let older = kernel.refresh_worker_turn_with_store(
+            &store,
+            ObservationQuery {
+                before: Some(cursor),
+                snapshot_id: Some(first.history_snapshot_id),
+                ..query.clone()
+            },
+            "turn-1",
+            Some("worker-a"),
+        );
+        assert!(older.failures.is_empty());
+        assert!(!older.observations_truncated);
+        assert_eq!(older.observations[0].event_id, "worker-a-older");
+        let root = store
+            .query_worker_turn_observations(&query, "turn-1", None)
+            .unwrap();
+        assert_eq!(root.observations[0].event_id, "root");
+        assert!(!root.has_more);
+        let legacy = store.query_turn_observations(&query, "turn-1").unwrap();
+        assert_eq!(legacy.observations[0].event_id, "worker-b-newer");
+        assert!(legacy.has_more);
     }
 
     #[test]

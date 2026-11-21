@@ -1,12 +1,17 @@
 use agenturm_app::{
-    AgenturmApp, Command, discover, execute_backup, execute_collect, execute_content,
-    execute_ingest, execute_inspect_ui, execute_prune, execute_query, execute_service,
-    execute_watch, parse_command, render,
+    AgenturmApp, Command, discover, execute_backup, execute_cockpit, execute_collect,
+    execute_content, execute_ingest, execute_inspect_ui, execute_prune, execute_query,
+    execute_service, execute_watch, parse_command, render,
 };
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let command = match parse_command(&std::env::args().skip(1).collect::<Vec<_>>()) {
+    let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.is_empty() && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        args.push("cockpit".into());
+    }
+    let command = match parse_command(&args) {
         Ok(command) => command,
         Err(message) => {
             eprintln!("{message}");
@@ -15,6 +20,12 @@ fn main() -> ExitCode {
     };
 
     match command {
+        Command::Cockpit { db } => {
+            if let Err(message) = execute_cockpit(db.as_deref()) {
+                eprintln!("cockpit failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
         Command::Inspect(options) => {
             if let Err(message) = execute_inspect_ui(&options) {
                 eprintln!("inspect failed: {message}");

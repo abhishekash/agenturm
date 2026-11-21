@@ -1,0 +1,88 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Cockpit Workflow Coverage</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cockpit-workflow-coverage.md">Markdown source ↗</a></nav><h1>Rust cockpit workflow coverage</h1>
+<p>This comparison uses the tagged Python cockpit <code>v0.2.8</code> and the published
+standalone Rust baseline <code>rust-v0.1.0</code>. Python workflows come from the tagged
+release documentation. Rust coverage comes from the tagged CLI and UI,
+the published archive qualification, and the per-harness evidence record.
+The coverage below concerns workflow behavior and recorded evidence.
+<a href="https://github.com/abhishekash/agenturm/blob/v0.2.8/docs/releases/0.2.8.md">Python 0.2.8 release notes</a> ·
+<a href="https://github.com/abhishekash/agenturm/blob/v0.2.8/docs/keyboard-navigation.md">Python 0.2.8 keyboard paths</a> ·
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-standalone-execution.md">Rust 0.1.0 qualification</a> ·
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-harness-evidence-coverage.md">Rust harness evidence</a></p>
+<h2>Workflow comparison</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Job</th>
+<th>Python 0.2.8</th>
+<th>Rust cockpit 0.2.0</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Open and discover recent work</td>
+<td>Installed <code>agenturm</code> starts or attaches to the local receiver. Native discovery includes Codex, Claude Code, OpenCode and Pi.</td>
+<td>Bare <code>agenturm</code> opens the cockpit and starts bounded Pi and Codex discovery, or reads the shared history while another process owns the writer lease. <code>cockpit --db &lt;path&gt;</code> opens existing history.</td>
+</tr>
+<tr>
+<td>Locate a session or worker</td>
+<td>Agents provides search, Today and History filters, and an expandable hierarchy.</td>
+<td>Agents refreshes every three seconds on the newest catalog page. It provides search, paging, recorded-state filters, sorting, and expandable explicit delegation on the current page.</td>
+</tr>
+<tr>
+<td>Read state and reason</td>
+<td>Overview and Details keep turn endings, explicit reasons and later activity visible.</td>
+<td>Session Overview and turn drilldown show recorded lifecycle and reasons. Turn queries distinguish a worker from another worker or a main turn with the same ID.</td>
+</tr>
+<tr>
+<td>Investigate Activity, MCP, or a trace</td>
+<td>Dedicated Activity, MCP and Traces navigate to linked evidence.</td>
+<td>Global and scoped Activity, MCP and Operations display admitted metadata and exact operation grouping. Native spans, MCP payloads, and deep linked tracing remain open.</td>
+</tr>
+<tr>
+<td>Review an agent's work</td>
+<td>Review presents recorded edits, checks, errors and context. The workflow includes richer saved decisions.</td>
+<td>Review shows recorded tools, checks, errors and work results with lifecycle evidence. <code>y</code> saves an acknowledgement for the selected evidence version in a separate SQLite file. Detailed edit evidence and decision notes remain open.</td>
+</tr>
+<tr>
+<td>Read prompts</td>
+<td>The Prompts navigator provides recorded requests, readable and original views, and pagination.</td>
+<td>Message roles appear in Activity. The explicit Pi preview reads an eligible event under a verified current grant. General prompt browsing remains open.</td>
+</tr>
+<tr>
+<td>Check usage or host health</td>
+<td>Metrics include run usage and host and process data when the producer supplies it.</td>
+<td>Usage shows recorded token and cache fields and separate Kiro credit units. Host now shows current Linux load and memory. Cost, historical host metrics and detailed process inventory remain open.</td>
+</tr>
+<tr>
+<td>Handle requests and preserve follow-up work</td>
+<td>Workflow surfaces requests, owner and local seen state. Saved tasks, decisions, linked runs and handoff export support follow-up.</td>
+<td>Recorded lifecycle can describe waiting or failure. Request routing, saved tasks, and handoff export remain open.</td>
+</tr>
+<tr>
+<td>Use the keyboard in a compact terminal</td>
+<td>Global shortcuts and focus controls support compact layouts.</td>
+<td>Root shortcuts select Activity, MCP, Operations, Findings, Host and Usage. At 60 columns the roster uses one pane and detail opens separately. Wide terminals show a selected-session preview.</td>
+</tr>
+</tbody>
+</table></div>
+<h2>Cockpit patch acceptance</h2>
+<p>The local cockpit candidate opened Agents from the bare executable at 60×18
+with empty state. Two fixture files added while the cockpit was open produced
+durable Pi and Codex sessions. A roster refresh showed both sessions. After
+quit, another collector opened the same SQLite store and resumed its cursors.
+The archived inspector also opened a recorded Codex turn through cross-source
+history and displayed its native completion reason.</p>
+<p>The release checks include opening a specific session, reading scoped
+activity and review, returning to the same selection, and terminal restoration.
+<a href="https://github.com/abhishekash/agenturm/blob/main/scripts/verify-rust-linux-bundle.sh">Linux bundle verifier</a></p>
+<p>The cockpit update adds an Agents roster, source-scoped session Overview,
+Activity, Review and Usage, and global shortcuts for available evidence.
+Review acknowledgement applies to the selected evidence version. The global
+MCP pane covers recorded tool outcomes and operation IDs. Workflow request
+handling, terminal routing, deep traces and MCP details, general prompt
+navigation, and cross-session task handoffs remain distinct workflows.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

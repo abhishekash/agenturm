@@ -76,6 +76,29 @@ pub(super) fn snapshot_id(receipt_sequence: i64, offset: i64) -> Result<i64> {
         .ok_or(StoreError::Invalid("history snapshot ID is exhausted"))
 }
 
+/// Resolves a read snapshot inside the transaction that reads the result rows.
+pub(super) fn resolve_read_snapshot(
+    connection: &Connection,
+    requested: Option<u64>,
+) -> Result<(u64, i64)> {
+    let state = read_state(connection)?;
+    let newest = snapshot_id(receipt_head(connection)?, state.snapshot_offset)?;
+    let selected = requested
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| StoreError::Invalid("query snapshot ID is invalid"))?
+        .unwrap_or(newest);
+    if selected > newest {
+        return Err(StoreError::Invalid("query snapshot ID is from the future"));
+    }
+    if selected < state.minimum_snapshot_id {
+        return Err(StoreError::ExpiredHistorySnapshot {
+            minimum_snapshot_id: state.minimum_snapshot_id as u64,
+        });
+    }
+    Ok((selected as u64, selected - state.snapshot_offset))
+}
+
 impl Store {
     /// Atomically removes observations strictly older than the supplied cutoff.
     /// Equal cutoffs are idempotent and lowering the cutoff is an error.
