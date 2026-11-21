@@ -2,6 +2,8 @@
 
 Status: independently reviewed execution plan, prepared 19 November 2026 against `ca202c7` (main including Kiro support). The ledger is updated through merged PR #331 at main `c138386` on 21 November 2026. PR #331 adds a test-only supported-subset façade and exercises existing `PluginSession`/`PluginSupervisor` seams against marked clones; it does not add runtime Rust routing, full `PluginAdmissionPort` conformance or production storage authority. The remaining gates are still binding; this is not a completed Rust migration. The previously stopped branch cleanup and UI revert are not resumed.
 
+> **Scope superseded:** The user reset the target on 21 November 2026 to a clean Rust-only application, with no Python compatibility, bridge or data-migration tooling. Use [Rust-only execution plan](rust-only-execution-plan.md) for the active scope and gates. The historical sections below record prior design and validation context; their Python-authority cutover steps are no longer the intended end state.
+
 ## Implementation ledger · 21 November 2026
 
 | Merged work | Evidence and limit |

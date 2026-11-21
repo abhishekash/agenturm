@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "agenturm-app"
+version = "0.1.0"
+dependencies = [
+ "agenturm-kernel",
+]
+
+[[package]]
 name = "agenturm-backup-query"
 version = "0.1.0"
 dependencies = [
@@ -89,6 +96,10 @@ dependencies = [
  "serde_json",
  "sha2",
 ]
+
+[[package]]
+name = "agenturm-kernel"
+version = "0.1.0"
 
 [[package]]
 name = "agenturm-kiro-harness"
@@ -215,6 +226,16 @@ dependencies = [
 
 [[package]]
 name = "agenturm-storage-shadow"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "agenturm-store"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
