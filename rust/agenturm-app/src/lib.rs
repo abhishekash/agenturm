@@ -1,15 +1,17 @@
 //! Rust application composition boundary.
 //!
-//! This is intentionally an early shell: one explicit Codex usage command
-//! registers a supervised source through kernel admission. The product UI,
-//! persistent configuration, and multi-harness composition are still open.
+//! The app exposes generic kernel extension registration, durable refresh,
+//! one explicit Codex usage command, and a full-screen durable-history viewer.
+//! Persistent source configuration and multi-harness composition are still
+//! open.
 
 use agenturm_kernel::{
-    Capability, ExtensionId, Harness, Kernel, ObservationStore, RegistrationError, Snapshot,
-    SourceAdapter, UiContribution,
+    Capability, ExtensionId, Harness, Kernel, MetricRow, Observation, ObservationKind,
+    ObservationStore, PaneModel, RegistrationError, Snapshot, SourceAdapter, UiContribution,
 };
 use agenturm_runtime::{ProcessConfig, ProcessSource};
 use agenturm_store::Store;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 pub struct AgenturmApp {
@@ -23,6 +25,21 @@ impl AgenturmApp {
 
     pub fn empty_composition() -> Self {
         Self::new(Kernel::new())
+    }
+
+    pub fn default_composition() -> Self {
+        let mut app = Self::empty_composition();
+        app.register_capability(
+            ExtensionId::parse("capability.overview").expect("built-in extension ID is valid"),
+            OverviewCapability,
+        )
+        .expect("built-in capability registers once");
+        app.register_ui_contribution(
+            ExtensionId::parse("pane.overview").expect("built-in extension ID is valid"),
+            OverviewPane,
+        )
+        .expect("built-in pane registers once");
+        app
     }
 
     pub fn refresh(&mut self) -> Snapshot {
@@ -71,6 +88,7 @@ pub enum Command {
     Help,
     Version,
     Status,
+    Inspect(PathBuf),
     Ingest(IngestOptions),
 }
 
@@ -83,14 +101,104 @@ pub struct IngestOptions {
     pub source_id: String,
 }
 
+struct OverviewCapability;
+
+impl Capability for OverviewCapability {
+    fn evaluate(&self, observations: &[Observation]) -> Result<Vec<MetricRow>, String> {
+        let mut usage_events = 0usize;
+        let mut reported_total_events = 0usize;
+        let mut reported_total_tokens = 0u64;
+        for row in observations {
+            if let ObservationKind::Usage { total_tokens, .. } = &row.kind {
+                usage_events += 1;
+                if let Some(total) = total_tokens {
+                    reported_total_events += 1;
+                    reported_total_tokens = reported_total_tokens
+                        .checked_add(*total)
+                        .ok_or_else(|| "reported token total exceeds u64".to_owned())?;
+                }
+            }
+        }
+        Ok(vec![
+            MetricRow {
+                label: "Usage events with reported totals".into(),
+                value: format!("{reported_total_events} / {usage_events}"),
+            },
+            MetricRow {
+                label: "Reported total tokens (partial)".into(),
+                value: reported_total_tokens.to_string(),
+            },
+        ])
+    }
+}
+
+struct OverviewPane;
+
+impl UiContribution for OverviewPane {
+    fn build_pane(&self, snapshot: &Snapshot) -> Result<PaneModel, String> {
+        Ok(PaneModel {
+            title: "Overview".into(),
+            rows: overview_rows(&snapshot.observations),
+        })
+    }
+}
+
+fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
+    let sessions = observations
+        .iter()
+        .map(|row| (row.harness_id.as_str(), row.identity.session_id.as_str()))
+        .collect::<BTreeSet<_>>()
+        .len();
+    let sources = observations
+        .iter()
+        .map(|row| row.harness_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let activities = observations
+        .iter()
+        .filter(|row| matches!(row.kind, ObservationKind::Activity { .. }))
+        .count();
+    let usages = observations
+        .iter()
+        .filter(|row| matches!(row.kind, ObservationKind::Usage { .. }))
+        .count();
+    vec![
+        MetricRow {
+            label: "Sessions observed".into(),
+            value: sessions.to_string(),
+        },
+        MetricRow {
+            label: "Sources with history".into(),
+            value: sources.to_string(),
+        },
+        MetricRow {
+            label: "Activity events".into(),
+            value: activities.to_string(),
+        },
+        MetricRow {
+            label: "Usage events".into(),
+            value: usages.to_string(),
+        },
+    ]
+}
+
 pub fn parse_command(args: &[String]) -> Result<Command, String> {
     match args.first().map(String::as_str) {
         None => Ok(Command::Help),
         Some("--help" | "-h" | "help") if args.len() == 1 => Ok(Command::Help),
         Some("--version" | "-V" | "version") if args.len() == 1 => Ok(Command::Version),
         Some("status") if args.len() == 1 => Ok(Command::Status),
+        Some("inspect") => parse_inspect_options(&args[1..]).map(Command::Inspect),
         Some("ingest-codex-usage") => parse_ingest_options(&args[1..]).map(Command::Ingest),
         _ => Err(usage()),
+    }
+}
+
+fn parse_inspect_options(args: &[String]) -> Result<PathBuf, String> {
+    if args.len() == 2 && args[0] == "--db" && !args[1].is_empty() && !args[1].starts_with("--") {
+        Ok(PathBuf::from(&args[1]))
+    } else {
+        Err(usage())
     }
 }
 
@@ -130,7 +238,13 @@ fn parse_ingest_options(args: &[String]) -> Result<IngestOptions, String> {
 }
 
 fn usage() -> String {
-    "usage: agenturm [--help|--version|status] | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
+    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
+}
+
+pub fn execute_inspect(db_path: &std::path::Path) -> Result<Snapshot, String> {
+    let mut store = Store::open(db_path).map_err(|error| format!("open store failed: {error}"))?;
+    let mut app = AgenturmApp::default_composition();
+    Ok(app.refresh_durable(&mut store))
 }
 
 pub fn execute_ingest(options: &IngestOptions) -> Result<String, String> {
@@ -194,10 +308,12 @@ pub fn render(command: Command) -> String {
             "Agenturm · Rust application (early composition shell)\n",
             "\n",
             "Usage: agenturm [--help|--version|status]\n",
+            "       agenturm inspect --db <path>\n",
             "       agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>\n",
             "\n",
             "This explicit projection stores token counters and skips all other valid Codex facts.\n",
-            "The full-screen interface and persistent application configuration are not yet available.\n",
+            "Use `agenturm inspect --db <path>` to view committed history in the full-screen interface.\n",
+            "Persistent source configuration is not yet available.\n",
         )
         .into(),
         Command::Version => format!("agenturm {}\n", env!("CARGO_PKG_VERSION")),
@@ -210,6 +326,7 @@ pub fn render(command: Command) -> String {
             "Explicit one-shot Codex usage projection: available\n",
         )
         .into(),
+        Command::Inspect(_) => String::new(),
         Command::Ingest(_) => String::new(),
     }
 }
@@ -285,6 +402,12 @@ mod tests {
             Command::Version
         );
         assert_eq!(parse_command(&["status".into()]).unwrap(), Command::Status);
+        assert_eq!(
+            parse_command(&["inspect".into(), "--db".into(), "./state.sqlite".into()]).unwrap(),
+            Command::Inspect(PathBuf::from("./state.sqlite"))
+        );
+        assert!(parse_command(&["inspect".into()]).is_err());
+        assert!(parse_command(&["inspect".into(), "--db".into(), String::new()]).is_err());
         assert!(parse_command(&["unknown".into()]).is_err());
     }
 
@@ -346,5 +469,17 @@ mod tests {
             snapshot.panes[&ExtensionId::parse("pane.activity").unwrap()].rows[0].value,
             "1"
         );
+    }
+
+    #[test]
+    fn default_composition_registers_a_data_only_overview() {
+        let mut app = AgenturmApp::default_composition();
+        let snapshot = app.refresh();
+        let pane = &snapshot.panes[&ExtensionId::parse("pane.overview").unwrap()];
+        assert_eq!(pane.title, "Overview");
+        assert_eq!(pane.rows[0].value, "0");
+        let metrics = &snapshot.metrics[&ExtensionId::parse("capability.overview").unwrap()];
+        assert_eq!(metrics[0].label, "Usage events with reported totals");
+        assert_eq!(metrics[0].value, "0 / 0");
     }
 }

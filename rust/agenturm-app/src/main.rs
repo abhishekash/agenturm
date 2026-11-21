@@ -1,4 +1,4 @@
-use agenturm_app::{AgenturmApp, Command, execute_ingest, parse_command, render};
+use agenturm_app::{AgenturmApp, Command, execute_ingest, execute_inspect, parse_command, render};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -11,6 +11,19 @@ fn main() -> ExitCode {
     };
 
     match command {
+        Command::Inspect(db) => match execute_inspect(&db) {
+            Ok(snapshot) => match agenturm_ui::run(snapshot) {
+                Ok(()) => {}
+                Err(error) => {
+                    eprintln!("Agenturm UI failed: {error}");
+                    return ExitCode::FAILURE;
+                }
+            },
+            Err(message) => {
+                eprintln!("inspect failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
         Command::Ingest(options) => match execute_ingest(&options) {
             Ok(summary) => print!("{summary}"),
             Err(message) => {
