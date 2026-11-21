@@ -69,9 +69,9 @@ pub trait SourceBatchDecoder: Send + Sync {
     fn decode_batch(&self, encoded: &str, expected_source_id: &str) -> Result<PreparedSourceBatch>;
 }
 
-/// Decoder for the shared usage and privacy-safe tool-fact subset emitted by
-/// bundled harness adapters. Other validated source facts are counted without
-/// being retained as observations.
+/// Decoder for the shared usage, tool, and lifecycle facts emitted by bundled
+/// harness adapters. Other validated source facts are counted without being
+/// retained as observations.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BundledObservationDecoder;
 
@@ -575,6 +575,11 @@ fn parse_source_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedB
             observations.push(typed.try_into()?);
             continue;
         }
+        if kind == "lifecycle" {
+            let typed: WireLifecycleRecord = serde_json::from_value(record)?;
+            observations.push(typed.try_into()?);
+            continue;
+        }
         if kind != "usage" {
             let skipped: WireSkippedRecord = serde_json::from_value(record)?;
             validate_skipped_record(&skipped)?;
@@ -642,6 +647,17 @@ struct WireToolRecord {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct WireLifecycleRecord {
+    event_id: String,
+    revision: u32,
+    kind: String,
+    time_ns: String,
+    identity: WireIdentity,
+    payload: WireLifecycle,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WireSkippedRecord {
     event_id: String,
     #[serde(rename = "revision")]
@@ -657,6 +673,14 @@ struct WireSkippedRecord {
 struct WireLifecycle {
     state: String,
     reason_code: Option<String>,
+}
+
+fn valid_reason_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+        })
 }
 
 #[derive(Deserialize)]
@@ -879,6 +903,43 @@ impl TryFrom<WireToolRecord> for RawObservation {
     }
 }
 
+impl TryFrom<WireLifecycleRecord> for RawObservation {
+    type Error = RuntimeError;
+
+    fn try_from(record: WireLifecycleRecord) -> Result<Self> {
+        if record.kind != "lifecycle"
+            || !valid_source_identifier(&record.event_id, 256)
+            || !matches!(
+                record.payload.state.as_str(),
+                "running" | "completed" | "interrupted" | "paused"
+            )
+            || record
+                .payload
+                .reason_code
+                .as_deref()
+                .is_some_and(|reason| !valid_reason_code(reason))
+        {
+            return Err(RuntimeError::new("source lifecycle payload is invalid"));
+        }
+        validate_wire_identity(&record.identity)?;
+        Ok(RawObservation {
+            event_id: record.event_id,
+            revision: record.revision,
+            identity: ObservationIdentity {
+                session_id: record.identity.session_id,
+                worker_id: record.identity.worker_id,
+                turn_id: record.identity.turn_id,
+                operation_id: record.identity.operation_id,
+            },
+            observed_at_unix_ns: parse_decimal_timestamp(&record.time_ns)?,
+            kind: ObservationKind::Lifecycle {
+                state: record.payload.state,
+                reason_code: record.payload.reason_code,
+            },
+        })
+    }
+}
+
 fn parse_decimal_timestamp(value: &str) -> Result<u64> {
     if value.is_empty()
         || !value.bytes().all(|byte| byte.is_ascii_digit())
@@ -977,6 +1038,34 @@ mod tests {
                 total_tokens: Some(4),
             }
         );
+    }
+
+    #[test]
+    fn lifecycle_projection_preserves_state_and_safe_reason_code() {
+        let response = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"lifecycle-1","revision":0,"kind":"lifecycle","time_ns":"9","identity":{"session_id":"s1","turn_id":"turn-1"},"payload":{"state":"interrupted","reason_code":"codex_task_aborted"}}]}"#;
+        let batch = parse_source_batch(response, "harness.codex").unwrap();
+        assert_eq!(batch.skipped_unprojected_facts, 0);
+        assert_eq!(batch.observations.len(), 1);
+        assert_eq!(
+            batch.observations[0].identity.turn_id.as_deref(),
+            Some("turn-1")
+        );
+        assert_eq!(
+            batch.observations[0].kind,
+            ObservationKind::Lifecycle {
+                state: "interrupted".into(),
+                reason_code: Some("codex_task_aborted".into()),
+            }
+        );
+        let invalid_state = response.replace("interrupted", "crashed");
+        assert!(parse_source_batch(&invalid_state, "harness.codex").is_err());
+        let invalid_reason = response.replace("codex_task_aborted", "Raw error message");
+        assert!(parse_source_batch(&invalid_reason, "harness.codex").is_err());
+        let unknown_field = response.replace(
+            "\"reason_code\":\"codex_task_aborted\"",
+            "\"reason_code\":\"codex_task_aborted\",\"message\":\"secret\"",
+        );
+        assert!(parse_source_batch(&unknown_field, "harness.codex").is_err());
     }
 
     #[test]
