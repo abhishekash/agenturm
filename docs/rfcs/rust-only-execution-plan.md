@@ -30,9 +30,11 @@ Wire one bundled Rust harness through the process protocol into the kernel, pers
 
 **Gate:** an installed Rust application can discover actual local harness data, commit one session atomically, restart and render it from durable state. A fixture worker alone does not pass.
 
-### 3. Rust UI and capability composition
+### 3. Rust UI and capability composition — generic viewer implemented; composition partial
 
 Build the Ratatui application over kernel query/pane models. Register one built-in capability and one independently packaged pane without editing the central app's view dispatch. Cover no sources, empty history, partial adapter failure, stale data, terminal resize and narrow terminal behavior. UI remains data-only at the extension boundary.
+
+**Current evidence:** `agenturm-ui` is a separate Ratatui crate that renders contribution panes, capability metrics and failures through generic model data; it does not dispatch on harness or capability IDs. `agenturm inspect --db <path>` reopens the Rust store and displays the bounded durable snapshot. The UI has explicit small-terminal handling, pane navigation, row scrolling, and a managed terminal lifecycle. State and rendering tests cover selection and wide, narrow and too-small dimensions. Persistent source configuration, background collection, an independently packaged pane, and a PTY lifecycle test remain open.
 
 ### 4. Harness and domain parity
 
@@ -50,7 +52,7 @@ Package harnesses and capabilities independently while shipping a useful default
 
 ## Current blockers
 
-- There is a minimal Rust app entry point, but no Rust TUI or production composition yet.
+- The Rust TUI can inspect durable snapshots, but persistent source configuration and continuous/background collection are not wired.
 - Existing harness crates are standalone processes; a narrow Codex usage command now uses kernel-owned admission, but the app does not yet compose configured multiple harnesses or discover plugins.
 - The Rust observation store is wired to kernel admission and bounded history reads, but the app still lacks a reusable collector/query command; the installed storage service remains probe/scratch oriented and is not production authority.
 - Existing Rust admission and query work proves bounded subsets, not product semantics across all evidence and policy cases.
