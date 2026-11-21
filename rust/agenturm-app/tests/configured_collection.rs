@@ -1,7 +1,9 @@
 use agenturm_app::execute_inspect;
 use std::fs;
+use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn temporary_directory() -> PathBuf {
@@ -13,6 +15,272 @@ fn temporary_directory() -> PathBuf {
         "agenturm-app-collect-e2e-{}-{nonce}",
         std::process::id()
     ))
+}
+
+#[cfg(unix)]
+#[test]
+fn configured_watch_retries_startup_failure_and_shuts_down_on_interrupt() {
+    let (Ok(plugin_host), Ok(pi_adapter)) = (
+        std::env::var("AGENTURM_RUNTIME_PLUGIN_HOST"),
+        std::env::var("AGENTURM_RUNTIME_PI_ADAPTER"),
+    ) else {
+        eprintln!("skipping real watch test: set plugin host and Pi adapter paths");
+        return;
+    };
+    let root = temporary_directory();
+    fs::create_dir_all(&root).expect("create fixture directory");
+    let source = root.join("pi.jsonl");
+    fs::write(
+        &source,
+        concat!(
+            "{\"type\":\"session\",\"id\":\"watch-session\"}\n",
+            "{\"type\":\"message\",\"id\":\"assistant-1\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\",\"usage\":{\"input\":8,\"output\":3},\"content\":[]}}\n"
+        ),
+    )
+    .expect("write Pi watch fixture");
+    let config_path = root.join("sources.json");
+    let delayed_adapter = root.join("pi-adapter-delayed");
+    let config = serde_json::json!({
+        "version": 1,
+        "plugin_host": plugin_host,
+        "sources": [{
+            "plugin_id": "example.rust-pi-harness",
+            "adapter": delayed_adapter,
+            "source_root": source,
+            "source_id": "harness.pi"
+        }]
+    });
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).expect("write config");
+    let database = root.join("agenturm.sqlite");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agenturm"))
+        .args([
+            "collect",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--db",
+            database.to_str().unwrap(),
+            "--watch",
+            "--interval-ms",
+            "100",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("start foreground collector");
+
+    let stdout = child.stdout.take().expect("capture collector stdout");
+    let (line_sender, line_receiver) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if line_sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut report_lines = Vec::new();
+    let mut installed_adapter = false;
+    let mut committed_reports = 0;
+    while committed_reports < 2 {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let line = if remaining.is_zero() {
+            None
+        } else {
+            line_receiver.recv_timeout(remaining).ok()
+        };
+        let Some(line) = line else {
+            let _ = child.kill();
+            reader.join().expect("join collector output reader");
+            let output = child
+                .wait_with_output()
+                .expect("read failed collector output");
+            panic!(
+                "collector did not produce two reports before deadline; lines={report_lines:?}; stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        if line.starts_with("harness.pi: startup failed:") && !installed_adapter {
+            std::os::unix::fs::symlink(&pi_adapter, &delayed_adapter)
+                .expect("make Pi adapter available after startup failure");
+            installed_adapter = true;
+        }
+        if line.starts_with("harness.pi: committed ")
+            || line.starts_with("harness.pi: replay confirmed ")
+        {
+            committed_reports += 1;
+        }
+        report_lines.push(line);
+    }
+    let signal = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status();
+    if !signal.is_ok_and(|status| status.success()) {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("send interrupt signal to collector");
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while child.try_wait().expect("poll collector process").is_none()
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    if child
+        .try_wait()
+        .expect("check collector shutdown")
+        .is_none()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("collector did not stop after interrupt");
+    }
+    reader.join().expect("join collector output reader");
+    report_lines.extend(line_receiver.try_iter());
+    let output = child.wait_with_output().expect("read collector output");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = report_lines.join("\n");
+    assert!(
+        installed_adapter,
+        "watch reported the initial startup failure"
+    );
+    assert!(stdout.contains("harness.pi: committed 1 usage observation(s)"));
+    assert!(committed_reports >= 2);
+    assert!(stdout.contains("Stopped after"));
+
+    let snapshot = execute_inspect(&database).expect("reopen watch history");
+    assert_eq!(snapshot.observations.len(), 1);
+    assert_eq!(
+        snapshot.observations[0].identity.session_id,
+        "watch-session"
+    );
+    drop(snapshot);
+    fs::remove_dir_all(root).expect("remove fixture directory");
+}
+
+#[cfg(unix)]
+#[test]
+fn configured_watch_exits_cleanly_on_terminate_between_cycles() {
+    let (Ok(plugin_host), Ok(pi_adapter)) = (
+        std::env::var("AGENTURM_RUNTIME_PLUGIN_HOST"),
+        std::env::var("AGENTURM_RUNTIME_PI_ADAPTER"),
+    ) else {
+        eprintln!("skipping real watch shutdown test: set plugin host and Pi adapter paths");
+        return;
+    };
+    let root = temporary_directory();
+    fs::create_dir_all(&root).expect("create fixture directory");
+    let source = root.join("pi.jsonl");
+    fs::write(
+        &source,
+        concat!(
+            "{\"type\":\"session\",\"id\":\"terminate-session\"}\n",
+            "{\"type\":\"message\",\"id\":\"assistant-1\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\",\"usage\":{\"input\":8,\"output\":3},\"content\":[]}}\n"
+        ),
+    )
+    .expect("write Pi fixture");
+    let config_path = root.join("sources.json");
+    let config = serde_json::json!({
+        "version": 1,
+        "plugin_host": plugin_host,
+        "sources": [{
+            "plugin_id": "example.rust-pi-harness",
+            "adapter": pi_adapter,
+            "source_root": source,
+            "source_id": "harness.pi"
+        }]
+    });
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).expect("write config");
+    let database = root.join("agenturm.sqlite");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agenturm"))
+        .args([
+            "collect",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--db",
+            database.to_str().unwrap(),
+            "--watch",
+            "--interval-ms",
+            "1000",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("start foreground collector");
+
+    let stdout = child.stdout.take().expect("capture collector stdout");
+    let (line_sender, line_receiver) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if line_sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut report_lines = Vec::new();
+    let mut successful_reports = 0;
+    while successful_reports < 2 {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let line = if remaining.is_zero() {
+            None
+        } else {
+            line_receiver.recv_timeout(remaining).ok()
+        };
+        let Some(line) = line else {
+            let _ = child.kill();
+            let _ = child.wait();
+            reader.join().expect("join collector output reader");
+            panic!("healthy collector did not produce two reports");
+        };
+        if line.starts_with("harness.pi: committed ")
+            || line.starts_with("harness.pi: replay confirmed ")
+        {
+            successful_reports += 1;
+        }
+        report_lines.push(line);
+    }
+    let signal = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status();
+    if !signal.is_ok_and(|status| status.success()) {
+        let _ = child.kill();
+        let _ = child.wait();
+        reader.join().expect("join collector output reader");
+        panic!("send SIGTERM to collector");
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while child.try_wait().expect("poll collector process").is_none()
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    if child
+        .try_wait()
+        .expect("check collector shutdown")
+        .is_none()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        reader.join().expect("join collector output reader");
+        panic!("collector did not stop after SIGTERM");
+    }
+    reader.join().expect("join collector output reader");
+    report_lines.extend(line_receiver.try_iter());
+    let output = child.wait_with_output().expect("read collector output");
+    assert!(output.status.success());
+    let stdout = report_lines.join("\n");
+    assert!(stdout.contains("Stopped after"));
+    assert!(!stdout.contains("cancelled by shutdown"));
+    let snapshot = execute_inspect(&database).expect("reopen watch history");
+    assert_eq!(snapshot.observations.len(), 1);
+    assert_eq!(
+        snapshot.observations[0].identity.session_id,
+        "terminate-session"
+    );
+    drop(snapshot);
+    fs::remove_dir_all(root).expect("remove fixture directory");
 }
 
 #[test]

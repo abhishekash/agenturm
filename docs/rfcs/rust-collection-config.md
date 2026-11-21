@@ -7,6 +7,17 @@ The Rust CLI can load an explicit version 1 JSON configuration and poll up to
 agenturm collect --config ./agenturm-sources.json --db ./agenturm.sqlite
 ```
 
+Add `--watch` to keep process adapters and the store open between polls. The
+default interval is 2 seconds; `--interval-ms` accepts 100 through 60000:
+
+```sh
+agenturm collect --config ./agenturm-sources.json --db ./agenturm.sqlite --watch --interval-ms 1000
+```
+
+`Ctrl-C` and `SIGTERM` stop the foreground collector cleanly and close its
+supervised adapter processes. Configuration is loaded once at startup; restart
+the command to apply edits.
+
 The configuration enumerates plugin identities and executable paths. Paths may
 be absolute or relative to the configuration file's directory. Relative paths
 are resolved before any child process starts.
@@ -36,16 +47,17 @@ different IDs.
 }
 ```
 
-Collection performs one bounded poll per configured source. The kernel validates
-each source batch, writes it to the Rust SQLite store, and ACKs only after the
-durable commit. A startup or poll failure for one source is reported in the
-summary while healthy configured sources continue. Any source failure makes
+Each collection cycle performs one bounded poll per configured source. The
+kernel validates each source batch, writes it to the Rust SQLite store, and ACKs
+only after the durable commit. A startup or poll failure for one source is reported in the
+summary while healthy configured sources continue. In watch mode, failed source
+startup is retried at most once per second until it starts or the collector stops. Any source failure makes
 the command exit nonzero; successful sources still retain their committed
 observations. A durable history read failure is reported as a storage failure
 and also makes the command exit nonzero, even if source commits and ACKs already
-succeeded. The JSON file is a user-managed configuration input. The command
-does not run continuously, scan plugin directories, or load in-process native
-libraries.
+succeeded. The JSON file is a user-managed configuration input. Watch mode
+runs in the foreground; the command does not install an OS service, scan plugin
+directories, or load in-process native libraries.
 
 For this first configured command, adapters must emit Agenturm's shared bounded
 source protocol, and the app installs `UsageBatchDecoder`. It stores token

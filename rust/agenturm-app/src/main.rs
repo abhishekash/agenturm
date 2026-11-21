@@ -1,5 +1,6 @@
 use agenturm_app::{
-    AgenturmApp, Command, execute_collect, execute_ingest, execute_inspect, parse_command, render,
+    AgenturmApp, Command, execute_collect, execute_ingest, execute_inspect, execute_watch,
+    parse_command, render,
 };
 use std::process::ExitCode;
 
@@ -33,18 +34,35 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
-        Command::Collect(options) => match execute_collect(&options) {
-            Ok(report) => {
-                print!("{}", report.summary);
-                if report.has_failures() {
-                    return ExitCode::FAILURE;
+        Command::Collect(options) => {
+            if let Some(interval) = options.watch_interval {
+                match execute_watch(&options, interval) {
+                    Ok(report) => {
+                        println!("Stopped after {} collection cycle(s).", report.cycles);
+                        if report.had_failures {
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    Err(message) => {
+                        eprintln!("collection watch failed: {message}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            } else {
+                match execute_collect(&options) {
+                    Ok(report) => {
+                        print!("{}", report.summary);
+                        if report.has_failures() {
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    Err(message) => {
+                        eprintln!("collection failed: {message}");
+                        return ExitCode::FAILURE;
+                    }
                 }
             }
-            Err(message) => {
-                eprintln!("collection failed: {message}");
-                return ExitCode::FAILURE;
-            }
-        },
+        }
         command => {
             if command == Command::Status {
                 let mut app = AgenturmApp::empty_composition();

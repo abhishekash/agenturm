@@ -2,7 +2,7 @@
 //!
 //! The app exposes generic kernel extension registration, durable refresh,
 //! explicit one-shot and configured multi-source usage collection, and a
-//! full-screen durable-history viewer. Continuous collection is still open.
+//! full-screen durable-history viewer. Installed service management remains open.
 
 use agenturm_kernel::{
     Capability, ExtensionId, Harness, Kernel, MetricRow, Observation, ObservationKind,
@@ -13,8 +13,12 @@ use agenturm_store::Store;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 const MAX_COLLECTION_CONFIG_BYTES: u64 = 256 * 1024;
 const MAX_CONFIGURED_SOURCES: usize = 16;
@@ -102,6 +106,7 @@ pub enum Command {
 pub struct ConfiguredCollectOptions {
     pub config: PathBuf,
     pub db: PathBuf,
+    pub watch_interval: Option<Duration>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -115,6 +120,12 @@ impl CollectionReport {
     pub fn has_failures(&self) -> bool {
         self.failed_sources > 0 || !self.global_failures.is_empty()
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WatchReport {
+    pub cycles: usize,
+    pub had_failures: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -242,17 +253,59 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
 }
 
 fn parse_collect_options(args: &[String]) -> Result<ConfiguredCollectOptions, String> {
-    if args.len() != 4
-        || args[0] != "--config"
-        || args[1].is_empty()
-        || args[2] != "--db"
-        || args[3].is_empty()
-    {
-        return Err(usage());
+    let mut config = None;
+    let mut db = None;
+    let mut watch = false;
+    let mut interval_ms = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--config" | "--db" | "--interval-ms" => {
+                let key = args[index].as_str();
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(usage)?;
+                if value.starts_with("--") {
+                    return Err(usage());
+                }
+                let slot = match key {
+                    "--config" => &mut config,
+                    "--db" => &mut db,
+                    "--interval-ms" => &mut interval_ms,
+                    _ => unreachable!(),
+                };
+                if slot.replace(value.clone()).is_some() {
+                    return Err(format!("duplicate option {key}\n{}", usage()));
+                }
+                index += 2;
+            }
+            "--watch" if !watch => {
+                watch = true;
+                index += 1;
+            }
+            _ => return Err(usage()),
+        }
     }
+    if interval_ms.is_some() && !watch {
+        return Err("--interval-ms requires --watch".into());
+    }
+    let watch_interval = if watch {
+        let interval_ms = interval_ms
+            .map(|value| value.parse::<u64>().map_err(|_| usage()))
+            .transpose()?
+            .unwrap_or(2_000);
+        if !(100..=60_000).contains(&interval_ms) {
+            return Err("watch interval must be between 100 and 60000 milliseconds".into());
+        }
+        Some(Duration::from_millis(interval_ms))
+    } else {
+        None
+    };
     Ok(ConfiguredCollectOptions {
-        config: PathBuf::from(&args[1]),
-        db: PathBuf::from(&args[3]),
+        config: PathBuf::from(config.ok_or_else(usage)?),
+        db: PathBuf::from(db.ok_or_else(usage)?),
+        watch_interval,
     })
 }
 
@@ -306,7 +359,7 @@ fn parse_ingest_options(
 }
 
 fn usage() -> String {
-    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> | agenturm collect --config <json-path> --db <path> | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
+    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
 }
 
 pub fn execute_inspect(db_path: &std::path::Path) -> Result<Snapshot, String> {
@@ -316,47 +369,221 @@ pub fn execute_inspect(db_path: &std::path::Path) -> Result<Snapshot, String> {
 }
 
 pub fn execute_collect(options: &ConfiguredCollectOptions) -> Result<CollectionReport, String> {
-    let config = load_collection_config(&options.config)?;
-    let mut store =
-        Store::open(&options.db).map_err(|error| format!("open store failed: {error}"))?;
-    let mut kernel = Kernel::new();
-    let mut source_ids = Vec::with_capacity(config.sources.len());
-    let mut startup_failures = BTreeMap::new();
-    for source in config.sources {
-        let source_id = ExtensionId::parse(source.source_id.clone())
-            .map_err(|error| format!("invalid source ID: {error}"))?;
-        source_ids.push(source_id.clone());
-        let process_config = ProcessConfig::new(
-            config.plugin_host.clone(),
-            source.adapter,
-            source.source_root,
-            source.source_id,
-            source.plugin_id,
-        );
-        match ProcessSource::spawn_with_decoder(process_config, UsageBatchDecoder) {
-            Ok(adapter) => {
-                if let Err(error) = kernel.register_source_adapter(source_id.clone(), adapter) {
-                    startup_failures.insert(source_id, error.to_string());
+    let mut collector = ConfiguredCollector::open(options)?;
+    Ok(collector.refresh())
+}
+
+pub fn execute_watch(
+    options: &ConfiguredCollectOptions,
+    interval: Duration,
+) -> Result<WatchReport, String> {
+    if interval < Duration::from_millis(100) || interval > Duration::from_secs(60) {
+        return Err("watch interval must be between 100 milliseconds and 60 seconds".into());
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let _signals = WatchSignalRegistrations::new(Arc::clone(&stop))?;
+    let mut collector = ConfiguredCollector::open_with_stop(options, Some(&stop))?;
+
+    let mut cycles = 0usize;
+    let mut had_failures = false;
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    let mut first_cycle = true;
+    loop {
+        if !first_cycle && stop.load(Ordering::Relaxed) {
+            break;
+        }
+        first_cycle = false;
+        let report = collector.refresh();
+        had_failures |= report.has_failures();
+        writeln!(output, "{}", report.summary.trim_end())
+            .map_err(|error| format!("write collection report failed: {error}"))?;
+        output
+            .flush()
+            .map_err(|error| format!("flush collection report failed: {error}"))?;
+        cycles += 1;
+
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let deadline = Instant::now() + interval;
+        while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
+            thread::sleep(
+                Duration::from_millis(25).min(deadline.saturating_duration_since(Instant::now())),
+            );
+        }
+    }
+    drop(output);
+    Ok(WatchReport {
+        cycles,
+        had_failures,
+    })
+}
+
+struct WatchSignalRegistrations(Vec<signal_hook::SigId>);
+
+impl WatchSignalRegistrations {
+    fn new(stop: Arc<AtomicBool>) -> Result<Self, String> {
+        let interrupt = signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&stop))
+            .map_err(|error| format!("register interrupt handler failed: {error}"))?;
+        let mut registrations = Self(vec![interrupt]);
+        #[cfg(unix)]
+        {
+            let terminate = signal_hook::flag::register(signal_hook::consts::SIGTERM, stop)
+                .map_err(|error| format!("register termination handler failed: {error}"))?;
+            registrations.0.push(terminate);
+        }
+        Ok(registrations)
+    }
+}
+
+impl Drop for WatchSignalRegistrations {
+    fn drop(&mut self) {
+        for registration in self.0.drain(..) {
+            signal_hook::low_level::unregister(registration);
+        }
+    }
+}
+
+pub struct ConfiguredCollector {
+    kernel: Kernel,
+    store: Store,
+    source_ids: Vec<ExtensionId>,
+    startup_failures: BTreeMap<ExtensionId, String>,
+    pending_sources: BTreeMap<ExtensionId, (ProcessConfig, Instant)>,
+    stop_flag: Option<Arc<AtomicBool>>,
+}
+
+impl ConfiguredCollector {
+    pub fn open(options: &ConfiguredCollectOptions) -> Result<Self, String> {
+        Self::open_with_stop(options, None)
+    }
+
+    fn open_with_stop(
+        options: &ConfiguredCollectOptions,
+        stop: Option<&Arc<AtomicBool>>,
+    ) -> Result<Self, String> {
+        let config = load_collection_config(&options.config)?;
+        let store =
+            Store::open(&options.db).map_err(|error| format!("open store failed: {error}"))?;
+        let mut kernel = Kernel::new();
+        let mut source_ids = Vec::with_capacity(config.sources.len());
+        let mut startup_failures = BTreeMap::new();
+        let mut pending_sources = BTreeMap::new();
+        for source in config.sources {
+            let source_id = ExtensionId::parse(source.source_id.clone())
+                .map_err(|error| format!("invalid source ID: {error}"))?;
+            source_ids.push(source_id.clone());
+            if stop.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
+                startup_failures.insert(
+                    source_id,
+                    "startup skipped because shutdown was requested".into(),
+                );
+                continue;
+            }
+            let mut process_config = ProcessConfig::new(
+                config.plugin_host.clone(),
+                source.adapter,
+                source.source_root,
+                source.source_id,
+                source.plugin_id,
+            );
+            if let Some(stop) = stop {
+                process_config = process_config.with_stop_flag(Arc::clone(stop));
+            }
+            let retry_config = process_config.clone();
+            match ProcessSource::spawn_with_decoder(process_config, UsageBatchDecoder) {
+                Ok(adapter) => {
+                    if let Err(error) = kernel.register_source_adapter(source_id.clone(), adapter) {
+                        startup_failures.insert(source_id, error.to_string());
+                    }
+                }
+                Err(error) => {
+                    startup_failures.insert(source_id.clone(), error.to_string());
+                    if stop.is_some() {
+                        pending_sources.insert(
+                            source_id,
+                            (retry_config, Instant::now() + Duration::from_secs(1)),
+                        );
+                    }
                 }
             }
-            Err(error) => {
-                startup_failures.insert(source_id, error.to_string());
+        }
+
+        Ok(Self {
+            kernel,
+            store,
+            source_ids,
+            startup_failures,
+            pending_sources,
+            stop_flag: stop.cloned(),
+        })
+    }
+
+    pub fn refresh(&mut self) -> CollectionReport {
+        self.retry_pending_sources();
+        let snapshot = self.kernel.refresh_with_store(&mut self.store);
+        let shutdown_requested = self
+            .stop_flag
+            .as_ref()
+            .is_some_and(|stop| stop.load(Ordering::Relaxed));
+        build_collection_report(
+            &self.source_ids,
+            &self.startup_failures,
+            &snapshot,
+            shutdown_requested,
+        )
+    }
+
+    fn retry_pending_sources(&mut self) {
+        let Some(stop) = &self.stop_flag else {
+            return;
+        };
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let now = Instant::now();
+        let due = self
+            .pending_sources
+            .iter()
+            .filter(|(_, (_, retry_at))| *retry_at <= now)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in due {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            let Some((config, _)) = self.pending_sources.get(&id).cloned() else {
+                continue;
+            };
+            match ProcessSource::spawn_with_decoder(config, UsageBatchDecoder) {
+                Ok(adapter) => match self.kernel.register_source_adapter(id.clone(), adapter) {
+                    Ok(()) => {
+                        self.pending_sources.remove(&id);
+                        self.startup_failures.remove(&id);
+                    }
+                    Err(error) => {
+                        self.pending_sources.remove(&id);
+                        self.startup_failures.insert(id, error.to_string());
+                    }
+                },
+                Err(error) => {
+                    if let Some((_, retry_at)) = self.pending_sources.get_mut(&id) {
+                        *retry_at = Instant::now() + Duration::from_secs(1);
+                    }
+                    self.startup_failures.insert(id, error.to_string());
+                }
             }
         }
     }
-
-    let snapshot = kernel.refresh_with_store(&mut store);
-    Ok(build_collection_report(
-        &source_ids,
-        &startup_failures,
-        &snapshot,
-    ))
 }
 
 fn build_collection_report(
     source_ids: &[ExtensionId],
     startup_failures: &BTreeMap<ExtensionId, String>,
     snapshot: &Snapshot,
+    shutdown_requested: bool,
 ) -> CollectionReport {
     let mut lines = Vec::with_capacity(source_ids.len());
     let mut failed_sources = 0;
@@ -372,6 +599,16 @@ fn build_collection_report(
     let source_count = source_ids.len();
     for source_id in source_ids {
         if let Some(message) = startup_failures.get(source_id) {
+            if shutdown_requested
+                && (message == "source operation cancelled"
+                    || message == "startup skipped because shutdown was requested")
+            {
+                lines.push(format!(
+                    "{}: startup cancelled by shutdown",
+                    source_id.as_str()
+                ));
+                continue;
+            }
             failed_sources += 1;
             lines.push(format!("{}: startup failed: {message}", source_id.as_str()));
             continue;
@@ -381,6 +618,13 @@ fn build_collection_report(
             .iter()
             .find(|failure| failure.extension_id == *source_id)
         {
+            if shutdown_requested && failure.message == "source operation cancelled" {
+                lines.push(format!(
+                    "{}: poll cancelled by shutdown",
+                    source_id.as_str()
+                ));
+                continue;
+            }
             failed_sources += 1;
             lines.push(format!(
                 "{}: {:?}: {}",
@@ -405,6 +649,13 @@ fn build_collection_report(
                 ));
             }
             None => {
+                if shutdown_requested {
+                    lines.push(format!(
+                        "{}: poll cancelled by shutdown",
+                        source_id.as_str()
+                    ));
+                    continue;
+                }
                 failed_sources += 1;
                 lines.push(format!("{}: no admission result", source_id.as_str()));
             }
@@ -629,6 +880,7 @@ pub fn render(command: Command) -> String {
             "Usage: agenturm [--help|--version|status]\n",
             "       agenturm inspect --db <path>\n",
             "       agenturm collect --config <json-path> --db <path>\n",
+            "       agenturm collect --config <json-path> --db <path> --watch [--interval-ms <100..60000>]\n",
             "       agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>\n",
             "       agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>\n",
             "\n",
@@ -643,9 +895,9 @@ pub fn render(command: Command) -> String {
             "Registered harnesses: 0\n",
             "Registered capabilities: 0\n",
             "Registered UI contributions: 0\n",
-            "Production storage service: not connected (collection is one-shot)\n",
-            "One-shot registered-plugin usage projection: available\n",
-            "Configured multi-source collection: available (one-shot)\n",
+            "Production storage service: not connected (foreground command only)\n",
+            "Registered-plugin usage projection: available\n",
+            "Configured multi-source collection: one-shot and foreground watch available\n",
         )
         .into(),
         Command::Inspect(_) => String::new(),
@@ -741,10 +993,54 @@ mod tests {
             Command::Collect(ConfiguredCollectOptions {
                 config: PathBuf::from("sources.json"),
                 db: PathBuf::from("state.sqlite"),
+                watch_interval: None,
             })
         );
         assert!(
             parse_command(&["collect".into(), "--config".into(), "sources.json".into()]).is_err()
+        );
+        assert_eq!(
+            parse_command(&[
+                "collect".into(),
+                "--watch".into(),
+                "--interval-ms".into(),
+                "500".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--config".into(),
+                "sources.json".into(),
+            ])
+            .unwrap(),
+            Command::Collect(ConfiguredCollectOptions {
+                config: PathBuf::from("sources.json"),
+                db: PathBuf::from("state.sqlite"),
+                watch_interval: Some(Duration::from_millis(500)),
+            })
+        );
+        assert!(
+            parse_command(&[
+                "collect".into(),
+                "--config".into(),
+                "sources.json".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--interval-ms".into(),
+                "500".into(),
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_command(&[
+                "collect".into(),
+                "--config".into(),
+                "sources.json".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--watch".into(),
+                "--interval-ms".into(),
+                "99".into(),
+            ])
+            .is_err()
         );
         assert!(parse_command(&["inspect".into()]).is_err());
         assert!(parse_command(&["inspect".into(), "--db".into(), String::new()]).is_err());
@@ -804,8 +1100,10 @@ mod tests {
         let status = render(Command::Status);
         assert!(status.contains("Registered harnesses: 0"));
         assert!(status.contains("Production storage service: not connected"));
-        assert!(status.contains("One-shot registered-plugin usage projection: available"));
-        assert!(status.contains("Configured multi-source collection: available (one-shot)"));
+        assert!(status.contains("Registered-plugin usage projection: available"));
+        assert!(status.contains(
+            "Configured multi-source collection: one-shot and foreground watch available"
+        ));
     }
 
     #[test]
@@ -816,7 +1114,7 @@ mod tests {
             stage: agenturm_kernel::ExtensionStage::AdmissionRead,
             message: "injected durable history read failure".into(),
         });
-        let report = build_collection_report(&[], &BTreeMap::new(), &snapshot);
+        let report = build_collection_report(&[], &BTreeMap::new(), &snapshot, false);
         assert_eq!(report.failed_sources, 0);
         assert_eq!(report.global_failures.len(), 1);
         assert!(
@@ -851,6 +1149,7 @@ mod tests {
             &[failed_source, healthy_source],
             &BTreeMap::new(),
             &snapshot,
+            false,
         );
         assert!(report.summary.contains("harness.failed: AdmissionPoll"));
         assert!(
@@ -861,6 +1160,21 @@ mod tests {
         assert!(report.summary.contains("ACK sent=true"));
         assert_eq!(report.failed_sources, 1);
         assert!(report.has_failures());
+    }
+
+    #[test]
+    fn shutdown_cancellation_is_reported_without_becoming_a_source_failure() {
+        let source_id = ExtensionId::parse("harness.cancelled").unwrap();
+        let mut snapshot = Snapshot::default();
+        snapshot.failures.push(agenturm_kernel::ExtensionFailure {
+            extension_id: source_id.clone(),
+            stage: agenturm_kernel::ExtensionStage::AdmissionPoll,
+            message: "source operation cancelled".into(),
+        });
+        let report = build_collection_report(&[source_id], &BTreeMap::new(), &snapshot, true);
+        assert!(report.summary.contains("poll cancelled by shutdown"));
+        assert_eq!(report.failed_sources, 0);
+        assert!(!report.has_failures());
     }
 
     #[test]

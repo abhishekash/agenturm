@@ -12,6 +12,7 @@ dependencies = [
  "agenturm-ui",
  "serde",
  "serde_json",
+ "signal-hook",
 ]
 
 [[package]]

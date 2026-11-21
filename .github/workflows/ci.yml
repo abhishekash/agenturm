@@ -37,8 +37,8 @@ jobs:
         env:
           AGENTURM_RUNTIME_PLUGIN_HOST: ${{ github.workspace }}/target/debug/agenturm-plugin-host
           AGENTURM_RUNTIME_PI_ADAPTER: ${{ github.workspace }}/target/debug/agenturm-pi-harness
-      - name: Verify configured multi-harness collection and restart read
-        run: cargo test --locked -p agenturm-app --test configured_collection -- --exact configured_collection_admits_pi_and_codex_together_and_reopens_history
+      - name: Verify configured collection and graceful watch lifecycle
+        run: cargo test --locked -p agenturm-app --test configured_collection
         env:
           AGENTURM_RUNTIME_PLUGIN_HOST: ${{ github.workspace }}/target/debug/agenturm-plugin-host
           AGENTURM_RUNTIME_PI_ADAPTER: ${{ github.workspace }}/target/debug/agenturm-pi-harness
