@@ -1,16 +1,16 @@
-//! Commit-before-ACK admission for supervised source adapters.
+//! Supervised process adapters for the Agenturm kernel.
 //!
 //! The first supported wire subset is metadata-only Codex usage. The explicit
-//! usage ingestion projection counts and skips other valid fact kinds; malformed
-//! envelopes and usage records fail closed. This crate is not yet a manifest
-//! installer, policy engine, or production service authority.
+//! usage projection counts and skips validated other fact kinds; malformed or
+//! unsupported records fail closed. Cursor commit and ACK ordering live in the
+//! kernel, outside this process-only crate.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-use agenturm_protocol::{read_frame, write_frame};
-use agenturm_store::{
-    CommitOutcome, ObservationBatch, ObservationIdentity, ObservationKind, Store, StoredObservation,
+use agenturm_kernel::{
+    ObservationIdentity, ObservationKind, PreparedSourceBatch, RawObservation, SourceAdapter,
 };
+use agenturm_protocol::{read_frame, write_frame};
 use serde::Deserialize;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -60,12 +60,6 @@ impl From<serde_json::Error> for RuntimeError {
     }
 }
 
-impl From<agenturm_store::StoreError> for RuntimeError {
-    fn from(error: agenturm_store::StoreError) -> Self {
-        Self::new(format!("durable admission failed: {error}"))
-    }
-}
-
 /// Configures a bundled Rust adapter launched through the Rust plugin host.
 #[derive(Clone, Debug)]
 pub struct ProcessConfig {
@@ -96,83 +90,6 @@ impl ProcessConfig {
     }
 }
 
-/// Parsed source response before the host commits it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedBatch {
-    pub source_id: String,
-    pub next_cursor: String,
-    pub observations: Vec<StoredObservation>,
-    pub skipped_non_usage_facts: usize,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IngestResult {
-    pub commit: CommitOutcome,
-    pub skipped_non_usage_facts: usize,
-}
-
-/// Source protocol boundary. A process implementation has one pending batch
-/// between `poll` and `ack`; an ACK is never issued by this trait itself.
-pub trait SourcePort {
-    fn poll(&mut self, cursor: &str) -> Result<PreparedBatch>;
-    fn ack(&mut self, cursor: &str) -> Result<()>;
-}
-
-/// Minimal storage boundary used by the commit-before-ACK coordinator.
-pub trait AdmissionStore {
-    fn source_cursor(&self, source_id: &str) -> Result<Option<String>>;
-    fn commit(&mut self, batch: &ObservationBatch) -> Result<CommitOutcome>;
-}
-
-impl AdmissionStore for Store {
-    fn source_cursor(&self, source_id: &str) -> Result<Option<String>> {
-        Store::source_cursor(self, source_id).map_err(Into::into)
-    }
-
-    fn commit(&mut self, batch: &ObservationBatch) -> Result<CommitOutcome> {
-        Store::commit_batch(self, batch).map_err(Into::into)
-    }
-}
-
-/// Reads one source batch, commits rows/receipt/cursor, then ACKs that cursor.
-/// A parse or commit error exits before `ack`, leaving the adapter batch
-/// replayable from the last durable cursor.
-pub fn ingest_once(
-    source_id: &str,
-    source: &mut impl SourcePort,
-    store: &mut impl AdmissionStore,
-) -> Result<IngestResult> {
-    let expected_cursor = store.source_cursor(source_id)?;
-    let wire_cursor = expected_cursor.as_deref().unwrap_or_default();
-    let prepared = source.poll(wire_cursor)?;
-    if prepared.source_id != source_id {
-        return Err(RuntimeError::new(
-            "source adapter returned a different source ID",
-        ));
-    }
-    if prepared.next_cursor.len() > MAX_SOURCE_CURSOR_BYTES
-        || prepared.next_cursor.chars().any(char::is_control)
-    {
-        return Err(RuntimeError::new(
-            "source adapter returned an invalid cursor",
-        ));
-    }
-    let next_cursor = prepared.next_cursor.clone();
-    let skipped_non_usage_facts = prepared.skipped_non_usage_facts;
-    let batch = ObservationBatch::new_deterministic(
-        source_id,
-        expected_cursor,
-        prepared.next_cursor,
-        prepared.observations,
-    )?;
-    let outcome = store.commit(&batch)?;
-    source.ack(&next_cursor)?;
-    Ok(IngestResult {
-        commit: outcome,
-        skipped_non_usage_facts,
-    })
-}
-
 /// Long-lived parent connection to `agenturm-plugin-host --child <adapter>`.
 pub struct ProcessSource {
     config: ProcessConfig,
@@ -180,6 +97,8 @@ pub struct ProcessSource {
     child_stdin: ChildStdin,
     replies: Receiver<std::result::Result<Option<String>, String>>,
     pending_cursor: Option<String>,
+    pending_from_cursor: Option<String>,
+    pending_batch: Option<PreparedSourceBatch>,
 }
 
 impl ProcessSource {
@@ -240,6 +159,8 @@ impl ProcessSource {
             child_stdin,
             replies,
             pending_cursor: None,
+            pending_from_cursor: None,
+            pending_batch: None,
         };
         source.hello()?;
         Ok(source)
@@ -298,46 +219,90 @@ impl ProcessSource {
     }
 }
 
-impl SourcePort for ProcessSource {
-    fn poll(&mut self, cursor: &str) -> Result<PreparedBatch> {
-        if self.pending_cursor.is_some() {
-            return Err(RuntimeError::new(
-                "previous source batch must be ACKed first",
-            ));
-        }
-        validate_cursor(cursor)?;
-        let request = serde_json::json!({
-            "type": "poll",
-            "protocol": PROTOCOL_VERSION,
-            "source_id": self.config.source_id,
-            "cursor": cursor,
-            "max_records": MAX_POLL_RECORDS,
-            "max_bytes": DATA_FRAME_LIMIT,
-        });
-        self.write_request(&request)?;
-        let reply = self.read_reply()?;
-        let batch = parse_codex_batch(&reply, &self.config.source_id)?;
-        self.pending_cursor = Some(batch.cursor.clone());
-        Ok(PreparedBatch {
-            source_id: batch.source_id,
-            next_cursor: batch.cursor,
-            observations: batch.observations,
-            skipped_non_usage_facts: batch.skipped_non_usage_facts,
-        })
+impl SourceAdapter for ProcessSource {
+    fn source_id(&self) -> &str {
+        &self.config.source_id
     }
 
-    fn ack(&mut self, cursor: &str) -> Result<()> {
-        if self.pending_cursor.as_deref() != Some(cursor) {
-            return Err(RuntimeError::new("source ACK cursor mismatch"));
+    fn poll(&mut self, cursor: &str) -> std::result::Result<PreparedSourceBatch, String> {
+        if let Some(batch) = &self.pending_batch {
+            if self.pending_from_cursor.as_deref() == Some(cursor) {
+                return Ok(batch.clone());
+            }
+            let reset = self.reset();
+            return Err(match reset {
+                Ok(()) => "previous source batch belonged to a different durable cursor".into(),
+                Err(error) => format!(
+                    "previous source batch belonged to a different durable cursor; source reset failed: {error}"
+                ),
+            });
         }
-        let request = serde_json::json!({
-            "type": "ack",
-            "protocol": PROTOCOL_VERSION,
-            "source_id": self.config.source_id,
-            "cursor": cursor,
-        });
-        self.write_request(&request)?;
-        self.pending_cursor = None;
+        validate_cursor(cursor).map_err(|error| error.to_string())?;
+        let result = (|| {
+            if self.pending_cursor.is_some() {
+                return Err(RuntimeError::new(
+                    "previous source batch must be ACKed first",
+                ));
+            }
+            let request = serde_json::json!({
+                "type": "poll",
+                "protocol": PROTOCOL_VERSION,
+                "source_id": self.config.source_id,
+                "cursor": cursor,
+                "max_records": MAX_POLL_RECORDS,
+                "max_bytes": DATA_FRAME_LIMIT,
+            });
+            self.write_request(&request)?;
+            let reply = self.read_reply()?;
+            let batch = parse_codex_batch(&reply, &self.config.source_id)?;
+            Ok(PreparedSourceBatch {
+                next_cursor: batch.cursor,
+                observations: batch.observations,
+                skipped_non_usage_facts: batch.skipped_non_usage_facts,
+            })
+        })();
+        match result {
+            Ok(batch) => {
+                self.pending_cursor = Some(batch.next_cursor.clone());
+                self.pending_from_cursor = Some(cursor.to_owned());
+                self.pending_batch = Some(batch.clone());
+                Ok(batch)
+            }
+            Err(error) => {
+                let reset = self.reset();
+                Err(match reset {
+                    Ok(()) => error.to_string(),
+                    Err(reset_error) => format!("{error}; source reset failed: {reset_error}"),
+                })
+            }
+        }
+    }
+
+    fn ack(&mut self, cursor: &str) -> std::result::Result<(), String> {
+        (|| {
+            if self.pending_cursor.as_deref() != Some(cursor) {
+                return Err(RuntimeError::new("source ACK cursor mismatch"));
+            }
+            let request = serde_json::json!({
+                "type": "ack",
+                "protocol": PROTOCOL_VERSION,
+                "source_id": self.config.source_id,
+                "cursor": cursor,
+            });
+            self.write_request(&request)?;
+            self.pending_cursor = None;
+            self.pending_from_cursor = None;
+            self.pending_batch = None;
+            Ok(())
+        })()
+        .map_err(|error: RuntimeError| error.to_string())
+    }
+
+    fn reset(&mut self) -> std::result::Result<(), String> {
+        let config = self.config.clone();
+        self.terminate();
+        let replacement = Self::spawn(config).map_err(|error| error.to_string())?;
+        *self = replacement;
         Ok(())
     }
 }
@@ -350,6 +315,10 @@ impl Drop for ProcessSource {
 
 impl ProcessSource {
     fn terminate(&mut self) {
+        if self.child.try_wait().ok().flatten().is_some() {
+            let _ = self.child.wait();
+            return;
+        }
         #[cfg(unix)]
         kill_process_group(self.child.id());
         #[cfg(not(unix))]
@@ -485,7 +454,6 @@ fn parse_codex_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedCo
         observations.push(typed.try_into()?);
     }
     Ok(ParsedCodexBatch {
-        source_id: batch.source_id,
         cursor: batch.cursor,
         observations,
         skipped_non_usage_facts,
@@ -514,9 +482,8 @@ struct WireBatch {
 }
 
 struct ParsedCodexBatch {
-    source_id: String,
     cursor: String,
-    observations: Vec<StoredObservation>,
+    observations: Vec<RawObservation>,
     skipped_non_usage_facts: usize,
 }
 
@@ -696,7 +663,7 @@ fn valid_source_identifier(value: &str, max_bytes: usize) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
 }
 
-impl TryFrom<WireUsageRecord> for StoredObservation {
+impl TryFrom<WireUsageRecord> for RawObservation {
     type Error = RuntimeError;
 
     fn try_from(record: WireUsageRecord) -> Result<Self> {
@@ -713,7 +680,7 @@ impl TryFrom<WireUsageRecord> for StoredObservation {
         {
             return Err(RuntimeError::new("Codex usage record has no counters"));
         }
-        Ok(StoredObservation {
+        Ok(RawObservation {
             event_id: record.event_id,
             revision: record.revision,
             identity: ObservationIdentity {
@@ -757,163 +724,6 @@ fn parse_decimal_timestamp(value: &str) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
-
-    fn identity() -> ObservationIdentity {
-        ObservationIdentity {
-            session_id: "session-1".into(),
-            worker_id: None,
-            turn_id: Some("turn-1".into()),
-            operation_id: None,
-        }
-    }
-
-    fn observation(event_id: &str) -> StoredObservation {
-        StoredObservation {
-            event_id: event_id.into(),
-            revision: 0,
-            identity: identity(),
-            observed_at_unix_ns: 1_700_000_000_123_456_789,
-            kind: ObservationKind::Usage {
-                input_tokens: Some(7),
-                output_tokens: Some(3),
-                cache_read_tokens: None,
-                cache_write_tokens: None,
-                total_tokens: None,
-            },
-        }
-    }
-
-    fn prepared(source_id: &str, cursor: &str, event_id: &str) -> PreparedBatch {
-        PreparedBatch {
-            source_id: source_id.into(),
-            next_cursor: cursor.into(),
-            observations: vec![observation(event_id)],
-            skipped_non_usage_facts: 0,
-        }
-    }
-
-    #[derive(Clone)]
-    struct Log(Arc<Mutex<Vec<String>>>);
-
-    impl Log {
-        fn push(&self, event: impl Into<String>) {
-            self.0.lock().unwrap().push(event.into());
-        }
-
-        fn take(&self) -> Vec<String> {
-            std::mem::take(&mut *self.0.lock().unwrap())
-        }
-    }
-
-    struct FakeSource {
-        response: Option<Result<PreparedBatch>>,
-        log: Log,
-    }
-
-    impl SourcePort for FakeSource {
-        fn poll(&mut self, cursor: &str) -> Result<PreparedBatch> {
-            self.log.push(format!("poll:{cursor}"));
-            self.response.take().expect("fake source polled once")
-        }
-
-        fn ack(&mut self, cursor: &str) -> Result<()> {
-            self.log.push(format!("ack:{cursor}"));
-            Ok(())
-        }
-    }
-
-    struct FakeStore {
-        cursor: Option<String>,
-        outcome: std::result::Result<CommitOutcome, &'static str>,
-        log: Log,
-    }
-
-    impl AdmissionStore for FakeStore {
-        fn source_cursor(&self, source_id: &str) -> Result<Option<String>> {
-            self.log.push(format!("cursor:{source_id}"));
-            Ok(self.cursor.clone())
-        }
-
-        fn commit(&mut self, batch: &ObservationBatch) -> Result<CommitOutcome> {
-            self.log.push(format!("commit:{}", batch.next_cursor));
-            self.outcome.map_err(RuntimeError::new)
-        }
-    }
-
-    fn log() -> Log {
-        Log(Arc::new(Mutex::new(Vec::new())))
-    }
-
-    #[test]
-    fn durable_commit_precedes_ack_and_exact_replay_is_ack_safe() {
-        let log = log();
-        let mut source = FakeSource {
-            response: Some(Ok(prepared("harness.codex", "cursor-1", "event-1"))),
-            log: log.clone(),
-        };
-        let mut store = FakeStore {
-            cursor: None,
-            outcome: Ok(CommitOutcome::Replay),
-            log: log.clone(),
-        };
-
-        let result = ingest_once("harness.codex", &mut source, &mut store).unwrap();
-        assert_eq!(result.commit, CommitOutcome::Replay);
-        assert_eq!(result.skipped_non_usage_facts, 0);
-        assert_eq!(
-            log.take(),
-            [
-                "cursor:harness.codex",
-                "poll:",
-                "commit:cursor-1",
-                "ack:cursor-1"
-            ]
-        );
-    }
-
-    #[test]
-    fn malformed_batch_never_reaches_commit_or_ack() {
-        let log = log();
-        let mut bad = prepared("harness.codex", "cursor-1", "bad event id");
-        let mut source = FakeSource {
-            response: Some(Ok(bad.clone())),
-            log: log.clone(),
-        };
-        let mut store = FakeStore {
-            cursor: None,
-            outcome: Ok(CommitOutcome::Committed { inserted: 1 }),
-            log: log.clone(),
-        };
-        assert!(ingest_once("harness.codex", &mut source, &mut store).is_err());
-        assert_eq!(log.take(), ["cursor:harness.codex", "poll:"]);
-
-        // A valid non-usage fact is intentionally skipped by this projection.
-        bad.observations.clear();
-        let response = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"c2","records":[{"event_id":"e1","revision":0,"kind":"tool","time_ns":"1","identity":{"session_id":"s1"},"payload":{"category":"shell","result":"succeeded"}}]}"#;
-        let parsed = parse_codex_batch(response, "harness.codex").unwrap();
-        assert!(parsed.observations.is_empty());
-        assert_eq!(parsed.skipped_non_usage_facts, 1);
-    }
-
-    #[test]
-    fn storage_failure_never_acks_prepared_batch() {
-        let log = log();
-        let mut source = FakeSource {
-            response: Some(Ok(prepared("harness.codex", "cursor-1", "event-1"))),
-            log: log.clone(),
-        };
-        let mut store = FakeStore {
-            cursor: Some("cursor-0".into()),
-            outcome: Err("injected commit failure"),
-            log: log.clone(),
-        };
-        assert!(ingest_once("harness.codex", &mut source, &mut store).is_err());
-        assert_eq!(
-            log.take(),
-            ["cursor:harness.codex", "poll:cursor-0", "commit:cursor-1"]
-        );
-    }
 
     #[test]
     fn parser_preserves_native_event_identity_revision_and_nanoseconds() {

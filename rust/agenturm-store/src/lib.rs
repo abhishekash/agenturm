@@ -5,14 +5,16 @@
 //! has no service principal, cross-process writer fence, product policy,
 //! retention, backup protocol, or integration with the Agenturm app.
 //!
-//! Kernel observations now carry adapter-native event ID/revision, nanosecond
-//! timestamps, and typed session/worker/turn/operation identity. Runtime
-//! admission and commit-before-ACK integration remain separate work; IDs must
-//! stay source-scoped and must never be synthesized from timestamps or session
-//! keys.
+//! Kernel observations carry adapter-native event ID/revision, nanosecond
+//! timestamps, and typed session/worker/turn/operation identity. The store
+//! implements the kernel's atomic admission port; IDs remain source-scoped and
+//! must never be synthesized from timestamps or session keys.
 
 #![forbid(unsafe_code)]
 
+use agenturm_kernel::{
+    Observation, ObservationKind as KernelObservationKind, ObservationStore, StoreCommit,
+};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -547,6 +549,78 @@ impl Store {
             )
             .optional()
             .map_err(StoreError::from)
+    }
+}
+
+impl ObservationStore for Store {
+    fn source_cursor(&self, source_id: &str) -> std::result::Result<Option<String>, String> {
+        Store::source_cursor(self, source_id).map_err(|error| error.to_string())
+    }
+
+    fn commit(
+        &mut self,
+        source_id: &str,
+        expected_cursor: Option<&str>,
+        next_cursor: &str,
+        observations: &[Observation],
+    ) -> std::result::Result<StoreCommit, String> {
+        let mut stored = Vec::with_capacity(observations.len());
+        for observation in observations {
+            if observation.harness_id.as_str() != source_id {
+                return Err("observation source identity mismatch".into());
+            }
+            stored.push(StoredObservation {
+                event_id: observation.event_id.clone(),
+                revision: observation.revision,
+                identity: ObservationIdentity {
+                    session_id: observation.identity.session_id.clone(),
+                    worker_id: observation.identity.worker_id.clone(),
+                    turn_id: observation.identity.turn_id.clone(),
+                    operation_id: observation.identity.operation_id.clone(),
+                },
+                observed_at_unix_ns: observation.observed_at_unix_ns,
+                kind: match &observation.kind {
+                    KernelObservationKind::SessionStarted => ObservationKind::SessionStarted,
+                    KernelObservationKind::SessionEnded => ObservationKind::SessionEnded,
+                    KernelObservationKind::Activity { category } => ObservationKind::Activity {
+                        category: category.clone(),
+                    },
+                    KernelObservationKind::Usage {
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                        total_tokens,
+                    } => ObservationKind::Usage {
+                        input_tokens: *input_tokens,
+                        output_tokens: *output_tokens,
+                        cache_read_tokens: *cache_read_tokens,
+                        cache_write_tokens: *cache_write_tokens,
+                        total_tokens: *total_tokens,
+                    },
+                },
+            });
+        }
+        let batch = ObservationBatch::new_deterministic(
+            source_id,
+            expected_cursor.map(str::to_owned),
+            next_cursor,
+            stored,
+        )
+        .map_err(|error| error.to_string())?;
+        match self
+            .commit_batch(&batch)
+            .map_err(|error| error.to_string())?
+        {
+            CommitOutcome::Committed { inserted } => Ok(StoreCommit {
+                inserted,
+                replay: false,
+            }),
+            CommitOutcome::Replay => Ok(StoreCommit {
+                inserted: 0,
+                replay: true,
+            }),
+        }
     }
 }
 
