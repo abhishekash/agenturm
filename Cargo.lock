@@ -7,6 +7,8 @@ name = "agenturm-app"
 version = "0.1.0"
 dependencies = [
  "agenturm-kernel",
+ "agenturm-runtime",
+ "agenturm-store",
 ]
 
 [[package]]
@@ -167,6 +169,17 @@ dependencies = [
 [[package]]
 name = "agenturm-protocol"
 version = "0.0.1"
+
+[[package]]
+name = "agenturm-runtime"
+version = "0.1.0"
+dependencies = [
+ "agenturm-protocol",
+ "agenturm-store",
+ "libc",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "agenturm-sample-harness"

@@ -5,10 +5,11 @@
 //! has no service principal, cross-process writer fence, product policy,
 //! retention, backup protocol, or integration with the Agenturm app.
 //!
-//! The current kernel observation type does not include an event ID, so this
-//! API is not yet a direct kernel port. The adapter-to-kernel contract must
-//! preserve stable adapter-native event identity scoped by source; do not
-//! synthesize identity from timestamps or session keys.
+//! Kernel observations now carry adapter-native event ID/revision, nanosecond
+//! timestamps, and typed session/worker/turn/operation identity. Runtime
+//! admission and commit-before-ACK integration remain separate work; IDs must
+//! stay source-scoped and must never be synthesized from timestamps or session
+//! keys.
 
 #![forbid(unsafe_code)]
 
@@ -19,15 +20,15 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
 const MAX_EVENT_ID_BYTES: usize = 256;
 const MAX_SESSION_KEY_BYTES: usize = 512;
 const MAX_CATEGORY_BYTES: usize = 64;
-const MAX_CURSOR_BYTES: usize = 512;
-const STORE_MARKER: &str = "agenturm.observation-store.v1";
+const MAX_CURSOR_BYTES: usize = 800;
+const STORE_MARKER: &str = "agenturm.observation-store.v2";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -38,8 +39,11 @@ pub enum ObservationKind {
         category: String,
     },
     Usage {
-        input_tokens: u64,
-        output_tokens: u64,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        cache_read_tokens: Option<u64>,
+        cache_write_tokens: Option<u64>,
+        total_tokens: Option<u64>,
     },
 }
 
@@ -47,9 +51,20 @@ pub enum ObservationKind {
 #[serde(deny_unknown_fields)]
 pub struct StoredObservation {
     pub event_id: String,
-    pub session_key: String,
-    pub observed_at_unix_ms: u64,
+    pub revision: u32,
+    pub identity: ObservationIdentity,
+    pub observed_at_unix_ns: u64,
     pub kind: ObservationKind,
+}
+
+/// Source-native session hierarchy associated with one stored fact.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationIdentity {
+    pub session_id: String,
+    pub worker_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub operation_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -60,6 +75,38 @@ pub struct ObservationBatch {
     pub expected_cursor: Option<String>,
     pub next_cursor: String,
     pub observations: Vec<StoredObservation>,
+}
+
+impl ObservationBatch {
+    /// Builds a batch with a repeatable request ID derived from its complete
+    /// typed contents and opaque cursor transition. Event input order does not
+    /// affect the ID.
+    pub fn new_deterministic(
+        source_id: impl Into<String>,
+        expected_cursor: Option<String>,
+        next_cursor: impl Into<String>,
+        observations: Vec<StoredObservation>,
+    ) -> Result<Self> {
+        let mut batch = Self {
+            // The request ID is excluded from the digest input, so validate
+            // every caller-controlled field and collection bound before
+            // cloning or serializing the observations below.
+            request_id: "pending".into(),
+            source_id: source_id.into(),
+            expected_cursor,
+            next_cursor: next_cursor.into(),
+            observations,
+        };
+        validate_batch(&batch)?;
+        batch.request_id = batch_digest(&batch)?;
+        validate_batch(&batch)?;
+        Ok(batch)
+    }
+
+    /// Returns the canonical content digest used as this batch's request ID.
+    pub fn deterministic_request_id(&self) -> Result<String> {
+        batch_digest(self)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,7 +174,7 @@ impl From<serde_json::Error> for StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-fn validate_marked_v1_shape(connection: &Connection) -> Result<()> {
+fn validate_marked_v2_shape(connection: &Connection) -> Result<()> {
     let mut statement = connection.prepare(
         "SELECT type, name FROM sqlite_schema
          WHERE name NOT LIKE 'sqlite_%' AND type IN ('table', 'index', 'view', 'trigger')
@@ -184,10 +231,14 @@ fn validate_marked_v1_shape(connection: &Connection) -> Result<()> {
             vec![
                 ("source_id", "TEXT", 1, 1),
                 ("event_id", "TEXT", 1, 2),
+                ("revision", "INTEGER", 1, 3),
                 ("request_id", "TEXT", 1, 0),
                 ("event_digest", "TEXT", 1, 0),
-                ("session_key", "TEXT", 1, 0),
-                ("observed_at_unix_ms", "INTEGER", 1, 0),
+                ("session_id", "TEXT", 1, 0),
+                ("worker_id", "TEXT", 0, 0),
+                ("turn_id", "TEXT", 0, 0),
+                ("operation_id", "TEXT", 0, 0),
+                ("observed_at_unix_ns", "INTEGER", 1, 0),
                 ("kind_json", "TEXT", 1, 0),
             ],
         ),
@@ -241,7 +292,7 @@ fn validate_marked_v1_shape(connection: &Connection) -> Result<()> {
         .prepare("PRAGMA index_info(agenturm_observations_by_session)")?
         .query_map([], |row| row.get::<_, String>(2))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    if index_columns != ["session_key", "observed_at_unix_ms", "event_id"] {
+    if index_columns != ["session_id", "observed_at_unix_ns", "event_id", "revision"] {
         return Err(StoreError::UnrecognizedDatabase);
     }
     Ok(())
@@ -255,7 +306,7 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens or creates a store at `path`. A new database receives the v1
+    /// Opens or creates a store at `path`. A new database receives the v2
     /// schema; an unknown or unrelated database is rejected without changing
     /// its journal mode or schema.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -280,7 +331,7 @@ impl Store {
                     value TEXT NOT NULL
                 );
                 INSERT INTO agenturm_store_meta (key, value)
-                    VALUES ('format', 'agenturm.observation-store.v1');
+                    VALUES ('format', 'agenturm.observation-store.v2');
                 CREATE TABLE agenturm_ingest_receipts (
                     request_id TEXT PRIMARY KEY NOT NULL,
                     source_id TEXT NOT NULL,
@@ -294,24 +345,29 @@ impl Store {
                 CREATE TABLE agenturm_observations (
                     source_id TEXT NOT NULL,
                     event_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL CHECK (revision >= 0),
                     request_id TEXT NOT NULL,
                     event_digest TEXT NOT NULL,
-                    session_key TEXT NOT NULL,
-                    observed_at_unix_ms INTEGER NOT NULL CHECK (observed_at_unix_ms >= 0),
+                    session_id TEXT NOT NULL,
+                    worker_id TEXT,
+                    turn_id TEXT,
+                    operation_id TEXT,
+                    observed_at_unix_ns INTEGER NOT NULL CHECK (observed_at_unix_ns >= 0),
                     kind_json TEXT NOT NULL,
-                    PRIMARY KEY (source_id, event_id),
+                    PRIMARY KEY (source_id, event_id, revision),
                     FOREIGN KEY (request_id) REFERENCES agenturm_ingest_receipts(request_id)
                         DEFERRABLE INITIALLY DEFERRED
                 );
                 CREATE INDEX agenturm_observations_by_session
-                    ON agenturm_observations (session_key, observed_at_unix_ms, event_id);
-                PRAGMA user_version = 1;",
+                    ON agenturm_observations
+                        (session_id, observed_at_unix_ns, event_id, revision);
+                PRAGMA user_version = 2;",
             )?;
             transaction.commit()?;
         } else if schema_version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(schema_version));
         } else {
-            validate_marked_v1_shape(&connection)?;
+            validate_marked_v2_shape(&connection)?;
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
@@ -368,8 +424,8 @@ impl Store {
             let prior_digest: Option<String> = transaction
                 .query_row(
                     "SELECT event_digest FROM agenturm_observations
-                     WHERE source_id = ?1 AND event_id = ?2",
-                    params![batch.source_id, observation.event_id],
+                     WHERE source_id = ?1 AND event_id = ?2 AND revision = ?3",
+                    params![batch.source_id, observation.event_id, observation.revision],
                     |row| row.get(0),
                 )
                 .optional()?;
@@ -383,16 +439,21 @@ impl Store {
                 None => {
                     transaction.execute(
                         "INSERT INTO agenturm_observations
-                         (source_id, event_id, request_id, event_digest, session_key,
-                          observed_at_unix_ms, kind_json)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        (source_id, event_id, revision, request_id, event_digest, session_id,
+                          worker_id, turn_id, operation_id,
+                          observed_at_unix_ns, kind_json)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                         params![
                             batch.source_id,
                             observation.event_id,
+                            i64::from(observation.revision),
                             batch.request_id,
                             event_hash,
-                            observation.session_key,
-                            i64::try_from(observation.observed_at_unix_ms).map_err(|_| {
+                            observation.identity.session_id,
+                            observation.identity.worker_id,
+                            observation.identity.turn_id,
+                            observation.identity.operation_id,
+                            i64::try_from(observation.observed_at_unix_ns).map_err(|_| {
                                 StoreError::Invalid("timestamp exceeds SQLite INTEGER")
                             })?,
                             serialized_kind,
@@ -428,16 +489,18 @@ impl Store {
     /// Returns all observations in stable chronological/source/event order.
     pub fn observations(&self) -> Result<Vec<(String, StoredObservation)>> {
         let mut statement = self.connection.prepare(
-            "SELECT source_id, event_id, session_key, observed_at_unix_ms, kind_json
+            "SELECT source_id, event_id, revision, session_id, worker_id, turn_id,
+                    operation_id, observed_at_unix_ns, kind_json
              FROM agenturm_observations
-             ORDER BY observed_at_unix_ms, source_id, event_id",
+             ORDER BY observed_at_unix_ns, source_id, event_id, revision",
         )?;
         let rows = statement.query_map([], |row| {
-            let timestamp: i64 = row.get(3)?;
-            let kind_json: String = row.get(4)?;
+            let revision: i64 = row.get(2)?;
+            let timestamp: i64 = row.get(7)?;
+            let kind_json: String = row.get(8)?;
             let kind = serde_json::from_str(&kind_json).map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    4,
+                    8,
                     rusqlite::types::Type::Text,
                     Box::new(error),
                 )
@@ -446,10 +509,22 @@ impl Store {
                 row.get::<_, String>(0)?,
                 StoredObservation {
                     event_id: row.get(1)?,
-                    session_key: row.get(2)?,
-                    observed_at_unix_ms: u64::try_from(timestamp).map_err(|error| {
+                    revision: u32::try_from(revision).map_err(|error| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            3,
+                            2,
+                            rusqlite::types::Type::Integer,
+                            Box::new(error),
+                        )
+                    })?,
+                    identity: ObservationIdentity {
+                        session_id: row.get(3)?,
+                        worker_id: row.get(4)?,
+                        turn_id: row.get(5)?,
+                        operation_id: row.get(6)?,
+                    },
+                    observed_at_unix_ns: u64::try_from(timestamp).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            7,
                             rusqlite::types::Type::Integer,
                             Box::new(error),
                         )
@@ -488,18 +563,26 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
     let mut event_ids = std::collections::BTreeSet::new();
     for observation in &batch.observations {
         validate_identifier(&observation.event_id, MAX_EVENT_ID_BYTES, "event ID")?;
-        if !event_ids.insert(observation.event_id.as_str()) {
-            return Err(StoreError::Invalid("duplicate event ID within batch"));
-        }
-        if observation.session_key.is_empty()
-            || observation.session_key.len() > MAX_SESSION_KEY_BYTES
-            || observation.session_key.chars().any(char::is_control)
-        {
+        if !event_ids.insert((observation.event_id.as_str(), observation.revision)) {
             return Err(StoreError::Invalid(
-                "session key is empty, invalid, or too long",
+                "duplicate event ID and revision within batch",
             ));
         }
-        if observation.observed_at_unix_ms > i64::MAX as u64 {
+        validate_identifier(
+            &observation.identity.session_id,
+            MAX_SESSION_KEY_BYTES,
+            "session ID",
+        )?;
+        for (value, label) in [
+            (observation.identity.worker_id.as_deref(), "worker ID"),
+            (observation.identity.turn_id.as_deref(), "turn ID"),
+            (observation.identity.operation_id.as_deref(), "operation ID"),
+        ] {
+            if let Some(value) = value {
+                validate_identifier(value, MAX_SESSION_KEY_BYTES, label)?;
+            }
+        }
+        if observation.observed_at_unix_ns > i64::MAX as u64 {
             return Err(StoreError::Invalid("timestamp exceeds SQLite INTEGER"));
         }
         if let ObservationKind::Activity { category } = &observation.kind
@@ -537,7 +620,11 @@ fn validate_identifier(value: &str, max_bytes: usize, label: &'static str) -> Re
 
 fn batch_digest(batch: &ObservationBatch) -> Result<String> {
     let mut observations = batch.observations.clone();
-    observations.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+    observations.sort_by(|left, right| {
+        left.event_id
+            .cmp(&right.event_id)
+            .then(left.revision.cmp(&right.revision))
+    });
     let encoded = serde_json::to_vec(&DigestInput {
         source_id: &batch.source_id,
         expected_cursor: &batch.expected_cursor,
@@ -605,11 +692,17 @@ mod tests {
         }
     }
 
-    fn event(event_id: &str, session_key: &str, timestamp: u64) -> StoredObservation {
+    fn event(event_id: &str, session_id: &str, timestamp: u64) -> StoredObservation {
         StoredObservation {
             event_id: event_id.into(),
-            session_key: session_key.into(),
-            observed_at_unix_ms: timestamp,
+            revision: 0,
+            identity: ObservationIdentity {
+                session_id: session_id.into(),
+                worker_id: Some("worker-1".into()),
+                turn_id: Some("turn-1".into()),
+                operation_id: Some("operation-1".into()),
+            },
+            observed_at_unix_ns: timestamp,
             kind: ObservationKind::Activity {
                 category: "tool".into(),
             },
@@ -652,6 +745,43 @@ mod tests {
         );
         assert_eq!(store.commit_batch(&input).unwrap(), CommitOutcome::Replay);
         assert_eq!(store.observations().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deterministic_request_id_is_stable_across_event_input_order() {
+        let first = event("event-1", "session-1", 10);
+        let second = event("event-2", "session-1", 11);
+        let forward = ObservationBatch::new_deterministic(
+            "harness.codex",
+            Some("cursor-0".into()),
+            "cursor-1",
+            vec![first.clone(), second.clone()],
+        )
+        .unwrap();
+        let reversed = ObservationBatch::new_deterministic(
+            "harness.codex",
+            Some("cursor-0".into()),
+            "cursor-1",
+            vec![second, first],
+        )
+        .unwrap();
+
+        assert_eq!(forward.request_id, reversed.request_id);
+        assert_eq!(
+            forward.deterministic_request_id().unwrap(),
+            forward.request_id
+        );
+    }
+
+    #[test]
+    fn deterministic_batch_constructor_rejects_bounds_before_digest() {
+        let observations = (0..=MAX_BATCH_EVENTS)
+            .map(|index| event(&format!("event-{index}"), "session-1", index as u64))
+            .collect();
+        assert!(matches!(
+            ObservationBatch::new_deterministic("harness.codex", None, "cursor-1", observations),
+            Err(StoreError::Invalid("batch exceeds event count limit"))
+        ));
     }
 
     #[test]
@@ -712,6 +842,30 @@ mod tests {
     }
 
     #[test]
+    fn higher_revision_is_stored_as_a_correction_without_overwriting_history() {
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        store
+            .commit_batch(&batch("request-1", vec![event("event-1", "session-1", 10)]))
+            .unwrap();
+        let mut correction = event("event-1", "session-1", 11);
+        correction.revision = 1;
+        store
+            .commit_batch(&batch_after(
+                "request-2",
+                "cursor-1",
+                "cursor-2",
+                vec![correction],
+            ))
+            .unwrap();
+
+        let observations = store.observations().unwrap();
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].1.revision, 0);
+        assert_eq!(observations[1].1.revision, 1);
+    }
+
+    #[test]
     fn failed_batch_rolls_back_rows_and_receipt() {
         let db = TempDb::new();
         let mut store = Store::open(&db.0).unwrap();
@@ -758,6 +912,70 @@ mod tests {
     }
 
     #[test]
+    fn complete_native_identity_survives_close_and_reopen() {
+        let db = TempDb::new();
+        let expected = event("event-1", "session-1", 10);
+        {
+            let mut store = Store::open(&db.0).unwrap();
+            store
+                .commit_batch(&batch("request-1", vec![expected.clone()]))
+                .unwrap();
+        }
+        let store = Store::open(&db.0).unwrap();
+        let actual = store.observations().unwrap();
+        assert_eq!(actual[0].1.identity, expected.identity);
+    }
+
+    #[test]
+    fn nanosecond_timestamps_above_javascript_integer_precision_survive_reopen() {
+        let db = TempDb::new();
+        let timestamp_ns = 1_700_000_000_123_456_789;
+        {
+            let mut store = Store::open(&db.0).unwrap();
+            store
+                .commit_batch(&batch(
+                    "request-1",
+                    vec![event("event-1", "session-1", timestamp_ns)],
+                ))
+                .unwrap();
+        }
+        let store = Store::open(&db.0).unwrap();
+        assert_eq!(
+            store.observations().unwrap()[0].1.observed_at_unix_ns,
+            timestamp_ns
+        );
+    }
+
+    #[test]
+    fn source_cursor_accepts_protocol_limit_and_rejects_over_limit() {
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        let max_cursor = "c".repeat(MAX_CURSOR_BYTES);
+        let first = ObservationBatch {
+            request_id: "request-1".into(),
+            source_id: "harness.codex".into(),
+            expected_cursor: None,
+            next_cursor: max_cursor.clone(),
+            observations: vec![],
+        };
+        store.commit_batch(&first).unwrap();
+        let over_limit = batch_after(
+            "request-2",
+            &max_cursor,
+            &"n".repeat(MAX_CURSOR_BYTES + 1),
+            vec![],
+        );
+        assert!(matches!(
+            store.commit_batch(&over_limit),
+            Err(StoreError::Invalid(_))
+        ));
+        assert_eq!(
+            store.source_cursor("harness.codex").unwrap().as_deref(),
+            Some(max_cursor.as_str())
+        );
+    }
+
+    #[test]
     fn events_are_atomic_when_already_known_and_new_events_share_batch() {
         let db = TempDb::new();
         let mut store = Store::open(&db.0).unwrap();
@@ -788,6 +1006,19 @@ mod tests {
         assert!(matches!(
             store.commit_batch(&invalid),
             Err(StoreError::Invalid(_))
+        ));
+        assert!(store.observations().unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_optional_native_identity_is_rejected_before_database_writes() {
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        let mut invalid = event("event-1", "session-1", 10);
+        invalid.identity.operation_id = Some("operation id with spaces".into());
+        assert!(matches!(
+            store.commit_batch(&batch("request-1", vec![invalid])),
+            Err(StoreError::Invalid("operation ID"))
         ));
         assert!(store.observations().unwrap().is_empty());
     }

@@ -20,9 +20,9 @@ Connectors remain a later extension family. The **target** kernel owns extension
 
 Deliver typed extension ports and deterministic registries for harnesses, capabilities and UI contributions. The host stamps source identity, validates bounded snapshot results, records returned errors/unwind panics, and returns a render-neutral snapshot. This seam is synchronous and trusted; it is not a process, time or allocation isolation boundary.
 
-**Current evidence:** `agenturm-kernel` provides these three ports, stable ID-ordered polling, validated result bounds and per-extension error reporting. `agenturm-app` adds the `agenturm` binary and composition root with explicit `help`, `version` and `status` commands. The current binary reports that no production harness or store is wired. Nine kernel and app tests establish this composition seam only. Trait extensions are trusted in-process code: calls are synchronous, result checks follow extension allocation, and caught panics still run the standard panic hook. Independently installed or untrusted extensions must use the supervised process boundary. This does not establish a real harness adapter, durable storage or the full-screen UI.
+**Current evidence:** `agenturm-kernel` provides these three ports, stable ID-ordered polling, validated result bounds and per-extension error reporting. `agenturm-app` adds the `agenturm` binary and composition root with explicit `help`, `version` and `status` commands. No production harness is registered with the kernel yet; a separate one-shot Codex usage projection now exists. Nine kernel and app tests establish this composition seam only. Trait extensions are trusted in-process code: calls are synchronous, result checks follow extension allocation, and caught panics still run the standard panic hook. Independently installed or untrusted extensions must use the supervised process boundary. This does not establish kernel-integrated harness collection, durable query after restart or the full-screen UI.
 
-### 2. First real Rust vertical slice
+### 2. First real Rust vertical slice — partial ingestion path implemented; gate open
 
 Wire one bundled Rust harness through the process protocol into the kernel, persist its observations in a Rust-owned SQLite store, and render/query the same session after restart. Exercise duplicate replay, malformed output, adapter crash, store failure before commit, and process restart. The runtime must not start or import Python.
 
@@ -40,7 +40,7 @@ Port each supported harness to Rust and map its source identities, lifecycle, us
 
 Implement schema creation, bounded writes, transaction receipts, replay, correction, revocation, retention, backup and crash recovery as native Rust behavior. Start from a new Rust-owned data directory; do not import the legacy Python database. Test kill/restart around each commit boundary and validate recovery from SQLite WAL state.
 
-**Current evidence:** `agenturm-store` is a fresh-database-only observation store. It atomically binds source-scoped events, content-bound request receipts and opaque expected/next cursors; exact replay, stale-cursor rejection, rollback injection and close/reopen reads are tested. It rejects unrelated databases before changing journal mode. It is not connected to `agenturm-app` or the harnesses, and it has no production service identity, cross-process writer fence, product policy, retention, backup, or full crash-recovery drill.
+**Current evidence:** `agenturm-store` is a fresh-database-only observation store. It atomically binds source-scoped event IDs and revisions, typed session/worker/turn/operation identity, nanosecond timestamps, content-bound request receipts and opaque 800-byte expected/next cursors. Exact replay (including retry after later cursor advance), stale-cursor rejection, deterministic request IDs, rollback injection, unrelated-database rejection and close/reopen reads are tested. `agenturm ingest-codex-usage` connects the Rust plugin host, the Codex adapter and this store for one explicit usage projection, committing before sending ACK. It preserves all five counters currently emitted by the Codex adapter, including absent-versus-zero values, and reports the number of other valid facts intentionally skipped; malformed records or unsupported usage payload fields fail closed. Rust CI exercises mixed lifecycle/message/usage rows through the actual host and adapter and polls again after ACK. This is not the full milestone gate: the app path bypasses `agenturm-kernel`, does not provide persistent app configuration or query/UI after restart, and does not yet support all Codex/domain facts. The app still has no plugin discovery/configuration or production service identity, cross-process writer fence, product policy, retention, backup, or full crash-recovery drill.
 
 ### 6. Capability SDK, packaging and connectors
 
@@ -49,9 +49,9 @@ Package harnesses and capabilities independently while shipping a useful default
 ## Current blockers
 
 - There is a minimal Rust app entry point, but no Rust TUI or production composition yet.
-- Existing harness crates are standalone processes; they are not wired into a Rust application composition root.
-- The Rust observation store exists but is not wired into the app; the installed storage service remains probe/scratch oriented and is not production authority.
+- Existing harness crates are standalone processes; a narrow Codex usage command now invokes the plugin host and adapter, but it bypasses the kernel and does not yet compose multiple harnesses.
+- The Rust observation store is wired only into that explicit one-shot command; the installed storage service remains probe/scratch oriented and is not production authority.
 - Existing Rust admission and query work proves bounded subsets, not product semantics across all evidence and policy cases.
 - Cross-platform service identity, packaging, crash recovery and release workflows need separate implementation and review.
 
-Do not call the project Rust-only, end-to-end, production-ready, or faster until the corresponding milestone gate has passed. The first vertical-slice gate is the next critical path; optional connector and sample-only work must not displace it.
+Do not call the project Rust-only, end-to-end, production-ready, or faster until the corresponding milestone gate has passed. Completing the vertical slice through kernel composition, persistent configuration, restart query and UI is the next critical path; optional connector and sample-only work must not displace it.

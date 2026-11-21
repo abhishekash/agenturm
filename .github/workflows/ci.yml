@@ -26,6 +26,12 @@ jobs:
       - run: cargo build --locked --bin agenturm-kiro-harness
       - run: cargo build --locked --bin agenturm-opencode-harness
       - run: cargo build --locked --bin agenturm-plugin-host
+      - run: cargo build --locked --bin agenturm
+      - name: Verify real Codex ingestion through Rust process host
+        run: cargo test --locked -p agenturm-runtime --test codex_process -- --exact codex_process_commits_metadata_usage_then_acknowledges
+        env:
+          AGENTURM_RUNTIME_PLUGIN_HOST: ${{ github.workspace }}/target/debug/agenturm-plugin-host
+          AGENTURM_RUNTIME_CODEX_ADAPTER: ${{ github.workspace }}/target/debug/agenturm-codex-harness
       - run: cargo build --locked --bin agenturm-domain-reducer
       - run: cargo build --locked --bin agenturm-domain-query
       - run: cargo build --locked --bin agenturm-backup-query
