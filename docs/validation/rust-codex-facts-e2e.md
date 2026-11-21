@@ -8,7 +8,7 @@ The root-only, two-UID fixture starts the actual `agenturm-codex-harness` agains
 
 The fixture checks that:
 
-- Codex output contains only bounded typed metadata; raw prompt, tool, command, and output strings are neither sent in the batch nor persisted in evidence.
+- Codex output contains only bounded typed metadata; the fixture's raw assistant answer, tool arguments/output, shell command, and check output are neither sent in the batch nor persisted in evidence.
 - The source files are created with mode `0600`, owned by the client UID, and unreadable by the distinct storage-service UID.
 - Rust cursor, evidence, dirty sequence, and empty-content receipts match an independent Python `Store` admission for the same facts.
 - After the Rust service commits but drops its reply, the durable cursor and request receipt are visible before the child receives an ACK. Restarting the child at the old cursor reproduces the same batch; Rust returns an exact replay, and the retry does not duplicate evidence or receipts.
