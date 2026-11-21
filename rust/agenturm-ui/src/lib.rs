@@ -409,7 +409,11 @@ fn wrap_display_width(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agenturm_kernel::{ExtensionId, PaneModel};
+    use agenturm_kernel::{
+        ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationScope,
+        PaneModel, UiContribution,
+    };
+    use agenturm_lifecycle_extension_example::LifecyclePane;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::collections::BTreeMap;
@@ -620,5 +624,51 @@ mod tests {
         assert!(text.contains("Latest diagnostic"));
         assert!(text.contains("unsupported_claude_stop_reason"));
         assert!(text.contains("session-123456789"));
+    }
+
+    #[test]
+    fn independently_packaged_pane_renders_generically_at_standard_and_narrow_sizes() {
+        let mut snapshot = snapshot_with_panes();
+        snapshot.observations.push(Observation {
+            harness_id: ExtensionId::parse("harness.fixture").unwrap(),
+            event_id: "lifecycle-1".into(),
+            revision: 0,
+            identity: ObservationIdentity {
+                scope: ObservationScope::Session,
+                session_id: Some("session-1".into()),
+                worker_id: None,
+                turn_id: None,
+                operation_id: None,
+            },
+            observed_at_unix_ns: 1,
+            kind: ObservationKind::Lifecycle {
+                state: "interrupted".into(),
+                reason_code: Some("adapter_stopped".into()),
+            },
+        });
+        let pane = LifecyclePane.build_pane(&snapshot).unwrap();
+        snapshot
+            .panes
+            .insert(ExtensionId::parse("pane.example.lifecycle").unwrap(), pane);
+
+        for (width, height) in [(80, 24), (60, 18)] {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut model = UiModel::from_snapshot(snapshot.clone());
+            model.select_next();
+            assert_eq!(model.selected_title(), Some("Lifecycle by source"));
+            model.set_viewport(width, height);
+            terminal.draw(|frame| draw(frame, &model, false)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(text.contains("Lifecycle by source"));
+            assert!(text.contains("harness.fixture"));
+            assert!(text.contains("1 total"));
+        }
     }
 }

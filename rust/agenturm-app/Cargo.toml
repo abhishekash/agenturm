@@ -16,6 +16,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 signal-hook = "0.3"
 
+[dev-dependencies]
+agenturm-lifecycle-extension-example = { path = "../../examples/rust_lifecycle_extension" }
+
 [lib]
 name = "agenturm_app"
 path = "src/lib.rs"

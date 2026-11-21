@@ -11,3 +11,6 @@ agenturm-kernel = { path = "../agenturm-kernel" }
 crossterm = "0.29"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 unicode-width = "0.2"
+
+[dev-dependencies]
+agenturm-lifecycle-extension-example = { path = "../../examples/rust_lifecycle_extension" }
