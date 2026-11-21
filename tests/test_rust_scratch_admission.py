@@ -3,17 +3,19 @@ import json
 import hashlib
 import os
 import select
+import sqlite3
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from observatory.core import Store
 from observatory.plugin_admission import (_validated, activate_source, commit_batch,
                                           set_source_capture)
-from observatory.plugin_wire import PollBatch
+from observatory.plugin_wire import PollBatch, ProtocolError
 
 
 SOURCE = "scratch-source"
@@ -129,6 +131,358 @@ class RustScratchAdmissionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("scratch admission rejected", result.stderr)
         return result.stderr
+
+    def apply_activation_clone_v2(self, request, *, path, success=True):
+        raw = request if isinstance(request, str) else json.dumps(request)
+        result = subprocess.run([self.binary, "--v2-activation-clone-path", str(path)],
+                                input=raw, text=True, capture_output=True, timeout=10)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("activation-clone admission rejected", result.stderr)
+        return result.stderr
+
+    def apply_mixed_clone_batch(self, request, *, path, success=True):
+        raw = request if isinstance(request, str) else json.dumps(request)
+        result = subprocess.run([self.binary, "--v2-mixed-clone-batch", str(path)],
+                                input=raw, text=True, capture_output=True, timeout=10)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("activation-clone admission rejected", result.stderr)
+        return result.stderr
+
+    @staticmethod
+    def mixed_batch_request(batch, lease, request_id, expected_cursor):
+        from observatory.plugin_admission import _validated
+
+        digest, rows, _ = _validated(batch, batch.source_id)
+        operation_lease = {key: lease[key] for key in
+                           ("receiver_id", "plugin_id", "source_id", "generation",
+                            "epoch", "policy_epoch")}
+        records = [{
+            "event_id_hash": row[1], "revision": row[2], "kind": row[3],
+            "time_ns": row[4], "payload_json": row[5], "record_digest": row[6],
+            "native_session_id": row[7], "native_worker_id": row[8],
+            "native_turn_id": row[9], "native_operation_id": row[10],
+        } for row in rows]
+        return {"version": 2, "request_id": request_id,
+                "receiver_id": lease["receiver_id"],
+                "operation": {"op": "admit_batch", "lease": operation_lease,
+                              "expected_cursor": expected_cursor, "cursor": batch.cursor,
+                              "batch_digest": digest, "records": records}}
+
+    @staticmethod
+    def batch_source_snapshot(store, source_id):
+        def read(db):
+            source = tuple(db.execute(
+                "SELECT receiver_id,plugin_id,generation,cursor,prior_cursor,last_batch_digest,"
+                "dirty_seq,lease_epoch,policy_epoch,capture_enabled,content_fingerprint "
+                "FROM plugin_source_cursor_v1 WHERE source_id=?", (source_id,)).fetchone())
+            evidence = tuple(tuple(row) for row in db.execute(
+                "SELECT event_id_hash,revision,kind,time_ns,payload_json,record_digest,"
+                "native_session_id,native_worker_id,native_turn_id,native_operation_id,"
+                "member_id,policy_epoch FROM plugin_evidence_v1 WHERE source_id=? "
+                "ORDER BY event_id_hash", (source_id,)))
+            dirty = tuple(tuple(row) for row in db.execute(
+                "SELECT source_id,dirty_seq FROM plugin_evidence_dirty_v1 WHERE source_id=?",
+                (source_id,)))
+            projection = tuple(tuple(row) for row in db.execute(
+                "SELECT native_session_id,session_key,state,reason_code,state_time_ns,"
+                "policy_epoch,source_dirty_seq,usage_json,"
+                "parent_native_session_id,relationship_kind,relationship_state "
+                "FROM plugin_session_projection_v1 WHERE source_id=? ORDER BY native_session_id",
+                (source_id,)))
+            activity = tuple(tuple(row) for row in db.execute(
+                "SELECT event_key,stamp,trace_id,session_id,agent_id,service,domain,action,"
+                "result,turn_id,payload FROM activity_index_v1 "
+                "WHERE kind='plugin' AND owner_key=? ORDER BY event_key", (source_id,)))
+            projected = tuple(tuple(row) for row in db.execute(
+                "SELECT projected_seq,policy_epoch FROM plugin_projection_cursor_v1 "
+                "WHERE source_id=?", (source_id,)))
+            return source, evidence, dirty, projection, activity, projected
+
+        if hasattr(store, "_connect"):
+            with store._connect() as db:
+                return read(db)
+        with closing(sqlite3.connect(str(store))) as db:
+            db.row_factory = sqlite3.Row
+            return read(db)
+
+    def test_mixed_batch_is_atomic_and_matches_python_on_detached_clone(self):
+        from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
+        from observatory.plugin_projection import project_source
+
+        source_id = "mixed-batch-source"
+        generation = "d" * 64
+        canonical_path = self.root / "canonical.db"
+        clone_path = self.root / "telemetry-clone.db"
+        oracle_path = self.root / "python-oracle.db"
+
+        canonical = Store(str(canonical_path))
+        receiver_id = canonical.receiver_id
+        activate_source(canonical, plugin_id=PLUGIN, source_id="clone-seed",
+                        generation=GENERATION)
+        canonical.close()
+        with closing(sqlite3.connect(canonical_path)) as original:
+            for target in (clone_path, oracle_path):
+                with closing(sqlite3.connect(target)) as copied:
+                    original.backup(copied)
+        with closing(sqlite3.connect(clone_path)) as db:
+            db.execute("INSERT INTO schema_meta(key,value) VALUES(?,?)",
+                       ("storage_activation_clone_v1", "enabled"))
+            db.commit()
+
+        def canonical_file_state():
+            paths = (canonical_path, Path(f"{canonical_path}-wal"),
+                     Path(f"{canonical_path}-shm"))
+            return tuple((path.stat().st_ino, path.stat().st_mtime_ns,
+                          hashlib.sha256(path.read_bytes()).hexdigest()) if path.exists() else None
+                         for path in paths)
+
+        canonical_before = canonical_file_state()
+        activation = {"version": 2, "request_id": "1" * 32,
+                      "receiver_id": receiver_id,
+                      "operation": {"op": "activate_source", "plugin_id": PLUGIN,
+                                    "source_id": source_id, "generation": generation}}
+        rust_activation = self.apply_activation_clone_v2(
+            activation, path=clone_path)["result"]
+        rust_lease = rust_activation["lease"]
+        oracle = Store(str(oracle_path))
+        self.addCleanup(oracle.close)
+        python_lease = activate_source(oracle, plugin_id=PLUGIN, source_id=source_id,
+                                       generation=generation)
+
+        batch = PollBatch(source_id, "mixed-one", (
+            {"event_id": "mixed-lifecycle", "revision": 0, "kind": "lifecycle",
+             "time_ns": "100", "payload": {"state": "completed"},
+             "identity": {"session_id": "mixed-session"}},
+            {"event_id": "mixed-message", "revision": 0, "kind": "message",
+             "time_ns": "110", "payload": {"role": "assistant"},
+             "identity": {"session_id": "fact-only-session"}},
+        ))
+        mixed = self.mixed_batch_request(batch, rust_lease, "2" * 32, "")
+        rust_reply = self.apply_mixed_clone_batch(mixed, path=clone_path)["result"]
+        self.assertEqual(rust_reply["kind"], "batch_admission")
+        self.assertEqual(rust_reply["disposition"], "committed")
+        self.assertEqual(rust_reply["cursor"], "mixed-one")
+        with closing(sqlite3.connect(clone_path)) as db:
+            admission_receipt = tuple(db.execute(
+                "SELECT request_id,receiver_id,request_digest,source_id,cursor,batch_digest,"
+                "dirty_seq,disposition FROM storage_admission_request_v2 WHERE request_id=?",
+                (mixed["request_id"],)).fetchone())
+        self.assertEqual(admission_receipt[:2], (mixed["request_id"], receiver_id))
+        self.assertEqual(admission_receipt[3:],
+                         (source_id, "mixed-one", mixed["operation"]["batch_digest"],
+                          1, "committed"))
+        expected_request_digest = hashlib.sha256(json.dumps(
+            mixed, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()).hexdigest()
+        self.assertEqual(admission_receipt[2], expected_request_digest)
+        self.assertEqual(commit_batch(oracle, python_lease, "", batch), "mixed-one")
+        with closing(sqlite3.connect(clone_path)) as check_db:
+            self.assertEqual(check_db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        normal_dispatch_before = self.batch_source_snapshot(clone_path, source_id)
+        normal_dispatch_error = self.apply_activation_clone_v2(
+            mixed, path=clone_path, success=False)
+        self.assertIn("mixed admission is unavailable through the storage service path",
+                      normal_dispatch_error)
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id),
+                         normal_dispatch_before)
+        projection_path = self.root / "projection-clone.db"
+        with closing(sqlite3.connect(clone_path)) as original:
+            with closing(sqlite3.connect(projection_path)) as projected:
+                original.backup(projected)
+        committed_snapshot = self.batch_source_snapshot(clone_path, source_id)
+        projection_store = Store(str(projection_path))
+        self.addCleanup(projection_store.close)
+        self.assertEqual(project_source(projection_store, source_id), 2)
+        self.assertEqual(project_source(oracle, source_id), 2)
+        empty_refs_digest = hashlib.sha256(b'{"refs":[]}').hexdigest()
+        with projection_store._connect() as db:
+            self.assertEqual(tuple(db.execute(
+                "SELECT cursor,refs_digest FROM plugin_content_batch_v1 WHERE source_id=?",
+                (source_id,)).fetchone()), ("mixed-one", empty_refs_digest))
+            self.assertEqual(tuple(db.execute(
+                "SELECT cursor,reason,refs_count FROM plugin_content_status_v1 WHERE source_id=?",
+                (source_id,)).fetchone()), ("mixed-one", "not_requested", 0))
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM plugin_content_v1 WHERE source_id=?",
+                (source_id,)).fetchone()[0], 0)
+        rust_projected = self.batch_source_snapshot(projection_store, source_id)
+        python_projected = self.batch_source_snapshot(oracle, source_id)
+        self.assertEqual(rust_projected[0][:7] + rust_projected[0][8:],
+                         python_projected[0][:7] + python_projected[0][8:])
+        self.assertEqual(rust_projected[1:], python_projected[1:])
+        self.assertEqual({row[0] for row in rust_projected[3]},
+                         {"mixed-session", "fact-only-session"})
+
+        # Build marked clone-only fixtures from Python's projection rows, but
+        # copy no content/reference-owner rows and never open these clones via
+        # Store. This isolates the supported fact projection from provider
+        # owner backfill in the Python fixture.
+        projected_clone_path = self.root / "projected-rust-clone.db"
+        with closing(sqlite3.connect(clone_path)) as original:
+            with closing(sqlite3.connect(projected_clone_path)) as projected_clone:
+                original.backup(projected_clone)
+        with closing(sqlite3.connect(projected_clone_path)) as projected_clone:
+            projected_clone.execute("ATTACH DATABASE ? AS projection_src",
+                                    (str(projection_path),))
+            for table in ("plugin_session_projection_v1", "plugin_session_member_v1",
+                          "plugin_source_member_cursor_v1", "plugin_projection_cursor_v1",
+                          "plugin_content_batch_v1", "plugin_content_status_v1"):
+                projected_clone.execute(
+                    f"INSERT OR REPLACE INTO main.{table} SELECT * FROM projection_src.{table} "
+                    "WHERE source_id=?", (source_id,))
+            projected_clone.execute(
+                "INSERT OR REPLACE INTO main.activity_index_v1 "
+                "SELECT * FROM projection_src.activity_index_v1 "
+                "WHERE kind='plugin' AND owner_key=?", (source_id,))
+            projected_clone.execute(
+                "INSERT OR IGNORE INTO main.investigation_dirty_v1 "
+                "SELECT * FROM projection_src.investigation_dirty_v1 "
+                "WHERE kind='plugin' AND owner_key=?", (source_id,))
+            projected_clone.execute(
+                "INSERT OR IGNORE INTO main.investigation_terms_v1 "
+                "SELECT * FROM projection_src.investigation_terms_v1 WHERE event_key IN "
+                "(SELECT event_key FROM projection_src.activity_index_v1 "
+                "WHERE kind='plugin' AND owner_key=?)", (source_id,))
+            projected_clone.commit()
+            for table in ("plugin_content_v1", "plugin_reference_owner_v1"):
+                self.assertEqual(projected_clone.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE source_id=?", (source_id,)
+                    ).fetchone()[0], 0, f"projection clone includes private {table} rows")
+            self.assertEqual(tuple(projected_clone.execute(
+                "SELECT cursor,refs_digest FROM plugin_content_batch_v1 WHERE source_id=?",
+                (source_id,)).fetchone()), ("mixed-one", empty_refs_digest))
+            self.assertEqual(tuple(projected_clone.execute(
+                "SELECT cursor,reason,refs_count FROM plugin_content_status_v1 WHERE source_id=?",
+                (source_id,)).fetchone()), ("mixed-one", "not_requested", 0))
+        projected_before_revoke = self.batch_source_snapshot(projected_clone_path, source_id)
+        self.assertTrue(projected_before_revoke[3], "projected clone has no session rows")
+        self.assertTrue(projected_before_revoke[4], "projected clone has no Activity rows")
+
+        # A subsequent supported batch on a fact-only projected source remains
+        # admissible without Python Store backfill state.
+        next_batch = PollBatch(source_id, "mixed-two", (
+            {"event_id": "after-projection", "revision": 0, "kind": "message",
+             "time_ns": "120", "payload": {"role": "assistant"},
+             "identity": {"session_id": "fact-only-session"}},
+        ))
+        next_request = self.mixed_batch_request(next_batch, rust_lease, "b" * 32, "mixed-one")
+        next_reply = self.apply_mixed_clone_batch(
+            next_request, path=projected_clone_path)["result"]
+        self.assertEqual((next_reply["disposition"], next_reply["cursor"],
+                          next_reply["dirty_seq"]), ("committed", "mixed-two", 2))
+        next_oracle_path = self.root / "next-python-oracle.db"
+        with closing(sqlite3.connect(oracle_path)) as original:
+            with closing(sqlite3.connect(next_oracle_path)) as copied:
+                original.backup(copied)
+        next_oracle = Store(str(next_oracle_path))
+        self.addCleanup(next_oracle.close)
+        self.assertEqual(commit_batch(next_oracle, python_lease, "mixed-one", next_batch),
+                         "mixed-two")
+        next_rust_state = self.batch_source_snapshot(projected_clone_path, source_id)
+        next_python_state = self.batch_source_snapshot(next_oracle, source_id)
+        self.assertEqual(next_rust_state[0][:7] + next_rust_state[0][8:],
+                         next_python_state[0][:7] + next_python_state[0][8:])
+        self.assertEqual(next_rust_state[1:], next_python_state[1:])
+
+        replay = self.apply_mixed_clone_batch(mixed, path=clone_path)["result"]
+        self.assertEqual(replay["disposition"], "replay")
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id),
+                         committed_snapshot)
+        with closing(sqlite3.connect(clone_path)) as db:
+            self.assertEqual(tuple(db.execute(
+                "SELECT request_id,receiver_id,request_digest,source_id,cursor,batch_digest,"
+                "dirty_seq,disposition FROM storage_admission_request_v2 WHERE request_id=?",
+                (mixed["request_id"],)).fetchone()), admission_receipt)
+        changed_batch = PollBatch(source_id, "mixed-one", (
+            {"event_id": "mixed-lifecycle", "revision": 0, "kind": "lifecycle",
+             "time_ns": "100", "payload": {"state": "completed"},
+             "identity": {"session_id": "mixed-session"}},
+            {"event_id": "mixed-message", "revision": 0, "kind": "message",
+             "time_ns": "110", "payload": {"role": "user"},
+             "identity": {"session_id": "mixed-session"}},
+        ))
+        conflicting_replay = self.mixed_batch_request(
+            changed_batch, rust_lease, "2" * 32, "")
+        self.assertIn("conflicting v2 request replay identity",
+                      self.apply_mixed_clone_batch(conflicting_replay,
+                                                   path=clone_path, success=False))
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id),
+                         committed_snapshot)
+
+        invalid_batch = PollBatch(source_id, "mixed-two", (
+            {"event_id": "insert-before-conflict", "revision": 0,
+             "kind": "lifecycle", "time_ns": "120",
+             "payload": {"state": "completed"},
+             "identity": {"session_id": "another-session"}},
+            {"event_id": "mixed-lifecycle", "revision": 0,
+             "kind": "lifecycle", "time_ns": "100",
+             "payload": {"state": "failed"},
+             "identity": {"session_id": "mixed-session"}},
+        ))
+        rollback_request = self.mixed_batch_request(
+            invalid_batch, rust_lease, "3" * 32, "mixed-one")
+        oracle_before_invalid = self.batch_source_snapshot(oracle, source_id)
+        with self.assertRaisesRegex(ProtocolError, "conflicting plugin event revision"):
+            commit_batch(oracle, python_lease, "mixed-one", invalid_batch)
+        self.assertEqual(self.batch_source_snapshot(oracle, source_id),
+                         oracle_before_invalid)
+        self.assertIn("conflicting or unsupported event revision",
+                      self.apply_mixed_clone_batch(rollback_request,
+                                                   path=clone_path, success=False))
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id),
+                         committed_snapshot)
+        with closing(sqlite3.connect(clone_path)) as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+                (rollback_request["request_id"],)).fetchone()[0], 0)
+
+        renewed_activation = json.loads(json.dumps(activation))
+        renewed_activation["request_id"] = "4" * 32
+        renewed = self.apply_activation_clone_v2(
+            renewed_activation, path=clone_path)["result"]["lease"]
+        stale_request = self.mixed_batch_request(
+            PollBatch(source_id, "mixed-two", ({
+                "event_id": "after-fence", "revision": 0, "kind": "lifecycle",
+                "time_ns": "130", "payload": {"state": "completed"},
+            },)), rust_lease, "5" * 32, "mixed-one")
+        after_renewal = self.batch_source_snapshot(clone_path, source_id)
+        self.assertIn("stale or unsupported source lease",
+                      self.apply_mixed_clone_batch(stale_request,
+                                                   path=clone_path, success=False))
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id), after_renewal)
+        with closing(sqlite3.connect(clone_path)) as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+                (stale_request["request_id"],)).fetchone()[0], 0)
+
+        revoke = {"version": 2, "request_id": "6" * 32,
+                  "receiver_id": receiver_id,
+                  "operation": {"op": "revoke_source", "lease": renewed,
+                                "cursor": "mixed-one", "expected_dirty_seq": 1}}
+        before_revoke = self.batch_source_snapshot(clone_path, source_id)
+        normal_revoke_error = self.apply_activation_clone_v2(
+            revoke, path=clone_path, success=False)
+        self.assertIn("clone revocation is unavailable through the storage service path",
+                      normal_revoke_error)
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id), before_revoke)
+        # Python Store remains the production writer; its revoke clears the
+        # projected oracle. Rust revoke cleanup/fencing is separately covered
+        # by revoke_atomically_clears_core_projections_and_fences_old_admission.
+        oracle_before_revoke = self.batch_source_snapshot(oracle, source_id)
+        self.assertTrue(oracle_before_revoke[3])
+        set_source_capture(oracle, source_id=source_id, enabled=False)
+        oracle_revoked = self.batch_source_snapshot(oracle, source_id)
+        self.assertEqual(oracle_revoked[1], ())
+        self.assertEqual(oracle_revoked[3], ())
+        self.assertEqual(oracle_revoked[4], ())
+        self.assertEqual(canonical_file_state(), canonical_before,
+                         "detached-clone admission changed the canonical Store")
 
     def test_v2_durable_receipt_exact_replay_and_conflict(self):
         first = self.v2_request(PollBatch(SOURCE, "one", (fact(),)))
