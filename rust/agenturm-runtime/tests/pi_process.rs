@@ -2,7 +2,9 @@ use agenturm_kernel::{
     ExtensionId, Kernel, Observation, ObservationPage, ObservationStore, PreparedSourceBatch,
     StoreCommit,
 };
-use agenturm_runtime::{ProcessConfig, ProcessSource, SourceBatchDecoder, UsageBatchDecoder};
+use agenturm_runtime::{
+    BundledObservationDecoder, ProcessConfig, ProcessSource, SourceBatchDecoder,
+};
 use agenturm_store::Store;
 use std::fs;
 use std::path::PathBuf;
@@ -45,9 +47,9 @@ impl ObservationStore for FailOnceStore {
     }
 }
 
-struct ResetOnceUsageDecoder(Arc<AtomicUsize>);
+struct ResetOnceObservationDecoder(Arc<AtomicUsize>);
 
-impl SourceBatchDecoder for ResetOnceUsageDecoder {
+impl SourceBatchDecoder for ResetOnceObservationDecoder {
     fn decode_batch(
         &self,
         encoded: &str,
@@ -59,7 +61,7 @@ impl SourceBatchDecoder for ResetOnceUsageDecoder {
                 "injected decoder reset probe",
             ));
         }
-        UsageBatchDecoder.decode_batch(encoded, expected_source_id)
+        BundledObservationDecoder.decode_batch(encoded, expected_source_id)
     }
 }
 
@@ -112,9 +114,11 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
     );
     config.timeout = Duration::from_secs(5);
     let decode_count = Arc::new(AtomicUsize::new(0));
-    let source =
-        ProcessSource::spawn_with_decoder(config, ResetOnceUsageDecoder(decode_count.clone()))
-            .expect("start Rust Pi adapter");
+    let source = ProcessSource::spawn_with_decoder(
+        config,
+        ResetOnceObservationDecoder(decode_count.clone()),
+    )
+    .expect("start Rust Pi adapter");
     let source_id = ExtensionId::parse("harness.pi").unwrap();
     let mut kernel = Kernel::new();
     kernel
@@ -144,13 +148,32 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
         .admissions
         .get(&source_id)
         .expect("Pi admission status");
-    assert_eq!(admission.inserted, 1);
-    assert_eq!(admission.skipped_non_usage_facts, 3);
+    assert_eq!(admission.inserted, 2);
+    assert_eq!(admission.skipped_unprojected_facts, 2);
     assert!(admission.source_ack_sent);
     assert_eq!(decode_count.load(Ordering::SeqCst), 2);
-    assert_eq!(snapshot.observations.len(), 1);
+    assert_eq!(snapshot.observations.len(), 2);
+    let tool = snapshot
+        .observations
+        .iter()
+        .find(|row| matches!(row.kind, agenturm_kernel::ObservationKind::Tool { .. }))
+        .unwrap();
+    assert_eq!(tool.identity.operation_id.as_deref(), Some("call-1"));
     assert_eq!(
-        snapshot.observations[0].kind,
+        tool.kind,
+        agenturm_kernel::ObservationKind::Tool {
+            category: "file".into(),
+            result: "started".into()
+        }
+    );
+    assert!(!format!("{:?}", snapshot.observations).contains("arguments"));
+    let usage = snapshot
+        .observations
+        .iter()
+        .find(|row| matches!(row.kind, agenturm_kernel::ObservationKind::Usage { .. }))
+        .unwrap();
+    assert_eq!(
+        usage.kind,
         agenturm_kernel::ObservationKind::Usage {
             input_tokens: Some(8),
             output_tokens: Some(3),
@@ -161,7 +184,7 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
     );
 
     let idle = kernel.refresh_with_store(&mut store);
-    assert_eq!(idle.observations.len(), 1);
+    assert_eq!(idle.observations.len(), 2);
     assert_eq!(idle.admissions[&source_id].inserted, 0);
     assert!(idle.admissions[&source_id].source_ack_sent);
     drop(kernel);
@@ -169,13 +192,21 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
 
     let mut store = Store::open(&database).expect("reopen Pi store");
     let restored = Kernel::new().refresh_with_store(&mut store);
-    assert_eq!(restored.observations.len(), 1);
+    assert_eq!(restored.observations.len(), 2);
     assert_eq!(restored.observations[0].identity.session_id, "pi-session");
     assert!(restored.failures.is_empty());
-    assert!(matches!(
-        restored.observations[0].kind,
-        agenturm_kernel::ObservationKind::Usage { .. }
-    ));
+    assert!(
+        restored
+            .observations
+            .iter()
+            .any(|row| matches!(row.kind, agenturm_kernel::ObservationKind::Tool { .. }))
+    );
+    assert!(
+        restored
+            .observations
+            .iter()
+            .any(|row| matches!(row.kind, agenturm_kernel::ObservationKind::Usage { .. }))
+    );
 
     drop(store);
     fs::remove_dir_all(root).expect("remove fixture directory");

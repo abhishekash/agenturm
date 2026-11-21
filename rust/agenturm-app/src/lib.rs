@@ -9,7 +9,7 @@ use agenturm_kernel::{
     Observation, ObservationKind, ObservationPosition, ObservationQuery, ObservationStore,
     PaneModel, RegistrationError, Snapshot, SourceAdapter, UiContribution,
 };
-use agenturm_runtime::{CODEX_PLUGIN_ID, ProcessConfig, ProcessSource, UsageBatchDecoder};
+use agenturm_runtime::{BundledObservationDecoder, CODEX_PLUGIN_ID, ProcessConfig, ProcessSource};
 #[cfg(target_os = "linux")]
 use agenturm_service::{
     ServiceSpec, Systemctl, install_user_service, status_user_service, uninstall_user_service,
@@ -259,6 +259,10 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         .iter()
         .filter(|row| matches!(row.kind, ObservationKind::Usage { .. }))
         .count();
+    let tools = observations
+        .iter()
+        .filter(|row| matches!(row.kind, ObservationKind::Tool { .. }))
+        .count();
     vec![
         MetricRow {
             label: "Sessions observed".into(),
@@ -275,6 +279,10 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         MetricRow {
             label: "Usage events".into(),
             value: usages.to_string(),
+        },
+        MetricRow {
+            label: "Tool observations".into(),
+            value: tools.to_string(),
         },
     ]
 }
@@ -737,6 +745,9 @@ pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
                 ObservationKind::Activity { category } => {
                     serde_json::json!({"kind":"activity", "category":category})
                 }
+                ObservationKind::Tool { category, result } => {
+                    serde_json::json!({"kind":"tool", "category":category, "result":result})
+                }
                 ObservationKind::Usage {
                     input_tokens,
                     output_tokens,
@@ -899,7 +910,7 @@ impl ConfiguredCollector {
                 process_config = process_config.with_stop_flag(Arc::clone(stop));
             }
             let retry_config = process_config.clone();
-            match ProcessSource::spawn_with_decoder(process_config, UsageBatchDecoder) {
+            match ProcessSource::spawn_with_decoder(process_config, BundledObservationDecoder) {
                 Ok(adapter) => {
                     if let Err(error) = kernel.register_source_adapter(source_id.clone(), adapter) {
                         startup_failures.insert(source_id, error.to_string());
@@ -963,7 +974,7 @@ impl ConfiguredCollector {
             let Some((config, _)) = self.pending_sources.get(&id).cloned() else {
                 continue;
             };
-            match ProcessSource::spawn_with_decoder(config, UsageBatchDecoder) {
+            match ProcessSource::spawn_with_decoder(config, BundledObservationDecoder) {
                 Ok(adapter) => match self.kernel.register_source_adapter(id.clone(), adapter) {
                     Ok(()) => {
                         self.pending_sources.remove(&id);
@@ -1045,12 +1056,12 @@ fn build_collection_report(
                 let outcome = if status.replay {
                     format!("replay confirmed ({} newly inserted)", status.inserted)
                 } else {
-                    format!("committed {} usage observation(s)", status.inserted)
+                    format!("committed {} observation(s)", status.inserted)
                 };
                 lines.push(format!(
-                    "{}: {outcome}, skipped {} non-usage fact(s), ACK sent={}",
+                    "{}: {outcome}, skipped {} validated fact(s) without a stored projection, ACK sent={}",
                     source_id.as_str(),
-                    status.skipped_non_usage_facts,
+                    status.skipped_unprojected_facts,
                     status.source_ack_sent
                 ));
             }
@@ -1303,7 +1314,7 @@ pub fn execute_ingest(options: &IngestOptions) -> Result<String, String> {
         options.source_id.clone(),
         options.plugin_id.clone(),
     );
-    let source = ProcessSource::spawn_with_decoder(config, UsageBatchDecoder)
+    let source = ProcessSource::spawn_with_decoder(config, BundledObservationDecoder)
         .map_err(|error| error.to_string())?;
     let mut store =
         Store::open(&options.db).map_err(|error| format!("open store failed: {error}"))?;
@@ -1342,11 +1353,11 @@ pub fn execute_ingest(options: &IngestOptions) -> Result<String, String> {
     let summary = if status.replay {
         "Batch was already committed".into()
     } else {
-        format!("Committed {} usage observation(s)", status.inserted)
+        format!("Committed {} observation(s)", status.inserted)
     };
     Ok(format!(
-        "{summary}; source ACK sent. Skipped {} non-usage fact(s) by design.\n",
-        status.skipped_non_usage_facts
+        "{summary}; source ACK sent. Skipped {} validated fact(s) without a stored projection.\n",
+        status.skipped_unprojected_facts
     ))
 }
 
@@ -1377,7 +1388,7 @@ pub fn render(command: Command) -> String {
                 "Registered capabilities: 0\n",
                 "Registered UI contributions: 0\n",
                 "Production storage service: not connected (no separate storage identity)\n",
-                "Registered-plugin usage projection: available\n",
+                "Registered-plugin observation decoder: available\n",
                 "Configured multi-source collection: one-shot and foreground watch available\n",
                 "{}"
             ),
@@ -1757,6 +1768,11 @@ mod tests {
                 total_tokens: Some(15),
             },
         };
+        let mut tool_event = make_event("event-3", 30);
+        tool_event.kind = StoredKind::Tool {
+            category: "shell".into(),
+            result: "failed".into(),
+        };
         store
             .commit_batch(&ObservationBatch {
                 request_id: "query-app-request".into(),
@@ -1766,7 +1782,7 @@ mod tests {
                 observations: vec![
                     make_event("event-1", 10),
                     make_event("event-2", 20),
-                    make_event("event-3", 30),
+                    tool_event,
                 ],
             })
             .unwrap();
@@ -1785,6 +1801,9 @@ mod tests {
         assert_eq!(first["has_more"], true);
         assert_eq!(first["observations"][0]["event_id"], "event-2");
         assert_eq!(first["observations"][1]["event_id"], "event-3");
+        assert_eq!(first["observations"][1]["observation"]["kind"], "tool");
+        assert_eq!(first["observations"][1]["observation"]["category"], "shell");
+        assert_eq!(first["observations"][1]["observation"]["result"], "failed");
 
         let cursor = &first["next_before"];
         let older = execute_query(&HistoryQueryOptions {
@@ -1859,7 +1878,7 @@ mod tests {
         let status = render(Command::Status);
         assert!(status.contains("Registered harnesses: 0"));
         assert!(status.contains("Production storage service: not connected"));
-        assert!(status.contains("Registered-plugin usage projection: available"));
+        assert!(status.contains("Registered-plugin observation decoder: available"));
         assert!(status.contains(
             "Configured multi-source collection: one-shot and foreground watch available"
         ));
@@ -1954,7 +1973,7 @@ mod tests {
             agenturm_kernel::AdmissionStatus {
                 inserted: 2,
                 replay: false,
-                skipped_non_usage_facts: 0,
+                skipped_unprojected_facts: 0,
                 source_ack_sent: true,
             },
         );
@@ -1968,7 +1987,7 @@ mod tests {
         assert!(
             report
                 .summary
-                .contains("harness.healthy: committed 2 usage")
+                .contains("harness.healthy: committed 2 observation")
         );
         assert!(report.summary.contains("ACK sent=true"));
         assert_eq!(report.failed_sources, 1);

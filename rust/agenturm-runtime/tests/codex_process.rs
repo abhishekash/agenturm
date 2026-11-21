@@ -73,6 +73,8 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
             "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-1\"}}\n",
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"private text never stored\"}}\n",
+            "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"exec_command\",\"arguments\":\"private command never stored\"}}\n",
+            "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"isError\":false,\"output\":\"private output never stored\"}}\n",
             "{\"type\":\"token_usage_record\",\"timestamp\":\"2026-11-20T12:00:02Z\",\"payload\":{\"type\":\"token_usage_record\",\"turn_id\":\"turn-1\",\"response_id\":\"response-1\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"cached_input_tokens\":2,\"cache_write_input_tokens\":1,\"total_tokens\":10}}}\n"
         ),
     )
@@ -111,15 +113,15 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .admissions
         .get(&source_id)
         .expect("admission status");
-    assert_eq!(admission.inserted, 1);
+    assert_eq!(admission.inserted, 3);
     assert!(!admission.replay);
-    assert_eq!(admission.skipped_non_usage_facts, 2);
+    assert_eq!(admission.skipped_unprojected_facts, 2);
     assert!(admission.source_ack_sent);
 
     let idle = kernel.refresh_with_store(&mut store);
     let idle_admission = idle.admissions.get(&source_id).expect("idle admission");
     assert_eq!(idle_admission.inserted, 0);
-    assert_eq!(idle_admission.skipped_non_usage_facts, 0);
+    assert_eq!(idle_admission.skipped_unprojected_facts, 0);
     assert!(idle_admission.source_ack_sent);
     drop(kernel);
     drop(store);
@@ -131,24 +133,35 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .expect("durable cursor committed");
     assert!(!cursor.is_empty());
     let observations = store.observations().expect("read committed observations");
-    assert_eq!(observations.len(), 1);
+    assert_eq!(observations.len(), 3);
     let mut restarted_kernel = Kernel::new();
     let restored = restarted_kernel.refresh_with_store(&mut store);
-    assert_eq!(restored.observations.len(), 1);
+    assert_eq!(restored.observations.len(), 3);
     assert_eq!(
-        restored.observations[0].event_id,
-        observations[0].1.event_id
+        restored
+            .observations
+            .iter()
+            .map(|row| row.event_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        observations
+            .iter()
+            .map(|(_, row)| row.event_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
     );
     assert!(restored.failures.is_empty());
     let (source_id, observation) = &observations[0];
     assert_eq!(source_id, "harness.codex");
     assert!(observation.event_id.len() > 32);
     assert_eq!(observation.revision, 0);
-    assert_eq!(observation.observed_at_unix_ns, 1_795_176_002_000_000_000);
-    assert_eq!(observation.identity.session_id, "session-1");
-    assert_eq!(observation.identity.turn_id.as_deref(), Some("turn-1"));
+    let usage = observations
+        .iter()
+        .find(|(_, row)| matches!(row.kind, ObservationKind::Usage { .. }))
+        .unwrap();
+    assert_eq!(usage.1.observed_at_unix_ns, 1_795_176_002_000_000_000);
+    assert_eq!(usage.1.identity.session_id, "session-1");
+    assert_eq!(usage.1.identity.turn_id.as_deref(), Some("turn-1"));
     assert_eq!(
-        observation.kind,
+        usage.1.kind,
         ObservationKind::Usage {
             input_tokens: Some(7),
             output_tokens: Some(3),
@@ -157,5 +170,29 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
             total_tokens: Some(10),
         }
     );
+    let tools = observations
+        .iter()
+        .filter(|(_, row)| matches!(row.kind, ObservationKind::Tool { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(tools.len(), 2);
+    assert!(tools.iter().all(|(_, row)| {
+        row.identity
+            .operation_id
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(tools.iter().any(|(_, row)| row.kind
+        == ObservationKind::Tool {
+            category: "shell".into(),
+            result: "started".into()
+        }));
+    assert!(tools.iter().any(|(_, row)| row.kind
+        == ObservationKind::Tool {
+            category: "other".into(),
+            result: "succeeded".into()
+        }));
+    let encoded = serde_json::to_string(&observations).unwrap();
+    assert!(!encoded.contains("private command never stored"));
+    assert!(!encoded.contains("private output never stored"));
     fs::remove_dir_all(root).expect("remove fixture directory");
 }

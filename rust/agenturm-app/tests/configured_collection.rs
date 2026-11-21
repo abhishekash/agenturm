@@ -144,7 +144,7 @@ fn configured_watch_retries_startup_failure_and_shuts_down_on_interrupt() {
         installed_adapter,
         "watch reported the initial startup failure"
     );
-    assert!(stdout.contains("harness.pi: committed 1 usage observation(s)"));
+    assert!(stdout.contains("harness.pi: committed 1 observation(s)"));
     assert!(committed_reports >= 2);
     assert!(stdout.contains("Stopped after"));
 
@@ -357,13 +357,21 @@ fn configured_collection_admits_pi_and_codex_together_and_reopens_history() {
     assert_eq!(output.status.code(), Some(1));
     let summary = String::from_utf8(output.stdout).expect("collection output is UTF-8");
     assert!(summary.contains("3 sources checked; 1 source failure; 0 global failures"));
-    assert!(summary.contains("harness.pi: committed 1 usage observation(s)"));
-    assert!(summary.contains("harness.codex: committed 1 usage observation(s)"));
+    assert!(summary.contains("harness.pi: committed 2 observation(s)"));
+    assert!(summary.contains("harness.codex: committed 1 observation(s)"));
     assert!(summary.contains("harness.broken: startup failed:"));
     assert!(summary.contains("ACK sent=true"));
 
     let snapshot = execute_inspect(&database).expect("reopen committed collection history");
-    assert_eq!(snapshot.observations.len(), 2);
+    assert_eq!(snapshot.observations.len(), 3);
+    assert_eq!(
+        snapshot
+            .observations
+            .iter()
+            .filter(|row| matches!(row.kind, agenturm_kernel::ObservationKind::Tool { .. }))
+            .count(),
+        1
+    );
     let session_ids = snapshot
         .observations
         .iter()
