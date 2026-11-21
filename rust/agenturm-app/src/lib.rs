@@ -9,6 +9,10 @@ use agenturm_kernel::{
     ObservationStore, PaneModel, RegistrationError, Snapshot, SourceAdapter, UiContribution,
 };
 use agenturm_runtime::{CODEX_PLUGIN_ID, ProcessConfig, ProcessSource, UsageBatchDecoder};
+#[cfg(target_os = "linux")]
+use agenturm_service::{
+    ServiceSpec, Systemctl, install_user_service, status_user_service, uninstall_user_service,
+};
 use agenturm_store::Store;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,6 +26,12 @@ use std::time::{Duration, Instant};
 
 const MAX_COLLECTION_CONFIG_BYTES: u64 = 256 * 1024;
 const MAX_CONFIGURED_SOURCES: usize = 16;
+
+#[cfg(target_os = "linux")]
+const SERVICE_STATUS_LINE: &str =
+    "Managed user service: Linux systemd install/status/uninstall available\n";
+#[cfg(not(target_os = "linux"))]
+const SERVICE_STATUS_LINE: &str = "Managed user service: systemd management unavailable\n";
 
 pub struct AgenturmApp {
     kernel: Kernel,
@@ -100,6 +110,18 @@ pub enum Command {
     Inspect(PathBuf),
     Ingest(IngestOptions),
     Collect(ConfiguredCollectOptions),
+    Service(ServiceCommand),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ServiceCommand {
+    Install {
+        config: PathBuf,
+        db: PathBuf,
+        interval_ms: u64,
+    },
+    Uninstall,
+    Status,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -244,10 +266,189 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("status") if args.len() == 1 => Ok(Command::Status),
         Some("inspect") => parse_inspect_options(&args[1..]).map(Command::Inspect),
         Some("collect") => parse_collect_options(&args[1..]).map(Command::Collect),
+        Some("service") => parse_service_options(&args[1..]).map(Command::Service),
         Some("ingest-usage") => parse_ingest_options(&args[1..], None).map(Command::Ingest),
         Some("ingest-codex-usage") => {
             parse_ingest_options(&args[1..], Some(CODEX_PLUGIN_ID)).map(Command::Ingest)
         }
+        _ => Err(usage()),
+    }
+}
+
+pub fn execute_service(action: &ServiceCommand) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        execute_systemd_service(action)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = action;
+        Err("Agenturm systemd user service management currently supports Linux only".into())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn execute_systemd_service(action: &ServiceCommand) -> Result<String, String> {
+    let unit_directory = systemd_user_unit_directory()?;
+    let mut manager = Systemctl;
+    match action {
+        ServiceCommand::Install {
+            config,
+            db,
+            interval_ms,
+        } => {
+            let config = std::fs::canonicalize(config)
+                .map_err(|error| format!("resolve collection config failed: {error}"))?;
+            let validated = load_collection_config(&config)?;
+            let executable = std::env::current_exe()
+                .map_err(|error| format!("resolve Agenturm executable failed: {error}"))?;
+            let database = absolute_database_path(db)?;
+            validate_service_database_isolation(&database, &validated.sources)?;
+            let database = prepare_database_path(&database)?;
+            let spec = ServiceSpec {
+                executable,
+                collection_config: config,
+                database,
+                interval_ms: *interval_ms,
+            };
+            let path = install_user_service(&spec, &unit_directory, &mut manager)?;
+            Ok(format!(
+                "Installed and started Agenturm user service at {}.\n",
+                path.display()
+            ))
+        }
+        ServiceCommand::Uninstall => {
+            uninstall_user_service(&unit_directory, &mut manager)?;
+            Ok("Stopped and uninstalled Agenturm user service.\n".into())
+        }
+        ServiceCommand::Status => status_user_service(&mut manager),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn validate_service_database_isolation(
+    database: &std::path::Path,
+    sources: &[ConfiguredSource],
+) -> Result<(), String> {
+    let database_directory = database
+        .parent()
+        .ok_or_else(|| "database path must have a parent directory".to_owned())?;
+    let database_directory = canonicalize_with_missing_suffix(database_directory)?;
+    for source in sources {
+        let source_root = canonicalize_with_missing_suffix(&source.source_root)?;
+        if database_directory.starts_with(&source_root)
+            || source_root.starts_with(&database_directory)
+        {
+            return Err(
+                "database directory and configured source roots must not overlap; the service grants its database directory write access".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_user_unit_directory() -> Result<PathBuf, String> {
+    let config_home = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            if !path.is_absolute() {
+                return Err("XDG_CONFIG_HOME must be an absolute path".into());
+            }
+            path
+        }
+        None => {
+            let home = std::env::var_os("HOME")
+                .ok_or_else(|| "HOME is unavailable; set XDG_CONFIG_HOME".to_owned())?;
+            PathBuf::from(home).join(".config")
+        }
+    };
+    Ok(config_home.join("systemd").join("user"))
+}
+
+#[cfg(target_os = "linux")]
+fn absolute_database_path(path: &std::path::Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("resolve working directory failed: {error}"))?
+            .join(path)
+    };
+    if absolute.exists() {
+        if !absolute.is_file() {
+            return Err("database path is not a regular file".into());
+        }
+        std::fs::canonicalize(absolute)
+            .map_err(|error| format!("resolve database file failed: {error}"))
+    } else {
+        canonicalize_with_missing_suffix(&absolute)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_database_path(path: &std::path::Path) -> Result<PathBuf, String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| "database path must name a file".to_owned())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "database path must have a parent directory".to_owned())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("create database directory failed: {error}"))?;
+    let parent = std::fs::canonicalize(parent)
+        .map_err(|error| format!("resolve database directory failed: {error}"))?;
+    let prepared = parent.join(name);
+    if prepared.exists() {
+        if !prepared.is_file() {
+            return Err("database path is not a regular file".into());
+        }
+        std::fs::canonicalize(prepared)
+            .map_err(|error| format!("resolve database file failed: {error}"))
+    } else {
+        Ok(prepared)
+    }
+}
+
+fn parse_service_options(args: &[String]) -> Result<ServiceCommand, String> {
+    match args.first().map(String::as_str) {
+        Some("install") => {
+            let mut config = None;
+            let mut db = None;
+            let mut interval_ms = None;
+            let mut index = 1;
+            while index < args.len() {
+                let key = args[index].as_str();
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.is_empty() && !value.starts_with("--"))
+                    .ok_or_else(usage)?;
+                let slot = match key {
+                    "--config" => &mut config,
+                    "--db" => &mut db,
+                    "--interval-ms" => &mut interval_ms,
+                    _ => return Err(usage()),
+                };
+                if slot.replace(value.clone()).is_some() {
+                    return Err(format!("duplicate option {key}\n{}", usage()));
+                }
+                index += 2;
+            }
+            let interval_ms = interval_ms
+                .map(|value| value.parse::<u64>().map_err(|_| usage()))
+                .transpose()?
+                .unwrap_or(2_000);
+            if !(100..=60_000).contains(&interval_ms) {
+                return Err("service interval must be between 100 and 60000 milliseconds".into());
+            }
+            Ok(ServiceCommand::Install {
+                config: PathBuf::from(config.ok_or_else(usage)?),
+                db: PathBuf::from(db.ok_or_else(usage)?),
+                interval_ms,
+            })
+        }
+        Some("uninstall") if args.len() == 1 => Ok(ServiceCommand::Uninstall),
+        Some("status") if args.len() == 1 => Ok(ServiceCommand::Status),
         _ => Err(usage()),
     }
 }
@@ -359,7 +560,7 @@ fn parse_ingest_options(
 }
 
 fn usage() -> String {
-    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
+    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm service install --config <json-path> --db <path> [--interval-ms <100..60000>] | agenturm service status | agenturm service uninstall | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
 }
 
 pub fn execute_inspect(db_path: &std::path::Path) -> Result<Snapshot, String> {
@@ -791,6 +992,10 @@ fn normalized_path_identity(path: &std::path::Path) -> PathBuf {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
     }
+    lexical_normalize_path(path)
+}
+
+fn lexical_normalize_path(path: &std::path::Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -807,6 +1012,74 @@ fn normalized_path_identity(path: &std::path::Path) -> PathBuf {
         }
     }
     normalized
+}
+
+#[cfg(target_os = "linux")]
+fn canonicalize_with_missing_suffix(path: &std::path::Path) -> Result<PathBuf, String> {
+    let mut cursor = path.to_path_buf();
+    let mut missing_suffix = Vec::new();
+    let mut followed_symlinks = BTreeSet::new();
+    loop {
+        match std::fs::canonicalize(&cursor) {
+            Ok(mut resolved) => {
+                for component in missing_suffix.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(lexical_normalize_path(&resolved));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::symlink_metadata(&cursor) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        let link = lexical_normalize_path(&cursor);
+                        if !followed_symlinks.insert(link.clone()) {
+                            return Err(format!(
+                                "cannot resolve cyclic symlink in path identity for {}",
+                                path.display()
+                            ));
+                        }
+                        let target = std::fs::read_link(&cursor).map_err(|error| {
+                            format!("cannot resolve symlink {}: {error}", cursor.display())
+                        })?;
+                        cursor = if target.is_absolute() {
+                            target
+                        } else {
+                            cursor
+                                .parent()
+                                .ok_or_else(|| {
+                                    format!("cannot resolve symlink {}", cursor.display())
+                                })?
+                                .join(target)
+                        };
+                        cursor = lexical_normalize_path(&cursor);
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(metadata_error)
+                        if metadata_error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(metadata_error) => {
+                        return Err(format!(
+                            "cannot inspect path identity for {}: {metadata_error}",
+                            cursor.display()
+                        ));
+                    }
+                }
+                let component = cursor.file_name().ok_or_else(|| {
+                    format!("cannot resolve path identity for {}", path.display())
+                })?;
+                missing_suffix.push(component.to_os_string());
+                cursor = cursor
+                    .parent()
+                    .ok_or_else(|| format!("cannot resolve path identity for {}", path.display()))?
+                    .to_path_buf();
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot resolve path identity for {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -887,22 +1160,27 @@ pub fn render(command: Command) -> String {
             "This explicit projection stores token counters and skips other supported facts.\n",
             "Use `agenturm inspect --db <path>` to view committed history in the full-screen interface.\n",
             "Collection config is versioned JSON; relative executable and source paths resolve beside the config.\n",
+            "On Linux, install the managed foreground collector with `agenturm service install`.\n",
         )
         .into(),
         Command::Version => format!("agenturm {}\n", env!("CARGO_PKG_VERSION")),
-        Command::Status => concat!(
-            "Agenturm Rust kernel: ready\n",
-            "Registered harnesses: 0\n",
-            "Registered capabilities: 0\n",
-            "Registered UI contributions: 0\n",
-            "Production storage service: not connected (foreground command only)\n",
-            "Registered-plugin usage projection: available\n",
-            "Configured multi-source collection: one-shot and foreground watch available\n",
-        )
-        .into(),
+        Command::Status => format!(
+            concat!(
+                "Agenturm Rust kernel: ready\n",
+                "Registered harnesses: 0\n",
+                "Registered capabilities: 0\n",
+                "Registered UI contributions: 0\n",
+                "Production storage service: not connected (no separate storage identity)\n",
+                "Registered-plugin usage projection: available\n",
+                "Configured multi-source collection: one-shot and foreground watch available\n",
+                "{}"
+            ),
+            SERVICE_STATUS_LINE
+        ),
         Command::Inspect(_) => String::new(),
         Command::Ingest(_) => String::new(),
         Command::Collect(_) => String::new(),
+        Command::Service(_) => String::new(),
     }
 }
 
@@ -977,6 +1255,53 @@ mod tests {
             Command::Version
         );
         assert_eq!(parse_command(&["status".into()]).unwrap(), Command::Status);
+        assert_eq!(
+            parse_command(&[
+                "service".into(),
+                "install".into(),
+                "--config".into(),
+                "sources.json".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+            ])
+            .unwrap(),
+            Command::Service(ServiceCommand::Install {
+                config: PathBuf::from("sources.json"),
+                db: PathBuf::from("state.sqlite"),
+                interval_ms: 2_000,
+            })
+        );
+        assert_eq!(
+            parse_command(&[
+                "service".into(),
+                "install".into(),
+                "--config".into(),
+                "sources.json".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--interval-ms".into(),
+                "500".into(),
+            ])
+            .unwrap(),
+            Command::Service(ServiceCommand::Install {
+                config: PathBuf::from("sources.json"),
+                db: PathBuf::from("state.sqlite"),
+                interval_ms: 500,
+            })
+        );
+        assert!(
+            parse_command(&[
+                "service".into(),
+                "install".into(),
+                "--config".into(),
+                "sources.json".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--interval-ms".into(),
+                "99".into(),
+            ])
+            .is_err()
+        );
         assert_eq!(
             parse_command(&["inspect".into(), "--db".into(), "./state.sqlite".into()]).unwrap(),
             Command::Inspect(PathBuf::from("./state.sqlite"))
@@ -1104,6 +1429,60 @@ mod tests {
         assert!(status.contains(
             "Configured multi-source collection: one-shot and foreground watch available"
         ));
+        assert!(
+            status
+                .contains("Managed user service: Linux systemd install/status/uninstall available")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn service_database_overlap_resolves_symlinks_before_missing_source_suffixes() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "agenturm-service-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let database_directory = root.join("database");
+        std::fs::create_dir_all(&database_directory).unwrap();
+        let source_alias = root.join("source-alias");
+        symlink(&database_directory, &source_alias).unwrap();
+        let source = ConfiguredSource {
+            plugin_id: "example.rust-pi-harness".into(),
+            adapter: PathBuf::from("/bin/true"),
+            source_root: source_alias.join("new-source-root"),
+            source_id: "harness.pi".into(),
+        };
+        assert!(
+            validate_service_database_isolation(
+                &database_directory.join("agenturm.sqlite"),
+                std::slice::from_ref(&source)
+            )
+            .is_err()
+        );
+        let dangling_alias = root.join("dangling-source-alias");
+        symlink(
+            database_directory.join("future-source-root"),
+            &dangling_alias,
+        )
+        .unwrap();
+        let dangling_source = ConfiguredSource {
+            source_root: dangling_alias,
+            ..source
+        };
+        assert!(
+            validate_service_database_isolation(
+                &database_directory.join("agenturm.sqlite"),
+                &[dangling_source]
+            )
+            .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

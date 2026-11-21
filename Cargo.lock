@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "agenturm-kernel",
  "agenturm-runtime",
+ "agenturm-service",
  "agenturm-store",
  "agenturm-ui",
  "serde",
@@ -195,6 +196,10 @@ dependencies = [
  "serde_json",
  "sha2",
 ]
+
+[[package]]
+name = "agenturm-service"
+version = "0.1.0"
 
 [[package]]
 name = "agenturm-source-process"
