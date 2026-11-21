@@ -142,6 +142,7 @@ pub fn is_safe_diagnostic_code(code: &str) -> bool {
             | "unsupported_codex_response"
             | "unsupported_codex_role"
             | "unsupported_codex_row"
+            | "codex_inherited_prefix"
             | "codex_historical_outcome"
             | "codex_historical_wait"
             | "codex_legacy_usage_unmapped"

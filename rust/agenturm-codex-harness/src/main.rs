@@ -20,11 +20,11 @@ impl SourceFormat for CodexFormat {
     }
 
     fn checkpoint(context: &Self::Context) -> String {
-        context.turn_id.clone()
+        context.checkpoint()
     }
 
     fn restore(context: &mut Self::Context, checkpoint: &str) -> Result<()> {
-        context.turn_id = checkpoint.to_owned();
+        context.restore(checkpoint);
         Ok(())
     }
 
