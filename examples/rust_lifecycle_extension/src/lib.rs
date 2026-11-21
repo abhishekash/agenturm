@@ -3,9 +3,35 @@
 #![forbid(unsafe_code)]
 
 use agenturm_kernel::{
-    Capability, MetricRow, Observation, ObservationKind, PaneModel, Snapshot, UiContribution,
+    Capability, ExtensionId, ExtensionPlugin, Kernel, MetricRow, Observation, ObservationKind,
+    PaneModel, Snapshot, UiContribution,
 };
 use std::collections::BTreeMap;
+
+/// Build-time package that installs the example capability and pane together.
+pub struct LifecycleExtensionPlugin;
+
+impl ExtensionPlugin for LifecycleExtensionPlugin {
+    fn id(&self) -> ExtensionId {
+        ExtensionId::parse("example.lifecycle").expect("example plugin ID is valid")
+    }
+
+    fn register(&self, kernel: &mut Kernel) -> Result<(), String> {
+        kernel
+            .register_capability(
+                ExtensionId::parse("capability.example.lifecycle")
+                    .expect("example capability ID is valid"),
+                LifecycleCounts,
+            )
+            .map_err(|error| error.to_string())?;
+        kernel
+            .register_ui_contribution(
+                ExtensionId::parse("pane.example.lifecycle").expect("example pane ID is valid"),
+                LifecyclePane,
+            )
+            .map_err(|error| error.to_string())
+    }
+}
 
 /// Counts lifecycle facts without retaining message or process content.
 pub struct LifecycleCounts;

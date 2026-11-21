@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const MAX_EXTENSIONS_PER_KIND: usize = 64;
+const MAX_EXTENSION_PACKAGES: usize = 64;
 const MAX_OBSERVATIONS_PER_HARNESS: usize = 2_048;
 const MAX_METRIC_ROWS: usize = 256;
 const MAX_SESSION_KEY_BYTES: usize = 512;
@@ -57,6 +58,15 @@ impl ExtensionId {
 pub enum RegistrationError {
     InvalidId(String),
     DuplicateId(String),
+    ExtensionIdentityPanicked,
+    EmptyExtensionPlugin(String),
+    ExtensionInstallFailed {
+        plugin_id: String,
+        message: String,
+    },
+    ExtensionInstallPanicked {
+        plugin_id: String,
+    },
     SourceIdentityMismatch {
         registered: String,
         configured: String,
@@ -69,6 +79,24 @@ impl std::fmt::Display for RegistrationError {
         match self {
             Self::InvalidId(id) => write!(f, "invalid extension id: {id:?}"),
             Self::DuplicateId(id) => write!(f, "extension id already registered: {id}"),
+            Self::ExtensionIdentityPanicked => {
+                f.write_str("extension package panicked while reporting its ID")
+            }
+            Self::EmptyExtensionPlugin(id) => {
+                write!(f, "extension package {id} registered no contributions")
+            }
+            Self::ExtensionInstallFailed { plugin_id, message } => {
+                write!(
+                    f,
+                    "extension package {plugin_id} failed to register: {message}"
+                )
+            }
+            Self::ExtensionInstallPanicked { plugin_id } => {
+                write!(
+                    f,
+                    "extension package {plugin_id} panicked during registration"
+                )
+            }
             Self::SourceIdentityMismatch {
                 registered,
                 configured,
@@ -354,6 +382,14 @@ pub trait UiContribution: Send + Sync {
     fn build_pane(&self, snapshot: &Snapshot) -> Result<PaneModel, String>;
 }
 
+/// Build-time extension package that installs one or more kernel contributions.
+/// Registration runs against a staging kernel and is committed atomically only
+/// after every contribution succeeds and all IDs/capacity checks pass.
+pub trait ExtensionPlugin: Send + Sync {
+    fn id(&self) -> ExtensionId;
+    fn register(&self, kernel: &mut Kernel) -> Result<(), String>;
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaneModel {
     pub title: String,
@@ -393,6 +429,7 @@ pub struct Snapshot {
 
 #[derive(Default)]
 pub struct Kernel {
+    plugins: BTreeSet<ExtensionId>,
     harnesses: BTreeMap<ExtensionId, Box<dyn Harness>>,
     sources: BTreeMap<ExtensionId, Box<dyn SourceAdapter>>,
     capabilities: BTreeMap<ExtensionId, Box<dyn Capability>>,
@@ -410,6 +447,72 @@ impl Kernel {
         harness: impl Harness + 'static,
     ) -> Result<(), RegistrationError> {
         insert_unique(&mut self.harnesses, id, Box::new(harness))
+    }
+
+    /// Stages a package's contributions so a failed package cannot leave a
+    /// partially registered capability, pane, harness, or source adapter.
+    pub fn register_plugin(
+        &mut self,
+        plugin: impl ExtensionPlugin + 'static,
+    ) -> Result<(), RegistrationError> {
+        let id = catch_unwind(AssertUnwindSafe(|| plugin.id()))
+            .map_err(|_| RegistrationError::ExtensionIdentityPanicked)?;
+        if self.plugins.contains(&id) {
+            return Err(RegistrationError::DuplicateId(id.0));
+        }
+        let mut staged = Kernel::new();
+        match catch_unwind(AssertUnwindSafe(|| plugin.register(&mut staged))) {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => {
+                return Err(RegistrationError::ExtensionInstallFailed {
+                    plugin_id: id.0,
+                    message: bounded(&message, MAX_FAILURE_BYTES),
+                });
+            }
+            Err(_) => {
+                return Err(RegistrationError::ExtensionInstallPanicked { plugin_id: id.0 });
+            }
+        }
+        if let Some(duplicate) = first_duplicate_id(&self.harnesses, &staged.harnesses)
+            .or_else(|| first_duplicate_id(&self.sources, &staged.sources))
+            .or_else(|| first_duplicate_id(&self.capabilities, &staged.capabilities))
+            .or_else(|| first_duplicate_id(&self.ui_contributions, &staged.ui_contributions))
+        {
+            return Err(RegistrationError::DuplicateId(duplicate));
+        }
+        if staged.plugins.contains(&id) {
+            return Err(RegistrationError::DuplicateId(id.0));
+        }
+        if let Some(duplicate) = staged.plugins.iter().find(|id| self.plugins.contains(*id)) {
+            return Err(RegistrationError::DuplicateId(
+                duplicate.as_str().to_owned(),
+            ));
+        }
+        if staged.harnesses.is_empty()
+            && staged.sources.is_empty()
+            && staged.capabilities.is_empty()
+            && staged.ui_contributions.is_empty()
+            && staged.plugins.is_empty()
+        {
+            return Err(RegistrationError::EmptyExtensionPlugin(id.0));
+        }
+        if self.plugins.len() + staged.plugins.len() + 1 > MAX_EXTENSION_PACKAGES {
+            return Err(RegistrationError::RegistryFull);
+        }
+        if self.harnesses.len() + staged.harnesses.len() > MAX_EXTENSIONS_PER_KIND
+            || self.sources.len() + staged.sources.len() > MAX_EXTENSIONS_PER_KIND
+            || self.capabilities.len() + staged.capabilities.len() > MAX_EXTENSIONS_PER_KIND
+            || self.ui_contributions.len() + staged.ui_contributions.len() > MAX_EXTENSIONS_PER_KIND
+        {
+            return Err(RegistrationError::RegistryFull);
+        }
+        self.plugins.insert(id);
+        self.plugins.extend(staged.plugins);
+        self.harnesses.extend(staged.harnesses);
+        self.sources.extend(staged.sources);
+        self.capabilities.extend(staged.capabilities);
+        self.ui_contributions.extend(staged.ui_contributions);
+        Ok(())
     }
 
     pub fn register_source_adapter(
@@ -804,6 +907,16 @@ fn insert_unique<T>(
     }
     registry.insert(id, extension);
     Ok(())
+}
+
+fn first_duplicate_id<T, U>(
+    existing: &BTreeMap<ExtensionId, T>,
+    added: &BTreeMap<ExtensionId, U>,
+) -> Option<String> {
+    added
+        .keys()
+        .find(|id| existing.contains_key(*id))
+        .map(|id| id.as_str().to_owned())
 }
 
 fn failure(id: &ExtensionId, stage: ExtensionStage, message: impl AsRef<str>) -> ExtensionFailure {

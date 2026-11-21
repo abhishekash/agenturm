@@ -5,9 +5,9 @@
 //! full-screen durable-history viewer. Installed service management remains open.
 
 use agenturm_kernel::{
-    Capability, ExtensionId, Harness, Kernel, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, MetricRow,
-    Observation, ObservationKind, ObservationPosition, ObservationQuery, ObservationStore,
-    PaneModel, RegistrationError, Snapshot, SourceAdapter, UiContribution,
+    Capability, ExtensionId, ExtensionPlugin, Harness, Kernel, MAX_DURABLE_SNAPSHOT_OBSERVATIONS,
+    MetricRow, Observation, ObservationKind, ObservationPosition, ObservationQuery,
+    ObservationStore, PaneModel, RegistrationError, Snapshot, SourceAdapter, UiContribution,
 };
 use agenturm_runtime::{BundledObservationDecoder, CODEX_PLUGIN_ID, ProcessConfig, ProcessSource};
 #[cfg(target_os = "linux")]
@@ -110,6 +110,15 @@ impl AgenturmApp {
         contribution: impl UiContribution + 'static,
     ) -> Result<(), RegistrationError> {
         self.kernel.register_ui_contribution(id, contribution)
+    }
+
+    /// Installs a build-time extension package atomically. The package's
+    /// contribution code remains trusted in-process Rust code.
+    pub fn install_plugin(
+        &mut self,
+        plugin: impl ExtensionPlugin + 'static,
+    ) -> Result<(), RegistrationError> {
+        self.kernel.register_plugin(plugin)
     }
 }
 
