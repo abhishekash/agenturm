@@ -1,9 +1,9 @@
-//! Feature-off, Linux-only cooperative writer lease experiment.
+//! Linux-only cooperative database writer lease.
 //!
-//! No production Store, receiver, or launcher calls this crate. A lease proves
-//! only the state seen at acquire and at each explicit `verify_admission` call.
-//! It cannot fence an already in-flight write, a legacy binary, or a process
-//! that deliberately ignores the advisory lock.
+//! The standalone Rust Store takes this lease for writable connections. A
+//! lease checks state at acquire and at each explicit `verify_admission` call.
+//! It cannot fence an already in-flight write or a process that deliberately
+//! ignores the advisory lock.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 

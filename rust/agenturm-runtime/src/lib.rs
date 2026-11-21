@@ -1,22 +1,26 @@
 //! Supervised process adapters for the Agenturm kernel.
 //!
 //! Process supervision is independent of harness identity. `SourceBatchDecoder`
-//! implementations normalize one shared bounded batch protocol into kernel
-//! facts; `BundledObservationDecoder` projects privacy-safe shared observations.
+//! implementations project bounded wire batches into kernel facts. The catalog
+//! selects a shared observation format independent of the source adapter.
 //! Cursor commit and ACK ordering live in the kernel.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+mod observation;
 mod observation_extension;
+
+pub use agenturm_protocol::observation::ObservationFormat;
+pub use observation::ObservationV1Decoder;
+/// Previous name for the shared version 1 observation decoder.
+pub use observation::ObservationV1Decoder as BundledObservationDecoder;
 
 pub use observation_extension::{
     ExtensionDataGrant, ProcessObservationExtension, ProcessObservationExtensionConfig,
     verify_extension_artifact,
 };
 
-use agenturm_kernel::{
-    ObservationIdentity, ObservationKind, PreparedSourceBatch, RawObservation, SourceAdapter,
-};
+use agenturm_kernel::{PreparedSourceBatch, SourceAdapter};
 use agenturm_protocol::{read_frame, write_frame};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -67,36 +71,19 @@ impl From<agenturm_protocol::FrameError> for RuntimeError {
 }
 
 impl From<serde_json::Error> for RuntimeError {
-    fn from(error: serde_json::Error) -> Self {
-        Self::new(format!("source batch rejected: {error}"))
+    fn from(_: serde_json::Error) -> Self {
+        Self::new("source message has invalid JSON")
     }
 }
 
-/// A harness-specific boundary for turning one protocol batch into typed
-/// kernel observations. Implementations must reject unknown or malformed
-/// envelopes and keep source content out of returned error messages.
+/// Host-side projection of a shared wire format into typed kernel observations.
+/// Implementations must reject unknown or malformed envelopes and keep source
+/// content out of returned error messages.
 pub trait SourceBatchDecoder: Send + Sync {
     fn decode_batch(&self, encoded: &str, expected_source_id: &str) -> Result<PreparedSourceBatch>;
 }
 
-/// Decoder for shared usage, tool, lifecycle, and check facts emitted by
-/// bundled harness adapters. Other validated source facts are counted without
-/// being retained as observations.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct BundledObservationDecoder;
-
-impl SourceBatchDecoder for BundledObservationDecoder {
-    fn decode_batch(&self, encoded: &str, expected_source_id: &str) -> Result<PreparedSourceBatch> {
-        let batch = parse_source_batch(encoded, expected_source_id)?;
-        Ok(PreparedSourceBatch {
-            next_cursor: batch.cursor,
-            observations: batch.observations,
-            skipped_unprojected_facts: batch.skipped_unprojected_facts,
-        })
-    }
-}
-
-/// Configures a bundled Rust adapter launched through the Rust plugin host.
+/// Configures a Rust adapter launched through the Rust plugin host.
 #[derive(Clone, Debug)]
 pub struct ProcessConfig {
     pub plugin_host: PathBuf,
@@ -108,6 +95,7 @@ pub struct ProcessConfig {
     pub stop_flag: Option<Arc<AtomicBool>>,
     expected_sha256: Option<String>,
     expected_features: Option<Vec<String>>,
+    observation_format: ObservationFormat,
 }
 
 impl ProcessConfig {
@@ -129,6 +117,7 @@ impl ProcessConfig {
             stop_flag: None,
             expected_sha256: None,
             expected_features: None,
+            observation_format: ObservationFormat::default(),
         }
     }
 
@@ -148,6 +137,12 @@ impl ProcessConfig {
     /// Requires the child handshake to advertise exactly the catalog features.
     pub fn with_expected_features(mut self, features: Vec<String>) -> Self {
         self.expected_features = Some(features);
+        self
+    }
+
+    /// Selects the host decoder for the adapter’s observation wire format.
+    pub fn with_observation_format(mut self, format: ObservationFormat) -> Self {
+        self.observation_format = format;
         self
     }
 
@@ -182,7 +177,9 @@ pub struct ProcessSource {
 
 impl ProcessSource {
     pub fn spawn(config: ProcessConfig) -> Result<Self> {
-        Self::spawn_with_decoder(config, BundledObservationDecoder)
+        match config.observation_format {
+            ObservationFormat::V1 => Self::spawn_with_decoder(config, ObservationV1Decoder),
+        }
     }
 
     pub fn spawn_with_decoder(
@@ -683,91 +680,6 @@ fn kill_process_group(process_id: u32) {
 #[cfg(not(unix))]
 fn kill_process_group(_process_id: u32) {}
 
-fn parse_source_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedBatch> {
-    let batch: WireBatch = serde_json::from_str(encoded)?;
-    if batch.kind != "batch"
-        || batch.protocol != PROTOCOL_VERSION
-        || batch.source_id != expected_source_id
-        || batch.records.len() > usize::from(MAX_POLL_RECORDS)
-    {
-        return Err(RuntimeError::new("source batch envelope mismatch"));
-    }
-    validate_cursor(&batch.cursor)?;
-    let mut observations = Vec::with_capacity(batch.records.len());
-    let mut skipped_unprojected_facts = 0;
-    for record in batch.records {
-        let kind = record
-            .get("kind")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| RuntimeError::new("source fact is missing a kind"))?;
-        if kind == "diagnostic" {
-            let diagnostic: WireDiagnosticRecord = serde_json::from_value(record)?;
-            validate_wire_diagnostic(&diagnostic)?;
-            if agenturm_kernel::is_safe_diagnostic_code(&diagnostic.payload.code) {
-                let identity = match diagnostic.identity {
-                    Some(identity) => {
-                        validate_wire_identity(&identity)?;
-                        ObservationIdentity {
-                            scope: agenturm_kernel::ObservationScope::Session,
-                            session_id: Some(identity.session_id),
-                            worker_id: identity.worker_id,
-                            turn_id: identity.turn_id,
-                            operation_id: identity.operation_id,
-                        }
-                    }
-                    None => ObservationIdentity::source(),
-                };
-                observations.push(RawObservation {
-                    event_id: diagnostic.event_id,
-                    revision: diagnostic.revision,
-                    identity,
-                    observed_at_unix_ns: parse_decimal_timestamp(&diagnostic.time_ns)?,
-                    kind: ObservationKind::Diagnostic {
-                        code: diagnostic.payload.code,
-                        severity: diagnostic.payload.severity,
-                    },
-                });
-            } else {
-                skipped_unprojected_facts += 1;
-            }
-            continue;
-        }
-        if kind == "tool" {
-            let typed: WireToolRecord = serde_json::from_value(record)?;
-            observations.push(typed.try_into()?);
-            continue;
-        }
-        if kind == "lifecycle" {
-            let typed: WireLifecycleRecord = serde_json::from_value(record)?;
-            observations.push(typed.try_into()?);
-            continue;
-        }
-        if kind == "check" {
-            let typed: WireCheckRecord = serde_json::from_value(record)?;
-            observations.push(typed.try_into()?);
-            continue;
-        }
-        if kind == "message" {
-            let typed: WireMessageRecord = serde_json::from_value(record)?;
-            observations.push(typed.try_into()?);
-            continue;
-        }
-        if kind != "usage" {
-            let skipped: WireSkippedRecord = serde_json::from_value(record)?;
-            validate_skipped_record(&skipped)?;
-            skipped_unprojected_facts += 1;
-            continue;
-        }
-        let typed: WireUsageRecord = serde_json::from_value(record)?;
-        observations.push(typed.try_into()?);
-    }
-    Ok(ParsedBatch {
-        cursor: batch.cursor,
-        observations,
-        skipped_unprojected_facts,
-    })
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HelloAck {
@@ -778,481 +690,11 @@ struct HelloAck {
     features: Vec<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireBatch {
-    #[serde(rename = "type")]
-    kind: String,
-    protocol: u64,
-    source_id: String,
-    cursor: String,
-    records: Vec<serde_json::Value>,
-}
-
-struct ParsedBatch {
-    cursor: String,
-    observations: Vec<RawObservation>,
-    skipped_unprojected_facts: usize,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireUsageRecord {
-    event_id: String,
-    revision: u32,
-    kind: String,
-    time_ns: String,
-    identity: WireIdentity,
-    payload: WireUsage,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireToolRecord {
-    event_id: String,
-    revision: u32,
-    kind: String,
-    time_ns: String,
-    identity: WireIdentity,
-    payload: WireTool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireLifecycleRecord {
-    event_id: String,
-    revision: u32,
-    kind: String,
-    time_ns: String,
-    identity: WireIdentity,
-    payload: WireLifecycle,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireCheckRecord {
-    event_id: String,
-    revision: u32,
-    kind: String,
-    time_ns: String,
-    identity: WireIdentity,
-    payload: WireCheck,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireMessageRecord {
-    event_id: String,
-    revision: u32,
-    kind: String,
-    time_ns: String,
-    identity: WireIdentity,
-    payload: WireMessage,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireSkippedRecord {
-    event_id: String,
-    #[serde(rename = "revision")]
-    _revision: u32,
-    kind: String,
-    time_ns: String,
-    identity: Option<WireIdentity>,
-    payload: serde_json::Value,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireDiagnosticRecord {
-    event_id: String,
-    revision: u32,
-    kind: String,
-    time_ns: String,
-    identity: Option<WireIdentity>,
-    payload: WireDiagnostic,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireLifecycle {
-    state: String,
-    reason_code: Option<String>,
-}
-
-fn valid_reason_code(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
-        })
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireMessage {
-    role: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireTool {
-    category: String,
-    result: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireCheck {
-    category: String,
-    result: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireDiagnostic {
-    code: String,
-    severity: String,
-}
-
-fn validate_wire_diagnostic(record: &WireDiagnosticRecord) -> Result<()> {
-    if record.kind != "diagnostic"
-        || !valid_source_identifier(&record.event_id, 256)
-        || parse_decimal_timestamp(&record.time_ns).is_err()
-        || !matches!(
-            record.payload.severity.as_str(),
-            "info" | "warning" | "error"
-        )
-        || record.payload.code.is_empty()
-        || record.payload.code.len() > 128
-    {
-        return Err(RuntimeError::new("source diagnostic payload is invalid"));
-    }
-    if let Some(identity) = &record.identity {
-        validate_wire_identity(identity)?;
-    }
-    Ok(())
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireIdentity {
-    session_id: String,
-    worker_id: Option<String>,
-    turn_id: Option<String>,
-    operation_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireUsage {
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cache_read_tokens: Option<u64>,
-    cache_write_tokens: Option<u64>,
-    total_tokens: Option<u64>,
-}
-
-fn validate_skipped_record(record: &WireSkippedRecord) -> Result<()> {
-    if !valid_source_identifier(&record.event_id, 256)
-        || parse_decimal_timestamp(&record.time_ns).is_err()
-    {
-        return Err(RuntimeError::new(
-            "skipped source fact identity or timestamp is invalid",
-        ));
-    }
-    match record.kind.as_str() {
-        "diagnostic" => {
-            if let Some(identity) = &record.identity {
-                validate_wire_identity(identity)?;
-            }
-            let diagnostic: WireDiagnostic = serde_json::from_value(record.payload.clone())?;
-            if diagnostic.code.is_empty()
-                || diagnostic.code.len() > 128
-                || !matches!(diagnostic.severity.as_str(), "info" | "warning" | "error")
-            {
-                return Err(RuntimeError::new("source diagnostic payload is invalid"));
-            }
-        }
-        "lifecycle" | "message" | "tool" | "check" => {
-            let identity = record
-                .identity
-                .as_ref()
-                .ok_or_else(|| RuntimeError::new("source fact identity is missing"))?;
-            validate_wire_identity(identity)?;
-            match record.kind.as_str() {
-                "lifecycle" => {
-                    let lifecycle: WireLifecycle = serde_json::from_value(record.payload.clone())?;
-                    if !matches!(
-                        lifecycle.state.as_str(),
-                        "running" | "completed" | "interrupted" | "paused"
-                    ) || lifecycle
-                        .reason_code
-                        .as_ref()
-                        .is_some_and(|reason| reason.is_empty() || reason.len() > 128)
-                    {
-                        return Err(RuntimeError::new("source lifecycle payload is invalid"));
-                    }
-                }
-                "message" => {
-                    let message: WireMessage = serde_json::from_value(record.payload.clone())?;
-                    if !matches!(message.role.as_str(), "user" | "assistant") {
-                        return Err(RuntimeError::new("source message payload is invalid"));
-                    }
-                }
-                "tool" => {
-                    let tool: WireTool = serde_json::from_value(record.payload.clone())?;
-                    if !matches!(tool.category.as_str(), "shell" | "file" | "mcp" | "other")
-                        || !matches!(
-                            tool.result.as_str(),
-                            "started" | "succeeded" | "failed" | "denied"
-                        )
-                    {
-                        return Err(RuntimeError::new("source tool payload is invalid"));
-                    }
-                }
-                "check" => {
-                    let check: WireCheck = serde_json::from_value(record.payload.clone())?;
-                    if !matches!(check.category.as_str(), "test" | "lint" | "build")
-                        || !matches!(check.result.as_str(), "passed" | "failed" | "unknown")
-                    {
-                        return Err(RuntimeError::new("source check payload is invalid"));
-                    }
-                }
-                _ => unreachable!("kind is matched above"),
-            }
-        }
-        _ => return Err(RuntimeError::new("unsupported source fact kind")),
-    }
-    Ok(())
-}
-
-fn validate_wire_identity(identity: &WireIdentity) -> Result<()> {
-    for value in [
-        Some(identity.session_id.as_str()),
-        identity.worker_id.as_deref(),
-        identity.turn_id.as_deref(),
-        identity.operation_id.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if !valid_source_identifier(value, 512) {
-            return Err(RuntimeError::new("source native identity is invalid"));
-        }
-    }
-    Ok(())
-}
-
-fn valid_source_identifier(value: &str, max_bytes: usize) -> bool {
-    !value.is_empty()
-        && value.len() <= max_bytes
-        && value.as_bytes()[0].is_ascii_alphanumeric()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
-}
-
-impl TryFrom<WireUsageRecord> for RawObservation {
-    type Error = RuntimeError;
-
-    fn try_from(record: WireUsageRecord) -> Result<Self> {
-        if record.kind != "usage" {
-            return Err(RuntimeError::new("unsupported source fact kind"));
-        }
-        let time_ns = parse_decimal_timestamp(&record.time_ns)?;
-        let counters = &record.payload;
-        if counters.input_tokens.is_none()
-            && counters.output_tokens.is_none()
-            && counters.cache_read_tokens.is_none()
-            && counters.cache_write_tokens.is_none()
-            && counters.total_tokens.is_none()
-        {
-            return Err(RuntimeError::new("usage record has no counters"));
-        }
-        Ok(RawObservation {
-            event_id: record.event_id,
-            revision: record.revision,
-            identity: ObservationIdentity {
-                scope: agenturm_kernel::ObservationScope::Session,
-                session_id: Some(record.identity.session_id),
-                worker_id: record.identity.worker_id,
-                turn_id: record.identity.turn_id,
-                operation_id: record.identity.operation_id,
-            },
-            observed_at_unix_ns: time_ns,
-            kind: ObservationKind::Usage {
-                input_tokens: counters.input_tokens,
-                output_tokens: counters.output_tokens,
-                cache_read_tokens: counters.cache_read_tokens,
-                cache_write_tokens: counters.cache_write_tokens,
-                total_tokens: counters.total_tokens,
-            },
-        })
-    }
-}
-
-impl TryFrom<WireToolRecord> for RawObservation {
-    type Error = RuntimeError;
-
-    fn try_from(record: WireToolRecord) -> Result<Self> {
-        if record.kind != "tool"
-            || !valid_source_identifier(&record.event_id, 256)
-            || !matches!(
-                record.payload.category.as_str(),
-                "shell" | "file" | "mcp" | "other"
-            )
-            || !matches!(
-                record.payload.result.as_str(),
-                "started" | "succeeded" | "failed" | "denied"
-            )
-        {
-            return Err(RuntimeError::new("source tool payload is invalid"));
-        }
-        validate_wire_identity(&record.identity)?;
-        Ok(RawObservation {
-            event_id: record.event_id,
-            revision: record.revision,
-            identity: ObservationIdentity {
-                scope: agenturm_kernel::ObservationScope::Session,
-                session_id: Some(record.identity.session_id),
-                worker_id: record.identity.worker_id,
-                turn_id: record.identity.turn_id,
-                operation_id: record.identity.operation_id,
-            },
-            observed_at_unix_ns: parse_decimal_timestamp(&record.time_ns)?,
-            kind: ObservationKind::Tool {
-                category: record.payload.category,
-                result: record.payload.result,
-            },
-        })
-    }
-}
-
-impl TryFrom<WireLifecycleRecord> for RawObservation {
-    type Error = RuntimeError;
-
-    fn try_from(record: WireLifecycleRecord) -> Result<Self> {
-        if record.kind != "lifecycle"
-            || !valid_source_identifier(&record.event_id, 256)
-            || !matches!(
-                record.payload.state.as_str(),
-                "running" | "completed" | "interrupted" | "paused"
-            )
-            || record
-                .payload
-                .reason_code
-                .as_deref()
-                .is_some_and(|reason| !valid_reason_code(reason))
-        {
-            return Err(RuntimeError::new("source lifecycle payload is invalid"));
-        }
-        validate_wire_identity(&record.identity)?;
-        Ok(RawObservation {
-            event_id: record.event_id,
-            revision: record.revision,
-            identity: ObservationIdentity {
-                scope: agenturm_kernel::ObservationScope::Session,
-                session_id: Some(record.identity.session_id),
-                worker_id: record.identity.worker_id,
-                turn_id: record.identity.turn_id,
-                operation_id: record.identity.operation_id,
-            },
-            observed_at_unix_ns: parse_decimal_timestamp(&record.time_ns)?,
-            kind: ObservationKind::Lifecycle {
-                state: record.payload.state,
-                reason_code: record.payload.reason_code,
-            },
-        })
-    }
-}
-
-impl TryFrom<WireCheckRecord> for RawObservation {
-    type Error = RuntimeError;
-
-    fn try_from(record: WireCheckRecord) -> Result<Self> {
-        if record.kind != "check"
-            || !valid_source_identifier(&record.event_id, 256)
-            || !matches!(record.payload.category.as_str(), "test" | "lint" | "build")
-            || !matches!(
-                record.payload.result.as_str(),
-                "passed" | "failed" | "unknown"
-            )
-        {
-            return Err(RuntimeError::new("source check payload is invalid"));
-        }
-        validate_wire_identity(&record.identity)?;
-        Ok(RawObservation {
-            event_id: record.event_id,
-            revision: record.revision,
-            identity: ObservationIdentity {
-                scope: agenturm_kernel::ObservationScope::Session,
-                session_id: Some(record.identity.session_id),
-                worker_id: record.identity.worker_id,
-                turn_id: record.identity.turn_id,
-                operation_id: record.identity.operation_id,
-            },
-            observed_at_unix_ns: parse_decimal_timestamp(&record.time_ns)?,
-            kind: ObservationKind::Check {
-                category: record.payload.category,
-                result: record.payload.result,
-            },
-        })
-    }
-}
-
-impl TryFrom<WireMessageRecord> for RawObservation {
-    type Error = RuntimeError;
-
-    fn try_from(record: WireMessageRecord) -> Result<Self> {
-        if record.kind != "message"
-            || !valid_source_identifier(&record.event_id, 256)
-            || !matches!(record.payload.role.as_str(), "user" | "assistant")
-        {
-            return Err(RuntimeError::new("source message payload is invalid"));
-        }
-        validate_wire_identity(&record.identity)?;
-        Ok(RawObservation {
-            event_id: record.event_id,
-            revision: record.revision,
-            identity: ObservationIdentity {
-                scope: agenturm_kernel::ObservationScope::Session,
-                session_id: Some(record.identity.session_id),
-                worker_id: record.identity.worker_id,
-                turn_id: record.identity.turn_id,
-                operation_id: record.identity.operation_id,
-            },
-            observed_at_unix_ns: parse_decimal_timestamp(&record.time_ns)?,
-            kind: ObservationKind::Message {
-                role: record.payload.role,
-            },
-        })
-    }
-}
-
-fn parse_decimal_timestamp(value: &str) -> Result<u64> {
-    if value.is_empty()
-        || !value.bytes().all(|byte| byte.is_ascii_digit())
-        || (value.len() > 1 && value.starts_with('0'))
-    {
-        return Err(RuntimeError::new(
-            "source timestamp is not canonical decimal",
-        ));
-    }
-    let timestamp = value
-        .parse::<u64>()
-        .map_err(|_| RuntimeError::new("source timestamp is outside range"))?;
-    if timestamp > i64::MAX as u64 {
-        return Err(RuntimeError::new(
-            "source timestamp exceeds supported range",
-        ));
-    }
-    Ok(timestamp)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observation::{parse_decimal_timestamp, parse_source_batch};
+    use agenturm_kernel::ObservationKind;
 
     #[test]
     fn artifact_hash_verification_accepts_only_matching_regular_files_and_lowercase_pins() {
@@ -1340,6 +782,49 @@ mod tests {
         assert_eq!(
             batch.observations[0].identity.worker_id.as_deref(),
             Some("worker-1")
+        );
+    }
+
+    #[test]
+    fn shared_decoder_rejects_ambiguous_fields_without_reported_source_content() {
+        let encoded = r#"{"type":"batch","protocol":1,"source_id":"harness.test","cursor":"next","records":[{"event_id":"e1","revision":0,"kind":"usage","time_ns":"1","identity":{"session_id":"s1"},"payload":{"input_tokens":1}}]}"#;
+        assert!(
+            ObservationV1Decoder
+                .decode_batch(encoded, "harness.test")
+                .is_ok()
+        );
+        for (original, replacement) in [
+            (
+                r#""input_tokens":1"#,
+                r#""input_tokens":1,"input_tokens":2"#,
+            ),
+            (r#""event_id":"e1""#, r#""event_id":"e1","event_id":"e2""#),
+            (
+                r#""session_id":"s1""#,
+                r#""session_id":"s1","session_id":"s2""#,
+            ),
+            (r#""usage""#, r#""private-observation-content""#),
+        ] {
+            let error = ObservationV1Decoder
+                .decode_batch(&encoded.replace(original, replacement), "harness.test")
+                .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "source batch rejected: invalid observation schema"
+            );
+        }
+        assert!(
+            ObservationV1Decoder
+                .decode_batch(encoded, "harness.other")
+                .is_err()
+        );
+        assert!(
+            ObservationV1Decoder
+                .decode_batch(
+                    &encoded.replace(r#""protocol":1"#, r#""protocol":2"#),
+                    "harness.test"
+                )
+                .is_err()
         );
     }
 

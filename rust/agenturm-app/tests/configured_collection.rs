@@ -10,6 +10,10 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+#[path = "fixtures/crash_recovery.rs"]
+mod crash_recovery;
+
 fn temporary_directory() -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -19,6 +23,196 @@ fn temporary_directory() -> PathBuf {
         "agenturm-app-collect-e2e-{}-{nonce}",
         std::process::id()
     ))
+}
+
+#[cfg(unix)]
+fn standalone_harness_paths() -> Option<(String, String)> {
+    let (Ok(host), Ok(adapter)) = (
+        std::env::var("AGENTURM_RUNTIME_PLUGIN_HOST"),
+        std::env::var("AGENTURM_RUNTIME_STANDALONE_ADAPTER"),
+    ) else {
+        eprintln!("skipping standalone harness test: set plugin host and standalone adapter paths");
+        return None;
+    };
+    Some((host, adapter))
+}
+
+#[cfg(unix)]
+fn standalone_collection_config(
+    root: &std::path::Path,
+    host: &str,
+    adapter: &str,
+    observation_format: &str,
+    inputs: &[(&str, &str)],
+) -> PathBuf {
+    const PLUGIN_ID: &str = "fixture.standalone-harness";
+    fs::create_dir_all(root).expect("create standalone fixture directory");
+    let hash = Command::new("sha256sum")
+        .arg(adapter)
+        .output()
+        .expect("hash independently built adapter");
+    assert!(hash.status.success());
+    let sha256 = std::str::from_utf8(&hash.stdout)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap();
+    let catalog = serde_json::json!({
+        "version": 1,
+        "plugins": [{
+            "plugin_id": PLUGIN_ID,
+            "adapter": adapter,
+            "sha256": sha256,
+            "protocol": 1,
+            "features": ["source-adapter/1", "configured-root/1"],
+            "observation_format": observation_format,
+        }]
+    });
+    fs::write(
+        root.join("plugins.json"),
+        serde_json::to_vec(&catalog).unwrap(),
+    )
+    .expect("write standalone plugin catalog");
+    let sources: Vec<_> = inputs
+        .iter()
+        .map(|(source_id, input)| {
+            let source_root = root.join(source_id);
+            fs::write(&source_root, input).expect("write native fixture input");
+            serde_json::json!({
+                "plugin_id": PLUGIN_ID,
+                "source_root": source_root,
+                "source_id": source_id,
+            })
+        })
+        .collect();
+    let config = serde_json::json!({
+        "version": 2,
+        "plugin_host": host,
+        "plugin_catalog": "plugins.json",
+        "sources": sources,
+    });
+    let path = root.join("sources.json");
+    fs::write(&path, serde_json::to_vec(&config).unwrap())
+        .expect("write standalone collection config");
+    path
+}
+
+#[cfg(unix)]
+fn collect_once(config: &std::path::Path, database: &std::path::Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_agenturm"))
+        .arg("collect")
+        .arg("--config")
+        .arg(config)
+        .arg("--db")
+        .arg(database)
+        .output()
+        .expect("run configured collection CLI")
+}
+
+#[cfg(unix)]
+#[test]
+fn standalone_harness_commits_without_admitting_malformed_or_failed_sources() {
+    let Some((host, adapter)) = standalone_harness_paths() else {
+        return;
+    };
+    let root = temporary_directory();
+    let config = standalone_collection_config(
+        &root,
+        &host,
+        &adapter,
+        "agenturm-observations/1",
+        &[
+            ("harness.crash", "crash"),
+            ("harness.malformed", "malformed"),
+            ("harness.standalone", "tokens=42\n"),
+        ],
+    );
+    let database = root.join("agenturm.sqlite");
+    let output = collect_once(&config, &database);
+    let summary = std::str::from_utf8(&output.stdout).expect("collection output is UTF-8");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        summary.contains("3 sources checked; 2 source failures; 0 global failures"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("harness.crash: AdmissionPoll: plugin host closed its data pipe"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains(
+            "harness.malformed: AdmissionPoll: source batch rejected: invalid observation schema"
+        ),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("harness.standalone: committed 1 observation(s)"),
+        "{summary}"
+    );
+    assert_eq!(summary.matches("ACK sent=true").count(), 1, "{summary}");
+
+    let snapshot = execute_inspect(&database).expect("reopen committed collection history");
+    assert!(snapshot.failures.is_empty());
+    assert_eq!(snapshot.observations.len(), 1);
+    let observation = &snapshot.observations[0];
+    assert_eq!(observation.harness_id.as_str(), "harness.standalone");
+    assert_eq!(observation.event_id, "standalone-event-1");
+    assert_eq!(observation.observed_at_unix_ns, 9_007_199_254_740_993);
+    assert_eq!(
+        observation.identity.session_id.as_deref(),
+        Some("standalone-session")
+    );
+    assert!(matches!(
+        observation.kind,
+        agenturm_kernel::ObservationKind::Usage {
+            input_tokens: Some(42),
+            ..
+        }
+    ));
+
+    let store = Store::open_read_only(&database).expect("reopen checkpoints");
+    assert_eq!(
+        store
+            .source_cursor("harness.standalone")
+            .unwrap()
+            .as_deref(),
+        Some("standalone-record-1")
+    );
+    assert_eq!(store.source_cursor("harness.crash").unwrap(), None);
+    assert_eq!(store.source_cursor("harness.malformed").unwrap(), None);
+    drop(store);
+    fs::remove_dir_all(root).expect("remove standalone fixture directory");
+}
+
+#[cfg(unix)]
+#[test]
+fn catalog_rejects_unsupported_observation_format_before_creating_database() {
+    let Some((host, adapter)) = standalone_harness_paths() else {
+        return;
+    };
+    let root = temporary_directory();
+    let config = standalone_collection_config(
+        &root,
+        &host,
+        &adapter,
+        "agenturm-observations/999",
+        &[("harness.standalone", "tokens=42\n")],
+    );
+    let database = root.join("agenturm.sqlite");
+    let output = collect_once(&config, &database);
+    let error = std::str::from_utf8(&output.stderr).expect("collection error is UTF-8");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        error.contains("unsupported observation format for fixture.standalone-harness"),
+        "{error}"
+    );
+    assert!(!database.exists());
+    fs::remove_dir_all(root).expect("remove standalone fixture directory");
 }
 
 #[cfg(unix)]
@@ -361,6 +555,8 @@ fn configured_watch_exits_cleanly_on_terminate_between_cycles() {
         }
         report_lines.push(line);
     }
+    #[cfg(target_os = "linux")]
+    let competing_writer = collect_once(&config_path, &database);
     let signal = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
         .status();
@@ -390,6 +586,15 @@ fn configured_watch_exits_cleanly_on_terminate_between_cycles() {
     report_lines.extend(line_receiver.try_iter());
     let output = child.wait_with_output().expect("read collector output");
     assert!(output.status.success());
+    #[cfg(target_os = "linux")]
+    {
+        let error = String::from_utf8_lossy(&competing_writer.stderr);
+        assert_eq!(competing_writer.status.code(), Some(1), "{error}");
+        assert!(
+            error.contains("collector writer lease unavailable"),
+            "{error}"
+        );
+    }
     let stdout = report_lines.join("\n");
     assert!(stdout.contains("Stopped after"));
     assert!(!stdout.contains("cancelled by shutdown"));

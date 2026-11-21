@@ -224,6 +224,14 @@ pub enum ObservationKind {
         category: String,
         result: String,
     },
+    PullRequestRaised {
+        repository: String,
+        number: u64,
+    },
+    Relationship {
+        relationship_kind: RelationshipKind,
+        parent_session_id: String,
+    },
     Message {
         role: String,
     },
@@ -238,6 +246,62 @@ pub enum ObservationKind {
         cache_write_tokens: Option<u64>,
         total_tokens: Option<u64>,
     },
+    CreditUsage {
+        nanocredits: u64,
+    },
+}
+
+/// Returns whether a source lifecycle state can be admitted and stored.
+pub fn is_lifecycle_state(state: &str) -> bool {
+    matches!(
+        state,
+        "running" | "completed" | "interrupted" | "failed" | "paused"
+    )
+}
+
+/// Checks the typed reference and its native turn and operation anchors.
+pub fn is_anchored_pull_request(
+    repository: &str,
+    number: u64,
+    identity: &ObservationIdentity,
+) -> bool {
+    identity.scope == ObservationScope::Session
+        && identity.session_id.is_some()
+        && identity.turn_id.is_some()
+        && identity.operation_id.is_some()
+        && is_github_pull_request(repository, number)
+}
+
+pub use agenturm_protocol::observation::{
+    NANOCREDITS_PER_CREDIT, RelationshipKind, is_github_pull_request,
+};
+
+/// Formats native credits without introducing floating-point rounding.
+pub fn format_credits(nanocredits: u64) -> String {
+    let whole = nanocredits / NANOCREDITS_PER_CREDIT;
+    let fraction = nanocredits % NANOCREDITS_PER_CREDIT;
+    if fraction == 0 {
+        return whole.to_string();
+    }
+    let fraction = format!("{fraction:09}");
+    format!("{whole}.{}", fraction.trim_end_matches('0'))
+}
+
+/// Validates a parent ID in the same configured source as a distinct child session.
+pub fn is_valid_relationship_parent(
+    child_session_id: Option<&str>,
+    parent_session_id: &str,
+) -> bool {
+    child_session_id.is_some_and(|child| child != parent_session_id)
+        && valid_identity_part(parent_session_id, MAX_SESSION_KEY_BYTES)
+}
+
+/// The relation describes a session, so turn and operation anchors are absent.
+pub fn is_session_relationship(parent_session_id: &str, identity: &ObservationIdentity) -> bool {
+    identity.scope == ObservationScope::Session
+        && identity.turn_id.is_none()
+        && identity.operation_id.is_none()
+        && is_valid_relationship_parent(identity.session_id.as_deref(), parent_session_id)
 }
 
 /// Adapter port. Implementations own harness-specific discovery and parsing;
@@ -337,6 +401,14 @@ pub trait ObservationStore {
             return Err("observation store does not support filtered history queries".into());
         }
         self.load_observations(query.limit)
+    }
+    /// Queries one native turn within an exact source and session.
+    fn query_turn_observations(
+        &self,
+        _query: &ObservationQuery,
+        _turn_id: &str,
+    ) -> Result<ObservationPage, String> {
+        Err("observation store does not support turn history queries".into())
     }
     fn commit(
         &mut self,
@@ -590,6 +662,11 @@ impl Kernel {
         insert_unique(&mut self.sources, id, Box::new(source))
     }
 
+    /// Stops polling a configured source. Its durable cursor stays in the store.
+    pub fn unregister_source_adapter(&mut self, id: &ExtensionId) {
+        self.sources.remove(id);
+    }
+
     pub fn register_capability(
         &mut self,
         id: ExtensionId,
@@ -644,6 +721,7 @@ impl Kernel {
             &mut snapshot,
             store,
             &ObservationQuery::latest(MAX_DURABLE_SNAPSHOT_OBSERVATIONS),
+            None,
         );
         self.evaluate_extensions(&mut snapshot, selection_scope);
         snapshot
@@ -657,7 +735,20 @@ impl Kernel {
         query: ObservationQuery,
     ) -> Snapshot {
         let mut snapshot = Snapshot::default();
-        let selection_scope = self.load_observations(&mut snapshot, store, &query);
+        let selection_scope = self.load_observations(&mut snapshot, store, &query, None);
+        self.evaluate_extensions(&mut snapshot, selection_scope);
+        snapshot
+    }
+
+    /// Rebuilds extension state from one exact, durable turn page.
+    pub fn refresh_turn_with_store(
+        &mut self,
+        store: &impl ObservationStore,
+        query: ObservationQuery,
+        turn_id: &str,
+    ) -> Snapshot {
+        let mut snapshot = Snapshot::default();
+        let selection_scope = self.load_observations(&mut snapshot, store, &query, Some(turn_id));
         self.evaluate_extensions(&mut snapshot, selection_scope);
         snapshot
     }
@@ -667,22 +758,41 @@ impl Kernel {
         snapshot: &mut Snapshot,
         store: &impl ObservationStore,
         query: &ObservationQuery,
+        turn_id: Option<&str>,
     ) -> ObservationSelectionScope {
         let selection_scope = if query.before.is_some() {
             ObservationSelectionScope::Continuation
-        } else if query.harness_id.is_some() || query.session_id.is_some() {
+        } else if query.harness_id.is_some() || query.session_id.is_some() || turn_id.is_some() {
             ObservationSelectionScope::Filtered
         } else {
             ObservationSelectionScope::Latest
         };
         let store_id = ExtensionId("kernel.store".into());
-        match store.query_observations(query) {
+        let page = match turn_id {
+            Some(turn_id) => store.query_turn_observations(query, turn_id),
+            None => store.query_observations(query),
+        };
+        match page {
             Ok(page) => {
                 if page.observations.len() > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
                     snapshot.failures.push(failure(
                         &store_id,
                         ExtensionStage::AdmissionRead,
                         "observation store returned more rows than requested",
+                    ));
+                    return selection_scope;
+                }
+                if let Some(turn_id) = turn_id
+                    && page.observations.iter().any(|row| {
+                        query.harness_id.as_deref() != Some(row.harness_id.as_str())
+                            || query.session_id != row.identity.session_id
+                            || row.identity.turn_id.as_deref() != Some(turn_id)
+                    })
+                {
+                    snapshot.failures.push(failure(
+                        &store_id,
+                        ExtensionStage::AdmissionRead,
+                        "observation store returned a row outside the requested turn",
                     ));
                     return selection_scope;
                 }
@@ -1159,16 +1269,16 @@ fn validate_raw_observation_slice(
             return Err("tool observation is invalid or exceeds limit".into());
         }
         if let ObservationKind::Lifecycle { state, reason_code } = &row.kind
-            && (!matches!(
-                state.as_str(),
-                "running" | "completed" | "interrupted" | "paused"
-            ) || reason_code.as_ref().is_some_and(|reason| {
-                reason.is_empty()
-                    || reason.len() > 128
-                    || !reason.bytes().all(|byte| {
-                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
-                    })
-            }))
+            && (!is_lifecycle_state(state)
+                || reason_code.as_ref().is_some_and(|reason| {
+                    reason.is_empty()
+                        || reason.len() > 128
+                        || !reason.bytes().all(|byte| {
+                            byte.is_ascii_lowercase()
+                                || byte.is_ascii_digit()
+                                || b"._-".contains(&byte)
+                        })
+                }))
         {
             return Err("lifecycle observation state or reason is invalid".into());
         }
@@ -1178,10 +1288,27 @@ fn validate_raw_observation_slice(
         {
             return Err("check observation category or result is invalid".into());
         }
+        if let ObservationKind::PullRequestRaised { repository, number } = &row.kind
+            && !is_anchored_pull_request(repository, *number, &row.identity)
+        {
+            return Err("pull request observation reference or identity is invalid".into());
+        }
+        if let ObservationKind::Relationship {
+            parent_session_id, ..
+        } = &row.kind
+            && !is_session_relationship(parent_session_id, &row.identity)
+        {
+            return Err("relationship parent or identity is invalid".into());
+        }
         if let ObservationKind::Message { role } = &row.kind
             && !matches!(role.as_str(), "user" | "assistant")
         {
             return Err("message observation role is invalid".into());
+        }
+        if let ObservationKind::CreditUsage { nanocredits } = &row.kind
+            && *nanocredits > i64::MAX as u64
+        {
+            return Err("credit usage exceeds supported range".into());
         }
         if let ObservationKind::Diagnostic { code, severity } = &row.kind
             && (!is_safe_diagnostic_code(code)

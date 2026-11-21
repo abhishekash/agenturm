@@ -1,11 +1,13 @@
-//! Bounded transport framing for future supervised local plugins.
+//! Bounded transport framing and wire types for supervised local plugins.
 //!
 //! A frame is a four-byte big-endian length followed by UTF-8 bytes. This
-//! crate does not validate JSON, authorize a plugin, or acknowledge evidence.
+//! framing functions do not validate JSON, authorize a plugin, or acknowledge evidence.
 //! A framing error poisons the connection: callers must close it and replay
 //! from the last durable cursor instead of trying to resynchronize.
 
 #![forbid(unsafe_code)]
+
+pub mod observation;
 
 use std::fmt;
 use std::io::{self, Read, Write};

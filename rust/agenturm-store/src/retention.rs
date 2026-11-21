@@ -1,0 +1,140 @@
+//! Explicit observation retention. Receipts and source checkpoints outlive
+//! their observation rows so exact replay and restart remain deterministic.
+
+use crate::{Result, SCHEMA_VERSION, Store, StoreError};
+use rusqlite::{Connection, TransactionBehavior, params};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetentionOutcome {
+    pub cutoff_unix_ns: u64,
+    pub removed_observations: usize,
+    pub minimum_snapshot_id: u64,
+}
+
+#[derive(Default)]
+pub(super) struct RetentionState {
+    pub cutoff_unix_ns: i64,
+    pub snapshot_offset: i64,
+    pub minimum_snapshot_id: i64,
+}
+
+pub(super) fn create_schema(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE agenturm_retention_state (
+            singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+            cutoff_unix_ns INTEGER NOT NULL CHECK (cutoff_unix_ns >= 0),
+            snapshot_offset INTEGER NOT NULL CHECK (snapshot_offset >= 0),
+            minimum_snapshot_id INTEGER NOT NULL CHECK (minimum_snapshot_id >= snapshot_offset)
+        );
+        INSERT INTO agenturm_retention_state VALUES (1, 0, 0, 0);
+        CREATE TABLE agenturm_retired_observations (
+            source_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision >= 0),
+            event_digest TEXT NOT NULL,
+            PRIMARY KEY (source_id, event_id, revision)
+        );",
+    )?;
+    Ok(())
+}
+
+pub(super) fn read_state(connection: &Connection) -> Result<RetentionState> {
+    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    match version {
+        8 | 9 => Ok(RetentionState::default()),
+        SCHEMA_VERSION => connection
+            .query_row(
+                "SELECT cutoff_unix_ns, snapshot_offset, minimum_snapshot_id
+                 FROM agenturm_retention_state WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok(RetentionState {
+                        cutoff_unix_ns: row.get(0)?,
+                        snapshot_offset: row.get(1)?,
+                        minimum_snapshot_id: row.get(2)?,
+                    })
+                },
+            )
+            .map_err(Into::into),
+        _ => Err(StoreError::UnsupportedSchema(version)),
+    }
+}
+
+pub(super) fn receipt_head(connection: &Connection) -> Result<i64> {
+    connection
+        .query_row(
+            "SELECT COALESCE(MAX(sequence), 0) FROM agenturm_history_batches",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+}
+
+pub(super) fn snapshot_id(receipt_sequence: i64, offset: i64) -> Result<i64> {
+    receipt_sequence
+        .checked_add(offset)
+        .ok_or(StoreError::Invalid("history snapshot ID is exhausted"))
+}
+
+impl Store {
+    /// Atomically removes observations strictly older than the supplied cutoff.
+    /// Equal cutoffs are idempotent and lowering the cutoff is an error.
+    /// Later batches still advance their checkpoint when an observation falls
+    /// below the cutoff. The store retains each expired event's source, ID,
+    /// revision and digest to preserve conflicts and replay semantics. Request
+    /// receipts are retained in full. Raising the cutoff expires earlier
+    /// snapshot IDs, including if no observations fall below the new cutoff.
+    /// On Linux the caller must open a persistent writable store.
+    /// This is logical cleanup of the live store. Existing backups and SQLite
+    /// file space can still contain the prior data.
+    pub fn prune_observations_before(&mut self, cutoff_unix_ns: u64) -> Result<RetentionOutcome> {
+        let cutoff = i64::try_from(cutoff_unix_ns)
+            .map_err(|_| StoreError::Invalid("retention cutoff exceeds SQLite INTEGER"))?;
+        #[cfg(target_os = "linux")]
+        if self.writer_lease.is_none() {
+            return Err(StoreError::WriterLease(std::io::Error::other(
+                "retention requires a writer lease",
+            )));
+        }
+        self.verify_write_admission()?;
+
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = read_state(&transaction)?;
+        if cutoff < state.cutoff_unix_ns {
+            return Err(StoreError::Invalid("retention cutoff cannot decrease"));
+        }
+        if cutoff == state.cutoff_unix_ns {
+            return Ok(RetentionOutcome {
+                cutoff_unix_ns,
+                removed_observations: 0,
+                minimum_snapshot_id: state.minimum_snapshot_id as u64,
+            });
+        }
+
+        let offset = snapshot_id(state.snapshot_offset, 1)?;
+        let barrier = snapshot_id(receipt_head(&transaction)?, offset)?;
+        transaction.execute(
+            "INSERT INTO agenturm_retired_observations (source_id, event_id, revision, event_digest)
+             SELECT source_id, event_id, revision, event_digest FROM agenturm_observations
+             WHERE observed_at_unix_ns < ?1",
+            [cutoff],
+        )?;
+        let removed_observations = transaction.execute(
+            "DELETE FROM agenturm_observations WHERE observed_at_unix_ns < ?1",
+            [cutoff],
+        )?;
+        transaction.execute(
+            "UPDATE agenturm_retention_state SET cutoff_unix_ns = ?1,
+                    snapshot_offset = ?2, minimum_snapshot_id = ?3 WHERE singleton = 1",
+            params![cutoff, offset, barrier],
+        )?;
+        transaction.commit()?;
+        Ok(RetentionOutcome {
+            cutoff_unix_ns,
+            removed_observations,
+            minimum_snapshot_id: barrier as u64,
+        })
+    }
+}

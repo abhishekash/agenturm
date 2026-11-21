@@ -1,12 +1,28 @@
-<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rust configured harness collection</title><style>:root{color-scheme:light dark;--bg:#f7f8fb;--fg:#202534;--muted:#586174;--panel:#fff;--line:#d9deea;--link:#3959bc;--code:#eef1f7}@media(prefers-color-scheme:dark){:root{--bg:#11141b;--fg:#e8ebf2;--muted:#a8b0c0;--panel:#191e28;--line:#303849;--link:#9db5ff;--code:#252c39}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1000px;margin:0 auto;padding:clamp(20px,5vw,56px)}article{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:clamp(20px,4vw,48px)}h1,h2,h3,h4{line-height:1.25;margin-top:1.8em}h1{font-size:2.1rem;margin-top:0}h2{border-bottom:1px solid var(--line);padding-bottom:.35em}p,li{max-width:86ch}a{color:var(--link)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{background:var(--code);padding:.12em .32em;border-radius:4px}pre{overflow:auto;background:var(--code);padding:16px;border-radius:8px;line-height:1.5}pre code{background:transparent;padding:0}li+li{margin-top:.35em}.source{font-size:.9rem;color:var(--muted);margin-top:2rem}</style></head><body><main><article><h1>Rust configured harness collection</h1>
-<p>The Rust CLI can load an explicit version 1 JSON configuration and poll up to 16 process adapters in one kernel refresh:</p>
-<pre><code>agenturm collect --config ./agenturm-sources.json --db ./agenturm.sqlite</code></pre>
-<p>Add <code>--watch</code> to keep process adapters and the store open between polls. The default interval is 2 seconds; <code>--interval-ms</code> accepts 100 through 60000:</p>
-<pre><code>agenturm collect --config ./agenturm-sources.json --db ./agenturm.sqlite --watch --interval-ms 1000</code></pre>
-<p><code>Ctrl-C</code> and <code>SIGTERM</code> stop the foreground collector cleanly and close its supervised adapter processes. Configuration is loaded once at startup; restart the command to apply edits.</p>
-<p>The configuration enumerates plugin identities and executable paths. Paths may be absolute or relative to the configuration file&#x27;s directory. Relative paths are resolved before any child process starts. Source IDs must be unique. Existing adapter and source-root paths are canonicalized when checking ownership; missing paths use lexical normalization. The same normalized adapter plus source-root pair cannot be listed twice under different IDs.</p>
-<pre><code>{
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Collection Config</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.1.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-collection-config.md">Markdown source ↗</a></nav><h1>Rust configured harness collection</h1>
+<p>The Rust CLI can load version 1 or version 2 JSON configuration and poll up to
+16 process adapters in one kernel refresh:</p>
+<pre><code class="language-sh">agenturm collect --config ./agenturm-sources.json --db ./agenturm.sqlite
+</code></pre>
+<p>Add <code>--watch</code> to keep process adapters and the store open between polls. The
+default interval is 2 seconds; <code>--interval-ms</code> accepts 100 through 60000:</p>
+<pre><code class="language-sh">agenturm collect --config ./agenturm-sources.json --db ./agenturm.sqlite --watch --interval-ms 1000
+</code></pre>
+<p><code>Ctrl-C</code> and <code>SIGTERM</code> stop the foreground collector cleanly and close its
+supervised adapter processes. Configuration is loaded once at startup; restart
+the command to apply edits.</p>
+<p>Version 1 enumerates plugin identities and executable paths directly. Version 2
+selects plugin identities from a separate, explicit catalog. Configuration and
+catalog paths may be absolute or relative to the containing file's directory.
+Relative paths are resolved before any child process starts.
+Source IDs must be unique. Existing adapter and source-root paths are
+canonicalized when checking ownership; missing paths use lexical normalization.
+The same normalized adapter plus source-root pair cannot be listed twice under
+different IDs.</p>
+<pre><code class="language-json">{
   &quot;version&quot;: 1,
   &quot;plugin_host&quot;: &quot;/opt/agenturm/bin/agenturm-plugin-host&quot;,
   &quot;sources&quot;: [
@@ -23,6 +39,84 @@
       &quot;source_id&quot;: &quot;harness.codex&quot;
     }
   ]
-}</code></pre>
-<p>Each collection cycle performs one bounded poll per configured source. The kernel validates each source batch, writes it to the Rust SQLite store, and ACKs only after the durable commit. A startup or poll failure for one source is reported in the summary while healthy configured sources continue. In watch mode, failed source startup is retried at most once per second until it starts or the collector stops. Any source failure makes the command exit nonzero; successful sources still retain their committed observations. A durable history read failure is reported as a storage failure and also makes the command exit nonzero, even if source commits and ACKs already succeeded. The JSON file is a user-managed configuration input. Watch mode runs in the foreground; the command does not install an OS service, scan plugin directories, or load in-process native libraries.</p>
-<p>For this first configured command, adapters must emit Agenturm&#x27;s shared bounded source protocol, and the app installs <code>BundledObservationDecoder</code>. It stores token usage and privacy-safe tool, lifecycle, check and message-role observations (category/result/operation identity, state/reason code, check category/result, and user/assistant role), while counting other validated facts without a stored projection. The runtime API accepts injected <code>SourceBatchDecoder</code> implementations for other typed fact projections; message bodies and content are rejected by the typed projection. Registering those decoders in a general plugin catalog is a later step.</p><p class="source">Markdown source: <a href="rust-collection-config.md">rust-collection-config.md</a></p></article></main></body></html>
+}
+</code></pre>
+<p>Version 2 keeps executable paths and integrity pins in a separate catalog. The
+catalog is user-managed JSON; it is not downloaded or discovered automatically.
+Each entry declares the plugin transport protocol, required source-adapter
+features, and a lower-case SHA-256 pin. The <code>observation_format</code> field selects
+the host's batch decoder. The supported format is <code>agenturm-observations/1</code>,
+which also applies when a catalog entry omits the field or when collection
+uses version 1 configuration. The app rejects unsupported formats and
+verifies catalog artifacts before opening the SQLite store, then checks the
+selected adapter artifact again before each supervised host launch. The host
+handshake must match the catalog's declared feature set.</p>
+<pre><code class="language-json">{
+  &quot;version&quot;: 2,
+  &quot;plugin_host&quot;: &quot;/opt/agenturm/bin/agenturm-plugin-host&quot;,
+  &quot;plugin_catalog&quot;: &quot;agenturm-plugins.json&quot;,
+  &quot;sources&quot;: [
+    {
+      &quot;plugin_id&quot;: &quot;example.rust-pi-harness&quot;,
+      &quot;source_root&quot;: &quot;/home/alex/.pi/agent/sessions&quot;,
+      &quot;source_id&quot;: &quot;harness.pi&quot;
+    }
+  ]
+}
+</code></pre>
+<pre><code class="language-json">{
+  &quot;version&quot;: 1,
+  &quot;plugins&quot;: [
+    {
+      &quot;plugin_id&quot;: &quot;example.rust-pi-harness&quot;,
+      &quot;adapter&quot;: &quot;/opt/agenturm/bin/agenturm-pi-harness&quot;,
+      &quot;sha256&quot;: &quot;&lt;64 lowercase hexadecimal characters&gt;&quot;,
+      &quot;protocol&quot;: 1,
+      &quot;features&quot;: [&quot;source-adapter/1&quot;, &quot;configured-root/1&quot;],
+      &quot;observation_format&quot;: &quot;agenturm-observations/1&quot;
+    }
+  ]
+}
+</code></pre>
+<p>Each collection cycle performs one bounded poll per configured source. The
+kernel validates each source batch, writes it to the Rust SQLite store, and ACKs
+only after the durable commit. A startup or poll failure for one source is reported in the
+summary while healthy configured sources continue. In watch mode, failed source
+startup is retried at most once per second until it starts or the collector stops. Any source failure makes
+the command exit nonzero; successful sources still retain their committed
+observations. A durable history read failure is reported as a storage failure
+and also makes the command exit nonzero, even if source commits and ACKs already
+succeeded. The JSON files are user-managed configuration inputs. Watch mode
+runs in the foreground; the command does not scan plugin directories or load
+in-process native libraries. Catalog pins detect artifact changes but do not
+sandbox adapters: each child runs with the same OS user privileges as Agenturm.</p>
+<p>Adapter processes parse harness-specific records and emit normalized batches
+in the configured observation format. The host projects usage and privacy-safe
+tool, lifecycle, check, message-role and diagnostic observations. Message
+bodies and other unsupported fields cause batch rejection. The catalog binds
+each configured process to an observation format supported by the host.</p>
+<h3>Rolling discovery configuration</h3>
+<p>Run <code>agenturm discover --follow [--sessions-per-harness &lt;1..8&gt;]</code> to generate
+a version 2 configuration with a <code>follow</code> object in place of <code>sources</code>.
+It captures the two session roots from discovery and requires both bundled
+catalog entries. Relative roots in a hand-written configuration are resolved
+against the configuration file. An example follows.</p>
+<pre><code class="language-json">{
+  &quot;version&quot;: 2,
+  &quot;plugin_host&quot;: &quot;/opt/agenturm/bin/agenturm-plugin-host&quot;,
+  &quot;plugin_catalog&quot;: &quot;/opt/agenturm/agenturm-plugins.json&quot;,
+  &quot;follow&quot;: {
+    &quot;codex_root&quot;: &quot;/home/alex/.codex/sessions&quot;,
+    &quot;pi_root&quot;: &quot;/home/alex/.pi/agent/sessions&quot;,
+    &quot;sessions_per_harness&quot;: 4
+  }
+}
+</code></pre>
+<p>One-shot collection scans once. Foreground watch and the managed collector
+rescan at most once every five seconds and admit new files from the bounded
+set. Adapter processes for unchanged paths continue polling. Evicted paths
+take their final bounded poll before eviction. They retain history and
+resume from their durable cursor if selected again. Backlog beyond the last
+poll remains on disk until reselection. A scan error preserves the current selection and is reported in the next
+collection summary. Put the database directory outside both roots.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

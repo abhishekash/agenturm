@@ -1,6 +1,7 @@
 use agenturm_app::{
-    AgenturmApp, Command, execute_collect, execute_ingest, execute_inspect_ui, execute_query,
-    execute_service, execute_watch, parse_command, render,
+    AgenturmApp, Command, discover, execute_backup, execute_collect, execute_content,
+    execute_ingest, execute_inspect_ui, execute_prune, execute_query, execute_service,
+    execute_watch, parse_command, render,
 };
 use std::process::ExitCode;
 
@@ -31,6 +32,36 @@ fn main() -> ExitCode {
             Ok(result) => println!("{result}"),
             Err(message) => {
                 eprintln!("query failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Command::Backup { db, output } => {
+            if let Err(message) = execute_backup(&db, &output) {
+                eprintln!("backup failed: {message}");
+                return ExitCode::FAILURE;
+            }
+            println!("Saved backup to {}", output.display());
+        }
+        Command::Prune { db, before_unix_ns } => match execute_prune(&db, before_unix_ns) {
+            Ok(summary) => print!("{summary}"),
+            Err(message) => {
+                eprintln!("retention failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Command::Content(options) => {
+            if let Err(message) = execute_content(&options, &mut std::io::stdout().lock()) {
+                eprintln!("Pi content failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Command::Discover {
+            sessions_per_harness,
+            follow,
+        } => match discover(sessions_per_harness, follow) {
+            Ok(config) => println!("{config}"),
+            Err(message) => {
+                eprintln!("discovery failed: {message}");
                 return ExitCode::FAILURE;
             }
         },

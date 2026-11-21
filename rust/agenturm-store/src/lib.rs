@@ -1,9 +1,8 @@
 //! A small Rust-owned SQLite store for kernel observations.
 //!
-//! This crate proves typed atomic persistence, request replay, event identity,
-//! and close/reopen reads. It is not yet a production storage authority: it
-//! has no service principal, cross-process writer fence, product policy,
-//! retention, backup protocol, or integration with the Agenturm app.
+//! The store provides typed atomic persistence, request replay, durable reads
+//! and online SQLite backup. Linux collectors can hold a cooperative writer
+//! lease for the lifetime of their connection.
 //!
 //! Kernel observations carry adapter-native event ID/revision, nanosecond
 //! timestamps, and typed session/worker/turn/operation identity. The store
@@ -11,6 +10,14 @@
 //! must never be synthesized from timestamps or session keys.
 
 #![forbid(unsafe_code)]
+
+mod backup;
+mod content_grant;
+mod retention;
+
+pub use backup::BackupError;
+pub use content_grant::{ContentGrant, ContentGrantScope, ContentKind, PiUserTextEvidence};
+pub use retention::RetentionOutcome;
 
 use agenturm_kernel::{
     MAX_DURABLE_SNAPSHOT_OBSERVATIONS, Observation, ObservationKind as KernelObservationKind,
@@ -24,7 +31,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 10;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -32,7 +39,9 @@ const MAX_EVENT_ID_BYTES: usize = 256;
 const MAX_SESSION_KEY_BYTES: usize = 512;
 const MAX_CATEGORY_BYTES: usize = 64;
 const MAX_CURSOR_BYTES: usize = 800;
-const STORE_MARKER: &str = "agenturm.observation-store.v8";
+const STORE_MARKER: &str = "agenturm.observation-store.v10";
+const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
+const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
 const STORE_MARKER_V6: &str = "agenturm.observation-store.v6";
 const STORE_MARKER_V5: &str = "agenturm.observation-store.v5";
@@ -60,6 +69,14 @@ pub enum ObservationKind {
         category: String,
         result: String,
     },
+    PullRequestRaised {
+        repository: String,
+        number: u64,
+    },
+    Relationship {
+        relationship_kind: agenturm_kernel::RelationshipKind,
+        parent_session_id: String,
+    },
     Message {
         role: String,
     },
@@ -73,6 +90,9 @@ pub enum ObservationKind {
         cache_read_tokens: Option<u64>,
         cache_write_tokens: Option<u64>,
         total_tokens: Option<u64>,
+    },
+    CreditUsage {
+        nanocredits: u64,
     },
 }
 
@@ -180,12 +200,15 @@ pub enum StoreError {
     Invalid(&'static str),
     RequestConflict,
     StaleCursor,
+    StaleContentGrant,
+    ExpiredHistorySnapshot { minimum_snapshot_id: u64 },
     EventConflict { event_id: String },
     UnrecognizedDatabase,
     UnsupportedSchema(i64),
     Sqlite(rusqlite::Error),
     Serialization(serde_json::Error),
     InjectedFailure,
+    WriterLease(std::io::Error),
 }
 
 impl Display for StoreError {
@@ -194,6 +217,13 @@ impl Display for StoreError {
             Self::Invalid(message) => write!(f, "invalid observation batch: {message}"),
             Self::RequestConflict => write!(f, "request ID was reused with different content"),
             Self::StaleCursor => write!(f, "source cursor changed since batch preparation"),
+            Self::StaleContentGrant => write!(f, "content grant is stale or denied"),
+            Self::ExpiredHistorySnapshot {
+                minimum_snapshot_id,
+            } => write!(
+                f,
+                "history snapshot expired after retention; start a new query at snapshot {minimum_snapshot_id} or later"
+            ),
             Self::EventConflict { event_id } => {
                 write!(f, "event ID was reused with different content: {event_id}")
             }
@@ -206,6 +236,7 @@ impl Display for StoreError {
             Self::Sqlite(error) => Display::fmt(error, f),
             Self::Serialization(error) => Display::fmt(error, f),
             Self::InjectedFailure => write!(f, "injected transaction failure"),
+            Self::WriterLease(error) => write!(f, "collector writer lease unavailable: {error}"),
         }
     }
 }
@@ -215,6 +246,7 @@ impl Error for StoreError {
         match self {
             Self::Sqlite(error) => Some(error),
             Self::Serialization(error) => Some(error),
+            Self::WriterLease(error) => Some(error),
             _ => None,
         }
     }
@@ -257,8 +289,18 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
     ];
     if version >= 3 {
         expected.push(("table".to_owned(), "agenturm_history_batches".to_owned()));
-        expected.sort();
     }
+    if version >= 9 {
+        expected.push(("table".to_owned(), "agenturm_content_grants".to_owned()));
+    }
+    if version >= 10 {
+        expected.push(("table".to_owned(), "agenturm_retention_state".to_owned()));
+        expected.push((
+            "table".to_owned(),
+            "agenturm_retired_observations".to_owned(),
+        ));
+    }
+    expected.sort();
     if objects != expected {
         return Err(StoreError::UnrecognizedDatabase);
     }
@@ -276,7 +318,9 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         5 => STORE_MARKER_V5,
         6 => STORE_MARKER_V6,
         7 => STORE_MARKER_V7,
-        8 => STORE_MARKER,
+        8 => STORE_MARKER_V8,
+        9 => STORE_MARKER_V9,
+        10 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -321,6 +365,39 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         expected_tables.push((
             "agenturm_history_batches",
             vec![("sequence", "INTEGER", 0, 1), ("request_id", "TEXT", 1, 0)],
+        ));
+    }
+    if version >= 9 {
+        expected_tables.push((
+            "agenturm_content_grants",
+            vec![
+                ("source_id", "TEXT", 1, 1),
+                ("kind", "TEXT", 1, 2),
+                ("source_fingerprint", "BLOB", 1, 0),
+                ("epoch", "INTEGER", 1, 0),
+                ("nonce", "BLOB", 1, 0),
+                ("enabled", "INTEGER", 1, 0),
+            ],
+        ));
+    }
+    if version >= 10 {
+        expected_tables.push((
+            "agenturm_retention_state",
+            vec![
+                ("singleton", "INTEGER", 1, 1),
+                ("cutoff_unix_ns", "INTEGER", 1, 0),
+                ("snapshot_offset", "INTEGER", 1, 0),
+                ("minimum_snapshot_id", "INTEGER", 1, 0),
+            ],
+        ));
+        expected_tables.push((
+            "agenturm_retired_observations",
+            vec![
+                ("source_id", "TEXT", 1, 1),
+                ("event_id", "TEXT", 1, 2),
+                ("revision", "INTEGER", 1, 3),
+                ("event_digest", "TEXT", 1, 0),
+            ],
         ));
     }
     for (table, expected_columns) in expected_tables {
@@ -488,39 +565,89 @@ fn migrate_v7_to_v8(connection: &mut Connection) -> Result<()> {
     validate_marked_shape(connection, 8)
 }
 
-/// One SQLite connection owned by the caller. Methods requiring mutation take
-/// `&mut self`, which serializes writes within this process. This is not a
-/// cross-process lease or an untrusted-client boundary.
+/// One SQLite connection owned by the caller. On Linux, writable connections
+/// to the same database share one process lease and SQLite serializes their
+/// transactions. Read-only connections do not take the lease.
 pub struct Store {
     connection: Connection,
+    #[cfg(target_os = "linux")]
+    writer_lease: Option<agenturm_storage_lease::WriterLease>,
 }
 
 impl Store {
-    /// Opens or creates a store at `path`. A new database receives the v8
+    /// Opens or creates a store at `path`. A new database receives the current
     /// schema; an unknown or unrelated database is rejected without changing
-    /// its journal mode or schema.
+    /// its journal mode or schema. On Linux the lease is acquired before any
+    /// SQLite writes, including schema initialization and migration.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-        )
+        let path = path.as_ref();
+        #[cfg(target_os = "linux")]
+        if !path.as_os_str().is_empty() && path != Path::new(":memory:") {
+            use std::fs::OpenOptions;
+            use std::io::ErrorKind;
+            use std::os::unix::fs::OpenOptionsExt;
+
+            let path = std::path::absolute(path).map_err(StoreError::WriterLease)?;
+            // The lease binds an inode, so make the fresh database file before
+            // attempting the lease. SQLite schema writes happen after acquisition.
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+            {
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(StoreError::WriterLease(error)),
+            }
+            let lease = agenturm_storage_lease::WriterLease::acquire(&path)
+                .map_err(StoreError::WriterLease)?;
+            let connection = Self::open_writable_connection(&path)?;
+            lease.verify_admission().map_err(StoreError::WriterLease)?;
+            return Ok(Self {
+                connection,
+                writer_lease: Some(lease),
+            });
+        }
+        Ok(Self {
+            connection: Self::open_writable_connection(path)?,
+            #[cfg(target_os = "linux")]
+            writer_lease: None,
+        })
     }
 
-    /// Opens an existing v8 store through a read-only connection. This path
+    /// Opens a writable store for collection using the same ownership rules
+    /// as other store writers. Collection always uses a filesystem path.
+    pub fn open_collector(path: impl AsRef<Path>) -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        let path = std::path::absolute(path).map_err(StoreError::WriterLease)?;
+        Self::open(path)
+    }
+
+    /// Opens a v8, v9, or v10 store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let transaction = connection.unchecked_transaction()?;
         let schema_version: i64 =
-            connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if schema_version != SCHEMA_VERSION {
+            transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if !matches!(schema_version, 8 | 9 | SCHEMA_VERSION) {
             return Err(StoreError::UnsupportedSchema(schema_version));
         }
-        validate_marked_shape(&connection, SCHEMA_VERSION)?;
-        Ok(Self { connection })
+        validate_marked_shape(&transaction, schema_version)?;
+        transaction.commit()?;
+        Ok(Self {
+            connection,
+            #[cfg(target_os = "linux")]
+            writer_lease: None,
+        })
     }
 
-    fn open_with_flags(path: impl AsRef<Path>, flags: OpenFlags) -> Result<Self> {
-        let mut connection = Connection::open_with_flags(path, flags)?;
+    fn open_writable_connection(path: &Path) -> Result<Connection> {
+        let mut connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+        )?;
         let schema_version: i64 =
             connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if schema_version == 0 {
@@ -541,7 +668,7 @@ impl Store {
                     value TEXT NOT NULL
                 );
                 INSERT INTO agenturm_store_meta (key, value)
-                    VALUES ('format', 'agenturm.observation-store.v8');
+                    VALUES ('format', 'agenturm.observation-store.v10');
                 CREATE TABLE agenturm_ingest_receipts (
                     request_id TEXT PRIMARY KEY NOT NULL,
                     source_id TEXT NOT NULL,
@@ -580,8 +707,10 @@ impl Store {
                 CREATE INDEX agenturm_observations_by_session
                     ON agenturm_observations
                         (session_id, observed_at_unix_ns, event_id, revision);
-                PRAGMA user_version = 8;",
+                PRAGMA user_version = 10;",
             )?;
+            content_grant::create_schema(&transaction)?;
+            retention::create_schema(&transaction)?;
             transaction.commit()?;
         } else if schema_version == 2 {
             validate_marked_shape(&connection, 2)?;
@@ -737,34 +866,75 @@ impl Store {
             validate_marked_shape(&connection, 7)?;
         } else if schema_version == 7 {
             validate_marked_shape(&connection, 7)?;
+        } else if matches!(schema_version, 8 | 9) {
+            validate_marked_shape(&connection, schema_version)?;
         } else if schema_version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(schema_version));
         } else {
             validate_marked_shape(&connection, SCHEMA_VERSION)?;
         }
-        if schema_version > 0 && schema_version < SCHEMA_VERSION {
+        if (2..8).contains(&schema_version) {
             migrate_v7_to_v8(&mut connection)?;
+        }
+        if (2..9).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::create_schema(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V9],
+            )?;
+            transaction.pragma_update(None, "user_version", 9)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 9)?;
+        }
+        if (2..SCHEMA_VERSION).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            retention::create_schema(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER],
+            )?;
+            transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, SCHEMA_VERSION)?;
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
-        Ok(Self { connection })
+        Ok(connection)
+    }
+
+    fn verify_write_admission(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(lease) = &self.writer_lease {
+            lease.verify_admission().map_err(StoreError::WriterLease)?;
+        }
+        Ok(())
     }
 
     /// Atomically records one source batch and its replay receipt. Repeating
     /// the same request returns `Replay`; changing content under a request or
     /// existing source/event identity fails without partial writes.
     pub fn commit_batch(&mut self, batch: &ObservationBatch) -> Result<CommitOutcome> {
-        self.commit_batch_inner(batch, None)
+        self.commit_batch_inner(
+            batch,
+            None,
+            #[cfg(test)]
+            None,
+        )
     }
 
     fn commit_batch_inner(
         &mut self,
         batch: &ObservationBatch,
         fail_after_insert: Option<usize>,
+        #[cfg(test)] before_commit: Option<fn()>,
     ) -> Result<CommitOutcome> {
         validate_batch(batch)?;
         let digest = batch_digest(batch)?;
+        self.verify_write_admission()?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -793,54 +963,65 @@ impl Store {
             return Err(StoreError::StaleCursor);
         }
 
+        let retention_cutoff = retention::read_state(&transaction)?.cutoff_unix_ns;
         let mut inserted = 0;
         for observation in &batch.observations {
-            let serialized_kind = serde_json::to_string(&observation.kind)?;
             let event_hash = event_digest(&batch.source_id, observation)?;
-            let prior_digest: Option<String> = transaction
-                .query_row(
-                    "SELECT event_digest FROM agenturm_observations
-                     WHERE source_id = ?1 AND event_id = ?2 AND revision = ?3",
-                    params![batch.source_id, observation.event_id, observation.revision],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            match prior_digest {
-                Some(prior_digest) if prior_digest == event_hash => continue,
-                Some(_) => {
-                    return Err(StoreError::EventConflict {
-                        event_id: observation.event_id.clone(),
-                    });
+            let prior_digest: Option<String> = transaction.query_row(
+                "SELECT COALESCE(
+                    (SELECT event_digest FROM agenturm_observations
+                     WHERE source_id = ?1 AND event_id = ?2 AND revision = ?3),
+                    (SELECT event_digest FROM agenturm_retired_observations
+                     WHERE source_id = ?1 AND event_id = ?2 AND revision = ?3))",
+                params![batch.source_id, observation.event_id, observation.revision],
+                |row| row.get(0),
+            )?;
+            if let Some(prior_digest) = prior_digest {
+                if prior_digest == event_hash {
+                    continue;
                 }
-                None => {
-                    transaction.execute(
-                        "INSERT INTO agenturm_observations
-                        (source_id, event_id, revision, request_id, event_digest, scope,
-                          session_id, worker_id, turn_id, operation_id,
-                          observed_at_unix_ns, kind_json)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                        params![
-                            batch.source_id,
-                            observation.event_id,
-                            i64::from(observation.revision),
-                            batch.request_id,
-                            event_hash,
-                            observation.identity.scope.as_str(),
-                            observation.identity.session_id,
-                            observation.identity.worker_id,
-                            observation.identity.turn_id,
-                            observation.identity.operation_id,
-                            i64::try_from(observation.observed_at_unix_ns).map_err(|_| {
-                                StoreError::Invalid("timestamp exceeds SQLite INTEGER")
-                            })?,
-                            serialized_kind,
-                        ],
-                    )?;
-                    inserted += 1;
-                    if fail_after_insert == Some(inserted) {
-                        return Err(StoreError::InjectedFailure);
-                    }
-                }
+                return Err(StoreError::EventConflict {
+                    event_id: observation.event_id.clone(),
+                });
+            }
+            let timestamp = i64::try_from(observation.observed_at_unix_ns)
+                .map_err(|_| StoreError::Invalid("timestamp exceeds SQLite INTEGER"))?;
+            if timestamp < retention_cutoff {
+                transaction.execute(
+                    "INSERT INTO agenturm_retired_observations
+                        (source_id, event_id, revision, event_digest) VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        batch.source_id,
+                        observation.event_id,
+                        observation.revision,
+                        event_hash
+                    ],
+                )?;
+                continue;
+            }
+            transaction.execute(
+                "INSERT INTO agenturm_observations
+                    (source_id, event_id, revision, request_id, event_digest, scope,
+                     session_id, worker_id, turn_id, operation_id, observed_at_unix_ns, kind_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    batch.source_id,
+                    observation.event_id,
+                    i64::from(observation.revision),
+                    batch.request_id,
+                    event_hash,
+                    observation.identity.scope.as_str(),
+                    observation.identity.session_id,
+                    observation.identity.worker_id,
+                    observation.identity.turn_id,
+                    observation.identity.operation_id,
+                    timestamp,
+                    serde_json::to_string(&observation.kind)?,
+                ],
+            )?;
+            inserted += 1;
+            if fail_after_insert == Some(inserted) {
+                return Err(StoreError::InjectedFailure);
             }
         }
         transaction.execute(
@@ -863,6 +1044,10 @@ impl Store {
              ON CONFLICT(source_id) DO UPDATE SET cursor = excluded.cursor",
             params![batch.source_id, batch.next_cursor],
         )?;
+        #[cfg(test)]
+        if let Some(before_commit) = before_commit {
+            before_commit();
+        }
         transaction.commit()?;
         Ok(CommitOutcome::Committed { inserted })
     }
@@ -939,6 +1124,29 @@ impl Store {
     /// Reads one filtered, keyset-paginated page in chronological order.
     /// `before` is exclusive and uses the full stable sort key.
     pub fn query_observations(&self, query: &ObservationQuery) -> Result<ObservationPage> {
+        self.query_history(query, None)
+    }
+
+    /// Reads a bounded history page for one exact native turn.
+    pub fn query_turn_observations(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+    ) -> Result<ObservationPage> {
+        if query.harness_id.is_none() || query.session_id.is_none() {
+            return Err(StoreError::Invalid(
+                "turn history requires a source and session",
+            ));
+        }
+        validate_identifier(turn_id, MAX_SESSION_KEY_BYTES, "turn ID")?;
+        self.query_history(query, Some(turn_id))
+    }
+
+    fn query_history(
+        &self,
+        query: &ObservationQuery,
+        turn_id: Option<&str>,
+    ) -> Result<ObservationPage> {
         if query.limit == 0 || query.limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
             return Err(StoreError::Invalid("observation page limit is invalid"));
         }
@@ -964,19 +1172,30 @@ impl Store {
                 return Err(StoreError::Invalid("query cursor snapshot does not match"));
             }
         }
-        let newest_snapshot_id: u64 = self.connection.query_row(
-            "SELECT COALESCE(MAX(sequence),0) FROM agenturm_history_batches",
-            [],
-            |row| row.get::<_, i64>(0),
-        )? as u64;
-        let snapshot_id = query.snapshot_id.unwrap_or(newest_snapshot_id);
-        if snapshot_id > i64::MAX as u64 {
-            return Err(StoreError::Invalid("query snapshot ID is invalid"));
-        }
+        // Use the same SQLite snapshot for the retention barrier, receipt head,
+        // and result rows so a concurrent prune cannot shift an active page.
+        let transaction = self.connection.unchecked_transaction()?;
+        let state = retention::read_state(&transaction)?;
+        let newest_snapshot_id = retention::snapshot_id(
+            retention::receipt_head(&transaction)?,
+            state.snapshot_offset,
+        )?;
+        let snapshot_id = query
+            .snapshot_id
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| StoreError::Invalid("query snapshot ID is invalid"))?
+            .unwrap_or(newest_snapshot_id);
         if snapshot_id > newest_snapshot_id {
             return Err(StoreError::Invalid("query snapshot ID is from the future"));
         }
-        let mut statement = self.connection.prepare(
+        if snapshot_id < state.minimum_snapshot_id {
+            return Err(StoreError::ExpiredHistorySnapshot {
+                minimum_snapshot_id: state.minimum_snapshot_id as u64,
+            });
+        }
+        let receipt_watermark = snapshot_id - state.snapshot_offset;
+        let mut statement = transaction.prepare(
             "SELECT observation.source_id, observation.event_id, observation.revision,
                     observation.scope, observation.session_id, observation.worker_id, observation.turn_id,
                     observation.operation_id, observation.observed_at_unix_ns,
@@ -989,6 +1208,7 @@ impl Store {
              WHERE history_batch.sequence <= ?1
                AND (?2 IS NULL OR observation.source_id=?2)
                AND (?3 IS NULL OR observation.session_id=?3)
+               AND (?9 IS NULL OR observation.turn_id=?9)
                AND (?4 IS NULL OR
                     (observation.observed_at_unix_ns,observation.source_id,
                      observation.event_id,observation.revision) <
@@ -1002,7 +1222,7 @@ impl Store {
         let before = query.before.as_ref();
         let rows = statement.query_map(
             params![
-                snapshot_id as i64,
+                receipt_watermark,
                 query.harness_id,
                 query.session_id,
                 before.map(|position| position.observed_at_unix_ns as i64),
@@ -1010,6 +1230,7 @@ impl Store {
                 before.map(|position| position.event_id.as_str()),
                 before.map(|position| i64::from(position.revision)),
                 read_limit,
+                turn_id,
             ],
             |row| {
                 let revision: i64 = row.get(2)?;
@@ -1096,7 +1317,20 @@ impl Store {
                     ObservationKind::Check { category, result } => {
                         KernelObservationKind::Check { category, result }
                     }
+                    ObservationKind::PullRequestRaised { repository, number } => {
+                        KernelObservationKind::PullRequestRaised { repository, number }
+                    }
+                    ObservationKind::Relationship {
+                        relationship_kind,
+                        parent_session_id,
+                    } => KernelObservationKind::Relationship {
+                        relationship_kind,
+                        parent_session_id,
+                    },
                     ObservationKind::Message { role } => KernelObservationKind::Message { role },
+                    ObservationKind::CreditUsage { nanocredits } => {
+                        KernelObservationKind::CreditUsage { nanocredits }
+                    }
                     ObservationKind::Diagnostic { code, severity } => {
                         KernelObservationKind::Diagnostic { code, severity }
                     }
@@ -1119,7 +1353,7 @@ impl Store {
         Ok(ObservationPage {
             observations,
             has_more,
-            snapshot_id,
+            snapshot_id: snapshot_id as u64,
         })
     }
 
@@ -1151,6 +1385,14 @@ impl ObservationStore for Store {
         query: &ObservationQuery,
     ) -> std::result::Result<ObservationPage, String> {
         Store::query_observations(self, query).map_err(|error| error.to_string())
+    }
+
+    fn query_turn_observations(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+    ) -> std::result::Result<ObservationPage, String> {
+        Store::query_turn_observations(self, query, turn_id).map_err(|error| error.to_string())
     }
 
     fn commit(
@@ -1196,8 +1438,26 @@ impl ObservationStore for Store {
                         category: category.clone(),
                         result: result.clone(),
                     },
+                    KernelObservationKind::PullRequestRaised { repository, number } => {
+                        ObservationKind::PullRequestRaised {
+                            repository: repository.clone(),
+                            number: *number,
+                        }
+                    }
+                    KernelObservationKind::Relationship {
+                        relationship_kind,
+                        parent_session_id,
+                    } => ObservationKind::Relationship {
+                        relationship_kind: *relationship_kind,
+                        parent_session_id: parent_session_id.clone(),
+                    },
                     KernelObservationKind::Message { role } => {
                         ObservationKind::Message { role: role.clone() }
+                    }
+                    KernelObservationKind::CreditUsage { nanocredits } => {
+                        ObservationKind::CreditUsage {
+                            nanocredits: *nanocredits,
+                        }
                     }
                     KernelObservationKind::Diagnostic { code, severity } => {
                         ObservationKind::Diagnostic {
@@ -1315,16 +1575,16 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
             return Err(StoreError::Invalid("tool category or result is invalid"));
         }
         if let ObservationKind::Lifecycle { state, reason_code } = &observation.kind
-            && (!matches!(
-                state.as_str(),
-                "running" | "completed" | "interrupted" | "paused"
-            ) || reason_code.as_ref().is_some_and(|reason| {
-                reason.is_empty()
-                    || reason.len() > 128
-                    || !reason.bytes().all(|byte| {
-                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
-                    })
-            }))
+            && (!agenturm_kernel::is_lifecycle_state(state)
+                || reason_code.as_ref().is_some_and(|reason| {
+                    reason.is_empty()
+                        || reason.len() > 128
+                        || !reason.bytes().all(|byte| {
+                            byte.is_ascii_lowercase()
+                                || byte.is_ascii_digit()
+                                || b"._-".contains(&byte)
+                        })
+                }))
         {
             return Err(StoreError::Invalid("lifecycle state or reason is invalid"));
         }
@@ -1334,10 +1594,40 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         {
             return Err(StoreError::Invalid("check category or result is invalid"));
         }
+        if let ObservationKind::PullRequestRaised { repository, number } = &observation.kind
+            && (observation.identity.scope != StoredScope::Session
+                || observation.identity.turn_id.is_none()
+                || observation.identity.operation_id.is_none()
+                || !agenturm_kernel::is_github_pull_request(repository, *number))
+        {
+            return Err(StoreError::Invalid(
+                "pull request observation reference or identity is invalid",
+            ));
+        }
+        if let ObservationKind::Relationship {
+            parent_session_id, ..
+        } = &observation.kind
+            && (observation.identity.scope != StoredScope::Session
+                || observation.identity.turn_id.is_some()
+                || observation.identity.operation_id.is_some()
+                || !agenturm_kernel::is_valid_relationship_parent(
+                    observation.identity.session_id.as_deref(),
+                    parent_session_id,
+                ))
+        {
+            return Err(StoreError::Invalid(
+                "relationship parent or identity is invalid",
+            ));
+        }
         if let ObservationKind::Message { role } = &observation.kind
             && !matches!(role.as_str(), "user" | "assistant")
         {
             return Err(StoreError::Invalid("message role is invalid"));
+        }
+        if let ObservationKind::CreditUsage { nanocredits } = &observation.kind
+            && *nanocredits > i64::MAX as u64
+        {
+            return Err(StoreError::Invalid("credit usage exceeds supported range"));
         }
         if let ObservationKind::Diagnostic { code, severity } = &observation.kind
             && (!agenturm_kernel::is_safe_diagnostic_code(code)
@@ -1443,13 +1733,33 @@ mod tests {
             for suffix in ["", "-wal", "-shm"] {
                 let _ = fs::remove_file(format!("{}{suffix}", self.0.display()));
             }
+            if let Some(name) = self.0.file_name().and_then(|name| name.to_str()) {
+                let _ = fs::remove_file(
+                    self.0
+                        .with_file_name(format!(".{name}.agenturm-writer.lock")),
+                );
+            }
         }
     }
 
-    fn downgrade_fixture_to_v7(connection: &Connection) {
+    fn downgrade_fixture_to_v9(connection: &Connection) {
         connection
             .execute_batch(
-                "DROP INDEX agenturm_observations_by_session;
+                "DROP TABLE agenturm_retired_observations;
+                 DROP TABLE agenturm_retention_state;
+                 UPDATE agenturm_store_meta SET value='agenturm.observation-store.v9'
+                  WHERE key='format';
+                 PRAGMA user_version=9;",
+            )
+            .unwrap();
+    }
+
+    fn downgrade_fixture_to_v7(connection: &Connection) {
+        downgrade_fixture_to_v9(connection);
+        connection
+            .execute_batch(
+                "DROP TABLE agenturm_content_grants;
+                 DROP INDEX agenturm_observations_by_session;
                  CREATE TABLE agenturm_observations_v7 (
                     source_id TEXT NOT NULL,
                     event_id TEXT NOT NULL,
@@ -1533,6 +1843,171 @@ mod tests {
             next_cursor: next_cursor.into(),
             observations,
         }
+    }
+
+    #[test]
+    fn retention_preserves_replay_and_cursor_without_readmitting_expired_events() {
+        let db = TempDb::new();
+        let backup = TempDb::new();
+        let expired = event("expired", "session-1", 10);
+        let kept = event("kept", "session-1", 20);
+        let initial = batch("initial", vec![expired.clone(), kept.clone()]);
+        let mut store = Store::open_collector(&db.0).unwrap();
+        store.commit_batch(&initial).unwrap();
+        let prune = store.prune_observations_before(20).unwrap();
+        assert_eq!(prune.removed_observations, 1);
+        assert_eq!(
+            store.observations().unwrap(),
+            [("harness.codex".into(), kept)]
+        );
+        assert_eq!(
+            store.source_cursor("harness.codex").unwrap().as_deref(),
+            Some("cursor-1")
+        );
+        assert_eq!(
+            store
+                .prune_observations_before(20)
+                .unwrap()
+                .removed_observations,
+            0
+        );
+        assert!(matches!(
+            store.prune_observations_before(19),
+            Err(StoreError::Invalid("retention cutoff cannot decrease"))
+        ));
+        store.backup_to(&backup.0).unwrap();
+
+        let mut restored = Store::open_collector(&backup.0).unwrap();
+        assert_eq!(
+            restored.observations().unwrap(),
+            store.observations().unwrap()
+        );
+        assert_eq!(
+            restored.commit_batch(&initial).unwrap(),
+            CommitOutcome::Replay
+        );
+        let late = event("late", "session-1", 11);
+        let repeated = batch_after("next", "cursor-1", "cursor-2", vec![expired, late.clone()]);
+        assert_eq!(
+            restored.commit_batch(&repeated).unwrap(),
+            CommitOutcome::Committed { inserted: 0 }
+        );
+        assert_eq!(
+            restored.source_cursor("harness.codex").unwrap().as_deref(),
+            Some("cursor-2")
+        );
+        assert_eq!(
+            restored.commit_batch(&initial).unwrap(),
+            CommitOutcome::Replay
+        );
+
+        let mut conflicting = late;
+        conflicting.observed_at_unix_ns = 21;
+        let conflict = batch_after("conflict", "cursor-2", "cursor-3", vec![conflicting]);
+        assert!(
+            matches!(restored.commit_batch(&conflict), Err(StoreError::EventConflict { event_id }) if event_id == "late")
+        );
+        assert_eq!(
+            restored.source_cursor("harness.codex").unwrap().as_deref(),
+            Some("cursor-2")
+        );
+        assert_eq!(restored.observations().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn retention_expires_old_snapshots_and_preserves_fresh_keyset_pages() {
+        let db = TempDb::new();
+        let mut writer = Store::open_collector(&db.0).unwrap();
+        writer
+            .commit_batch(&batch(
+                "initial",
+                vec![
+                    event("expired", "session-1", 10),
+                    event("middle", "session-1", 20),
+                    event("newest", "session-1", 30),
+                ],
+            ))
+            .unwrap();
+        let reader = Store::open_read_only(&db.0).unwrap();
+        let continued = |page: ObservationPage| {
+            assert!(page.has_more);
+            let first = &page.observations[0];
+            ObservationQuery {
+                before: Some(ObservationPosition {
+                    observed_at_unix_ns: first.observed_at_unix_ns,
+                    harness_id: first.harness_id.as_str().into(),
+                    event_id: first.event_id.clone(),
+                    revision: first.revision,
+                    snapshot_id: page.snapshot_id,
+                }),
+                snapshot_id: Some(page.snapshot_id),
+                ..ObservationQuery::latest(1)
+            }
+        };
+        let old = continued(reader.observation_page(1).unwrap());
+        let prune = writer.prune_observations_before(20).unwrap();
+        assert!(
+            matches!(reader.query_observations(&old), Err(StoreError::ExpiredHistorySnapshot { minimum_snapshot_id })
+            if minimum_snapshot_id == prune.minimum_snapshot_id)
+        );
+
+        let page = reader.observation_page(1).unwrap();
+        assert_eq!(page.snapshot_id, prune.minimum_snapshot_id);
+        assert_eq!(page.observations[0].event_id, "newest");
+        let next = continued(page);
+        writer
+            .commit_batch(&batch_after(
+                "new",
+                "cursor-1",
+                "cursor-2",
+                vec![event("added-later", "session-1", 25)],
+            ))
+            .unwrap();
+        let older = reader.query_observations(&next).unwrap();
+        assert_eq!(older.observations[0].event_id, "middle");
+        assert!(!older.has_more);
+
+        let second = writer.prune_observations_before(25).unwrap();
+        assert!(second.minimum_snapshot_id > prune.minimum_snapshot_id);
+        assert!(matches!(
+            reader.query_observations(&next),
+            Err(StoreError::ExpiredHistorySnapshot { .. })
+        ));
+        assert_eq!(
+            reader.observation_page(1).unwrap().snapshot_id,
+            second.minimum_snapshot_id
+        );
+    }
+
+    #[test]
+    fn v9_readers_and_leased_migration_preserve_existing_snapshot_ids() {
+        let db = TempDb::new();
+        let initial = batch("initial", vec![event("event-1", "session-1", 10)]);
+        let mut writer = Store::open_collector(&db.0).unwrap();
+        writer.commit_batch(&initial).unwrap();
+        downgrade_fixture_to_v9(&writer.connection);
+        drop(writer);
+
+        let reader = Store::open_read_only(&db.0).unwrap();
+        let previous = reader.observation_page(1).unwrap();
+        let mut writer = Store::open_collector(&db.0).unwrap();
+        let migrated = reader.observation_page(1).unwrap();
+        assert_eq!(migrated.snapshot_id, previous.snapshot_id);
+        assert_eq!(migrated.observations, previous.observations);
+        assert_eq!(
+            writer.commit_batch(&initial).unwrap(),
+            CommitOutcome::Replay
+        );
+        writer.prune_observations_before(11).unwrap();
+        let pinned = ObservationQuery {
+            snapshot_id: Some(previous.snapshot_id),
+            ..ObservationQuery::latest(1)
+        };
+        assert!(matches!(
+            reader.query_observations(&pinned),
+            Err(StoreError::ExpiredHistorySnapshot { .. })
+        ));
+        assert!(reader.observations().unwrap().is_empty());
     }
 
     #[test]
@@ -1689,11 +2164,11 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
-    fn v3_store_upgrades_through_v4_v5_v6_and_v7_to_v8_without_changing_history() {
+    fn v3_store_upgrades_to_current_schema_without_changing_history() {
         let db = TempDb::new();
         {
             let mut store = Store::open(&db.0).unwrap();
@@ -1719,12 +2194,12 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            8
+            SCHEMA_VERSION
         );
     }
 
     #[test]
-    fn v4_store_upgrades_through_v5_v6_and_v7_to_v8_without_changing_history() {
+    fn v4_store_upgrades_to_current_schema_without_changing_history() {
         let db = TempDb::new();
         {
             let mut store = Store::open(&db.0).unwrap();
@@ -1750,12 +2225,12 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            8
+            SCHEMA_VERSION
         );
     }
 
     #[test]
-    fn v5_store_upgrades_through_v6_and_v7_to_v8_without_changing_history() {
+    fn v5_store_upgrades_to_current_schema_without_changing_history() {
         let db = TempDb::new();
         {
             let mut store = Store::open(&db.0).unwrap();
@@ -1781,12 +2256,12 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            8
+            SCHEMA_VERSION
         );
     }
 
     #[test]
-    fn v6_store_upgrades_through_v7_to_v8_without_changing_history() {
+    fn v6_store_upgrades_to_current_schema_without_changing_history() {
         let db = TempDb::new();
         {
             let mut store = Store::open(&db.0).unwrap();
@@ -1812,7 +2287,7 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            8
+            SCHEMA_VERSION
         );
     }
 
@@ -1843,7 +2318,7 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            8
+            SCHEMA_VERSION
         );
     }
 
@@ -1878,6 +2353,129 @@ mod tests {
             .unwrap();
         let refreshed = reader.observation_page(10).unwrap();
         assert_eq!(refreshed.observations.len(), 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn writable_store_open_requires_collector_lease_across_processes() {
+        const CHILD_DATABASE: &str = "AGENTURM_TEST_WRITER_LEASE_DATABASE";
+        const CHILD_EXPECT_DENIED: &str = "AGENTURM_TEST_WRITER_LEASE_DENIED";
+
+        if let Some(database) = std::env::var_os(CHILD_DATABASE) {
+            let path = Path::new(&database);
+            let reader = Store::open_read_only(path).unwrap();
+            assert_eq!(reader.observations().unwrap().len(), 1);
+            if std::env::var_os(CHILD_EXPECT_DENIED).is_some() {
+                assert!(matches!(Store::open(path), Err(StoreError::WriterLease(_))));
+                assert!(matches!(
+                    Store::open_collector(path),
+                    Err(StoreError::WriterLease(_))
+                ));
+                let version: i64 = reader
+                    .connection
+                    .pragma_query_value(None, "user_version", |row| row.get(0))
+                    .unwrap();
+                assert_eq!(version, 9);
+            } else {
+                let store = Store::open(path).unwrap();
+                let version: i64 = store
+                    .connection
+                    .pragma_query_value(None, "user_version", |row| row.get(0))
+                    .unwrap();
+                assert_eq!(version, SCHEMA_VERSION);
+            }
+            return;
+        }
+
+        let db = TempDb::new();
+        let mut collector = Store::open_collector(&db.0).unwrap();
+        collector
+            .commit_batch(&batch("lease-test", vec![event("event-1", "session-1", 1)]))
+            .unwrap();
+        downgrade_fixture_to_v9(&collector.connection);
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "tests::writable_store_open_requires_collector_lease_across_processes",
+            ])
+            .env(CHILD_DATABASE, &db.0)
+            .env(CHILD_EXPECT_DENIED, "1");
+        let blocked = child.output().unwrap();
+        assert!(
+            blocked.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&blocked.stdout),
+            String::from_utf8_lossy(&blocked.stderr),
+        );
+
+        drop(collector);
+        let reopened = child.env_remove(CHILD_EXPECT_DENIED).output().unwrap();
+        assert!(
+            reopened.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&reopened.stdout),
+            String::from_utf8_lossy(&reopened.stderr),
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retargeted_writable_store_rejects_observations_retention_and_grants() {
+        use std::os::unix::fs::symlink;
+
+        let db = TempDb::new();
+        let alias = TempDb::new();
+        let replacement = TempDb::new();
+        drop(Store::open(&db.0).unwrap());
+        drop(Store::open(&replacement.0).unwrap());
+        symlink(&db.0, &alias.0).unwrap();
+
+        let mut writer = Store::open(&alias.0).unwrap();
+        let reader = Store::open_read_only(&db.0).unwrap();
+        let initial = batch("initial", vec![event("event-1", "session-1", 1)]);
+        writer.commit_batch(&initial).unwrap();
+        let source = agenturm_kernel::ExtensionId::parse("harness.pi").unwrap();
+        let scope = ContentGrantScope::new(source.clone(), ContentKind::PiUserText, [1; 32]);
+        let grant = writer.grant_content(&scope).unwrap();
+
+        fs::remove_file(&alias.0).unwrap();
+        symlink(&replacement.0, &alias.0).unwrap();
+        let next = batch_after(
+            "subsequent",
+            &initial.next_cursor,
+            "cursor-2",
+            vec![event("event-2", "session-1", 2)],
+        );
+        assert!(matches!(
+            writer.commit_batch(&next),
+            Err(StoreError::WriterLease(_))
+        ));
+        assert!(matches!(
+            writer.prune_observations_before(2),
+            Err(StoreError::WriterLease(_))
+        ));
+        assert!(matches!(
+            writer.grant_content(&scope),
+            Err(StoreError::WriterLease(_))
+        ));
+        assert!(matches!(
+            writer.revoke_content(&source, ContentKind::PiUserText),
+            Err(StoreError::WriterLease(_))
+        ));
+        assert_eq!(
+            reader.source_cursor(&initial.source_id).unwrap().as_deref(),
+            Some(initial.next_cursor.as_str())
+        );
+        assert_eq!(reader.observations().unwrap().len(), 1);
+        reader.verify_content_grant(&scope, &grant).unwrap();
+        assert!(
+            Store::open_read_only(&replacement.0)
+                .unwrap()
+                .observations()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2192,13 +2790,143 @@ mod tests {
             ],
         );
         assert!(matches!(
-            store.commit_batch_inner(&input, Some(1)),
+            store.commit_batch_inner(&input, Some(1), None),
             Err(StoreError::InjectedFailure)
         ));
         assert!(store.observations().unwrap().is_empty());
         assert_eq!(
             store.commit_batch(&input).unwrap(),
             CommitOutcome::Committed { inserted: 2 }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigkill_after_uncommitted_wal_writes_rolls_back_batch() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::{Command, Stdio};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        const CHILD_DATABASE: &str = "AGENTURM_TEST_UNCOMMITTED_DATABASE";
+        const CHILD_MARKER: &str = "AGENTURM_TEST_UNCOMMITTED_MARKER";
+        let input = batch_after(
+            "interrupted-request",
+            "cursor-1",
+            "cursor-2",
+            (0..128)
+                .map(|index| {
+                    event(
+                        &format!("interrupted-{index:03}-{}", "x".repeat(200)),
+                        "session-1",
+                        100 + index,
+                    )
+                })
+                .collect(),
+        );
+
+        if let Some(database) = std::env::var_os(CHILD_DATABASE) {
+            let mut store = Store::open(Path::new(&database)).unwrap();
+            // Force dirty pages out of the cache before SQLite writes its
+            // commit marker, so recovery has actual WAL frames to ignore.
+            store
+                .connection
+                .pragma_update(None, "cache_size", 4)
+                .unwrap();
+            store
+                .commit_batch_inner(
+                    &input,
+                    None,
+                    Some(|| {
+                        fs::write(std::env::var_os(CHILD_MARKER).unwrap(), b"ready").unwrap();
+                        loop {
+                            thread::park();
+                        }
+                    }),
+                )
+                .unwrap();
+            panic!("transaction returned before SIGKILL");
+        }
+
+        let db = TempDb::new();
+        let seed = event("committed-before-interruption", "session-1", 1);
+        Store::open(&db.0)
+            .unwrap()
+            .commit_batch(&batch("seed-request", vec![seed.clone()]))
+            .unwrap();
+        let marker = db.0.with_extension("pre-commit");
+        let _ = fs::remove_file(&marker);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::sigkill_after_uncommitted_wal_writes_rolls_back_batch",
+                "--nocapture",
+            ])
+            .env(CHILD_DATABASE, &db.0)
+            .env(CHILD_MARKER, &marker)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let ready = loop {
+            if fs::read(&marker).is_ok_and(|contents| contents == b"ready") {
+                break true;
+            }
+            if child.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let wal_bytes = fs::metadata(db.0.with_extension("sqlite-wal"))
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        let _ = child.kill();
+        let status = child.wait().unwrap();
+        let _ = fs::remove_file(&marker);
+        assert!(
+            ready,
+            "child did not reach the pre-commit checkpoint: {status}"
+        );
+        assert_eq!(status.signal(), Some(9));
+        assert!(
+            wal_bytes > 32,
+            "SQLite must spill pages into the WAL before the kill"
+        );
+
+        let mut store = Store::open(&db.0).unwrap();
+        assert_eq!(
+            store.source_cursor(&input.source_id).unwrap().as_deref(),
+            Some("cursor-1")
+        );
+        assert_eq!(
+            store.observations().unwrap(),
+            vec![(input.source_id.clone(), seed)]
+        );
+        for table in ["agenturm_ingest_receipts", "agenturm_history_batches"] {
+            let count = store
+                .connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE request_id = ?1"),
+                    [&input.request_id],
+                    |row| row.get::<_, usize>(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table} retained uncommitted rows");
+        }
+        assert_eq!(
+            store.commit_batch(&input).unwrap(),
+            CommitOutcome::Committed {
+                inserted: input.observations.len()
+            }
+        );
+        assert_eq!(store.commit_batch(&input).unwrap(), CommitOutcome::Replay);
+        assert_eq!(
+            store.observations().unwrap().len(),
+            input.observations.len() + 1
+        );
+        assert_eq!(
+            store.source_cursor(&input.source_id).unwrap().as_deref(),
+            Some("cursor-2")
         );
     }
 
@@ -2419,6 +3147,143 @@ mod tests {
         ));
         let after = fs::read(&db.0).unwrap();
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn v8_stores_migrate_to_default_denied_content_grants_without_changing_history() {
+        let source = TempDb::new();
+        let snapshot = TempDb::new();
+        let first = batch("v8-source", vec![event("v8-event", "session-1", 1)]);
+        {
+            let mut store = Store::open(&source.0).unwrap();
+            store.commit_batch(&first).unwrap();
+            downgrade_fixture_to_v9(&store.connection);
+            store
+                .connection
+                .execute_batch(
+                    "DROP TABLE agenturm_content_grants;
+                     UPDATE agenturm_store_meta SET value='agenturm.observation-store.v8'
+                      WHERE key='format';
+                     PRAGMA user_version=8;",
+                )
+                .unwrap();
+        }
+
+        let source_id = agenturm_kernel::ExtensionId::parse("harness.pi").unwrap();
+        let scope = ContentGrantScope::new(source_id, ContentKind::PiUserText, [0x42; 32]);
+        {
+            let reader = Store::open_read_only(&source.0).unwrap();
+            assert!(reader.current_content_grant(&scope).unwrap().is_none());
+            assert_eq!(reader.observations().unwrap().len(), 1);
+            reader.backup_to(&snapshot.0).unwrap();
+        }
+        let mut restored = Store::open(&snapshot.0).unwrap();
+        assert!(restored.current_content_grant(&scope).unwrap().is_none());
+        assert_eq!(
+            restored.commit_batch(&first).unwrap(),
+            CommitOutcome::Replay
+        );
+
+        let store = Store::open(&source.0).unwrap();
+        assert!(store.current_content_grant(&scope).unwrap().is_none());
+        let schema: i64 = store
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(schema, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn content_grant_revocation_and_rebinding_reject_stale_access() {
+        let db = TempDb::new();
+        let other_db = TempDb::new();
+        let source = agenturm_kernel::ExtensionId::parse("harness.pi").unwrap();
+        let kind = ContentKind::PiUserText;
+        let initial_scope = ContentGrantScope::new(source.clone(), kind, [0x11; 32]);
+        let changed_scope = ContentGrantScope::new(source.clone(), kind, [0x42; 32]);
+
+        let mut store = Store::open(&db.0).unwrap();
+        let reader = Store::open_read_only(&db.0).unwrap();
+        assert!(
+            reader
+                .current_content_grant(&initial_scope)
+                .unwrap()
+                .is_none()
+        );
+
+        let first = store.grant_content(&initial_scope).unwrap();
+        assert_eq!(store.grant_content(&initial_scope).unwrap(), first);
+        reader.verify_content_grant(&initial_scope, &first).unwrap();
+        assert!(matches!(
+            reader.verify_content_grant(&changed_scope, &first),
+            Err(StoreError::StaleContentGrant)
+        ));
+        let mut other_store = Store::open(&other_db.0).unwrap();
+        let foreign = other_store.grant_content(&initial_scope).unwrap();
+        assert_eq!(foreign.epoch(), first.epoch());
+        assert!(matches!(
+            reader.verify_content_grant(&initial_scope, &foreign),
+            Err(StoreError::StaleContentGrant)
+        ));
+
+        assert!(store.revoke_content(&source, kind).unwrap());
+        assert!(!store.revoke_content(&source, kind).unwrap());
+        assert!(
+            reader
+                .current_content_grant(&initial_scope)
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            reader.verify_content_grant(&initial_scope, &first),
+            Err(StoreError::StaleContentGrant)
+        ));
+        drop(store);
+        let mut store = Store::open(&db.0).unwrap();
+        let second = store.grant_content(&initial_scope).unwrap();
+        assert_eq!(second.epoch(), first.epoch() + 1);
+        assert!(matches!(
+            reader.verify_content_grant(&initial_scope, &first),
+            Err(StoreError::StaleContentGrant)
+        ));
+        reader
+            .verify_content_grant(&initial_scope, &second)
+            .unwrap();
+
+        let third = store.grant_content(&changed_scope).unwrap();
+        assert_eq!(third.epoch(), second.epoch() + 1);
+        assert!(
+            reader
+                .current_content_grant(&initial_scope)
+                .unwrap()
+                .is_none()
+        );
+        reader.verify_content_grant(&changed_scope, &third).unwrap();
+    }
+
+    #[test]
+    fn restored_backup_requires_fresh_content_authorization() {
+        let db = TempDb::new();
+        let snapshot = TempDb::new();
+        let source = agenturm_kernel::ExtensionId::parse("harness.pi").unwrap();
+        let scope = ContentGrantScope::new(source, ContentKind::PiUserText, [0xff; 32]);
+        let mut store = Store::open(&db.0).unwrap();
+        let grant = store.grant_content(&scope).unwrap();
+        Store::open_read_only(&db.0)
+            .unwrap()
+            .backup_to(&snapshot.0)
+            .unwrap();
+        store.verify_content_grant(&scope, &grant).unwrap();
+
+        let mut restored = Store::open(&snapshot.0).unwrap();
+        assert!(restored.current_content_grant(&scope).unwrap().is_none());
+        assert!(matches!(
+            restored.verify_content_grant(&scope, &grant),
+            Err(StoreError::StaleContentGrant)
+        ));
+        let fresh = restored.grant_content(&scope).unwrap();
+        assert_eq!(fresh.epoch(), grant.epoch() + 1);
+        restored.verify_content_grant(&scope, &fresh).unwrap();
     }
 
     #[test]
