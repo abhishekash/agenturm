@@ -112,8 +112,8 @@ jobs:
         run: sudo -n /usr/bin/python3 scripts/validate_rust_storage_service_v2_accounts.py --bin target/debug/agenturm-storage-service --rust-client-bin target/debug/examples/v2_client
       - name: Prove detached real Store activation across accounts
         run: sudo -n env PYTHONPATH=${{ github.workspace }} /usr/bin/python3 scripts/validate_rust_real_clone_activation.py --bin target/debug/agenturm-storage-service
-      - name: Prove Rust lifecycle admission on a detached Store clone
-        run: sudo -n env PYTHONPATH=${{ github.workspace }} /usr/bin/python3 scripts/validate_rust_real_clone_admission.py --bin target/debug/agenturm-storage-service
+      - name: Prove Rust Codex fact admission on a detached Store clone
+        run: sudo -n env PYTHONPATH=${{ github.workspace }} /usr/bin/python3 scripts/validate_rust_real_clone_admission.py --bin target/debug/agenturm-storage-service --codex-bin target/debug/agenturm-codex-harness
 
   rust-host-linux-wheel:
     name: Linux x86_64 Rust host wheel

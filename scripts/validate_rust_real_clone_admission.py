@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+import atexit
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 import shutil
 import signal
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -17,6 +19,23 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from validate_rust_real_clone_activation import send
 from validate_rust_storage_service_accounts import check, drop_to, identities, wait_socket
+
+
+_CODEX_CHILDREN: list[subprocess.Popen] = []
+
+
+def _stop_codex_children() -> None:
+    for child in _CODEX_CHILDREN:
+        if child.poll() is None:
+            child.kill()
+            try:
+                child.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.communicate()
+
+
+atexit.register(_stop_codex_children)
 
 
 def child_request(args) -> None:
@@ -45,6 +64,35 @@ def run_client(request_path: Path, socket_path: Path, *, uid: int, gid: int,
                             capture_output=True, text=True, timeout=8)
     check(result.returncode == 0, f"client: {result.stdout}{result.stderr}")
     return json.loads(reply_path.read_text()) if reply_path and reply_path.exists() else None
+
+
+def child_write_frame(process: subprocess.Popen, message: dict) -> None:
+    raw = json.dumps(message, separators=(",", ":")).encode()
+    check(0 < len(raw) <= 4 * 1024 * 1024, "Codex child frame exceeds its bound")
+    process.stdin.write(struct.pack(">I", len(raw)) + raw)
+    process.stdin.flush()
+
+
+def child_read_exact(stream, length: int) -> bytes | None:
+    result = bytearray()
+    while len(result) < length:
+        chunk = stream.read(length - len(result))
+        if not chunk:
+            return None if not result else bytes(result)
+        result.extend(chunk)
+    return bytes(result)
+
+
+def child_read_frame(process: subprocess.Popen) -> dict | None:
+    prefix = child_read_exact(process.stdout, 4)
+    if prefix is None:
+        return None
+    check(len(prefix) == 4, "Codex child sent a truncated frame prefix")
+    length = struct.unpack(">I", prefix)[0]
+    check(0 < length <= 4 * 1024 * 1024, "Codex child frame length is invalid")
+    raw = child_read_exact(process.stdout, length)
+    check(raw is not None and len(raw) == length, "Codex child sent a truncated frame")
+    return json.loads(raw)
 
 
 def new_batch(source_id: str, cursor: str):
@@ -105,7 +153,331 @@ def request_for(lease: dict, batch, request_id: str, expected_cursor: str,
                           "batch_digest": digest, "records": records}}
 
 
-def main(binary: Path) -> None:
+def exercise_codex_fact_path(*, root: Path, codex_binary: Path, clone: Path,
+                             oracle: Path, receiver: str, socket_path: Path,
+                             client_uid: int, client_gid: int) -> None:
+    from observatory.core import Store
+    from observatory.plugin_admission import activate_source, commit_batch
+    from observatory.plugin_wire import PollBatch, ProtocolError
+
+    plugin_id = "example.rust-codex-harness"
+    source_id = "codex-facts-source"
+    generation = "c" * 64
+    source_path = root / "codex-session.jsonl"
+    corpus = [
+        {"type": "session_meta", "payload": {"id": "codex-thread-1"}},
+        {"type": "response_item", "timestamp": "2026-11-14T10:00:01Z",
+         "payload": {"type": "message", "role": "assistant",
+                     "content": "private Codex answer"}},
+        {"type": "response_item", "timestamp": "2026-11-14T10:00:02Z",
+         "payload": {"type": "function_call", "call_id": "call-1",
+                     "name": "functions.exec_command", "arguments": "private"}},
+        {"type": "response_item", "timestamp": "2026-11-14T10:00:03Z",
+         "payload": {"type": "function_call_output", "call_id": "call-1",
+                     "isError": False, "output": "private tool output"}},
+        {"type": "event_msg", "timestamp": "2026-11-14T10:00:04Z",
+         "payload": {"type": "item_completed", "turn_id": "turn-1",
+                     "item": {"type": "CommandExecution", "id": "check-1",
+                              "command": ["/usr/bin/zsh", "-lc", "npm run check"],
+                              "status": "completed", "exit_code": 0,
+                              "aggregated_output": "private check output"}}},
+        {"type": "token_usage_record", "timestamp": "2026-11-14T10:00:05Z",
+         "payload": {"turn_id": "turn-1", "response_id": "response-1",
+                     "usage": {"input_tokens": 7, "output_tokens": 3,
+                               "cached_input_tokens": 2,
+                               "reasoning_output_tokens": 1}}},
+    ]
+    source_path.write_text("".join(
+        json.dumps(row, separators=(",", ":")) + "\n" for row in corpus))
+    source_path.chmod(0o644)
+    os.chown(source_path, client_uid, client_gid)
+
+    activation = {
+        "version": 2, "request_id": "c" * 32, "receiver_id": receiver,
+        "operation": {"op": "activate_source", "plugin_id": plugin_id,
+                      "source_id": source_id, "generation": generation},
+    }
+    activation_path = root / "codex-activation.json"
+    activation_path.write_text(json.dumps(activation))
+    activation_path.chmod(0o644)
+    activated = run_client(
+        activation_path, socket_path, uid=client_uid, gid=client_gid,
+        reply_path=root / "client-results" / "codex-activation-reply.json")
+    check(activated["result"]["disposition"] == "committed",
+          "Rust Codex fact source activation failed")
+    rust_lease = activated["result"]["lease"]
+
+    oracle_store = Store(oracle)
+    python_lease = activate_source(
+        oracle_store, plugin_id=plugin_id, source_id=source_id, generation=generation)
+
+    def launch(path: Path, child_source_id: str) -> subprocess.Popen:
+        environment = os.environ.copy()
+        environment["AGENTURM_PLUGIN_SOURCE_ROOT"] = str(path)
+        process = subprocess.Popen(
+            [str(codex_binary)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, env=environment, cwd=root,
+            preexec_fn=drop_to(client_uid, client_gid))
+        _CODEX_CHILDREN.append(process)
+        child_write_frame(process, {
+            "type": "hello", "protocol": 1, "plugin_id": plugin_id,
+            "source_id": child_source_id, "max_frame_bytes": 4 * 1024 * 1024,
+        })
+        hello = child_read_frame(process)
+        check(hello == {
+            "type": "hello_ack", "protocol": 1, "plugin_id": plugin_id,
+            "features": ["source-adapter/1", "configured-root/1"],
+        }, f"unexpected Codex hello response: {hello!r}")
+        return process
+
+    def poll(process: subprocess.Popen, child_source_id: str, cursor: str = "") -> dict:
+        child_write_frame(process, {
+            "type": "poll", "protocol": 1, "source_id": child_source_id,
+            "cursor": cursor, "max_records": 48, "max_bytes": 1024 * 1024,
+        })
+        response = child_read_frame(process)
+        check(isinstance(response, dict), "Codex child returned no batch")
+        return response
+
+    def make_fact_batch(response: dict) -> PollBatch:
+        records = response.get("records")
+        check(isinstance(records, list), "Codex batch has no records list")
+        allowed = {"message", "tool", "check", "usage"}
+        unsupported = {row.get("kind") for row in records} - allowed
+        if unsupported:
+            raise ProtocolError(
+                f"unsupported Codex output kinds: {', '.join(sorted(unsupported))}")
+        return PollBatch(source_id=source_id, cursor=response["cursor"], records=records)
+
+    child = launch(source_path, source_id)
+    first = poll(child, source_id)
+    check(first.get("type") == "batch" and first.get("source_id") == source_id,
+          "Codex child returned a malformed batch envelope")
+    kinds = [row["kind"] for row in first["records"]]
+    check(kinds == ["message", "tool", "tool", "tool", "check", "usage"],
+          f"Codex typed fact coverage changed: {kinds!r}")
+    check("private" not in json.dumps(first), "Codex child exposed private source content")
+    batch = make_fact_batch(first)
+    request_id = "d" * 32
+    wire_request = request_for(rust_lease, batch, request_id, "", fact_kinds=True)
+    request_path = root / "codex-facts.json"
+    request_path.write_text(json.dumps(wire_request))
+    request_path.chmod(0o644)
+
+    # Python's API has no request-ID receipt table. Its durable cursor/digest
+    # pair is replayable; Rust additionally persists the exact v2 request ID.
+    python_cursor = commit_batch(oracle_store, python_lease, "", batch)
+    check(python_cursor == batch.cursor, "Python Codex oracle did not commit cursor")
+    with oracle_store._connect() as db:
+        python_state = db.execute(
+            "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch "
+            "FROM plugin_source_cursor_v1 WHERE source_id=?", (source_id,)).fetchone()
+    check(commit_batch(oracle_store, python_lease, "", batch) == batch.cursor,
+          "Python Codex exact retry failed")
+    with oracle_store._connect() as db:
+        check(db.execute(
+            "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch "
+            "FROM plugin_source_cursor_v1 WHERE source_id=?", (source_id,)).fetchone()
+              == python_state, "Python Codex retry changed durable state")
+    oracle_store.close()
+
+    # Drop the service reply after the request is sent. No child ACK is sent.
+    run_client(request_path, socket_path, uid=client_uid, gid=client_gid,
+               drop_reply=True)
+    deadline = time.monotonic() + 5
+    while True:
+        with closing(sqlite3.connect(clone)) as db:
+            rust_cursor = db.execute(
+                "SELECT cursor FROM plugin_source_cursor_v1 WHERE source_id=?",
+                (source_id,)).fetchone()[0]
+            receipt = db.execute(
+                "SELECT request_digest,source_id,cursor,batch_digest,disposition "
+                "FROM storage_admission_request_v2 WHERE request_id=?", (request_id,)).fetchone()
+            dirty = db.execute(
+                "SELECT dirty_seq FROM plugin_evidence_dirty_v1 WHERE source_id=?",
+                (source_id,)).fetchone()
+        if rust_cursor == batch.cursor and receipt is not None:
+            break
+        check(time.monotonic() < deadline,
+              "Codex fact admission did not durably commit after lost reply")
+        time.sleep(0.02)
+    check(receipt[1:] == (source_id, batch.cursor,
+                          wire_request["operation"]["batch_digest"], "committed"),
+          "Codex receipt did not bind source, cursor, digest and disposition")
+    check(dirty == (1,), "Codex dirty sequence was not durable")
+    child.kill()
+    _, child_stderr = child.communicate(timeout=5)
+    check(child.returncode == -signal.SIGKILL,
+          f"unacknowledged Codex child did not terminate: {child_stderr}")
+
+    # Restart at the old, unacknowledged host cursor and require identical
+    # output. Exact Rust replay must succeed before the child receives ACK.
+    child = launch(source_path, source_id)
+    replayed = poll(child, source_id)
+    check(replayed == first, "Codex replay changed source facts or cursor")
+    replay_reply = run_client(
+        request_path, socket_path, uid=client_uid, gid=client_gid,
+        reply_path=root / "client-results" / "codex-facts-replay.json")
+    check(replay_reply["result"]["kind"] == "fact_admission"
+          and replay_reply["result"]["disposition"] == "replay",
+          "Codex storage replay did not return its durable receipt")
+    with closing(sqlite3.connect(clone)) as db:
+        before_ack = db.execute(
+            "SELECT cursor,dirty_seq FROM plugin_source_cursor_v1 WHERE source_id=?",
+            (source_id,)).fetchone()
+        replayed_receipt = db.execute(
+            "SELECT request_digest,source_id,cursor,batch_digest,disposition "
+            "FROM storage_admission_request_v2 WHERE request_id=?", (request_id,)).fetchone()
+    check(before_ack == (batch.cursor, 1) and replayed_receipt == receipt,
+          "Codex ACK would precede visible durable receipt or replay changed the receipt")
+    child_write_frame(child, {
+        "type": "ack", "protocol": 1, "source_id": source_id, "cursor": batch.cursor,
+    })
+    empty_batch = poll(child, source_id, batch.cursor)
+    check(empty_batch["records"] == [] and empty_batch["cursor"] == batch.cursor,
+          "Codex source repeated facts after ACK")
+    child_write_frame(child, {"type": "stop", "protocol": 1})
+    check(child.wait(timeout=5) == 0, "Codex child did not stop cleanly after ACK")
+
+    with closing(sqlite3.connect(clone)) as rust_db, closing(sqlite3.connect(oracle)) as py_db:
+        rust_state = rust_db.execute(
+            "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch "
+            "FROM plugin_source_cursor_v1 WHERE source_id=?", (source_id,)).fetchone()
+        py_state = py_db.execute(
+            "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch "
+            "FROM plugin_source_cursor_v1 WHERE source_id=?", (source_id,)).fetchone()
+        check(rust_state == py_state, "Rust Codex source state differs from Python Store")
+        fields = ("event_id_hash,revision,kind,time_ns,payload_json,record_digest,"
+                  "native_session_id,native_worker_id,native_turn_id,native_operation_id,"
+                  "member_id,policy_epoch")
+        rust_rows = rust_db.execute(
+            f"SELECT {fields} FROM plugin_evidence_v1 WHERE source_id=? "
+            "ORDER BY event_id_hash,revision", (source_id,)).fetchall()
+        py_rows = py_db.execute(
+            f"SELECT {fields} FROM plugin_evidence_v1 WHERE source_id=? "
+            "ORDER BY event_id_hash,revision", (source_id,)).fetchall()
+        check(rust_rows == py_rows, "Rust Codex facts differ from Python Store")
+        for table, columns in (
+            ("plugin_content_batch_v1", "cursor,refs_digest"),
+            ("plugin_content_status_v1", "cursor,reason,refs_count,policy_epoch"),
+        ):
+            rust_receipt = rust_db.execute(
+                f"SELECT {columns} FROM {table} WHERE source_id=?", (source_id,)).fetchone()
+            python_receipt = py_db.execute(
+                f"SELECT {columns} FROM {table} WHERE source_id=?", (source_id,)).fetchone()
+            check(rust_receipt == python_receipt,
+                  f"Rust Codex {table} differs from Python Store")
+        admission_receipts = rust_db.execute(
+            "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+            (request_id,)).fetchone()[0]
+        check(admission_receipts == 1, "Codex replay duplicated its request receipt")
+        persisted = "".join(row[0] for row in rust_db.execute(
+            "SELECT payload_json FROM plugin_evidence_v1 WHERE source_id=?", (source_id,)))
+        check(all(secret not in persisted for secret in (
+            "private Codex answer", "private tool output", "private check output",
+            "npm run check", "functions.exec_command")),
+            "Codex admission persisted source text")
+
+    # Unsupported Codex rows become diagnostics. The facts-only host mapper
+    # refuses the whole batch instead of silently dropping diagnostic coverage.
+    unsupported_id = "codex-unsupported-source"
+    unsupported_activation = {
+        "version": 2, "request_id": "0" * 32, "receiver_id": receiver,
+        "operation": {"op": "activate_source", "plugin_id": plugin_id,
+                      "source_id": unsupported_id, "generation": "b" * 64},
+    }
+    unsupported_path = root / "codex-unsupported-activation.json"
+    unsupported_path.write_text(json.dumps(unsupported_activation))
+    unsupported_path.chmod(0o644)
+    unsupported_reply = run_client(
+        unsupported_path, socket_path, uid=client_uid, gid=client_gid,
+        reply_path=root / "client-results" / "codex-unsupported-activation-reply.json")
+    unsupported_lease = unsupported_reply["result"]["lease"]
+    unsupported_source = root / "codex-unsupported.jsonl"
+    unsupported_source.write_text("".join(
+        json.dumps(row, separators=(",", ":")) + "\n" for row in (
+            {"type": "session_meta", "payload": {"id": "codex-thread-unsupported"}},
+            {"type": "event_msg", "timestamp": "2026-11-14T10:01:00Z",
+             "payload": {"type": "item_completed", "item":{"type":"UnknownItem"}}},
+        )))
+    unsupported_source.chmod(0o644)
+    os.chown(unsupported_source, client_uid, client_gid)
+    child = launch(unsupported_source, unsupported_id)
+    unsupported_batch_reply = poll(child, unsupported_id)
+    check([row["kind"] for row in unsupported_batch_reply["records"]] == ["diagnostic"],
+          "unsupported Codex item was not made visible as a diagnostic")
+    unsupported_batch = PollBatch(
+        source_id=unsupported_id, cursor=unsupported_batch_reply["cursor"],
+        records=unsupported_batch_reply["records"])
+    with closing(sqlite3.connect(clone)) as db:
+        unsupported_before = db.execute(
+            "SELECT cursor,dirty_seq FROM plugin_source_cursor_v1 WHERE source_id=?",
+            (unsupported_id,)).fetchone()
+    try:
+        records = unsupported_batch.records
+        unsupported_kinds = {row.get("kind") for row in records} - {
+            "message", "tool", "check", "usage"}
+        if unsupported_kinds:
+            raise ProtocolError(
+                f"unsupported Codex output kinds: {', '.join(sorted(unsupported_kinds))}")
+        request_for(unsupported_lease, unsupported_batch, "a" * 32, "", fact_kinds=True)
+    except ProtocolError as error:
+        check("unsupported Codex output" in str(error),
+              f"unexpected unsupported Codex refusal: {error}")
+    else:
+        raise AssertionError("facts-only mapper accepted an unsupported Codex diagnostic")
+    with closing(sqlite3.connect(clone)) as db:
+        unsupported_after = db.execute(
+            "SELECT cursor,dirty_seq FROM plugin_source_cursor_v1 WHERE source_id=?",
+            (unsupported_id,)).fetchone()
+        unsupported_evidence = db.execute(
+            "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
+            (unsupported_id,)).fetchone()[0]
+        unsupported_receipt_count = db.execute(
+            "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+            ("a" * 32,)).fetchone()[0]
+    check(unsupported_after == unsupported_before and unsupported_evidence == 0
+          and unsupported_receipt_count == 0,
+          "unsupported Codex batch changed detached Store state")
+    child_write_frame(child, {"type": "stop", "protocol": 1})
+    check(child.wait(timeout=5) == 0, "unsupported Codex process did not stop cleanly")
+
+    # Malformed typed data exits before a batch can be acknowledged or
+    # admitted. No source lease or evidence row is created for this input.
+    malformed_id = "codex-malformed-source"
+    malformed_source = root / "codex-malformed.jsonl"
+    malformed_source.write_text("".join(
+        json.dumps(row, separators=(",", ":")) + "\n" for row in (
+            {"type": "session_meta", "payload": {"id": "codex-thread-malformed"}},
+            {"type": "token_usage_record", "timestamp": "2026-11-14T10:02:00Z",
+             "payload": {"response_id": "response-bad",
+                         "usage": {"input_tokens": "not-a-number"}}},
+        )))
+    malformed_source.chmod(0o644)
+    os.chown(malformed_source, client_uid, client_gid)
+    child = launch(malformed_source, malformed_id)
+    child_write_frame(child, {
+        "type": "poll", "protocol": 1, "source_id": malformed_id,
+        "cursor": "", "max_records": 48, "max_bytes": 1024 * 1024,
+    })
+    check(child_read_frame(child) is None, "malformed Codex usage produced a batch")
+    child.wait(timeout=5)
+    check(child.returncode == 2, "malformed Codex child did not fail visibly")
+    with closing(sqlite3.connect(clone)) as db:
+        malformed_source_count = db.execute(
+            "SELECT COUNT(*) FROM plugin_source_cursor_v1 WHERE source_id=?",
+            (malformed_id,)).fetchone()[0]
+        malformed_evidence = db.execute(
+            "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
+            (malformed_id,)).fetchone()[0]
+        malformed_receipts = db.execute(
+            "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE source_id=?",
+            (malformed_id,)).fetchone()[0]
+    check((malformed_source_count, malformed_evidence, malformed_receipts) == (0, 0, 0),
+          "malformed Codex output changed detached Store state")
+
+
+def main(binary: Path, codex_binary: Path) -> None:
     check(sys.platform == "linux" and os.geteuid() == 0,
           "run as root on isolated Linux")
     binary_source = binary.resolve(strict=True)
@@ -133,6 +505,9 @@ def main(binary: Path) -> None:
         service_binary = root / "agenturm-storage-service"
         shutil.copy2(binary_source, service_binary)
         service_binary.chmod(0o755)
+        codex_service_binary = root / "agenturm-codex-harness"
+        shutil.copy2(codex_binary.resolve(strict=True), codex_service_binary)
+        codex_service_binary.chmod(0o755)
         canonical = root / "canonical.db"
         original = Store(canonical)
         receiver = original.receiver_id
@@ -489,6 +864,11 @@ def main(binary: Path) -> None:
                   and facts_replay["result"]["disposition"] == "replay",
                   "restart generic fact replay was not durable")
 
+            exercise_codex_fact_path(
+                root=root, codex_binary=codex_service_binary, clone=clone, oracle=oracle,
+                receiver=receiver, socket_path=socket_path,
+                client_uid=client_uid, client_gid=client_gid)
+
             with closing(sqlite3.connect(clone)) as db, closing(sqlite3.connect(oracle)) as py:
                 rust_state = db.execute(
                     "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
@@ -787,6 +1167,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin", type=Path)
+    parser.add_argument("--codex-bin", type=Path)
     parser.add_argument("--client", action="store_true")
     parser.add_argument("--socket", type=Path)
     parser.add_argument("--request", type=Path)
@@ -797,4 +1178,5 @@ if __name__ == "__main__":
     if args.client:
         child_request(args)
     else:
-        main(args.bin.resolve(strict=True))
+        check(args.codex_bin is not None, "--codex-bin is required for the Codex integration proof")
+        main(args.bin.resolve(strict=True), args.codex_bin.resolve(strict=True))
