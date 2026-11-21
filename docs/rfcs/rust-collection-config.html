@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rust configured harness collection</title><style>:root{color-scheme:light dark;--bg:#f7f8fb;--fg:#202534;--muted:#586174;--panel:#fff;--line:#d9deea;--link:#3959bc;--code:#eef1f7}@media(prefers-color-scheme:dark){:root{--bg:#11141b;--fg:#e8ebf2;--muted:#a8b0c0;--panel:#191e28;--line:#303849;--link:#9db5ff;--code:#252c39}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1000px;margin:0 auto;padding:clamp(20px,5vw,56px)}article{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:clamp(20px,4vw,48px)}h1,h2,h3,h4{line-height:1.25;margin-top:1.8em}h1{font-size:2.1rem;margin-top:0}h2{border-bottom:1px solid var(--line);padding-bottom:.35em}p,li{max-width:86ch}a{color:var(--link)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{background:var(--code);padding:.12em .32em;border-radius:4px}pre{overflow:auto;background:var(--code);padding:16px;border-radius:8px;line-height:1.5}pre code{background:transparent;padding:0}li+li{margin-top:.35em}.source{font-size:.9rem;color:var(--muted);margin-top:2rem}</style></head><body><main><article><h1>Rust configured harness collection</h1>
+<p>The Rust CLI can load an explicit version 1 JSON configuration and poll up to 16 process adapters in one kernel refresh:</p>
+<pre><code>agenturm collect --config ./agenturm-sources.json --db ./agenturm.sqlite</code></pre>
+<p>The configuration enumerates plugin identities and executable paths. Paths may be absolute or relative to the configuration file&#x27;s directory. Relative paths are resolved before any child process starts. Source IDs must be unique. Existing adapter and source-root paths are canonicalized when checking ownership; missing paths use lexical normalization. The same normalized adapter plus source-root pair cannot be listed twice under different IDs.</p>
+<pre><code>{
+  &quot;version&quot;: 1,
+  &quot;plugin_host&quot;: &quot;/opt/agenturm/bin/agenturm-plugin-host&quot;,
+  &quot;sources&quot;: [
+    {
+      &quot;plugin_id&quot;: &quot;example.rust-pi-harness&quot;,
+      &quot;adapter&quot;: &quot;/opt/agenturm/bin/agenturm-pi-harness&quot;,
+      &quot;source_root&quot;: &quot;/home/alex/.pi/agent/sessions&quot;,
+      &quot;source_id&quot;: &quot;harness.pi&quot;
+    },
+    {
+      &quot;plugin_id&quot;: &quot;example.rust-codex-harness&quot;,
+      &quot;adapter&quot;: &quot;/opt/agenturm/bin/agenturm-codex-harness&quot;,
+      &quot;source_root&quot;: &quot;/home/alex/.codex/sessions&quot;,
+      &quot;source_id&quot;: &quot;harness.codex&quot;
+    }
+  ]
+}</code></pre>
+<p>Collection performs one bounded poll per configured source. The kernel validates each source batch, writes it to the Rust SQLite store, and ACKs only after the durable commit. A startup or poll failure for one source is reported in the summary while healthy configured sources continue. Any source failure makes the command exit nonzero; successful sources still retain their committed observations. A durable history read failure is reported as a storage failure and also makes the command exit nonzero, even if source commits and ACKs already succeeded. The JSON file is a user-managed configuration input. The command does not run continuously, scan plugin directories, or load in-process native libraries.</p>
+<p>For this first configured command, adapters must emit Agenturm&#x27;s shared bounded source protocol, and the app installs <code>UsageBatchDecoder</code>. It stores token usage observations and counts other supported content-free facts as skipped. The runtime API accepts injected <code>SourceBatchDecoder</code> implementations for other typed fact projections; registering those decoders in a general plugin catalog is a later step.</p><p class="source">Markdown source: <a href="rust-collection-config.md">rust-collection-config.md</a></p></article></main></body></html>

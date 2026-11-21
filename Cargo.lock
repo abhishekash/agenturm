@@ -10,6 +10,8 @@ dependencies = [
  "agenturm-runtime",
  "agenturm-store",
  "agenturm-ui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

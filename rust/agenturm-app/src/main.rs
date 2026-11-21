@@ -1,4 +1,6 @@
-use agenturm_app::{AgenturmApp, Command, execute_ingest, execute_inspect, parse_command, render};
+use agenturm_app::{
+    AgenturmApp, Command, execute_collect, execute_ingest, execute_inspect, parse_command, render,
+};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -28,6 +30,18 @@ fn main() -> ExitCode {
             Ok(summary) => print!("{summary}"),
             Err(message) => {
                 eprintln!("ingest failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Command::Collect(options) => match execute_collect(&options) {
+            Ok(report) => {
+                print!("{}", report.summary);
+                if report.has_failures() {
+                    return ExitCode::FAILURE;
+                }
+            }
+            Err(message) => {
+                eprintln!("collection failed: {message}");
                 return ExitCode::FAILURE;
             }
         },
