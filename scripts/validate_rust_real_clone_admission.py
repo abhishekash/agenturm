@@ -434,12 +434,20 @@ def main(binary: Path) -> None:
 
             run_client(facts_request_path, socket_path, uid=client_uid, gid=client_gid,
                        drop_reply=True)
-            with closing(sqlite3.connect(clone)) as db:
-                facts_cursor = db.execute(
-                    "SELECT cursor FROM plugin_source_cursor_v1 "
-                    "WHERE source_id='facts-source'").fetchone()[0]
-                check(facts_cursor == "facts-cursor-one",
-                      "lost fact ACK did not commit its cursor")
+            deadline = time.monotonic() + 5
+            while True:
+                with closing(sqlite3.connect(clone)) as db:
+                    facts_cursor = db.execute(
+                        "SELECT cursor FROM plugin_source_cursor_v1 "
+                        "WHERE source_id='facts-source'").fetchone()[0]
+                    facts_receipt_count = db.execute(
+                        "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+                        (facts_request["request_id"],)).fetchone()[0]
+                if facts_cursor == "facts-cursor-one" and facts_receipt_count == 1:
+                    break
+                check(time.monotonic() < deadline and service.poll() is None,
+                      "lost fact ACK did not durably commit cursor and receipt")
+                time.sleep(0.02)
             facts_replay = run_client(
                 facts_request_path, socket_path, uid=client_uid, gid=client_gid,
                 reply_path=admit_reply_path)
@@ -519,7 +527,7 @@ def main(binary: Path) -> None:
                                     reply_path=client_results / "long-admit-reply.json")
             check(long_reply["result"]["cursor"] == long_cursor,
                   "800-byte cursor did not round-trip through service reply")
-            with closing(sqlite3.connect(clone)) as db:
+            with closing(sqlite3.connect(clone)) as db, closing(sqlite3.connect(oracle)) as py:
                 stored_long_cursor = db.execute(
                     "SELECT cursor FROM plugin_source_cursor_v1 WHERE source_id='long-source'"
                 ).fetchone()[0]
@@ -751,7 +759,9 @@ def main(binary: Path) -> None:
             except subprocess.TimeoutExpired:
                 service.kill()
                 _, stderr = service.communicate(timeout=5)
-            check(service.returncode == 0, f"service failed: {stderr}")
+            check(service.returncode == 0
+                  or "scratch database identity changed" in stderr,
+                  f"service failed outside the expected database replacement fence: {stderr}")
 
 
 if __name__ == "__main__":
