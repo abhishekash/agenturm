@@ -2009,49 +2009,51 @@ fn read_last_source_diagnostic(
     db: &Connection,
     lease: &v2::SourceLease,
 ) -> Result<Option<v2::SourceDiagnostic>> {
-    let row: Option<(String, i64, i64, String, String, String, String)> = db
-        .query_row(
-            "SELECT e.payload_json,e.time_ns,e.revision,e.native_session_id, \
-                    e.native_worker_id,e.native_turn_id,e.native_operation_id \
-             FROM plugin_evidence_v1 e \
-             JOIN plugin_source_cursor_v1 c USING(source_id) \
-             WHERE e.source_id=?1 AND e.kind='diagnostic' \
-               AND e.policy_epoch=?2 AND c.policy_epoch=?2 \
-               AND c.receiver_id=?3 AND c.plugin_id=?4 AND c.generation=?5 \
-               AND c.capture_enabled=1 \
-             ORDER BY e.admitted_ns DESC,e.rowid DESC LIMIT 1",
-            params![
-                lease.source_id,
-                lease.policy_epoch,
-                lease.receiver_id,
-                lease.plugin_id,
-                lease.generation,
-            ],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            },
-        )
-        .optional()?;
-    row.map(
-        |(payload_json, time_ns, revision, session, worker, turn, operation)| {
-            if time_ns < 0
-                || revision != 0
-                || !session.is_empty()
-                || !worker.is_empty()
-                || !turn.is_empty()
-                || !operation.is_empty()
-                || !v2::diagnostic_payload_is_valid(&payload_json)
-            {
-                return Err(reject("stored source diagnostic is invalid"));
-            }
+    let source_matches: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM plugin_source_cursor_v1 \
+         WHERE source_id=?1 AND receiver_id=?2 AND plugin_id=?3 AND generation=?4 \
+           AND policy_epoch=?5 AND capture_enabled=1)",
+        params![
+            lease.source_id,
+            lease.receiver_id,
+            lease.plugin_id,
+            lease.generation,
+            lease.policy_epoch,
+        ],
+        |row| row.get(0),
+    )?;
+    if !source_matches {
+        return Ok(None);
+    }
+
+    let mut statement = db.prepare(
+        "SELECT payload_json,time_ns,revision,member_id,native_session_id, \
+                native_worker_id,native_turn_id,native_operation_id \
+         FROM plugin_evidence_v1 WHERE source_id=?1 AND kind='diagnostic' \
+           AND policy_epoch=?2 ORDER BY admitted_ns DESC,rowid DESC",
+    )?;
+    let mut rows = statement.query(params![lease.source_id, lease.policy_epoch])?;
+    let mut latest = None;
+    while let Some(row) = rows.next()? {
+        let payload_json: String = row.get(0)?;
+        let time_ns: i64 = row.get(1)?;
+        let revision: i64 = row.get(2)?;
+        let member_id: String = row.get(3)?;
+        let identities = [
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+        ];
+        if time_ns < 0
+            || revision != 0
+            || !member_id.is_empty()
+            || identities.iter().any(|value| !value.is_empty())
+            || !v2::diagnostic_payload_is_valid(&payload_json)
+        {
+            return Err(reject("stored source diagnostic is invalid"));
+        }
+        if latest.is_none() {
             let payload: serde_json::Value = serde_json::from_str(&payload_json)?;
             let code = payload
                 .get("code")
@@ -2061,14 +2063,14 @@ fn read_last_source_diagnostic(
                 .get("severity")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| reject("stored source diagnostic is invalid"))?;
-            Ok(v2::SourceDiagnostic {
+            latest = Some(v2::SourceDiagnostic {
                 code: code.to_owned(),
                 severity: severity.to_owned(),
                 time_ns: time_ns.to_string(),
-            })
-        },
-    )
-    .transpose()
+            });
+        }
+    }
+    Ok(latest)
 }
 
 fn apply_activation_clone_v2_json_inner(

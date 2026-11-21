@@ -2148,6 +2148,33 @@ with open(sys.argv[1], 'r+b') as stream:
                           "time_ns": "9007199254740993"})
         self.assertEqual(last_source_diagnostic(oracle, python_lease)["severity"], "error")
 
+        for case, admitted_ns, member_id, payload_json in (
+                ("malformed-latest", 999999, "bad-member",
+                 '{"code":"member_gap","severity":"warning"}'),
+                ("malformed-older", 1, "",
+                 '{"code":"BadCode","severity":"warning"}')):
+            attacked_path = self.root / f"{case}.db"
+            with closing(sqlite3.connect(clone_path)) as original:
+                with closing(sqlite3.connect(attacked_path)) as copied:
+                    original.backup(copied)
+            event_id = f"{case}-event"
+            event_hash = hashlib.sha256((source_id + "\0" + event_id).encode()).hexdigest()
+            record_digest = hashlib.sha256(event_id.encode()).hexdigest()
+            with closing(sqlite3.connect(attacked_path)) as db:
+                db.execute(
+                    "INSERT INTO plugin_evidence_v1(source_id,event_id_hash,revision,kind,"
+                    "time_ns,payload_json,record_digest,native_session_id,native_worker_id,"
+                    "native_turn_id,native_operation_id,member_id,policy_epoch,admitted_ns) "
+                    "VALUES(?,?,0,'diagnostic',8,?,?, '', '', '', '', ?,1,?)",
+                    (source_id, event_hash, payload_json, record_digest, member_id, admitted_ns))
+                db.commit()
+            before_bad_read = logical_clone_snapshot(attacked_path)
+            failure = self.apply_clone_diagnostic_read(
+                read_request(renewed, "9" * 32 if case == "malformed-latest" else "0" * 32),
+                path=attacked_path, success=False)
+            self.assertIn("stored source diagnostic is invalid", failure)
+            self.assertEqual(logical_clone_snapshot(attacked_path), before_bad_read)
+
         disable = self.clone_capture_request(
             renewed, enabled=False, expected_enabled=True, cursor="diag-two",
             dirty_seq=2, request_id="3" * 32)
