@@ -1,9 +1,9 @@
 //! Supervised process adapters for the Agenturm kernel.
 //!
-//! The first supported wire subset is metadata-only Codex usage. The explicit
-//! usage projection counts and skips validated other fact kinds; malformed or
-//! unsupported records fail closed. Cursor commit and ACK ordering live in the
-//! kernel, outside this process-only crate.
+//! Process supervision is independent of harness identity. `SourceBatchDecoder`
+//! implementations normalize one shared bounded batch protocol into kernel
+//! facts; `UsageBatchDecoder` provides the first common usage projection.
+//! Cursor commit and ACK ordering live in the kernel.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -17,6 +17,7 @@ use std::fmt::{self, Display, Formatter};
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -27,7 +28,7 @@ const DATA_FRAME_LIMIT: usize = 64 * 1024;
 const MAX_SOURCE_CURSOR_BYTES: usize = 800;
 const MAX_POLL_RECORDS: u16 = 256;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
-const CODEX_PLUGIN_ID: &str = "example.rust-codex-harness";
+pub const CODEX_PLUGIN_ID: &str = "example.rust-codex-harness";
 
 pub type Result<T> = std::result::Result<T, RuntimeError>;
 
@@ -35,7 +36,7 @@ pub type Result<T> = std::result::Result<T, RuntimeError>;
 pub struct RuntimeError(String);
 
 impl RuntimeError {
-    fn new(message: impl Into<String>) -> Self {
+    pub fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }
 }
@@ -60,6 +61,29 @@ impl From<serde_json::Error> for RuntimeError {
     }
 }
 
+/// A harness-specific boundary for turning one protocol batch into typed
+/// kernel observations. Implementations must reject unknown or malformed
+/// envelopes and keep source content out of returned error messages.
+pub trait SourceBatchDecoder: Send + Sync {
+    fn decode_batch(&self, encoded: &str, expected_source_id: &str) -> Result<PreparedSourceBatch>;
+}
+
+/// Decoder for the shared metadata and token-usage fact subset emitted by
+/// bundled harness adapters.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UsageBatchDecoder;
+
+impl SourceBatchDecoder for UsageBatchDecoder {
+    fn decode_batch(&self, encoded: &str, expected_source_id: &str) -> Result<PreparedSourceBatch> {
+        let batch = parse_usage_batch(encoded, expected_source_id)?;
+        Ok(PreparedSourceBatch {
+            next_cursor: batch.cursor,
+            observations: batch.observations,
+            skipped_non_usage_facts: batch.skipped_non_usage_facts,
+        })
+    }
+}
+
 /// Configures a bundled Rust adapter launched through the Rust plugin host.
 #[derive(Clone, Debug)]
 pub struct ProcessConfig {
@@ -72,6 +96,24 @@ pub struct ProcessConfig {
 }
 
 impl ProcessConfig {
+    /// Configuration for an adapter registered by the Rust plugin host.
+    pub fn new(
+        plugin_host: impl Into<PathBuf>,
+        adapter: impl Into<PathBuf>,
+        source_root: impl Into<PathBuf>,
+        source_id: impl Into<String>,
+        plugin_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            plugin_host: plugin_host.into(),
+            adapter: adapter.into(),
+            source_root: source_root.into(),
+            source_id: source_id.into(),
+            plugin_id: plugin_id.into(),
+            timeout: DEFAULT_TIMEOUT,
+        }
+    }
+
     /// Configuration for the bundled Codex adapter.
     pub fn codex(
         plugin_host: impl Into<PathBuf>,
@@ -79,14 +121,13 @@ impl ProcessConfig {
         source_root: impl Into<PathBuf>,
         source_id: impl Into<String>,
     ) -> Self {
-        Self {
-            plugin_host: plugin_host.into(),
-            adapter: adapter.into(),
-            source_root: source_root.into(),
-            source_id: source_id.into(),
-            plugin_id: CODEX_PLUGIN_ID.into(),
-            timeout: DEFAULT_TIMEOUT,
-        }
+        Self::new(
+            plugin_host,
+            adapter,
+            source_root,
+            source_id,
+            CODEX_PLUGIN_ID,
+        )
     }
 }
 
@@ -99,10 +140,25 @@ pub struct ProcessSource {
     pending_cursor: Option<String>,
     pending_from_cursor: Option<String>,
     pending_batch: Option<PreparedSourceBatch>,
+    decoder: Arc<dyn SourceBatchDecoder>,
 }
 
 impl ProcessSource {
     pub fn spawn(config: ProcessConfig) -> Result<Self> {
+        Self::spawn_with_decoder(config, UsageBatchDecoder)
+    }
+
+    pub fn spawn_with_decoder(
+        config: ProcessConfig,
+        decoder: impl SourceBatchDecoder + 'static,
+    ) -> Result<Self> {
+        Self::spawn_with_shared_decoder(config, Arc::new(decoder))
+    }
+
+    fn spawn_with_shared_decoder(
+        config: ProcessConfig,
+        decoder: Arc<dyn SourceBatchDecoder>,
+    ) -> Result<Self> {
         validate_process_config(&config)?;
         #[cfg(not(unix))]
         return Err(RuntimeError::new(
@@ -161,6 +217,7 @@ impl ProcessSource {
             pending_cursor: None,
             pending_from_cursor: None,
             pending_batch: None,
+            decoder,
         };
         source.hello()?;
         Ok(source)
@@ -180,7 +237,6 @@ impl ProcessSource {
         if ack.kind != "hello_ack"
             || ack.protocol != PROTOCOL_VERSION
             || ack.plugin_id != self.config.plugin_id
-            || ack.features.len() != 2
             || !ack
                 .features
                 .iter()
@@ -254,12 +310,7 @@ impl SourceAdapter for ProcessSource {
             });
             self.write_request(&request)?;
             let reply = self.read_reply()?;
-            let batch = parse_codex_batch(&reply, &self.config.source_id)?;
-            Ok(PreparedSourceBatch {
-                next_cursor: batch.cursor,
-                observations: batch.observations,
-                skipped_non_usage_facts: batch.skipped_non_usage_facts,
-            })
+            self.decoder.decode_batch(&reply, &self.config.source_id)
         })();
         match result {
             Ok(batch) => {
@@ -300,8 +351,10 @@ impl SourceAdapter for ProcessSource {
 
     fn reset(&mut self) -> std::result::Result<(), String> {
         let config = self.config.clone();
+        let decoder = self.decoder.clone();
         self.terminate();
-        let replacement = Self::spawn(config).map_err(|error| error.to_string())?;
+        let replacement =
+            Self::spawn_with_shared_decoder(config, decoder).map_err(|error| error.to_string())?;
         *self = replacement;
         Ok(())
     }
@@ -390,13 +443,17 @@ fn validate_process_config(config: &ProcessConfig) -> Result<()> {
     {
         return Err(RuntimeError::new("source ID is invalid"));
     }
-    if config.plugin_id.is_empty() || config.plugin_id.len() > 96 {
+    if !valid_plugin_id(&config.plugin_id) {
         return Err(RuntimeError::new("plugin ID is invalid"));
     }
     if config.timeout.is_zero() {
         return Err(RuntimeError::new("source timeout must be positive"));
     }
     Ok(())
+}
+
+fn valid_plugin_id(value: &str) -> bool {
+    agenturm_kernel::ExtensionId::parse(value.to_owned()).is_ok()
 }
 
 fn validate_cursor(cursor: &str) -> Result<()> {
@@ -427,7 +484,7 @@ fn kill_process_group(process_id: u32) {
 #[cfg(not(unix))]
 fn kill_process_group(_process_id: u32) {}
 
-fn parse_codex_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedCodexBatch> {
+fn parse_usage_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedBatch> {
     let batch: WireBatch = serde_json::from_str(encoded)?;
     if batch.kind != "batch"
         || batch.protocol != PROTOCOL_VERSION
@@ -453,7 +510,7 @@ fn parse_codex_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedCo
         let typed: WireUsageRecord = serde_json::from_value(record)?;
         observations.push(typed.try_into()?);
     }
-    Ok(ParsedCodexBatch {
+    Ok(ParsedBatch {
         cursor: batch.cursor,
         observations,
         skipped_non_usage_facts,
@@ -481,7 +538,7 @@ struct WireBatch {
     records: Vec<serde_json::Value>,
 }
 
-struct ParsedCodexBatch {
+struct ParsedBatch {
     cursor: String,
     observations: Vec<RawObservation>,
     skipped_non_usage_facts: usize,
@@ -568,7 +625,7 @@ fn validate_skipped_record(record: &WireSkippedRecord) -> Result<()> {
         || parse_decimal_timestamp(&record.time_ns).is_err()
     {
         return Err(RuntimeError::new(
-            "skipped Codex fact identity or timestamp is invalid",
+            "skipped source fact identity or timestamp is invalid",
         ));
     }
     match record.kind.as_str() {
@@ -581,14 +638,14 @@ fn validate_skipped_record(record: &WireSkippedRecord) -> Result<()> {
                 || diagnostic.code.len() > 128
                 || !matches!(diagnostic.severity.as_str(), "info" | "warning")
             {
-                return Err(RuntimeError::new("Codex diagnostic payload is invalid"));
+                return Err(RuntimeError::new("source diagnostic payload is invalid"));
             }
         }
         "lifecycle" | "message" | "tool" | "check" => {
             let identity = record
                 .identity
                 .as_ref()
-                .ok_or_else(|| RuntimeError::new("Codex fact identity is missing"))?;
+                .ok_or_else(|| RuntimeError::new("source fact identity is missing"))?;
             validate_wire_identity(identity)?;
             match record.kind.as_str() {
                 "lifecycle" => {
@@ -601,13 +658,13 @@ fn validate_skipped_record(record: &WireSkippedRecord) -> Result<()> {
                         .as_ref()
                         .is_some_and(|reason| reason.is_empty() || reason.len() > 128)
                     {
-                        return Err(RuntimeError::new("Codex lifecycle payload is invalid"));
+                        return Err(RuntimeError::new("source lifecycle payload is invalid"));
                     }
                 }
                 "message" => {
                     let message: WireMessage = serde_json::from_value(record.payload.clone())?;
                     if !matches!(message.role.as_str(), "user" | "assistant") {
-                        return Err(RuntimeError::new("Codex message payload is invalid"));
+                        return Err(RuntimeError::new("source message payload is invalid"));
                     }
                 }
                 "tool" => {
@@ -618,7 +675,7 @@ fn validate_skipped_record(record: &WireSkippedRecord) -> Result<()> {
                             "started" | "succeeded" | "failed" | "denied"
                         )
                     {
-                        return Err(RuntimeError::new("Codex tool payload is invalid"));
+                        return Err(RuntimeError::new("source tool payload is invalid"));
                     }
                 }
                 "check" => {
@@ -626,13 +683,13 @@ fn validate_skipped_record(record: &WireSkippedRecord) -> Result<()> {
                     if !matches!(check.category.as_str(), "test" | "lint" | "build")
                         || !matches!(check.result.as_str(), "passed" | "failed" | "unknown")
                     {
-                        return Err(RuntimeError::new("Codex check payload is invalid"));
+                        return Err(RuntimeError::new("source check payload is invalid"));
                     }
                 }
                 _ => unreachable!("kind is matched above"),
             }
         }
-        _ => return Err(RuntimeError::new("unsupported Codex fact kind")),
+        _ => return Err(RuntimeError::new("unsupported source fact kind")),
     }
     Ok(())
 }
@@ -648,7 +705,7 @@ fn validate_wire_identity(identity: &WireIdentity) -> Result<()> {
     .flatten()
     {
         if !valid_source_identifier(value, 512) {
-            return Err(RuntimeError::new("Codex native identity is invalid"));
+            return Err(RuntimeError::new("source native identity is invalid"));
         }
     }
     Ok(())
@@ -678,7 +735,7 @@ impl TryFrom<WireUsageRecord> for RawObservation {
             && counters.cache_write_tokens.is_none()
             && counters.total_tokens.is_none()
         {
-            return Err(RuntimeError::new("Codex usage record has no counters"));
+            return Err(RuntimeError::new("usage record has no counters"));
         }
         Ok(RawObservation {
             event_id: record.event_id,
@@ -726,9 +783,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn plugin_ids_use_the_kernel_extension_identifier_grammar() {
+        assert!(valid_plugin_id("example.rust-pi-harness"));
+        assert!(valid_plugin_id("example.rust_codex/harness"));
+        assert!(!valid_plugin_id(""));
+        assert!(!valid_plugin_id("Example.rust-pi-harness"));
+        assert!(!valid_plugin_id("example.pi harness"));
+        assert!(!valid_plugin_id("example.pi\n-harness"));
+        assert!(!valid_plugin_id(&"a".repeat(97)));
+    }
+
+    #[test]
     fn parser_preserves_native_event_identity_revision_and_nanoseconds() {
         let response = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"codex:file:1:usage:hash","revision":2,"kind":"usage","time_ns":"1700000000123456789","identity":{"session_id":"session-1","worker_id":"worker-1","turn_id":"turn-1","operation_id":"operation-1"},"payload":{"input_tokens":7,"output_tokens":3}}]}"#;
-        let batch = parse_codex_batch(response, "harness.codex").unwrap();
+        let batch = parse_usage_batch(response, "harness.codex").unwrap();
         assert_eq!(batch.observations[0].revision, 2);
         assert_eq!(
             batch.observations[0].observed_at_unix_ns,
@@ -743,7 +811,7 @@ mod tests {
     #[test]
     fn strict_usage_wire_schema_rejects_unknown_fields_and_noncanonical_times() {
         let unknown = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"e1","revision":0,"kind":"usage","time_ns":"1","identity":{"session_id":"s1"},"payload":{"input_tokens":1,"output_tokens":2,"cached_input_tokens":3}}]}"#;
-        assert!(parse_codex_batch(unknown, "harness.codex").is_err());
+        assert!(parse_usage_batch(unknown, "harness.codex").is_err());
         assert!(parse_decimal_timestamp("01").is_err());
         assert!(parse_decimal_timestamp("+1").is_err());
         assert!(parse_decimal_timestamp("9223372036854775808").is_err());
@@ -752,7 +820,7 @@ mod tests {
     #[test]
     fn usage_projection_preserves_partial_and_cached_counters_and_counts_skips() {
         let response = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"tool-1","revision":0,"kind":"tool","time_ns":"1","identity":{"session_id":"s1"},"payload":{"category":"shell","result":"succeeded"}},{"event_id":"usage-1","revision":0,"kind":"usage","time_ns":"2","identity":{"session_id":"s1"},"payload":{"cache_read_tokens":0,"cache_write_tokens":4,"total_tokens":4}}]}"#;
-        let batch = parse_codex_batch(response, "harness.codex").unwrap();
+        let batch = parse_usage_batch(response, "harness.codex").unwrap();
         assert_eq!(batch.skipped_non_usage_facts, 1);
         assert_eq!(batch.observations.len(), 1);
         assert_eq!(
@@ -770,9 +838,9 @@ mod tests {
     #[test]
     fn projection_rejects_unknown_or_malformed_non_usage_facts() {
         let unknown_kind = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"e1","revision":0,"kind":"usgae","time_ns":"1","identity":{"session_id":"s1"},"payload":{"input_tokens":1}}]}"#;
-        assert!(parse_codex_batch(unknown_kind, "harness.codex").is_err());
+        assert!(parse_usage_batch(unknown_kind, "harness.codex").is_err());
 
         let malformed_tool = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"e1","revision":0,"kind":"tool","time_ns":"1","identity":{"session_id":"s1"},"payload":{"category":"shell"}}]}"#;
-        assert!(parse_codex_batch(malformed_tool, "harness.codex").is_err());
+        assert!(parse_usage_batch(malformed_tool, "harness.codex").is_err());
     }
 }
