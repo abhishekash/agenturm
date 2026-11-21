@@ -12,7 +12,7 @@ The application keeps three independent extension families:
 2. **Capabilities** derive optional, typed signals from authorized observations.
 3. **UI contributions** provide data-only panes; the Rust UI owns layout, navigation, focus and terminal lifecycle.
 
-Connectors remain a later extension family. The **target** kernel owns extension identity, policy, durable writes, query boundaries and supervision. The current `agenturm-kernel` owns supervised admission and a bounded durable observation read port, but not product policy, app configuration (which lives in CLI input), or process supervision. Rust performance is a user-chosen implementation direction; no gain is claimed without whole-application measurements.
+Connectors remain a later runtime extension family. The new `agenturm-connector-api` crate defines preliminary, versioned inbound and outbound contracts; it does not yet register, supervise, authorize, or persist connector work. The **target** kernel owns extension identity, policy, durable writes, query boundaries and supervision. The current `agenturm-kernel` owns supervised admission and a bounded durable observation read port, but not product policy, app configuration (which lives in CLI input), or process supervision. Rust performance is a user-chosen implementation direction; no gain is claimed without whole-application measurements.
 
 ## Milestones and gates
 
@@ -52,7 +52,7 @@ Implement schema creation, bounded writes, transaction receipts, replay, correct
 
 ### 6. Capability SDK, packaging and connectors
 
-Package harnesses and capabilities independently while shipping a useful default bundle. Publish extension contracts only after at least two real harnesses and one capability use them. Add connectors later with isolated fake-source/sink tests, explicit grants and idempotent delivery.
+Package harnesses and capabilities independently while shipping a useful default bundle. Publish extension contracts only after at least two real harnesses and one capability use them. A preliminary connector API now has separate inbound and outbound ports, bounded DTO validation, stable delivery request digests, and fake source/sink contract tests. Inbound work must commit with its checkpoint before ACK. Outbound attempts are at-least-once; ambiguous outcomes are reconciled by the same idempotency key, never assumed to be exactly-once. See [the Rust connector API RFC](rust-connector-api.md). Runtime registration, process supervision, host-owned grant evaluation, durable inbound checkpoints/outbound receipts, retry scheduling, revocation fencing, credential policy, and OS isolation are not implemented. Connector processes must not be treated as sandboxes; no third-party executable is safe to authorize until least-privilege isolation and credential boundaries exist. Connector runtime work remains gated behind the Rust service, recovery, and packaging critical path.
 
 ## Current blockers
 

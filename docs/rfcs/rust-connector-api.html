@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Rust connector API: first contract slice</title>
+<style>
+:root{color-scheme:light dark;--bg:#f5f7fb;--fg:#202534;--muted:#5b6475;--panel:#fff;--line:#d8deea;--code:#edf0f6;--accent:#3659bd}
+@media(prefers-color-scheme:dark){:root{--bg:#11141a;--fg:#e8ebf2;--muted:#a9b1c0;--panel:#191e27;--line:#303849;--code:#252b37;--accent:#a8bcff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:900px;margin:auto;padding:clamp(18px,5vw,54px)}article{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:clamp(20px,4vw,48px)}h1,h2{line-height:1.25}h1{font-size:2rem;margin:0 0 .4em}h2{margin:2em 0 .5em;border-bottom:1px solid var(--line);padding-bottom:.35em}p,li{max-width:78ch}.status{color:var(--muted)}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--code);padding:.12em .32em;border-radius:4px}a{color:var(--accent)}li+li{margin-top:.35em}
+</style>
+</head>
+<body><main><article>
+<h1>Rust connector API: first contract slice</h1>
+<p class="status">API crate and contract tests implemented; runtime integration is not implemented.</p>
+<h2>Goal</h2>
+<p>Connectors are a separate extension family from harness adapters. A connector talks to an external system; harness adapters discover and decode an agent's local activity. Inbound connectors import remote records. Outbound connectors deliver host-authorized actions. The two directions have different acknowledgement and uncertainty rules, so the API exposes separate traits.</p>
+<p>The current slice is <code>rust/agenturm-connector-api</code>. It defines versioned, serializable DTOs and Rust traits that can later be carried by a process protocol. It deliberately gives the connector no store, cursor table, credential store, or policy authority.</p>
+<h2>Inbound contract</h2>
+<p>An inbound connector receives the last durable checkpoint and a host-provided count/byte budget. It returns a bounded batch with a next checkpoint. The host validates and projects allowlisted fields, validates domain facts, and commits the records with the checkpoint in one transaction. Only after that commit does it call <code>ack</code>. On failed commit, the host must not ACK, so replay starts from the last committed checkpoint.</p>
+<p>The API rejects oversized checkpoints, batches, record counts, repeated record IDs and invalid IDs. These checks bound the DTO; they do not prove the payload is safe or authorized. The host still owns projection and domain validation.</p>
+<h2>Outbound contract</h2>
+<p>The host constructs a delivery containing a stable delivery ID, idempotency key, destination ID, action, payload and SHA-256 digest over the destination/action/payload tuple. Lookup requests carry the full delivery identity, and responses echo its destination, key and digest so a host can reject a response for another request. A connector can send and look up a key. Lookups distinguish accepted, confirmed missing, and unknown. A timeout is ambiguous; the host must reconcile the same key before any retry. Reusing a key with different request data is a conflict.</p>
+<p>In this first API version, the digest is computed and validated by the Rust host using this crate's JSON representation; an external connector returns the digest it was given and does not recompute it. This is not a cross-language canonical JSON specification. A future process protocol that needs third-party recomputation must define canonical bytes and test vectors before claiming interoperability.</p>
+<p>This is an at-least-once attempt model. Exactly-once external effects are not promised: they require a sink that deduplicates or can authoritatively look up the idempotency key. If the sink cannot resolve an ambiguous result, the host must preserve an <code>unknown</code> outcome for reconciliation rather than blindly resend.</p>
+<h2>Trust and policy boundary</h2>
+<p>Descriptor feature declarations describe protocol support; they are not permissions. The API does not implement grants or endpoint policy. Before runtime activation, the host must bind grants to connector ID, pinned artifact digest, exact source/destination identity, permitted fields/actions and a revocable policy epoch, then recheck authorization at admission or dispatch.</p>
+<p>Process supervision is a crash/protocol boundary, not an OS sandbox. A child under the Agenturm user's identity can still access that user's files, credentials and network. Do not activate untrusted third-party connector executables until a least-privilege OS boundary and credential isolation exist. Prompt/content and credential fields require separate grants; connector diagnostics use a closed enum code set that cannot carry payloads or secrets.</p>
+<h2>Current evidence and limits</h2>
+<p>Fourteen tests cover version/identity validation, bounded inbound batches, duplicate record rejection, checkpoint progress and control-character validation, modeled commit-before-ACK ordering, idempotent/stale ACK behavior, outbound request digest validation and response correlation, idempotency conflict, fake accept-then-timeout reconciliation, distinct unknown/missing/accepted states, bounded serialization, and a closed error-code vocabulary that rejects token-like strings. The fake-source test models the intended host/store sequence; it is not a Store integration test.</p>
+<p>This slice does not register connectors in the app/kernel, launch connector processes, evaluate grants, persist connector checkpoints or delivery receipts, schedule retries/dead letters, fence revocation during in-flight work, manage credentials, or sandbox code. These are explicit follow-on requirements, not implicit behavior of the traits. Full runtime connector work remains behind the Rust service/recovery/packaging critical path in the execution plan.</p>
+<h2>Acceptance gates for runtime integration</h2>
+<ul>
+<li>Missing, wrong-scope, stale-artifact and revoked grants deny work before launch/send.</li>
+<li>Inbound rows and cursor commit atomically; crash after commit but before ACK replays without duplicate durable facts.</li>
+<li>Outbound stable key/request digest are persisted before send; timeout reconciliation checks the same key; retry occurs only after confirmed absence and retains the same key/data.</li>
+<li>Retry budget, backoff, dead-letter and uncertain states survive process restart.</li>
+<li>A blocked, malformed or oversized connector does not stall its siblings; cleanup covers descendants.</li>
+<li>Diagnostics expose bounded safe codes only; no payload, prompt, credential or secret endpoint is logged.</li>
+<li>Fake source/sink conformance tests run without real external accounts or network access.</li>
+</ul>
+<p class="status">Markdown source: <a href="rust-connector-api.md">rust-connector-api.md</a></p>
+</article></main></body></html>
