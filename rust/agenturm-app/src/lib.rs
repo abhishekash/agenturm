@@ -271,6 +271,10 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         .iter()
         .filter(|row| matches!(row.kind, ObservationKind::Check { .. }))
         .count();
+    let messages = observations
+        .iter()
+        .filter(|row| matches!(row.kind, ObservationKind::Message { .. }))
+        .count();
     let latest_lifecycle = observations
         .iter()
         .filter_map(|row| match &row.kind {
@@ -322,6 +326,10 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         MetricRow {
             label: "Check observations".into(),
             value: checks.to_string(),
+        },
+        MetricRow {
+            label: "Message role observations".into(),
+            value: messages.to_string(),
         },
         MetricRow {
             label: "Latest lifecycle evidence".into(),
@@ -796,6 +804,9 @@ pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
                 }
                 ObservationKind::Check { category, result } => {
                     serde_json::json!({"kind":"check", "category":category, "result":result})
+                }
+                ObservationKind::Message { role } => {
+                    serde_json::json!({"kind":"message", "role":role})
                 }
                 ObservationKind::Usage {
                     input_tokens,
@@ -1484,6 +1495,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn overview_counts_typed_message_roles_without_content() {
+        let observation = Observation {
+            harness_id: ExtensionId::parse("harness.codex").unwrap(),
+            event_id: "message-1".into(),
+            revision: 0,
+            identity: agenturm_kernel::ObservationIdentity {
+                session_id: "session-1".into(),
+                worker_id: None,
+                turn_id: Some("turn-1".into()),
+                operation_id: None,
+            },
+            observed_at_unix_ns: 1,
+            kind: ObservationKind::Message {
+                role: "user".into(),
+            },
+        };
+        let rows = overview_rows(&[observation]);
+        let count = rows
+            .iter()
+            .find(|row| row.label == "Message role observations")
+            .unwrap();
+        assert_eq!(count.value, "1");
+    }
+
     struct FixtureHarness;
 
     impl Harness for FixtureHarness {
@@ -1861,13 +1897,17 @@ mod tests {
             category: "shell".into(),
             result: "failed".into(),
         };
+        let mut message_event = make_event("event-4", 15);
+        message_event.kind = StoredKind::Message {
+            role: "assistant".into(),
+        };
         store
             .commit_batch(&ObservationBatch {
                 request_id: "query-app-request".into(),
                 source_id: "harness.codex".into(),
                 expected_cursor: None,
                 next_cursor: "cursor-1".into(),
-                observations: vec![check_event, lifecycle_event, tool_event],
+                observations: vec![check_event, lifecycle_event, tool_event, message_event],
             })
             .unwrap();
         drop(store);
@@ -1897,7 +1937,6 @@ mod tests {
             first["observations"][0]["observation"]["reason_code"],
             "codex_task_aborted"
         );
-
         let cursor = &first["next_before"];
         let older = execute_query(&HistoryQueryOptions {
             db: path.clone(),
@@ -1925,6 +1964,8 @@ mod tests {
         assert_eq!(older["observations"][0]["observation"]["kind"], "check");
         assert_eq!(older["observations"][0]["observation"]["category"], "lint");
         assert_eq!(older["observations"][0]["observation"]["result"], "passed");
+        assert_eq!(older["observations"][1]["observation"]["kind"], "message");
+        assert_eq!(older["observations"][1]["observation"]["role"], "assistant");
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }

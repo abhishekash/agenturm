@@ -123,6 +123,9 @@ pub enum ObservationKind {
         category: String,
         result: String,
     },
+    Message {
+        role: String,
+    },
     Usage {
         input_tokens: Option<u64>,
         output_tokens: Option<u64>,
@@ -837,6 +840,11 @@ fn validate_raw_observation_slice(
         {
             return Err("check observation category or result is invalid".into());
         }
+        if let ObservationKind::Message { role } = &row.kind
+            && !matches!(role.as_str(), "user" | "assistant")
+        {
+            return Err("message observation role is invalid".into());
+        }
     }
     Ok(())
 }
@@ -1282,6 +1290,50 @@ mod tests {
         batch.observations[0].kind = ObservationKind::Check {
             category: "coverage".into(),
             result: "passed".into(),
+        };
+        let mut kernel = Kernel::new();
+        kernel
+            .register_source_adapter(
+                id("harness.codex"),
+                FixedSource {
+                    name: "codex",
+                    batch,
+                    fail_ack: false,
+                    panic_ack: false,
+                    fail_poll: false,
+                    fail_reset: false,
+                    panic_reset: false,
+                    log: log.clone(),
+                },
+            )
+            .unwrap();
+        let mut store = FixedStore {
+            cursor: None,
+            fail_commit: false,
+            replay: false,
+            rows: Vec::new(),
+            log: log.clone(),
+        };
+
+        let snapshot = kernel.refresh_with_store(&mut store);
+        assert_eq!(snapshot.failures.len(), 1);
+        assert_eq!(
+            snapshot.failures[0].stage,
+            ExtensionStage::AdmissionValidation
+        );
+        assert!(snapshot.admissions.is_empty());
+        assert!(snapshot.observations.is_empty());
+        let entries = log.take();
+        assert!(!entries.iter().any(|entry| entry.starts_with("commit:")));
+        assert!(!entries.iter().any(|entry| entry.starts_with("ack:")));
+    }
+
+    #[test]
+    fn invalid_message_role_fails_admission_without_commit_or_ack() {
+        let log = Log::default();
+        let mut batch = prepared("event-1");
+        batch.observations[0].kind = ObservationKind::Message {
+            role: "system".into(),
         };
         let mut kernel = Kernel::new();
         kernel

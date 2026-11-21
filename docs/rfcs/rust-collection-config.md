@@ -61,8 +61,8 @@ directories, or load in-process native libraries.
 
 For this first configured command, adapters must emit Agenturm's shared bounded
 source protocol, and the app installs `BundledObservationDecoder`. It stores token usage and privacy-safe
-tool, lifecycle and check observations (category/result/operation identity,
-state/reason code, and check category/result), while counting other validated facts without a stored projection.
+tool, lifecycle, check and message-role observations (category/result/operation identity,
+state/reason code, check category/result, and user/assistant role), while counting other validated facts without a stored projection. Message bodies and content are rejected by the typed projection.
 The runtime API accepts injected `SourceBatchDecoder` implementations for other
 typed fact projections; registering those decoders in a general plugin catalog
 is a later step.

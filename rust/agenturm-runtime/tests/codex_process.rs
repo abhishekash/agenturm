@@ -77,6 +77,7 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"exec_command\",\"arguments\":\"private command never stored\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"isError\":false,\"output\":\"private output never stored\"}}\n",
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"type\":\"CommandExecution\",\"id\":\"check-1\",\"command\":[\"/usr/bin/zsh\",\"-lc\",\"npm run check\"],\"status\":\"completed\",\"exit_code\":0,\"aggregated_output\":\"private check output never stored\"}}}\n",
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"type\":\"UserMessage\",\"content\":\"private user prompt never stored\"}}}\n",
             "{\"type\":\"token_usage_record\",\"timestamp\":\"2026-11-20T12:00:02Z\",\"payload\":{\"type\":\"token_usage_record\",\"turn_id\":\"turn-1\",\"response_id\":\"response-1\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"cached_input_tokens\":2,\"cache_write_input_tokens\":1,\"total_tokens\":10}}}\n"
         ),
     )
@@ -115,9 +116,9 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .admissions
         .get(&source_id)
         .expect("admission status");
-    assert_eq!(admission.inserted, 7);
+    assert_eq!(admission.inserted, 10);
     assert!(!admission.replay);
-    assert_eq!(admission.skipped_unprojected_facts, 1);
+    assert_eq!(admission.skipped_unprojected_facts, 0);
     assert!(admission.source_ack_sent);
 
     let idle = kernel.refresh_with_store(&mut store);
@@ -135,10 +136,10 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .expect("durable cursor committed");
     assert!(!cursor.is_empty());
     let observations = store.observations().expect("read committed observations");
-    assert_eq!(observations.len(), 7);
+    assert_eq!(observations.len(), 10);
     let mut restarted_kernel = Kernel::new();
     let restored = restarted_kernel.refresh_with_store(&mut store);
-    assert_eq!(restored.observations.len(), 7);
+    assert_eq!(restored.observations.len(), 10);
     assert_eq!(
         restored
             .observations
@@ -214,10 +215,20 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
                 result: "passed".into(),
             }
     }));
+    assert!(observations.iter().any(|(_, row)| row.kind
+        == ObservationKind::Message {
+            role: "user".into()
+        }));
+    assert!(observations.iter().any(|(_, row)| row.kind
+        == ObservationKind::Message {
+            role: "assistant".into()
+        }));
     let encoded = serde_json::to_string(&observations).unwrap();
     assert!(!encoded.contains("private command never stored"));
     assert!(!encoded.contains("private output never stored"));
     assert!(!encoded.contains("private check output never stored"));
+    assert!(!encoded.contains("private user prompt never stored"));
+    assert!(!encoded.contains("private text never stored"));
     assert!(!encoded.contains("npm run check"));
     fs::remove_dir_all(root).expect("remove fixture directory");
 }

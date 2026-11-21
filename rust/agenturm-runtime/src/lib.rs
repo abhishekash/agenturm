@@ -585,6 +585,11 @@ fn parse_source_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedB
             observations.push(typed.try_into()?);
             continue;
         }
+        if kind == "message" {
+            let typed: WireMessageRecord = serde_json::from_value(record)?;
+            observations.push(typed.try_into()?);
+            continue;
+        }
         if kind != "usage" {
             let skipped: WireSkippedRecord = serde_json::from_value(record)?;
             validate_skipped_record(&skipped)?;
@@ -670,6 +675,17 @@ struct WireCheckRecord {
     time_ns: String,
     identity: WireIdentity,
     payload: WireCheck,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireMessageRecord {
+    event_id: String,
+    revision: u32,
+    kind: String,
+    time_ns: String,
+    identity: WireIdentity,
+    payload: WireMessage,
 }
 
 #[derive(Deserialize)]
@@ -989,6 +1005,34 @@ impl TryFrom<WireCheckRecord> for RawObservation {
     }
 }
 
+impl TryFrom<WireMessageRecord> for RawObservation {
+    type Error = RuntimeError;
+
+    fn try_from(record: WireMessageRecord) -> Result<Self> {
+        if record.kind != "message"
+            || !valid_source_identifier(&record.event_id, 256)
+            || !matches!(record.payload.role.as_str(), "user" | "assistant")
+        {
+            return Err(RuntimeError::new("source message payload is invalid"));
+        }
+        validate_wire_identity(&record.identity)?;
+        Ok(RawObservation {
+            event_id: record.event_id,
+            revision: record.revision,
+            identity: ObservationIdentity {
+                session_id: record.identity.session_id,
+                worker_id: record.identity.worker_id,
+                turn_id: record.identity.turn_id,
+                operation_id: record.identity.operation_id,
+            },
+            observed_at_unix_ns: parse_decimal_timestamp(&record.time_ns)?,
+            kind: ObservationKind::Message {
+                role: record.payload.role,
+            },
+        })
+    }
+}
+
 fn parse_decimal_timestamp(value: &str) -> Result<u64> {
     if value.is_empty()
         || !value.bytes().all(|byte| byte.is_ascii_digit())
@@ -1139,6 +1183,28 @@ mod tests {
             "\"category\":\"lint\",\"command\":\"secret\"",
         );
         assert!(parse_source_batch(&unknown_field, "harness.codex").is_err());
+    }
+
+    #[test]
+    fn message_projection_preserves_only_role() {
+        let response = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"message-1","revision":0,"kind":"message","time_ns":"11","identity":{"session_id":"s1","turn_id":"turn-1"},"payload":{"role":"user"}},{"event_id":"message-2","revision":0,"kind":"message","time_ns":"12","identity":{"session_id":"s1","turn_id":"turn-1"},"payload":{"role":"assistant"}}]}"#;
+        let batch = parse_source_batch(response, "harness.codex").unwrap();
+        assert_eq!(batch.observations.len(), 2);
+        assert_eq!(batch.skipped_unprojected_facts, 0);
+        assert!(batch.observations.iter().any(|row| row.kind
+            == ObservationKind::Message {
+                role: "user".into()
+            }));
+        assert!(batch.observations.iter().any(|row| row.kind
+            == ObservationKind::Message {
+                role: "assistant".into()
+            }));
+        assert!(parse_source_batch(&response.replace("user", "system"), "harness.codex").is_err());
+        let extra_content = response.replace(
+            "\"role\":\"user\"",
+            "\"role\":\"user\",\"content\":\"private prompt\"",
+        );
+        assert!(parse_source_batch(&extra_content, "harness.codex").is_err());
     }
 
     #[test]
