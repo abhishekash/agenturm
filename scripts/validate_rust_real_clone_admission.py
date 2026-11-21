@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -31,7 +32,8 @@ def run_client(request_path: Path, socket_path: Path, *, uid: int, gid: int,
                drop_reply: bool = False) -> dict | None:
     if reply_path is not None:
         reply_path.unlink(missing_ok=True)
-    command = [sys.executable, __file__, "--client", "--socket", str(socket_path),
+    command = [sys.executable, str(request_path.parent / Path(__file__).name),
+               "--client", "--socket", str(socket_path),
                "--request", str(request_path)]
     if reply_path is not None:
         command.extend(("--reply", str(reply_path)))
@@ -85,6 +87,7 @@ def request_for(lease: dict, batch, request_id: str, expected_cursor: str) -> di
 def main(binary: Path) -> None:
     check(sys.platform == "linux" and os.geteuid() == 0,
           "run as root on isolated Linux")
+    binary_source = binary.resolve(strict=True)
     from observatory.core import Store
     from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
 
@@ -92,6 +95,23 @@ def main(binary: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="agenturm-real-clone-admit-") as temporary:
         root = Path(temporary)
         root.chmod(0o755)
+        # Neither dropped UID can traverse a private CI checkout. Keep the
+        # executable and the client-only script imports in this public root.
+        script_dir = Path(__file__).resolve().parent
+        for name in (Path(__file__).name, "validate_rust_real_clone_activation.py",
+                     "validate_rust_storage_service_accounts.py"):
+            client_script = root / name
+            shutil.copy2(script_dir / name, client_script)
+            client_script.chmod(0o644)
+        package = root / "observatory"
+        shutil.copytree(script_dir.parent / "observatory", package,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        package.chmod(0o755)
+        for path in package.rglob("*"):
+            path.chmod(0o755 if path.is_dir() else 0o644)
+        service_binary = root / "agenturm-storage-service"
+        shutil.copy2(binary_source, service_binary)
+        service_binary.chmod(0o755)
         canonical = root / "canonical.db"
         original = Store(canonical)
         receiver = original.receiver_id
@@ -158,7 +178,7 @@ def main(binary: Path) -> None:
         activation_path.write_text(json.dumps(activation))
         activation_path.chmod(0o644)
         socket_path = transport / "agenturm-storage-v1.sock"
-        service_command = [str(binary), "--data-root", str(data),
+        service_command = [str(service_binary), "--data-root", str(data),
                            "--transport-dir", str(transport), "--receiver-id", receiver,
                            "--client-uid", str(client_uid), "--client-gid", str(client_gid),
                            "--experimental-real-clone-activation", "enabled"]
