@@ -5,8 +5,9 @@
 //! full-screen durable-history viewer. Installed service management remains open.
 
 use agenturm_kernel::{
-    Capability, ExtensionId, Harness, Kernel, MetricRow, Observation, ObservationKind,
-    ObservationStore, PaneModel, RegistrationError, Snapshot, SourceAdapter, UiContribution,
+    Capability, ExtensionId, Harness, Kernel, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, MetricRow,
+    Observation, ObservationKind, ObservationPosition, ObservationQuery, ObservationStore,
+    PaneModel, RegistrationError, Snapshot, SourceAdapter, UiContribution,
 };
 use agenturm_runtime::{CODEX_PLUGIN_ID, ProcessConfig, ProcessSource, UsageBatchDecoder};
 #[cfg(target_os = "linux")]
@@ -26,6 +27,7 @@ use std::time::{Duration, Instant};
 
 const MAX_COLLECTION_CONFIG_BYTES: u64 = 256 * 1024;
 const MAX_CONFIGURED_SOURCES: usize = 16;
+const INSPECT_PAGE_SIZE: usize = 500;
 
 #[cfg(target_os = "linux")]
 const SERVICE_STATUS_LINE: &str =
@@ -69,6 +71,14 @@ impl AgenturmApp {
         self.kernel.refresh_with_store(store)
     }
 
+    pub fn refresh_history_query(
+        &mut self,
+        store: &impl ObservationStore,
+        query: ObservationQuery,
+    ) -> Snapshot {
+        self.kernel.refresh_query_with_store(store, query)
+    }
+
     pub fn register_harness(
         &mut self,
         id: ExtensionId,
@@ -108,6 +118,7 @@ pub enum Command {
     Version,
     Status,
     Inspect(PathBuf),
+    Query(HistoryQueryOptions),
     Ingest(IngestOptions),
     Collect(ConfiguredCollectOptions),
     Service(ServiceCommand),
@@ -175,6 +186,16 @@ pub struct IngestOptions {
     pub source_root: PathBuf,
     pub db: PathBuf,
     pub source_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryQueryOptions {
+    pub db: PathBuf,
+    pub harness_id: Option<String>,
+    pub session_id: Option<String>,
+    pub before: Option<ObservationPosition>,
+    pub snapshot_id: Option<u64>,
+    pub limit: usize,
 }
 
 struct OverviewCapability;
@@ -265,6 +286,7 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("--version" | "-V" | "version") if args.len() == 1 => Ok(Command::Version),
         Some("status") if args.len() == 1 => Ok(Command::Status),
         Some("inspect") => parse_inspect_options(&args[1..]).map(Command::Inspect),
+        Some("query") => parse_query_options(&args[1..]).map(Command::Query),
         Some("collect") => parse_collect_options(&args[1..]).map(Command::Collect),
         Some("service") => parse_service_options(&args[1..]).map(Command::Service),
         Some("ingest-usage") => parse_ingest_options(&args[1..], None).map(Command::Ingest),
@@ -518,6 +540,87 @@ fn parse_inspect_options(args: &[String]) -> Result<PathBuf, String> {
     }
 }
 
+fn parse_query_options(args: &[String]) -> Result<HistoryQueryOptions, String> {
+    let mut db = None;
+    let mut harness_id = None;
+    let mut session_id = None;
+    let mut before_timestamp = None;
+    let mut before_harness = None;
+    let mut before_event = None;
+    let mut before_revision = None;
+    let mut before_snapshot_id = None;
+    let mut limit = None;
+    let mut index = 0;
+    while index < args.len() {
+        let key = &args[index];
+        let value = args.get(index + 1).ok_or_else(usage)?;
+        if value.starts_with("--") || value.is_empty() {
+            return Err(usage());
+        }
+        let slot = match key.as_str() {
+            "--db" => &mut db,
+            "--harness-id" => &mut harness_id,
+            "--session-id" => &mut session_id,
+            "--before-timestamp-ns" => &mut before_timestamp,
+            "--before-harness-id" => &mut before_harness,
+            "--before-event-id" => &mut before_event,
+            "--before-revision" => &mut before_revision,
+            "--snapshot-id" => &mut before_snapshot_id,
+            "--limit" => &mut limit,
+            _ => return Err(usage()),
+        };
+        if slot.replace(value.clone()).is_some() {
+            return Err(format!("duplicate option {key}\n{}", usage()));
+        }
+        index += 2;
+    }
+    let before_parts = [
+        before_timestamp.as_ref(),
+        before_harness.as_ref(),
+        before_event.as_ref(),
+        before_revision.as_ref(),
+    ];
+    let snapshot_id = before_snapshot_id
+        .as_deref()
+        .map(|value| value.parse::<u64>().map_err(|_| usage()))
+        .transpose()?;
+    let before = if before_parts.iter().all(Option::is_none) {
+        None
+    } else if before_parts.iter().all(Option::is_some) {
+        let snapshot_id = snapshot_id.ok_or_else(usage)?;
+        Some(ObservationPosition {
+            observed_at_unix_ns: before_timestamp
+                .as_deref()
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(usage)?,
+            harness_id: before_harness.ok_or_else(usage)?,
+            event_id: before_event.ok_or_else(usage)?,
+            revision: before_revision
+                .as_deref()
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(usage)?,
+            snapshot_id,
+        })
+    } else {
+        return Err(usage());
+    };
+    let limit = limit
+        .map(|value| value.parse::<usize>().map_err(|_| usage()))
+        .transpose()?
+        .unwrap_or(500);
+    if limit == 0 || limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
+        return Err(usage());
+    }
+    Ok(HistoryQueryOptions {
+        db: PathBuf::from(db.ok_or_else(usage)?),
+        harness_id,
+        session_id,
+        before,
+        snapshot_id,
+        limit,
+    })
+}
+
 fn parse_ingest_options(
     args: &[String],
     default_plugin_id: Option<&str>,
@@ -560,13 +663,115 @@ fn parse_ingest_options(
 }
 
 fn usage() -> String {
-    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm service install --config <json-path> --db <path> [--interval-ms <100..60000>] | agenturm service status | agenturm service uninstall | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
+    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> | agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>] | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm service install --config <json-path> --db <path> [--interval-ms <100..60000>] | agenturm service status | agenturm service uninstall | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
 }
 
 pub fn execute_inspect(db_path: &std::path::Path) -> Result<Snapshot, String> {
-    let mut store = Store::open(db_path).map_err(|error| format!("open store failed: {error}"))?;
+    let store = Store::open(db_path).map_err(|error| format!("open store failed: {error}"))?;
     let mut app = AgenturmApp::default_composition();
-    Ok(app.refresh_durable(&mut store))
+    Ok(app.refresh_history_query(&store, ObservationQuery::latest(INSPECT_PAGE_SIZE)))
+}
+
+pub fn execute_inspect_ui(db_path: &std::path::Path) -> Result<(), String> {
+    let store = Store::open(db_path).map_err(|error| format!("open store failed: {error}"))?;
+    let mut app = AgenturmApp::default_composition();
+    let snapshot = app.refresh_history_query(&store, ObservationQuery::latest(INSPECT_PAGE_SIZE));
+    agenturm_ui::run_with_history(snapshot, |before| {
+        Ok(Some(app.refresh_history_query(
+            &store,
+            ObservationQuery {
+                harness_id: None,
+                session_id: None,
+                before: Some(before.clone()),
+                snapshot_id: Some(before.snapshot_id),
+                limit: INSPECT_PAGE_SIZE,
+            },
+        )))
+    })
+    .map_err(|error| format!("Agenturm UI failed: {error}"))
+}
+
+/// Executes one bounded read-only history query and returns a stable cursor
+/// that can be passed back as `--before-*` to fetch the next older page.
+pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
+    let store = Store::open_read_only(&options.db)
+        .map_err(|error| format!("open existing store failed: {error}"))?;
+    let query = ObservationQuery {
+        harness_id: options.harness_id.clone(),
+        session_id: options.session_id.clone(),
+        before: options.before.clone(),
+        snapshot_id: options.snapshot_id,
+        limit: options.limit,
+    };
+    let page = store
+        .query_observations(&query)
+        .map_err(|error| format!("query store failed: {error}"))?;
+    let next_before = page
+        .has_more
+        .then(|| {
+            page.observations.first().map(|row| ObservationPosition {
+                observed_at_unix_ns: row.observed_at_unix_ns,
+                harness_id: row.harness_id.as_str().to_owned(),
+                event_id: row.event_id.clone(),
+                revision: row.revision,
+                snapshot_id: page.snapshot_id,
+            })
+        })
+        .flatten();
+    let next_before = next_before.map(|position| {
+        serde_json::json!({
+            "observed_at_unix_ns":position.observed_at_unix_ns.to_string(),
+            "harness_id":position.harness_id,
+            "event_id":position.event_id,
+            "revision":position.revision,
+            "snapshot_id":position.snapshot_id.to_string(),
+        })
+    });
+    let observations = page
+        .observations
+        .iter()
+        .map(|row| {
+            let kind = match &row.kind {
+                ObservationKind::SessionStarted => serde_json::json!({"kind":"session_started"}),
+                ObservationKind::SessionEnded => serde_json::json!({"kind":"session_ended"}),
+                ObservationKind::Activity { category } => {
+                    serde_json::json!({"kind":"activity", "category":category})
+                }
+                ObservationKind::Usage {
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    total_tokens,
+                } => serde_json::json!({
+                    "kind":"usage", "input_tokens":input_tokens,
+                    "output_tokens":output_tokens,
+                    "cache_read_tokens":cache_read_tokens,
+                    "cache_write_tokens":cache_write_tokens,
+                    "total_tokens":total_tokens,
+                }),
+            };
+            serde_json::json!({
+                "harness_id":row.harness_id.as_str(),
+                "event_id":row.event_id,
+                "revision":row.revision,
+                "observed_at_unix_ns":row.observed_at_unix_ns.to_string(),
+                "identity": {
+                    "session_id":row.identity.session_id,
+                    "worker_id":row.identity.worker_id,
+                    "turn_id":row.identity.turn_id,
+                    "operation_id":row.identity.operation_id,
+                },
+                "observation":kind,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "observations":observations,
+        "has_more":page.has_more,
+        "next_before":next_before,
+    }))
+    .map_err(|_| "serialize history query failed".into())
 }
 
 pub fn execute_collect(options: &ConfiguredCollectOptions) -> Result<CollectionReport, String> {
@@ -1152,6 +1357,7 @@ pub fn render(command: Command) -> String {
             "\n",
             "Usage: agenturm [--help|--version|status]\n",
             "       agenturm inspect --db <path>\n",
+            "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
             "       agenturm collect --config <json-path> --db <path>\n",
             "       agenturm collect --config <json-path> --db <path> --watch [--interval-ms <100..60000>]\n",
             "       agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>\n",
@@ -1178,6 +1384,7 @@ pub fn render(command: Command) -> String {
             SERVICE_STATUS_LINE
         ),
         Command::Inspect(_) => String::new(),
+        Command::Query(_) => String::new(),
         Command::Ingest(_) => String::new(),
         Command::Collect(_) => String::new(),
         Command::Service(_) => String::new(),
@@ -1307,6 +1514,103 @@ mod tests {
             Command::Inspect(PathBuf::from("./state.sqlite"))
         );
         assert_eq!(
+            parse_command(&["query".into(), "--db".into(), "./state.sqlite".into()]).unwrap(),
+            Command::Query(HistoryQueryOptions {
+                db: PathBuf::from("./state.sqlite"),
+                harness_id: None,
+                session_id: None,
+                before: None,
+                snapshot_id: None,
+                limit: 500,
+            })
+        );
+        assert_eq!(
+            parse_command(&[
+                "query".into(),
+                "--db".into(),
+                "./state.sqlite".into(),
+                "--snapshot-id".into(),
+                "12".into(),
+            ])
+            .unwrap(),
+            Command::Query(HistoryQueryOptions {
+                db: PathBuf::from("./state.sqlite"),
+                harness_id: None,
+                session_id: None,
+                before: None,
+                snapshot_id: Some(12),
+                limit: 500,
+            })
+        );
+        assert_eq!(
+            parse_command(&[
+                "query".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--harness-id".into(),
+                "harness.codex".into(),
+                "--session-id".into(),
+                "session-1".into(),
+                "--limit".into(),
+                "10".into(),
+                "--before-timestamp-ns".into(),
+                "42".into(),
+                "--before-harness-id".into(),
+                "harness.codex".into(),
+                "--before-event-id".into(),
+                "event-1".into(),
+                "--before-revision".into(),
+                "0".into(),
+                "--snapshot-id".into(),
+                "1".into(),
+            ])
+            .unwrap(),
+            Command::Query(HistoryQueryOptions {
+                db: PathBuf::from("state.sqlite"),
+                harness_id: Some("harness.codex".into()),
+                session_id: Some("session-1".into()),
+                before: Some(ObservationPosition {
+                    observed_at_unix_ns: 42,
+                    harness_id: "harness.codex".into(),
+                    event_id: "event-1".into(),
+                    revision: 0,
+                    snapshot_id: 1,
+                }),
+                snapshot_id: Some(1),
+                limit: 10,
+            })
+        );
+        assert!(
+            parse_command(&[
+                "query".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--before-timestamp-ns".into(),
+                "42".into(),
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_command(&[
+                "query".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--limit".into(),
+                "16385".into(),
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_command(&[
+                "query".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--session-id".into(),
+                "session 1".into(),
+            ])
+            .is_ok()
+        );
+        assert_eq!(
             parse_command(&[
                 "collect".into(),
                 "--config".into(),
@@ -1418,6 +1722,136 @@ mod tests {
         };
         assert_eq!(pi.plugin_id, "example.rust-pi-harness");
         assert!(parse_command(&generic[..2]).is_err());
+    }
+
+    #[test]
+    fn history_query_reopens_store_and_returns_a_reusable_older_cursor() {
+        use agenturm_store::{
+            ObservationBatch, ObservationIdentity as StoredIdentity, ObservationKind as StoredKind,
+            StoredObservation,
+        };
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "agenturm-query-app-{}-{id}.sqlite",
+            std::process::id()
+        ));
+        let mut store = Store::open(&path).unwrap();
+        let make_event = |event_id: &str, timestamp| StoredObservation {
+            event_id: event_id.into(),
+            revision: 0,
+            identity: StoredIdentity {
+                session_id: "session-a".into(),
+                worker_id: None,
+                turn_id: None,
+                operation_id: None,
+            },
+            observed_at_unix_ns: timestamp,
+            kind: StoredKind::Usage {
+                input_tokens: Some(10),
+                output_tokens: Some(5),
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                total_tokens: Some(15),
+            },
+        };
+        store
+            .commit_batch(&ObservationBatch {
+                request_id: "query-app-request".into(),
+                source_id: "harness.codex".into(),
+                expected_cursor: None,
+                next_cursor: "cursor-1".into(),
+                observations: vec![
+                    make_event("event-1", 10),
+                    make_event("event-2", 20),
+                    make_event("event-3", 30),
+                ],
+            })
+            .unwrap();
+        drop(store);
+
+        let first = execute_query(&HistoryQueryOptions {
+            db: path.clone(),
+            harness_id: Some("harness.codex".into()),
+            session_id: Some("session-a".into()),
+            before: None,
+            snapshot_id: None,
+            limit: 2,
+        })
+        .unwrap();
+        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(first["has_more"], true);
+        assert_eq!(first["observations"][0]["event_id"], "event-2");
+        assert_eq!(first["observations"][1]["event_id"], "event-3");
+
+        let cursor = &first["next_before"];
+        let older = execute_query(&HistoryQueryOptions {
+            db: path.clone(),
+            harness_id: Some("harness.codex".into()),
+            session_id: Some("session-a".into()),
+            before: Some(ObservationPosition {
+                observed_at_unix_ns: cursor["observed_at_unix_ns"]
+                    .as_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+                harness_id: cursor["harness_id"].as_str().unwrap().into(),
+                event_id: cursor["event_id"].as_str().unwrap().into(),
+                revision: cursor["revision"].as_u64().unwrap() as u32,
+                snapshot_id: cursor["snapshot_id"].as_str().unwrap().parse().unwrap(),
+            }),
+            snapshot_id: Some(cursor["snapshot_id"].as_str().unwrap().parse().unwrap()),
+            limit: 2,
+        })
+        .unwrap();
+        let older: serde_json::Value = serde_json::from_str(&older).unwrap();
+        assert_eq!(older["has_more"], false);
+        assert!(older["next_before"].is_null());
+        assert_eq!(older["observations"][0]["event_id"], "event-1");
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    #[test]
+    fn history_query_does_not_create_a_missing_database() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "agenturm-query-missing-{}-{nonce}.sqlite",
+            std::process::id()
+        ));
+        assert!(!path.exists());
+        let result = execute_query(&HistoryQueryOptions {
+            db: path.clone(),
+            harness_id: None,
+            session_id: None,
+            before: None,
+            snapshot_id: None,
+            limit: 1,
+        });
+        assert!(result.is_err());
+        assert!(!path.exists());
+
+        std::fs::write(&path, []).unwrap();
+        let result = execute_query(&HistoryQueryOptions {
+            db: path.clone(),
+            harness_id: None,
+            session_id: None,
+            before: None,
+            snapshot_id: None,
+            limit: 1,
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        for suffix in ["-wal", "-shm"] {
+            assert!(!std::path::PathBuf::from(format!("{}{suffix}", path.display())).exists());
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

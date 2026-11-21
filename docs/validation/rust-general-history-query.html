@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rust durable history query</title>
+<style>
+:root{color-scheme:light dark;--bg:#f7f8fb;--fg:#202534;--muted:#586174;--panel:#fff;--line:#d9deea;--link:#3959bc;--code:#eef1f7}
+@media(prefers-color-scheme:dark){:root{--bg:#11141b;--fg:#e8ebf2;--muted:#a8b0c0;--panel:#191e28;--line:#303849;--link:#9db5ff;--code:#252c39}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:900px;margin:auto;padding:clamp(20px,5vw,56px)}article{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:clamp(20px,4vw,48px)}h1,h2{line-height:1.25}h1{font-size:2rem}h2{margin-top:2rem;border-bottom:1px solid var(--line);padding-bottom:.35rem}p,li{max-width:84ch}a{color:var(--link)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code,pre{background:var(--code);border-radius:6px}code{padding:.12em .32em}pre{padding:14px;overflow:auto}footer{margin-top:2rem;color:var(--muted);font-size:.9rem}
+</style>
+</head>
+<body><main><article>
+<h1>Rust durable history query</h1>
+<p>This slice connects the fresh Rust observation store to a bounded read API, the <code>agenturm query</code> command, and older-history navigation in <code>agenturm inspect</code>. It reads only the Rust-owned observation database. It does not import, bridge, or modify Python-era state.</p>
+<h2>Query contract</h2>
+<ul>
+<li>Optional exact <code>harness_id</code> and <code>session_id</code> filters apply before paging.</li>
+<li>Storage uses a deterministic descending key of timestamp, harness, event, and revision. Each page returns oldest-to-newest for capability and UI reduction.</li>
+<li>The exclusive cursor carries all four ordering fields and a <code>snapshot_id</code>.</li>
+<li>The snapshot watermark is the highest committed sequence in a dedicated <code>AUTOINCREMENT</code> receipt table on page one. Later pages exclude later receipts, including backdated observations, so concurrent collection cannot shift traversal. The explicit sequence is durable across <code>VACUUM</code> and row deletion.</li>
+<li>Page size defaults to 500 and is bounded to 1–16,384. The inspector reads 500 observations per page. Timestamps and snapshot IDs are decimal strings in JSON to preserve integer precision.</li>
+<li>In the inspector, <kbd>[</kbd> loads older history and <kbd>]</kbd> returns through a cache of at most four page models.</li>
+</ul>
+<p>First page:</p>
+<pre><code>agenturm query --db ./state.sqlite --harness-id harness.codex --session-id session-1 --limit 500</code></pre>
+<p>Pass every field from <code>next_before</code> to fetch the next older page, including <code>snapshot_id</code>. When <code>has_more</code> is false, the current snapshot has no older matching observations.</p>
+<h2>Safety and limits</h2>
+<p>The query opens a v3 store through SQLite read-only mode. It does not create a database for a missing path, initialize an empty file, migrate schema, change journal settings, or change observation rows/cursors. Open a v2 store through a write-capable operation such as inspect or collection first; that path performs a transactionally backfilled v2-to-v3 schema upgrade. The store validates filters, page size, cursor identity, timestamp range, and snapshot watermark before parameterized SQL. A cursor from another snapshot and a future watermark are rejected. Existing marker checks reject unrelated databases. Terminal pages do not emit a next cursor.</p>
+<p>The watermark relies on the explicit AUTOINCREMENT sequence remaining durable. The current store has no retention. If a future retention feature prunes history, it must preserve the monotonic sequence and cursor contract. Paging does not hold a long-lived SQLite transaction or pin the WAL.</p>
+<p>This is a bounded observation query, not full domain query parity. Lifecycle summaries, relationships, private content, policy-filtered hydration, network APIs, arbitrary ordering, and text search remain open. The in-memory inspector back stack is bounded; reopening starts at the latest page.</p>
+<h2>Verification</h2>
+<p>Focused tests cover equal-timestamp ordering across harnesses, source/session filtering, stable pagination, a concurrent backdated write excluded by the watermark, v2-to-v3 schema upgrade, missing-path and empty-file no-write behavior, invalid cursor rejection, close/reopen queries, CLI cursor round-trip, terminal-page cursor omission, and UI cursor precision above JavaScript’s exact integer range. Workspace formatting, Clippy, and full Rust workspace tests are recorded with the implementation PR.</p>
+<footer>Self-contained HTML companion · <a href="rust-general-history-query.md">Markdown source</a></footer>
+</article></main></body></html>

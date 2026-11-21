@@ -6,7 +6,7 @@
 
 #![forbid(unsafe_code)]
 
-use agenturm_kernel::{MetricRow, Snapshot};
+use agenturm_kernel::{MetricRow, ObservationPosition, Snapshot};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -36,11 +36,26 @@ pub struct UiModel {
     viewport_height: u16,
     observations: usize,
     truncated: bool,
+    older_cursor: Option<ObservationPosition>,
     help: bool,
 }
 
 impl UiModel {
     pub fn from_snapshot(snapshot: Snapshot) -> Self {
+        let older_cursor = if snapshot.observations_truncated {
+            snapshot
+                .observations
+                .first()
+                .map(|row| ObservationPosition {
+                    observed_at_unix_ns: row.observed_at_unix_ns,
+                    harness_id: row.harness_id.as_str().to_owned(),
+                    event_id: row.event_id.clone(),
+                    revision: row.revision,
+                    snapshot_id: snapshot.history_snapshot_id,
+                })
+        } else {
+            None
+        };
         let mut panes: Vec<_> = snapshot
             .panes
             .into_values()
@@ -86,8 +101,13 @@ impl UiModel {
             viewport_height: 0,
             observations: snapshot.observations.len(),
             truncated: snapshot.observations_truncated,
+            older_cursor,
             help: false,
         }
+    }
+
+    pub fn older_cursor(&self) -> Option<&ObservationPosition> {
+        self.older_cursor.as_ref()
     }
 
     pub fn selected_title(&self) -> Option<&str> {
@@ -175,24 +195,55 @@ impl UiModel {
 }
 
 /// Runs the terminal UI and restores the terminal on every return path.
-pub fn run(snapshot: Snapshot) -> io::Result<()> {
+pub fn run(mut snapshot: Snapshot) -> io::Result<()> {
+    snapshot.observations_truncated = false;
+    run_with_history(snapshot, |_| Ok(None))
+}
+
+/// Runs the inspector with bounded older-page navigation. The UI receives
+/// only render-neutral snapshots and an exact opaque ordering cursor.
+pub fn run_with_history(
+    snapshot: Snapshot,
+    mut load_older: impl FnMut(&ObservationPosition) -> io::Result<Option<Snapshot>>,
+) -> io::Result<()> {
     let mut model = UiModel::from_snapshot(snapshot);
+    let mut newer_pages = Vec::<UiModel>::new();
+    const MAX_CACHED_NEWER_PAGES: usize = 4;
     ratatui::run(|terminal| {
         loop {
             let area = terminal.size()?;
             model.set_viewport(area.width, area.height);
-            terminal.draw(|frame| draw(frame, &model))?;
+            terminal.draw(|frame| draw(frame, &model, !newer_pages.is_empty()))?;
             if let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
-                && model.handle_key(key.code)
             {
-                break Ok(());
+                match key.code {
+                    KeyCode::Char('[') if !model.help => {
+                        if let Some(cursor) = model.older_cursor().cloned()
+                            && let Some(next) = load_older(&cursor)?
+                        {
+                            let previous =
+                                std::mem::replace(&mut model, UiModel::from_snapshot(next));
+                            if newer_pages.len() == MAX_CACHED_NEWER_PAGES {
+                                newer_pages.remove(0);
+                            }
+                            newer_pages.push(previous);
+                        }
+                    }
+                    KeyCode::Char(']') if !model.help => {
+                        if let Some(newer) = newer_pages.pop() {
+                            model = newer;
+                        }
+                    }
+                    key if model.handle_key(key) => break Ok(()),
+                    _ => {}
+                }
             }
         }
     })
 }
 
-fn draw(frame: &mut Frame, model: &UiModel) {
+fn draw(frame: &mut Frame, model: &UiModel, has_newer_page: bool) {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         frame.render_widget(
@@ -221,7 +272,7 @@ fn draw(frame: &mut Frame, model: &UiModel) {
     header.push(Span::raw(format!(" · {} observations", model.observations)));
     if model.truncated {
         header.push(Span::styled(
-            " · showing newest history",
+            " · older history available",
             Style::default().fg(Color::Yellow),
         ));
     }
@@ -243,6 +294,12 @@ fn draw(frame: &mut Frame, model: &UiModel) {
 
     let footer = if model.help {
         " ←/→ or Tab switch panes · ↑/↓ or j/k scroll · ? close help · q quit "
+    } else if model.older_cursor.is_some() && has_newer_page {
+        " ←/→ panes · ↑/↓ scroll · [ older · ] newer · ? help · q quit "
+    } else if model.older_cursor.is_some() {
+        " ←/→ panes · ↑/↓ scroll · [ older · ? help · q quit "
+    } else if has_newer_page {
+        " ←/→ panes · ↑/↓ scroll · ] newer · ? help · q quit "
     } else {
         " ←/→ or Tab switch panes · ↑/↓ scroll · ? help · q quit "
     };
@@ -382,6 +439,38 @@ mod tests {
     }
 
     #[test]
+    fn older_history_cursor_is_exact_and_keeps_the_query_snapshot() {
+        let mut snapshot = snapshot_with_panes();
+        snapshot.observations_truncated = true;
+        snapshot.history_snapshot_id = 77;
+        snapshot.observations.push(agenturm_kernel::Observation {
+            harness_id: ExtensionId::parse("harness.codex").unwrap(),
+            event_id: "event-1".into(),
+            revision: 2,
+            identity: agenturm_kernel::ObservationIdentity {
+                session_id: "session-1".into(),
+                worker_id: None,
+                turn_id: None,
+                operation_id: None,
+            },
+            observed_at_unix_ns: 9_007_199_254_740_993,
+            kind: agenturm_kernel::ObservationKind::SessionStarted,
+        });
+
+        let model = UiModel::from_snapshot(snapshot);
+        assert_eq!(
+            model.older_cursor(),
+            Some(&ObservationPosition {
+                observed_at_unix_ns: 9_007_199_254_740_993,
+                harness_id: "harness.codex".into(),
+                event_id: "event-1".into(),
+                revision: 2,
+                snapshot_id: 77,
+            })
+        );
+    }
+
+    #[test]
     fn pane_navigation_and_row_scrolling_are_independent() {
         let mut model = UiModel::from_snapshot(snapshot_with_panes());
         model.set_viewport(40, 10);
@@ -486,7 +575,7 @@ mod tests {
             let mut terminal = Terminal::new(backend).unwrap();
             let mut model = UiModel::from_snapshot(snapshot_with_panes());
             model.set_viewport(width, height);
-            terminal.draw(|frame| draw(frame, &model)).unwrap();
+            terminal.draw(|frame| draw(frame, &model, false)).unwrap();
             let text = terminal
                 .backend()
                 .buffer()
