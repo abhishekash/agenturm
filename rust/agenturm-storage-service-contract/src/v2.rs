@@ -382,6 +382,10 @@ pub fn diagnostic_payload_is_valid(raw: &str) -> bool {
         && serde_json::to_value(typed).is_ok_and(|roundtrip| roundtrip == value)
 }
 
+pub fn member_gap_diagnostic_payload_is_valid(raw: &str) -> bool {
+    raw == r#"{"code":"possible_source_gap","severity":"warning"}"#
+}
+
 fn payload(raw: &str) -> bool {
     if raw.len() > 4096 {
         return false;
@@ -677,11 +681,31 @@ impl Request {
                     || (next_cursor.is_empty() && !records.is_empty())
                     || member_update.as_ref().is_some_and(|member| {
                         !member_id_is_valid(&member.member_id)
-                            || !member_cursor_is_valid(&member.cursor)
+                            || (!member.cursor.is_empty()
+                                && !member_cursor_is_valid(&member.cursor))
                     })
                 {
                     return Err(ContractError::Invalid(
                         "invalid v2 source lease or mixed admission batch",
+                    ));
+                }
+                let member_gap_removal = member_update
+                    .as_ref()
+                    .is_some_and(|member| member.cursor.is_empty());
+                let is_member_gap_record = |row: &PreparedBatchRecord| {
+                    row.kind == BatchRecordKind::Diagnostic
+                        && row.revision == 0
+                        && row.native_session_id.is_empty()
+                        && row.native_worker_id.is_empty()
+                        && row.native_turn_id.is_empty()
+                        && row.native_operation_id.is_empty()
+                        && member_gap_diagnostic_payload_is_valid(&row.payload_json)
+                };
+                if member_gap_removal
+                    && (records.len() != 1 || !records.first().is_some_and(is_member_gap_record))
+                {
+                    return Err(ContractError::Invalid(
+                        "member removal requires one possible source gap diagnostic",
                     ));
                 }
                 let mut seen = HashSet::new();
@@ -712,6 +736,7 @@ impl Request {
                         }
                         BatchRecordKind::Diagnostic => {
                             diagnostic_payload_is_valid(&row.payload_json)
+                                || (member_gap_removal && is_member_gap_record(row))
                         }
                     };
                     let fact_identity_valid = match row.kind {
@@ -992,7 +1017,8 @@ impl Reply {
                     OperationResult::SourceDiagnosticRead(result),
                 ) => result.diagnostic.as_ref().is_some_and(|diagnostic| {
                     !diagnostic_code(&diagnostic.code)
-                        || diagnostic.code == "possible_source_gap"
+                        || (diagnostic.code == "possible_source_gap"
+                            && diagnostic.severity != "warning")
                         || !matches!(diagnostic.severity.as_str(), "info" | "warning" | "error")
                         || diagnostic.time_ns.parse::<i64>().is_err()
                         || diagnostic
@@ -1870,6 +1896,31 @@ mod tests {
             });
         } else {
             unreachable!()
+        }
+        assert!(request.validate().is_err());
+        {
+            let Operation::AdmitBatch { records, .. } = &mut request.operation else {
+                unreachable!()
+            };
+            *records = vec![PreparedBatchRecord {
+                event_id_hash: "7".repeat(64),
+                revision: 0,
+                kind: BatchRecordKind::Diagnostic,
+                time_ns: 103,
+                payload_json: r#"{"code":"possible_source_gap","severity":"warning"}"#.into(),
+                record_digest: "6".repeat(64),
+                native_session_id: String::new(),
+                native_worker_id: String::new(),
+                native_turn_id: String::new(),
+                native_operation_id: String::new(),
+            }];
+        }
+        assert!(request.validate().is_ok());
+        {
+            let Operation::AdmitBatch { records, .. } = &mut request.operation else {
+                unreachable!()
+            };
+            records[0].payload_json = r#"{"code":"bad gap","severity":"warning"}"#.into();
         }
         assert!(request.validate().is_err());
     }

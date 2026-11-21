@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import closing
+from contextlib import closing, contextmanager, nullcontext
 from pathlib import Path
 
 from observatory.core import Store
@@ -277,8 +277,11 @@ class RustScratchAdmissionTests(unittest.TestCase):
             session_members = tuple(tuple(row) for row in db.execute(
                 "SELECT native_session_id,member_id FROM plugin_session_member_v1 "
                 "WHERE source_id=? ORDER BY native_session_id", (source_id,)))
+            source_gaps = tuple(tuple(row) for row in db.execute(
+                "SELECT native_session_id,last_record_ns FROM plugin_source_gap_invalidated_v1 "
+                "WHERE source_id=? ORDER BY native_session_id", (source_id,)))
             return (source, evidence, dirty, projection, activity, projected,
-                    member_cursors, session_members)
+                    member_cursors, session_members, source_gaps)
 
         if hasattr(store, "_connect"):
             with store._connect() as db:
@@ -2502,7 +2505,45 @@ with open(sys.argv[1], 'r+b') as stream:
             python = self.batch_source_snapshot(oracle, source_id)
             self.assertEqual(rust[0][:7] + rust[0][8:],
                              python[0][:7] + python[0][8:])
-            self.assertEqual(rust[1:], python[1:])
+            self.assertEqual(rust[1:8], python[1:8])
+            self.assertEqual(tuple(row[0] for row in rust[8]),
+                             tuple(row[0] for row in python[8]))
+
+        class CloneProjectionStore:
+            def __init__(self, path):
+                self.path = str(path)
+
+            @contextmanager
+            def _connect(self):
+                db = sqlite3.connect(self.path, timeout=10)
+                db.row_factory = sqlite3.Row
+                try:
+                    yield db
+                    db.commit()
+                except BaseException:
+                    db.rollback()
+                    raise
+                finally:
+                    db.close()
+
+            def _source_write(self):
+                return nullcontext()
+
+            def receiver_namespace(self):
+                with self._connect() as db:
+                    row = db.execute(
+                        "SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
+                    return row[0]
+
+        clone_projection_store = CloneProjectionStore(clone_path)
+
+        def mirror_projection_to_clone():
+            from observatory.plugin_projection import project_source
+            oracle_projected = project_source(oracle, source_id)
+            clone_projected = project_source(clone_projection_store, source_id)
+            self.assertEqual(oracle_projected, clone_projected,
+                             (self.batch_source_snapshot(oracle, source_id)[0],
+                              self.batch_source_snapshot(clone_path, source_id)[0]))
 
         def batch(cursor, member, checkpoint, records=()):
             return PollBatch(source_id, cursor, tuple(records), member, checkpoint)
@@ -2612,11 +2653,6 @@ with open(sys.argv[1], 'r+b') as stream:
 
         for unsupported in (
             batch("member-global-three", member_one, ""),
-            batch("member-global-three", member_one, "gap-checkpoint", ({
-                "event_id": "source-gap", "revision": 0, "kind": "diagnostic",
-                "time_ns": "107", "payload": {"code": "possible_source_gap",
-                                                   "severity": "warning"},
-            },)),
         ):
             unsupported_req = self.mixed_batch_request(
                 unsupported, rust_lease, "e" * 32, "member-global-two")
@@ -2682,28 +2718,283 @@ with open(sys.argv[1], 'r+b') as stream:
         self.apply_mixed_clone_batch(over_req, path=clone_path, success=False)
         self.assertEqual(logical_snapshot(clone_path), at_limit)
 
+        sibling_batch = batch("member-global-sibling", member_two,
+                              "file-checkpoint-two-updated", ({
+            "event_id": "sibling-life", "revision": 0, "kind": "lifecycle",
+            "time_ns": "108", "payload": {"state": "completed"},
+            "identity": {"session_id": "sibling-session"},
+        },))
+        sibling_req = self.mixed_batch_request(
+            sibling_batch, rust_lease, "9" * 32, "member-global-cap-46")
+        self.apply_mixed_clone_batch(sibling_req, path=clone_path)
+        commit_batch(oracle, python_lease, "member-global-cap-46", sibling_batch)
+        parity()
+        mirror_projection_to_clone()
+        before_gap_projection = self.batch_source_snapshot(clone_path, source_id)[3]
+        self.assertTrue(any(row[0] == "sibling-session" for row in before_gap_projection),
+                        before_gap_projection)
+        sibling_before = next(row for row in before_gap_projection
+                              if row[0] == "sibling-session")
+        gap_batch = batch("member-global-gap", member_one, "", ({
+            "event_id": "member-one-gap", "revision": 0, "kind": "diagnostic",
+            "time_ns": "109", "payload": {"code": "possible_source_gap",
+                                               "severity": "warning"},
+        },))
+        gap_req = self.mixed_batch_request(
+            gap_batch, rust_lease, "c" * 32, "member-global-sibling")
+        stale_gap = json.loads(json.dumps(gap_req))
+        stale_gap["operation"]["expected_cursor"] = "stale-member-global"
+        stale_before = logical_snapshot(clone_path)
+        self.apply_mixed_clone_batch(stale_gap, path=clone_path, success=False)
+        self.assertEqual(logical_snapshot(clone_path), stale_before)
+
+        for malformed_records in (
+            list(gap_req["operation"]["records"]) * 2,
+            list(gap_req["operation"]["records"]) + [{
+                **gap_req["operation"]["records"][0],
+                "event_id_hash": hashlib.sha256(b"extra-gap-record").hexdigest(),
+                "record_digest": hashlib.sha256(b"extra-gap-record").hexdigest(),
+                "payload_json": '{"code":"source_timeout","severity":"warning"}',
+            }],
+        ):
+            malformed = json.loads(json.dumps(gap_req))
+            malformed["request_id"] = "a" * 32
+            malformed["operation"]["records"] = malformed_records
+            malformed_before = logical_snapshot(clone_path)
+            self.apply_mixed_clone_batch(malformed, path=clone_path, success=False)
+            self.assertEqual(logical_snapshot(clone_path), malformed_before)
+
+        with closing(sqlite3.connect(clone_path)) as db:
+            db.execute(
+                "CREATE TRIGGER gap_cross_source AFTER INSERT ON plugin_source_gap_invalidated_v1 "
+                "BEGIN UPDATE plugin_source_cursor_v1 SET cursor='trigger-write' "
+                "WHERE source_id='member-trigger-target'; END")
+            db.commit()
+        trigger_before = logical_snapshot(clone_path)
+        self.assertIn("real clone admission write tables",
+                      self.apply_mixed_clone_batch(gap_req, path=clone_path, success=False))
+        self.assertEqual(logical_snapshot(clone_path), trigger_before)
+        with closing(sqlite3.connect(clone_path)) as db:
+            db.execute("DROP TRIGGER gap_cross_source")
+            db.commit()
+
+        # A late receipt constraint failure occurs after evidence, cursor and
+        # tombstone writes have begun; SQLite must roll back the whole batch.
+        failed_gap_clone = self.root / "gap-late-failure.db"
+        with closing(sqlite3.connect(clone_path)) as src, closing(sqlite3.connect(failed_gap_clone)) as dst:
+            src.backup(dst)
+        with closing(sqlite3.connect(failed_gap_clone)) as db:
+            db.execute("PRAGMA foreign_keys=OFF")
+            db.execute("ALTER TABLE storage_admission_request_v2 RENAME TO old_request_receipts")
+            db.execute("CREATE TABLE storage_admission_request_v2("
+                       "request_id TEXT PRIMARY KEY,receiver_id TEXT NOT NULL,"
+                       "request_digest TEXT NOT NULL,source_id TEXT NOT NULL,cursor TEXT NOT NULL,"
+                       "batch_digest TEXT NOT NULL,dirty_seq INTEGER NOT NULL,"
+                       "disposition TEXT NOT NULL CHECK(request_id<>'" + "c" * 32 + "'))")
+            db.execute("INSERT INTO storage_admission_request_v2 SELECT * FROM old_request_receipts")
+            db.execute("DROP TABLE old_request_receipts")
+            db.commit()
+        failure_before = logical_snapshot(failed_gap_clone)
+        self.apply_mixed_clone_batch(gap_req, path=failed_gap_clone, success=False)
+        self.assertEqual(logical_snapshot(failed_gap_clone), failure_before)
+
+        corrupt_clone = self.root / "gap-missing-owner.db"
+        with closing(sqlite3.connect(clone_path)) as src, closing(sqlite3.connect(corrupt_clone)) as dst:
+            src.backup(dst)
+        with closing(sqlite3.connect(corrupt_clone)) as db:
+            db.execute("DELETE FROM plugin_session_member_v1 WHERE source_id=? AND native_session_id='member-session'",
+                       (source_id,))
+            db.commit()
+        corrupt_before = logical_snapshot(corrupt_clone)
+        self.apply_mixed_clone_batch(gap_req, path=corrupt_clone, success=False)
+        self.assertEqual(logical_snapshot(corrupt_clone), corrupt_before)
+        ambiguous_clone = self.root / "gap-ambiguous-owner.db"
+        with closing(sqlite3.connect(clone_path)) as src, \
+                closing(sqlite3.connect(ambiguous_clone)) as dst:
+            src.backup(dst)
+        with closing(sqlite3.connect(ambiguous_clone)) as db:
+            db.execute("UPDATE plugin_session_member_v1 SET member_id='' "
+                       "WHERE source_id=? AND native_session_id='member-session'",
+                       (source_id,))
+            db.commit()
+        ambiguous_before = logical_snapshot(ambiguous_clone)
+        self.apply_mixed_clone_batch(gap_req, path=ambiguous_clone, success=False)
+        self.assertEqual(logical_snapshot(ambiguous_clone), ambiguous_before)
+
+        service_before = logical_snapshot(clone_path)
+        self.apply_activation_clone_v2(gap_req, path=clone_path, success=False)
+        self.assertEqual(logical_snapshot(clone_path), service_before)
+        self.assertEqual(self.apply_mixed_clone_batch(
+            gap_req, path=clone_path)["result"]["disposition"], "committed")
+        commit_batch(oracle, python_lease, "member-global-sibling", gap_batch)
+        parity()
+        member_cursors_after_gap = dict(self.batch_source_snapshot(clone_path, source_id)[6])
+        self.assertNotIn(member_one, member_cursors_after_gap)
+        self.assertEqual(member_cursors_after_gap[member_two], "file-checkpoint-two-updated")
+        gap_rows = self.batch_source_snapshot(clone_path, source_id)[8]
+        self.assertEqual(tuple(row[0] for row in gap_rows), ("member-session",))
+        self.assertGreaterEqual(gap_rows[0][1], 109)
+
+        # Exercise the projector's synthetic tombstone path from a durable
+        # owner+tombstone with no retained evidence, then validate read/admit.
+        with oracle._connect() as db:
+            db.execute("INSERT INTO plugin_session_member_v1(source_id,native_session_id,member_id) VALUES(?,?,?)",
+                       (source_id, "projection-only-session", member_one))
+            db.execute("INSERT INTO plugin_source_gap_invalidated_v1(source_id,native_session_id,last_record_ns) VALUES(?,?,?)",
+                       (source_id, "projection-only-session", 111))
+            db.commit()
+        with closing(sqlite3.connect(clone_path)) as db:
+            db.execute("INSERT INTO plugin_session_member_v1(source_id,native_session_id,member_id) VALUES(?,?,?)",
+                       (source_id, "projection-only-session", member_one))
+            db.execute("INSERT INTO plugin_source_gap_invalidated_v1(source_id,native_session_id,last_record_ns) VALUES(?,?,?)",
+                       (source_id, "projection-only-session", 111))
+            db.commit()
+        mirror_projection_to_clone()
+        synthetic = next(row for row in self.batch_source_snapshot(clone_path, source_id)[3]
+                         if row[0] == "projection-only-session")
+        self.assertEqual((synthetic[2], synthetic[3]), ("unknown", "source_gap"))
+        parity()
+        replay_before = logical_snapshot(clone_path)
+        self.assertEqual(self.apply_mixed_clone_batch(
+            gap_req, path=clone_path)["result"]["disposition"], "replay")
+        self.assertEqual(logical_snapshot(clone_path), replay_before)
+        conflict = json.loads(json.dumps(gap_req))
+        conflict["request_id"] = "c" * 32
+        conflict["operation"]["records"][0]["record_digest"] = "0" * 64
+        self.apply_mixed_clone_batch(conflict, path=clone_path, success=False)
+        self.assertEqual(logical_snapshot(clone_path), replay_before)
+        python_gap_diag = last_source_diagnostic(oracle, python_lease)
+        self.assertEqual(python_gap_diag, {"code": "possible_source_gap",
+                                           "severity": "warning", "time_ns": "109"})
+        read_gap = self.clone_diagnostic_read_request(rust_lease, "d" * 32)
+        read_before = logical_snapshot(clone_path)
+        rust_gap_diag = self.apply_clone_diagnostic_read(read_gap, path=clone_path)[
+            "result"]["diagnostic"]
+        self.assertEqual(rust_gap_diag, python_gap_diag)
+        self.assertEqual(logical_snapshot(clone_path), read_before)
+        mirror_projection_to_clone()
+        projected = self.batch_source_snapshot(clone_path, source_id)[3]
+        gap_session = next(row for row in projected if row[0] == "member-session")
+        sibling_after = next(row for row in projected if row[0] == "sibling-session")
+        self.assertEqual((gap_session[2], gap_session[3]), ("unknown", "source_gap"))
+        self.assertEqual(sibling_after[:6] + sibling_after[7:],
+                         sibling_before[:6] + sibling_before[7:])
+        parity()
+
+        # Reappearing under the same stable member ID preserves old tombstones;
+        # its prior session stays Unknown while a newly owned session projects.
+        reappear = batch("member-global-reappear", member_one,
+                         "file-checkpoint-reappeared", ({
+            "event_id": "member-one-reappeared", "revision": 0, "kind": "lifecycle",
+            "time_ns": "110", "payload": {"state": "started"},
+            "identity": {"session_id": "member-new-session"},
+        },))
+        reappear_req = self.mixed_batch_request(
+            reappear, rust_lease, "e" * 32, "member-global-gap")
+        self.apply_mixed_clone_batch(reappear_req, path=clone_path)
+        commit_batch(oracle, python_lease, "member-global-gap", reappear)
+        parity()
+        mirror_projection_to_clone()
+        projected = self.batch_source_snapshot(clone_path, source_id)[3]
+        self.assertEqual((next(row for row in projected if row[0] == "member-session")[2:4]),
+                         ("unknown", "source_gap"))
+        sibling_reappeared = next(row for row in projected if row[0] == "sibling-session")
+        self.assertEqual(sibling_reappeared[:6] + sibling_reappeared[7:],
+                         sibling_before[:6] + sibling_before[7:])
+        parity()
+
+        regap = batch("member-global-regap", member_one, "", ({
+            "event_id": "member-one-regap", "revision": 0, "kind": "diagnostic",
+            "time_ns": "112", "payload": {"code": "possible_source_gap",
+                                               "severity": "warning"},
+        },))
+        regap_req = self.mixed_batch_request(
+            regap, rust_lease, "f" * 32, "member-global-reappear")
+        old_gap_time = dict((row[0], row[1]) for row in
+                            self.batch_source_snapshot(clone_path, source_id)[8])["member-session"]
+        self.apply_mixed_clone_batch(regap_req, path=clone_path)
+        commit_batch(oracle, python_lease, "member-global-reappear", regap)
+        parity()
+        regap_rows = self.batch_source_snapshot(clone_path, source_id)[8]
+        regap_sessions = {row[0] for row in regap_rows}
+        self.assertTrue({"member-session", "projection-only-session",
+                         "member-new-session"}.issubset(regap_sessions))
+        self.assertGreaterEqual(dict(regap_rows)["member-session"], old_gap_time)
+        self.assertNotIn(member_one,
+                         dict(self.batch_source_snapshot(clone_path, source_id)[6]))
+        mirror_projection_to_clone()
+        regap_projection = self.batch_source_snapshot(clone_path, source_id)[3]
+        self.assertEqual((next(row for row in regap_projection
+                               if row[0] == "member-new-session")[2:4]),
+                         ("unknown", "source_gap"))
+        parity()
+
+        # Revoke uses a separate clone-policy transaction and must erase every
+        # gap/evidence/projection/owner row while preserving member cursors.
+        revoke_clone = self.root / "gap-revoke-clone.db"
+        revoke_oracle_path = self.root / "gap-revoke-oracle.db"
+        with closing(sqlite3.connect(clone_path)) as src, \
+                closing(sqlite3.connect(revoke_clone)) as dst, \
+                closing(sqlite3.connect(revoke_oracle_path)) as py_dst:
+            src.backup(dst)
+            src.backup(py_dst)
+        revoke_oracle = Store(str(revoke_oracle_path))
+        self.addCleanup(revoke_oracle.close)
+        with closing(sqlite3.connect(revoke_clone)) as db:
+            revoke_cursor, revoke_dirty = db.execute(
+                "SELECT cursor,dirty_seq FROM plugin_source_cursor_v1 WHERE source_id=?",
+                (source_id,)).fetchone()
+        revoke = self.clone_revoke_request(
+            rust_lease, cursor=revoke_cursor, dirty_seq=revoke_dirty,
+            request_id="12" * 16)
+        cursors_before_revoke = self.batch_source_snapshot(revoke_clone, source_id)[6]
+        rust_revoked = self.apply_clone_policy(revoke, path=revoke_clone)["result"]
+        set_source_capture(revoke_oracle, source_id=source_id, enabled=False)
+        revoked_snapshot = self.batch_source_snapshot(revoke_clone, source_id)
+        python_revoked_snapshot = self.batch_source_snapshot(revoke_oracle, source_id)
+        self.assertEqual(revoked_snapshot[0][:7] + revoked_snapshot[0][8:],
+                         python_revoked_snapshot[0][:7] + python_revoked_snapshot[0][8:])
+        for index in (1, 3, 4, 8):
+            self.assertEqual(revoked_snapshot[index], python_revoked_snapshot[index])
+        self.assertEqual(revoked_snapshot[1], ())
+        self.assertEqual(revoked_snapshot[3], ())
+        self.assertEqual(revoked_snapshot[4], ())
+        self.assertEqual(revoked_snapshot[7], ())
+        self.assertEqual(revoked_snapshot[8], ())
+        self.assertEqual(revoked_snapshot[6], cursors_before_revoke)
+        self.assertEqual(self.batch_binding_snapshot(revoke_clone, source_id), ())
+        self.assertFalse(rust_revoked["capture_enabled"])
+        stale_after_revoke = batch("member-global-after-revoke", member_two,
+                                   "stale-after-revoke")
+        stale_revoke_req = self.mixed_batch_request(
+            stale_after_revoke, rust_lease, "13" * 16, revoke_cursor)
+        revoke_before_stale = logical_snapshot(revoke_clone)
+        self.apply_mixed_clone_batch(stale_revoke_req, path=revoke_clone, success=False)
+        self.assertEqual(logical_snapshot(revoke_clone), revoke_before_stale)
+
         with closing(sqlite3.connect(clone_path)) as db:
             current_cursor, dirty_seq = db.execute(
                 "SELECT cursor,dirty_seq FROM plugin_source_cursor_v1 WHERE source_id=?",
                 (source_id,)).fetchone()
         disable = self.clone_capture_request(
             rust_lease, enabled=False, expected_enabled=True, cursor=current_cursor,
-            dirty_seq=dirty_seq, request_id="9" * 32)
+            dirty_seq=dirty_seq, request_id="a" * 32)
         self.apply_clone_policy(disable, path=clone_path)
         set_source_capture(oracle, source_id=source_id, enabled=False)
         self.assertEqual(self.batch_source_snapshot(clone_path, source_id)[6],
                          self.batch_source_snapshot(oracle, source_id)[6])
         self.assertEqual(self.batch_source_snapshot(clone_path, source_id)[1], ())
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id)[8], ())
         stale_batch = batch("member-global-stale", member_one, "stale-checkpoint")
         stale_request = self.mixed_batch_request(
-            stale_batch, rust_lease, "a" * 32, current_cursor)
+            stale_batch, rust_lease, "14" * 16, current_cursor)
         stale_before = logical_snapshot(clone_path)
         self.assertIn("stale or unsupported source lease",
                       self.apply_mixed_clone_batch(stale_request, path=clone_path,
                                                    success=False))
         self.assertEqual(logical_snapshot(clone_path), stale_before)
         self.apply_clone_member_cursor_read(
-            self.clone_member_cursor_read_request(rust_lease, "a" * 32),
+            self.clone_member_cursor_read_request(rust_lease, "15" * 16),
             path=clone_path, success=False)
         disabled_lease = self.apply_clone_policy(disable, path=clone_path)["result"]["lease"]
         enable = self.clone_capture_request(
@@ -2725,7 +3016,7 @@ with open(sys.argv[1], 'r+b') as stream:
             "time_ns": "106", "payload": {"output_tokens": 9},
         },))
         resume_req = self.mixed_batch_request(
-            resumed, enabled["lease"], "c" * 32, current_cursor)
+            resumed, enabled["lease"], "16" * 16, current_cursor)
         self.apply_mixed_clone_batch(resume_req, path=clone_path)
         commit_batch(oracle, python_enabled, current_cursor, resumed)
         parity()
@@ -2739,7 +3030,7 @@ with open(sys.argv[1], 'r+b') as stream:
                 (source_id,)).fetchone()
         revoke = self.clone_revoke_request(
             enabled["lease"], cursor=revoke_cursor, dirty_seq=revoke_dirty,
-            request_id="f" * 32)
+            request_id="17" * 16)
         revoked = self.apply_clone_policy(revoke, path=clone_path)["result"]
         set_source_capture(oracle, source_id=source_id, enabled=False)
         revoked_state = self.batch_source_snapshot(clone_path, source_id)
@@ -2754,7 +3045,7 @@ with open(sys.argv[1], 'r+b') as stream:
         revoked_lease["policy_epoch"] = revoked["policy_epoch"]
         reenable = self.clone_capture_request(
             revoked_lease, enabled=True, expected_enabled=False, cursor=revoke_cursor,
-            dirty_seq=revoke_dirty + 1, request_id="0" * 32)
+            dirty_seq=revoke_dirty + 1, request_id="18" * 16)
         reenabling = self.apply_clone_policy(reenable, path=clone_path)["result"]
         set_source_capture(oracle, source_id=source_id, enabled=True)
         self.assertEqual(self.batch_source_snapshot(clone_path, source_id)[1], ())

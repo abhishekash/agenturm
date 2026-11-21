@@ -477,6 +477,7 @@ struct AdmissionSnapshot {
     batch_binding_before: Option<BatchBinding>,
     member_cursors_before: Vec<(String, String)>,
     session_members_before: Vec<(String, String)>,
+    source_gaps_before: Vec<(String, i64)>,
     tables: Vec<(&'static str, &'static str, &'static str, bool)>,
 }
 
@@ -505,6 +506,7 @@ struct AdmissionReadback<'a> {
     effective_records: &'a [PreparedRecord],
     member_cursors_after: &'a [(String, String)],
     session_members_after: &'a [(String, String)],
+    source_gaps_after: &'a [(String, i64)],
 }
 
 struct MemberAdmissionPlan {
@@ -512,6 +514,8 @@ struct MemberAdmissionPlan {
     session_member_inserts: Vec<(String, String)>,
     member_cursors_after: Vec<(String, String)>,
     session_members_after: Vec<(String, String)>,
+    source_gaps_after: Vec<(String, i64)>,
+    removed_member: bool,
 }
 
 impl AdmissionSnapshot {
@@ -523,7 +527,7 @@ impl AdmissionSnapshot {
                 |row| row.get(0),
             )
             .optional()?;
-        let specs: [(&str, &str, &str, bool); 9] = [
+        let specs: [(&str, &str, &str, bool); 10] = [
             (
                 "_agenturm_fact_before_evidence",
                 "plugin_evidence_v1",
@@ -578,6 +582,12 @@ impl AdmissionSnapshot {
                 "source_id=?",
                 false,
             ),
+            (
+                "_agenturm_fact_before_source_gap",
+                "plugin_source_gap_invalidated_v1",
+                "source_id=?",
+                false,
+            ),
         ];
         let mut tables = Vec::new();
         for (snapshot, table, filter, verify_unchanged) in specs {
@@ -604,12 +614,14 @@ impl AdmissionSnapshot {
         let batch_binding_before = read_batch_binding(db, source_id)?;
         let member_cursors_before = read_member_cursor_rows(db, source_id)?;
         let session_members_before = read_session_member_rows(db, source_id)?;
+        let source_gaps_before = read_source_gap_rows(db, source_id)?;
         Ok(Self {
             evidence_count,
             dirty_marker_before,
             batch_binding_before,
             member_cursors_before,
             session_members_before,
+            source_gaps_before,
             tables,
         })
     }
@@ -724,6 +736,19 @@ fn read_session_member_rows(db: &Connection, source_id: &str) -> Result<Vec<(Str
     Ok(values)
 }
 
+fn read_source_gap_rows(db: &Connection, source_id: &str) -> Result<Vec<(String, i64)>> {
+    let mut statement = db.prepare(
+        "SELECT native_session_id,last_record_ns FROM plugin_source_gap_invalidated_v1 \
+         WHERE source_id=? ORDER BY native_session_id LIMIT 2001",
+    )?;
+    let rows = statement.query_map([source_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let values = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    if values.len() > 2000 {
+        return Err(reject("source gap invalidation capacity exceeded"));
+    }
+    Ok(values)
+}
+
 fn plan_member_admission(
     db: &Connection,
     request: &Request,
@@ -755,6 +780,8 @@ fn plan_member_admission(
             session_member_inserts: Vec::new(),
             member_cursors_after: snapshot.member_cursors_before.clone(),
             session_members_after: snapshot.session_members_before.clone(),
+            source_gaps_after: snapshot.source_gaps_before.clone(),
+            removed_member: false,
         });
     }
 
@@ -762,8 +789,173 @@ fn plan_member_admission(
         .member_update
         .as_ref()
         .expect("member update checked");
+    let removing = update.cursor.is_empty();
     let mut member_cursors: BTreeMap<String, String> =
         snapshot.member_cursors_before.iter().cloned().collect();
+    if removing {
+        if !member_cursors.contains_key(&update.member_id) {
+            let source: (String, String) = db.query_row(
+                "SELECT cursor,last_batch_digest FROM plugin_source_cursor_v1 WHERE source_id=?",
+                [&request.lease.source_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let retired_gap: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 AND kind='diagnostic' \
+                 AND member_id=?2 AND payload_json=?)",
+                params![request.lease.source_id, update.member_id, r#"{"code":"possible_source_gap","severity":"warning"}"#],
+                |row| row.get(0),
+            )?;
+            if source.0 != request.cursor || source.1 != request.batch_digest || !retired_gap {
+                return Err(reject("cannot remove an unknown discovery member"));
+            }
+            let mut replay_records = effective_records;
+            replay_records[0].member_id = update.member_id.clone();
+            return Ok(MemberAdmissionPlan {
+                effective_records: replay_records,
+                session_member_inserts: Vec::new(),
+                member_cursors_after: snapshot.member_cursors_before.clone(),
+                session_members_after: snapshot.session_members_before.clone(),
+                source_gaps_after: snapshot.source_gaps_before.clone(),
+                removed_member: false,
+            });
+        }
+        if effective_records.len() != 1
+            || effective_records[0].kind != "diagnostic"
+            || effective_records[0].revision != 0
+            || !effective_records[0].native_session_id.is_empty()
+            || !effective_records[0].native_worker_id.is_empty()
+            || !effective_records[0].native_turn_id.is_empty()
+            || !effective_records[0].native_operation_id.is_empty()
+            || !v2::member_gap_diagnostic_payload_is_valid(&effective_records[0].payload_json)
+        {
+            return Err(reject(
+                "member removal requires one possible source gap diagnostic",
+            ));
+        }
+        let owners: BTreeMap<String, String> =
+            snapshot.session_members_before.iter().cloned().collect();
+        if owners.values().any(String::is_empty) {
+            return Err(reject("member gap has ambiguous session ownership"));
+        }
+        let active: HashSet<&str> = snapshot
+            .member_cursors_before
+            .iter()
+            .map(|row| row.0.as_str())
+            .collect();
+        let mut retired = BTreeSet::new();
+        let mut gap_diagnostics = db.prepare(
+            "SELECT member_id,payload_json,native_session_id,native_worker_id,native_turn_id,native_operation_id \
+             FROM plugin_evidence_v1 WHERE source_id=? AND kind='diagnostic'",
+        )?;
+        let mut diagnostic_rows = gap_diagnostics.query([&request.lease.source_id])?;
+        while let Some(row) = diagnostic_rows.next()? {
+            let member: String = row.get(0)?;
+            let payload: String = row.get(1)?;
+            let identities = [
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ];
+            if v2::member_gap_diagnostic_payload_is_valid(&payload)
+                && !member.is_empty()
+                && identities.iter().all(String::is_empty)
+            {
+                retired.insert(member);
+            }
+        }
+        let mut evidence = db.prepare(
+            "SELECT native_session_id,member_id,admitted_ns FROM plugin_evidence_v1 \
+             WHERE source_id=? ORDER BY rowid",
+        )?;
+        let mut rows = evidence.query([&request.lease.source_id])?;
+        let mut target_times: BTreeMap<String, i64> = BTreeMap::new();
+        while let Some(row) = rows.next()? {
+            let session: String = row.get(0)?;
+            let member: String = row.get(1)?;
+            let admitted_ns: i64 = row.get(2)?;
+            if !session.is_empty() {
+                let owner = owners
+                    .get(&session)
+                    .ok_or_else(|| reject("member gap has missing session owner"))?;
+                if owner != &member || member.is_empty() {
+                    return Err(reject("member gap has conflicting session ownership"));
+                }
+                if !active.contains(member.as_str()) && !retired.contains(&member) {
+                    return Err(reject("member gap found unproven retired ownership"));
+                }
+                if member == update.member_id {
+                    target_times
+                        .entry(session)
+                        .and_modify(|time| *time = (*time).max(admitted_ns))
+                        .or_insert(admitted_ns);
+                }
+            } else if !member.is_empty()
+                && !active.contains(member.as_str())
+                && !retired.contains(&member)
+            {
+                return Err(reject("member gap found unproven retired evidence"));
+            }
+        }
+        let mut projections = db.prepare(
+            "SELECT native_session_id,last_record_ns,reason_code FROM plugin_session_projection_v1 \
+             WHERE source_id=? AND reason_code NOT IN('retention_gap','source_gap')",
+        )?;
+        let mut rows = projections.query([&request.lease.source_id])?;
+        while let Some(row) = rows.next()? {
+            let session: String = row.get(0)?;
+            let last_record_ns: i64 = row.get(1)?;
+            let owner = owners
+                .get(&session)
+                .ok_or_else(|| reject("member gap has unowned session projection"))?;
+            if owner.is_empty() || !active.contains(owner.as_str()) && !retired.contains(owner) {
+                return Err(reject("member gap has unsupported projected session owner"));
+            }
+            if owner == &update.member_id {
+                target_times
+                    .entry(session)
+                    .and_modify(|time| *time = (*time).max(last_record_ns))
+                    .or_insert(last_record_ns);
+            }
+        }
+        let mut source_gaps: BTreeMap<String, i64> =
+            snapshot.source_gaps_before.iter().cloned().collect();
+        if source_gaps.contains_key("*")
+            || source_gaps
+                .keys()
+                .any(|session| !owners.contains_key(session))
+        {
+            return Err(reject(
+                "member gap has ambiguous existing invalidation history",
+            ));
+        }
+        for (session, time) in &target_times {
+            if owners.get(session) != Some(&update.member_id) {
+                return Err(reject(
+                    "member gap target ownership or tombstone is ambiguous",
+                ));
+            }
+            source_gaps
+                .entry(session.clone())
+                .and_modify(|previous| *previous = (*previous).max(*time))
+                .or_insert(*time);
+        }
+        if source_gaps.len() > 2000 {
+            return Err(reject("source gap invalidation capacity exceeded"));
+        }
+        member_cursors.remove(&update.member_id);
+        effective_records[0].member_id = update.member_id.clone();
+        let mut after = source_gaps.into_iter().collect::<Vec<_>>();
+        after.sort();
+        return Ok(MemberAdmissionPlan {
+            effective_records,
+            session_member_inserts: Vec::new(),
+            member_cursors_after: member_cursors.into_iter().collect(),
+            session_members_after: snapshot.session_members_before.clone(),
+            source_gaps_after: after,
+            removed_member: true,
+        });
+    }
     if !member_cursors.contains_key(&update.member_id)
         && member_cursors.len() >= MAX_DISCOVERY_MEMBERS as usize
     {
@@ -820,6 +1012,8 @@ fn plan_member_admission(
         session_member_inserts,
         member_cursors_after: member_cursors.into_iter().collect(),
         session_members_after: session_members.into_iter().collect(),
+        source_gaps_after: snapshot.source_gaps_before.clone(),
+        removed_member: false,
     })
 }
 
@@ -911,6 +1105,7 @@ fn verify_fact_admission_readback(
 
     if read_member_cursor_rows(db, &request.lease.source_id)? != readback.member_cursors_after
         || read_session_member_rows(db, &request.lease.source_id)? != readback.session_members_after
+        || read_source_gap_rows(db, &request.lease.source_id)? != readback.source_gaps_after
     {
         return Err(reject(
             "member cursor or session ownership readback mismatch",
@@ -1083,6 +1278,7 @@ fn reject_real_clone_admission_triggers(db: &Connection) -> Result<()> {
             "plugin_evidence_dirty_v1",
             "plugin_session_member_v1",
             "plugin_source_member_cursor_v1",
+            "plugin_source_gap_invalidated_v1",
             "plugin_content_batch_v1",
             "plugin_content_status_v1",
             "storage_admission_request_v2",
@@ -1430,6 +1626,10 @@ fn verify_real_clone_lifecycle_commit(
 
 fn validate(request: &Request, allow_plugin_facts: bool) -> Result<()> {
     let lease = &request.lease;
+    let member_gap_removal = request
+        .member_update
+        .as_ref()
+        .is_some_and(|member| member.cursor.is_empty());
     if request.schema_version != 1
         || !identity(&lease.receiver_id)
         || !identity(&lease.plugin_id)
@@ -1448,9 +1648,23 @@ fn validate(request: &Request, allow_plugin_facts: bool) -> Result<()> {
     if request.member_update.as_ref().is_some_and(|member| {
         !allow_plugin_facts
             || !v2::member_id_is_valid(&member.member_id)
-            || !v2::member_cursor_is_valid(&member.cursor)
+            || (!member.cursor.is_empty() && !v2::member_cursor_is_valid(&member.cursor))
     }) {
         return Err(reject("invalid or unavailable member cursor update"));
+    }
+    if member_gap_removal
+        && (request.records.len() != 1
+            || request.records[0].kind != "diagnostic"
+            || request.records[0].revision != 0
+            || !request.records[0].native_session_id.is_empty()
+            || !request.records[0].native_worker_id.is_empty()
+            || !request.records[0].native_turn_id.is_empty()
+            || !request.records[0].native_operation_id.is_empty()
+            || !v2::member_gap_diagnostic_payload_is_valid(&request.records[0].payload_json))
+    {
+        return Err(reject(
+            "member removal requires one possible source gap diagnostic",
+        ));
     }
     if request.records.iter().any(|row| !row.member_id.is_empty()) {
         return Err(reject(
@@ -1469,7 +1683,10 @@ fn validate(request: &Request, allow_plugin_facts: bool) -> Result<()> {
         let payload_valid = if row.kind == "lifecycle" {
             lifecycle_payload(&row.payload_json)
         } else if row.kind == "diagnostic" {
-            allow_plugin_facts && v2::diagnostic_payload_is_valid(&row.payload_json)
+            allow_plugin_facts
+                && (v2::diagnostic_payload_is_valid(&row.payload_json)
+                    || (member_gap_removal
+                        && v2::member_gap_diagnostic_payload_is_valid(&row.payload_json)))
         } else {
             allow_plugin_facts
                 && fact_kind.is_some_and(|kind| v2::fact_payload_is_valid(kind, &row.payload_json))
@@ -1660,6 +1877,35 @@ fn validate_member_history(db: &Connection, source_id: &str) -> Result<()> {
         .iter()
         .map(|(member, _)| member.as_str())
         .collect();
+    let mut retired = HashSet::new();
+    let mut diagnostics = db.prepare(
+        "SELECT member_id,payload_json,native_session_id,native_worker_id,native_turn_id,native_operation_id \
+         FROM plugin_evidence_v1 WHERE source_id=? AND kind='diagnostic'",
+    )?;
+    let mut diagnostic_rows = diagnostics.query([source_id])?;
+    while let Some(row) = diagnostic_rows.next()? {
+        let member: String = row.get(0)?;
+        let payload: String = row.get(1)?;
+        let identities = [
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+        ];
+        if v2::member_gap_diagnostic_payload_is_valid(&payload) {
+            if !v2::member_id_is_valid(&member) || identities.iter().any(|value| !value.is_empty())
+            {
+                return Err(reject(
+                    "source gap diagnostic retirement proof is malformed",
+                ));
+            }
+            retired.insert(member);
+        } else if !v2::diagnostic_payload_is_valid(&payload)
+            || identities.iter().any(|value| !value.is_empty())
+        {
+            return Err(reject("source diagnostic history is malformed"));
+        }
+    }
 
     let owner_count: i64 = db.query_row(
         "SELECT COUNT(*) FROM plugin_session_member_v1 WHERE source_id=?",
@@ -1676,10 +1922,31 @@ fn validate_member_history(db: &Connection, source_id: &str) -> Result<()> {
     for (native_session, member) in session_members {
         if !identity(&native_session)
             || (!member.is_empty() && !v2::member_id_is_valid(&member))
-            || (!member.is_empty() && !member_ids.contains(member.as_str()))
+            || (!member.is_empty()
+                && !member_ids.contains(member.as_str())
+                && !retired.contains(&member))
             || owners.insert(native_session, member).is_some()
         {
             return Err(reject("source session-member ownership is malformed"));
+        }
+    }
+    let source_gaps = read_source_gap_rows(db, source_id)?;
+    let mut invalidated = BTreeMap::new();
+    for (session, time_ns) in source_gaps {
+        let owner = owners
+            .get(session.as_str())
+            .map(String::as_str)
+            .unwrap_or("");
+        if session == "*"
+            || !identity(&session)
+            || time_ns < 0
+            || owner.is_empty()
+            || !retired.contains(owner)
+            || invalidated.insert(session, time_ns).is_some()
+        {
+            return Err(reject(
+                "source gap tombstone history is malformed or unproven",
+            ));
         }
     }
 
@@ -1690,7 +1957,8 @@ fn validate_member_history(db: &Connection, source_id: &str) -> Result<()> {
         let native_session: String = row.get(0)?;
         let member: String = row.get(1)?;
         if !member.is_empty()
-            && (!v2::member_id_is_valid(&member) || !member_ids.contains(member.as_str()))
+            && (!v2::member_id_is_valid(&member)
+                || (!member_ids.contains(member.as_str()) && !retired.contains(&member)))
         {
             return Err(reject("source evidence has an unsupported member identity"));
         }
@@ -1706,6 +1974,24 @@ fn validate_member_history(db: &Connection, source_id: &str) -> Result<()> {
         } else if !member.is_empty() {
             return Err(reject(
                 "source evidence member has no session ownership row",
+            ));
+        }
+        if !native_session.is_empty()
+            && !member.is_empty()
+            && !member_ids.contains(member.as_str())
+            && retired.contains(&member)
+            && !invalidated.contains_key(&native_session)
+        {
+            return Err(reject(
+                "retired member evidence lacks a source gap tombstone",
+            ));
+        }
+        if !member.is_empty()
+            && !retired.contains(&member)
+            && invalidated.contains_key(&native_session)
+        {
+            return Err(reject(
+                "active member evidence overlaps a source gap tombstone",
             ));
         }
     }
@@ -1725,7 +2011,7 @@ fn validate_active_source_history(
         "SELECT EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
          OR (?6=0 AND EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1)) \
-         OR EXISTS(SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=?1) \
+         OR (?6=0 AND EXISTS(SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=?1)) \
          OR EXISTS(SELECT 1 FROM plugin_retention_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=?1) \
          OR (?6=0 AND EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1)) \
@@ -1734,12 +2020,16 @@ fn validate_active_source_history(
                      OR (?6=0 AND kind<>'lifecycle') \
                      OR (?6=1 AND kind NOT IN('lifecycle','message','tool','check','usage','diagnostic')))) \
          OR EXISTS(SELECT 1 FROM plugin_session_projection_v1 p WHERE p.source_id=?1 \
-                   AND (p.policy_epoch<>?2 OR p.source_dirty_seq>?3 OR NOT EXISTS(\
+                   AND (p.policy_epoch<>?2 OR p.source_dirty_seq>?3 OR (\
+                     NOT (p.reason_code='source_gap' AND EXISTS(\
+                       SELECT 1 FROM plugin_source_gap_invalidated_v1 g \
+                       WHERE g.source_id=p.source_id AND g.native_session_id=p.native_session_id)) \
+                     AND NOT EXISTS(\
                        SELECT 1 FROM plugin_evidence_v1 e WHERE e.source_id=p.source_id \
                          AND e.native_session_id=p.native_session_id \
                          AND e.policy_epoch=?2 AND e.revision=0 AND (?6=1 OR e.member_id='') \
                          AND ((?6=0 AND e.kind='lifecycle') OR (?6=1 AND \
-                           e.kind IN('lifecycle','message','tool','check','usage')))))) \
+                           e.kind IN('lifecycle','message','tool','check','usage'))))))) \
          OR EXISTS(SELECT 1 FROM plugin_content_batch_v1 WHERE source_id=?1 \
                    AND (cursor<>?4 OR refs_digest<>?5)) \
          OR (?4<>'' AND NOT EXISTS(SELECT 1 FROM plugin_content_batch_v1 \
@@ -1773,7 +2063,7 @@ fn validate_active_source_history(
         validate_member_history(db, source_id)?;
     }
     let mut diagnostics = db.prepare(
-        "SELECT payload_json,native_session_id,native_worker_id,native_turn_id,native_operation_id \
+        "SELECT payload_json,native_session_id,native_worker_id,native_turn_id,native_operation_id,member_id \
          FROM plugin_evidence_v1 WHERE source_id=?1 AND kind='diagnostic'",
     )?;
     let mut rows = diagnostics.query([source_id])?;
@@ -1785,8 +2075,14 @@ fn validate_active_source_history(
             row.get::<_, String>(3)?,
             row.get::<_, String>(4)?,
         ];
+        let member_id: String = row.get(5)?;
         let has_identity = identities.iter().any(|value| !value.is_empty());
-        if !allow_plugin_facts || has_identity || !v2::diagnostic_payload_is_valid(&payload) {
+        let member_gap = v2::member_gap_diagnostic_payload_is_valid(&payload)
+            && v2::member_id_is_valid(&member_id);
+        if !allow_plugin_facts
+            || has_identity
+            || (!v2::diagnostic_payload_is_valid(&payload) && !member_gap)
+        {
             return Err(reject("scratch source has unsupported diagnostic history"));
         }
     }
@@ -2027,6 +2323,8 @@ fn commit_guarded_member_mode(
         session_member_inserts: Vec::new(),
         member_cursors_after: Vec::new(),
         session_members_after: Vec::new(),
+        source_gaps_after: Vec::new(),
+        removed_member: false,
     };
     let member_plan = if let Some(snapshot) = snapshot.as_ref() {
         plan_member_admission(&transaction, request, snapshot)?
@@ -2071,6 +2369,7 @@ fn commit_guarded_member_mode(
                 effective_records: &member_plan.effective_records,
                 member_cursors_after: &member_plan.member_cursors_after,
                 session_members_after: &member_plan.session_members_after,
+                source_gaps_after: &member_plan.source_gaps_after,
             }),
         );
     }
@@ -2141,6 +2440,7 @@ fn commit_guarded_member_mode(
                 effective_records: &member_plan.effective_records,
                 member_cursors_after: &member_plan.member_cursors_after,
                 session_members_after: &member_plan.session_members_after,
+                source_gaps_after: &member_plan.source_gaps_after,
             }),
         );
     }
@@ -2281,7 +2581,13 @@ fn commit_guarded_member_mode(
         )?;
     }
     if let Some(member_update) = request.member_update.as_ref() {
-        transaction.execute(
+        if member_plan.removed_member {
+            transaction.execute(
+                "DELETE FROM plugin_source_member_cursor_v1 WHERE source_id=? AND member_id=?",
+                params![request.lease.source_id, member_update.member_id],
+            )?;
+        } else {
+            transaction.execute(
             "INSERT INTO plugin_source_member_cursor_v1(source_id,member_id,cursor) VALUES(?,?,?) \
              ON CONFLICT(source_id,member_id) DO UPDATE SET cursor=excluded.cursor",
             params![
@@ -2290,6 +2596,23 @@ fn commit_guarded_member_mode(
                 member_update.cursor
             ],
         )?;
+        }
+    }
+    for (session_id, last_record_ns) in &member_plan.source_gaps_after {
+        let previous = snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .source_gaps_before
+                .iter()
+                .find(|(existing, _)| existing == session_id)
+        });
+        if previous.is_none_or(|(_, old_time)| old_time != last_record_ns) {
+            transaction.execute(
+                "INSERT INTO plugin_source_gap_invalidated_v1(source_id,native_session_id,last_record_ns) VALUES(?,?,?) \
+                 ON CONFLICT(source_id,native_session_id) DO UPDATE SET \
+                 last_record_ns=MAX(last_record_ns,excluded.last_record_ns)",
+                params![request.lease.source_id, session_id, last_record_ns],
+            )?;
+        }
     }
     if let Some((prepared_version, prepared_digest)) = prepared_state.as_ref() {
         let binding = binding_for_request(
@@ -2379,6 +2702,7 @@ fn commit_guarded_member_mode(
             effective_records: &member_plan.effective_records,
             member_cursors_after: &member_plan.member_cursors_after,
             session_members_after: &member_plan.session_members_after,
+            source_gaps_after: &member_plan.source_gaps_after,
         }),
     )
 }
@@ -2679,6 +3003,8 @@ fn read_last_source_diagnostic(
     if !source_matches {
         return Ok(None);
     }
+    validate_member_history(db, &lease.source_id)
+        .map_err(|_| reject("stored source diagnostic is invalid"))?;
 
     let mut statement = db.prepare(
         "SELECT payload_json,time_ns,revision,member_id,native_session_id, \
@@ -2699,19 +3025,33 @@ fn read_last_source_diagnostic(
             row.get::<_, String>(6)?,
             row.get::<_, String>(7)?,
         ];
+        let gap_payload = v2::member_gap_diagnostic_payload_is_valid(&payload_json);
+        let current_member: bool = if member_id.is_empty() {
+            true
+        } else {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 \
+                 WHERE source_id=?1 AND member_id=?2 AND length(CAST(cursor AS BLOB))<=800 AND cursor<>'')",
+                params![lease.source_id, member_id],
+                |found| found.get(0),
+            )?
+        };
+        let retired_member: bool = if member_id.is_empty() {
+            false
+        } else {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 AND kind='diagnostic' \
+                 AND member_id=?2 AND payload_json=?)",
+                params![lease.source_id, member_id, r#"{"code":"possible_source_gap","severity":"warning"}"#],
+                |found| found.get(0),
+            )?
+        };
         if time_ns < 0
             || revision != 0
-            || (!member_id.is_empty()
-                && (!v2::member_id_is_valid(&member_id)
-                    || !db.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 \
-                         WHERE source_id=?1 AND member_id=?2 AND length(CAST(cursor AS BLOB))<=800 \
-                           AND cursor<>'')",
-                        params![lease.source_id, member_id],
-                        |found| found.get::<_, bool>(0),
-                    )?))
+            || (!member_id.is_empty() && !v2::member_id_is_valid(&member_id))
+            || (!member_id.is_empty() && !current_member && !retired_member)
             || identities.iter().any(|value| !value.is_empty())
-            || !v2::diagnostic_payload_is_valid(&payload_json)
+            || (!v2::diagnostic_payload_is_valid(&payload_json) && !gap_payload)
         {
             return Err(reject("stored source diagnostic is invalid"));
         }
@@ -4436,6 +4776,10 @@ fn set_source_capture_guarded_mode(
                 [&lease.source_id],
             )?;
             transaction.execute(
+                "DELETE FROM plugin_source_gap_invalidated_v1 WHERE source_id=?",
+                [&lease.source_id],
+            )?;
+            transaction.execute(
                 "DELETE FROM activity_index_v1 WHERE kind='plugin' AND owner_key=?",
                 [&lease.source_id],
             )?;
@@ -4815,14 +5159,17 @@ mod tests {
                admitted_ns INTEGER,PRIMARY KEY(source_id,event_id_hash,revision)); \
              CREATE TABLE plugin_evidence_dirty_v1(source_id TEXT PRIMARY KEY,dirty_seq INTEGER); \
              CREATE TABLE plugin_session_projection_v1(source_id TEXT,native_session_id TEXT, \
-               policy_epoch INTEGER,source_dirty_seq INTEGER); \
+               policy_epoch INTEGER,source_dirty_seq INTEGER,last_record_ns INTEGER DEFAULT 0, \
+               reason_code TEXT DEFAULT 'completed'); \
              CREATE TABLE plugin_projection_cursor_v1(source_id TEXT PRIMARY KEY,projected_seq INTEGER,policy_epoch INTEGER); \
              CREATE TABLE activity_index_v1(event_key TEXT,kind TEXT,owner_key TEXT); \
              CREATE TABLE investigation_dirty_v1(kind TEXT,owner_key TEXT); \
              CREATE TABLE plugin_source_member_cursor_v1( \
                source_id TEXT,member_id TEXT,cursor TEXT,PRIMARY KEY(source_id,member_id)); \
              CREATE TABLE plugin_content_v1(source_id TEXT); \
-             CREATE TABLE plugin_source_gap_invalidated_v1(source_id TEXT); \
+             CREATE TABLE plugin_source_gap_invalidated_v1( \
+               source_id TEXT NOT NULL,native_session_id TEXT NOT NULL,last_record_ns INTEGER NOT NULL, \
+               PRIMARY KEY(source_id,native_session_id)); \
              CREATE TABLE plugin_retention_v1(source_id TEXT); \
              CREATE TABLE plugin_retention_invalidated_v1(source_id TEXT); \
              CREATE TABLE plugin_session_member_v1( \
@@ -5261,7 +5608,7 @@ mod tests {
         let first = request("next", "", &[(&event_hash, &event_digest)]);
         commit(&mut db, &first).unwrap();
         db.execute(
-            "INSERT INTO plugin_session_projection_v1 VALUES('source-one','native-one',1,1)",
+            "INSERT INTO plugin_session_projection_v1(source_id,native_session_id,policy_epoch,source_dirty_seq) VALUES('source-one','native-one',1,1)",
             [],
         )
         .unwrap();
@@ -5475,7 +5822,7 @@ mod tests {
         let mut db = fixture();
         commit(&mut db, &request("next", "", &[])).unwrap();
         db.execute(
-            "INSERT INTO plugin_session_projection_v1 VALUES('source-one','native-one',1,0)",
+                "INSERT INTO plugin_session_projection_v1(source_id,native_session_id,policy_epoch,source_dirty_seq) VALUES('source-one','native-one',1,0)",
             [],
         )
         .unwrap();
@@ -5842,7 +6189,7 @@ mod tests {
             ),
             (
                 "plugin_source_gap_invalidated_v1",
-                "INSERT INTO plugin_source_gap_invalidated_v1 VALUES('source-one')",
+                "INSERT INTO plugin_source_gap_invalidated_v1 VALUES('source-one','session-one',0)",
                 "unsupported",
             ),
             (
@@ -7425,7 +7772,7 @@ mod tests {
         let digest = "2".repeat(64);
         commit(&mut db, &request("next", "", &[(&event_hash, &digest)])).unwrap();
         db.execute(
-            "INSERT INTO plugin_session_projection_v1 VALUES('source-one','native-one',1,1)",
+            "INSERT INTO plugin_session_projection_v1(source_id,native_session_id,policy_epoch,source_dirty_seq) VALUES('source-one','native-one',1,1)",
             [],
         )
         .unwrap();
@@ -7826,7 +8173,7 @@ mod tests {
                     .unwrap(),
                 "gap" => db
                     .execute(
-                        "INSERT INTO plugin_source_gap_invalidated_v1 VALUES('source-one')",
+                        "INSERT INTO plugin_source_gap_invalidated_v1 VALUES('source-one','session-one',0)",
                         [],
                     )
                     .unwrap(),
