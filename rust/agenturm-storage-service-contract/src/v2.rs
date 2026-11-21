@@ -1,4 +1,4 @@
-//! Data-only v2 contract for one host-prepared, metadata-only lifecycle batch.
+//! Data-only v2 contract for host-prepared, content-free plugin facts.
 //!
 //! This module does not read sockets or write SQLite. Digests in a request are
 //! untrusted assertions: only a future independent service writer can check
@@ -41,6 +41,13 @@ pub enum Operation {
         batch_digest: String,
         records: Vec<PreparedLifecycle>,
     },
+    AdmitFacts {
+        lease: SourceLease,
+        expected_cursor: String,
+        cursor: String,
+        batch_digest: String,
+        records: Vec<PreparedFact>,
+    },
     RevokeSource {
         lease: SourceLease,
         cursor: String,
@@ -80,6 +87,42 @@ pub struct PreparedLifecycle {
     pub native_worker_id: String,
     pub native_turn_id: String,
     pub native_operation_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedFact {
+    pub event_id_hash: String,
+    pub revision: i64,
+    pub kind: FactKind,
+    pub time_ns: i64,
+    /// Canonical, content-free JSON validated again by the storage service.
+    pub payload_json: String,
+    pub record_digest: String,
+    pub native_session_id: String,
+    pub native_worker_id: String,
+    pub native_turn_id: String,
+    pub native_operation_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FactKind {
+    Message,
+    Tool,
+    Check,
+    Usage,
+}
+
+impl FactKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Tool => "tool",
+            Self::Check => "check",
+            Self::Usage => "usage",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -124,6 +167,7 @@ pub struct Reply {
 pub enum OperationResult {
     SourceActivated(SourceActivatedResult),
     LifecycleAdmission(AdmissionResult),
+    FactAdmission(AdmissionResult),
     SourceRevoked(SourceRevokedResult),
     SourceCaptureSet(SourceCaptureSetResult),
 }
@@ -233,6 +277,64 @@ fn payload(raw: &str) -> bool {
     };
     sorted_json(&value).is_ok_and(|canonical| canonical == raw.as_bytes())
         && serde_json::to_value(typed).is_ok_and(|roundtrip| roundtrip == value)
+}
+
+pub fn fact_payload_is_valid(kind: FactKind, raw: &str) -> bool {
+    if raw.len() > 4096 {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let valid = match kind {
+        FactKind::Message => {
+            object.len() == 1
+                && object
+                    .get("role")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|role| matches!(role, "user" | "assistant"))
+        }
+        FactKind::Tool | FactKind::Check => {
+            let category = object.get("category").and_then(serde_json::Value::as_str);
+            let result = object.get("result").and_then(serde_json::Value::as_str);
+            object.len() == 2
+                && match kind {
+                    FactKind::Tool => {
+                        category.is_some_and(|value| {
+                            matches!(value, "shell" | "file" | "mcp" | "other")
+                        }) && result.is_some_and(|value| {
+                            matches!(value, "started" | "succeeded" | "failed" | "denied")
+                        })
+                    }
+                    FactKind::Check => {
+                        category.is_some_and(|value| {
+                            matches!(value, "test" | "lint" | "build" | "review" | "other")
+                        }) && result.is_some_and(|value| {
+                            matches!(value, "passed" | "failed" | "skipped" | "unknown")
+                        })
+                    }
+                    _ => false,
+                }
+        }
+        FactKind::Usage => {
+            !object.is_empty()
+                && object.len() <= 5
+                && object.iter().all(|(key, value)| {
+                    matches!(
+                        key.as_str(),
+                        "input_tokens"
+                            | "output_tokens"
+                            | "cache_read_tokens"
+                            | "cache_write_tokens"
+                            | "total_tokens"
+                    ) && value.as_i64().is_some_and(|number| number >= 0)
+                })
+        }
+    };
+    valid && sorted_json(&value).is_ok_and(|canonical| canonical == raw.as_bytes())
 }
 
 fn sorted_json(value: &serde_json::Value) -> Result<Vec<u8>> {
@@ -361,6 +463,61 @@ impl Request {
                     {
                         return Err(ContractError::Invalid(
                             "unsupported v2 prepared lifecycle evidence",
+                        ));
+                    }
+                }
+            }
+            Operation::AdmitFacts {
+                lease,
+                expected_cursor,
+                cursor: next_cursor,
+                batch_digest,
+                records,
+            } => {
+                if lease.receiver_id != self.receiver_id
+                    || !identity(&lease.plugin_id, 256)
+                    || !identity(&lease.source_id, 256)
+                    || !digest(&lease.generation, 32)
+                    || lease.epoch <= 0
+                    || lease.policy_epoch <= 0
+                    || !cursor(expected_cursor)
+                    || !cursor(next_cursor)
+                    || !digest(batch_digest, 32)
+                    || records.is_empty()
+                    || records.len() > MAX_RECORDS
+                {
+                    return Err(ContractError::Invalid(
+                        "invalid v2 source lease or fact batch",
+                    ));
+                }
+                let mut seen = HashSet::new();
+                for row in records {
+                    let identity_fields = [
+                        &row.native_session_id,
+                        &row.native_worker_id,
+                        &row.native_turn_id,
+                        &row.native_operation_id,
+                    ];
+                    let identity_valid = identity_fields
+                        .into_iter()
+                        .all(|field| field.is_empty() || identity(field, 256));
+                    let has_identity = identity_fields.iter().any(|field| !field.is_empty());
+                    if !digest(&row.event_id_hash, 32)
+                        || !seen.insert(row.event_id_hash.as_str())
+                        || row.revision != 0
+                        || row.time_ns < 0
+                        || !digest(&row.record_digest, 32)
+                        || row.payload_json.len() > 4096
+                        || !identity_valid
+                        || !fact_payload_is_valid(row.kind, &row.payload_json)
+                        || (row.kind != FactKind::Usage && row.native_session_id.is_empty())
+                        || (row.kind == FactKind::Usage
+                            && has_identity
+                            && row.native_session_id.is_empty())
+                        || (row.kind != FactKind::Tool && !row.native_operation_id.is_empty())
+                    {
+                        return Err(ContractError::Invalid(
+                            "unsupported v2 prepared plugin fact",
                         ));
                     }
                 }
@@ -501,6 +658,19 @@ impl Reply {
                             && (!records.is_empty() || cursor != expected_cursor)
                 }
                 (
+                    Operation::AdmitFacts {
+                        cursor,
+                        batch_digest,
+                        ..
+                    },
+                    OperationResult::FactAdmission(result),
+                ) => {
+                    result.cursor != *cursor
+                        || result.batch_digest != *batch_digest
+                        || result.dirty_seq < 0
+                        || result.disposition == Disposition::Idle
+                }
+                (
                     Operation::RevokeSource {
                         cursor,
                         lease,
@@ -579,6 +749,76 @@ mod tests {
         let request = Request::from_json(&serde_json::to_vec(&value["request"]).unwrap()).unwrap();
         let digest = value["request_digest"].as_str().unwrap().to_owned();
         (request, digest)
+    }
+
+    fn facts_fixture() -> Request {
+        let lease = SourceLease {
+            receiver_id: "receiver-one".into(),
+            plugin_id: "fixture.plugin".into(),
+            source_id: "source-one".into(),
+            generation: "a".repeat(64),
+            epoch: 7,
+            policy_epoch: 1,
+        };
+        let records = [
+            (
+                FactKind::Message,
+                "{\"role\":\"user\"}",
+                "session-one",
+                "",
+                "",
+            ),
+            (
+                FactKind::Tool,
+                "{\"category\":\"mcp\",\"result\":\"succeeded\"}",
+                "session-one",
+                "turn-one",
+                "operation-one",
+            ),
+            (
+                FactKind::Check,
+                "{\"category\":\"test\",\"result\":\"passed\"}",
+                "session-one",
+                "",
+                "",
+            ),
+            (
+                FactKind::Usage,
+                "{\"input_tokens\":12,\"total_tokens\":12}",
+                "",
+                "",
+                "",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(
+            |(index, (kind, payload_json, session, turn, operation))| PreparedFact {
+                event_id_hash: format!("{:x}", index + 1).repeat(64),
+                revision: 0,
+                kind,
+                time_ns: 100 + index as i64,
+                payload_json: payload_json.to_owned(),
+                record_digest: format!("{:x}", index + 5).repeat(64),
+                native_session_id: session.to_owned(),
+                native_worker_id: String::new(),
+                native_turn_id: turn.to_owned(),
+                native_operation_id: operation.to_owned(),
+            },
+        )
+        .collect();
+        Request {
+            version: VERSION,
+            request_id: "b".repeat(32),
+            receiver_id: lease.receiver_id.clone(),
+            operation: Operation::AdmitFacts {
+                lease,
+                expected_cursor: String::new(),
+                cursor: "facts-one".into(),
+                batch_digest: "c".repeat(64),
+                records,
+            },
+        }
     }
 
     #[test]
@@ -686,6 +926,91 @@ mod tests {
         value["operation"]["lease"]["receiver_id"] = json!("receiver-one");
         value["operation"]["lease"]["generation"] = json!("A".repeat(64));
         assert!(Request::from_json(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn fact_admission_matches_content_free_python_metadata_rules() {
+        let request = facts_fixture();
+        assert!(request.validate().is_ok());
+        let json = request.to_json().unwrap();
+        assert_eq!(Request::from_json(&json).unwrap(), request);
+        let reply = Reply {
+            version: VERSION,
+            request_id: request.request_id.clone(),
+            receiver_id: request.receiver_id.clone(),
+            request_digest: request.replay_identity().unwrap().digest,
+            result: OperationResult::FactAdmission(AdmissionResult {
+                disposition: Disposition::Committed,
+                cursor: "facts-one".into(),
+                batch_digest: "c".repeat(64),
+                dirty_seq: 1,
+            }),
+        };
+        assert!(Reply::from_json(&reply.to_json(&request).unwrap(), &request).is_ok());
+
+        let mut invalid = request.clone();
+        let Operation::AdmitFacts { records, .. } = &mut invalid.operation else {
+            unreachable!()
+        };
+        records[0].payload_json = "{\"role\":\"system\"}".into();
+        assert!(invalid.validate().is_err());
+
+        let mut invalid = request.clone();
+        let Operation::AdmitFacts { records, .. } = &mut invalid.operation else {
+            unreachable!()
+        };
+        records[1].native_operation_id.clear();
+        records[1].native_session_id.clear();
+        assert!(invalid.validate().is_err());
+
+        let mut invalid = request.clone();
+        let Operation::AdmitFacts { records, .. } = &mut invalid.operation else {
+            unreachable!()
+        };
+        records[3].payload_json = "{\"input_tokens\":true}".into();
+        assert!(invalid.validate().is_err());
+
+        let mut valid_usage_identity = request;
+        let Operation::AdmitFacts { records, .. } = &mut valid_usage_identity.operation else {
+            unreachable!()
+        };
+        records[3].native_session_id = "session-one".into();
+        records[3].native_worker_id = "worker-one".into();
+        assert!(valid_usage_identity.validate().is_ok());
+    }
+
+    #[test]
+    fn fact_admission_enforces_exact_cursor_record_and_frame_bounds() {
+        let mut request = facts_fixture();
+        if let Operation::AdmitFacts {
+            cursor, records, ..
+        } = &mut request.operation
+        {
+            *cursor = "c".repeat(MAX_CURSOR_CHARS);
+            records.resize(48, records[0].clone());
+            for (index, row) in records.iter_mut().enumerate() {
+                row.event_id_hash = format!("{:064x}", index + 1);
+                row.record_digest = format!("{:064x}", index + 100);
+            }
+        }
+        assert!(request.validate().is_ok());
+        if let Operation::AdmitFacts { cursor, .. } = &mut request.operation {
+            *cursor = "c".repeat(MAX_CURSOR_CHARS + 1);
+        }
+        assert!(request.validate().is_err());
+        if let Operation::AdmitFacts {
+            cursor, records, ..
+        } = &mut request.operation
+        {
+            *cursor = "c".repeat(MAX_CURSOR_CHARS);
+            records.push(records[0].clone());
+        }
+        assert!(request.validate().is_err());
+        let mut oversized = facts_fixture();
+        if let Operation::AdmitFacts { cursor, .. } = &mut oversized.operation {
+            *cursor = "c".repeat(MAX_FRAME_BYTES);
+        }
+        assert!(oversized.to_json().is_err());
     }
 
     #[test]

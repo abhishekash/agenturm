@@ -60,13 +60,33 @@ def new_batch(source_id: str, cursor: str):
     return PollBatch(source_id=source_id, cursor=cursor, records=records)
 
 
-def request_for(lease: dict, batch, request_id: str, expected_cursor: str) -> dict:
+def new_fact_batch(source_id: str, cursor: str, suffix: str = "one"):
+    from observatory.plugin_wire import PollBatch
+    records = (
+        {"event_id": f"{suffix}-message", "revision": 0, "kind": "message",
+         "time_ns": "100", "payload": {"role": "assistant"},
+         "identity": {"session_id": "native-session"}},
+        {"event_id": f"{suffix}-tool", "revision": 0, "kind": "tool",
+         "time_ns": "110", "payload": {"category": "shell", "result": "started"},
+         "identity": {"session_id": "native-session", "turn_id": "turn-one",
+                      "operation_id": "operation-one"}},
+        {"event_id": f"{suffix}-check", "revision": 0, "kind": "check",
+         "time_ns": "120", "payload": {"category": "test", "result": "passed"},
+         "identity": {"session_id": "native-session"}},
+        {"event_id": f"{suffix}-usage", "revision": 0, "kind": "usage",
+         "time_ns": "130", "payload": {"input_tokens": 7, "total_tokens": 7}},
+    )
+    return PollBatch(source_id=source_id, cursor=cursor, records=records)
+
+
+def request_for(lease: dict, batch, request_id: str, expected_cursor: str,
+                *, fact_kinds: bool = False) -> dict:
     from observatory.plugin_admission import _validated
     digest, rows, _ = _validated(batch, lease["source_id"])
     records = [{
         "event_id_hash": row[1],
         "revision": row[2],
-        "kind": "lifecycle",
+        "kind": row[3] if fact_kinds else "lifecycle",
         "time_ns": row[4],
         "payload_json": row[5],
         "record_digest": row[6],
@@ -79,7 +99,8 @@ def request_for(lease: dict, batch, request_id: str, expected_cursor: str) -> di
                     ("receiver_id", "plugin_id", "source_id", "generation", "epoch", "policy_epoch")}
     return {"version": 2, "request_id": request_id,
             "receiver_id": lease["receiver_id"],
-            "operation": {"op": "admit_lifecycle", "lease": stable_lease,
+            "operation": {"op": "admit_facts" if fact_kinds else "admit_lifecycle",
+                          "lease": stable_lease,
                           "expected_cursor": expected_cursor, "cursor": batch.cursor,
                           "batch_digest": digest, "records": records}}
 
@@ -122,6 +143,8 @@ def main(binary: Path) -> None:
         for source_id in ("bad-batch-source", "bad-status-source"):
             activate_source(original, plugin_id="fixture.plugin", source_id=source_id,
                             generation="e" * 64)
+        activate_source(original, plugin_id="fixture.plugin", source_id="facts-source",
+                        generation="f" * 64)
         with original._connect() as db:
             db.execute("INSERT INTO plugin_reference_owner_v1 VALUES('owned-source','pi-content')")
         original.close()
@@ -156,6 +179,12 @@ def main(binary: Path) -> None:
         # cursor, and dirty state; provider ownership remains a separate gate.
         python_result = commit_batch(oracle_store, py_lease, "", batch)
         check(python_result == "cursor-one", "Python oracle did not commit cursor")
+        py_facts_lease = activate_source(oracle_store, plugin_id="fixture.plugin",
+                                         source_id="facts-source", generation="f" * 64)
+        facts_batch = new_fact_batch("facts-source", "facts-cursor-one")
+        python_facts_result = commit_batch(oracle_store, py_facts_lease, "", facts_batch)
+        check(python_facts_result == "facts-cursor-one",
+              "Python mixed-fact oracle did not commit cursor")
         oracle_store.close()
 
         # The canonical input, clone, and transport tree are separately pinned.
@@ -199,6 +228,56 @@ def main(binary: Path) -> None:
                   activated["result"]["disposition"] == "committed",
                   "Rust source activation failed")
             lease = activated["result"]["lease"]
+
+            facts_activation = {
+                "version": 2, "request_id": "6" * 32, "receiver_id": receiver,
+                "operation": {"op": "activate_source", "plugin_id": "fixture.plugin",
+                              "source_id": "facts-source", "generation": "f" * 64},
+            }
+            activation_path.write_text(json.dumps(facts_activation))
+            facts_activated = run_client(activation_path, socket_path, uid=client_uid,
+                                         gid=client_gid, reply_path=reply_path)
+            check(facts_activated is not None and
+                  facts_activated["result"]["disposition"] == "committed",
+                  "Rust fact source activation failed")
+            facts_lease = facts_activated["result"]["lease"]
+            facts_request = request_for(
+                facts_lease, facts_batch, "7" * 32, "", fact_kinds=True)
+            facts_request_path = root / "admit-facts.json"
+            facts_request_path.write_text(json.dumps(facts_request))
+            facts_request_path.chmod(0o644)
+
+            with closing(sqlite3.connect(clone)) as db:
+                facts_before_invalid = db.execute(
+                    "SELECT cursor,dirty_seq,policy_epoch,capture_enabled,content_fingerprint "
+                    "FROM plugin_source_cursor_v1 WHERE source_id='facts-source'").fetchone()
+
+            wrong_receiver = dict(facts_request)
+            wrong_receiver["request_id"] = "8" * 32
+            wrong_receiver["receiver_id"] = "wrong-receiver"
+            wrong_receiver_path = root / "wrong-facts-receiver.json"
+            wrong_receiver_path.write_text(json.dumps(wrong_receiver))
+            wrong_receiver_path.chmod(0o644)
+            run_client(wrong_receiver_path, socket_path, uid=client_uid,
+                       gid=client_gid, reject=True)
+
+            wrong_source = json.loads(json.dumps(facts_request))
+            wrong_source["request_id"] = "9" * 32
+            wrong_source["operation"]["lease"]["source_id"] = "missing-source"
+            wrong_source_path = root / "wrong-facts-source.json"
+            wrong_source_path.write_text(json.dumps(wrong_source))
+            wrong_source_path.chmod(0o644)
+            run_client(wrong_source_path, socket_path, uid=client_uid,
+                       gid=client_gid, reject=True)
+            with closing(sqlite3.connect(clone)) as db:
+                facts_after_invalid = db.execute(
+                    "SELECT cursor,dirty_seq,policy_epoch,capture_enabled,content_fingerprint "
+                    "FROM plugin_source_cursor_v1 WHERE source_id='facts-source'").fetchone()
+                missing_source = db.execute(
+                    "SELECT COUNT(*) FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='missing-source'").fetchone()[0]
+                check(facts_after_invalid == facts_before_invalid and missing_source == 0,
+                      "identity mismatch changed real-clone source state")
 
             def existing_lease(source_id: str) -> dict:
                 with closing(sqlite3.connect(clone)) as db:
@@ -328,6 +407,73 @@ def main(binary: Path) -> None:
             check(replay["result"]["disposition"] == "replay",
                   "same-process admission retry was not a replay")
 
+            # A late conflict on the second fact must roll back the first
+            # insert, cursor, dirty marker and shared request receipt.
+            records = facts_request["operation"]["records"]
+            first_fact_hash = records[0]["event_id_hash"]
+            conflicting_fact = records[1]
+            with closing(sqlite3.connect(clone)) as db:
+                db.execute(
+                    "INSERT INTO plugin_evidence_v1 "
+                    "(source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest,"
+                    "native_session_id,native_worker_id,native_turn_id,native_operation_id,"
+                    "member_id,policy_epoch,admitted_ns) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("facts-source", conflicting_fact["event_id_hash"],
+                     conflicting_fact["revision"], conflicting_fact["kind"],
+                     conflicting_fact["time_ns"], conflicting_fact["payload_json"],
+                     "0" * 64, conflicting_fact["native_session_id"],
+                     conflicting_fact["native_worker_id"], conflicting_fact["native_turn_id"],
+                     conflicting_fact["native_operation_id"], "", facts_lease["policy_epoch"], 1),
+                )
+                db.commit()
+            run_client(facts_request_path, socket_path, uid=client_uid,
+                       gid=client_gid, reject=True)
+            with closing(sqlite3.connect(clone)) as db:
+                facts_cursor = db.execute(
+                    "SELECT cursor FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='facts-source'").fetchone()[0]
+                facts_count = db.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id='facts-source'").fetchone()[0]
+                first_fact_count = db.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 "
+                    "WHERE source_id='facts-source' AND event_id_hash=?",
+                    (first_fact_hash,)).fetchone()[0]
+                facts_receipts = db.execute(
+                    "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+                    (facts_request["request_id"],)).fetchone()[0]
+                check((facts_cursor, facts_count, first_fact_count, facts_receipts) == ("", 1, 0, 0),
+                      "late second-fact conflict did not roll back the first insert")
+                removed = db.execute(
+                    "DELETE FROM plugin_evidence_v1 WHERE source_id='facts-source' "
+                    "AND event_id_hash=? AND record_digest=?",
+                    (conflicting_fact["event_id_hash"], "0" * 64),
+                ).rowcount
+                check(removed == 1, "could not remove the fixture's conflicting seed row")
+                db.commit()
+
+            run_client(facts_request_path, socket_path, uid=client_uid, gid=client_gid,
+                       drop_reply=True)
+            deadline = time.monotonic() + 5
+            while True:
+                with closing(sqlite3.connect(clone)) as db:
+                    facts_cursor = db.execute(
+                        "SELECT cursor FROM plugin_source_cursor_v1 "
+                        "WHERE source_id='facts-source'").fetchone()[0]
+                    facts_receipt_count = db.execute(
+                        "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+                        (facts_request["request_id"],)).fetchone()[0]
+                if facts_cursor == "facts-cursor-one" and facts_receipt_count == 1:
+                    break
+                check(time.monotonic() < deadline and service.poll() is None,
+                      "lost fact ACK did not durably commit cursor and receipt")
+                time.sleep(0.02)
+            facts_replay = run_client(
+                facts_request_path, socket_path, uid=client_uid, gid=client_gid,
+                reply_path=admit_reply_path)
+            check(facts_replay["result"]["kind"] == "fact_admission"
+                  and facts_replay["result"]["disposition"] == "replay",
+                  "same-process generic fact replay failed")
+
             service.send_signal(signal.SIGTERM)
             _, stderr = service.communicate(timeout=5)
             check(service.returncode == 0, f"service shutdown failed: {stderr}")
@@ -336,6 +482,12 @@ def main(binary: Path) -> None:
                                 reply_path=admit_reply_path)
             check(replay["result"]["disposition"] == "replay",
                   "restart admission replay was not durable")
+            facts_replay = run_client(
+                facts_request_path, socket_path, uid=client_uid, gid=client_gid,
+                reply_path=admit_reply_path)
+            check(facts_replay["result"]["kind"] == "fact_admission"
+                  and facts_replay["result"]["disposition"] == "replay",
+                  "restart generic fact replay was not durable")
 
             with closing(sqlite3.connect(clone)) as db, closing(sqlite3.connect(oracle)) as py:
                 rust_state = db.execute(
@@ -394,12 +546,98 @@ def main(binary: Path) -> None:
                                     reply_path=client_results / "long-admit-reply.json")
             check(long_reply["result"]["cursor"] == long_cursor,
                   "800-byte cursor did not round-trip through service reply")
-            with closing(sqlite3.connect(clone)) as db:
+            with closing(sqlite3.connect(clone)) as db, closing(sqlite3.connect(oracle)) as py:
                 stored_long_cursor = db.execute(
                     "SELECT cursor FROM plugin_source_cursor_v1 WHERE source_id='long-source'"
                 ).fetchone()[0]
                 check(stored_long_cursor == long_cursor,
                       "800-byte cursor was not stored exactly")
+
+                facts_rust_state = db.execute(
+                    "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                    "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='facts-source'").fetchone()
+                facts_py_state = py.execute(
+                    "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                    "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='facts-source'").fetchone()
+                check(facts_rust_state == facts_py_state,
+                      "Rust mixed-fact cursor/policy state differs from Python")
+                facts_rust_rows = db.execute(
+                    f"SELECT {projection} FROM plugin_evidence_v1 WHERE source_id=? "
+                    "ORDER BY event_id_hash,revision", ("facts-source",)).fetchall()
+                facts_py_rows = py.execute(
+                    f"SELECT {projection} FROM plugin_evidence_v1 WHERE source_id=? "
+                    "ORDER BY event_id_hash,revision", ("facts-source",)).fetchall()
+                check(facts_rust_rows == facts_py_rows,
+                      "Rust message/tool/check/usage facts differ from Python Store")
+                check(len(facts_rust_rows) == 4,
+                      "mixed-fact batch did not admit all four fact kinds")
+                facts_dirty = db.execute(
+                    "SELECT dirty_seq FROM plugin_evidence_dirty_v1 "
+                    "WHERE source_id='facts-source'").fetchone()
+                facts_py_dirty = py.execute(
+                    "SELECT dirty_seq FROM plugin_evidence_dirty_v1 "
+                    "WHERE source_id='facts-source'").fetchone()
+                check(facts_dirty == facts_py_dirty,
+                      "Rust fact dirty sequence differs from Python")
+                facts_content_batch = db.execute(
+                    "SELECT cursor,refs_digest FROM plugin_content_batch_v1 "
+                    "WHERE source_id='facts-source'").fetchone()
+                facts_py_content_batch = py.execute(
+                    "SELECT cursor,refs_digest FROM plugin_content_batch_v1 "
+                    "WHERE source_id='facts-source'").fetchone()
+                check(facts_content_batch == facts_py_content_batch,
+                      "Rust empty-content batch receipt differs from Python")
+                facts_content_status = db.execute(
+                    "SELECT cursor,reason,refs_count,policy_epoch "
+                    "FROM plugin_content_status_v1 WHERE source_id='facts-source'").fetchone()
+                facts_py_content_status = py.execute(
+                    "SELECT cursor,reason,refs_count,policy_epoch "
+                    "FROM plugin_content_status_v1 WHERE source_id='facts-source'").fetchone()
+                check(facts_content_status == facts_py_content_status,
+                      "Rust content status differs from Python")
+                facts_receipt_count = db.execute(
+                    "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+                    (facts_request["request_id"],)).fetchone()[0]
+                check(facts_receipt_count == 1,
+                      "fact replay receipt was duplicated")
+
+            marker_batch = new_fact_batch(
+                "facts-source", "facts-cursor-two", suffix="marker")
+            marker_request = request_for(
+                facts_lease, marker_batch, "b" * 32,
+                "facts-cursor-one", fact_kinds=True)
+            marker_path = root / "marker-facts.json"
+            marker_path.write_text(json.dumps(marker_request))
+            marker_path.chmod(0o644)
+            with closing(sqlite3.connect(clone)) as db:
+                db.execute(
+                    "CREATE TRIGGER delete_clone_marker_during_fact AFTER INSERT "
+                    "ON plugin_evidence_v1 WHEN NEW.source_id='facts-source' "
+                    "BEGIN DELETE FROM schema_meta "
+                    "WHERE key='storage_activation_clone_v1'; END")
+                db.commit()
+            run_client(marker_path, socket_path, uid=client_uid,
+                       gid=client_gid, reject=True)
+            with closing(sqlite3.connect(clone)) as db:
+                marker_cursor = db.execute(
+                    "SELECT cursor FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='facts-source'").fetchone()[0]
+                marker_evidence = db.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 "
+                    "WHERE source_id='facts-source'").fetchone()[0]
+                marker_receipt = db.execute(
+                    "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+                    (marker_request["request_id"],)).fetchone()[0]
+                clone_marker = db.execute(
+                    "SELECT value FROM schema_meta "
+                    "WHERE key='storage_activation_clone_v1'").fetchone()
+                check((marker_cursor, marker_evidence, marker_receipt, clone_marker) ==
+                      ("facts-cursor-one", 4, 0, ("enabled",)),
+                      "marker-changing trigger was not rejected before fact writes")
+                db.execute("DROP TRIGGER delete_clone_marker_during_fact")
+                db.commit()
 
             # Revoke through Python against the clone while the Rust service is
             # idle, then prove the previously issued Rust lease is stale. The
@@ -433,6 +671,40 @@ def main(binary: Path) -> None:
                 check((after_stale, after_evidence) == (before_stale, before_evidence),
                       "stale lease admission changed revoked source state")
 
+            stale_facts_batch = new_fact_batch(
+                "facts-source", "facts-cursor-two", suffix="two")
+            stale_facts_request = request_for(
+                facts_lease, stale_facts_batch, "a" * 32,
+                "facts-cursor-one", fact_kinds=True)
+            stale_facts_path = root / "stale-facts.json"
+            stale_facts_path.write_text(json.dumps(stale_facts_request))
+            stale_facts_path.chmod(0o644)
+            clone_store = Store(clone)
+            set_source_capture(clone_store, source_id="facts-source", enabled=False)
+            clone_store.close()
+            oracle_store = Store(oracle)
+            set_source_capture(oracle_store, source_id="facts-source", enabled=False)
+            oracle_store.close()
+            with closing(sqlite3.connect(clone)) as db:
+                facts_before_stale = db.execute(
+                    "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                    "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='facts-source'").fetchone()
+                facts_evidence_before_stale = db.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id='facts-source'").fetchone()[0]
+            run_client(stale_facts_path, socket_path, uid=client_uid,
+                       gid=client_gid, reject=True)
+            with closing(sqlite3.connect(clone)) as db:
+                facts_after_stale = db.execute(
+                    "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                    "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='facts-source'").fetchone()
+                facts_evidence_after_stale = db.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id='facts-source'").fetchone()[0]
+                check((facts_after_stale, facts_evidence_after_stale) ==
+                      (facts_before_stale, facts_evidence_before_stale),
+                      "stale fact lease changed revoked source state")
+
             with closing(sqlite3.connect(clone)) as db, closing(sqlite3.connect(oracle)) as py:
                 rust_state = db.execute(
                     "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
@@ -449,11 +721,55 @@ def main(binary: Path) -> None:
                 py_count = py.execute(
                     "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id='batch-source'").fetchone()[0]
                 check(rust_count == py_count == 0, "revocation left source evidence")
+                facts_rust_state = db.execute(
+                    "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                    "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='facts-source'").fetchone()
+                facts_py_state = py.execute(
+                    "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq,policy_epoch,"
+                    "capture_enabled,content_fingerprint FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='facts-source'").fetchone()
+                check(facts_rust_state == facts_py_state,
+                      "fact-source revocation state differs from Python")
+                facts_rust_count = db.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id='facts-source'").fetchone()[0]
+                facts_py_count = py.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id='facts-source'").fetchone()[0]
+                check(facts_rust_count == facts_py_count == 0,
+                      "revocation left generic fact evidence")
+
+            # Replacing the fixed database inode while the service is alive
+            # must prevent a new, otherwise valid activation from mutating it.
+            replacement = data / "replacement.db"
+            with closing(sqlite3.connect(clone)) as source_db, \
+                    closing(sqlite3.connect(replacement)) as replacement_db:
+                source_db.backup(replacement_db)
+            os.chown(replacement, service_uid, service_gid)
+            replacement.chmod(0o600)
+            Path(f"{clone}-wal").unlink(missing_ok=True)
+            Path(f"{clone}-shm").unlink(missing_ok=True)
+            os.replace(replacement, clone)
+            replacement_activation = {
+                "version": 2, "request_id": "e" * 32, "receiver_id": receiver,
+                "operation": {"op": "activate_source", "plugin_id": "fixture.plugin",
+                              "source_id": "replacement-source", "generation": "e" * 64},
+            }
+            replacement_request_path = root / "replacement-activation.json"
+            replacement_request_path.write_text(json.dumps(replacement_activation))
+            replacement_request_path.chmod(0o644)
+            run_client(replacement_request_path, socket_path, uid=client_uid,
+                       gid=client_gid, reject=True)
+            with closing(sqlite3.connect(clone)) as db:
+                replacement_source_count = db.execute(
+                    "SELECT COUNT(*) FROM plugin_source_cursor_v1 "
+                    "WHERE source_id='replacement-source'").fetchone()[0]
+                check(replacement_source_count == 0,
+                      "service mutated a replaced fixed-path database inode")
 
             # The exact receipt and cursor survive service restart; all test
             # mutations stayed on the detached clone.
             check(canonical_state() == canonical_before, "canonical database changed")
-            print("PASS detached real Store clone lifecycle admission, parity, replay, and revoke fence")
+            print("PASS detached Store lifecycle/fact admission, parity, replay, fencing, and replacement guard")
         finally:
             if service.poll() is None:
                 service.send_signal(signal.SIGTERM)
@@ -462,7 +778,9 @@ def main(binary: Path) -> None:
             except subprocess.TimeoutExpired:
                 service.kill()
                 _, stderr = service.communicate(timeout=5)
-            check(service.returncode == 0, f"service failed: {stderr}")
+            check(service.returncode == 0
+                  or "scratch database identity changed" in stderr,
+                  f"service failed outside the expected database replacement fence: {stderr}")
 
 
 if __name__ == "__main__":
