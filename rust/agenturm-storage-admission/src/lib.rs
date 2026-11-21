@@ -809,7 +809,7 @@ fn validate(request: &Request, allow_plugin_facts: bool) -> Result<()> {
             || !identity_policy_valid
         {
             return Err(reject(if row.kind == "lifecycle" {
-                "unsupported prepared lifecycle"
+                "unsupported prepared lifecycle record"
             } else {
                 "unsupported prepared plugin fact"
             }));
@@ -6317,6 +6317,6 @@ mod tests {
         let mut prepared = request("cursor-one", "", &[(&hash, &digest)]);
         prepared.records[0].payload_json = "{\"state\":\"started\",\"text\":\"prompt\"}".to_owned();
         let error = validate(&prepared, true).unwrap_err();
-        assert!(error.to_string().contains("unsupported prepared lifecycle"));
+        assert_eq!(error.to_string(), "unsupported prepared lifecycle record");
     }
 }
