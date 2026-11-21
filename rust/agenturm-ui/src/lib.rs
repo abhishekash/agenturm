@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn renderer_handles_wide_narrow_and_too_small_terminals() {
-        for (width, height) in [(100, 30), (50, 16), (20, 6)] {
+        for (width, height) in [(100, 30), (80, 24), (60, 18), (50, 16), (20, 6)] {
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut model = UiModel::from_snapshot(snapshot_with_panes());
@@ -591,5 +591,34 @@ mod tests {
                 assert!(text.contains("Activity"));
             }
         }
+    }
+
+    #[test]
+    fn diagnostic_evidence_remains_readable_at_narrow_terminal_width() {
+        let mut snapshot = snapshot_with_panes();
+        snapshot
+            .panes
+            .get_mut(&ExtensionId::parse("pane.activity").unwrap())
+            .unwrap()
+            .rows = vec![MetricRow {
+            label: "Latest diagnostic".into(),
+            value: "unsupported_claude_stop_reason · error · harness.claude · session session-123456789"
+                .into(),
+        }];
+        let backend = TestBackend::new(60, 18);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut model = UiModel::from_snapshot(snapshot);
+        model.set_viewport(60, 18);
+        terminal.draw(|frame| draw(frame, &model, false)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Latest diagnostic"));
+        assert!(text.contains("unsupported_claude_stop_reason"));
+        assert!(text.contains("session-123456789"));
     }
 }

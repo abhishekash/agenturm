@@ -295,6 +295,7 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
                 row.observed_at_unix_ns,
                 row.harness_id.as_str(),
                 row.event_id.as_str(),
+                row.revision,
             )
         })
         .map(|(row, state, reason_code)| {
@@ -304,6 +305,34 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
                 state,
                 row.harness_id.as_str(),
                 row.identity.session_id.as_deref().unwrap_or("source")
+            )
+        })
+        .unwrap_or_else(|| "none recorded".into());
+    let latest_diagnostic = observations
+        .iter()
+        .filter_map(|row| match &row.kind {
+            ObservationKind::Diagnostic { code, severity } => Some((row, code, severity)),
+            _ => None,
+        })
+        .max_by_key(|(row, _, _)| {
+            (
+                row.observed_at_unix_ns,
+                row.harness_id.as_str(),
+                row.event_id.as_str(),
+                row.revision,
+            )
+        })
+        .map(|(row, code, severity)| {
+            let scope = match row.identity.scope {
+                agenturm_kernel::ObservationScope::Source => "source".to_owned(),
+                agenturm_kernel::ObservationScope::Session => format!(
+                    "session {}",
+                    row.identity.session_id.as_deref().unwrap_or("unknown")
+                ),
+            };
+            format!(
+                "{code} · {severity} · {} · {scope}",
+                row.harness_id.as_str()
             )
         })
         .unwrap_or_else(|| "none recorded".into());
@@ -347,6 +376,10 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         MetricRow {
             label: "Latest lifecycle evidence".into(),
             value: latest_lifecycle,
+        },
+        MetricRow {
+            label: "Latest diagnostic".into(),
+            value: latest_diagnostic,
         },
     ]
 }
@@ -1513,6 +1546,103 @@ mod tests {
         assert_eq!(
             latest.value,
             "reason=codex_task_aborted · state=interrupted · harness.codex/session-1"
+        );
+    }
+
+    #[test]
+    fn overview_exposes_latest_diagnostic_code_severity_and_scope() {
+        let diagnostic = |event_id: &str,
+                          timestamp,
+                          scope,
+                          session_id: Option<&str>,
+                          code: &str,
+                          severity: &str| Observation {
+            harness_id: ExtensionId::parse("harness.pi").unwrap(),
+            event_id: event_id.into(),
+            revision: 0,
+            identity: agenturm_kernel::ObservationIdentity {
+                scope,
+                session_id: session_id.map(str::to_owned),
+                worker_id: None,
+                turn_id: None,
+                operation_id: None,
+            },
+            observed_at_unix_ns: timestamp,
+            kind: ObservationKind::Diagnostic {
+                code: code.into(),
+                severity: severity.into(),
+            },
+        };
+        let source = diagnostic(
+            "source-gap",
+            2,
+            agenturm_kernel::ObservationScope::Source,
+            None,
+            "possible_source_gap",
+            "warning",
+        );
+        let session = diagnostic(
+            "session-gap",
+            1,
+            agenturm_kernel::ObservationScope::Session,
+            Some("session-7"),
+            "cursor_expired",
+            "error",
+        );
+
+        let source_rows = overview_rows(std::slice::from_ref(&source));
+        assert_eq!(
+            source_rows
+                .iter()
+                .find(|row| row.label == "Latest diagnostic")
+                .unwrap()
+                .value,
+            "possible_source_gap · warning · harness.pi · source"
+        );
+        let mixed_rows = overview_rows(&[source.clone(), session]);
+        assert_eq!(
+            mixed_rows
+                .iter()
+                .find(|row| row.label == "Latest diagnostic")
+                .unwrap()
+                .value,
+            "possible_source_gap · warning · harness.pi · source",
+            "newest evidence is selected by event time"
+        );
+        let corrected = Observation {
+            revision: 2,
+            kind: ObservationKind::Diagnostic {
+                code: "cursor_expired".into(),
+                severity: "error".into(),
+            },
+            ..source.clone()
+        };
+        let revised_rows = overview_rows(&[source.clone(), corrected]);
+        assert_eq!(
+            revised_rows
+                .iter()
+                .find(|row| row.label == "Latest diagnostic")
+                .unwrap()
+                .value,
+            "cursor_expired · error · harness.pi · source",
+            "equal-time revisions use the highest revision"
+        );
+        let latest_session = diagnostic(
+            "session-latest",
+            3,
+            agenturm_kernel::ObservationScope::Session,
+            Some("session-7"),
+            "cursor_expired",
+            "error",
+        );
+        let session_rows = overview_rows(&[latest_session]);
+        assert_eq!(
+            session_rows
+                .iter()
+                .find(|row| row.label == "Latest diagnostic")
+                .unwrap()
+                .value,
+            "cursor_expired · error · harness.pi · session session-7"
         );
     }
 
