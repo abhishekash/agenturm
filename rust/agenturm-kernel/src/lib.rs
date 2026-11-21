@@ -162,6 +162,41 @@ pub struct StoreCommit {
 pub struct ObservationPage {
     pub observations: Vec<Observation>,
     pub has_more: bool,
+    /// Highest durable batch receipt visible when this query began.
+    pub snapshot_id: u64,
+}
+
+/// Exclusive keyset cursor for deterministic paging through durable history.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObservationPosition {
+    pub observed_at_unix_ns: u64,
+    pub harness_id: String,
+    pub event_id: String,
+    pub revision: u32,
+    pub snapshot_id: u64,
+}
+
+/// Bounded durable-history query. `before` selects rows older than its exact
+/// ordering key; filters are applied before the page limit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObservationQuery {
+    pub harness_id: Option<String>,
+    pub session_id: Option<String>,
+    pub before: Option<ObservationPosition>,
+    pub snapshot_id: Option<u64>,
+    pub limit: usize,
+}
+
+impl ObservationQuery {
+    pub fn latest(limit: usize) -> Self {
+        Self {
+            harness_id: None,
+            session_id: None,
+            before: None,
+            snapshot_id: None,
+            limit,
+        }
+    }
 }
 
 /// Atomic storage boundary used by kernel admission.
@@ -170,6 +205,19 @@ pub trait ObservationStore {
     /// Returns at most `limit` rows ordered oldest-to-newest within the
     /// selected newest page. `has_more` indicates older rows were omitted.
     fn load_observations(&self, limit: usize) -> Result<ObservationPage, String>;
+    /// Queries durable history using stable keyset pagination. The fallback
+    /// keeps small test/extension stores source-compatible for the default
+    /// newest-page read; filtered or continued queries require implementation.
+    fn query_observations(&self, query: &ObservationQuery) -> Result<ObservationPage, String> {
+        if query.harness_id.is_some()
+            || query.session_id.is_some()
+            || query.before.is_some()
+            || query.snapshot_id.is_some()
+        {
+            return Err("observation store does not support filtered history queries".into());
+        }
+        self.load_observations(query.limit)
+    }
     fn commit(
         &mut self,
         source_id: &str,
@@ -247,6 +295,7 @@ pub struct Snapshot {
     pub panes: BTreeMap<ExtensionId, PaneModel>,
     pub admissions: BTreeMap<ExtensionId, AdmissionStatus>,
     pub observations_truncated: bool,
+    pub history_snapshot_id: u64,
     pub failures: Vec<ExtensionFailure>,
 }
 
@@ -318,14 +367,36 @@ impl Kernel {
     pub fn refresh_with_store(&mut self, store: &mut impl ObservationStore) -> Snapshot {
         let mut snapshot = Snapshot::default();
         self.admit_sources(&mut snapshot, store);
-        self.load_observations(&mut snapshot, store);
+        self.load_observations(
+            &mut snapshot,
+            store,
+            &ObservationQuery::latest(MAX_DURABLE_SNAPSHOT_OBSERVATIONS),
+        );
         self.evaluate_extensions(&mut snapshot);
         snapshot
     }
 
-    fn load_observations(&self, snapshot: &mut Snapshot, store: &impl ObservationStore) {
+    /// Rebuilds capability and pane state from one bounded query of durable
+    /// observations. This path does not admit live sources.
+    pub fn refresh_query_with_store(
+        &mut self,
+        store: &impl ObservationStore,
+        query: ObservationQuery,
+    ) -> Snapshot {
+        let mut snapshot = Snapshot::default();
+        self.load_observations(&mut snapshot, store, &query);
+        self.evaluate_extensions(&mut snapshot);
+        snapshot
+    }
+
+    fn load_observations(
+        &self,
+        snapshot: &mut Snapshot,
+        store: &impl ObservationStore,
+        query: &ObservationQuery,
+    ) {
         let store_id = ExtensionId("kernel.store".into());
-        match store.load_observations(MAX_DURABLE_SNAPSHOT_OBSERVATIONS) {
+        match store.query_observations(query) {
             Ok(page) => {
                 if page.observations.len() > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
                     snapshot.failures.push(failure(
@@ -336,6 +407,7 @@ impl Kernel {
                     return;
                 }
                 snapshot.observations_truncated = page.has_more;
+                snapshot.history_snapshot_id = page.snapshot_id;
                 let mut grouped = BTreeMap::<ExtensionId, Vec<RawObservation>>::new();
                 let mut ordered = Vec::with_capacity(page.observations.len());
                 let mut conversion_error = None;
@@ -913,6 +985,7 @@ mod tests {
             Ok(ObservationPage {
                 observations: self.rows[start..].to_vec(),
                 has_more,
+                snapshot_id: 0,
             })
         }
 
