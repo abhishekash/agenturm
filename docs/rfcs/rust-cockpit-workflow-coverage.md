@@ -1,9 +1,9 @@
 # Rust cockpit workflow coverage
 
 This comparison uses the tagged Python cockpit `v0.2.8` and the published
-standalone Rust baseline `rust-v0.1.0`. Python workflows come from the tagged
-release documentation. Rust coverage comes from the tagged CLI and UI,
-the published archive qualification, and the per-harness evidence record.
+Rust cockpit `rust-v0.2.0`. Python workflows come from the tagged release
+documentation. Rust coverage comes from the tagged CLI and UI, the archive
+qualification, and the per-harness evidence record.
 The coverage below concerns workflow behavior and recorded evidence.
 [Python 0.2.8 release notes](https://github.com/abhishekash/agenturm/blob/v0.2.8/docs/releases/0.2.8.md) ·
 [Python 0.2.8 keyboard paths](https://github.com/abhishekash/agenturm/blob/v0.2.8/docs/keyboard-navigation.md) ·
@@ -43,3 +43,20 @@ Review acknowledgement applies to the selected evidence version. The global
 MCP pane covers recorded tool outcomes and operation IDs. Workflow request
 handling, terminal routing, deep traces and MCP details, general prompt
 navigation, and cross-session task handoffs remain distinct workflows.
+
+## Published Rust 0.2.0
+
+The Ubuntu 24.04 x86-64 release tag `rust-v0.2.0` resolves to
+`34345408a170f059e8af096c87c17a2e97d074e8`. The promoted CI archive has
+SHA-256 `594b47dd8d2c6035034e57b1dec21ca34445b00017a938a19746b9de3dfafa7a`.
+[Release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.2.0) ·
+[Tag workflow](https://github.com/abhishekash/agenturm/actions/runs/44961241954)
+
+The downloaded tag archive passed bare startup and rolling discovery, clean
+terminal exit and writer lease release, systemd install and restart, and
+history retention after uninstall. It reopened a database created by the
+published Rust 0.1.0 bundle and resumed both source cursors. A separate
+60×18 run saved and reopened a review acknowledgement while the observation
+database's checksum stayed unchanged. The history backup command covers
+observations. Local review acknowledgements live in the adjacent
+`.reviews.sqlite` sidecar.
