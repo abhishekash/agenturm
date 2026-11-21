@@ -4,9 +4,12 @@
 //! explicit one-shot and configured multi-source usage collection, and a
 //! full-screen durable-history viewer and Linux user service management.
 
+mod cockpit_host;
+mod cockpit_startup;
 mod discovery;
 mod inspector_activity;
 mod pi_preview;
+mod session_evidence;
 
 pub use discovery::{discover, execute_discover};
 pub use pi_preview::{PiContentOptions, execute_content};
@@ -26,7 +29,14 @@ use agenturm_runtime::{
 use agenturm_service::{
     ServiceSpec, Systemctl, install_user_service, status_user_service, uninstall_user_service,
 };
-use agenturm_store::Store;
+use agenturm_store::{
+    ReviewKey, ReviewLedger, ReviewVersion as StoredReviewVersion, SessionPosition, SessionQuery,
+    Store,
+};
+use agenturm_ui::{
+    HistorySelection, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor, SessionView,
+    WorkspaceRequest, WorkspaceResponse, WorkspaceView,
+};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -152,6 +162,9 @@ pub enum Command {
     Version,
     Status,
     Inspect(InspectOptions),
+    Cockpit {
+        db: Option<PathBuf>,
+    },
     Query(HistoryQueryOptions),
     Backup {
         db: PathBuf,
@@ -642,6 +655,15 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("--help" | "-h" | "help") if args.len() == 1 => Ok(Command::Help),
         Some("--version" | "-V" | "version") if args.len() == 1 => Ok(Command::Version),
         Some("status") if args.len() == 1 => Ok(Command::Status),
+        Some("cockpit") => match &args[1..] {
+            [] => Ok(Command::Cockpit { db: None }),
+            [flag, value] if flag == "--db" && !value.is_empty() && !value.starts_with("--") => {
+                Ok(Command::Cockpit {
+                    db: Some(PathBuf::from(value)),
+                })
+            }
+            _ => Err(usage()),
+        },
         Some("inspect") => parse_inspect_options(&args[1..]).map(Command::Inspect),
         Some("query") => parse_query_options(&args[1..]).map(Command::Query),
         Some("backup") => {
@@ -1312,7 +1334,7 @@ fn parse_ingest_options(
 }
 
 fn usage() -> String {
-    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...] | agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>] | agenturm backup --db <path> --output <new-path> | agenturm prune --db <path> --before-unix-ns <ns> | agenturm discover [--follow] [--sessions-per-harness <1..8>] | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm service install --config <json-path> --db <path> [--interval-ms <100..60000>] | agenturm service status | agenturm service uninstall | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
+    "usage: agenturm [--help|--version|status] | agenturm cockpit [--db <path>] | agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...] | agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>] | agenturm backup --db <path> --output <new-path> | agenturm prune --db <path> --before-unix-ns <ns> | agenturm discover [--follow] [--sessions-per-harness <1..8>] | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm service install --config <json-path> --db <path> [--interval-ms <100..60000>] | agenturm service status | agenturm service uninstall | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
 }
 
 fn parse_db_and_option<'a>(args: &'a [String], option: &str) -> Result<(PathBuf, &'a str), String> {
@@ -1360,6 +1382,33 @@ pub fn execute_inspect(db_path: &std::path::Path) -> Result<Snapshot, String> {
     Ok(app.refresh_history_query(&store, ObservationQuery::latest(INSPECT_PAGE_SIZE)))
 }
 
+pub fn execute_cockpit(db: Option<&std::path::Path>) -> Result<(), String> {
+    if let Some(db) = db {
+        return execute_inspect_ui(&InspectOptions {
+            db: db.to_path_buf(),
+            extensions: ResolvedExtensionCatalog::default(),
+        });
+    }
+    let mut startup = None;
+    let mut app = AgenturmApp::default_composition();
+    let mut store = None;
+    agenturm_ui::run_workspace(move |request| {
+        if startup.is_none() {
+            startup = Some(cockpit_startup::prepare_cockpit_store(None)?);
+        }
+        let startup = startup.as_ref().expect("cockpit store prepared");
+        if store.is_none() {
+            store = Some(
+                Store::open_read_only(&startup.db)
+                    .map_err(|error| format!("Open history failed: {error}"))?,
+            );
+        }
+        let store = store.as_ref().expect("history opened");
+        workspace_response(&mut app, store, &startup.db, request, || startup.notice())
+    })
+    .map_err(|error| error.to_string())
+}
+
 pub fn execute_inspect_ui(options: &InspectOptions) -> Result<(), String> {
     let mut app = AgenturmApp::default_composition();
     for extension in &options.extensions.extensions {
@@ -1393,32 +1442,208 @@ pub fn execute_inspect_ui(options: &InspectOptions) -> Result<(), String> {
     }
     let store = Store::open_read_only(&options.db)
         .map_err(|error| format!("open store failed: {error}"))?;
-    let snapshot = app.refresh_history_query(&store, ObservationQuery::latest(INSPECT_PAGE_SIZE));
-    agenturm_ui::run_with_turn_activity(
-        inspector_activity::overview_page(snapshot),
-        |turn, before| {
-            let query = ObservationQuery {
-                harness_id: turn.map(|turn| turn.harness_id.clone()),
-                session_id: turn.map(|turn| turn.session_id.clone()),
-                before: before.cloned(),
-                snapshot_id: before
-                    .map(|cursor| cursor.snapshot_id)
-                    .or_else(|| turn.map(|turn| turn.snapshot_id)),
-                limit: INSPECT_PAGE_SIZE,
-            };
-            let page = match turn {
-                Some(turn) => {
-                    let snapshot = app
-                        .kernel
-                        .refresh_turn_with_store(&store, query, &turn.turn_id);
-                    inspector_activity::turn_page(snapshot, turn)
-                }
-                None => inspector_activity::overview_page(app.refresh_history_query(&store, query)),
-            };
-            Ok(Some(page))
-        },
-    )
+    let db = options.db.clone();
+    agenturm_ui::run_workspace(move |request| {
+        workspace_response(&mut app, &store, &db, request, || None)
+    })
     .map_err(|error| error.to_string())
+}
+
+fn workspace_response(
+    app: &mut AgenturmApp,
+    store: &Store,
+    db: &std::path::Path,
+    request: WorkspaceRequest,
+    notice: impl FnOnce() -> Option<String>,
+) -> Result<WorkspaceResponse, String> {
+    match request {
+        WorkspaceRequest::Sessions(before) => {
+            let mut catalog = load_session_catalog(store, db, before)?;
+            if catalog.notice.is_none() {
+                catalog.notice = notice();
+            }
+            Ok(WorkspaceResponse::Sessions(catalog))
+        }
+        WorkspaceRequest::MarkReviewed(session) => {
+            let key = ReviewKey {
+                harness_id: ExtensionId::parse(session.harness_id)
+                    .map_err(|error| error.to_string())?,
+                session_id: session.session_id,
+            };
+            let version = StoredReviewVersion {
+                receipt_sequence: session.review_version.receipt_sequence,
+                retained_observations: session.review_version.retained_observations,
+            };
+            let ledger =
+                ReviewLedger::open(db).map_err(|error| format!("Open reviews failed: {error}"))?;
+            let saved = ledger
+                .mark_reviewed(&key, version, session.snapshot_id)
+                .map_err(|error| format!("Save review failed: {error}"))?;
+            if !saved
+                && ledger
+                    .reviewed(std::slice::from_ref(&key))
+                    .map_err(|error| format!("Read reviews failed: {error}"))?
+                    .get(&key)
+                    != Some(&version)
+            {
+                return Err(
+                    "A newer review is already saved. Refresh to see current evidence.".into(),
+                );
+            }
+            Ok(WorkspaceResponse::ReviewSaved)
+        }
+        WorkspaceRequest::History { selection, before } => Ok(WorkspaceResponse::History(
+            load_workspace_history(app, store, selection, before),
+        )),
+    }
+}
+
+fn load_session_catalog(
+    store: &Store,
+    db: &std::path::Path,
+    before: Option<SessionCursor>,
+) -> Result<SessionCatalog, String> {
+    let mut query = SessionQuery::latest(200);
+    query.before = before.map(|cursor| SessionPosition {
+        observed_at_unix_ns: cursor.updated_at_unix_ns,
+        harness_id: cursor.harness_id,
+        session_id: cursor.session_id,
+        snapshot_id: cursor.snapshot_id,
+    });
+    query.snapshot_id = query.before.as_ref().map(|cursor| cursor.snapshot_id);
+    let page = store
+        .query_sessions(&query)
+        .map_err(|error| format!("Read sessions failed: {error}"))?;
+    let keys = page
+        .sessions
+        .iter()
+        .map(|session| ReviewKey {
+            harness_id: session.harness_id.clone(),
+            session_id: session.session_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    let (reviewed, notice) = match ReviewLedger::open(db).and_then(|ledger| ledger.reviewed(&keys))
+    {
+        Ok(reviewed) => (reviewed, None),
+        Err(error) => (
+            BTreeMap::new(),
+            Some(format!("Review status unavailable: {error}")),
+        ),
+    };
+    let sessions = page
+        .sessions
+        .into_iter()
+        .zip(keys)
+        .map(|(session, key)| {
+            let (state, reason, turn_id) = session.lifecycle.map_or((None, None, None), |life| {
+                (Some(life.state), life.reason_code, life.turn_id)
+            });
+            RecordedSession {
+                harness_id: session.harness_id.as_str().to_owned(),
+                session_id: session.session_id,
+                updated_at_unix_ns: session.observed_at_unix_ns,
+                snapshot_id: page.snapshot_id,
+                state,
+                reason,
+                turn_id,
+                parent_session_id: session.parent_session_id,
+                relationship_kind: session.relationship_kind,
+                review_version: ReviewVersion {
+                    receipt_sequence: session.review_version.receipt_sequence,
+                    retained_observations: session.review_version.retained_observations,
+                },
+                reviewed: reviewed.get(&key) == Some(&session.review_version),
+            }
+        })
+        .collect();
+    let older = page.next_before.map(|cursor| SessionCursor {
+        harness_id: cursor.harness_id,
+        session_id: cursor.session_id,
+        updated_at_unix_ns: cursor.observed_at_unix_ns,
+        snapshot_id: cursor.snapshot_id,
+    });
+    Ok(SessionCatalog {
+        sessions,
+        older,
+        notice,
+    })
+}
+
+fn load_workspace_history(
+    app: &mut AgenturmApp,
+    store: &Store,
+    selection: HistorySelection,
+    before: Option<ObservationPosition>,
+) -> agenturm_ui::HistoryPage {
+    let (source, session, pinned) = match &selection {
+        HistorySelection::All(_) => (None, None, None),
+        HistorySelection::Session(session, _) => (
+            Some(&session.harness_id),
+            Some(&session.session_id),
+            Some(session.snapshot_id),
+        ),
+        HistorySelection::Turn(turn) => (
+            Some(&turn.harness_id),
+            Some(&turn.session_id),
+            Some(turn.snapshot_id),
+        ),
+    };
+    let query = ObservationQuery {
+        harness_id: source.cloned(),
+        session_id: session.cloned(),
+        snapshot_id: before.as_ref().map(|cursor| cursor.snapshot_id).or(pinned),
+        before,
+        limit: INSPECT_PAGE_SIZE,
+    };
+    match selection {
+        HistorySelection::Turn(turn) => {
+            let snapshot = app.kernel.refresh_worker_turn_with_store(
+                store,
+                query,
+                &turn.turn_id,
+                turn.worker_id.as_deref(),
+            );
+            inspector_activity::turn_page(snapshot, &turn)
+        }
+        HistorySelection::Session(session, view) => {
+            let mut snapshot = app.refresh_history_query(store, query);
+            let panes = session_evidence::add_session_panes(
+                &mut snapshot,
+                &session.harness_id,
+                &session.session_id,
+            );
+            let mut page = inspector_activity::overview_page(snapshot);
+            if !page.snapshot.observations.is_empty() {
+                page.review_pane = Some(panes.review.clone());
+            }
+            let pane = match view {
+                SessionView::Overview => panes.overview,
+                SessionView::Activity => panes.activity,
+                SessionView::Review => panes.review,
+                SessionView::Usage => panes.usage,
+            };
+            page.initial_pane = Some(pane);
+            page
+        }
+        HistorySelection::All(view) => {
+            let mut snapshot = app.refresh_history_query(store, query);
+            let ids = session_evidence::add_workspace_panes(&mut snapshot);
+            let host = cockpit_host::add_host_pane(&mut snapshot);
+            let mut page = inspector_activity::overview_page(snapshot);
+            page.initial_pane = Some(match view {
+                WorkspaceView::Overview => {
+                    ExtensionId::parse("pane.overview").expect("built-in overview ID is valid")
+                }
+                WorkspaceView::Activity => ids.activity,
+                WorkspaceView::Mcp => ids.mcp,
+                WorkspaceView::Operations => ids.operations,
+                WorkspaceView::Findings => ids.findings,
+                WorkspaceView::Host => host,
+                WorkspaceView::Usage => ids.usage,
+            });
+            page
+        }
+    }
 }
 
 /// Executes one bounded read-only history query and returns a stable cursor
@@ -1645,6 +1870,17 @@ impl ConfiguredCollector {
         }
         let store = Store::open_collector(&database)
             .map_err(|error| format!("open store failed: {error}"))?;
+        Self::with_store(config, database, store, stop)
+    }
+
+    fn with_store(
+        config: ValidatedCollectionConfig,
+        database: PathBuf,
+        store: Store,
+        stop: Option<&Arc<AtomicBool>>,
+    ) -> Result<Self, String> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = database;
         let mut collector = Self {
             kernel: Kernel::new(),
             store,
@@ -1976,8 +2212,21 @@ fn load_collection_config(path: &std::path::Path) -> Result<ValidatedCollectionC
     if bytes.len() as u64 > MAX_COLLECTION_CONFIG_BYTES {
         return Err("collection config exceeds the 256 KiB limit".into());
     }
-    let mut config: CollectionConfigFile = serde_json::from_slice(&bytes)
+    let config: CollectionConfigFile = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid collection config: {error}"))?;
+    let base = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    let base = std::path::absolute(base)
+        .map_err(|error| format!("resolve collection config directory failed: {error}"))?;
+    validate_collection_config(config, base)
+}
+
+fn validate_collection_config(
+    mut config: CollectionConfigFile,
+    base: PathBuf,
+) -> Result<ValidatedCollectionConfig, String> {
     if !matches!(config.version, 1 | 2) {
         return Err("unsupported collection config version".into());
     }
@@ -1994,17 +2243,6 @@ fn load_collection_config(path: &std::path::Path) -> Result<ValidatedCollectionC
         ));
     }
 
-    let base = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(std::path::Path::new("."));
-    let base = if base.is_absolute() {
-        base.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|error| format!("resolve collection config directory failed: {error}"))?
-            .join(base)
-    };
     let resolve = |value: PathBuf| {
         if value.is_absolute() {
             value
@@ -2480,7 +2718,7 @@ pub fn render(command: Command) -> String {
             "       agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>\n",
             "\n",
             "This explicit projection stores token counters and skips other supported facts.\n",
-            "Use `agenturm inspect --db <path>` to view committed history in the full-screen interface.\n",
+            "Run `agenturm` in a terminal to discover sessions and open the cockpit.\n",
             "Collection config is versioned JSON; relative executable and source paths resolve beside the config.\n",
             "On Linux, install the managed foreground collector with `agenturm service install`.\n",
         )
@@ -2500,7 +2738,7 @@ pub fn render(command: Command) -> String {
             SERVICE_STATUS_LINE
         ),
         Command::Backup { .. } | Command::Prune { .. } | Command::Content(_) => String::new(),
-        Command::Discover { .. } => String::new(),
+        Command::Discover { .. } | Command::Cockpit { .. } => String::new(),
         Command::Inspect(_) => String::new(),
         Command::Query(_) => String::new(),
         Command::Ingest(_) => String::new(),

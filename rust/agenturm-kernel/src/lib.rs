@@ -384,6 +384,12 @@ impl ObservationQuery {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TurnSelection<'a> {
+    turn_id: &'a str,
+    worker_filter: Option<Option<&'a str>>,
+}
+
 /// Atomic storage boundary used by kernel admission.
 pub trait ObservationStore {
     fn source_cursor(&self, source_id: &str) -> Result<Option<String>, String>;
@@ -410,6 +416,16 @@ pub trait ObservationStore {
         _turn_id: &str,
     ) -> Result<ObservationPage, String> {
         Err("observation store does not support turn history queries".into())
+    }
+    /// Queries one exact worker anchor in a native turn. `None` selects
+    /// workerless records. The default fails closed without an exact port.
+    fn query_worker_turn_observations(
+        &self,
+        _query: &ObservationQuery,
+        _turn_id: &str,
+        _worker_id: Option<&str>,
+    ) -> Result<ObservationPage, String> {
+        Err("observation store does not support exact worker turn history queries".into())
     }
     fn commit(
         &mut self,
@@ -748,8 +764,43 @@ impl Kernel {
         query: ObservationQuery,
         turn_id: &str,
     ) -> Snapshot {
+        self.refresh_selected_turn(
+            store,
+            query,
+            TurnSelection {
+                turn_id,
+                worker_filter: None,
+            },
+        )
+    }
+
+    /// Rebuilds extension state for a durable turn at one exact native
+    /// worker anchor. Pass `None` to select workerless observations.
+    pub fn refresh_worker_turn_with_store(
+        &mut self,
+        store: &impl ObservationStore,
+        query: ObservationQuery,
+        turn_id: &str,
+        worker_id: Option<&str>,
+    ) -> Snapshot {
+        self.refresh_selected_turn(
+            store,
+            query,
+            TurnSelection {
+                turn_id,
+                worker_filter: Some(worker_id),
+            },
+        )
+    }
+
+    fn refresh_selected_turn(
+        &mut self,
+        store: &impl ObservationStore,
+        query: ObservationQuery,
+        turn: TurnSelection<'_>,
+    ) -> Snapshot {
         let mut snapshot = Snapshot::default();
-        let selection_scope = self.load_observations(&mut snapshot, store, &query, Some(turn_id));
+        let selection_scope = self.load_observations(&mut snapshot, store, &query, Some(turn));
         self.evaluate_extensions(&mut snapshot, selection_scope);
         snapshot
     }
@@ -759,18 +810,22 @@ impl Kernel {
         snapshot: &mut Snapshot,
         store: &impl ObservationStore,
         query: &ObservationQuery,
-        turn_id: Option<&str>,
+        turn: Option<TurnSelection<'_>>,
     ) -> ObservationSelectionScope {
         let selection_scope = if query.before.is_some() {
             ObservationSelectionScope::Continuation
-        } else if query.harness_id.is_some() || query.session_id.is_some() || turn_id.is_some() {
+        } else if query.harness_id.is_some() || query.session_id.is_some() || turn.is_some() {
             ObservationSelectionScope::Filtered
         } else {
             ObservationSelectionScope::Latest
         };
         let store_id = ExtensionId("kernel.store".into());
-        let page = match turn_id {
-            Some(turn_id) => store.query_turn_observations(query, turn_id),
+        let page = match turn {
+            Some(TurnSelection {
+                turn_id,
+                worker_filter: Some(worker_id),
+            }) => store.query_worker_turn_observations(query, turn_id, worker_id),
+            Some(TurnSelection { turn_id, .. }) => store.query_turn_observations(query, turn_id),
             None => store.query_observations(query),
         };
         match page {
@@ -783,11 +838,14 @@ impl Kernel {
                     ));
                     return selection_scope;
                 }
-                if let Some(turn_id) = turn_id
+                if let Some(turn) = turn
                     && page.observations.iter().any(|row| {
                         query.harness_id.as_deref() != Some(row.harness_id.as_str())
                             || query.session_id != row.identity.session_id
-                            || row.identity.turn_id.as_deref() != Some(turn_id)
+                            || row.identity.turn_id.as_deref() != Some(turn.turn_id)
+                            || turn
+                                .worker_filter
+                                .is_some_and(|worker| row.identity.worker_id.as_deref() != worker)
                     })
                 {
                     snapshot.failures.push(failure(

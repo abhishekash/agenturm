@@ -6,6 +6,13 @@
 
 #![forbid(unsafe_code)]
 
+mod workspace;
+
+pub use workspace::{
+    HistorySelection, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor, SessionView,
+    WorkspaceRequest, WorkspaceResponse, WorkspaceView, run_workspace,
+};
+
 use agenturm_kernel::{ExtensionId, MetricRow, ObservationPosition, Snapshot};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
@@ -21,6 +28,7 @@ const MIN_HEIGHT: u16 = 8;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Pane {
+    id: Option<ExtensionId>,
     title: String,
     rows: Vec<MetricRow>,
 }
@@ -60,14 +68,16 @@ impl UiModel {
         };
         let mut panes: Vec<_> = snapshot
             .panes
-            .into_values()
-            .map(|pane| Pane {
+            .into_iter()
+            .map(|(id, pane)| Pane {
+                id: Some(id),
                 title: visible_text(&pane.title),
                 rows: pane.rows,
             })
             .collect();
         if !snapshot.metrics.is_empty() {
             panes.push(Pane {
+                id: None,
                 title: "Metrics".into(),
                 rows: snapshot
                     .metrics
@@ -83,6 +93,7 @@ impl UiModel {
         }
         if !snapshot.failures.is_empty() {
             panes.push(Pane {
+                id: None,
                 title: "Attention".into(),
                 rows: snapshot
                     .failures
@@ -118,6 +129,14 @@ impl UiModel {
         self.panes
             .get(self.selected)
             .map(|pane| pane.title.as_str())
+    }
+
+    fn select_title(&mut self, title: &str) {
+        if let Some(index) = self.panes.iter().position(|pane| pane.title == title) {
+            self.selected = index;
+            self.scroll = 0;
+            self.update_scroll_limit();
+        }
     }
 
     pub fn select_next(&mut self) {
@@ -210,6 +229,7 @@ pub struct RecordedTurn {
     pub harness_id: String,
     pub session_id: String,
     pub turn_id: String,
+    pub worker_id: Option<String>,
     pub snapshot_id: u64,
     pub lifecycle: Option<(String, Option<String>)>,
 }
@@ -218,12 +238,14 @@ pub struct HistoryPage {
     pub snapshot: Snapshot,
     pub turns: Vec<RecordedTurn>,
     pub initial_pane: Option<ExtensionId>,
+    pub review_pane: Option<ExtensionId>,
 }
 
 struct PageView {
     ui: UiModel,
     turns: Vec<RecordedTurn>,
     turn_picker: Option<ListState>,
+    review_pane: Option<ExtensionId>,
 }
 
 impl PageView {
@@ -242,7 +264,17 @@ impl PageView {
             ui,
             turns: page.turns,
             turn_picker: None,
+            review_pane: page.review_pane,
         }
+    }
+    fn reviewing(&self) -> bool {
+        self.review_pane.as_ref().is_some_and(|review| {
+            self.ui
+                .panes
+                .get(self.ui.selected)
+                .and_then(|pane| pane.id.as_ref())
+                == Some(review)
+        })
     }
 }
 
@@ -255,6 +287,7 @@ pub fn run_with_history(
         snapshot,
         turns: Vec::new(),
         initial_pane: None,
+        review_pane: None,
     };
     run_with_turn_activity(initial, |_, before| {
         let Some(cursor) = before else {
@@ -264,6 +297,7 @@ pub fn run_with_history(
             snapshot,
             turns: Vec::new(),
             initial_pane: None,
+            review_pane: None,
         }))
     })
 }
@@ -474,7 +508,14 @@ fn render_turn_picker(
         if area.height < 6 {
             return ListItem::new(summary);
         }
-        let source = visible_text(&format!("{} · {}", turn.harness_id, turn.session_id));
+        let worker = turn
+            .worker_id
+            .as_deref()
+            .map_or_else(String::new, |worker| format!(" · worker {worker}"));
+        let source = visible_text(&format!(
+            "{} · {}{worker}",
+            turn.harness_id, turn.session_id
+        ));
         ListItem::new(Text::from(vec![Line::from(summary), Line::from(source)]))
     });
     let list = List::new(items)

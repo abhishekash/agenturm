@@ -1,4 +1,4 @@
-use agenturm_kernel::{ExtensionId, MetricRow, ObservationKind, PaneModel, Snapshot};
+use agenturm_kernel::{MetricRow, ObservationKind, Snapshot};
 use agenturm_ui::{HistoryPage, RecordedTurn};
 use std::collections::HashMap;
 
@@ -11,13 +11,19 @@ pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
             continue;
         };
         let position = positions
-            .entry((row.harness_id.as_str(), session_id, turn_id))
+            .entry((
+                row.harness_id.as_str(),
+                session_id,
+                row.identity.worker_id.as_deref(),
+                turn_id,
+            ))
             .or_insert_with(|| {
                 let position = turns.len();
                 turns.push(RecordedTurn {
                     harness_id: row.harness_id.as_str().to_owned(),
                     session_id: session_id.clone(),
                     turn_id: turn_id.clone(),
+                    worker_id: row.identity.worker_id.clone(),
                     snapshot_id: snapshot.history_snapshot_id,
                     lifecycle: None,
                 });
@@ -37,6 +43,7 @@ pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
         snapshot,
         turns,
         initial_pane: None,
+        review_pane: None,
     }
 }
 
@@ -59,67 +66,14 @@ pub(super) fn turn_page(mut snapshot: Snapshot, turn: &RecordedTurn) -> HistoryP
             value: turn.turn_id.clone(),
         },
     ];
+    if let Some(worker) = &turn.worker_id {
+        rows.push(MetricRow {
+            label: "Worker".into(),
+            value: worker.clone(),
+        });
+    }
     rows.extend(snapshot.observations.iter().rev().map(|row| {
-        let (label, value) = match &row.kind {
-            ObservationKind::SessionStarted => ("Session", "started".into()),
-            ObservationKind::SessionEnded => ("Session", "ended".into()),
-            ObservationKind::Activity { category } => ("Activity", category.clone()),
-            ObservationKind::Usage {
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                cache_write_tokens,
-                total_tokens,
-            } => {
-                let counters = [
-                    ("input", input_tokens),
-                    ("output", output_tokens),
-                    ("cache read", cache_read_tokens),
-                    ("cache write", cache_write_tokens),
-                    ("total", total_tokens),
-                ];
-                let value = counters
-                    .into_iter()
-                    .filter_map(|(name, count)| count.map(|count| format!("{name} {count}")))
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                ("Usage", value)
-            }
-            ObservationKind::Tool { category, result } => {
-                ("Tool", format!("{category} · {result}"))
-            }
-            ObservationKind::CreditUsage { nanocredits } => (
-                "Credit usage",
-                format!("{} credits", agenturm_kernel::format_credits(*nanocredits)),
-            ),
-            ObservationKind::Lifecycle { state, reason_code } => (
-                "Lifecycle",
-                reason_code
-                    .as_deref()
-                    .map_or_else(|| state.clone(), |reason| format!("{state} · {reason}")),
-            ),
-            ObservationKind::Check { category, result } => {
-                ("Check", format!("{category} · {result}"))
-            }
-            ObservationKind::PullRequestRaised { repository, number } => (
-                "Pull request raised",
-                format!("https://github.com/{repository}/pull/{number}"),
-            ),
-            ObservationKind::Relationship {
-                relationship_kind,
-                parent_session_id,
-            } => (
-                "Session relationship",
-                format!(
-                    "{} · parent {parent_session_id}",
-                    relationship_kind.as_str()
-                ),
-            ),
-            ObservationKind::Message { role } => ("Message role", role.clone()),
-            ObservationKind::Diagnostic { code, severity } => {
-                ("Diagnostic", format!("{code} · {severity}"))
-            }
-        };
+        let (label, value) = crate::session_evidence::describe_observation(&row.kind);
         let value = match row.identity.operation_id.as_deref() {
             Some(operation) => format!("{value} · operation {operation}"),
             None => value,
@@ -129,18 +83,17 @@ pub(super) fn turn_page(mut snapshot: Snapshot, turn: &RecordedTurn) -> HistoryP
             value,
         }
     }));
-    let pane_id = ExtensionId::parse("app.turn-activity").expect("built-in extension ID is valid");
-    snapshot.panes.insert(
-        pane_id.clone(),
-        PaneModel {
-            title: "Turn activity".into(),
-            rows,
-        },
+    let pane_id = crate::session_evidence::insert_pane(
+        &mut snapshot,
+        "app.turn-activity",
+        "Turn activity",
+        rows,
     );
     HistoryPage {
         snapshot,
         turns: Vec::new(),
         initial_pane: Some(pane_id),
+        review_pane: None,
     }
 }
 
@@ -149,8 +102,8 @@ mod tests {
     use super::*;
     use crate::AgenturmApp;
     use agenturm_kernel::{
-        Observation, ObservationIdentity, ObservationPosition, ObservationQuery, ObservationScope,
-        ObservationStore,
+        ExtensionId, Observation, ObservationIdentity, ObservationPosition, ObservationQuery,
+        ObservationScope, ObservationStore,
     };
     use agenturm_store::Store;
     use std::fs;

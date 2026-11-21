@@ -113,12 +113,22 @@ expect_replay() {
     grep -qE '^harness\.pi\..*: committed 0 observation\(s\).*ACK sent=true$' "$log"
 }
 
+publish_fixture_files() {
+    local target_codex=$1 target_pi=$2
+    cp -- "$codex/session.jsonl" "$target_codex/new.tmp"
+    cp -- "$pi/session.jsonl" "$target_pi/new.tmp"
+    mv -- "$target_codex/new.tmp" "$target_codex/new.jsonl"
+    mv -- "$target_pi/new.tmp" "$target_pi/new.jsonl"
+}
+
 inspect_history() {
     local database=$1
     local transcript="$state/inspector.txt"
     # Run on a PTY with the same empty PATH as the foreground collector.
     (
         sleep 1
+        printf g
+        sleep 0.3
         printf t
         sleep 0.3
         printf '\033[B'
@@ -161,6 +171,76 @@ inspect_history "$db"
 "${isolated[@]}" query --db "$state/backup.sqlite" | expect_usage
 echo "Verified extracted bundle, foreground restart, both sessions in the inspector, and backup"
 
+wait_for_live_check() {
+    local attempt
+    for ((attempt=0; attempt<100; attempt++)); do
+        if "$@"; then
+            return
+        fi
+        kill -0 "$watch_pid" 2>/dev/null || return 1
+        sleep 0.2
+    done
+    return 1
+}
+
+query_fixture_usage() {
+    "${isolated[@]}" query --db "$1" 2>/dev/null | expect_usage
+}
+
+query_empty_history() {
+    "${isolated[@]}" query --db "$1" 2>/dev/null | jq -e '.observations == []' > /dev/null
+}
+
+verify_default_cockpit() {
+    local cockpit_home="$scratch/cockpit-home"
+    local cockpit_codex="$cockpit_home/.codex/sessions/2026/11/20"
+    local cockpit_pi="$cockpit_home/.pi/agent/sessions/project"
+    local cockpit_db="$cockpit_home/.local/state/agenturm-rust/history.sqlite"
+    local cockpit_config="$state/cockpit-sources.json"
+    local transcript="$state/cockpit.txt"
+    local keyboard="$state/cockpit-keys" keyboard_fd status=0
+    local -a cockpit_isolated=(env -i HOME="$cockpit_home" PATH="$empty_path" "$agenturm")
+    mkdir -p -- "$cockpit_codex" "$cockpit_pi"
+    mkfifo -- "$keyboard"
+    : > "$transcript"
+    exec {keyboard_fd}<>"$keyboard"
+    AGENTURM_TEST_HOME="$cockpit_home" AGENTURM_TEST_PATH="$empty_path" AGENTURM_TEST_BIN="$agenturm" \
+        timeout --foreground --kill-after=5s 70s script -efq -c '
+            stty rows 18 cols 60
+            exec env -i HOME="$AGENTURM_TEST_HOME" PATH="$AGENTURM_TEST_PATH" TERM=xterm-256color "$AGENTURM_TEST_BIN"
+        ' "$transcript" < "$keyboard" > /dev/null &
+    watch_pid=$!
+    if ! wait_for_live_check grep -aFq 'Agenturm  /  Agents' "$transcript" ||
+        ! wait_for_live_check query_empty_history "$cockpit_db"; then
+        echo "Bare cockpit did not open the empty Agents workspace" >&2
+        return 1
+    fi
+
+    publish_fixture_files "$cockpit_codex" "$cockpit_pi"
+    if ! wait_for_live_check query_fixture_usage "$cockpit_db"; then
+        echo "Bare cockpit did not collect both newly arrived sessions" >&2
+        return 1
+    fi
+    printf r >&"$keyboard_fd"
+    wait_for_live_check grep -aFq 'bundle-codex-session' "$transcript"
+    wait_for_live_check grep -aFq 'bundle-pi-session' "$transcript"
+    printf q >&"$keyboard_fd"
+    wait "$watch_pid" || status=$?
+    watch_pid=
+    exec {keyboard_fd}>&-
+    if ((status != 0)); then
+        echo "Bare cockpit did not quit cleanly" >&2
+        return 1
+    fi
+
+    "${cockpit_isolated[@]}" discover --sessions-per-harness 1 > "$cockpit_config"
+    "${cockpit_isolated[@]}" collect --config "$cockpit_config" --db "$cockpit_db" > "$state/cockpit-replay.log"
+    expect_replay "$state/cockpit-replay.log"
+    query_fixture_usage "$cockpit_db"
+    echo "Verified bare cockpit opened empty, collected both sessions, and released the writer on quit"
+}
+verify_default_cockpit
+
 verify_follow() {
     local follow_home="$scratch/follow-home"
     local follow_codex="$follow_home/.codex/sessions/2026/11/20"
@@ -192,10 +272,7 @@ verify_follow() {
     fi
     "${follow_isolated[@]}" query --db "$follow_db" | jq -e '.observations == []' > /dev/null
 
-    cp -- "$codex/session.jsonl" "$follow_codex/new.tmp"
-    cp -- "$pi/session.jsonl" "$follow_pi/new.tmp"
-    mv -- "$follow_codex/new.tmp" "$follow_codex/new.jsonl"
-    mv -- "$follow_pi/new.tmp" "$follow_pi/new.jsonl"
+    publish_fixture_files "$follow_codex" "$follow_pi"
     for ((attempt=0; attempt<100; attempt++)); do
         if "${follow_isolated[@]}" query --db "$follow_db" | expect_usage; then
             break

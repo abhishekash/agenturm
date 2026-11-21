@@ -18,18 +18,51 @@ From a source checkout on Linux with the pinned Rust toolchain and a native C
 build toolchain, run `scripts/build-rust-linux-bundle.sh ./dist`. The script
 builds for the local Linux architecture and emits a tarball and checksum.
 
-From the directory containing the archive and its checksum, run:
+From the directory containing the archive and its checksum, set the version
+and use the archive name for your architecture.
 
 ```sh
-sha256sum -c agenturm-0.1.0-linux-x86_64.tar.gz.sha256
+archive="agenturm-VERSION-linux-x86_64.tar.gz"
+sha256sum -c "$archive.sha256"
 mkdir -p "$HOME/.local/opt"
-tar -xzf agenturm-0.1.0-linux-x86_64.tar.gz -C "$HOME/.local/opt"
-agenturm="$HOME/.local/opt/agenturm-0.1.0-linux-x86_64/bin/agenturm"
+tar -xzf "$archive" -C "$HOME/.local/opt"
+agenturm="$HOME/.local/opt/${archive%.tar.gz}/bin/agenturm"
 "$agenturm" --version
 ```
 
 Use the archive and directory names produced by the build for your version and
 architecture. Keep the catalog and binaries in the extracted directory.
+
+## Open the cockpit
+
+From a terminal, run the installed binary.
+
+```sh
+"$agenturm"
+```
+
+The cockpit opens on Agents. It uses
+`${XDG_STATE_HOME:-$HOME/.local/state}/agenturm-rust/history.sqlite`.
+It starts session-owned Pi and Codex collection when the default database is
+available for writing. When another writer owns the database, the cockpit
+reads the same history. The collector started by the cockpit stops on quit.
+
+Use `↑` and `↓` to choose a session, `/` to search the loaded roster,
+and Enter to open its Overview. The newest roster page refreshes while open.
+Press `r` in Agents to refresh it immediately. Open Activity with `a` or
+Review with `v`, and open the selected session’s Usage with `u`. Press
+`y` in Review to acknowledge the displayed evidence. The acknowledgement
+is stored next to the history database and applies to the reviewed version.
+
+From Agents, `g` opens the cross-source Overview. Use `2` for Activity,
+`3` for MCP, `4` for Operations, `5` for Findings, `6` for Host, and
+`7` for Usage. Press `t` in a history view to select a recorded turn,
+`?` for keyboard help, and `q` to quit. The available evidence varies by
+source. The MCP view lists recorded tool outcomes and operation IDs.
+
+Use `"$agenturm" cockpit --db <path>` or `"$agenturm" inspect --db <path>`
+to open a specific existing Rust store without starting local collection.
+For collection between cockpit sessions, set up the managed collector below.
 
 ## Discover, collect, and inspect
 
@@ -64,12 +97,10 @@ To restart the managed collector, run
 manager, use `"$agenturm" collect --config "$state/sources.json" --db
 "$state/history.sqlite" --watch` instead of installing the service.
 
-In the inspector, press `t` when the header offers Turns. The view
-lists recorded turns on the current history page. Use the arrow keys to
-choose a turn, then press Enter to open its scoped observations. Press
-`Esc` to return to the turn list, then press it again to return to history.
-A recorded pull request appears as a work result alongside the native
-lifecycle state.
+The turn picker lists the recorded turns on the current history page.
+Use the arrow keys to choose a turn, then press Enter to open its scoped
+observations. A recorded pull request appears as a work result alongside
+the native lifecycle state.
 
 ## Back up history
 
@@ -96,14 +127,16 @@ the qualified archive and checksum as workflow artifacts. Python releases use
 the separate `v<version>` tag family.
 
 ```sh
-scripts/verify-rust-linux-bundle.sh ./dist/agenturm-0.1.0-linux-x86_64.tar.gz
+scripts/verify-rust-linux-bundle.sh "./dist/$archive"
 ```
 
 The verifier extracts the checksum-verified archive into a fresh state
 directory. It discovers and collects fixture sessions with an empty PATH,
 checks that reopening and replay preserve history, opens recorded turn
-activity in a PTY, and reopens a backup. It uses Bash, jq, GNU coreutils,
-GNU tar, and util-linux `script` as qualification tools.
+activity in a PTY, and reopens a backup. A narrow-PTY run starts the cockpit
+with empty state, adds fixtures while it is open, refreshes the roster, and
+verifies the next collector can reopen the history after quit. Qualification
+uses Bash, jq, GNU coreutils, GNU tar, and util-linux `script`.
 
 On a dedicated Ubuntu 24.04 x86-64 account with a running systemd user
 manager and no Agenturm collector unit, pass `--systemd-user` to verify
@@ -120,7 +153,7 @@ After the tag run succeeds, download the archive and checksum from that
 specific run. Set `run_id` to the successful run for the release tag.
 
 ```sh
-tag=rust-v0.1.0
+tag=rust-vVERSION
 asset="agenturm-${tag#rust-v}-linux-x86_64.tar.gz"
 gh run download "$run_id" --name agenturm-rust-linux-x86_64 --dir ./release
 scripts/verify-rust-linux-bundle.sh "./release/$asset" --systemd-user
