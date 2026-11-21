@@ -37,6 +37,7 @@ const V2_RECEIPT_TABLES: &[&str] = &[
     "storage_source_activate_v2",
     "storage_source_capture_set_v2",
 ];
+const BATCH_BINDING_TABLE: &str = "storage_admission_batch_binding_v1";
 
 fn reject(message: &'static str) -> Box<dyn Error> {
     message.into()
@@ -121,7 +122,7 @@ struct Lease {
     policy_epoch: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PreparedRecord {
     event_id_hash: String,
@@ -171,6 +172,78 @@ struct SourceState {
     updated_ns: i64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BatchBinding {
+    generation: String,
+    policy_epoch: i64,
+    expected_cursor: String,
+    cursor: String,
+    batch_digest: String,
+    prepared_digest: String,
+    dirty_seq: i64,
+}
+
+fn prepared_rows_digest(records: &[PreparedRecord]) -> Result<String> {
+    // This v1 fingerprint hashes a fixed-order tuple representation rather
+    // than a JSON object. Changing its fields/order requires a v2 algorithm and
+    // binding table so persisted rows retain their original interpretation.
+    let rows = records
+        .iter()
+        .map(|row| {
+            (
+                row.event_id_hash.as_str(),
+                row.revision,
+                row.kind.as_str(),
+                row.time_ns,
+                row.payload_json.as_str(),
+                row.record_digest.as_str(),
+                row.native_session_id.as_str(),
+                row.native_worker_id.as_str(),
+                row.native_turn_id.as_str(),
+                row.native_operation_id.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let encoded = serde_json::to_vec(&rows)?;
+    let mut digest = Sha256::new();
+    digest.update(b"agenturm-prepared-rows-v1\0");
+    digest.update(encoded);
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn read_batch_binding(db: &Connection, source_id: &str) -> Result<Option<BatchBinding>> {
+    Ok(db
+        .query_row(
+            "SELECT generation,policy_epoch,expected_cursor,cursor,batch_digest,prepared_digest,dirty_seq \
+             FROM storage_admission_batch_binding_v1 WHERE source_id=?",
+            [source_id],
+            |row| {
+                Ok(BatchBinding {
+                    generation: row.get(0)?,
+                    policy_epoch: row.get(1)?,
+                    expected_cursor: row.get(2)?,
+                    cursor: row.get(3)?,
+                    batch_digest: row.get(4)?,
+                    prepared_digest: row.get(5)?,
+                    dirty_seq: row.get(6)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+fn binding_for_request(request: &Request, dirty_seq: i64, prepared_digest: String) -> BatchBinding {
+    BatchBinding {
+        generation: request.lease.generation.clone(),
+        policy_epoch: request.lease.policy_epoch,
+        expected_cursor: request.expected_cursor.clone(),
+        cursor: request.cursor.clone(),
+        batch_digest: request.batch_digest.clone(),
+        prepared_digest,
+        dirty_seq,
+    }
+}
+
 fn source_state(db: &Connection, source_id: &str) -> Result<SourceState> {
     Ok(db.query_row(
         "SELECT receiver_id,plugin_id,generation,lease_epoch,policy_epoch,capture_enabled,\
@@ -200,6 +273,7 @@ fn source_state(db: &Connection, source_id: &str) -> Result<SourceState> {
 struct AdmissionSnapshot {
     evidence_count: i64,
     dirty_marker_before: Option<i64>,
+    batch_binding_before: Option<BatchBinding>,
     tables: Vec<(&'static str, &'static str, &'static str, bool)>,
 }
 
@@ -302,9 +376,11 @@ impl AdmissionSnapshot {
             [source_id],
             |row| row.get(0),
         )?;
+        let batch_binding_before = read_batch_binding(db, source_id)?;
         Ok(Self {
             evidence_count,
             dirty_marker_before,
+            batch_binding_before,
             tables,
         })
     }
@@ -408,6 +484,19 @@ fn verify_fact_admission_readback(
         &request.lease.source_id,
         readback.inserted_hashes.len() as i64,
     )?;
+    let actual_binding = read_batch_binding(db, &request.lease.source_id)?;
+    if receipt.disposition == "committed" {
+        let expected_binding = binding_for_request(
+            request,
+            receipt.dirty_seq,
+            prepared_rows_digest(&request.records)?,
+        );
+        if actual_binding.as_ref() != Some(&expected_binding) {
+            return Err(reject("prepared batch binding was not persisted exactly"));
+        }
+    } else if actual_binding != readback.snapshot.batch_binding_before {
+        return Err(reject("non-commit changed the prepared batch binding"));
+    }
     for row in &request.records {
         let stored: Option<StoredFactRow> = db
             .query_row(
@@ -626,6 +715,7 @@ fn reject_real_clone_admission_triggers(db: &Connection) -> Result<()> {
             "plugin_content_batch_v1",
             "plugin_content_status_v1",
             "storage_admission_request_v2",
+            BATCH_BINDING_TABLE,
         ],
         "SQLite triggers on real clone admission write tables are unsupported",
     )
@@ -915,7 +1005,17 @@ fn activation_has_orphan_rows(db: &Connection, source_id: &str) -> Result<bool> 
             }
         }
     }
-    Ok(false)
+    let binding_table_exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+        [BATCH_BINDING_TABLE],
+        |row| row.get(0),
+    )?;
+    Ok(binding_table_exists
+        && db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM storage_admission_batch_binding_v1 WHERE source_id=?)",
+            [source_id],
+            |row| row.get::<_, bool>(0),
+        )?)
 }
 
 fn validate_active_source_history(
@@ -1034,6 +1134,12 @@ fn commit_guarded_mode(
     if real_clone {
         require_activation_clone_markers(&transaction)?;
         reject_real_clone_admission_triggers(&transaction)?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS storage_admission_batch_binding_v1(\
+             source_id TEXT PRIMARY KEY,generation TEXT NOT NULL,policy_epoch INTEGER NOT NULL,\
+             expected_cursor TEXT NOT NULL,cursor TEXT NOT NULL,batch_digest TEXT NOT NULL,\
+             prepared_digest TEXT NOT NULL,dirty_seq INTEGER NOT NULL)",
+        )?;
     } else {
         require_scratch(&transaction)?;
     }
@@ -1075,6 +1181,11 @@ fn commit_guarded_mode(
     {
         return Err(reject("stale or unsupported source lease"));
     }
+    let prepared_digest = if real_clone {
+        Some(prepared_rows_digest(&request.records)?)
+    } else {
+        None
+    };
     if real_clone {
         // A real Store clone must pass the same complete history gate as
         // activation. Stale or private content receipts cannot be overwritten
@@ -1182,6 +1293,21 @@ fn commit_guarded_mode(
         && request.batch_digest == prior_digest
         && (request.expected_cursor == prior_cursor || request.expected_cursor == current_cursor)
     {
+        if let Some(prepared_digest) = prepared_digest.as_deref() {
+            let binding = read_batch_binding(&transaction, &request.lease.source_id)?
+                .ok_or_else(|| reject("prepared batch replay binding is missing"))?;
+            if binding.generation != request.lease.generation
+                || binding.policy_epoch != request.lease.policy_epoch
+                || binding.cursor != request.cursor
+                || binding.batch_digest != request.batch_digest
+                || binding.prepared_digest != prepared_digest
+                || binding.dirty_seq != dirty_seq
+                || (binding.expected_cursor != request.expected_cursor
+                    && request.expected_cursor != request.cursor)
+            {
+                return Err(reject("conflicting prepared batch replay identity"));
+            }
+        }
         let receipt: Option<(String, String)> = transaction
             .query_row(
                 "SELECT cursor,refs_digest FROM plugin_content_batch_v1 WHERE source_id=?",
@@ -1343,6 +1469,32 @@ fn commit_guarded_mode(
             request.lease.policy_epoch
         ],
     )?;
+    if let Some(prepared_digest) = prepared_digest.as_deref() {
+        let binding = binding_for_request(request, next_dirty, prepared_digest.to_owned());
+        let changed = transaction.execute(
+            "INSERT INTO storage_admission_batch_binding_v1(source_id,generation,policy_epoch,\
+             expected_cursor,cursor,batch_digest,prepared_digest,dirty_seq) VALUES(?,?,?,?,?,?,?,?) \
+             ON CONFLICT(source_id) DO UPDATE SET generation=excluded.generation,\
+             policy_epoch=excluded.policy_epoch,expected_cursor=excluded.expected_cursor,\
+             cursor=excluded.cursor,batch_digest=excluded.batch_digest,\
+             prepared_digest=excluded.prepared_digest,dirty_seq=excluded.dirty_seq",
+            params![
+                request.lease.source_id,
+                binding.generation,
+                binding.policy_epoch,
+                binding.expected_cursor,
+                binding.cursor,
+                binding.batch_digest,
+                binding.prepared_digest,
+                binding.dirty_seq,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(reject(
+                "prepared batch binding did not persist exactly one row",
+            ));
+        }
+    }
     let mut expected_source = source.clone();
     expected_source.cursor.clone_from(&request.cursor);
     expected_source
@@ -3292,6 +3444,39 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn prepared_rows_digest_is_stable_and_binds_order_and_fields() {
+        let row = PreparedRecord {
+            event_id_hash: "1".repeat(64),
+            revision: 0,
+            kind: "message".to_owned(),
+            time_ns: 10,
+            payload_json: "{\"role\":\"assistant\"}".to_owned(),
+            record_digest: "2".repeat(64),
+            native_session_id: "session-one".to_owned(),
+            native_worker_id: String::new(),
+            native_turn_id: String::new(),
+            native_operation_id: String::new(),
+        };
+        let second = PreparedRecord {
+            event_id_hash: "3".repeat(64),
+            native_session_id: "session-two".to_owned(),
+            ..row.clone()
+        };
+        let baseline = prepared_rows_digest(&[row.clone(), second.clone()]).unwrap();
+        assert_eq!(
+            baseline,
+            prepared_rows_digest(&[row.clone(), second.clone()]).unwrap()
+        );
+        assert_ne!(
+            baseline,
+            prepared_rows_digest(&[second.clone(), row.clone()]).unwrap()
+        );
+        let mut changed = row.clone();
+        changed.native_session_id = "different-session".to_owned();
+        assert_ne!(baseline, prepared_rows_digest(&[changed, second]).unwrap());
+    }
+
     fn state(db: &Connection) -> (String, i64, i64) {
         let (cursor, dirty) = db
             .query_row(
@@ -4553,6 +4738,34 @@ mod tests {
     }
 
     #[test]
+    fn activation_rejects_orphan_prepared_binding_after_cursor_removal() {
+        let mut db = fixture();
+        activate(
+            &mut db,
+            &activation_request("e123456789abcdef0123456789abcdef", "source-one"),
+        )
+        .unwrap();
+        db.execute_batch(
+            "CREATE TABLE storage_admission_batch_binding_v1(\
+             source_id TEXT PRIMARY KEY,generation TEXT,policy_epoch INTEGER,\
+             expected_cursor TEXT,cursor TEXT,batch_digest TEXT,prepared_digest TEXT,dirty_seq INTEGER); \
+             INSERT INTO storage_admission_batch_binding_v1 VALUES(\
+             'source-one','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',\
+             1,'','cursor-one','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',\
+             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',1); \
+             DELETE FROM storage_source_activate_v2 WHERE source_id='source-one'; \
+             DELETE FROM plugin_source_cursor_v1 WHERE source_id='source-one';",
+        )
+        .unwrap();
+        let error = activate(
+            &mut db,
+            &activation_request("f123456789abcdef0123456789abcdef", "source-one"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("orphan"));
+    }
+
+    #[test]
     fn activation_and_admission_and_revoke_share_request_id_namespace() {
         let id = "e123456789abcdef0123456789abcdef";
         let mut db = fixture();
@@ -5051,6 +5264,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(marker, "enabled");
+    }
+
+    #[test]
+    fn real_clone_admission_rejects_prepared_binding_trigger_before_mutation() {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        db.execute_batch(
+            "CREATE TABLE storage_admission_batch_binding_v1(source_id TEXT); \
+             CREATE TRIGGER tamper_prepared_binding BEFORE INSERT \
+             ON storage_admission_batch_binding_v1 BEGIN SELECT RAISE(IGNORE); END;",
+        )
+        .unwrap();
+        let error = reject_clone_lifecycle_trigger(&mut db, "7123456789abcdef0123456789abcdef");
+        assert!(error.contains("triggers on real clone admission"));
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM storage_admission_batch_binding_v1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
     }
 
     fn assert_fact_trigger_rolls_back(trigger: &str, request_id: &str) -> String {
