@@ -202,7 +202,8 @@ def exercise_codex_fact_path(*, root: Path, codex_binary: Path, clone: Path,
                      "content": "private Codex answer"}},
         {"type": "response_item", "timestamp": "2026-11-14T10:00:02Z",
          "payload": {"type": "function_call", "call_id": "call-1",
-                     "name": "functions.exec_command", "arguments": "private"}},
+                     "name": "functions.exec_command",
+                     "arguments": "private /private/synthetic/project/file.txt"}},
         {"type": "response_item", "timestamp": "2026-11-14T10:00:03Z",
          "payload": {"type": "function_call_output", "call_id": "call-1",
                      "isError": False, "output": "private tool output"}},
@@ -420,8 +421,85 @@ def exercise_codex_fact_path(*, root: Path, codex_binary: Path, clone: Path,
             "SELECT payload_json FROM plugin_evidence_v1 WHERE source_id=?", (source_id,)))
         check(all(secret not in persisted for secret in (
             "private Codex answer", "private tool output", "private check output",
-            "npm run check", "functions.exec_command")),
+            "npm run check", "functions.exec_command", "/private/synthetic/project")),
             "Codex admission persisted source text")
+
+    # The detached Rust-admitted facts are consumed by the current Python
+    # projection/export path. Storage and wire admission are Rust-owned here;
+    # Activity, session metadata, and Review/export projections remain Python.
+    from observatory.plugin_projection import project_source
+    from observatory.plugin_activity import export_proof
+    from observatory.ui_export import investigation_json, review_investigation_json
+
+    projected_store = Store(clone)
+    try:
+        project_source(projected_store, source_id)
+        sessions = projected_store.plugin_sessions()["sessions"]
+        check(len(sessions) == 1, "Rust-admitted Codex session was not projected")
+        session = sessions[0]
+        check(session["metadata_usage"] == {
+            "input_tokens": 7, "output_tokens": 3,
+            "cache_read_tokens": 2,
+        }, f"Codex usage was not projected to session metadata: {session['metadata_usage']!r}")
+
+        activity_page = projected_store.activity_page()
+        activity = activity_page["activity"]
+        check({row["domain"] for row in activity} == {"message", "tool", "check"},
+              f"Rust-admitted Codex Activity domains changed: "
+              f"{[(row['domain'], row['action'], row['result']) for row in activity]!r}")
+        check(len([row for row in activity if row["domain"] == "message"]) == 1
+              and len([row for row in activity if row["domain"] == "tool"]) == 3
+              and len([row for row in activity if row["domain"] == "check"]) == 1,
+              "Rust-admitted Codex Activity fact counts changed")
+        check(all(row["source"] == "plugin" and row["detail"] == ""
+                  and row["metadata"].get("capture") == "content-free"
+                  and row["metadata"].get("coverage") == "partial"
+                  for row in activity),
+              "Codex Activity lost content-free partial provenance")
+        check(all("usage" not in row["domain"] and "token" not in row["domain"]
+                  for row in activity), "Codex usage leaked into Activity")
+
+        selected = next(row for row in activity if row["domain"] == "check")
+        selected_export = json.loads(investigation_json("activity", selected))
+        exported = selected_export["evidence"]
+        check(exported["domain"] == "check" and exported["action"] == "lint"
+              and exported["result"] == "passed",
+              "Codex selected Activity JSON lost typed check facts")
+        check(exported["source_provenance"]["capture"] == "content-free"
+              and exported["source_provenance"]["coverage"] == "partial",
+              "Codex Activity JSON lost partial provenance")
+
+        # Generic Review receives only the content-free Activity context for
+        # this metadata-only plugin session; no Codex or Pi text is attached.
+        review_page = projected_store.activity_page(review=True)
+        review_snapshot = {"activity": review_page["activity"],
+                           "review_context": review_page["review_context"],
+                           "coverage": "loaded content-free Activity only"}
+        review_json = review_investigation_json(review_snapshot)
+        check("pi_user_text" not in review_json and "redacted_text" not in review_json,
+              "generic Codex Review unexpectedly included the Pi text payload")
+
+        consumer_payload = (json.dumps(activity, ensure_ascii=False)
+                            + json.dumps(selected_export, ensure_ascii=False) + review_json)
+        check(all(secret not in consumer_payload for secret in (
+            "private Codex answer", "private tool output", "private check output",
+            "npm run check", "functions.exec_command", "/private/synthetic/project",
+            "file.txt", "usage", "input_tokens", "output_tokens")),
+            "Python consumer projection exposed private Codex content or usage in Activity")
+        check(session["metadata_usage"]["input_tokens"] == 7,
+              "Codex usage is missing from session metadata")
+
+        proof = export_proof(projected_store, selected["id"])
+        check(proof is not None and proof["record"]["id"] == selected["id"],
+              "policy-current Activity export proof is unavailable")
+        from observatory.plugin_admission import set_source_capture
+        set_source_capture(projected_store, source_id=source_id, enabled=False)
+        check(projected_store.activity_page()["activity"] == [],
+              "capture revoke left Codex Activity visible")
+        check(export_proof(projected_store, selected["id"]) is None,
+              "capture revoke left Codex Activity export proof valid")
+    finally:
+        projected_store.close()
 
     # Unsupported Codex rows become diagnostics. The facts-only host mapper
     # refuses the whole batch instead of silently dropping diagnostic coverage.
