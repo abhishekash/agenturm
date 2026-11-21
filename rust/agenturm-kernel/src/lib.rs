@@ -115,6 +115,10 @@ pub enum ObservationKind {
         category: String,
         result: String,
     },
+    Lifecycle {
+        state: String,
+        reason_code: Option<String>,
+    },
     Usage {
         input_tokens: Option<u64>,
         output_tokens: Option<u64>,
@@ -808,6 +812,20 @@ fn validate_raw_observation_slice(
                 ))
         {
             return Err("tool observation is invalid or exceeds limit".into());
+        }
+        if let ObservationKind::Lifecycle { state, reason_code } = &row.kind
+            && (!matches!(
+                state.as_str(),
+                "running" | "completed" | "interrupted" | "paused"
+            ) || reason_code.as_ref().is_some_and(|reason| {
+                reason.is_empty()
+                    || reason.len() > 128
+                    || !reason.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+                    })
+            }))
+        {
+            return Err("lifecycle observation state or reason is invalid".into());
         }
     }
     Ok(())

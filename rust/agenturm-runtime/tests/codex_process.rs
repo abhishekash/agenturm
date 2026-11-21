@@ -72,6 +72,7 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         concat!(
             "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-1\"}}\n",
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:03Z\",\"payload\":{\"type\":\"task_aborted\",\"turn_id\":\"turn-1\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"private text never stored\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"exec_command\",\"arguments\":\"private command never stored\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"isError\":false,\"output\":\"private output never stored\"}}\n",
@@ -113,9 +114,9 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .admissions
         .get(&source_id)
         .expect("admission status");
-    assert_eq!(admission.inserted, 3);
+    assert_eq!(admission.inserted, 5);
     assert!(!admission.replay);
-    assert_eq!(admission.skipped_unprojected_facts, 2);
+    assert_eq!(admission.skipped_unprojected_facts, 1);
     assert!(admission.source_ack_sent);
 
     let idle = kernel.refresh_with_store(&mut store);
@@ -133,10 +134,10 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .expect("durable cursor committed");
     assert!(!cursor.is_empty());
     let observations = store.observations().expect("read committed observations");
-    assert_eq!(observations.len(), 3);
+    assert_eq!(observations.len(), 5);
     let mut restarted_kernel = Kernel::new();
     let restored = restarted_kernel.refresh_with_store(&mut store);
-    assert_eq!(restored.observations.len(), 3);
+    assert_eq!(restored.observations.len(), 5);
     assert_eq!(
         restored
             .observations
@@ -170,6 +171,13 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
             total_tokens: Some(10),
         }
     );
+    assert!(observations.iter().any(|(_, row)| {
+        row.kind
+            == ObservationKind::Lifecycle {
+                state: "interrupted".into(),
+                reason_code: Some("codex_task_aborted".into()),
+            }
+    }));
     let tools = observations
         .iter()
         .filter(|(_, row)| matches!(row.kind, ObservationKind::Tool { .. }))

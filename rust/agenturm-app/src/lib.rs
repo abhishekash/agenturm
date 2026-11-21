@@ -263,6 +263,33 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         .iter()
         .filter(|row| matches!(row.kind, ObservationKind::Tool { .. }))
         .count();
+    let lifecycle = observations
+        .iter()
+        .filter(|row| matches!(row.kind, ObservationKind::Lifecycle { .. }))
+        .count();
+    let latest_lifecycle = observations
+        .iter()
+        .filter_map(|row| match &row.kind {
+            ObservationKind::Lifecycle { state, reason_code } => Some((row, state, reason_code)),
+            _ => None,
+        })
+        .max_by_key(|(row, _, _)| {
+            (
+                row.observed_at_unix_ns,
+                row.harness_id.as_str(),
+                row.event_id.as_str(),
+            )
+        })
+        .map(|(row, state, reason_code)| {
+            format!(
+                "reason={} · state={} · {}/{}",
+                reason_code.as_deref().unwrap_or("not-recorded"),
+                state,
+                row.harness_id.as_str(),
+                row.identity.session_id
+            )
+        })
+        .unwrap_or_else(|| "none recorded".into());
     vec![
         MetricRow {
             label: "Sessions observed".into(),
@@ -283,6 +310,14 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         MetricRow {
             label: "Tool observations".into(),
             value: tools.to_string(),
+        },
+        MetricRow {
+            label: "Lifecycle observations".into(),
+            value: lifecycle.to_string(),
+        },
+        MetricRow {
+            label: "Latest lifecycle evidence".into(),
+            value: latest_lifecycle,
         },
     ]
 }
@@ -747,6 +782,9 @@ pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
                 }
                 ObservationKind::Tool { category, result } => {
                     serde_json::json!({"kind":"tool", "category":category, "result":result})
+                }
+                ObservationKind::Lifecycle { state, reason_code } => {
+                    serde_json::json!({"kind":"lifecycle", "state":state, "reason_code":reason_code})
                 }
                 ObservationKind::Usage {
                     input_tokens,
@@ -1406,6 +1444,35 @@ pub fn render(command: Command) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn overview_exposes_lifecycle_reason_as_source_evidence() {
+        let observation = Observation {
+            harness_id: ExtensionId::parse("harness.codex").unwrap(),
+            event_id: "event-1".into(),
+            revision: 0,
+            identity: agenturm_kernel::ObservationIdentity {
+                session_id: "session-1".into(),
+                worker_id: None,
+                turn_id: Some("turn-1".into()),
+                operation_id: None,
+            },
+            observed_at_unix_ns: 1,
+            kind: ObservationKind::Lifecycle {
+                state: "interrupted".into(),
+                reason_code: Some("codex_task_aborted".into()),
+            },
+        };
+        let rows = overview_rows(&[observation]);
+        let latest = rows
+            .iter()
+            .find(|row| row.label == "Latest lifecycle evidence")
+            .unwrap();
+        assert_eq!(
+            latest.value,
+            "reason=codex_task_aborted · state=interrupted · harness.codex/session-1"
+        );
+    }
+
     struct FixtureHarness;
 
     impl Harness for FixtureHarness {
@@ -1768,6 +1835,11 @@ mod tests {
                 total_tokens: Some(15),
             },
         };
+        let mut lifecycle_event = make_event("event-2", 20);
+        lifecycle_event.kind = StoredKind::Lifecycle {
+            state: "interrupted".into(),
+            reason_code: Some("codex_task_aborted".into()),
+        };
         let mut tool_event = make_event("event-3", 30);
         tool_event.kind = StoredKind::Tool {
             category: "shell".into(),
@@ -1779,11 +1851,7 @@ mod tests {
                 source_id: "harness.codex".into(),
                 expected_cursor: None,
                 next_cursor: "cursor-1".into(),
-                observations: vec![
-                    make_event("event-1", 10),
-                    make_event("event-2", 20),
-                    tool_event,
-                ],
+                observations: vec![make_event("event-1", 10), lifecycle_event, tool_event],
             })
             .unwrap();
         drop(store);
@@ -1804,6 +1872,15 @@ mod tests {
         assert_eq!(first["observations"][1]["observation"]["kind"], "tool");
         assert_eq!(first["observations"][1]["observation"]["category"], "shell");
         assert_eq!(first["observations"][1]["observation"]["result"], "failed");
+        assert_eq!(first["observations"][0]["observation"]["kind"], "lifecycle");
+        assert_eq!(
+            first["observations"][0]["observation"]["state"],
+            "interrupted"
+        );
+        assert_eq!(
+            first["observations"][0]["observation"]["reason_code"],
+            "codex_task_aborted"
+        );
 
         let cursor = &first["next_before"];
         let older = execute_query(&HistoryQueryOptions {
