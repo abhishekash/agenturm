@@ -1,10 +1,13 @@
 # Independently packaged Rust UI extension
 
 `examples/rust_lifecycle_extension` is a separate Cargo package and workspace.
-It depends on the public `agenturm-kernel` crate and implements one `Capability`
-and one data-only `UiContribution`. The app integration test registers both
-alongside the built-in composition; it also registers a deliberately failing
-neighbor capability and verifies the external pane remains available and the
+It depends on the public `agenturm-kernel` crate and implements one `Capability`,
+one data-only `UiContribution`, and one `ExtensionPlugin` package that installs
+both contributions atomically. The app integration test installs it alongside
+the built-in composition, verifies duplicate package IDs are rejected, and
+checks nested package IDs, package identity/registration panics, registration
+errors, and contribution-ID conflicts without partial package contributions. A deliberately
+failing neighbor capability still does not suppress the example pane; its
 failure is reported in the generic Attention view.
 
 The UI crate's TestBackend test invokes the external pane implementation and
@@ -20,6 +23,7 @@ cargo test --offline --locked -p agenturm-app --test sample_extension_compositio
 cargo test --offline --locked -p agenturm-ui --lib independently_packaged_pane_renders_generically_at_standard_and_narrow_sizes
 ```
 
-This proves crate-level Rust composition with statically linked trusted code.
-It does not establish runtime discovery, binary loading, sandboxing, deadlines,
-or isolation from panics and resource exhaustion.
+This proves crate-level Rust composition through the package-level installation
+API with statically linked trusted code. Registration is staged and committed
+atomically. It does not establish runtime discovery, binary loading,
+sandboxing, deadlines, or isolation from panics and resource exhaustion.
