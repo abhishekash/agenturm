@@ -2,9 +2,9 @@
 
 A backend conformance test can subclass ``PluginAdmissionPortContract`` and
 supply a fixture with a durable receiver, a port factory, a receiver-owned
-capture-policy mutation and a durable-state snapshot. This base suite covers
-metadata admission only. Reference-capable backends need additional provider
-schema, verification, commit, replay and revocation-erasure conformance tests.
+    capture-policy mutation and a durable-state snapshot. This base suite covers
+    metadata admission only. Reference-capable backends need additional provider
+    schema, verification, commit, replay and revocation-erasure conformance tests.
 The default Python Store backend exercises this suite below; structural
 Protocol checks alone are not conformance evidence.
 """
@@ -44,8 +44,8 @@ class PluginAdmissionPortContract:
     The fixture must preserve receiver state between ports made with the same
     directory. ``set_capture_enabled`` models the receiver's policy-control
     plane, which is deliberately outside the admission port itself.
-    ``snapshot`` returns backend-specific durable cursor/evidence/receipt state
-    so failed writes can be checked for partial effects.
+    ``snapshot`` returns backend-specific durable cursor/evidence/dirty state
+    so rejected writes can be checked for partial effects.
     """
 
     def make_backend(self, directory: Path) -> tuple[
@@ -132,10 +132,17 @@ class PluginAdmissionPortContract:
                 allow_root_gap=False, reference_submission=None,
                 reference_admissions=self.reference_admissions)
         self.assertEqual(self.durable_snapshot(SOURCE_ID), after_replay)
+        with self.assertRaises(Exception):
+            reopened.commit_batch(
+                resumed, "", batch("cursor-2", lifecycle_record("event-2")),
+                allow_root_gap=False, reference_submission=None,
+                reference_admissions=self.reference_admissions)
+        self.assertEqual(self.durable_snapshot(SOURCE_ID), after_replay)
 
     def test_new_activation_fences_old_lease_and_classifies_it(self):
         stale = self.activate()
         self.activate()
+        before = self.durable_snapshot(SOURCE_ID)
         with self.assertRaises(Exception) as raised:
             self.port.commit_batch(
                 stale, "", batch("cursor-1", lifecycle_record("event-1")),
@@ -143,6 +150,7 @@ class PluginAdmissionPortContract:
                 reference_admissions=self.reference_admissions)
         self.assertEqual(self.port.classify_lease_failure(
             raised.exception, SOURCE_ID), "source_fenced")
+        self.assertEqual(self.durable_snapshot(SOURCE_ID), before)
 
     def test_revocation_is_visible_and_classified_as_capture_revoked(self):
         lease = self.activate()
@@ -163,7 +171,7 @@ class PluginAdmissionPortContract:
             raised.exception, SOURCE_ID), "capture_revoked")
         self.assertEqual(self.durable_snapshot(SOURCE_ID), after_revoke)
 
-    def test_conflicting_batch_rolls_back_cursor_and_can_resume(self):
+    def test_conflicting_batch_is_rejected_without_durable_changes(self):
         lease = self.activate()
         first = batch("cursor-1", lifecycle_record("event-1"))
         self.port.commit_batch(lease, "", first, allow_root_gap=False,
