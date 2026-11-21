@@ -6,7 +6,7 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn configured_opencode_checks_survive_ack_reopen_and_restart() {
+fn configured_opencode_evidence_survives_ack_reopen_and_restart() {
     let (Some(app), Some(host)) = (
         std::env::var_os("AGENTURM_RUNTIME_APP"),
         std::env::var_os("AGENTURM_RUNTIME_PLUGIN_HOST"),
@@ -102,7 +102,74 @@ fn configured_opencode_checks_survive_ack_reopen_and_restart() {
     }
     run(&mut collect);
     assert_eq!(run(&mut query), durable);
+    verify_idle_correction(&source, &mut collect, &mut query);
     fs::remove_dir_all(root).unwrap();
+}
+
+fn verify_idle_correction(source: &Path, collect: &mut Command, query: &mut Command) {
+    let native = Connection::open(source).unwrap();
+    native
+        .execute(
+            "INSERT INTO session_message VALUES (
+                'msg_assistant', 'ses_schema_fixture', 'assistant', 10,
+                1794650400030, 1794650400030, ?1
+            )",
+            [r#"{"finish":"stop"}"#],
+        )
+        .unwrap();
+    collect_lifecycle(collect, query, "running", "opencode_latest_assistant");
+
+    native
+        .execute(
+            "INSERT INTO session_message VALUES (
+                'msg_idle', 'ses_schema_fixture', 'idle', 20,
+                1794650400040, 1794650400040, ?1
+            )",
+            [r#"{"outcome":"succeeded"}"#],
+        )
+        .unwrap();
+    let completed = collect_lifecycle(collect, query, "completed", "opencode_idle_succeeded");
+
+    native
+        .execute(
+            "UPDATE session_message SET data=?1, time_updated=time_updated+1 WHERE id='msg_idle'",
+            [r#"{"outcome":"failed"}"#],
+        )
+        .unwrap();
+    let corrected = collect_lifecycle(collect, query, "failed", "opencode_idle_failed");
+    assert_eq!(corrected["event_id"], completed["event_id"]);
+    assert!(corrected["revision"].as_u64().unwrap() > completed["revision"].as_u64().unwrap());
+    assert_eq!(corrected["identity"]["session_id"], "ses_schema_fixture");
+    assert!(corrected["identity"]["turn_id"].is_null());
+}
+
+fn collect_lifecycle(
+    collect: &mut Command,
+    query: &mut Command,
+    state: &str,
+    reason: &str,
+) -> Value {
+    let expected = json!({"kind":"lifecycle","state":state,"reason_code":reason});
+    // A poll can finish an earlier bounded sweep before observing the write.
+    for _ in 0..10 {
+        let report = run(collect);
+        assert!(report.contains("ACK sent=true"), "{report}");
+        let page: Value = serde_json::from_str(&run(query)).unwrap();
+        if let Some(row) = page["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|row| row["observation"]["kind"] == "lifecycle")
+            && row["observation"] == expected
+        {
+            return row.clone();
+        }
+    }
+    panic!(
+        "no latest lifecycle {expected} after ten polls: {}",
+        run(query)
+    );
 }
 
 fn make_native_fixture(path: &Path) {
