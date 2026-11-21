@@ -510,6 +510,11 @@ def commit_batch(store: Store, lease: SourceLease, expected_cursor: str,
                  lease.policy_epoch, lease.content_fingerprint)):
             raise ProtocolError("stale plugin source lease")
         reference_admissions.require_source_providers(db, lease.source_id)
+        # The empty cursor is the initial checkpoint, not a destination after
+        # the source has advanced. Otherwise an empty poll can rewind the
+        # durable cursor and make the next worker replay old history.
+        if not batch.cursor and row["cursor"]:
+            raise ProtocolError("plugin cursor cannot return to empty")
         if (not rows and not batch.member_id and batch.cursor == row["cursor"]
                 and expected_cursor == row["cursor"]):
             if requested:

@@ -489,6 +489,7 @@ impl Request {
                     || !cursor(next_cursor)
                     || !digest(batch_digest, 32)
                     || records.len() > MAX_RECORDS
+                    || (next_cursor.is_empty() && !records.is_empty())
                 {
                     return Err(ContractError::Invalid("invalid v2 source lease or batch"));
                 }
@@ -533,6 +534,7 @@ impl Request {
                     || !digest(batch_digest, 32)
                     || records.is_empty()
                     || records.len() > MAX_RECORDS
+                    || next_cursor.is_empty()
                 {
                     return Err(ContractError::Invalid(
                         "invalid v2 source lease or fact batch",
@@ -586,8 +588,8 @@ impl Request {
                     || !cursor(expected_cursor)
                     || !cursor(next_cursor)
                     || !digest(batch_digest, 32)
-                    || records.is_empty()
                     || records.len() > MAX_RECORDS
+                    || (next_cursor.is_empty() && !records.is_empty())
                 {
                     return Err(ContractError::Invalid(
                         "invalid v2 source lease or mixed admission batch",
@@ -798,6 +800,8 @@ impl Reply {
                     Operation::AdmitBatch {
                         cursor,
                         batch_digest,
+                        expected_cursor,
+                        records,
                         ..
                     },
                     OperationResult::BatchAdmission(result),
@@ -806,6 +810,7 @@ impl Reply {
                         || result.batch_digest != *batch_digest
                         || result.dirty_seq < 0
                         || result.disposition == Disposition::Idle
+                            && (!records.is_empty() || cursor != expected_cursor)
                 }
                 (
                     Operation::RevokeSource {
@@ -1043,6 +1048,39 @@ mod tests {
         };
         records[1].payload_json = "{\"role\":\"assistant\",\"content\":\"private\"}".to_owned();
         assert!(private.validate().is_err());
+    }
+
+    #[test]
+    fn mixed_empty_batch_allows_initial_idle_and_cursor_only_advance() {
+        let mut request = mixed_fixture();
+        let Operation::AdmitBatch { records, .. } = &mut request.operation else {
+            unreachable!()
+        };
+        records.clear();
+        assert!(request.validate().is_ok());
+
+        let Operation::AdmitBatch { cursor, .. } = &mut request.operation else {
+            unreachable!()
+        };
+        cursor.clear();
+        assert!(request.validate().is_ok());
+
+        let Operation::AdmitBatch { records, .. } = &mut request.operation else {
+            unreachable!()
+        };
+        records.push(PreparedBatchRecord {
+            event_id_hash: "9".repeat(64),
+            revision: 0,
+            kind: BatchRecordKind::Message,
+            time_ns: 101,
+            payload_json: "{\"role\":\"assistant\"}".to_owned(),
+            record_digest: "8".repeat(64),
+            native_session_id: "native-one".to_owned(),
+            native_worker_id: String::new(),
+            native_turn_id: String::new(),
+            native_operation_id: String::new(),
+        });
+        assert!(request.validate().is_err());
     }
 
     #[test]

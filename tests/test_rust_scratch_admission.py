@@ -601,6 +601,113 @@ class RustScratchAdmissionTests(unittest.TestCase):
         self.assertEqual(canonical_file_state(), canonical_before,
                          "detached-clone admission changed the canonical Store")
 
+    def test_empty_mixed_batch_cursor_policy_on_detached_clone(self):
+        from observatory.plugin_admission import activate_source
+
+        source_id = "empty-batch-source"
+        generation = "d" * 64
+        canonical_path = self.root / "empty-canonical.db"
+        clone_path = self.root / "empty-clone.db"
+        canonical = Store(str(canonical_path))
+        receiver_id = canonical.receiver_id
+        activate_source(canonical, plugin_id=PLUGIN, source_id="clone-seed",
+                        generation=GENERATION)
+        canonical.close()
+        with closing(sqlite3.connect(canonical_path)) as original:
+            with closing(sqlite3.connect(clone_path)) as clone:
+                original.backup(clone)
+        with closing(sqlite3.connect(clone_path)) as db:
+            db.execute("INSERT INTO schema_meta(key,value) VALUES(?,?)",
+                       ("storage_activation_clone_v1", "enabled"))
+            db.commit()
+        activation = {"version": 2, "request_id": "a" * 32,
+                      "receiver_id": receiver_id,
+                      "operation": {"op": "activate_source", "plugin_id": PLUGIN,
+                                    "source_id": source_id, "generation": generation}}
+        lease = self.apply_activation_clone_v2(activation, path=clone_path)["result"]["lease"]
+
+        def receipts():
+            with closing(sqlite3.connect(clone_path)) as db:
+                exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                                    "AND name='storage_admission_request_v2'").fetchone()
+                if exists is None:
+                    return ()
+                return tuple(tuple(row) for row in db.execute(
+                    "SELECT request_id,request_digest,cursor,batch_digest,dirty_seq,disposition "
+                    "FROM storage_admission_request_v2 WHERE source_id=? ORDER BY request_id",
+                    (source_id,)))
+
+        initial = self.batch_source_snapshot(clone_path, source_id)
+        idle = self.mixed_batch_request(PollBatch(source_id, "", ()), lease,
+                                        "1" * 32, "")
+        self.assertIn("mixed admission is unavailable through the storage service path",
+                      self.apply_activation_clone_v2(idle, path=clone_path, success=False))
+        self.assertEqual(self.apply_mixed_clone_batch(
+            idle, path=clone_path)["result"]["disposition"], "idle")
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id), initial)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id), ())
+
+        cursor_only = self.mixed_batch_request(PollBatch(source_id, "cursor-one", ()),
+                                               lease, "2" * 32, "")
+        committed = self.apply_mixed_clone_batch(cursor_only, path=clone_path)["result"]
+        self.assertEqual((committed["disposition"], committed["cursor"],
+                          committed["dirty_seq"]), ("committed", "cursor-one", 0))
+        after_commit = self.batch_source_snapshot(clone_path, source_id)
+        self.assertEqual((after_commit[0][3], after_commit[0][4]), ("cursor-one", ""))
+        self.assertEqual(after_commit[1], ())
+        committed_binding = self.batch_binding_snapshot(clone_path, source_id)
+        self.assertEqual(committed_binding,
+                         (generation, lease["policy_epoch"], "", "cursor-one",
+                          cursor_only["operation"]["batch_digest"],
+                          hashlib.sha256(b"agenturm-prepared-rows-v1\0[]").hexdigest(), 0))
+        committed_receipts = receipts()
+        self.assertEqual(self.apply_mixed_clone_batch(
+            cursor_only, path=clone_path)["result"]["disposition"], "replay")
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id), after_commit)
+        self.assertEqual(receipts(), committed_receipts)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                         committed_binding)
+
+        same_cursor_idle = self.mixed_batch_request(
+            PollBatch(source_id, "cursor-one", ()), lease, "3" * 32, "cursor-one")
+        self.assertEqual(self.apply_mixed_clone_batch(
+            same_cursor_idle, path=clone_path)["result"]["disposition"], "idle")
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id), after_commit)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                         committed_binding)
+        before_rewind_receipts = receipts()
+        rewind = self.mixed_batch_request(PollBatch(source_id, "", ()), lease,
+                                          "4" * 32, "cursor-one")
+        self.assertIn("source cursor cannot return to empty",
+                      self.apply_mixed_clone_batch(rewind, path=clone_path, success=False))
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id), after_commit)
+        self.assertEqual(receipts(), before_rewind_receipts)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                         committed_binding)
+
+        stale_cursor = self.mixed_batch_request(
+            PollBatch(source_id, "cursor-two", ()), lease, "6" * 32, "stale")
+        self.assertIn("stale source cursor",
+                      self.apply_mixed_clone_batch(stale_cursor, path=clone_path,
+                                                   success=False))
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id), after_commit)
+        self.assertEqual(receipts(), before_rewind_receipts)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                         committed_binding)
+
+        renewed = json.loads(json.dumps(activation))
+        renewed["request_id"] = "b" * 32
+        self.apply_activation_clone_v2(renewed, path=clone_path)
+        after_renewal = self.batch_source_snapshot(clone_path, source_id)
+        stale = self.mixed_batch_request(PollBatch(source_id, "cursor-two", ()),
+                                         lease, "5" * 32, "cursor-one")
+        self.assertIn("stale or unsupported source lease",
+                      self.apply_mixed_clone_batch(stale, path=clone_path, success=False))
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id), after_renewal)
+        self.assertEqual(receipts(), before_rewind_receipts)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                         committed_binding)
+
     def test_v2_durable_receipt_exact_replay_and_conflict(self):
         first = self.v2_request(PollBatch(SOURCE, "one", (fact(),)))
         digest = hashlib.sha256(json.dumps(first, sort_keys=True, separators=(",", ":"),
