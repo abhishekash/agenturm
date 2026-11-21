@@ -785,6 +785,28 @@ mod tests {
     }
 
     #[test]
+    fn display_error_is_emitted_as_an_identity_bearing_error_diagnostic() {
+        let first = row("u1", 0, json!({"type":"user"}));
+        let context = initial_context(Path::new("/x/sess_one/messages.jsonl"), &first).unwrap();
+        let display_error = row(
+            "display-error",
+            1,
+            json!({"type":"session_metadata","key":"displayError"}),
+        );
+        let (facts, _) = translate_line(&display_error, &context, "generation", 1).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0]["kind"], "diagnostic");
+        assert_eq!(facts[0]["identity"]["session_id"], "sess_one");
+        assert_eq!(facts[0]["payload"]["code"], "kiro_display_error");
+        assert_eq!(facts[0]["payload"]["severity"], "error");
+        assert!(
+            !serde_json::to_string(&facts)
+                .unwrap()
+                .contains("display error text")
+        );
+    }
+
+    #[test]
     fn single_pending_interaction_is_checkpointed_and_resolved_exactly() {
         let first = row("u1", 0, json!({"type":"user"}));
         let context = initial_context(Path::new("/x/sess_one/messages.jsonl"), &first).unwrap();

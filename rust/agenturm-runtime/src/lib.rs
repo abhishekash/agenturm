@@ -777,7 +777,7 @@ fn validate_skipped_record(record: &WireSkippedRecord) -> Result<()> {
             let diagnostic: WireDiagnostic = serde_json::from_value(record.payload.clone())?;
             if diagnostic.code.is_empty()
                 || diagnostic.code.len() > 128
-                || !matches!(diagnostic.severity.as_str(), "info" | "warning")
+                || !matches!(diagnostic.severity.as_str(), "info" | "warning" | "error")
             {
                 return Err(RuntimeError::new("source diagnostic payload is invalid"));
             }
@@ -1205,6 +1205,21 @@ mod tests {
             "\"role\":\"user\",\"content\":\"private prompt\"",
         );
         assert!(parse_source_batch(&extra_content, "harness.codex").is_err());
+    }
+
+    #[test]
+    fn identity_bearing_error_diagnostics_are_validated_and_counted() {
+        let response = r#"{"type":"batch","protocol":1,"source_id":"harness.kiro","cursor":"next","records":[{"event_id":"kiro:display-error","revision":0,"kind":"diagnostic","time_ns":"11","identity":{"session_id":"s1","turn_id":"turn-1"},"payload":{"code":"kiro_display_error","severity":"error"}}]}"#;
+        let batch = parse_source_batch(response, "harness.kiro").unwrap();
+        assert!(batch.observations.is_empty());
+        assert_eq!(batch.skipped_unprojected_facts, 1);
+        let unsupported_severity = response.replace("\"error\"", "\"critical\"");
+        assert!(parse_source_batch(&unsupported_severity, "harness.kiro").is_err());
+        let raw_message = response.replace(
+            "\"severity\":\"error\"",
+            "\"severity\":\"error\",\"message\":\"private text\"",
+        );
+        assert!(parse_source_batch(&raw_message, "harness.kiro").is_err());
     }
 
     #[test]
