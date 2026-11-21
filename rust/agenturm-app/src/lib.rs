@@ -1,7 +1,7 @@
 //! Rust application composition boundary.
 //!
 //! The app exposes generic kernel extension registration, durable refresh,
-//! one explicit Codex usage command, and a full-screen durable-history viewer.
+//! an explicit registered-plugin usage command, and a full-screen durable-history viewer.
 //! Persistent source configuration and multi-harness composition are still
 //! open.
 
@@ -9,7 +9,7 @@ use agenturm_kernel::{
     Capability, ExtensionId, Harness, Kernel, MetricRow, Observation, ObservationKind,
     ObservationStore, PaneModel, RegistrationError, Snapshot, SourceAdapter, UiContribution,
 };
-use agenturm_runtime::{ProcessConfig, ProcessSource};
+use agenturm_runtime::{CODEX_PLUGIN_ID, ProcessConfig, ProcessSource, UsageBatchDecoder};
 use agenturm_store::Store;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -94,6 +94,7 @@ pub enum Command {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IngestOptions {
+    pub plugin_id: String,
     pub plugin_host: PathBuf,
     pub adapter: PathBuf,
     pub source_root: PathBuf,
@@ -189,7 +190,10 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("--version" | "-V" | "version") if args.len() == 1 => Ok(Command::Version),
         Some("status") if args.len() == 1 => Ok(Command::Status),
         Some("inspect") => parse_inspect_options(&args[1..]).map(Command::Inspect),
-        Some("ingest-codex-usage") => parse_ingest_options(&args[1..]).map(Command::Ingest),
+        Some("ingest-usage") => parse_ingest_options(&args[1..], None).map(Command::Ingest),
+        Some("ingest-codex-usage") => {
+            parse_ingest_options(&args[1..], Some(CODEX_PLUGIN_ID)).map(Command::Ingest)
+        }
         _ => Err(usage()),
     }
 }
@@ -202,7 +206,11 @@ fn parse_inspect_options(args: &[String]) -> Result<PathBuf, String> {
     }
 }
 
-fn parse_ingest_options(args: &[String]) -> Result<IngestOptions, String> {
+fn parse_ingest_options(
+    args: &[String],
+    default_plugin_id: Option<&str>,
+) -> Result<IngestOptions, String> {
+    let mut plugin_id = default_plugin_id.map(str::to_owned);
     let mut plugin_host = None;
     let mut adapter = None;
     let mut source_root = None;
@@ -216,6 +224,7 @@ fn parse_ingest_options(args: &[String]) -> Result<IngestOptions, String> {
             return Err(usage());
         }
         let slot = match key.as_str() {
+            "--plugin-id" => &mut plugin_id,
             "--plugin-host" => &mut plugin_host,
             "--adapter" => &mut adapter,
             "--source-root" => &mut source_root,
@@ -229,6 +238,7 @@ fn parse_ingest_options(args: &[String]) -> Result<IngestOptions, String> {
         index += 2;
     }
     Ok(IngestOptions {
+        plugin_id: plugin_id.ok_or_else(usage)?,
         plugin_host: PathBuf::from(plugin_host.ok_or_else(usage)?),
         adapter: PathBuf::from(adapter.ok_or_else(usage)?),
         source_root: PathBuf::from(source_root.ok_or_else(usage)?),
@@ -238,7 +248,7 @@ fn parse_ingest_options(args: &[String]) -> Result<IngestOptions, String> {
 }
 
 fn usage() -> String {
-    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
+    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
 }
 
 pub fn execute_inspect(db_path: &std::path::Path) -> Result<Snapshot, String> {
@@ -250,13 +260,15 @@ pub fn execute_inspect(db_path: &std::path::Path) -> Result<Snapshot, String> {
 pub fn execute_ingest(options: &IngestOptions) -> Result<String, String> {
     let source_id = ExtensionId::parse(options.source_id.clone())
         .map_err(|error| format!("invalid source ID: {error}"))?;
-    let config = ProcessConfig::codex(
+    let config = ProcessConfig::new(
         options.plugin_host.clone(),
         options.adapter.clone(),
         options.source_root.clone(),
         options.source_id.clone(),
+        options.plugin_id.clone(),
     );
-    let source = ProcessSource::spawn(config).map_err(|error| error.to_string())?;
+    let source = ProcessSource::spawn_with_decoder(config, UsageBatchDecoder)
+        .map_err(|error| error.to_string())?;
     let mut store =
         Store::open(&options.db).map_err(|error| format!("open store failed: {error}"))?;
     let mut kernel = Kernel::new();
@@ -309,9 +321,10 @@ pub fn render(command: Command) -> String {
             "\n",
             "Usage: agenturm [--help|--version|status]\n",
             "       agenturm inspect --db <path>\n",
+            "       agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>\n",
             "       agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>\n",
             "\n",
-            "This explicit projection stores token counters and skips all other valid Codex facts.\n",
+            "This explicit projection stores token counters and skips other supported facts.\n",
             "Use `agenturm inspect --db <path>` to view committed history in the full-screen interface.\n",
             "Persistent source configuration is not yet available.\n",
         )
@@ -323,7 +336,7 @@ pub fn render(command: Command) -> String {
             "Registered capabilities: 0\n",
             "Registered UI contributions: 0\n",
             "Production storage: not connected (no persistent app configuration)\n",
-            "Explicit one-shot Codex usage projection: available\n",
+            "One-shot registered-plugin usage projection: available\n",
         )
         .into(),
         Command::Inspect(_) => String::new(),
@@ -427,11 +440,36 @@ mod tests {
             "harness.codex",
         ]
         .map(str::to_owned);
-        assert!(matches!(parse_command(&args), Ok(Command::Ingest(_))));
+        let Command::Ingest(codex) = parse_command(&args).unwrap() else {
+            panic!("Codex usage command must parse as ingestion");
+        };
+        assert_eq!(codex.plugin_id, CODEX_PLUGIN_ID);
         assert!(parse_command(&args[..args.len() - 2]).is_err());
         let mut duplicate = args.to_vec();
         duplicate.extend(["--db".into(), "/tmp/other.sqlite".into()]);
         assert!(parse_command(&duplicate).is_err());
+
+        let generic = [
+            "ingest-usage",
+            "--plugin-id",
+            "example.rust-pi-harness",
+            "--plugin-host",
+            "/bin/agenturm-plugin-host",
+            "--adapter",
+            "/bin/agenturm-pi-harness",
+            "--source-root",
+            "/tmp/pi.jsonl",
+            "--db",
+            "/tmp/agenturm.sqlite",
+            "--source-id",
+            "harness.pi",
+        ]
+        .map(str::to_owned);
+        let Command::Ingest(pi) = parse_command(&generic).unwrap() else {
+            panic!("generic usage command must parse as ingestion");
+        };
+        assert_eq!(pi.plugin_id, "example.rust-pi-harness");
+        assert!(parse_command(&generic[..2]).is_err());
     }
 
     #[test]
@@ -439,7 +477,7 @@ mod tests {
         let status = render(Command::Status);
         assert!(status.contains("Registered harnesses: 0"));
         assert!(status.contains("Production storage: not connected"));
-        assert!(status.contains("Explicit one-shot Codex usage projection: available"));
+        assert!(status.contains("One-shot registered-plugin usage projection: available"));
     }
 
     #[test]
