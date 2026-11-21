@@ -909,6 +909,48 @@ fn preflight_clone_policy_deletes(db: &Connection, source_id: &str) -> Result<()
     Ok(())
 }
 
+fn validate_clone_policy_replay_source(
+    db: &Connection,
+    source_id: &str,
+    receiver: &str,
+    plugin_id: &str,
+    generation: &str,
+    receipt_policy_epoch: i64,
+    receipt_dirty_seq: i64,
+) -> Result<()> {
+    let current: Option<(String, String, String, i64, i64)> = db
+        .query_row(
+            "SELECT receiver_id,plugin_id,generation,policy_epoch,dirty_seq \
+             FROM plugin_source_cursor_v1 WHERE source_id=?",
+            [source_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((current_receiver, current_plugin, current_generation, policy, dirty_seq)) = current
+    else {
+        return Err(reject("clone policy replay has no persisted source"));
+    };
+    if current_receiver != receiver
+        || current_plugin != plugin_id
+        || current_generation != generation
+        || policy < receipt_policy_epoch
+        || dirty_seq < receipt_dirty_seq
+    {
+        return Err(reject(
+            "clone policy replay is not fenced by the current source state",
+        ));
+    }
+    Ok(())
+}
+
 fn verify_real_clone_lifecycle_commit(
     db: &Connection,
     request: &Request,
@@ -2743,6 +2785,32 @@ fn revoke_source_guarded_mode(
         if stored_receiver != receiver || digest != replay.digest || source != lease.source_id {
             return Err(reject("conflicting v2 source revocation request"));
         }
+        if real_clone {
+            let expected_dirty = request_dirty_seq
+                .checked_add(1)
+                .ok_or_else(|| reject("source revoke dirty sequence overflow"))?;
+            let expected_policy = lease
+                .policy_epoch
+                .checked_add(1)
+                .ok_or_else(|| reject("source revoke policy epoch overflow"))?;
+            if stored_cursor != *cursor
+                || dirty != expected_dirty
+                || epoch == lease.epoch
+                || policy != expected_policy
+                || enabled != 0
+            {
+                return Err(reject("conflicting v2 source revocation receipt"));
+            }
+            validate_clone_policy_replay_source(
+                &transaction,
+                &lease.source_id,
+                &receiver,
+                &lease.plugin_id,
+                &lease.generation,
+                policy,
+                dirty,
+            )?;
+        }
         transaction.commit()?;
         return Ok(SourceRevocationReceipt {
             cursor: stored_cursor,
@@ -3388,6 +3456,17 @@ fn set_source_capture_guarded_mode(
         {
             return Err(reject("conflicting v2 source capture request"));
         }
+        if real_clone {
+            validate_clone_policy_replay_source(
+                &transaction,
+                &lease.source_id,
+                &receiver,
+                &lease.plugin_id,
+                &lease.generation,
+                policy,
+                dirty_seq,
+            )?;
+        }
         transaction.commit()?;
         return Ok(SourceCaptureSetReceipt {
             lease: v2::SourceLease {
@@ -3522,6 +3601,9 @@ fn set_source_capture_guarded_mode(
     };
     if !is_noop {
         if !enabled {
+            if real_clone {
+                preflight_clone_policy_deletes(&transaction, &lease.source_id)?;
+            }
             transaction.execute(
                 "DELETE FROM plugin_evidence_v1 WHERE source_id=?",
                 [&lease.source_id],

@@ -287,6 +287,18 @@ class RustScratchAdmissionTests(unittest.TestCase):
                     f"SELECT * FROM {table} WHERE {where} ORDER BY rowid", params)))
             return tuple(result)
 
+    @staticmethod
+    def native_lifecycle_snapshot(path, source_id):
+        with closing(sqlite3.connect(str(path))) as db:
+            activity = tuple(tuple(row) for row in db.execute(
+                "SELECT event_key,payload FROM activity_index_v1 "
+                "WHERE kind='plugin' AND owner_key=? ORDER BY event_key", (source_id,)))
+            native_index = tuple(tuple(row) for row in db.execute(
+                "SELECT * FROM native_lifecycle_index_v1 ORDER BY event_key"))
+            native_dirty = tuple(tuple(row) for row in db.execute(
+                "SELECT * FROM native_lifecycle_dirty_v1 ORDER BY kind,owner_key"))
+            return activity, native_index, native_dirty
+
     @classmethod
     def comparable_clone_policy_state(cls, path, source_id):
         snapshot = cls.batch_source_snapshot(path, source_id)
@@ -874,6 +886,20 @@ class RustScratchAdmissionTests(unittest.TestCase):
         python_lease = activate_source(oracle, plugin_id=PLUGIN, source_id=source_id,
                                        generation=generation)
 
+        idle_capture = self.clone_capture_request(
+            rust_lease, enabled=True, expected_enabled=True, cursor="", dirty_seq=0,
+            request_id="0" * 32)
+        idle_state = self.clone_policy_state_snapshot(clone_path, source_id)
+        self.assertEqual(self.apply_clone_policy(
+            idle_capture, path=clone_path)["result"]["disposition"], "idle")
+        idle_receipt = self.policy_receipts_snapshot(
+            clone_path, "storage_source_capture_set_v2", source_id)
+        idle_replay = self.apply_clone_policy(idle_capture, path=clone_path)
+        self.assertEqual(idle_replay["result"]["disposition"], "replay")
+        self.assertEqual(self.clone_policy_state_snapshot(clone_path, source_id), idle_state)
+        self.assertEqual(self.policy_receipts_snapshot(
+            clone_path, "storage_source_capture_set_v2", source_id), idle_receipt)
+
         def mirror_projection_to_clone():
             project_source(oracle, source_id)
             tables = ("plugin_session_projection_v1", "activity_index_v1",
@@ -944,6 +970,58 @@ class RustScratchAdmissionTests(unittest.TestCase):
         disable = self.clone_capture_request(
             rust_lease, enabled=False, expected_enabled=True, cursor="policy-one",
             dirty_seq=1, request_id="c" * 32)
+        for index, attack in enumerate(("native-lifecycle-payload", "native-index-overlap"),
+                                       start=1):
+            with self.subTest(capture_delete_preflight=attack):
+                attacked_path = self.root / f"policy-{attack}-{index}.db"
+                with closing(sqlite3.connect(clone_path)) as original:
+                    with closing(sqlite3.connect(attacked_path)) as attacked:
+                        original.backup(attacked)
+                with closing(sqlite3.connect(attacked_path)) as db:
+                    event_key, payload = db.execute(
+                        "SELECT event_key,payload FROM activity_index_v1 "
+                        "WHERE kind='plugin' AND owner_key=? ORDER BY event_key LIMIT 1",
+                        (source_id,)).fetchone()
+                    if attack == "native-lifecycle-payload":
+                        activity_payload = json.loads(payload)
+                        activity_payload["native_lifecycle"] = {"state": "started"}
+                        db.execute("UPDATE activity_index_v1 SET payload=? WHERE event_key=?",
+                                   (json.dumps(activity_payload, sort_keys=True,
+                                               separators=(",", ":")), event_key))
+                        # Leave a clean baseline so a delete-trigger dirty row would
+                        # be an observable side effect if preflight did not stop it.
+                        db.execute("DELETE FROM native_lifecycle_dirty_v1 "
+                                   "WHERE kind='plugin' AND owner_key=?", (source_id,))
+                    else:
+                        db.execute(
+                            "INSERT INTO native_lifecycle_index_v1 "
+                            "(event_key,kind,owner_key,receiver_id,sender_id,request_id,sequence,"
+                            "scope_key,state_hash,payload,event_kind) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                            (event_key, "native", "native-owner", receiver_id, "sender",
+                             "request", 1, "scope", "a" * 64,
+                             json.dumps({"native_lifecycle": {"state": "started"}},
+                                        sort_keys=True, separators=(",", ":")), "started"))
+                    db.commit()
+                before_attack = self.clone_policy_state_snapshot(attacked_path, source_id)
+                native_before_attack = self.native_lifecycle_snapshot(attacked_path, source_id)
+                binding_before_attack = self.batch_binding_snapshot(attacked_path, source_id)
+                admission_before_attack = self.admission_receipts_snapshot(
+                    attacked_path, source_id)
+                capture_before_attack = self.policy_receipts_snapshot(
+                    attacked_path, "storage_source_capture_set_v2", source_id)
+                failure = self.apply_clone_policy(disable, path=attacked_path, success=False)
+                self.assertIn("real clone", failure)
+                self.assertEqual(self.clone_policy_state_snapshot(attacked_path, source_id),
+                                 before_attack)
+                self.assertEqual(self.native_lifecycle_snapshot(attacked_path, source_id),
+                                 native_before_attack)
+                self.assertEqual(self.batch_binding_snapshot(attacked_path, source_id),
+                                 binding_before_attack)
+                self.assertEqual(self.admission_receipts_snapshot(attacked_path, source_id),
+                                 admission_before_attack)
+                self.assertEqual(self.policy_receipts_snapshot(
+                    attacked_path, "storage_source_capture_set_v2", source_id),
+                    capture_before_attack)
         before_normal_disable = self.clone_policy_state_snapshot(clone_path, source_id)
         normal_disable = self.apply_activation_clone_v2(
             disable, path=clone_path, success=False)
@@ -976,8 +1054,10 @@ class RustScratchAdmissionTests(unittest.TestCase):
         self.assertEqual(self.comparable_clone_policy_state(clone_path, source_id),
                          self.comparable_clone_policy_state(oracle_path, source_id))
         self.assertEqual(self.batch_binding_snapshot(clone_path, source_id), ())
-        self.assertEqual(self.policy_receipts_snapshot(
-            clone_path, "storage_source_capture_set_v2", source_id)[0][8], "committed")
+        disable_receipt = next(row for row in self.policy_receipts_snapshot(
+            clone_path, "storage_source_capture_set_v2", source_id)
+                               if row[0] == disable["request_id"])
+        self.assertEqual(disable_receipt[8], "committed")
         self.assertEqual(canonical_file_state(), canonical_before)
         disabled_lease = disabled["result"]["lease"]
 
@@ -1006,6 +1086,12 @@ class RustScratchAdmissionTests(unittest.TestCase):
         self.assertEqual(self.comparable_clone_policy_state(clone_path, source_id),
                          self.comparable_clone_policy_state(oracle_path, source_id))
         self.assertEqual(self.batch_binding_snapshot(clone_path, source_id), ())
+        before_historical_capture_replay = self.clone_policy_state_snapshot(
+            clone_path, source_id)
+        historical_capture = self.apply_clone_policy(disable, path=clone_path)
+        self.assertEqual(historical_capture["result"]["disposition"], "replay")
+        self.assertEqual(self.clone_policy_state_snapshot(clone_path, source_id),
+                         before_historical_capture_replay)
 
         reactivation = {"version": 2, "request_id": "f" * 32,
                         "receiver_id": receiver_id,
@@ -1070,6 +1156,26 @@ class RustScratchAdmissionTests(unittest.TestCase):
                          (False, "policy-two", 4, 5))
         self.assertEqual(self.policy_receipts_snapshot(
             clone_path, "storage_source_revoke_v2", source_id)[0][8], 0)
+
+        reenable_lease = {
+            "receiver_id": receiver_id, "plugin_id": PLUGIN, "source_id": source_id,
+            "generation": generation, "epoch": revoked_lease["lease_epoch"],
+            "policy_epoch": revoked_lease["policy_epoch"],
+        }
+        reenable_after_revoke = self.clone_capture_request(
+            reenable_lease, enabled=True, expected_enabled=False, cursor="policy-two",
+            dirty_seq=5, request_id="6" * 32)
+        self.assertEqual(self.apply_clone_policy(
+            reenable_after_revoke, path=clone_path)["result"]["disposition"], "committed")
+        self.assertEqual(set_source_capture(oracle, source_id=source_id, enabled=True), 5)
+        self.assertEqual(self.comparable_clone_policy_state(clone_path, source_id),
+                         self.comparable_clone_policy_state(oracle_path, source_id))
+        before_historical_revoke_replay = self.clone_policy_state_snapshot(
+            clone_path, source_id)
+        historical_revoke = self.apply_clone_policy(revoke, path=clone_path)
+        self.assertEqual(historical_revoke["result"]["disposition"], "replay")
+        self.assertEqual(self.clone_policy_state_snapshot(clone_path, source_id),
+                         before_historical_revoke_replay)
 
         stale_after_revoke = self.mixed_batch_request(
             PollBatch(source_id, "policy-three", ({
@@ -1141,6 +1247,89 @@ class RustScratchAdmissionTests(unittest.TestCase):
                 self.assertEqual(self.policy_receipts_snapshot(
                     clone_path, "storage_source_capture_set_v2", source_id),
                     capture_receipts_before)
+
+    def test_clone_policy_replay_rejects_orphan_committed_receipts(self):
+        from observatory.plugin_admission import activate_source
+
+        canonical_path = self.root / "orphan-replay-canonical.db"
+        canonical = Store(str(canonical_path))
+        receiver_id = canonical.receiver_id
+        activate_source(canonical, plugin_id=PLUGIN, source_id="orphan-replay-seed",
+                        generation=GENERATION)
+        canonical.close()
+
+        for operation in ("capture", "revoke"):
+            with self.subTest(operation=operation):
+                source_id = f"orphan-replay-{operation}"
+                clone_path = self.root / f"orphan-replay-{operation}.db"
+                with closing(sqlite3.connect(canonical_path)) as original:
+                    with closing(sqlite3.connect(clone_path)) as clone:
+                        original.backup(clone)
+                with closing(sqlite3.connect(clone_path)) as db:
+                    db.execute("INSERT INTO schema_meta(key,value) VALUES(?,?)",
+                               ("storage_activation_clone_v1", "enabled"))
+                    db.commit()
+                activation = {"version": 2, "request_id": "a" * 32,
+                              "receiver_id": receiver_id,
+                              "operation": {"op": "activate_source", "plugin_id": PLUGIN,
+                                            "source_id": source_id,
+                                            "generation": GENERATION}}
+                lease = self.apply_activation_clone_v2(
+                    activation, path=clone_path)["result"]["lease"]
+                if operation == "capture":
+                    request = self.clone_capture_request(
+                        lease, enabled=False, expected_enabled=True, cursor="", dirty_seq=0,
+                        request_id="b" * 32)
+                    table = "storage_source_capture_set_v2"
+                    receipt_epoch = lease["epoch"] + 1 if lease["epoch"] < 2**63 - 1 else lease["epoch"] - 1
+                    receipt = (request["request_id"], receiver_id,
+                               hashlib.sha256(json.dumps(
+                                   request, sort_keys=True, separators=(",", ":"),
+                                   ensure_ascii=False).encode()).hexdigest(),
+                               source_id, PLUGIN, GENERATION, 1, 0, "committed",
+                               receipt_epoch, 2, "", 1)
+                    create_and_insert = (
+                        "CREATE TABLE storage_source_capture_set_v2("
+                        "request_id TEXT PRIMARY KEY,receiver_id TEXT NOT NULL,"
+                        "request_digest TEXT NOT NULL,source_id TEXT NOT NULL,plugin_id TEXT NOT NULL,"
+                        "generation TEXT NOT NULL,expected_capture_enabled INTEGER NOT NULL,"
+                        "enabled INTEGER NOT NULL,disposition TEXT NOT NULL,lease_epoch INTEGER NOT NULL,"
+                        "policy_epoch INTEGER NOT NULL,cursor TEXT NOT NULL,dirty_seq INTEGER NOT NULL)",
+                        "INSERT INTO storage_source_capture_set_v2 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    )
+                else:
+                    request = self.clone_revoke_request(
+                        lease, cursor="", dirty_seq=0, request_id="c" * 32)
+                    table = "storage_source_revoke_v2"
+                    receipt_epoch = lease["epoch"] + 1 if lease["epoch"] < 2**63 - 1 else lease["epoch"] - 1
+                    receipt = (request["request_id"], receiver_id,
+                               hashlib.sha256(json.dumps(
+                                   request, sort_keys=True, separators=(",", ":"),
+                                   ensure_ascii=False).encode()).hexdigest(),
+                               source_id, "", 1, receipt_epoch, 2, 0)
+                    create_and_insert = (
+                        "CREATE TABLE storage_source_revoke_v2("
+                        "request_id TEXT PRIMARY KEY,receiver_id TEXT NOT NULL,"
+                        "request_digest TEXT NOT NULL,source_id TEXT NOT NULL,cursor TEXT NOT NULL,"
+                        "dirty_seq INTEGER NOT NULL,lease_epoch INTEGER NOT NULL,"
+                        "policy_epoch INTEGER NOT NULL,capture_enabled INTEGER NOT NULL)",
+                        "INSERT INTO storage_source_revoke_v2 VALUES(?,?,?,?,?,?,?,?,?)",
+                    )
+                with closing(sqlite3.connect(clone_path)) as db:
+                    db.execute(create_and_insert[0])
+                    db.execute(create_and_insert[1], receipt)
+                    db.commit()
+                before = self.clone_policy_state_snapshot(clone_path, source_id)
+                receipts_before = self.policy_receipts_snapshot(clone_path, table, source_id)
+                binding_before = self.batch_binding_snapshot(clone_path, source_id)
+                failure = self.apply_clone_policy(request, path=clone_path, success=False)
+                self.assertIn("clone policy replay is not fenced by the current source state",
+                              failure)
+                self.assertEqual(self.clone_policy_state_snapshot(clone_path, source_id), before)
+                self.assertEqual(self.policy_receipts_snapshot(clone_path, table, source_id),
+                                 receipts_before)
+                self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                                 binding_before)
 
     def test_clone_capture_transition_rolls_back_late_sql_failure(self):
         from observatory.plugin_admission import activate_source
