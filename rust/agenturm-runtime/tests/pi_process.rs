@@ -1,16 +1,26 @@
 use agenturm_kernel::{
-    ExtensionId, Kernel, Observation, ObservationPage, ObservationStore, PreparedSourceBatch,
-    StoreCommit,
+    ExtensionId, Kernel, Observation, ObservationPage, ObservationQuery, ObservationStore,
+    PreparedSourceBatch, StoreCommit,
 };
 use agenturm_runtime::{
-    BundledObservationDecoder, ProcessConfig, ProcessSource, SourceBatchDecoder,
+    BundledObservationDecoder, ExtensionDataGrant, ProcessConfig, ProcessObservationExtension,
+    ProcessObservationExtensionConfig, ProcessSource, SourceBatchDecoder,
 };
 use agenturm_store::Store;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{collections::BTreeSet, path::Path};
+
+fn sha256(path: &Path) -> String {
+    Sha256::digest(fs::read(path).expect("read process fixture"))
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
 
 struct FailOnceStore {
     inner: Store,
@@ -235,6 +245,37 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
             .any(|row| matches!(row.kind, agenturm_kernel::ObservationKind::Usage { .. }))
     );
 
+    let extension_path = PathBuf::from(env!("CARGO_BIN_EXE_agenturm-extension-fixture"));
+    let extension = ProcessObservationExtension::new(ProcessObservationExtensionConfig {
+        plugin_id: ExtensionId::parse("example.pi-signals").unwrap(),
+        executable: extension_path.clone(),
+        sha256: sha256(&extension_path),
+        features: vec!["capability/1".into(), "ui-contribution/1".into()],
+        grants: BTreeSet::from([ExtensionDataGrant::Usage]),
+    })
+    .expect("construct pinned extension");
+    let mut extension_kernel = Kernel::new();
+    extension_kernel
+        .register_observation_extension(
+            ExtensionId::parse("example.pi-signals").unwrap(),
+            extension,
+        )
+        .unwrap();
+    let read_only_store =
+        Store::open_read_only(&database).expect("open durable Pi store read-only");
+    let extended =
+        extension_kernel.refresh_query_with_store(&read_only_store, ObservationQuery::latest(500));
+    assert!(extended.failures.is_empty());
+    assert_eq!(
+        extended.metrics[&ExtensionId::parse("example.pi-signals").unwrap()][0].value,
+        "6"
+    );
+    assert_eq!(
+        extended.panes[&ExtensionId::parse("example.pi-signals").unwrap()].title,
+        "Fixture pane"
+    );
+
+    drop(read_only_store);
     drop(store);
     fs::remove_dir_all(root).expect("remove fixture directory");
 }
