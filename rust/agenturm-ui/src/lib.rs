@@ -448,7 +448,8 @@ mod tests {
             event_id: "event-1".into(),
             revision: 2,
             identity: agenturm_kernel::ObservationIdentity {
-                session_id: "session-1".into(),
+                scope: agenturm_kernel::ObservationScope::Session,
+                session_id: Some("session-1".into()),
                 worker_id: None,
                 turn_id: None,
                 operation_id: None,

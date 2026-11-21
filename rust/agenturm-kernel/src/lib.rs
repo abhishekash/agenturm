@@ -96,12 +96,85 @@ pub struct Observation {
 }
 
 /// Source-native identity components preserved across collection and storage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObservationScope {
+    Source,
+    Session,
+}
+
+/// Diagnostic codes are a closed set of source-neutral, privacy-safe labels.
+/// Unrecognized adapter codes remain count-only at the decoder boundary.
+pub fn is_safe_diagnostic_code(code: &str) -> bool {
+    matches!(
+        code,
+        "possible_source_gap"
+            | "cursor_expired"
+            | "unsupported_codex_event"
+            | "unsupported_codex_item"
+            | "unsupported_codex_response"
+            | "unsupported_codex_role"
+            | "unsupported_codex_row"
+            | "codex_historical_outcome"
+            | "codex_historical_wait"
+            | "codex_legacy_usage_unmapped"
+            | "codex_tool_result_unknown"
+            | "codex_usage_unavailable"
+            | "unsupported_pi_role"
+            | "unsupported_pi_row"
+            | "unsupported_claude_block"
+            | "unsupported_claude_row"
+            | "unsupported_claude_stop_reason"
+            | "unsupported_claude_user"
+            | "kiro_credit_usage_unrepresented"
+            | "kiro_display_error"
+            | "kiro_error"
+            | "kiro_non_message_assistant"
+            | "kiro_permission_unrepresented"
+            | "kiro_queued_prompt"
+            | "kiro_subagent_relation_unresolved"
+            | "kiro_unknown_stop_reason"
+            | "unsupported_kiro_row"
+            | "opencode_idle_outcome_unknown"
+            | "opencode_latest_role_unknown"
+            | "opencode_tool_result_unknown"
+            | "oversized_opencode_identity"
+            | "oversized_opencode_row"
+            | "unsupported_opencode_message"
+            | "unsupported_jsonl_row"
+            | "source_root_unavailable"
+            | "root_gap"
+    )
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObservationIdentity {
-    pub session_id: String,
+    pub scope: ObservationScope,
+    pub session_id: Option<String>,
     pub worker_id: Option<String>,
     pub turn_id: Option<String>,
     pub operation_id: Option<String>,
+}
+
+impl ObservationIdentity {
+    pub fn session(session_id: impl Into<String>) -> Self {
+        Self {
+            scope: ObservationScope::Session,
+            session_id: Some(session_id.into()),
+            worker_id: None,
+            turn_id: None,
+            operation_id: None,
+        }
+    }
+
+    pub fn source() -> Self {
+        Self {
+            scope: ObservationScope::Source,
+            session_id: None,
+            worker_id: None,
+            turn_id: None,
+            operation_id: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,6 +198,10 @@ pub enum ObservationKind {
     },
     Message {
         role: String,
+    },
+    Diagnostic {
+        code: String,
+        severity: String,
     },
     Usage {
         input_tokens: Option<u64>,
@@ -782,7 +859,21 @@ fn validate_raw_observation_slice(
         if !event_revisions.insert((row.event_id.as_str(), row.revision)) {
             return Err("duplicate event identity and revision".into());
         }
-        if !valid_identity_part(&row.identity.session_id, MAX_SESSION_KEY_BYTES)
+        let session_scope_valid = match row.identity.scope {
+            ObservationScope::Session => row
+                .identity
+                .session_id
+                .as_ref()
+                .is_some_and(|value| valid_identity_part(value, MAX_SESSION_KEY_BYTES)),
+            ObservationScope::Source => {
+                matches!(row.kind, ObservationKind::Diagnostic { .. })
+                    && row.identity.session_id.is_none()
+                    && row.identity.worker_id.is_none()
+                    && row.identity.turn_id.is_none()
+                    && row.identity.operation_id.is_none()
+            }
+        };
+        if !session_scope_valid
             || !row
                 .identity
                 .worker_id
@@ -844,6 +935,12 @@ fn validate_raw_observation_slice(
             && !matches!(role.as_str(), "user" | "assistant")
         {
             return Err("message observation role is invalid".into());
+        }
+        if let ObservationKind::Diagnostic { code, severity } = &row.kind
+            && (!is_safe_diagnostic_code(code)
+                || !matches!(severity.as_str(), "info" | "warning" | "error"))
+        {
+            return Err("diagnostic code or severity is invalid".into());
         }
     }
     Ok(())
@@ -941,7 +1038,8 @@ mod tests {
             event_id: format!("fixture:{session_key}"),
             revision: 0,
             identity: ObservationIdentity {
-                session_id: session_key.into(),
+                scope: ObservationScope::Session,
+                session_id: Some(session_key.into()),
                 worker_id: Some("worker-1".into()),
                 turn_id: Some("turn-1".into()),
                 operation_id: Some("operation-1".into()),
@@ -1088,7 +1186,10 @@ mod tests {
         assert_eq!(snapshot.observations.len(), 1);
         assert_eq!(snapshot.observations[0].event_id, "fixture:s1");
         assert_eq!(snapshot.observations[0].revision, 0);
-        assert_eq!(snapshot.observations[0].identity.session_id, "s1");
+        assert_eq!(
+            snapshot.observations[0].identity.session_id.as_deref(),
+            Some("s1")
+        );
         assert_eq!(
             snapshot.observations[0].identity.worker_id.as_deref(),
             Some("worker-1")
@@ -1370,6 +1471,54 @@ mod tests {
         let entries = log.take();
         assert!(!entries.iter().any(|entry| entry.starts_with("commit:")));
         assert!(!entries.iter().any(|entry| entry.starts_with("ack:")));
+    }
+
+    #[test]
+    fn source_scoped_gap_diagnostic_is_admitted_without_fake_session() {
+        assert!(is_safe_diagnostic_code("kiro_queued_prompt"));
+        assert!(!is_safe_diagnostic_code("private_prompt_text"));
+        let log = Log::default();
+        let mut batch = prepared("gap-event");
+        batch.observations[0].identity = ObservationIdentity::source();
+        batch.observations[0].kind = ObservationKind::Diagnostic {
+            code: "possible_source_gap".into(),
+            severity: "warning".into(),
+        };
+        let mut kernel = Kernel::new();
+        kernel
+            .register_source_adapter(
+                id("harness.zeta"),
+                FixedSource {
+                    name: "pi",
+                    batch,
+                    fail_ack: false,
+                    panic_ack: false,
+                    fail_poll: false,
+                    fail_reset: false,
+                    panic_reset: false,
+                    log: log.clone(),
+                },
+            )
+            .unwrap();
+        let mut store = FixedStore {
+            cursor: None,
+            fail_commit: false,
+            replay: false,
+            rows: Vec::new(),
+            log: log.clone(),
+        };
+
+        let snapshot = kernel.refresh_with_store(&mut store);
+        assert!(snapshot.failures.is_empty());
+        assert_eq!(snapshot.observations.len(), 1);
+        assert_eq!(
+            snapshot.observations[0].identity.scope,
+            ObservationScope::Source
+        );
+        assert_eq!(snapshot.observations[0].identity.session_id, None);
+        let entries = log.take();
+        assert!(entries.iter().any(|entry| entry.starts_with("commit:")));
+        assert!(entries.iter().any(|entry| entry.starts_with("ack:")));
     }
 
     #[test]

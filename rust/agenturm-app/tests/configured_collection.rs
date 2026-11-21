@@ -151,8 +151,8 @@ fn configured_watch_retries_startup_failure_and_shuts_down_on_interrupt() {
     let snapshot = execute_inspect(&database).expect("reopen watch history");
     assert_eq!(snapshot.observations.len(), 3);
     assert_eq!(
-        snapshot.observations[0].identity.session_id,
-        "watch-session"
+        snapshot.observations[0].identity.session_id.as_deref(),
+        Some("watch-session")
     );
     drop(snapshot);
     fs::remove_dir_all(root).expect("remove fixture directory");
@@ -276,8 +276,8 @@ fn configured_watch_exits_cleanly_on_terminate_between_cycles() {
     let snapshot = execute_inspect(&database).expect("reopen watch history");
     assert_eq!(snapshot.observations.len(), 3);
     assert_eq!(
-        snapshot.observations[0].identity.session_id,
-        "terminate-session"
+        snapshot.observations[0].identity.session_id.as_deref(),
+        Some("terminate-session")
     );
     drop(snapshot);
     fs::remove_dir_all(root).expect("remove fixture directory");
@@ -383,7 +383,7 @@ fn configured_collection_admits_pi_and_codex_together_and_reopens_history() {
     let session_ids = snapshot
         .observations
         .iter()
-        .map(|observation| observation.identity.session_id.as_str())
+        .filter_map(|observation| observation.identity.session_id.as_deref())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(session_ids, ["codex-session", "pi-session"].into());
     assert!(snapshot.failures.is_empty());

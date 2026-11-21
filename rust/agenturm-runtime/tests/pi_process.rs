@@ -210,7 +210,10 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
     let mut store = Store::open(&database).expect("reopen Pi store");
     let restored = Kernel::new().refresh_with_store(&mut store);
     assert_eq!(restored.observations.len(), 6);
-    assert_eq!(restored.observations[0].identity.session_id, "pi-session");
+    assert_eq!(
+        restored.observations[0].identity.session_id.as_deref(),
+        Some("pi-session")
+    );
     assert!(restored.failures.is_empty());
     assert!(
         restored

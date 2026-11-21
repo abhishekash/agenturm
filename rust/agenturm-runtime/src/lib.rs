@@ -570,6 +570,38 @@ fn parse_source_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedB
             .get("kind")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| RuntimeError::new("source fact is missing a kind"))?;
+        if kind == "diagnostic" {
+            let diagnostic: WireDiagnosticRecord = serde_json::from_value(record)?;
+            validate_wire_diagnostic(&diagnostic)?;
+            if agenturm_kernel::is_safe_diagnostic_code(&diagnostic.payload.code) {
+                let identity = match diagnostic.identity {
+                    Some(identity) => {
+                        validate_wire_identity(&identity)?;
+                        ObservationIdentity {
+                            scope: agenturm_kernel::ObservationScope::Session,
+                            session_id: Some(identity.session_id),
+                            worker_id: identity.worker_id,
+                            turn_id: identity.turn_id,
+                            operation_id: identity.operation_id,
+                        }
+                    }
+                    None => ObservationIdentity::source(),
+                };
+                observations.push(RawObservation {
+                    event_id: diagnostic.event_id,
+                    revision: diagnostic.revision,
+                    identity,
+                    observed_at_unix_ns: parse_decimal_timestamp(&diagnostic.time_ns)?,
+                    kind: ObservationKind::Diagnostic {
+                        code: diagnostic.payload.code,
+                        severity: diagnostic.payload.severity,
+                    },
+                });
+            } else {
+                skipped_unprojected_facts += 1;
+            }
+            continue;
+        }
         if kind == "tool" {
             let typed: WireToolRecord = serde_json::from_value(record)?;
             observations.push(typed.try_into()?);
@@ -702,6 +734,17 @@ struct WireSkippedRecord {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct WireDiagnosticRecord {
+    event_id: String,
+    revision: u32,
+    kind: String,
+    time_ns: String,
+    identity: Option<WireIdentity>,
+    payload: WireDiagnostic,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WireLifecycle {
     state: String,
     reason_code: Option<String>,
@@ -740,6 +783,25 @@ struct WireCheck {
 struct WireDiagnostic {
     code: String,
     severity: String,
+}
+
+fn validate_wire_diagnostic(record: &WireDiagnosticRecord) -> Result<()> {
+    if record.kind != "diagnostic"
+        || !valid_source_identifier(&record.event_id, 256)
+        || parse_decimal_timestamp(&record.time_ns).is_err()
+        || !matches!(
+            record.payload.severity.as_str(),
+            "info" | "warning" | "error"
+        )
+        || record.payload.code.is_empty()
+        || record.payload.code.len() > 128
+    {
+        return Err(RuntimeError::new("source diagnostic payload is invalid"));
+    }
+    if let Some(identity) = &record.identity {
+        validate_wire_identity(identity)?;
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -882,7 +944,8 @@ impl TryFrom<WireUsageRecord> for RawObservation {
             event_id: record.event_id,
             revision: record.revision,
             identity: ObservationIdentity {
-                session_id: record.identity.session_id,
+                scope: agenturm_kernel::ObservationScope::Session,
+                session_id: Some(record.identity.session_id),
                 worker_id: record.identity.worker_id,
                 turn_id: record.identity.turn_id,
                 operation_id: record.identity.operation_id,
@@ -921,7 +984,8 @@ impl TryFrom<WireToolRecord> for RawObservation {
             event_id: record.event_id,
             revision: record.revision,
             identity: ObservationIdentity {
-                session_id: record.identity.session_id,
+                scope: agenturm_kernel::ObservationScope::Session,
+                session_id: Some(record.identity.session_id),
                 worker_id: record.identity.worker_id,
                 turn_id: record.identity.turn_id,
                 operation_id: record.identity.operation_id,
@@ -958,7 +1022,8 @@ impl TryFrom<WireLifecycleRecord> for RawObservation {
             event_id: record.event_id,
             revision: record.revision,
             identity: ObservationIdentity {
-                session_id: record.identity.session_id,
+                scope: agenturm_kernel::ObservationScope::Session,
+                session_id: Some(record.identity.session_id),
                 worker_id: record.identity.worker_id,
                 turn_id: record.identity.turn_id,
                 operation_id: record.identity.operation_id,
@@ -991,7 +1056,8 @@ impl TryFrom<WireCheckRecord> for RawObservation {
             event_id: record.event_id,
             revision: record.revision,
             identity: ObservationIdentity {
-                session_id: record.identity.session_id,
+                scope: agenturm_kernel::ObservationScope::Session,
+                session_id: Some(record.identity.session_id),
                 worker_id: record.identity.worker_id,
                 turn_id: record.identity.turn_id,
                 operation_id: record.identity.operation_id,
@@ -1020,7 +1086,8 @@ impl TryFrom<WireMessageRecord> for RawObservation {
             event_id: record.event_id,
             revision: record.revision,
             identity: ObservationIdentity {
-                session_id: record.identity.session_id,
+                scope: agenturm_kernel::ObservationScope::Session,
+                session_id: Some(record.identity.session_id),
                 worker_id: record.identity.worker_id,
                 turn_id: record.identity.turn_id,
                 operation_id: record.identity.operation_id,
@@ -1211,8 +1278,19 @@ mod tests {
     fn identity_bearing_error_diagnostics_are_validated_and_counted() {
         let response = r#"{"type":"batch","protocol":1,"source_id":"harness.kiro","cursor":"next","records":[{"event_id":"kiro:display-error","revision":0,"kind":"diagnostic","time_ns":"11","identity":{"session_id":"s1","turn_id":"turn-1"},"payload":{"code":"kiro_display_error","severity":"error"}}]}"#;
         let batch = parse_source_batch(response, "harness.kiro").unwrap();
-        assert!(batch.observations.is_empty());
-        assert_eq!(batch.skipped_unprojected_facts, 1);
+        assert_eq!(batch.observations.len(), 1);
+        assert_eq!(batch.skipped_unprojected_facts, 0);
+        assert_eq!(
+            batch.observations[0].identity.scope,
+            agenturm_kernel::ObservationScope::Session
+        );
+        assert_eq!(
+            batch.observations[0].kind,
+            ObservationKind::Diagnostic {
+                code: "kiro_display_error".into(),
+                severity: "error".into(),
+            }
+        );
         let unsupported_severity = response.replace("\"error\"", "\"critical\"");
         assert!(parse_source_batch(&unsupported_severity, "harness.kiro").is_err());
         let raw_message = response.replace(
@@ -1220,6 +1298,31 @@ mod tests {
             "\"severity\":\"error\",\"message\":\"private text\"",
         );
         assert!(parse_source_batch(&raw_message, "harness.kiro").is_err());
+    }
+
+    #[test]
+    fn source_diagnostics_use_explicit_source_scope_and_closed_code_catalog() {
+        let response = r#"{"type":"batch","protocol":1,"source_id":"harness.pi","cursor":"next","records":[{"event_id":"pi:gap","revision":0,"kind":"diagnostic","time_ns":"11","payload":{"code":"possible_source_gap","severity":"warning"}},{"event_id":"pi:custom","revision":0,"kind":"diagnostic","time_ns":"12","payload":{"code":"private_content_in_code","severity":"warning"}}]}"#;
+        let batch = parse_source_batch(response, "harness.pi").unwrap();
+        assert_eq!(batch.observations.len(), 1);
+        assert_eq!(batch.skipped_unprojected_facts, 1);
+        assert_eq!(
+            batch.observations[0].identity.scope,
+            agenturm_kernel::ObservationScope::Source
+        );
+        assert_eq!(batch.observations[0].identity.session_id, None);
+        assert_eq!(
+            batch.observations[0].kind,
+            ObservationKind::Diagnostic {
+                code: "possible_source_gap".into(),
+                severity: "warning".into(),
+            }
+        );
+        let added_payload = response.replace(
+            "\"severity\":\"warning\"",
+            "\"severity\":\"warning\",\"message\":\"private text\"",
+        );
+        assert!(parse_source_batch(&added_payload, "harness.pi").is_err());
     }
 
     #[test]
