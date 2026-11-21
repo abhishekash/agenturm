@@ -6,5 +6,8 @@ rust-version = "1.100"
 publish = false
 license = "MIT"
 
+[dependencies]
+agenturm-protocol = { path = "../agenturm-protocol" }
+
 [lib]
 path = "src/lib.rs"

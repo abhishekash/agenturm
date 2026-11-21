@@ -2,7 +2,14 @@
 //!
 //! The app exposes generic kernel extension registration, durable refresh,
 //! explicit one-shot and configured multi-source usage collection, and a
-//! full-screen durable-history viewer. Installed service management remains open.
+//! full-screen durable-history viewer and Linux user service management.
+
+mod discovery;
+mod inspector_activity;
+mod pi_preview;
+
+pub use discovery::{discover, execute_discover};
+pub use pi_preview::{PiContentOptions, execute_content};
 
 use agenturm_kernel::{
     Capability, ExtensionId, ExtensionPlugin, Harness, Kernel, MAX_DURABLE_SNAPSHOT_OBSERVATIONS,
@@ -11,7 +18,7 @@ use agenturm_kernel::{
     UiContribution,
 };
 use agenturm_runtime::{
-    BundledObservationDecoder, CODEX_PLUGIN_ID, ExtensionDataGrant, ProcessConfig,
+    CODEX_PLUGIN_ID, ExtensionDataGrant, ObservationFormat, ProcessConfig,
     ProcessObservationExtension, ProcessObservationExtensionConfig, ProcessSource,
     verify_extension_artifact,
 };
@@ -36,6 +43,7 @@ const MAX_PROCESS_EXTENSION_CATALOG_ENTRIES: usize = 64;
 const MAX_ENABLED_PROCESS_EXTENSIONS: usize = 4;
 const MAX_PROCESS_EXTENSION_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CONFIGURED_SOURCES: usize = 16;
+const FOLLOW_INTERVAL: Duration = Duration::from_secs(5);
 const INSPECT_PAGE_SIZE: usize = 500;
 
 #[cfg(target_os = "linux")]
@@ -145,8 +153,21 @@ pub enum Command {
     Status,
     Inspect(InspectOptions),
     Query(HistoryQueryOptions),
+    Backup {
+        db: PathBuf,
+        output: PathBuf,
+    },
+    Prune {
+        db: PathBuf,
+        before_unix_ns: u64,
+    },
+    Content(PiContentOptions),
     Ingest(IngestOptions),
     Collect(ConfiguredCollectOptions),
+    Discover {
+        sessions_per_harness: usize,
+        follow: bool,
+    },
     Service(ServiceCommand),
 }
 
@@ -219,14 +240,17 @@ struct CollectionConfigFile {
     plugin_host: PathBuf,
     #[serde(default)]
     plugin_catalog: Option<PathBuf>,
+    #[serde(default)]
     sources: Vec<CollectionSourceInput>,
+    #[serde(default)]
+    follow: Option<discovery::FollowDiscovery>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct CollectionSourceInput {
     plugin_id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     adapter: Option<PathBuf>,
     source_root: PathBuf,
     source_id: String,
@@ -239,7 +263,7 @@ struct AdapterCatalogFile {
     plugins: Vec<AdapterCatalogEntry>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AdapterCatalogEntry {
     plugin_id: String,
@@ -247,6 +271,20 @@ struct AdapterCatalogEntry {
     sha256: String,
     protocol: u32,
     features: Vec<String>,
+    #[serde(default = "default_observation_format")]
+    observation_format: String,
+}
+
+#[derive(Debug)]
+struct ValidatedAdapter {
+    adapter: PathBuf,
+    sha256: String,
+    features: Vec<String>,
+    observation_format: ObservationFormat,
+}
+
+fn default_observation_format() -> String {
+    ObservationFormat::default().to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,6 +313,7 @@ struct ConfiguredSource {
     source_id: String,
     artifact_sha256: Option<String>,
     features: Option<Vec<String>>,
+    observation_format: ObservationFormat,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -361,7 +400,12 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         .count();
     let usages = observations
         .iter()
-        .filter(|row| matches!(row.kind, ObservationKind::Usage { .. }))
+        .filter(|row| {
+            matches!(
+                row.kind,
+                ObservationKind::Usage { .. } | ObservationKind::CreditUsage { .. }
+            )
+        })
         .count();
     let tools = observations
         .iter()
@@ -383,44 +427,22 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         .iter()
         .filter(|row| matches!(row.kind, ObservationKind::Diagnostic { .. }))
         .count();
-    let latest_lifecycle = observations
-        .iter()
-        .filter_map(|row| match &row.kind {
-            ObservationKind::Lifecycle { state, reason_code } => Some((row, state, reason_code)),
-            _ => None,
-        })
-        .max_by_key(|(row, _, _)| {
-            (
-                row.observed_at_unix_ns,
-                row.harness_id.as_str(),
-                row.event_id.as_str(),
-                row.revision,
-            )
-        })
-        .map(|(row, state, reason_code)| {
-            format!(
-                "reason={} · state={} · {}/{}",
-                reason_code.as_deref().unwrap_or("not-recorded"),
-                state,
-                row.harness_id.as_str(),
-                row.identity.session_id.as_deref().unwrap_or("source")
-            )
-        })
-        .unwrap_or_else(|| "none recorded".into());
+    let lifecycle_evidence = observations.iter().filter_map(|row| match &row.kind {
+        ObservationKind::Lifecycle { state, reason_code } => {
+            Some((row, state.as_str(), reason_code.as_deref()))
+        }
+        _ => None,
+    });
+    let latest_lifecycle = lifecycle_evidence
+        .clone()
+        .max_by_key(|(row, ..)| evidence_order(row));
     let latest_diagnostic = observations
         .iter()
         .filter_map(|row| match &row.kind {
             ObservationKind::Diagnostic { code, severity } => Some((row, code, severity)),
             _ => None,
         })
-        .max_by_key(|(row, _, _)| {
-            (
-                row.observed_at_unix_ns,
-                row.harness_id.as_str(),
-                row.event_id.as_str(),
-                row.revision,
-            )
-        })
+        .max_by_key(|(row, ..)| evidence_order(row))
         .map(|(row, code, severity)| {
             let scope = match row.identity.scope {
                 agenturm_kernel::ObservationScope::Source => "source".to_owned(),
@@ -435,7 +457,7 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
             )
         })
         .unwrap_or_else(|| "none recorded".into());
-    vec![
+    let mut rows = vec![
         MetricRow {
             label: "Sessions observed".into(),
             value: sessions.to_string(),
@@ -472,13 +494,144 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
             label: "Diagnostic observations".into(),
             value: diagnostics.to_string(),
         },
-        MetricRow {
+    ];
+    if let Some((row, state, reason)) = latest_lifecycle {
+        rows.extend(lifecycle_evidence_rows(
+            "Latest lifecycle evidence",
+            "Lifecycle turn",
+            row,
+            state,
+            reason,
+        ));
+        if !is_recorded_turn_end(row, state)
+            && let Some((row, state, reason)) = lifecycle_evidence
+                .filter(|(row, state, _)| is_recorded_turn_end(row, state))
+                .max_by_key(|(row, ..)| evidence_order(row))
+        {
+            rows.extend(lifecycle_evidence_rows(
+                "Latest recorded turn end",
+                "Ended turn",
+                row,
+                state,
+                reason,
+            ));
+        }
+    } else {
+        rows.push(MetricRow {
             label: "Latest lifecycle evidence".into(),
-            value: latest_lifecycle,
+            value: "none recorded".into(),
+        });
+    }
+    if let Some((row, repository, number)) = observations
+        .iter()
+        .filter_map(|row| match &row.kind {
+            ObservationKind::PullRequestRaised { repository, number } => {
+                Some((row, repository, number))
+            }
+            _ => None,
+        })
+        .max_by_key(|(row, ..)| evidence_order(row))
+    {
+        rows.push(MetricRow {
+            label: "Latest raised PR".into(),
+            value: format!(
+                "{repository}#{number} · {} · turn {}",
+                row.harness_id.as_str(),
+                row.identity.turn_id.as_deref().unwrap_or("not recorded")
+            ),
+        });
+    }
+    if let Some((row, relationship_kind, parent_session_id)) = observations
+        .iter()
+        .filter_map(|row| match &row.kind {
+            ObservationKind::Relationship {
+                relationship_kind,
+                parent_session_id,
+            } => Some((row, relationship_kind, parent_session_id)),
+            _ => None,
+        })
+        .max_by_key(|(row, ..)| evidence_order(row))
+    {
+        rows.extend([
+            MetricRow {
+                label: "Latest session relationship".into(),
+                value: format!(
+                    "{} · {} · child {}",
+                    relationship_kind.as_str(),
+                    row.harness_id.as_str(),
+                    row.identity.session_id.as_deref().unwrap_or("unknown"),
+                ),
+            },
+            MetricRow {
+                label: "Parent session".into(),
+                value: parent_session_id.clone(),
+            },
+        ]);
+    }
+    if let Some((row, nanocredits)) = observations
+        .iter()
+        .filter_map(|row| match row.kind {
+            ObservationKind::CreditUsage { nanocredits } => Some((row, nanocredits)),
+            _ => None,
+        })
+        .max_by_key(|(row, ..)| evidence_order(row))
+    {
+        rows.push(MetricRow {
+            label: "Latest credit usage".into(),
+            value: format!(
+                "{} credits · {} · session {}",
+                agenturm_kernel::format_credits(nanocredits),
+                row.harness_id.as_str(),
+                row.identity.session_id.as_deref().unwrap_or("unknown"),
+            ),
+        });
+    }
+    rows.push(MetricRow {
+        label: "Latest diagnostic".into(),
+        value: latest_diagnostic,
+    });
+    rows
+}
+
+fn evidence_order(row: &Observation) -> (u64, &str, &str, u32) {
+    (
+        row.observed_at_unix_ns,
+        row.harness_id.as_str(),
+        row.event_id.as_str(),
+        row.revision,
+    )
+}
+
+fn is_recorded_turn_end(row: &Observation, state: &str) -> bool {
+    row.identity.turn_id.is_some() && matches!(state, "completed" | "interrupted" | "failed")
+}
+
+fn lifecycle_evidence_rows(
+    label: &str,
+    turn_label: &str,
+    row: &Observation,
+    state: &str,
+    reason: Option<&str>,
+) -> [MetricRow; 2] {
+    [
+        MetricRow {
+            label: label.into(),
+            value: format!(
+                "reason={} · state={} · {}/{}",
+                reason.unwrap_or("not-recorded"),
+                state,
+                row.harness_id.as_str(),
+                row.identity.session_id.as_deref().unwrap_or("source")
+            ),
         },
         MetricRow {
-            label: "Latest diagnostic".into(),
-            value: latest_diagnostic,
+            label: turn_label.into(),
+            value: row
+                .identity
+                .turn_id
+                .as_deref()
+                .unwrap_or("not recorded")
+                .to_owned(),
         },
     ]
 }
@@ -491,6 +644,22 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("status") if args.len() == 1 => Ok(Command::Status),
         Some("inspect") => parse_inspect_options(&args[1..]).map(Command::Inspect),
         Some("query") => parse_query_options(&args[1..]).map(Command::Query),
+        Some("backup") => {
+            let (db, output) = parse_db_and_option(&args[1..], "--output")?;
+            Ok(Command::Backup {
+                db,
+                output: output.into(),
+            })
+        }
+        Some("prune") => {
+            let (db, cutoff) = parse_db_and_option(&args[1..], "--before-unix-ns")?;
+            let before_unix_ns = cutoff
+                .parse::<u64>()
+                .map_err(|_| "--before-unix-ns requires a Unix nanosecond timestamp".to_owned())?;
+            Ok(Command::Prune { db, before_unix_ns })
+        }
+        Some("content") => pi_preview::parse(&args[1..]).map(Command::Content),
+        Some("discover") => parse_discover_options(&args[1..]),
         Some("collect") => parse_collect_options(&args[1..]).map(Command::Collect),
         Some("service") => parse_service_options(&args[1..]).map(Command::Service),
         Some("ingest-usage") => parse_ingest_options(&args[1..], None).map(Command::Ingest),
@@ -499,6 +668,34 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         }
         _ => Err(usage()),
     }
+}
+
+fn parse_discover_options(mut args: &[String]) -> Result<Command, String> {
+    let mut follow = false;
+    let mut sessions_per_harness = None;
+    while let Some((flag, rest)) = args.split_first() {
+        args = rest;
+        match flag.as_str() {
+            "--follow" if !follow => follow = true,
+            "--sessions-per-harness" if sessions_per_harness.is_none() => {
+                let (limit, rest) = args.split_first().ok_or_else(usage)?;
+                sessions_per_harness = Some(
+                    limit
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|limit| (1..=discovery::MAX_SESSIONS_PER_HARNESS).contains(limit))
+                        .ok_or_else(usage)?,
+                );
+                args = rest;
+            }
+            _ => return Err(usage()),
+        }
+    }
+    Ok(Command::Discover {
+        sessions_per_harness: sessions_per_harness
+            .unwrap_or(discovery::DEFAULT_SESSIONS_PER_HARNESS),
+        follow,
+    })
 }
 
 pub fn execute_service(action: &ServiceCommand) -> Result<String, String> {
@@ -530,6 +727,9 @@ fn execute_systemd_service(action: &ServiceCommand) -> Result<String, String> {
                 .map_err(|error| format!("resolve Agenturm executable failed: {error}"))?;
             let database = absolute_database_path(db)?;
             validate_service_database_isolation(&database, &validated.sources)?;
+            if let Some(follow) = &validated.follow {
+                validate_source_root_isolation(&database, follow.selection.roots())?;
+            }
             let database = prepare_database_path(&database)?;
             let spec = ServiceSpec {
                 executable,
@@ -556,12 +756,23 @@ fn validate_service_database_isolation(
     database: &std::path::Path,
     sources: &[ConfiguredSource],
 ) -> Result<(), String> {
+    validate_source_root_isolation(
+        database,
+        sources.iter().map(|source| source.source_root.as_path()),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn validate_source_root_isolation<'a>(
+    database: &std::path::Path,
+    roots: impl IntoIterator<Item = &'a std::path::Path>,
+) -> Result<(), String> {
     let database_directory = database
         .parent()
         .ok_or_else(|| "database path must have a parent directory".to_owned())?;
     let database_directory = canonicalize_with_missing_suffix(database_directory)?;
-    for source in sources {
-        let source_root = canonicalize_with_missing_suffix(&source.source_root)?;
+    for root in roots {
+        let source_root = canonicalize_with_missing_suffix(root)?;
         if database_directory.starts_with(&source_root)
             || source_root.starts_with(&database_directory)
         {
@@ -1101,11 +1312,50 @@ fn parse_ingest_options(
 }
 
 fn usage() -> String {
-    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...] | agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>] | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm service install --config <json-path> --db <path> [--interval-ms <100..60000>] | agenturm service status | agenturm service uninstall | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
+    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...] | agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>] | agenturm backup --db <path> --output <new-path> | agenturm prune --db <path> --before-unix-ns <ns> | agenturm discover [--follow] [--sessions-per-harness <1..8>] | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm service install --config <json-path> --db <path> [--interval-ms <100..60000>] | agenturm service status | agenturm service uninstall | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
+}
+
+fn parse_db_and_option<'a>(args: &'a [String], option: &str) -> Result<(PathBuf, &'a str), String> {
+    let [first, first_value, second, second_value] = args else {
+        return Err(usage());
+    };
+    let (db, value) = match (first.as_str(), second.as_str()) {
+        ("--db", name) if name == option => (first_value, second_value),
+        (name, "--db") if name == option => (second_value, first_value),
+        _ => return Err(usage()),
+    };
+    if [db, value]
+        .iter()
+        .any(|item| item.is_empty() || item.starts_with("--"))
+    {
+        return Err(usage());
+    }
+    Ok((db.into(), value))
+}
+
+pub fn execute_backup(db: &std::path::Path, output: &std::path::Path) -> Result<(), String> {
+    let store = Store::open_read_only(db).map_err(|error| format!("open store failed: {error}"))?;
+    store.backup_to(output).map_err(|error| error.to_string())
+}
+
+pub fn execute_prune(db: &std::path::Path, before_unix_ns: u64) -> Result<String, String> {
+    if !db.is_file() {
+        return Err("retention requires an existing observation database".into());
+    }
+    let mut store =
+        Store::open_collector(db).map_err(|error| format!("open store failed: {error}"))?;
+    let outcome = store
+        .prune_observations_before(before_unix_ns)
+        .map_err(|error| error.to_string())?;
+    Ok(format!(
+        "Removed {} observation(s) before {} ns. Restart history queries from the newest page.\n",
+        outcome.removed_observations, outcome.cutoff_unix_ns
+    ))
 }
 
 pub fn execute_inspect(db_path: &std::path::Path) -> Result<Snapshot, String> {
-    let store = Store::open(db_path).map_err(|error| format!("open store failed: {error}"))?;
+    let store =
+        Store::open_read_only(db_path).map_err(|error| format!("open store failed: {error}"))?;
     let mut app = AgenturmApp::default_composition();
     Ok(app.refresh_history_query(&store, ObservationQuery::latest(INSPECT_PAGE_SIZE)))
 }
@@ -1144,19 +1394,31 @@ pub fn execute_inspect_ui(options: &InspectOptions) -> Result<(), String> {
     let store = Store::open_read_only(&options.db)
         .map_err(|error| format!("open store failed: {error}"))?;
     let snapshot = app.refresh_history_query(&store, ObservationQuery::latest(INSPECT_PAGE_SIZE));
-    agenturm_ui::run_with_history(snapshot, |before| {
-        Ok(Some(app.refresh_history_query(
-            &store,
-            ObservationQuery {
-                harness_id: None,
-                session_id: None,
-                before: Some(before.clone()),
-                snapshot_id: Some(before.snapshot_id),
+    agenturm_ui::run_with_turn_activity(
+        inspector_activity::overview_page(snapshot),
+        |turn, before| {
+            let query = ObservationQuery {
+                harness_id: turn.map(|turn| turn.harness_id.clone()),
+                session_id: turn.map(|turn| turn.session_id.clone()),
+                before: before.cloned(),
+                snapshot_id: before
+                    .map(|cursor| cursor.snapshot_id)
+                    .or_else(|| turn.map(|turn| turn.snapshot_id)),
                 limit: INSPECT_PAGE_SIZE,
-            },
-        )))
-    })
-    .map_err(|error| format!("Agenturm UI failed: {error}"))
+            };
+            let page = match turn {
+                Some(turn) => {
+                    let snapshot = app
+                        .kernel
+                        .refresh_turn_with_store(&store, query, &turn.turn_id);
+                    inspector_activity::turn_page(snapshot, turn)
+                }
+                None => inspector_activity::overview_page(app.refresh_history_query(&store, query)),
+            };
+            Ok(Some(page))
+        },
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Executes one bounded read-only history query and returns a stable cursor
@@ -1214,8 +1476,20 @@ pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
                 ObservationKind::Check { category, result } => {
                     serde_json::json!({"kind":"check", "category":category, "result":result})
                 }
+                ObservationKind::PullRequestRaised { repository, number } => {
+                    serde_json::json!({"kind":"pull_request_raised", "repository":repository, "number":number})
+                }
+                ObservationKind::Relationship {
+                    relationship_kind,
+                    parent_session_id,
+                } => {
+                    serde_json::json!({"kind":"relationship", "relationship_kind":relationship_kind, "parent_session_id":parent_session_id})
+                }
                 ObservationKind::Message { role } => {
                     serde_json::json!({"kind":"message", "role":role})
+                }
+                ObservationKind::CreditUsage { nanocredits } => {
+                    serde_json::json!({"kind":"credit_usage", "nanocredits":nanocredits})
                 }
                 ObservationKind::Diagnostic { code, severity } => {
                     serde_json::json!({"kind":"diagnostic", "code":code, "severity":severity})
@@ -1346,6 +1620,11 @@ pub struct ConfiguredCollector {
     startup_failures: BTreeMap<ExtensionId, String>,
     pending_sources: BTreeMap<ExtensionId, (ProcessConfig, Instant)>,
     stop_flag: Option<Arc<AtomicBool>>,
+    plugin_host: PathBuf,
+    follow: Option<FollowSources>,
+    #[cfg(target_os = "linux")]
+    database: PathBuf,
+    next_scan: Instant,
 }
 
 impl ConfiguredCollector {
@@ -1358,66 +1637,117 @@ impl ConfiguredCollector {
         stop: Option<&Arc<AtomicBool>>,
     ) -> Result<Self, String> {
         let config = load_collection_config(&options.config)?;
-        let store =
-            Store::open(&options.db).map_err(|error| format!("open store failed: {error}"))?;
-        let mut kernel = Kernel::new();
-        let mut source_ids = Vec::with_capacity(config.sources.len());
-        let mut startup_failures = BTreeMap::new();
-        let mut pending_sources = BTreeMap::new();
+        let database = std::path::absolute(&options.db)
+            .map_err(|error| format!("resolve database path failed: {error}"))?;
+        #[cfg(target_os = "linux")]
+        if let Some(follow) = &config.follow {
+            validate_source_root_isolation(&database, follow.selection.roots())?;
+        }
+        let store = Store::open_collector(&database)
+            .map_err(|error| format!("open store failed: {error}"))?;
+        let mut collector = Self {
+            kernel: Kernel::new(),
+            store,
+            source_ids: Vec::with_capacity(config.sources.len()),
+            startup_failures: BTreeMap::new(),
+            pending_sources: BTreeMap::new(),
+            stop_flag: stop.cloned(),
+            plugin_host: config.plugin_host,
+            follow: config.follow,
+            #[cfg(target_os = "linux")]
+            database,
+            next_scan: Instant::now() + FOLLOW_INTERVAL,
+        };
         for source in config.sources {
-            let source_id = ExtensionId::parse(source.source_id.clone())
-                .map_err(|error| format!("invalid source ID: {error}"))?;
-            source_ids.push(source_id.clone());
-            if stop.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
-                startup_failures.insert(
-                    source_id,
-                    "startup skipped because shutdown was requested".into(),
-                );
-                continue;
-            }
-            let mut process_config = ProcessConfig::new(
-                config.plugin_host.clone(),
-                source.adapter,
-                source.source_root,
-                source.source_id,
-                source.plugin_id,
+            collector.add_source(source)?;
+        }
+        Ok(collector)
+    }
+
+    fn add_source(&mut self, source: ConfiguredSource) -> Result<(), String> {
+        let source_id = ExtensionId::parse(source.source_id.clone())
+            .map_err(|error| format!("invalid source ID: {error}"))?;
+        self.source_ids.push(source_id.clone());
+        if self
+            .stop_flag
+            .as_ref()
+            .is_some_and(|stop| stop.load(Ordering::Relaxed))
+        {
+            self.startup_failures.insert(
+                source_id,
+                "startup skipped because shutdown was requested".into(),
             );
-            if let Some(sha256) = source.artifact_sha256 {
-                process_config = process_config.with_artifact_sha256(sha256);
-            }
-            if let Some(features) = source.features {
-                process_config = process_config.with_expected_features(features);
-            }
-            if let Some(stop) = stop {
-                process_config = process_config.with_stop_flag(Arc::clone(stop));
-            }
-            let retry_config = process_config.clone();
-            match ProcessSource::spawn_with_decoder(process_config, BundledObservationDecoder) {
-                Ok(adapter) => {
-                    if let Err(error) = kernel.register_source_adapter(source_id.clone(), adapter) {
-                        startup_failures.insert(source_id, error.to_string());
-                    }
+            return Ok(());
+        }
+        let mut config = ProcessConfig::new(
+            self.plugin_host.clone(),
+            source.adapter,
+            source.source_root,
+            source.source_id,
+            source.plugin_id,
+        )
+        .with_observation_format(source.observation_format);
+        if let Some(sha256) = source.artifact_sha256 {
+            config = config.with_artifact_sha256(sha256);
+        }
+        if let Some(features) = source.features {
+            config = config.with_expected_features(features);
+        }
+        if let Some(stop) = &self.stop_flag {
+            config = config.with_stop_flag(Arc::clone(stop));
+        }
+        match ProcessSource::spawn(config.clone()) {
+            Ok(adapter) => {
+                if let Err(error) = self
+                    .kernel
+                    .register_source_adapter(source_id.clone(), adapter)
+                {
+                    self.startup_failures.insert(source_id, error.to_string());
                 }
-                Err(error) => {
-                    startup_failures.insert(source_id.clone(), error.to_string());
-                    if stop.is_some() {
-                        pending_sources.insert(
-                            source_id,
-                            (retry_config, Instant::now() + Duration::from_secs(1)),
-                        );
-                    }
+            }
+            Err(error) => {
+                self.startup_failures
+                    .insert(source_id.clone(), error.to_string());
+                if self.stop_flag.is_some() {
+                    self.pending_sources
+                        .insert(source_id, (config, Instant::now() + Duration::from_secs(1)));
                 }
             }
         }
+        Ok(())
+    }
 
-        Ok(Self {
-            kernel,
-            store,
-            source_ids,
-            startup_failures,
-            pending_sources,
-            stop_flag: stop.cloned(),
-        })
+    fn rescan_follow_sources(&mut self) -> Result<(), String> {
+        let Some(follow) = &self.follow else {
+            return Ok(());
+        };
+        #[cfg(target_os = "linux")]
+        validate_source_root_isolation(&self.database, follow.selection.roots())?;
+        let selected = follow.resolve()?;
+        let selected_ids = selected
+            .iter()
+            .map(|source| source.source_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let old_ids = self
+            .source_ids
+            .iter()
+            .map(|id| id.as_str().to_owned())
+            .collect::<BTreeSet<_>>();
+        self.source_ids.retain(|id| {
+            if selected_ids.contains(id.as_str()) {
+                return true;
+            }
+            self.kernel.unregister_source_adapter(id);
+            self.pending_sources.remove(id);
+            self.startup_failures.remove(id);
+            false
+        });
+        for source in selected {
+            if !old_ids.contains(&source.source_id) {
+                self.add_source(source)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn refresh(&mut self) -> CollectionReport {
@@ -1427,11 +1757,31 @@ impl ConfiguredCollector {
             .stop_flag
             .as_ref()
             .is_some_and(|stop| stop.load(Ordering::Relaxed));
-        build_collection_report(
+        if self.follow.is_some()
+            && self.stop_flag.is_some()
+            && Instant::now() >= self.next_scan
+            && !shutdown_requested
+        {
+            self.next_scan = Instant::now() + FOLLOW_INTERVAL;
+            // Give each selected source its current poll before replacing it.
+            // Findings from newly selected sources appear in the next cycle.
+            let polled_ids = self.source_ids.clone();
+            let startup_failures = self.startup_failures.clone();
+            let discovery_failure = self.rescan_follow_sources().err();
+            return build_collection_report_with_discovery(
+                &polled_ids,
+                &startup_failures,
+                &snapshot,
+                shutdown_requested,
+                discovery_failure,
+            );
+        }
+        build_collection_report_with_discovery(
             &self.source_ids,
             &self.startup_failures,
             &snapshot,
             shutdown_requested,
+            None,
         )
     }
 
@@ -1456,7 +1806,7 @@ impl ConfiguredCollector {
             let Some((config, _)) = self.pending_sources.get(&id).cloned() else {
                 continue;
             };
-            match ProcessSource::spawn_with_decoder(config, BundledObservationDecoder) {
+            match ProcessSource::spawn(config) {
                 Ok(adapter) => match self.kernel.register_source_adapter(id.clone(), adapter) {
                     Ok(()) => {
                         self.pending_sources.remove(&id);
@@ -1478,11 +1828,28 @@ impl ConfiguredCollector {
     }
 }
 
+#[cfg(test)]
 fn build_collection_report(
     source_ids: &[ExtensionId],
     startup_failures: &BTreeMap<ExtensionId, String>,
     snapshot: &Snapshot,
     shutdown_requested: bool,
+) -> CollectionReport {
+    build_collection_report_with_discovery(
+        source_ids,
+        startup_failures,
+        snapshot,
+        shutdown_requested,
+        None,
+    )
+}
+
+fn build_collection_report_with_discovery(
+    source_ids: &[ExtensionId],
+    startup_failures: &BTreeMap<ExtensionId, String>,
+    snapshot: &Snapshot,
+    shutdown_requested: bool,
+    discovery_failure: Option<String>,
 ) -> CollectionReport {
     let mut lines = Vec::with_capacity(source_ids.len());
     let mut failed_sources = 0;
@@ -1566,6 +1933,11 @@ fn build_collection_report(
         .collect::<Vec<_>>();
     let mut all_lines = lines;
     all_lines.extend(global_summary);
+    if let Some(error) = discovery_failure {
+        let failure = format!("discovery: {error}");
+        all_lines.push(failure.clone());
+        global_failures.push(failure);
+    }
     let source_failure_word = if failed_sources == 1 {
         "failure"
     } else {
@@ -1609,7 +1981,14 @@ fn load_collection_config(path: &std::path::Path) -> Result<ValidatedCollectionC
     if !matches!(config.version, 1 | 2) {
         return Err("unsupported collection config version".into());
     }
-    if config.sources.is_empty() || config.sources.len() > MAX_CONFIGURED_SOURCES {
+    if config.follow.is_some() && (config.version != 2 || !config.sources.is_empty()) {
+        return Err(
+            "follow discovery requires collection config v2 without explicit sources".into(),
+        );
+    }
+    if config.follow.is_none()
+        && (config.sources.is_empty() || config.sources.len() > MAX_CONFIGURED_SOURCES)
+    {
         return Err(format!(
             "collection config must define 1 to {MAX_CONFIGURED_SOURCES} sources"
         ));
@@ -1658,10 +2037,68 @@ fn load_collection_config(path: &std::path::Path) -> Result<ValidatedCollectionC
         _ => unreachable!("collection config version was validated"),
     };
 
-    let mut sources = Vec::with_capacity(config.sources.len());
+    let (sources, follow) = match config.follow {
+        Some(mut selection) => {
+            if !(1..=discovery::MAX_SESSIONS_PER_HARNESS).contains(&selection.sessions_per_harness)
+                || selection
+                    .roots()
+                    .iter()
+                    .any(|root| !valid_config_path(root))
+            {
+                return Err("invalid follow discovery roots or session limit".into());
+            }
+            selection.codex_root = resolve(selection.codex_root);
+            selection.pi_root = resolve(selection.pi_root);
+            if selection
+                .roots()
+                .iter()
+                .any(|root| !root.is_absolute() || !valid_config_path(root))
+            {
+                return Err("follow discovery roots must resolve to bounded absolute paths".into());
+            }
+            for plugin in [CODEX_PLUGIN_ID, discovery::PI_PLUGIN_ID] {
+                if !catalog.contains_key(plugin) {
+                    return Err(format!(
+                        "follow discovery requires plugin {plugin} in the catalog"
+                    ));
+                }
+            }
+            let follow = FollowSources {
+                selection,
+                catalog,
+                base,
+            };
+            (follow.resolve()?, Some(follow))
+        }
+        None => (
+            resolve_collection_sources(config.sources, config.version, &catalog, &base)?,
+            None,
+        ),
+    };
+    Ok(ValidatedCollectionConfig {
+        plugin_host: config.plugin_host,
+        sources,
+        follow,
+    })
+}
+
+fn resolve_collection_sources(
+    inputs: Vec<CollectionSourceInput>,
+    version: u32,
+    catalog: &BTreeMap<String, ValidatedAdapter>,
+    base: &std::path::Path,
+) -> Result<Vec<ConfiguredSource>, String> {
+    let resolve = |value: PathBuf| {
+        if value.is_absolute() {
+            value
+        } else {
+            base.join(value)
+        }
+    };
+    let mut sources = Vec::with_capacity(inputs.len());
     let mut seen_source_ids = BTreeSet::new();
     let mut seen_collection_targets = BTreeSet::new();
-    for mut source in config.sources {
+    for mut source in inputs {
         ExtensionId::parse(source.source_id.clone())
             .map_err(|error| format!("invalid source ID: {error}"))?;
         ExtensionId::parse(source.plugin_id.clone())
@@ -1669,7 +2106,7 @@ fn load_collection_config(path: &std::path::Path) -> Result<ValidatedCollectionC
         if !seen_source_ids.insert(source.source_id.clone()) {
             return Err(format!("duplicate source ID: {}", source.source_id));
         }
-        let (adapter, artifact_sha256, features) = match config.version {
+        let (adapter, artifact_sha256, features, observation_format) = match version {
             1 => {
                 if catalog.contains_key(&source.plugin_id) {
                     return Err("collection config v1 cannot select catalog plugins".into());
@@ -1681,7 +2118,7 @@ fn load_collection_config(path: &std::path::Path) -> Result<ValidatedCollectionC
                 if adapter.as_os_str().is_empty() {
                     return Err("adapter and source-root paths must not be empty".into());
                 }
-                (resolve(adapter), None, None)
+                (resolve(adapter), None, None, ObservationFormat::default())
             }
             2 => {
                 if source.adapter.is_some() {
@@ -1699,6 +2136,7 @@ fn load_collection_config(path: &std::path::Path) -> Result<ValidatedCollectionC
                     plugin.adapter.clone(),
                     Some(plugin.sha256.clone()),
                     Some(plugin.features.clone()),
+                    plugin.observation_format,
                 )
             }
             _ => unreachable!("collection config version was validated"),
@@ -1731,17 +2169,15 @@ fn load_collection_config(path: &std::path::Path) -> Result<ValidatedCollectionC
             source_id: source.source_id,
             artifact_sha256,
             features,
+            observation_format,
         });
     }
-    Ok(ValidatedCollectionConfig {
-        plugin_host: config.plugin_host,
-        sources,
-    })
+    Ok(sources)
 }
 
 fn load_adapter_catalog(
     path: &std::path::Path,
-) -> Result<BTreeMap<String, AdapterCatalogEntry>, String> {
+) -> Result<BTreeMap<String, ValidatedAdapter>, String> {
     let file = File::open(path).map_err(|_| "cannot open plugin catalog".to_owned())?;
     let metadata = file
         .metadata()
@@ -1782,6 +2218,10 @@ fn load_adapter_catalog(
                 plugin.plugin_id
             ));
         }
+        let observation_format = plugin
+            .observation_format
+            .parse()
+            .map_err(|_| format!("unsupported observation format for {}", plugin.plugin_id))?;
         if plugin.sha256.len() != 64
             || !plugin
                 .sha256
@@ -1821,7 +2261,13 @@ fn load_adapter_catalog(
             .map_err(|_| format!("adapter artifact is unavailable for {}", plugin.plugin_id))?;
         agenturm_runtime::verify_artifact_sha256(&plugin.adapter, &plugin.sha256)
             .map_err(|_| format!("adapter artifact hash mismatch for {}", plugin.plugin_id))?;
-        if plugins.insert(plugin.plugin_id.clone(), plugin).is_some() {
+        let adapter = ValidatedAdapter {
+            adapter: plugin.adapter,
+            sha256: plugin.sha256,
+            features: plugin.features,
+            observation_format,
+        };
+        if plugins.insert(plugin.plugin_id, adapter).is_some() {
             return Err("plugin catalog contains duplicate plugin IDs".into());
         }
     }
@@ -1944,6 +2390,20 @@ fn canonicalize_with_missing_suffix(path: &std::path::Path) -> Result<PathBuf, S
 struct ValidatedCollectionConfig {
     plugin_host: PathBuf,
     sources: Vec<ConfiguredSource>,
+    follow: Option<FollowSources>,
+}
+
+#[derive(Debug)]
+struct FollowSources {
+    selection: discovery::FollowDiscovery,
+    catalog: BTreeMap<String, ValidatedAdapter>,
+    base: PathBuf,
+}
+
+impl FollowSources {
+    fn resolve(&self) -> Result<Vec<ConfiguredSource>, String> {
+        resolve_collection_sources(self.selection.sources()?, 2, &self.catalog, &self.base)
+    }
 }
 
 pub fn execute_ingest(options: &IngestOptions) -> Result<String, String> {
@@ -1956,10 +2416,9 @@ pub fn execute_ingest(options: &IngestOptions) -> Result<String, String> {
         options.source_id.clone(),
         options.plugin_id.clone(),
     );
-    let source = ProcessSource::spawn_with_decoder(config, BundledObservationDecoder)
-        .map_err(|error| error.to_string())?;
-    let mut store =
-        Store::open(&options.db).map_err(|error| format!("open store failed: {error}"))?;
+    let source = ProcessSource::spawn(config).map_err(|error| error.to_string())?;
+    let mut store = Store::open_collector(&options.db)
+        .map_err(|error| format!("open store failed: {error}"))?;
     let mut kernel = Kernel::new();
     kernel
         .register_source_adapter(source_id.clone(), source)
@@ -2011,6 +2470,10 @@ pub fn render(command: Command) -> String {
             "Usage: agenturm [--help|--version|status]\n",
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
+            "       agenturm backup --db <path> --output <new-path>\n",
+            "       agenturm prune --db <path> --before-unix-ns <ns>\n",
+            "       agenturm content <grant|revoke|preview> [options]\n",
+            "       agenturm discover [--follow] [--sessions-per-harness <1..8>]\n",
             "       agenturm collect --config <json-path> --db <path>\n",
             "       agenturm collect --config <json-path> --db <path> --watch [--interval-ms <100..60000>]\n",
             "       agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>\n",
@@ -2036,6 +2499,8 @@ pub fn render(command: Command) -> String {
             ),
             SERVICE_STATUS_LINE
         ),
+        Command::Backup { .. } | Command::Prune { .. } | Command::Content(_) => String::new(),
+        Command::Discover { .. } => String::new(),
         Command::Inspect(_) => String::new(),
         Command::Query(_) => String::new(),
         Command::Ingest(_) => String::new(),
@@ -2049,33 +2514,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn overview_exposes_lifecycle_reason_as_source_evidence() {
-        let observation = Observation {
-            harness_id: ExtensionId::parse("harness.codex").unwrap(),
-            event_id: "event-1".into(),
-            revision: 0,
-            identity: agenturm_kernel::ObservationIdentity {
-                scope: agenturm_kernel::ObservationScope::Session,
-                session_id: Some("session-1".into()),
-                worker_id: None,
-                turn_id: Some("turn-1".into()),
-                operation_id: None,
-            },
-            observed_at_unix_ns: 1,
-            kind: ObservationKind::Lifecycle {
-                state: "interrupted".into(),
-                reason_code: Some("codex_task_aborted".into()),
-            },
+    fn overview_preserves_recorded_lifecycle_turns_and_reasons() {
+        let lifecycle =
+            |event_id: &str, time, turn_id: Option<&str>, state: &str, reason: Option<&str>| {
+                Observation {
+                    harness_id: ExtensionId::parse("harness.codex").unwrap(),
+                    event_id: event_id.into(),
+                    revision: 0,
+                    identity: agenturm_kernel::ObservationIdentity {
+                        scope: agenturm_kernel::ObservationScope::Session,
+                        session_id: Some("session-1".into()),
+                        worker_id: None,
+                        turn_id: turn_id.map(str::to_owned),
+                        operation_id: None,
+                    },
+                    observed_at_unix_ns: time,
+                    kind: ObservationKind::Lifecycle {
+                        state: state.into(),
+                        reason_code: reason.map(str::to_owned),
+                    },
+                }
+            };
+        let interrupted = lifecycle(
+            "event-1",
+            1,
+            Some("turn-1"),
+            "interrupted",
+            Some("codex_task_aborted"),
+        );
+        let running = lifecycle("event-2", 2, None, "running", None);
+        let completed = lifecycle("event-3", 3, Some("turn-2"), "completed", None);
+        let values = |events: &[Observation]| {
+            overview_rows(events)
+                .into_iter()
+                .map(|row| (row.label, row.value))
+                .collect::<BTreeMap<_, _>>()
         };
-        let rows = overview_rows(&[observation]);
-        let latest = rows
-            .iter()
-            .find(|row| row.label == "Latest lifecycle evidence")
-            .unwrap();
+
+        let ending = values(std::slice::from_ref(&interrupted));
         assert_eq!(
-            latest.value,
+            ending["Latest lifecycle evidence"],
             "reason=codex_task_aborted · state=interrupted · harness.codex/session-1"
         );
+        assert_eq!(ending["Lifecycle turn"], "turn-1");
+
+        let ongoing = values(&[running.clone(), interrupted.clone()]);
+        assert_eq!(ongoing["Lifecycle turn"], "not recorded");
+        assert_eq!(ongoing["Ended turn"], "turn-1");
+        assert_eq!(
+            ongoing["Latest recorded turn end"],
+            "reason=codex_task_aborted · state=interrupted · harness.codex/session-1"
+        );
+
+        let finished = values(&[running, completed, interrupted]);
+        assert_eq!(finished["Lifecycle turn"], "turn-2");
+        assert_eq!(
+            finished["Latest lifecycle evidence"],
+            "reason=not-recorded · state=completed · harness.codex/session-1"
+        );
+        assert!(!finished.contains_key("Latest recorded turn end"));
     }
 
     #[test]
@@ -3027,6 +3524,7 @@ mod tests {
             source_id: "harness.pi".into(),
             artifact_sha256: None,
             features: None,
+            observation_format: ObservationFormat::default(),
         };
         assert!(
             validate_service_database_isolation(
@@ -3267,6 +3765,22 @@ mod tests {
     }
 
     #[test]
+    fn discover_cli_accepts_follow_and_rejects_duplicate_flags() {
+        let parse = |args: &[&str]| {
+            parse_command(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            parse(&["discover", "--sessions-per-harness", "1", "--follow"]).unwrap(),
+            Command::Discover {
+                sessions_per_harness: 1,
+                follow: true
+            }
+        );
+        assert!(parse(&["discover", "--follow", "--follow"]).is_err());
+        assert!(parse(&["discover", "--follow", "--sessions-per-harness", "0"]).is_err());
+    }
+
+    #[test]
     fn version_two_collection_config_resolves_and_pins_catalog_plugins_before_store_open() {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3315,6 +3829,10 @@ mod tests {
             Some("2de1f3a1752dc35308e48cde8ee2e146620d022fa0974ffbd4acf078bcb665f0")
         );
         assert_eq!(loaded.sources[0].features.as_ref().unwrap().len(), 2);
+        assert_eq!(
+            loaded.sources[0].observation_format,
+            ObservationFormat::default()
+        );
 
         let db = directory.join("should-not-open.sqlite");
         let options = ConfiguredCollectOptions {

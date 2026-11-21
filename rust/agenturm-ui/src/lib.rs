@@ -6,12 +6,12 @@
 
 #![forbid(unsafe_code)]
 
-use agenturm_kernel::{MetricRow, ObservationPosition, Snapshot};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use agenturm_kernel::{ExtensionId, MetricRow, ObservationPosition, Snapshot};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use std::io;
 use unicode_width::UnicodeWidthChar;
@@ -38,6 +38,8 @@ pub struct UiModel {
     truncated: bool,
     older_cursor: Option<ObservationPosition>,
     help: bool,
+    turn_available: bool,
+    in_turn: bool,
 }
 
 impl UiModel {
@@ -103,6 +105,8 @@ impl UiModel {
             truncated: snapshot.observations_truncated,
             older_cursor,
             help: false,
+            turn_available: false,
+            in_turn: false,
         }
     }
 
@@ -200,42 +204,164 @@ pub fn run(mut snapshot: Snapshot) -> io::Result<()> {
     run_with_history(snapshot, |_| Ok(None))
 }
 
-/// Runs the inspector with bounded older-page navigation. The UI receives
-/// only render-neutral snapshots and an exact opaque ordering cursor.
+/// Host-provided identity and lifecycle for a selectable recorded turn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordedTurn {
+    pub harness_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub snapshot_id: u64,
+    pub lifecycle: Option<(String, Option<String>)>,
+}
+
+pub struct HistoryPage {
+    pub snapshot: Snapshot,
+    pub turns: Vec<RecordedTurn>,
+    pub initial_pane: Option<ExtensionId>,
+}
+
+struct PageView {
+    ui: UiModel,
+    turns: Vec<RecordedTurn>,
+    turn_picker: Option<ListState>,
+}
+
+impl PageView {
+    fn new(page: HistoryPage, in_turn: bool) -> Self {
+        let selected = page
+            .initial_pane
+            .as_ref()
+            .and_then(|pane| page.snapshot.panes.keys().position(|id| id == pane));
+        let mut ui = UiModel::from_snapshot(page.snapshot);
+        if let Some(selected) = selected {
+            ui.selected = selected;
+        }
+        ui.in_turn = in_turn;
+        ui.turn_available = !in_turn && !page.turns.is_empty();
+        Self {
+            ui,
+            turns: page.turns,
+            turn_picker: None,
+        }
+    }
+}
+
+/// Runs the inspector with bounded older-page navigation.
 pub fn run_with_history(
     snapshot: Snapshot,
     mut load_older: impl FnMut(&ObservationPosition) -> io::Result<Option<Snapshot>>,
 ) -> io::Result<()> {
-    let mut model = UiModel::from_snapshot(snapshot);
-    let mut newer_pages = Vec::<UiModel>::new();
+    let initial = HistoryPage {
+        snapshot,
+        turns: Vec::new(),
+        initial_pane: None,
+    };
+    run_with_turn_activity(initial, |_, before| {
+        let Some(cursor) = before else {
+            return Ok(None);
+        };
+        Ok(load_older(cursor)?.map(|snapshot| HistoryPage {
+            snapshot,
+            turns: Vec::new(),
+            initial_pane: None,
+        }))
+    })
+}
+
+/// Navigates immutable, data-only pages supplied by the application.
+pub fn run_with_turn_activity(
+    initial: HistoryPage,
+    mut load_page: impl FnMut(
+        Option<&RecordedTurn>,
+        Option<&ObservationPosition>,
+    ) -> io::Result<Option<HistoryPage>>,
+) -> io::Result<()> {
+    let mut page = PageView::new(initial, false);
+    let mut newer_pages = Vec::<PageView>::new();
+    let mut overview = None;
+    let mut active_turn = None;
     const MAX_CACHED_NEWER_PAGES: usize = 4;
     ratatui::run(|terminal| {
         loop {
             let area = terminal.size()?;
-            model.set_viewport(area.width, area.height);
-            terminal.draw(|frame| draw(frame, &model, !newer_pages.is_empty()))?;
+            page.ui.set_viewport(area.width, area.height);
+            terminal.draw(|frame| {
+                draw(
+                    frame,
+                    &page.ui,
+                    !newer_pages.is_empty(),
+                    page.turn_picker
+                        .as_mut()
+                        .map(|state| (page.turns.as_slice(), state)),
+                )
+            })?;
             if let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
             {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    break Ok(());
+                }
+                if let Some(selection) = &mut page.turn_picker {
+                    match key.code {
+                        KeyCode::Char('q') => break Ok(()),
+                        KeyCode::Esc => page.turn_picker = None,
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let current = selection.selected().unwrap_or_default();
+                            selection.select(Some((current + 1).min(page.turns.len() - 1)));
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            let current = selection.selected().unwrap_or_default();
+                            selection.select(Some(current.saturating_sub(1)));
+                        }
+                        KeyCode::Enter => {
+                            if let Some(turn) = selection
+                                .selected()
+                                .and_then(|index| page.turns.get(index))
+                                .cloned()
+                                && let Some(detail) = load_page(Some(&turn), None)?
+                            {
+                                overview = Some((
+                                    std::mem::replace(&mut page, PageView::new(detail, true)),
+                                    std::mem::take(&mut newer_pages),
+                                ));
+                                active_turn = Some(turn);
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
                 match key.code {
-                    KeyCode::Char('[') if !model.help => {
-                        if let Some(cursor) = model.older_cursor().cloned()
-                            && let Some(next) = load_older(&cursor)?
+                    KeyCode::Char('[') if !page.ui.help => {
+                        if let Some(cursor) = page.ui.older_cursor()
+                            && let Some(next) = load_page(active_turn.as_ref(), Some(cursor))?
                         {
-                            let previous =
-                                std::mem::replace(&mut model, UiModel::from_snapshot(next));
+                            let previous = std::mem::replace(
+                                &mut page,
+                                PageView::new(next, active_turn.is_some()),
+                            );
                             if newer_pages.len() == MAX_CACHED_NEWER_PAGES {
                                 newer_pages.remove(0);
                             }
                             newer_pages.push(previous);
                         }
                     }
-                    KeyCode::Char(']') if !model.help => {
+                    KeyCode::Char(']') if !page.ui.help => {
                         if let Some(newer) = newer_pages.pop() {
-                            model = newer;
+                            page = newer;
                         }
                     }
-                    key if model.handle_key(key) => break Ok(()),
+                    KeyCode::Char('t') if page.ui.turn_available && !page.ui.help => {
+                        page.turn_picker = Some(ListState::default().with_selected(Some(0)));
+                    }
+                    KeyCode::Esc if active_turn.is_some() => {
+                        if let Some((previous, cached)) = overview.take() {
+                            page = previous;
+                            newer_pages = cached;
+                        }
+                        active_turn = None;
+                    }
+                    key if page.ui.handle_key(key) => break Ok(()),
                     _ => {}
                 }
             }
@@ -243,7 +369,12 @@ pub fn run_with_history(
     })
 }
 
-fn draw(frame: &mut Frame, model: &UiModel, has_newer_page: bool) {
+fn draw(
+    frame: &mut Frame,
+    model: &UiModel,
+    has_newer_page: bool,
+    turn_picker: Option<(&[RecordedTurn], &mut ListState)>,
+) {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         frame.render_widget(
@@ -270,6 +401,13 @@ fn draw(frame: &mut Frame, model: &UiModel, has_newer_page: bool) {
             .add_modifier(Modifier::BOLD),
     )];
     header.push(Span::raw(format!(" · {} observations", model.observations)));
+    if turn_picker.is_some() {
+        header.push(Span::raw(" · Select a turn"));
+    } else if model.in_turn {
+        header.push(Span::raw(" · Esc back"));
+    } else if model.turn_available {
+        header.push(Span::raw(" · t Turns"));
+    }
     if model.truncated {
         header.push(Span::styled(
             " · older history available",
@@ -281,7 +419,10 @@ fn draw(frame: &mut Frame, model: &UiModel, has_newer_page: bool) {
         rows[0],
     );
 
-    if model.panes.is_empty() {
+    let picking_turn = turn_picker.is_some();
+    if let Some((turns, state)) = turn_picker {
+        render_turn_picker(frame, turns, state, rows[1]);
+    } else if model.panes.is_empty() {
         frame.render_widget(
             Paragraph::new("No panes are registered yet.\nAdd a UI contribution to inspect data.")
                 .block(Block::bordered().title("Overview"))
@@ -292,8 +433,12 @@ fn draw(frame: &mut Frame, model: &UiModel, has_newer_page: bool) {
         render_panes(frame, model, rows[1]);
     }
 
-    let footer = if model.help {
-        " ←/→ or Tab switch panes · ↑/↓ or j/k scroll · ? close help · q quit "
+    let footer = if picking_turn {
+        "↑/↓ select · Enter open · Esc back"
+    } else if model.help && model.turn_available {
+        " Tab panes · ↑/↓ scroll · t turns · ? close help · q quit "
+    } else if model.help {
+        " Tab panes · ↑/↓ scroll · ? close help · q quit "
     } else if model.older_cursor.is_some() && has_newer_page {
         " ←/→ panes · ↑/↓ scroll · [ older · ] newer · ? help · q quit "
     } else if model.older_cursor.is_some() {
@@ -309,6 +454,38 @@ fn draw(frame: &mut Frame, model: &UiModel, has_newer_page: bool) {
             .centered(),
         rows[2],
     );
+}
+
+fn render_turn_picker(
+    frame: &mut Frame,
+    turns: &[RecordedTurn],
+    state: &mut ListState,
+    area: Rect,
+) {
+    let items = turns.iter().map(|turn| {
+        let (status, reason) = turn
+            .lifecycle
+            .as_ref()
+            .map_or(("No lifecycle recorded", None), |(status, reason)| {
+                (status.as_str(), reason.as_deref())
+            });
+        let reason = reason.map_or_else(String::new, |reason| format!(" · {reason}"));
+        let summary = visible_text(&format!("{status} · {}{reason}", turn.turn_id));
+        if area.height < 6 {
+            return ListItem::new(summary);
+        }
+        let source = visible_text(&format!("{} · {}", turn.harness_id, turn.session_id));
+        ListItem::new(Text::from(vec![Line::from(summary), Line::from(source)]))
+    });
+    let list = List::new(items)
+        .block(Block::bordered().title("Turns on this page"))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("› ");
+    frame.render_stateful_widget(list, area, state);
 }
 
 fn render_panes(frame: &mut Frame, model: &UiModel, area: Rect) {
@@ -580,7 +757,9 @@ mod tests {
             let mut terminal = Terminal::new(backend).unwrap();
             let mut model = UiModel::from_snapshot(snapshot_with_panes());
             model.set_viewport(width, height);
-            terminal.draw(|frame| draw(frame, &model, false)).unwrap();
+            terminal
+                .draw(|frame| draw(frame, &model, false, None))
+                .unwrap();
             let text = terminal
                 .backend()
                 .buffer()
@@ -613,7 +792,9 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut model = UiModel::from_snapshot(snapshot);
         model.set_viewport(60, 18);
-        terminal.draw(|frame| draw(frame, &model, false)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &model, false, None))
+            .unwrap();
         let text = terminal
             .backend()
             .buffer()
@@ -658,7 +839,9 @@ mod tests {
             model.select_next();
             assert_eq!(model.selected_title(), Some("Lifecycle by source"));
             model.set_viewport(width, height);
-            terminal.draw(|frame| draw(frame, &model, false)).unwrap();
+            terminal
+                .draw(|frame| draw(frame, &model, false, None))
+                .unwrap();
             let text = terminal
                 .backend()
                 .buffer()

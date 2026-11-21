@@ -1,0 +1,131 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Linux Bundle</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.1.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-linux-bundle.md">Markdown source ↗</a></nav><h1>Agenturm Rust bundle for Linux</h1>
+<p>The bundle contains the Agenturm CLI and inspector, the process host, the
+Codex and Pi adapters, and their SHA-256-pinned adapter catalog. The runtime
+requires a compatible Linux system and does not require Python or Rust.
+The managed collector uses a running systemd user manager. Foreground
+collection is available on Linux systems without a user manager.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Platform</th>
+<th>Build</th>
+<th>Collector</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Ubuntu 24.04 x86-64</td>
+<td>Local bundle and CI artifact</td>
+<td>Foreground and systemd user service verified</td>
+</tr>
+<tr>
+<td>Other Linux releases and architectures</td>
+<td>Host build script available</td>
+<td>Qualification open</td>
+</tr>
+<tr>
+<td>macOS and Windows</td>
+<td>Bundle qualification open</td>
+<td>Service integration open</td>
+</tr>
+</tbody>
+</table></div>
+<h2>Build and install</h2>
+<p>From a source checkout on Linux with the pinned Rust toolchain and a native C
+build toolchain, run <code>scripts/build-rust-linux-bundle.sh ./dist</code>. The script
+builds for the local Linux architecture and emits a tarball and checksum.</p>
+<p>From the directory containing the archive and its checksum, run:</p>
+<pre><code class="language-sh">sha256sum -c agenturm-0.1.0-linux-x86_64.tar.gz.sha256
+mkdir -p &quot;$HOME/.local/opt&quot;
+tar -xzf agenturm-0.1.0-linux-x86_64.tar.gz -C &quot;$HOME/.local/opt&quot;
+agenturm=&quot;$HOME/.local/opt/agenturm-0.1.0-linux-x86_64/bin/agenturm&quot;
+&quot;$agenturm&quot; --version
+</code></pre>
+<p>Use the archive and directory names produced by the build for your version and
+architecture. Keep the catalog and binaries in the extracted directory.</p>
+<h2>Discover, collect, and inspect</h2>
+<pre><code class="language-sh">state=&quot;${XDG_STATE_HOME:-$HOME/.local/state}/agenturm-rust&quot;
+mkdir -m 700 -p &quot;$state&quot;
+&quot;$agenturm&quot; discover &gt; &quot;$state/sources.json&quot;
+&quot;$agenturm&quot; service install --config &quot;$state/sources.json&quot; --db &quot;$state/history.sqlite&quot;
+&quot;$agenturm&quot; service status
+&quot;$agenturm&quot; query --db &quot;$state/history.sqlite&quot;
+&quot;$agenturm&quot; inspect --db &quot;$state/history.sqlite&quot;
+</code></pre>
+<p>Discovery looks in <code>$CODEX_HOME/sessions</code> and
+<code>$PI_CODING_AGENT_DIR/sessions</code>, defaulting to <code>~/.codex/sessions</code> and
+<code>~/.pi/agent/sessions</code>. It selects up to four recent JSONL files per
+harness by modification time. Use <code>--sessions-per-harness &lt;1..8&gt;</code> to set
+the limit. Each file gets a source ID derived from its canonical path so an
+unchanged path resumes its stored cursor. Discovery prints a configuration
+snapshot. The collector watches the selected files, and newly created session
+files become eligible when you regenerate the config and restart the service.
+Previously collected observations remain available in the database. For rolling
+discovery, run <code>discover --follow</code> when creating the config. A running collector
+rescans the captured roots at most once every five seconds and watches the
+same bounded selection of newest files. It starts even when both roots are
+empty. A file that leaves the selection keeps its durable cursor and history.
+To change the captured roots or replace a static config, write a temporary file
+first and replace the config only after discovery succeeds.</p>
+<p>To restart the managed collector, run
+<code>systemctl --user restart agenturm-collector.service</code>. If there is no user
+manager, use <code>&quot;$agenturm&quot; collect --config &quot;$state/sources.json&quot; --db &quot;$state/history.sqlite&quot; --watch</code> instead of installing the service.</p>
+<p>In the inspector, press <code>t</code> when the header offers Turns. The view
+lists recorded turns on the current history page. Use the arrow keys to
+choose a turn, then press Enter to open its scoped observations. Press
+<code>Esc</code> to return to the turn list, then press it again to return to history.
+A recorded pull request appears as a work result alongside the native
+lifecycle state.</p>
+<h2>Back up history</h2>
+<p>Run <code>&quot;$agenturm&quot; backup --db &quot;$state/history.sqlite&quot; --output &quot;$state/history-backup.sqlite&quot;</code> while collection is running or stopped.
+The output path must be new. Query or inspect the backup by passing its
+path with <code>--db</code>. To resume collection from a snapshot, stop the current
+collector and configure the backup file as the new database.</p>
+<h2>Uninstall</h2>
+<p>Run <code>&quot;$agenturm&quot; service uninstall</code> to stop and remove the systemd unit.
+Remove the extracted bundle directory afterward if desired. The configuration
+and SQLite database stay in the state directory. The extracted or a compatible
+Agenturm CLI can query or inspect the database after uninstall.</p>
+<h2>Qualify a release candidate</h2>
+<p>Run the archive checks on each supported platform after building from the
+release tag. The Linux CI workflow accepts Rust tags in the form
+<code>rust-v&lt;version&gt;</code>. The version comes from <code>rust/agenturm-app/Cargo.toml</code>.
+The workflow verifies the tag matches the version in the archive and retains
+the qualified archive and checksum as workflow artifacts. Python releases use
+the separate <code>v&lt;version&gt;</code> tag family.</p>
+<pre><code class="language-sh">scripts/verify-rust-linux-bundle.sh ./dist/agenturm-0.1.0-linux-x86_64.tar.gz
+</code></pre>
+<p>The verifier extracts the checksum-verified archive into a fresh state
+directory. It discovers and collects fixture sessions with an empty PATH,
+checks that reopening and replay preserve history, opens recorded turn
+activity in a PTY, and reopens a backup. It uses Bash, jq, GNU coreutils,
+GNU tar, and util-linux <code>script</code> as qualification tools.</p>
+<p>On a dedicated Ubuntu 24.04 x86-64 account with a running systemd user
+manager and no Agenturm collector unit, pass <code>--systemd-user</code> to verify
+managed install, restart, inspection, and retained data after uninstall.
+Also repeat those steps with real local Pi and Codex data. When a prior
+standalone Rust artifact is available, pass
+<code>--previous /path/to/agenturm-&lt;previous&gt;-linux-x86_64.tar.gz</code>. The verifier
+uses that artifact and its adjacent checksum to create a database, then
+checks that the current bundle retains its history and resumes its cursors.</p>
+<h2>Publish a qualified archive</h2>
+<p>After the tag run succeeds, download the archive and checksum from that
+specific run. Set <code>run_id</code> to the successful run for the release tag.</p>
+<pre><code class="language-sh">tag=rust-v0.1.0
+asset=&quot;agenturm-${tag#rust-v}-linux-x86_64.tar.gz&quot;
+gh run download &quot;$run_id&quot; --name agenturm-rust-linux-x86_64 --dir ./release
+scripts/verify-rust-linux-bundle.sh &quot;./release/$asset&quot; --systemd-user
+</code></pre>
+<p>Complete the real-record checks above using the same extracted archive.
+Record the tag, OS and architecture, artifact checksum, and results. Attach
+the tested files to the existing tag with release notes identifying the supported
+platforms and linking to these instructions.</p>
+<pre><code class="language-sh">gh release create &quot;$tag&quot; &quot;./release/$asset&quot; &quot;./release/$asset.sha256&quot; \
+    --verify-tag --latest=false --title &quot;Agenturm Rust ${tag#rust-v}&quot; \
+    --notes-file &quot;$release_notes&quot;
+</code></pre>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

@@ -1,6 +1,6 @@
 use agenturm_kernel::{
-    ExtensionId, Kernel, Observation, ObservationPage, ObservationQuery, ObservationStore,
-    PreparedSourceBatch, StoreCommit,
+    ExtensionId, Kernel, Observation, ObservationKind, ObservationPage, ObservationQuery,
+    ObservationStore, PreparedSourceBatch, RelationshipKind, StoreCommit,
 };
 use agenturm_runtime::{
     BundledObservationDecoder, ExtensionDataGrant, ProcessConfig, ProcessObservationExtension,
@@ -103,9 +103,11 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
     fs::write(
         &source_path,
         concat!(
-            "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+            "{\"type\":\"session\",\"id\":\"pi-session\",\"timestamp\":\"2026-11-20T11:59:58Z\",\"parentSessionId\":\"pi-parent\"}\n",
             "{\"type\":\"message\",\"id\":\"user-1\",\"timestamp\":\"2026-11-20T11:59:59Z\",\"message\":{\"role\":\"user\",\"content\":\"private Pi prompt never stored\"}}\n",
-            "{\"type\":\"message\",\"id\":\"assistant-1\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"error\",\"usage\":{\"input\":8,\"output\":3},\"content\":[{\"type\":\"toolCall\",\"id\":\"call-1\",\"name\":\"read\"}]}}\n"
+            "{\"type\":\"message\",\"id\":\"assistant-1\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"toolUse\",\"usage\":{\"input\":8,\"output\":3},\"content\":[{\"type\":\"toolCall\",\"id\":\"call_abc|fc_xyz\",\"name\":\"read\"}]}}\n",
+            "{\"type\":\"message\",\"id\":\"result-1\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"call_abc|fc_xyz\",\"toolName\":\"read\",\"isError\":false}}\n",
+            "{\"type\":\"message\",\"id\":\"assistant-2\",\"timestamp\":\"2026-11-20T12:00:02Z\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"error\"}}\n"
         ),
     )
     .expect("write Pi fixture");
@@ -159,11 +161,11 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
         .admissions
         .get(&source_id)
         .expect("Pi admission status");
-    assert_eq!(admission.inserted, 6);
+    assert_eq!(admission.inserted, 11);
     assert_eq!(admission.skipped_unprojected_facts, 0);
     assert!(admission.source_ack_sent);
     assert_eq!(decode_count.load(Ordering::SeqCst), 2);
-    assert_eq!(snapshot.observations.len(), 6);
+    assert_eq!(snapshot.observations.len(), 11);
     assert!(snapshot.observations.iter().any(|row| row.kind
         == agenturm_kernel::ObservationKind::Message {
             role: "user".into()
@@ -177,7 +179,8 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
         .iter()
         .find(|row| matches!(row.kind, agenturm_kernel::ObservationKind::Tool { .. }))
         .unwrap();
-    assert_eq!(tool.identity.operation_id.as_deref(), Some("call-1"));
+    let operation_id = tool.identity.operation_id.as_deref().unwrap();
+    assert!(operation_id.starts_with("pi-call/"));
     assert_eq!(
         tool.kind,
         agenturm_kernel::ObservationKind::Tool {
@@ -211,7 +214,7 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
     );
 
     let idle = kernel.refresh_with_store(&mut store);
-    assert_eq!(idle.observations.len(), 6);
+    assert_eq!(idle.observations.len(), 11);
     assert_eq!(idle.admissions[&source_id].inserted, 0);
     assert!(idle.admissions[&source_id].source_ack_sent);
     drop(kernel);
@@ -219,12 +222,34 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
 
     let mut store = Store::open(&database).expect("reopen Pi store");
     let restored = Kernel::new().refresh_with_store(&mut store);
-    assert_eq!(restored.observations.len(), 6);
+    assert_eq!(restored.observations.len(), 11);
     assert_eq!(
         restored.observations[0].identity.session_id.as_deref(),
         Some("pi-session")
     );
     assert!(restored.failures.is_empty());
+    let relation = restored
+        .observations
+        .iter()
+        .find(|row| {
+            row.kind
+                == ObservationKind::Relationship {
+                    relationship_kind: RelationshipKind::Delegated,
+                    parent_session_id: "pi-parent".into(),
+                }
+        })
+        .expect("reopen explicit Pi parent session fact");
+    assert_eq!(relation.identity.session_id.as_deref(), Some("pi-session"));
+    assert!(relation.identity.turn_id.is_none());
+    assert!(restored.observations.iter().any(|row| {
+        row.kind
+            == ObservationKind::Tool {
+                category: "file".into(),
+                result: "succeeded".into(),
+            }
+            && row.identity.operation_id.as_deref() == Some(operation_id)
+    }));
+    assert!(!format!("{:?}", restored.observations).contains("call_abc|fc_xyz"));
     assert!(
         restored
             .observations
@@ -268,7 +293,7 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
     assert!(extended.failures.is_empty());
     assert_eq!(
         extended.metrics[&ExtensionId::parse("example.pi-signals").unwrap()][0].value,
-        "6"
+        "11"
     );
     assert_eq!(
         extended.panes[&ExtensionId::parse("example.pi-signals").unwrap()].title,

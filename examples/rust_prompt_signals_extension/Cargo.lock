@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "agenturm-kernel"
 version = "0.1.0"
+dependencies = [
+ "agenturm-protocol",
+]
 
 [[package]]
 name = "agenturm-prompt-signals-extension"
@@ -21,6 +24,10 @@ dependencies = [
 [[package]]
 name = "agenturm-protocol"
 version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "agenturm-runtime"

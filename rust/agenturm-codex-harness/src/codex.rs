@@ -3,9 +3,11 @@
 //! result, EOF or ordinary assistant message never supplies a terminal state.
 
 use agenturm_jsonl_source::Result;
+use agenturm_protocol::observation::{RelationshipKind, is_github_pull_request};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::error::Error;
+use std::path::Path;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 fn invalid(message: &'static str) -> Box<dyn Error> {
@@ -101,6 +103,27 @@ fn stamp(row: &Value) -> Result<String> {
         return Err(invalid("Codex timestamp outside supported range"));
     }
     Ok(nanos.to_string())
+}
+
+fn header_relationship(payload: &Value, child: &str) -> Option<Value> {
+    let direct = payload
+        .get("parent_thread_id")
+        .filter(|value| !value.is_null());
+    let nested = payload
+        .pointer("/source/subagent/thread_spawn/parent_thread_id")
+        .filter(|value| !value.is_null());
+    if let (Some(direct), Some(nested)) = (direct, nested)
+        && direct != nested
+    {
+        return None;
+    }
+    let (kind, parent) = match direct.or(nested) {
+        Some(parent) => (RelationshipKind::Delegated, parent),
+        None => (RelationshipKind::Forked, payload.get("forked_from_id")?),
+    };
+    let parent = parent.as_str()?;
+    (identifier(parent) && parent != child)
+        .then(|| json!({"relationship_kind":kind,"parent_session_id":parent}))
 }
 
 fn turn_from(payload: &Value, context: &mut Context, clear_if_missing: bool) -> Result<()> {
@@ -228,6 +251,91 @@ fn check_category(item: &Value) -> Option<&'static str> {
     }
 }
 
+fn executable_name(path: &str) -> Option<&str> {
+    Path::new(path).file_name()?.to_str()
+}
+
+fn is_pr_create<'a>(mut words: impl Iterator<Item = &'a str>) -> bool {
+    words.next().and_then(executable_name) == Some("gh")
+        && words.next() == Some("pr")
+        && words.next() == Some("create")
+        && !words.any(|word| {
+            matches!(word, "--help" | "-h" | "--dry-run") || word.starts_with("--dry-run=")
+        })
+}
+
+// Split a single shell command only after ruling out syntax that could run
+// another command or expand arguments. Quoted title and body values are data.
+fn single_shell_command(raw: &str) -> Option<Vec<String>> {
+    if raw.len() > 16 * 1024 || raw.as_bytes().contains(&0) {
+        return None;
+    }
+    let mut quote = None;
+    let mut chars = raw.chars();
+    while let Some(character) = chars.next() {
+        match (quote, character) {
+            (Some(open), close) if open == close => quote = None,
+            (Some('\''), _) => {}
+            (_, '\\') => {
+                chars.next()?;
+            }
+            (_, '$' | '`') => return None,
+            (None, '\'' | '"') => quote = Some(character),
+            (
+                None,
+                ';' | '|' | '&' | '>' | '<' | '(' | ')' | '{' | '}' | '*' | '?' | '[' | ']' | '#'
+                | '!' | '~' | '\n' | '\r',
+            ) => return None,
+            _ => {}
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    shlex::split(raw)
+}
+
+fn raised_pull_request(item: &Value) -> Option<(&str, u64)> {
+    if item.get("exit_code").and_then(Value::as_i64) != Some(0)
+        || item.get("status").and_then(Value::as_str) != Some("completed")
+    {
+        return None;
+    }
+    let command = item.get("command")?.as_array()?;
+    if command.len() > 128 {
+        return None;
+    }
+    let words = command
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<Vec<_>>>()?;
+    let creates_pr = match words.as_slice() {
+        [shell, "-c" | "-lc", raw]
+            if matches!(executable_name(shell), Some("bash" | "dash" | "sh" | "zsh")) =>
+        {
+            let expanded = single_shell_command(raw)?;
+            is_pr_create(expanded.iter().map(String::as_str))
+        }
+        _ => is_pr_create(words.into_iter()),
+    };
+    if !creates_pr {
+        return None;
+    }
+    let output = item.get("aggregated_output")?.as_str()?;
+    if output.len() > 512 {
+        return None;
+    }
+    let (repository, raw_number) = output
+        .trim()
+        .strip_prefix("https://github.com/")?
+        .rsplit_once("/pull/")?;
+    if raw_number.starts_with('0') || !raw_number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number = raw_number.parse().ok()?;
+    is_github_pull_request(repository, number).then_some((repository, number))
+}
+
 fn usage(payload: &Value) -> Result<Option<Value>> {
     let Some(raw) = payload.get("usage") else {
         return Ok(None);
@@ -270,6 +378,23 @@ pub(crate) fn translate_line(
         let header = header_identity(raw)?;
         if header.session_id != context.session_id || header.worker_id != context.worker_id {
             return Err(invalid("Codex session identity changed inside one file"));
+        }
+        let payload = &row["payload"];
+        if offset == 0
+            && let Some(relationship) = header_relationship(payload, &header.session_id)
+            && let Ok(time_ns) = stamp(&row).or_else(|_| stamp(payload))
+        {
+            return Ok((
+                vec![fact(
+                    format!("codex:{origin}:{offset}:relationship"),
+                    "relationship",
+                    &time_ns,
+                    &header,
+                    relationship,
+                    None,
+                )],
+                next,
+            ));
         }
         return Ok((Vec::new(), next));
     }
@@ -510,6 +635,21 @@ pub(crate) fn translate_line(
                                     facts.push(fact(format!("{base}:check"), "check", &time_ns,
                                     &row_context, json!({"category":check,"result":if result == "succeeded" {"passed"} else if result == "failed" {"failed"} else {"unknown"}}), None));
                                 }
+                                if item_kind == "CommandExecution"
+                                    && result == "succeeded"
+                                    && payload.get("turn_id").is_some()
+                                    && let Some(operation) = operation.as_deref()
+                                    && let Some((repository, number)) = raised_pull_request(item)
+                                {
+                                    facts.push(fact(
+                                        format!("{base}:pull-request-raised"),
+                                        "pull_request_raised",
+                                        &time_ns,
+                                        &row_context,
+                                        json!({"repository":repository,"number":number}),
+                                        Some(operation),
+                                    ));
+                                }
                             } else {
                                 facts.push(diagnostic(
                                     format!("{base}:tool-unknown"),
@@ -564,6 +704,56 @@ mod tests {
 
     fn translate(payload: Value, context: &Context) -> (Vec<Value>, Context) {
         translate_line(&row("event_msg", payload), context, "generation", 10).unwrap()
+    }
+
+    #[test]
+    fn session_header_records_explicit_delegation_and_fork() {
+        for (payload, relationship_kind) in [
+            (
+                json!({"id":"child","session_id":"root","parent_thread_id":"parent",
+                      "source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}),
+                "delegated",
+            ),
+            (json!({"id":"child","forked_from_id":"parent"}), "forked"),
+        ] {
+            let raw = row("session_meta", payload);
+            let context = header_identity(&raw).unwrap();
+            let (facts, _) = translate_line(&raw, &context, "generation", 0).unwrap();
+            assert_eq!(facts.len(), 1);
+            assert_eq!(facts[0]["identity"]["session_id"], "child");
+            assert_eq!(facts[0]["kind"], "relationship");
+            assert_eq!(
+                facts[0]["payload"],
+                json!({"relationship_kind":relationship_kind,"parent_session_id":"parent"}),
+            );
+            assert!(
+                translate_line(&raw, &context, "generation", 30)
+                    .unwrap()
+                    .0
+                    .is_empty()
+            );
+        }
+
+        let nested_only = br#"{"type":"session_meta","payload":{"id":"child","timestamp":"2026-11-14T10:00:00Z","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}"#;
+        let context = header_identity(nested_only).unwrap();
+        let (facts, _) = translate_line(nested_only, &context, "generation", 0).unwrap();
+        assert_eq!(facts[0]["payload"]["relationship_kind"], "delegated");
+    }
+
+    #[test]
+    fn session_header_omits_missing_conflicting_and_invalid_parent_evidence() {
+        for payload in [
+            json!({"id":"child","session_id":"root","source":{"subagent":"other"}}),
+            json!({"id":"child","parent_thread_id":"parent","source":
+                   {"subagent":{"thread_spawn":{"parent_thread_id":"other"}}}}),
+            json!({"id":"child","parent_thread_id":"child"}),
+            json!({"id":"child","parent_thread_id":"../parent"}),
+        ] {
+            let raw = row("session_meta", payload);
+            let context = header_identity(&raw).unwrap();
+            let (facts, _) = translate_line(&raw, &context, "generation", 0).unwrap();
+            assert!(facts.is_empty());
+        }
     }
 
     #[test]
@@ -645,6 +835,66 @@ mod tests {
                 .unwrap()
                 .contains("response-1")
         );
+    }
+
+    #[test]
+    fn pull_request_requires_a_native_successful_create_and_an_exact_result() {
+        let context =
+            header_identity(br#"{"type":"session_meta","payload":{"id":"thread-1"}}"#).unwrap();
+        let mut item = json!({
+            "type": "CommandExecution",
+            "id": "opaque-call",
+            "command": ["/usr/bin/zsh", "-lc", "gh pr create --title 'private; title'"],
+            "status": "completed",
+            "exit_code": 0,
+            "aggregated_output": "https://github.com/example/agenturm/pull/42\n"
+        });
+        let event =
+            |item: &Value| json!({"type":"item_completed", "turn_id":"turn-1", "item":item});
+        let (facts, _) = translate(event(&item), &context);
+        assert_eq!(facts.len(), 2);
+        assert_eq!(facts[1]["kind"], "pull_request_raised");
+        assert_eq!(
+            facts[1]["payload"],
+            json!({"repository":"example/agenturm","number":42})
+        );
+        assert_eq!(facts[1]["identity"]["turn_id"], "turn-1");
+        assert_eq!(
+            facts[1]["identity"]["operation_id"],
+            facts[0]["identity"]["operation_id"]
+        );
+        let encoded = serde_json::to_string(&facts).unwrap();
+        assert!(!encoded.contains("private"));
+        assert!(!encoded.contains("https://"));
+
+        let mut unanchored = event(&item);
+        unanchored.as_object_mut().unwrap().remove("turn_id");
+        assert_eq!(translate(unanchored, &context).0.len(), 1);
+
+        item["exit_code"] = json!(1);
+        assert_eq!(translate(event(&item), &context).0.len(), 1);
+        item["exit_code"] = json!(0);
+        for command in [
+            "echo https://github.com/example/agenturm/pull/42",
+            "gh pr create --dry-run",
+            "gh pr create && echo https://github.com/example/agenturm/pull/42",
+            "gh pr create --body \"$(echo hi)\"",
+        ] {
+            item["command"] = json!(["bash", "-lc", command]);
+            assert_eq!(translate(event(&item), &context).0.len(), 1, "{command}");
+        }
+
+        item["command"] = json!(["gh", "pr", "create"]);
+        for output in [
+            "https://github.com/example/agenturm/pull/42?extra=1",
+            "https://github.com/example/agenturm/pull/042",
+            "https://github.com/example/../pull/42",
+            "https://github.com/example/agenturm/pull/42\nprivate extra output",
+            "https://other.example/example/agenturm/pull/42",
+        ] {
+            item["aggregated_output"] = json!(output);
+            assert_eq!(translate(event(&item), &context).0.len(), 1, "{output}");
+        }
     }
 
     #[test]

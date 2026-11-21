@@ -6,15 +6,19 @@ version = 4
 name = "agenturm-app"
 version = "0.1.0"
 dependencies = [
+ "agenturm-jsonl-source",
  "agenturm-kernel",
  "agenturm-lifecycle-extension-example",
  "agenturm-runtime",
  "agenturm-service",
  "agenturm-store",
  "agenturm-ui",
+ "rustix",
  "serde",
  "serde_json",
+ "sha2",
  "signal-hook",
+ "time",
 ]
 
 [[package]]
@@ -43,9 +47,11 @@ version = "0.1.0"
 dependencies = [
  "agenturm-directory-source",
  "agenturm-jsonl-source",
+ "agenturm-protocol",
  "agenturm-source-process",
  "serde_json",
  "sha2",
+ "shlex",
  "time",
 ]
 
@@ -117,12 +123,16 @@ dependencies = [
 [[package]]
 name = "agenturm-kernel"
 version = "0.1.0"
+dependencies = [
+ "agenturm-protocol",
+]
 
 [[package]]
 name = "agenturm-kiro-harness"
 version = "0.1.0"
 dependencies = [
  "agenturm-jsonl-source",
+ "agenturm-protocol",
  "serde_json",
  "sha2",
  "time",
@@ -191,6 +201,10 @@ dependencies = [
 [[package]]
 name = "agenturm-protocol"
 version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "agenturm-runtime"
@@ -280,7 +294,9 @@ name = "agenturm-store"
 version = "0.1.0"
 dependencies = [
  "agenturm-kernel",
+ "agenturm-storage-lease",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

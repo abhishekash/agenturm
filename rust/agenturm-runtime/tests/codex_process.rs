@@ -1,5 +1,6 @@
 use agenturm_kernel::{
-    ExtensionId, Kernel, Observation, ObservationPage, ObservationStore, StoreCommit,
+    ExtensionId, Kernel, Observation, ObservationPage, ObservationStore, RelationshipKind,
+    StoreCommit,
 };
 use agenturm_runtime::{ProcessConfig, ProcessSource};
 use agenturm_store::{ObservationKind, Store};
@@ -70,8 +71,9 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
     fs::write(
         &source_path,
         concat!(
-            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-1\"}}\n",
+            "{\"type\":\"session_meta\",\"timestamp\":\"2026-11-20T11:59:59Z\",\"payload\":{\"id\":\"session-1\",\"session_id\":\"root-1\",\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"parent-1\"}}}}}\n",
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:02Z\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"type\":\"CommandExecution\",\"id\":\"pr-operation\",\"command\":[\"/usr/bin/zsh\",\"-lc\",\"gh pr create --body 'private PR body never stored'\"],\"status\":\"completed\",\"exit_code\":0,\"aggregated_output\":\"https://github.com/example/agenturm/pull/42\\n\"}}}\n",
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:03Z\",\"payload\":{\"type\":\"task_aborted\",\"turn_id\":\"turn-1\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"private text never stored\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"exec_command\",\"arguments\":\"private command never stored\"}}\n",
@@ -116,7 +118,7 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .admissions
         .get(&source_id)
         .expect("admission status");
-    assert_eq!(admission.inserted, 10);
+    assert_eq!(admission.inserted, 13);
     assert!(!admission.replay);
     assert_eq!(admission.skipped_unprojected_facts, 0);
     assert!(admission.source_ack_sent);
@@ -136,10 +138,10 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .expect("durable cursor committed");
     assert!(!cursor.is_empty());
     let observations = store.observations().expect("read committed observations");
-    assert_eq!(observations.len(), 10);
+    assert_eq!(observations.len(), 13);
     let mut restarted_kernel = Kernel::new();
     let restored = restarted_kernel.refresh_with_store(&mut store);
-    assert_eq!(restored.observations.len(), 10);
+    assert_eq!(restored.observations.len(), 13);
     assert_eq!(
         restored
             .observations
@@ -180,11 +182,44 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
                 reason_code: Some("codex_task_aborted".into()),
             }
     }));
+    let (_, raised) = observations
+        .iter()
+        .find(|(_, row)| {
+            row.kind
+                == ObservationKind::PullRequestRaised {
+                    repository: "example/agenturm".into(),
+                    number: 42,
+                }
+        })
+        .expect("reopen typed pull-request work result");
+    assert_eq!(raised.identity.session_id.as_deref(), Some("session-1"));
+    assert_eq!(raised.identity.turn_id.as_deref(), Some("turn-1"));
+    assert!(raised.identity.operation_id.is_some());
+    let (_, relationship) = observations
+        .iter()
+        .find(|(_, row)| {
+            row.kind
+                == ObservationKind::Relationship {
+                    relationship_kind: RelationshipKind::Delegated,
+                    parent_session_id: "parent-1".into(),
+                }
+        })
+        .expect("reopen typed delegation evidence");
+    assert_eq!(
+        relationship.identity.session_id.as_deref(),
+        Some("session-1")
+    );
+    assert_eq!(
+        relationship.identity.worker_id.as_deref(),
+        Some("session-1")
+    );
+    assert!(relationship.identity.turn_id.is_none());
+
     let tools = observations
         .iter()
         .filter(|(_, row)| matches!(row.kind, ObservationKind::Tool { .. }))
         .collect::<Vec<_>>();
-    assert_eq!(tools.len(), 3);
+    assert_eq!(tools.len(), 4);
     assert_eq!(
         observations
             .iter()
@@ -230,5 +265,7 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
     assert!(!encoded.contains("private user prompt never stored"));
     assert!(!encoded.contains("private text never stored"));
     assert!(!encoded.contains("npm run check"));
+    assert!(!encoded.contains("private PR body never stored"));
+    assert!(!encoded.contains("https://"));
     fs::remove_dir_all(root).expect("remove fixture directory");
 }

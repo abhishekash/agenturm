@@ -198,9 +198,20 @@ fn columns(db: &Connection, table: &str) -> Result<HashSet<String>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 
-fn check_schema(db: &Connection) -> Result<()> {
+struct SessionRelationshipColumns {
+    parent: bool,
+    fork: bool,
+}
+
+fn check_schema(db: &Connection) -> Result<SessionRelationshipColumns> {
+    let session_columns = columns(db, "session_v2")?;
+    if !["id", "time_created", "time_updated"]
+        .iter()
+        .all(|column| session_columns.contains(*column))
+    {
+        return Err(invalid("unsupported OpenCode SQLite layout"));
+    }
     for (table, required) in [
-        ("session_v2", &["id", "time_created", "time_updated"][..]),
         (
             "session_message",
             &[
@@ -211,7 +222,7 @@ fn check_schema(db: &Connection) -> Result<()> {
                 "time_created",
                 "time_updated",
                 "data",
-            ],
+            ][..],
         ),
         (
             "session_part",
@@ -224,7 +235,7 @@ fn check_schema(db: &Connection) -> Result<()> {
                 "time_created",
                 "time_updated",
                 "data",
-            ],
+            ][..],
         ),
     ] {
         let found = columns(db, table)?;
@@ -232,7 +243,10 @@ fn check_schema(db: &Connection) -> Result<()> {
             return Err(invalid("unsupported OpenCode SQLite layout"));
         }
     }
-    Ok(())
+    Ok(SessionRelationshipColumns {
+        parent: session_columns.contains("parent_id"),
+        fork: session_columns.contains("fork_session_id"),
+    })
 }
 
 fn bounded_count(db: &Connection, table: &str, remaining: i64) -> Result<i64> {
@@ -498,6 +512,42 @@ fn category(name: &str) -> &'static str {
     }
 }
 
+fn check_category(command: &str) -> Option<&'static str> {
+    // Recognize a bounded direct invocation. Shell quoting, expansion,
+    // redirection, pipelines and chained commands can change what ran.
+    if command.len() > 160
+        || !command
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b" \t._/:-=,@+".contains(&byte))
+    {
+        return None;
+    }
+    let mut words = command.split_ascii_whitespace();
+    let category = match (words.next()?, words.next()) {
+        ("pytest", _) => "test",
+        ("cargo" | "go", Some("test")) => "test",
+        ("cargo" | "go", Some("build")) => "build",
+        ("cargo", Some("clippy")) | ("ruff", Some("check")) => "lint",
+        ("python" | "python3", Some("-m")) if words.next() == Some("pytest") => "test",
+        _ => return None,
+    };
+    if command.split_ascii_whitespace().any(|word| {
+        matches!(
+            word,
+            "-h" | "--help"
+                | "--version"
+                | "--dry-run"
+                | "--list"
+                | "--no-run"
+                | "--collect-only"
+                | "--co"
+        )
+    }) {
+        return None;
+    }
+    Some(category)
+}
+
 fn part_facts(cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
     if row.order < 0
         || row.session.is_empty()
@@ -556,10 +606,34 @@ fn part_facts(cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
         "completed" => "succeeded",
         _ => return Ok(vec![scope.diagnostic("opencode_tool_result_unknown")]),
     };
-    Ok(vec![scope.record(
-        "tool",
-        json!({"category":category(name),"result":result}),
-    )])
+    let mut facts = vec![scope.record("tool", json!({"category":category(name),"result":result}))];
+    // Tool completion alone only establishes that the tool returned. A
+    // native shell exit code establishes the check outcome.
+    if shell
+        && status == "completed"
+        && let Some(metadata) = metadata
+        && metadata.is_object()
+        && metadata
+            .get("status")
+            .is_none_or(|value| value.as_str() == Some("completed"))
+        && metadata
+            .get("timeout")
+            .is_none_or(|value| value.as_bool() == Some(false))
+        && metadata
+            .get("signal")
+            .is_none_or(|value| value.is_null() || value.as_str() == Some(""))
+        && let Some(exit) = exit.filter(|&code| (0..=255).contains(&code))
+        && let Some(category) = raw
+            .pointer("/state/input/command")
+            .and_then(Value::as_str)
+            .and_then(check_category)
+    {
+        facts.push(scope.record(
+            "check",
+            json!({"category":category,"result":if exit == 0 {"passed"} else {"failed"}}),
+        ));
+    }
+    Ok(facts)
 }
 
 fn session_fact(db: &Connection, cursor: &Cursor, session: &str) -> Result<Vec<Value>> {
@@ -599,6 +673,68 @@ fn session_fact(db: &Connection, cursor: &Cursor, session: &str) -> Result<Vec<V
     )])
 }
 
+fn session_relationships(
+    db: &Connection,
+    cursor: &Cursor,
+    rowid: i64,
+    session: &str,
+    columns: &SessionRelationshipColumns,
+) -> Result<Vec<Value>> {
+    let mut facts = Vec::new();
+    for (available, edge, sql) in [
+        (
+            columns.parent,
+            "delegated",
+            "SELECT time_created, CAST(parent_id AS BLOB) FROM session_v2 WHERE rowid=?1
+               AND typeof(time_created)='integer' AND typeof(parent_id)='text'
+               AND length(CAST(parent_id AS BLOB)) BETWEEN 1 AND 256",
+        ),
+        (
+            columns.fork,
+            "forked",
+            "SELECT time_created, CAST(fork_session_id AS BLOB) FROM session_v2 WHERE rowid=?1
+               AND typeof(time_created)='integer' AND typeof(fork_session_id)='text'
+               AND length(CAST(fork_session_id AS BLOB)) BETWEEN 1 AND 256",
+        ),
+    ] {
+        if !available {
+            continue;
+        }
+        let parent: Option<(i64, Vec<u8>)> = db
+            .prepare_cached(sql)?
+            .query_row([rowid], |row| Ok((row.get(0)?, row.get(1)?)))
+            .optional()?;
+        let Some((created, parent)) = parent else {
+            continue;
+        };
+        if parent == session.as_bytes()
+            || !parent[0].is_ascii_alphanumeric()
+            || !parent
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            continue;
+        }
+        let (Ok(parent), Ok(time_ns)) = (String::from_utf8(parent), stamp(created)) else {
+            continue;
+        };
+        let scope = FactScope {
+            epoch: &cursor.epoch,
+            table: edge,
+            session,
+            row: session,
+            revision: cursor.revision,
+            time_ns: &time_ns,
+            operation: None,
+        };
+        facts.push(scope.record(
+            "relationship",
+            json!({"relationship_kind":edge,"parent_session_id":parent}),
+        ));
+    }
+    Ok(facts)
+}
+
 pub fn poll(
     path: &Path,
     source_id: &str,
@@ -635,7 +771,7 @@ pub fn poll(
     )?;
     db.busy_timeout(std::time::Duration::from_millis(250))?;
     db.execute_batch("PRAGMA query_only=ON; BEGIN")?;
-    check_schema(&db)?;
+    let relationship_columns = check_schema(&db)?;
     let start_sweep = previous.is_none()
         || replacement
         || sweep_finished
@@ -778,7 +914,15 @@ pub fn poll(
                 db.query_row("SELECT id FROM session_v2 WHERE rowid=?1", [rowid], |r| {
                     r.get(0)
                 })?;
-            session_fact(&db, &cursor, &session)?
+            let mut facts = session_fact(&db, &cursor, &session)?;
+            facts.extend(session_relationships(
+                &db,
+                &cursor,
+                rowid,
+                &session,
+                &relationship_columns,
+            )?);
+            facts
         } else {
             let sql = if phase == 'm' {
                 "SELECT session_id,id,type,data FROM session_message WHERE rowid=?1"
@@ -839,4 +983,130 @@ pub fn poll(
         return Err(invalid("OpenCode batch budget exceeded"));
     }
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_checks_keep_only_typed_outcomes_and_operation_identity() {
+        let native = json!({
+            "name": "shell",
+            "state": {
+                "status": "completed",
+                "input": {
+                    "command": "pytest tests/private_test.py -q",
+                    "workdir": "/private/project",
+                },
+                "metadata": {"exit": 0, "status": "completed"},
+                "content": [{"type": "text", "text": "private check output"}],
+            },
+        });
+        let mut failed = native.clone();
+        failed["state"]["input"]["command"] = json!("cargo clippy --workspace");
+        failed["state"]["metadata"]["exit"] = json!(1);
+
+        for (raw, category, result, tool_result) in [
+            (&native, "test", "passed", "succeeded"),
+            (&failed, "lint", "failed", "failed"),
+        ] {
+            let facts = fixture_part(raw);
+            assert_eq!(facts.len(), 2);
+            assert_eq!(
+                facts[0]["payload"],
+                json!({"category":"shell","result":tool_result})
+            );
+            assert_eq!(facts[1]["kind"], "check");
+            assert_eq!(
+                facts[1]["payload"],
+                json!({"category":category,"result":result})
+            );
+            assert_eq!(facts[1]["identity"], facts[0]["identity"]);
+            assert_ne!(facts[1]["event_id"], facts[0]["event_id"]);
+            assert_eq!(facts[1]["identity"]["session_id"], "ses_fixture");
+            assert!(facts[1]["identity"]["operation_id"].is_string());
+            assert_eq!(fixture_part(raw), facts);
+            let wire = serde_json::to_string(&facts).unwrap();
+            for private in [
+                "private_test.py",
+                "/private/project",
+                "private check output",
+            ] {
+                assert!(!wire.contains(private));
+            }
+        }
+    }
+
+    #[test]
+    fn ambiguous_commands_and_nonterminal_shell_records_remain_tools() {
+        for command in [
+            "pytest && cargo build",
+            "pytest | tee result.log",
+            "pytest --help",
+            "pytest --collect-only",
+            "cargo test --no-run",
+            "pytest tests/$(cat case)",
+            "echo pytest",
+            "go test\nwhoami",
+        ] {
+            assert_eq!(check_category(command), None);
+        }
+        assert_eq!(check_category("cargo build --locked"), Some("build"));
+
+        for metadata in [
+            json!({}),
+            json!({"exit":"0"}),
+            json!({"exit":-1}),
+            json!({"exit":256}),
+            json!({"exit":0,"status":"running"}),
+            json!({"exit":0,"timeout":true}),
+            json!({"exit":0,"signal":"SIGTERM"}),
+        ] {
+            let facts = fixture_part(&json!({
+                "name": "shell",
+                "state": {
+                    "status": "completed",
+                    "input": {"command": "pytest tests"},
+                    "metadata": metadata,
+                },
+            }));
+            assert_eq!(facts.len(), 1);
+            assert_eq!(facts[0]["kind"], "tool");
+        }
+
+        let facts = fixture_part(&json!({
+            "name": "shell",
+            "state": {
+                "status": "running",
+                "input": {"command": "pytest tests"},
+                "metadata": {"exit":0},
+            },
+        }));
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0]["payload"]["result"], "started");
+    }
+
+    fn fixture_part(raw: &Value) -> Vec<Value> {
+        let cursor = Cursor::parse(&format!(
+            "oc2:{}:{}:{}:0:p:0:1:1:1:1:1:1",
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64)
+        ))
+        .unwrap()
+        .unwrap();
+        part_facts(
+            &cursor,
+            SourceRow {
+                session: "ses_fixture",
+                id: "msg_part",
+                kind: "tool",
+                order: 0,
+                updated: 1,
+                data: &raw.to_string(),
+            },
+        )
+        .unwrap()
+    }
 }

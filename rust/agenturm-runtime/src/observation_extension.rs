@@ -391,9 +391,12 @@ fn kind_name(kind: &ObservationKind) -> &'static str {
         ObservationKind::Tool { .. } => "tool",
         ObservationKind::Lifecycle { .. } => "lifecycle",
         ObservationKind::Check { .. } => "check",
+        ObservationKind::PullRequestRaised { .. } => "pull-request-raised",
+        ObservationKind::Relationship { .. } => "relationship",
         ObservationKind::Message { .. } => "message",
         ObservationKind::Diagnostic { .. } => "diagnostic",
         ObservationKind::Usage { .. } => "usage",
+        ObservationKind::CreditUsage { .. } => "credit-usage",
     }
 }
 

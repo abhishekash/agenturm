@@ -2,6 +2,8 @@
 //! Source text is parsed in the child and never placed in a process fact.
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::error::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -18,6 +20,23 @@ fn identifier(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn operation_id(value: &str) -> Option<Cow<'_, str>> {
+    if identifier(value) {
+        return Some(Cow::Borrowed(value));
+    }
+    let (call, item) = value.split_once('|')?;
+    let call_suffix = call.strip_prefix("call_")?;
+    let item_suffix = item
+        .strip_prefix("fc_")
+        .or_else(|| item.strip_prefix("ctc_"))?;
+    if call_suffix.is_empty() || item_suffix.is_empty() || !identifier(call) || !identifier(item) {
+        return None;
+    }
+    // Pi combines the provider call and item IDs. Hash the pair into a
+    // namespace containing a slash, which plain native Pi IDs cannot contain.
+    Some(Cow::Owned(format!("pi-call/{:x}", Sha256::digest(value))))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -144,6 +163,24 @@ pub(crate) fn translate_line(
         if header.session_id != context.session_id || header.worker_id != context.worker_id {
             return Err(invalid("Pi session identity changed inside one file"));
         }
+        if offset == 0
+            && let Some(parent) = row.get("parentSessionId").and_then(Value::as_str)
+            && identifier(parent)
+            && parent != header.session_id
+            && let Ok(time_ns) = stamp(&row)
+        {
+            return Ok((
+                vec![fact(
+                    format!("pi:{origin}:{offset}:relationship"),
+                    "relationship",
+                    &time_ns,
+                    &header,
+                    json!({"relationship_kind":"delegated","parent_session_id":parent}),
+                    None,
+                )],
+                next,
+            ));
+        }
         return Ok((vec![], next));
     }
     let row_id = row.get("id").and_then(Value::as_str);
@@ -235,13 +272,12 @@ pub(crate) fn translate_line(
                     if block.get("type").and_then(Value::as_str) != Some("toolCall") {
                         continue;
                     }
-                    let operation = block
+                    let native_operation = block
                         .get("id")
                         .and_then(Value::as_str)
                         .ok_or("Pi tool call lacks ID")?;
-                    if !identifier(operation) {
-                        return Err(invalid("invalid Pi tool call identity"));
-                    }
+                    let operation =
+                        operation_id(native_operation).ok_or("invalid Pi tool call identity")?;
                     let name = block.get("name").and_then(Value::as_str).unwrap_or("");
                     facts.push(fact(
                         format!("{base}:tool-{index}"),
@@ -249,7 +285,7 @@ pub(crate) fn translate_line(
                         &time_ns,
                         &next,
                         json!({"category":category(name),"result":"started"}),
-                        Some(operation),
+                        Some(&operation),
                     ));
                 }
             }
@@ -282,13 +318,12 @@ pub(crate) fn translate_line(
         }
         "toolResult" => {
             row_id.ok_or("Pi tool result lacks ID")?;
-            let operation = message
+            let native_operation = message
                 .get("toolCallId")
                 .and_then(Value::as_str)
                 .ok_or("Pi tool result lacks call ID")?;
-            if !identifier(operation) {
-                return Err(invalid("invalid Pi tool result identity"));
-            }
+            let operation =
+                operation_id(native_operation).ok_or("invalid Pi tool result identity")?;
             let failed = message
                 .get("isError")
                 .and_then(Value::as_bool)
@@ -309,7 +344,7 @@ pub(crate) fn translate_line(
                 &result_context,
                 json!({"category":category(name),
                                           "result":if failed {"failed"} else {"succeeded"}}),
-                Some(operation),
+                Some(&operation),
             ));
             facts.push(fact(
                 format!("{base}:lifecycle"),
@@ -332,6 +367,75 @@ pub(crate) fn translate_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composite_provider_operation_ids_pair_calls_and_results() {
+        let context = header_identity(br#"{"type":"session","id":"pi-1"}"#).unwrap();
+        for native_id in ["call_abc|fc_xyz", "call_abc|ctc_xyz"] {
+            let call = json!({
+                "type":"message","id":"call","timestamp":"2026-10-24T12:00:00Z",
+                "message":{"role":"assistant","stopReason":"toolUse",
+                    "content":[{"type":"toolCall","id":native_id,"name":"read"}]}
+            });
+            let result = json!({
+                "type":"message","id":"result","timestamp":"2026-10-24T12:00:01Z",
+                "message":{"role":"toolResult","toolCallId":native_id,"toolName":"read","isError":false}
+            });
+            let (call_facts, next) =
+                translate_line(call.to_string().as_bytes(), &context, "file", 0).unwrap();
+            let (result_facts, _) =
+                translate_line(result.to_string().as_bytes(), &next, "file", 1).unwrap();
+            let [call, result] = [&call_facts, &result_facts]
+                .map(|facts| facts.iter().find(|fact| fact["kind"] == "tool").unwrap());
+            let id = call["identity"]["operation_id"].as_str().unwrap();
+            assert!(id.starts_with("pi-call/"));
+            assert_eq!(id, result["identity"]["operation_id"]);
+            assert!(!call.to_string().contains(native_id));
+            assert!(!result.to_string().contains(native_id));
+        }
+        assert_eq!(operation_id("plain-id").as_deref(), Some("plain-id"));
+        for malformed in [
+            "call_|fc_abc",
+            "call_abc|fc_",
+            "call_abc|other",
+            "call_abc|fc_abc|fc_xyz",
+        ] {
+            assert!(operation_id(malformed).is_none());
+        }
+    }
+
+    #[test]
+    fn relationship_requires_an_explicit_distinct_parent_session_id() {
+        let header = br#"{"type":"session","id":"child","timestamp":"2026-10-24T12:00:00Z","parentSessionId":"parent"}"#;
+        let context = header_identity(header).unwrap();
+        let (facts, _) = translate_line(header, &context, "file", 0).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0]["identity"], json!({"session_id":"child"}));
+        assert_eq!(facts[0]["kind"], "relationship");
+        assert_eq!(
+            facts[0]["payload"],
+            json!({"relationship_kind":"delegated","parent_session_id":"parent"}),
+        );
+        assert!(
+            translate_line(header, &context, "file", 10)
+                .unwrap()
+                .0
+                .is_empty()
+        );
+
+        for (field, value) in [
+            ("parentSession", "path/to/private.jsonl"),
+            ("parentAgentId", "worker"),
+            ("parentSessionId", "../private"),
+            ("parentSessionId", "child"),
+        ] {
+            let mut raw = json!({"type":"session","id":"child","timestamp":"2026-10-24T12:00:00Z"});
+            raw[field] = json!(value);
+            let (facts, _) =
+                translate_line(raw.to_string().as_bytes(), &context, "file", 0).unwrap();
+            assert!(facts.is_empty());
+        }
+    }
 
     #[test]
     fn one_assistant_row_yields_usage_two_tools_and_no_false_completion() {

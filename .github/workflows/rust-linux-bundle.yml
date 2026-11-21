@@ -1,0 +1,44 @@
+name: Rust Linux bundle
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["rust-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    name: Build and verify Linux x86_64 bundle
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.100.0 --profile minimal
+      - name: Build standalone Rust bundle
+        run: scripts/build-rust-linux-bundle.sh "$RUNNER_TEMP/agenturm-rust-bundle"
+      - name: Qualify the extracted bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          archives=("$RUNNER_TEMP"/agenturm-rust-bundle/agenturm-*-linux-x86_64.tar.gz)
+          [[ ${#archives[@]} -eq 1 && -f ${archives[0]} ]]
+          archive=${archives[0]}
+          if [[ $GITHUB_REF_TYPE == tag ]]; then
+            expected="agenturm-${GITHUB_REF_NAME#rust-v}-linux-x86_64.tar.gz"
+            if [[ ${archive##*/} != "$expected" ]]; then
+              echo "Rust tag $GITHUB_REF_NAME does not match ${archive##*/}" >&2
+              exit 1
+            fi
+          fi
+          scripts/verify-rust-linux-bundle.sh "$archive"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agenturm-rust-linux-x86_64
+          path: ${{ runner.temp }}/agenturm-rust-bundle/
+          if-no-files-found: error
+          compression-level: 0

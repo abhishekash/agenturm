@@ -1,6 +1,7 @@
 //! Content-free facts from one configured Kiro messages or sub-execution file.
 //! Kiro JSONL has no session header: identity comes from its bounded path shape.
 
+use agenturm_protocol::observation::NANOCREDITS_PER_CREDIT;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -301,6 +302,26 @@ fn category(name: &str) -> &'static str {
     } else {
         "other"
     }
+}
+
+fn credit_usage(payload: &serde_json::Map<String, Value>) -> Option<u64> {
+    let summaries = payload.get("promptTurnSummaries")?.as_array()?;
+    if summaries.len() > 128 {
+        return None;
+    }
+    let mut total = None;
+    for summary in summaries {
+        if summary.get("unit").and_then(Value::as_str) != Some("credit") {
+            continue;
+        }
+        let amount = summary.get("usage")?.as_f64()?;
+        if !amount.is_finite() || amount < 0.0 {
+            return None;
+        }
+        total = Some(total.unwrap_or(0.0) + amount);
+    }
+    let scaled = (total? * NANOCREDITS_PER_CREDIT as f64).round();
+    (scaled < i64::MAX as f64).then_some(scaled as u64)
 }
 
 pub(crate) fn translate_line(
@@ -664,16 +685,34 @@ pub(crate) fn translate_line(
             }
         }
         "usage_summary" => {
-            // Kiro reports credits, not token counters. The current plugin
-            // usage schema has no credit unit, so never invent token usage.
-            facts.push(diagnostic(
-                &base,
-                "credits",
-                &time_ns,
-                &next,
-                "kiro_credit_usage_unrepresented",
-                "warning",
-            ));
+            let usage_fact = if let Some(nanocredits) = credit_usage(payload) {
+                let mut scope = next.clone();
+                let turn = payload
+                    .get("turnId")
+                    .or_else(|| payload.get("executionId"))
+                    .and_then(Value::as_str)
+                    .filter(|turn| identifier(turn));
+                scope.turn_id = turn.unwrap_or_default().to_owned();
+                fact(
+                    &base,
+                    "credits",
+                    "credit_usage",
+                    &time_ns,
+                    &scope,
+                    json!({"nanocredits":nanocredits}),
+                    None,
+                )
+            } else {
+                diagnostic(
+                    &base,
+                    "credits",
+                    &time_ns,
+                    &next,
+                    "kiro_credit_usage_unrepresented",
+                    "warning",
+                )
+            };
+            facts.push(usage_fact);
         }
         "session_metadata"
             if payload.get("key").and_then(Value::as_str) == Some("displayError") =>
@@ -688,14 +727,27 @@ pub(crate) fn translate_line(
             ));
         }
         "sub_agent_start" | "sub_agent_complete" => {
-            facts.push(diagnostic(
-                &base,
-                "subagent",
-                &time_ns,
-                &next,
-                "kiro_subagent_relation_unresolved",
-                "warning",
-            ));
+            if kind == "sub_agent_start"
+                && let Some(child) = payload.get("subSessionId").and_then(Value::as_str)
+                && identifier(child)
+                && child != next.session_id
+            {
+                facts.push(json!({
+                    "event_id":format!("{base}:relationship"),"revision":0,
+                    "kind":"relationship","time_ns":time_ns,
+                    "identity":{"session_id":child,"worker_id":child},
+                    "payload":{"relationship_kind":"delegated","parent_session_id":next.session_id}
+                }));
+            } else {
+                facts.push(diagnostic(
+                    &base,
+                    "subagent",
+                    &time_ns,
+                    &next,
+                    "kiro_subagent_relation_unresolved",
+                    "warning",
+                ));
+            }
         }
         _ => {
             facts.push(diagnostic(
@@ -717,6 +769,31 @@ pub(crate) fn translate_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn known_credit_units_keep_zero_and_reject_unreliable_totals() {
+        let payload = |summaries: Value| json!({"promptTurnSummaries":summaries});
+        for (summaries, expected) in [
+            (json!([{"unit":"credit","usage":0}]), Some(0)),
+            (
+                json!([{"unit":"credit","usage":0.123456789},
+                       {"unit":"credit","usage":0.2},{"unit":"token","usage":99}]),
+                Some(323_456_789),
+            ),
+            (json!([{"unit":"token","usage":0}]), None),
+            (json!([{"unit":"credit","usage":-1}]), None),
+            (json!([{"unit":"credit","usage":1e100}]), None),
+            (
+                json!([{"unit":"credit","usage":1},{"unit":"credit","usage":"missing"}]),
+                None,
+            ),
+        ] {
+            assert_eq!(
+                credit_usage(payload(summaries).as_object().unwrap()),
+                expected
+            );
+        }
+    }
 
     fn row(id: &str, second: u8, payload: Value) -> Vec<u8> {
         serde_json::to_vec(

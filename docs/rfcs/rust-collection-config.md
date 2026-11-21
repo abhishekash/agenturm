@@ -50,11 +50,14 @@ different IDs.
 
 Version 2 keeps executable paths and integrity pins in a separate catalog. The
 catalog is user-managed JSON; it is not downloaded or discovered automatically.
-Each entry declares the plugin protocol, required source-adapter features, and
-a lower-case SHA-256 pin. Every catalog artifact is checked before the SQLite
-store is opened, then the selected adapter is checked again before each
-supervised host launch. The host handshake must match the catalog's declared
-feature set.
+Each entry declares the plugin transport protocol, required source-adapter
+features, and a lower-case SHA-256 pin. The `observation_format` field selects
+the host's batch decoder. The supported format is `agenturm-observations/1`,
+which also applies when a catalog entry omits the field or when collection
+uses version 1 configuration. The app rejects unsupported formats and
+verifies catalog artifacts before opening the SQLite store, then checks the
+selected adapter artifact again before each supervised host launch. The host
+handshake must match the catalog's declared feature set.
 
 ```json
 {
@@ -80,7 +83,8 @@ feature set.
       "adapter": "/opt/agenturm/bin/agenturm-pi-harness",
       "sha256": "<64 lowercase hexadecimal characters>",
       "protocol": 1,
-      "features": ["source-adapter/1", "configured-root/1"]
+      "features": ["source-adapter/1", "configured-root/1"],
+      "observation_format": "agenturm-observations/1"
     }
   ]
 }
@@ -99,10 +103,38 @@ runs in the foreground; the command does not scan plugin directories or load
 in-process native libraries. Catalog pins detect artifact changes but do not
 sandbox adapters: each child runs with the same OS user privileges as Agenturm.
 
-For this first configured command, adapters must emit Agenturm's shared bounded
-source protocol, and the app installs `BundledObservationDecoder`. It stores token usage and privacy-safe
-tool, lifecycle, check and message-role observations (category/result/operation identity,
-state/reason code, check category/result, and user/assistant role), while counting other validated facts without a stored projection. Message bodies and content are rejected by the typed projection.
-The runtime API accepts injected `SourceBatchDecoder` implementations for other
-typed fact projections. The catalog selects process adapters for the shared
-source protocol; it does not dynamically load new decoders or capabilities.
+Adapter processes parse harness-specific records and emit normalized batches
+in the configured observation format. The host projects usage and privacy-safe
+tool, lifecycle, check, message-role and diagnostic observations. Message
+bodies and other unsupported fields cause batch rejection. The catalog binds
+each configured process to an observation format supported by the host.
+
+
+### Rolling discovery configuration
+
+Run `agenturm discover --follow [--sessions-per-harness <1..8>]` to generate
+a version 2 configuration with a `follow` object in place of `sources`.
+It captures the two session roots from discovery and requires both bundled
+catalog entries. Relative roots in a hand-written configuration are resolved
+against the configuration file. An example follows.
+
+```json
+{
+  "version": 2,
+  "plugin_host": "/opt/agenturm/bin/agenturm-plugin-host",
+  "plugin_catalog": "/opt/agenturm/agenturm-plugins.json",
+  "follow": {
+    "codex_root": "/home/alex/.codex/sessions",
+    "pi_root": "/home/alex/.pi/agent/sessions",
+    "sessions_per_harness": 4
+  }
+}
+```
+
+One-shot collection scans once. Foreground watch and the managed collector
+rescan at most once every five seconds and admit new files from the bounded
+set. Adapter processes for unchanged paths continue polling. Evicted paths
+take their final bounded poll before eviction. They retain history and
+resume from their durable cursor if selected again. Backlog beyond the last
+poll remains on disk until reselection. A scan error preserves the current selection and is reported in the next
+collection summary. Put the database directory outside both roots.
