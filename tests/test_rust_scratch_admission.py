@@ -211,6 +211,32 @@ class RustScratchAdmissionTests(unittest.TestCase):
             db.row_factory = sqlite3.Row
             return read(db)
 
+    @staticmethod
+    def batch_binding_snapshot(path, source_id):
+        with closing(sqlite3.connect(str(path))) as db:
+            exists = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                "name='storage_admission_batch_binding_v1'").fetchone()
+            if exists is None:
+                return None
+            return tuple(db.execute(
+                "SELECT generation,policy_epoch,expected_cursor,cursor,batch_digest,"
+                "prepared_digest,dirty_seq FROM storage_admission_batch_binding_v1 "
+                "WHERE source_id=?", (source_id,)).fetchone() or ())
+
+    @staticmethod
+    def admission_receipts_snapshot(path, source_id):
+        with closing(sqlite3.connect(str(path))) as db:
+            exists = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                "name='storage_admission_request_v2'").fetchone()
+            if exists is None:
+                return ()
+            return tuple(tuple(row) for row in db.execute(
+                "SELECT request_id,receiver_id,request_digest,cursor,batch_digest,"
+                "dirty_seq,disposition FROM storage_admission_request_v2 "
+                "WHERE source_id=? ORDER BY request_id", (source_id,)))
+
     def test_mixed_batch_is_atomic_and_matches_python_on_detached_clone(self):
         from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
         from observatory.plugin_projection import project_source
@@ -281,6 +307,82 @@ class RustScratchAdmissionTests(unittest.TestCase):
             mixed, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         ).encode()).hexdigest()
         self.assertEqual(admission_receipt[2], expected_request_digest)
+        prepared_rows = [[row[key] for key in (
+            "event_id_hash", "revision", "kind", "time_ns", "payload_json",
+            "record_digest", "native_session_id", "native_worker_id",
+            "native_turn_id", "native_operation_id")] for row in mixed["operation"]["records"]]
+        expected_prepared_digest = hashlib.sha256(
+            b"agenturm-prepared-rows-v1\0" + json.dumps(
+                prepared_rows, separators=(",", ":"), ensure_ascii=False
+            ).encode()).hexdigest()
+        committed_binding = self.batch_binding_snapshot(clone_path, source_id)
+        self.assertEqual(committed_binding,
+                         (generation, rust_lease["policy_epoch"], "", "mixed-one",
+                          mixed["operation"]["batch_digest"], expected_prepared_digest, 1))
+        binding_before_new_id_replay = committed_binding
+        same_rows_new_request = json.loads(json.dumps(mixed))
+        same_rows_new_request["request_id"] = "7" * 32
+        self.assertEqual(self.apply_mixed_clone_batch(
+            same_rows_new_request, path=clone_path)["result"]["disposition"], "replay")
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                         binding_before_new_id_replay)
+
+        altered_rows_new_request = json.loads(json.dumps(mixed))
+        altered_rows_new_request["request_id"] = "8" * 32
+        altered_rows_new_request["operation"]["records"][1]["payload_json"] = '{"role":"user"}'
+        altered_rows_new_request["operation"]["records"][1]["record_digest"] = "e" * 64
+        before_altered_rows = self.batch_source_snapshot(clone_path, source_id)
+        receipts_before_altered_rows = self.admission_receipts_snapshot(clone_path, source_id)
+        self.assertIn("conflicting prepared batch replay identity",
+                      self.apply_mixed_clone_batch(altered_rows_new_request,
+                                                   path=clone_path, success=False))
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id),
+                         before_altered_rows)
+        self.assertEqual(self.admission_receipts_snapshot(clone_path, source_id),
+                         receipts_before_altered_rows)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                         binding_before_new_id_replay)
+        with closing(sqlite3.connect(clone_path)) as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
+                (altered_rows_new_request["request_id"],)).fetchone()[0], 0)
+
+        tampered_clone_path = self.root / "tampered-binding-clone.db"
+        with closing(sqlite3.connect(clone_path)) as original:
+            with closing(sqlite3.connect(tampered_clone_path)) as tampered:
+                original.backup(tampered)
+        with closing(sqlite3.connect(tampered_clone_path)) as tampered:
+            tampered.execute(
+                "UPDATE storage_admission_batch_binding_v1 SET prepared_digest=? "
+                "WHERE source_id=?", ("f" * 64, source_id))
+            tampered.commit()
+        tampered_before = self.batch_source_snapshot(tampered_clone_path, source_id)
+        tampered_binding = self.batch_binding_snapshot(tampered_clone_path, source_id)
+        self.assertIn("conflicting prepared batch replay identity",
+                      self.apply_mixed_clone_batch(mixed, path=tampered_clone_path,
+                                                   success=False))
+        self.assertEqual(self.batch_source_snapshot(tampered_clone_path, source_id),
+                         tampered_before)
+        self.assertEqual(self.batch_binding_snapshot(tampered_clone_path, source_id),
+                         tampered_binding)
+
+        unbound_clone_path = self.root / "unbound-binding-clone.db"
+        with closing(sqlite3.connect(clone_path)) as original:
+            with closing(sqlite3.connect(unbound_clone_path)) as unbound:
+                original.backup(unbound)
+        with closing(sqlite3.connect(unbound_clone_path)) as unbound:
+            unbound.execute("DROP TABLE storage_admission_batch_binding_v1")
+            unbound.commit()
+        unbound_before = self.batch_source_snapshot(unbound_clone_path, source_id)
+        self.assertIn("prepared batch replay binding is missing",
+                      self.apply_mixed_clone_batch(mixed, path=unbound_clone_path,
+                                                   success=False))
+        self.assertEqual(self.batch_source_snapshot(unbound_clone_path, source_id),
+                         unbound_before)
+        with closing(sqlite3.connect(unbound_clone_path)) as unbound:
+            self.assertEqual(unbound.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                "name='storage_admission_batch_binding_v1'").fetchone(), None)
         self.assertEqual(commit_batch(oracle, python_lease, "", batch), "mixed-one")
         with closing(sqlite3.connect(clone_path)) as check_db:
             self.assertEqual(check_db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
@@ -376,6 +478,13 @@ class RustScratchAdmissionTests(unittest.TestCase):
             next_request, path=projected_clone_path)["result"]
         self.assertEqual((next_reply["disposition"], next_reply["cursor"],
                           next_reply["dirty_seq"]), ("committed", "mixed-two", 2))
+        next_binding = self.batch_binding_snapshot(projected_clone_path, source_id)
+        self.assertEqual(next_binding[2:5], ("mixed-one", "mixed-two",
+                                              next_request["operation"]["batch_digest"]))
+        with closing(sqlite3.connect(projected_clone_path)) as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM storage_admission_batch_binding_v1 WHERE source_id=?",
+                (source_id,)).fetchone()[0], 1)
         next_oracle_path = self.root / "next-python-oracle.db"
         with closing(sqlite3.connect(oracle_path)) as original:
             with closing(sqlite3.connect(next_oracle_path)) as copied:
@@ -394,6 +503,8 @@ class RustScratchAdmissionTests(unittest.TestCase):
         self.assertEqual(replay["disposition"], "replay")
         self.assertEqual(self.batch_source_snapshot(clone_path, source_id),
                          committed_snapshot)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                         committed_binding)
         with closing(sqlite3.connect(clone_path)) as db:
             self.assertEqual(tuple(db.execute(
                 "SELECT request_id,receiver_id,request_digest,source_id,cursor,batch_digest,"
@@ -414,6 +525,8 @@ class RustScratchAdmissionTests(unittest.TestCase):
                                                    path=clone_path, success=False))
         self.assertEqual(self.batch_source_snapshot(clone_path, source_id),
                          committed_snapshot)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                         committed_binding)
 
         invalid_batch = PollBatch(source_id, "mixed-two", (
             {"event_id": "insert-before-conflict", "revision": 0,
@@ -437,6 +550,8 @@ class RustScratchAdmissionTests(unittest.TestCase):
                                                    path=clone_path, success=False))
         self.assertEqual(self.batch_source_snapshot(clone_path, source_id),
                          committed_snapshot)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                         committed_binding)
         with closing(sqlite3.connect(clone_path)) as db:
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
@@ -456,6 +571,8 @@ class RustScratchAdmissionTests(unittest.TestCase):
                       self.apply_mixed_clone_batch(stale_request,
                                                    path=clone_path, success=False))
         self.assertEqual(self.batch_source_snapshot(clone_path, source_id), after_renewal)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                         committed_binding)
         with closing(sqlite3.connect(clone_path)) as db:
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
