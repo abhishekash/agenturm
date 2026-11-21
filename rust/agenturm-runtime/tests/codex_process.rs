@@ -161,7 +161,7 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .find(|(_, row)| matches!(row.kind, ObservationKind::Usage { .. }))
         .unwrap();
     assert_eq!(usage.1.observed_at_unix_ns, 1_795_176_002_000_000_000);
-    assert_eq!(usage.1.identity.session_id, "session-1");
+    assert_eq!(usage.1.identity.session_id.as_deref(), Some("session-1"));
     assert_eq!(usage.1.identity.turn_id.as_deref(), Some("turn-1"));
     assert_eq!(
         usage.1.kind,

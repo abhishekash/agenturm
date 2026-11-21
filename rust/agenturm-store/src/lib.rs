@@ -14,7 +14,8 @@
 
 use agenturm_kernel::{
     MAX_DURABLE_SNAPSHOT_OBSERVATIONS, Observation, ObservationKind as KernelObservationKind,
-    ObservationPage, ObservationQuery, ObservationStore, StoreCommit,
+    ObservationPage, ObservationQuery, ObservationScope as KernelObservationScope,
+    ObservationStore, StoreCommit,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -31,7 +32,8 @@ const MAX_EVENT_ID_BYTES: usize = 256;
 const MAX_SESSION_KEY_BYTES: usize = 512;
 const MAX_CATEGORY_BYTES: usize = 64;
 const MAX_CURSOR_BYTES: usize = 800;
-const STORE_MARKER: &str = "agenturm.observation-store.v7";
+const STORE_MARKER: &str = "agenturm.observation-store.v8";
+const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
 const STORE_MARKER_V6: &str = "agenturm.observation-store.v6";
 const STORE_MARKER_V5: &str = "agenturm.observation-store.v5";
 const STORE_MARKER_V4: &str = "agenturm.observation-store.v4";
@@ -61,6 +63,10 @@ pub enum ObservationKind {
     Message {
         role: String,
     },
+    Diagnostic {
+        code: String,
+        severity: String,
+    },
     Usage {
         input_tokens: Option<u64>,
         output_tokens: Option<u64>,
@@ -84,10 +90,41 @@ pub struct StoredObservation {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservationIdentity {
-    pub session_id: String,
+    pub scope: StoredScope,
+    pub session_id: Option<String>,
     pub worker_id: Option<String>,
     pub turn_id: Option<String>,
     pub operation_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredScope {
+    Source,
+    Session,
+}
+
+impl StoredScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Session => "session",
+        }
+    }
+}
+
+fn kernel_scope(scope: StoredScope) -> KernelObservationScope {
+    match scope {
+        StoredScope::Source => KernelObservationScope::Source,
+        StoredScope::Session => KernelObservationScope::Session,
+    }
+}
+
+fn stored_scope(scope: KernelObservationScope) -> StoredScope {
+    match scope {
+        KernelObservationScope::Source => StoredScope::Source,
+        KernelObservationScope::Session => StoredScope::Session,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -238,7 +275,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         4 => STORE_MARKER_V4,
         5 => STORE_MARKER_V5,
         6 => STORE_MARKER_V6,
-        7 => STORE_MARKER,
+        7 => STORE_MARKER_V7,
+        8 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -297,17 +335,34 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        let expected_columns = expected_columns
-            .into_iter()
-            .map(|(name, column_type, not_null, primary_key)| {
-                (
-                    name.to_owned(),
-                    column_type.to_owned(),
-                    not_null,
-                    primary_key,
-                )
-            })
-            .collect::<Vec<_>>();
+        let expected_columns = if table == "agenturm_observations" && version >= 8 {
+            vec![
+                ("source_id", "TEXT", 1, 1),
+                ("event_id", "TEXT", 1, 2),
+                ("revision", "INTEGER", 1, 3),
+                ("request_id", "TEXT", 1, 0),
+                ("event_digest", "TEXT", 1, 0),
+                ("scope", "TEXT", 1, 0),
+                ("session_id", "TEXT", 0, 0),
+                ("worker_id", "TEXT", 0, 0),
+                ("turn_id", "TEXT", 0, 0),
+                ("operation_id", "TEXT", 0, 0),
+                ("observed_at_unix_ns", "INTEGER", 1, 0),
+                ("kind_json", "TEXT", 1, 0),
+            ]
+        } else {
+            expected_columns
+        }
+        .into_iter()
+        .map(|(name, column_type, not_null, primary_key)| {
+            (
+                name.to_owned(),
+                column_type.to_owned(),
+                not_null,
+                primary_key,
+            )
+        })
+        .collect::<Vec<_>>();
         if columns != expected_columns {
             return Err(StoreError::UnrecognizedDatabase);
         }
@@ -391,6 +446,48 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v7_to_v8(connection: &mut Connection) -> Result<()> {
+    validate_marked_shape(connection, 7)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE agenturm_observations_v8 (
+            source_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision >= 0),
+            request_id TEXT NOT NULL,
+            event_digest TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK(scope IN ('source', 'session')),
+            session_id TEXT,
+            worker_id TEXT,
+            turn_id TEXT,
+            operation_id TEXT,
+            observed_at_unix_ns INTEGER NOT NULL CHECK (observed_at_unix_ns >= 0),
+            kind_json TEXT NOT NULL,
+            CHECK ((scope='source' AND session_id IS NULL AND worker_id IS NULL
+                    AND turn_id IS NULL AND operation_id IS NULL)
+                OR (scope='session' AND session_id IS NOT NULL)),
+            PRIMARY KEY (source_id, event_id, revision),
+            FOREIGN KEY (request_id) REFERENCES agenturm_ingest_receipts(request_id)
+                DEFERRABLE INITIALLY DEFERRED
+        );
+        INSERT INTO agenturm_observations_v8
+            (source_id, event_id, revision, request_id, event_digest, scope,
+             session_id, worker_id, turn_id, operation_id, observed_at_unix_ns, kind_json)
+        SELECT source_id, event_id, revision, request_id, event_digest, 'session',
+               session_id, worker_id, turn_id, operation_id, observed_at_unix_ns, kind_json
+          FROM agenturm_observations;
+        DROP TABLE agenturm_observations;
+        ALTER TABLE agenturm_observations_v8 RENAME TO agenturm_observations;
+        CREATE INDEX agenturm_observations_by_session
+            ON agenturm_observations (session_id, observed_at_unix_ns, event_id, revision);
+        UPDATE agenturm_store_meta
+            SET value='agenturm.observation-store.v8' WHERE key='format';
+        PRAGMA user_version = 8;",
+    )?;
+    transaction.commit()?;
+    validate_marked_shape(connection, 8)
+}
+
 /// One SQLite connection owned by the caller. Methods requiring mutation take
 /// `&mut self`, which serializes writes within this process. This is not a
 /// cross-process lease or an untrusted-client boundary.
@@ -399,7 +496,7 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens or creates a store at `path`. A new database receives the v7
+    /// Opens or creates a store at `path`. A new database receives the v8
     /// schema; an unknown or unrelated database is rejected without changing
     /// its journal mode or schema.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -409,7 +506,7 @@ impl Store {
         )
     }
 
-    /// Opens an existing v7 store through a read-only connection. This path
+    /// Opens an existing v8 store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -444,7 +541,7 @@ impl Store {
                     value TEXT NOT NULL
                 );
                 INSERT INTO agenturm_store_meta (key, value)
-                    VALUES ('format', 'agenturm.observation-store.v7');
+                    VALUES ('format', 'agenturm.observation-store.v8');
                 CREATE TABLE agenturm_ingest_receipts (
                     request_id TEXT PRIMARY KEY NOT NULL,
                     source_id TEXT NOT NULL,
@@ -466,12 +563,16 @@ impl Store {
                     revision INTEGER NOT NULL CHECK (revision >= 0),
                     request_id TEXT NOT NULL,
                     event_digest TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
+                    scope TEXT NOT NULL CHECK(scope IN ('source', 'session')),
+                    session_id TEXT,
                     worker_id TEXT,
                     turn_id TEXT,
                     operation_id TEXT,
                     observed_at_unix_ns INTEGER NOT NULL CHECK (observed_at_unix_ns >= 0),
                     kind_json TEXT NOT NULL,
+                    CHECK ((scope='source' AND session_id IS NULL AND worker_id IS NULL
+                            AND turn_id IS NULL AND operation_id IS NULL)
+                        OR (scope='session' AND session_id IS NOT NULL)),
                     PRIMARY KEY (source_id, event_id, revision),
                     FOREIGN KEY (request_id) REFERENCES agenturm_ingest_receipts(request_id)
                         DEFERRABLE INITIALLY DEFERRED
@@ -479,7 +580,7 @@ impl Store {
                 CREATE INDEX agenturm_observations_by_session
                     ON agenturm_observations
                         (session_id, observed_at_unix_ns, event_id, revision);
-                PRAGMA user_version = 7;",
+                PRAGMA user_version = 8;",
             )?;
             transaction.commit()?;
         } else if schema_version == 2 {
@@ -634,10 +735,15 @@ impl Store {
             )?;
             transaction.commit()?;
             validate_marked_shape(&connection, 7)?;
+        } else if schema_version == 7 {
+            validate_marked_shape(&connection, 7)?;
         } else if schema_version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(schema_version));
         } else {
             validate_marked_shape(&connection, SCHEMA_VERSION)?;
+        }
+        if schema_version > 0 && schema_version < SCHEMA_VERSION {
+            migrate_v7_to_v8(&mut connection)?;
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
@@ -709,16 +815,17 @@ impl Store {
                 None => {
                     transaction.execute(
                         "INSERT INTO agenturm_observations
-                        (source_id, event_id, revision, request_id, event_digest, session_id,
-                          worker_id, turn_id, operation_id,
+                        (source_id, event_id, revision, request_id, event_digest, scope,
+                          session_id, worker_id, turn_id, operation_id,
                           observed_at_unix_ns, kind_json)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                         params![
                             batch.source_id,
                             observation.event_id,
                             i64::from(observation.revision),
                             batch.request_id,
                             event_hash,
+                            observation.identity.scope.as_str(),
                             observation.identity.session_id,
                             observation.identity.worker_id,
                             observation.identity.turn_id,
@@ -763,18 +870,19 @@ impl Store {
     /// Returns all observations in stable chronological/source/event order.
     pub fn observations(&self) -> Result<Vec<(String, StoredObservation)>> {
         let mut statement = self.connection.prepare(
-            "SELECT source_id, event_id, revision, session_id, worker_id, turn_id,
+            "SELECT source_id, event_id, revision, scope, session_id, worker_id, turn_id,
                     operation_id, observed_at_unix_ns, kind_json
              FROM agenturm_observations
              ORDER BY observed_at_unix_ns, source_id, event_id, revision",
         )?;
         let rows = statement.query_map([], |row| {
             let revision: i64 = row.get(2)?;
-            let timestamp: i64 = row.get(7)?;
-            let kind_json: String = row.get(8)?;
+            let scope: String = row.get(3)?;
+            let timestamp: i64 = row.get(8)?;
+            let kind_json: String = row.get(9)?;
             let kind = serde_json::from_str(&kind_json).map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    8,
+                    9,
                     rusqlite::types::Type::Text,
                     Box::new(error),
                 )
@@ -791,14 +899,25 @@ impl Store {
                         )
                     })?,
                     identity: ObservationIdentity {
-                        session_id: row.get(3)?,
-                        worker_id: row.get(4)?,
-                        turn_id: row.get(5)?,
-                        operation_id: row.get(6)?,
+                        scope: match scope.as_str() {
+                            "source" => StoredScope::Source,
+                            "session" => StoredScope::Session,
+                            _ => {
+                                return Err(rusqlite::Error::FromSqlConversionFailure(
+                                    3,
+                                    rusqlite::types::Type::Text,
+                                    "unknown observation scope".into(),
+                                ));
+                            }
+                        },
+                        session_id: row.get(4)?,
+                        worker_id: row.get(5)?,
+                        turn_id: row.get(6)?,
+                        operation_id: row.get(7)?,
                     },
                     observed_at_unix_ns: u64::try_from(timestamp).map_err(|error| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            7,
+                            8,
                             rusqlite::types::Type::Integer,
                             Box::new(error),
                         )
@@ -859,7 +978,7 @@ impl Store {
         }
         let mut statement = self.connection.prepare(
             "SELECT observation.source_id, observation.event_id, observation.revision,
-                    observation.session_id, observation.worker_id, observation.turn_id,
+                    observation.scope, observation.session_id, observation.worker_id, observation.turn_id,
                     observation.operation_id, observation.observed_at_unix_ns,
                     observation.kind_json
              FROM agenturm_observations AS observation
@@ -894,11 +1013,12 @@ impl Store {
             ],
             |row| {
                 let revision: i64 = row.get(2)?;
-                let timestamp: i64 = row.get(7)?;
-                let kind_json: String = row.get(8)?;
+                let scope: String = row.get(3)?;
+                let timestamp: i64 = row.get(8)?;
+                let kind_json: String = row.get(9)?;
                 let kind = serde_json::from_str(&kind_json).map_err(|error| {
                     rusqlite::Error::FromSqlConversionFailure(
-                        8,
+                        9,
                         rusqlite::types::Type::Text,
                         Box::new(error),
                     )
@@ -914,14 +1034,25 @@ impl Store {
                         )
                     })?,
                     ObservationIdentity {
-                        session_id: row.get(3)?,
-                        worker_id: row.get(4)?,
-                        turn_id: row.get(5)?,
-                        operation_id: row.get(6)?,
+                        scope: match scope.as_str() {
+                            "source" => StoredScope::Source,
+                            "session" => StoredScope::Session,
+                            _ => {
+                                return Err(rusqlite::Error::FromSqlConversionFailure(
+                                    3,
+                                    rusqlite::types::Type::Text,
+                                    "unknown observation scope".into(),
+                                ));
+                            }
+                        },
+                        session_id: row.get(4)?,
+                        worker_id: row.get(5)?,
+                        turn_id: row.get(6)?,
+                        operation_id: row.get(7)?,
                     },
                     u64::try_from(timestamp).map_err(|error| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            7,
+                            8,
                             rusqlite::types::Type::Integer,
                             Box::new(error),
                         )
@@ -943,6 +1074,7 @@ impl Store {
                 event_id,
                 revision,
                 identity: agenturm_kernel::ObservationIdentity {
+                    scope: kernel_scope(identity.scope),
                     session_id: identity.session_id,
                     worker_id: identity.worker_id,
                     turn_id: identity.turn_id,
@@ -965,6 +1097,9 @@ impl Store {
                         KernelObservationKind::Check { category, result }
                     }
                     ObservationKind::Message { role } => KernelObservationKind::Message { role },
+                    ObservationKind::Diagnostic { code, severity } => {
+                        KernelObservationKind::Diagnostic { code, severity }
+                    }
                     ObservationKind::Usage {
                         input_tokens,
                         output_tokens,
@@ -1034,6 +1169,7 @@ impl ObservationStore for Store {
                 event_id: observation.event_id.clone(),
                 revision: observation.revision,
                 identity: ObservationIdentity {
+                    scope: stored_scope(observation.identity.scope),
                     session_id: observation.identity.session_id.clone(),
                     worker_id: observation.identity.worker_id.clone(),
                     turn_id: observation.identity.turn_id.clone(),
@@ -1062,6 +1198,12 @@ impl ObservationStore for Store {
                     },
                     KernelObservationKind::Message { role } => {
                         ObservationKind::Message { role: role.clone() }
+                    }
+                    KernelObservationKind::Diagnostic { code, severity } => {
+                        ObservationKind::Diagnostic {
+                            code: code.clone(),
+                            severity: severity.clone(),
+                        }
                     }
                     KernelObservationKind::Usage {
                         input_tokens,
@@ -1120,11 +1262,28 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
                 "duplicate event ID and revision within batch",
             ));
         }
-        validate_identifier(
-            &observation.identity.session_id,
-            MAX_SESSION_KEY_BYTES,
-            "session ID",
-        )?;
+        match observation.identity.scope {
+            StoredScope::Session => validate_identifier(
+                observation
+                    .identity
+                    .session_id
+                    .as_deref()
+                    .ok_or(StoreError::Invalid("session scope requires a session ID"))?,
+                MAX_SESSION_KEY_BYTES,
+                "session ID",
+            )?,
+            StoredScope::Source
+                if matches!(observation.kind, ObservationKind::Diagnostic { .. })
+                    && observation.identity.session_id.is_none()
+                    && observation.identity.worker_id.is_none()
+                    && observation.identity.turn_id.is_none()
+                    && observation.identity.operation_id.is_none() => {}
+            StoredScope::Source => {
+                return Err(StoreError::Invalid(
+                    "source scope requires a source diagnostic without session identity",
+                ));
+            }
+        }
         for (value, label) in [
             (observation.identity.worker_id.as_deref(), "worker ID"),
             (observation.identity.turn_id.as_deref(), "turn ID"),
@@ -1179,6 +1338,14 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
             && !matches!(role.as_str(), "user" | "assistant")
         {
             return Err(StoreError::Invalid("message role is invalid"));
+        }
+        if let ObservationKind::Diagnostic { code, severity } = &observation.kind
+            && (!agenturm_kernel::is_safe_diagnostic_code(code)
+                || !matches!(severity.as_str(), "info" | "warning" | "error"))
+        {
+            return Err(StoreError::Invalid(
+                "diagnostic code or severity is invalid",
+            ));
         }
     }
     Ok(())
@@ -1279,12 +1446,50 @@ mod tests {
         }
     }
 
+    fn downgrade_fixture_to_v7(connection: &Connection) {
+        connection
+            .execute_batch(
+                "DROP INDEX agenturm_observations_by_session;
+                 CREATE TABLE agenturm_observations_v7 (
+                    source_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL CHECK (revision >= 0),
+                    request_id TEXT NOT NULL,
+                    event_digest TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    worker_id TEXT,
+                    turn_id TEXT,
+                    operation_id TEXT,
+                    observed_at_unix_ns INTEGER NOT NULL CHECK (observed_at_unix_ns >= 0),
+                    kind_json TEXT NOT NULL,
+                    PRIMARY KEY (source_id, event_id, revision),
+                    FOREIGN KEY (request_id) REFERENCES agenturm_ingest_receipts(request_id)
+                        DEFERRABLE INITIALLY DEFERRED
+                 );
+                 INSERT INTO agenturm_observations_v7
+                    (source_id, event_id, revision, request_id, event_digest, session_id,
+                     worker_id, turn_id, operation_id, observed_at_unix_ns, kind_json)
+                 SELECT source_id, event_id, revision, request_id, event_digest, session_id,
+                        worker_id, turn_id, operation_id, observed_at_unix_ns, kind_json
+                   FROM agenturm_observations;
+                 DROP TABLE agenturm_observations;
+                 ALTER TABLE agenturm_observations_v7 RENAME TO agenturm_observations;
+                 CREATE INDEX agenturm_observations_by_session
+                    ON agenturm_observations (session_id, observed_at_unix_ns, event_id, revision);
+                 UPDATE agenturm_store_meta
+                    SET value='agenturm.observation-store.v7' WHERE key='format';
+                 PRAGMA user_version=7;",
+            )
+            .unwrap();
+    }
+
     fn event(event_id: &str, session_id: &str, timestamp: u64) -> StoredObservation {
         StoredObservation {
             event_id: event_id.into(),
             revision: 0,
             identity: ObservationIdentity {
-                session_id: session_id.into(),
+                scope: StoredScope::Session,
+                session_id: Some(session_id.into()),
                 worker_id: Some("worker-1".into()),
                 turn_id: Some("turn-1".into()),
                 operation_id: Some("operation-1".into()),
@@ -1464,6 +1669,7 @@ mod tests {
                     vec![event("event-1", "session-1", 1)],
                 ))
                 .unwrap();
+            downgrade_fixture_to_v7(&store.connection);
             store
                 .connection
                 .execute_batch(
@@ -1483,17 +1689,18 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
-    fn v3_store_upgrades_through_v4_v5_and_v6_to_v7_without_changing_history() {
+    fn v3_store_upgrades_through_v4_v5_v6_and_v7_to_v8_without_changing_history() {
         let db = TempDb::new();
         {
             let mut store = Store::open(&db.0).unwrap();
             store
                 .commit_batch(&batch("v3-request", vec![event("v3-event", "s1", 1)]))
                 .unwrap();
+            downgrade_fixture_to_v7(&store.connection);
             store
                 .connection
                 .execute_batch(
@@ -1512,18 +1719,19 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            7
+            8
         );
     }
 
     #[test]
-    fn v4_store_upgrades_through_v5_and_v6_to_v7_without_changing_history() {
+    fn v4_store_upgrades_through_v5_v6_and_v7_to_v8_without_changing_history() {
         let db = TempDb::new();
         {
             let mut store = Store::open(&db.0).unwrap();
             store
                 .commit_batch(&batch("v4-request", vec![event("v4-event", "s1", 1)]))
                 .unwrap();
+            downgrade_fixture_to_v7(&store.connection);
             store
                 .connection
                 .execute_batch(
@@ -1542,18 +1750,19 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            7
+            8
         );
     }
 
     #[test]
-    fn v5_store_upgrades_through_v6_to_v7_without_changing_history() {
+    fn v5_store_upgrades_through_v6_and_v7_to_v8_without_changing_history() {
         let db = TempDb::new();
         {
             let mut store = Store::open(&db.0).unwrap();
             store
                 .commit_batch(&batch("v5-request", vec![event("v5-event", "s1", 1)]))
                 .unwrap();
+            downgrade_fixture_to_v7(&store.connection);
             store
                 .connection
                 .execute_batch(
@@ -1572,18 +1781,19 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            7
+            8
         );
     }
 
     #[test]
-    fn v6_store_upgrades_to_v7_without_changing_history() {
+    fn v6_store_upgrades_through_v7_to_v8_without_changing_history() {
         let db = TempDb::new();
         {
             let mut store = Store::open(&db.0).unwrap();
             store
                 .commit_batch(&batch("v6-request", vec![event("v6-event", "s1", 1)]))
                 .unwrap();
+            downgrade_fixture_to_v7(&store.connection);
             store
                 .connection
                 .execute_batch(
@@ -1602,7 +1812,38 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            7
+            8
+        );
+    }
+
+    #[test]
+    fn v7_store_rebuilds_observation_table_and_preserves_session_scope() {
+        let db = TempDb::new();
+        {
+            let mut store = Store::open(&db.0).unwrap();
+            store
+                .commit_batch(&batch("v7-request", vec![event("v7-event", "s1", 1)]))
+                .unwrap();
+            downgrade_fixture_to_v7(&store.connection);
+        }
+        let store = Store::open(&db.0).unwrap();
+        let page = store.observation_page(10).unwrap();
+        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.observations.len(), 1);
+        assert_eq!(
+            page.observations[0].identity.scope,
+            KernelObservationScope::Session
+        );
+        assert_eq!(
+            page.observations[0].identity.session_id.as_deref(),
+            Some("s1")
+        );
+        assert_eq!(
+            store
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            8
         );
     }
 
@@ -1637,6 +1878,54 @@ mod tests {
             .unwrap();
         let refreshed = reader.observation_page(10).unwrap();
         assert_eq!(refreshed.observations.len(), 2);
+    }
+
+    #[test]
+    fn source_diagnostic_persists_without_fake_session_and_session_filters_exclude_it() {
+        let db = TempDb::new();
+        {
+            let mut store = Store::open(&db.0).unwrap();
+            let mut diagnostic = event("source-gap-1", "unused", 10);
+            diagnostic.identity = ObservationIdentity {
+                scope: StoredScope::Source,
+                session_id: None,
+                worker_id: None,
+                turn_id: None,
+                operation_id: None,
+            };
+            diagnostic.kind = ObservationKind::Diagnostic {
+                code: "possible_source_gap".into(),
+                severity: "warning".into(),
+            };
+            store
+                .commit_batch(&batch("source-diagnostic-request", vec![diagnostic]))
+                .unwrap();
+        }
+        let store = Store::open_read_only(&db.0).unwrap();
+        let page = store.observation_page(10).unwrap();
+        assert_eq!(page.observations.len(), 1);
+        assert_eq!(
+            page.observations[0].identity.scope,
+            KernelObservationScope::Source
+        );
+        assert_eq!(page.observations[0].identity.session_id, None);
+        assert_eq!(
+            page.observations[0].kind,
+            KernelObservationKind::Diagnostic {
+                code: "possible_source_gap".into(),
+                severity: "warning".into(),
+            }
+        );
+        let session_page = store
+            .query_observations(&ObservationQuery {
+                harness_id: Some("harness.codex".into()),
+                session_id: Some("session-1".into()),
+                before: None,
+                snapshot_id: Some(page.snapshot_id),
+                limit: 10,
+            })
+            .unwrap();
+        assert!(session_page.observations.is_empty());
     }
 
     #[test]
@@ -2063,6 +2352,37 @@ mod tests {
         assert!(matches!(
             store.commit_batch(&batch("request-1", vec![invalid])),
             Err(StoreError::Invalid("message role is invalid"))
+        ));
+        assert!(store.observations().unwrap().is_empty());
+    }
+
+    #[test]
+    fn source_scope_is_restricted_to_safe_diagnostics() {
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        let mut invalid_kind = event("event-1", "session-1", 10);
+        invalid_kind.identity.scope = StoredScope::Source;
+        invalid_kind.identity.session_id = None;
+        invalid_kind.identity.worker_id = None;
+        invalid_kind.identity.turn_id = None;
+        invalid_kind.identity.operation_id = None;
+        assert!(matches!(
+            store.commit_batch(&batch("request-source-usage", vec![invalid_kind])),
+            Err(StoreError::Invalid(
+                "source scope requires a source diagnostic without session identity"
+            ))
+        ));
+
+        let mut invalid_code = event("event-2", "session-1", 11);
+        invalid_code.kind = ObservationKind::Diagnostic {
+            code: "private_text_encoded_as_identifier".into(),
+            severity: "warning".into(),
+        };
+        assert!(matches!(
+            store.commit_batch(&batch("request-diagnostic-code", vec![invalid_code])),
+            Err(StoreError::Invalid(
+                "diagnostic code or severity is invalid"
+            ))
         ));
         assert!(store.observations().unwrap().is_empty());
     }

@@ -243,7 +243,12 @@ impl UiContribution for OverviewPane {
 fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
     let sessions = observations
         .iter()
-        .map(|row| (row.harness_id.as_str(), row.identity.session_id.as_str()))
+        .filter_map(|row| {
+            row.identity
+                .session_id
+                .as_deref()
+                .map(|session| (row.harness_id.as_str(), session))
+        })
         .collect::<BTreeSet<_>>()
         .len();
     let sources = observations
@@ -275,6 +280,10 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         .iter()
         .filter(|row| matches!(row.kind, ObservationKind::Message { .. }))
         .count();
+    let diagnostics = observations
+        .iter()
+        .filter(|row| matches!(row.kind, ObservationKind::Diagnostic { .. }))
+        .count();
     let latest_lifecycle = observations
         .iter()
         .filter_map(|row| match &row.kind {
@@ -294,7 +303,7 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
                 reason_code.as_deref().unwrap_or("not-recorded"),
                 state,
                 row.harness_id.as_str(),
-                row.identity.session_id
+                row.identity.session_id.as_deref().unwrap_or("source")
             )
         })
         .unwrap_or_else(|| "none recorded".into());
@@ -330,6 +339,10 @@ fn overview_rows(observations: &[Observation]) -> Vec<MetricRow> {
         MetricRow {
             label: "Message role observations".into(),
             value: messages.to_string(),
+        },
+        MetricRow {
+            label: "Diagnostic observations".into(),
+            value: diagnostics.to_string(),
         },
         MetricRow {
             label: "Latest lifecycle evidence".into(),
@@ -808,6 +821,9 @@ pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
                 ObservationKind::Message { role } => {
                     serde_json::json!({"kind":"message", "role":role})
                 }
+                ObservationKind::Diagnostic { code, severity } => {
+                    serde_json::json!({"kind":"diagnostic", "code":code, "severity":severity})
+                }
                 ObservationKind::Usage {
                     input_tokens,
                     output_tokens,
@@ -828,6 +844,10 @@ pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
                 "revision":row.revision,
                 "observed_at_unix_ns":row.observed_at_unix_ns.to_string(),
                 "identity": {
+                    "scope":match row.identity.scope {
+                        agenturm_kernel::ObservationScope::Source => "source",
+                        agenturm_kernel::ObservationScope::Session => "session",
+                    },
                     "session_id":row.identity.session_id,
                     "worker_id":row.identity.worker_id,
                     "turn_id":row.identity.turn_id,
@@ -1473,7 +1493,8 @@ mod tests {
             event_id: "event-1".into(),
             revision: 0,
             identity: agenturm_kernel::ObservationIdentity {
-                session_id: "session-1".into(),
+                scope: agenturm_kernel::ObservationScope::Session,
+                session_id: Some("session-1".into()),
                 worker_id: None,
                 turn_id: Some("turn-1".into()),
                 operation_id: None,
@@ -1502,7 +1523,8 @@ mod tests {
             event_id: "message-1".into(),
             revision: 0,
             identity: agenturm_kernel::ObservationIdentity {
-                session_id: "session-1".into(),
+                scope: agenturm_kernel::ObservationScope::Session,
+                session_id: Some("session-1".into()),
                 worker_id: None,
                 turn_id: Some("turn-1".into()),
                 operation_id: None,
@@ -1528,7 +1550,8 @@ mod tests {
                 event_id: "fixture:event-1".into(),
                 revision: 0,
                 identity: agenturm_kernel::ObservationIdentity {
-                    session_id: "session-1".into(),
+                    scope: agenturm_kernel::ObservationScope::Session,
+                    session_id: Some("session-1".into()),
                     worker_id: None,
                     turn_id: None,
                     operation_id: None,
@@ -1868,7 +1891,8 @@ mod tests {
             event_id: event_id.into(),
             revision: 0,
             identity: StoredIdentity {
-                session_id: "session-a".into(),
+                scope: agenturm_store::StoredScope::Session,
+                session_id: Some("session-a".into()),
                 worker_id: None,
                 turn_id: None,
                 operation_id: None,
@@ -1901,13 +1925,31 @@ mod tests {
         message_event.kind = StoredKind::Message {
             role: "assistant".into(),
         };
+        let mut source_diagnostic = make_event("event-5", 25);
+        source_diagnostic.identity = StoredIdentity {
+            scope: agenturm_store::StoredScope::Source,
+            session_id: None,
+            worker_id: None,
+            turn_id: None,
+            operation_id: None,
+        };
+        source_diagnostic.kind = StoredKind::Diagnostic {
+            code: "possible_source_gap".into(),
+            severity: "warning".into(),
+        };
         store
             .commit_batch(&ObservationBatch {
                 request_id: "query-app-request".into(),
                 source_id: "harness.codex".into(),
                 expected_cursor: None,
                 next_cursor: "cursor-1".into(),
-                observations: vec![check_event, lifecycle_event, tool_event, message_event],
+                observations: vec![
+                    check_event,
+                    lifecycle_event,
+                    tool_event,
+                    message_event,
+                    source_diagnostic,
+                ],
             })
             .unwrap();
         drop(store);
@@ -1966,6 +2008,25 @@ mod tests {
         assert_eq!(older["observations"][0]["observation"]["result"], "passed");
         assert_eq!(older["observations"][1]["observation"]["kind"], "message");
         assert_eq!(older["observations"][1]["observation"]["role"], "assistant");
+        let all_scopes = execute_query(&HistoryQueryOptions {
+            db: path.clone(),
+            harness_id: Some("harness.codex".into()),
+            session_id: None,
+            before: None,
+            snapshot_id: None,
+            limit: 10,
+        })
+        .unwrap();
+        let all_scopes: serde_json::Value = serde_json::from_str(&all_scopes).unwrap();
+        let source_row = all_scopes["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["event_id"] == "event-5")
+            .unwrap();
+        assert_eq!(source_row["identity"]["scope"], "source");
+        assert!(source_row["identity"]["session_id"].is_null());
+        assert_eq!(source_row["observation"]["code"], "possible_source_gap");
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
