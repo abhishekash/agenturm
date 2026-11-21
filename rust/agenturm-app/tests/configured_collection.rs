@@ -1,4 +1,8 @@
-use agenturm_app::execute_inspect;
+use agenturm_app::{AgenturmApp, execute_inspect};
+use agenturm_kernel::{ExtensionId, ObservationQuery};
+use agenturm_lifecycle_extension_example::LifecycleExtensionPlugin;
+use agenturm_store::Store;
+use agenturm_ui::UiModel;
 use std::fs;
 use std::io::BufRead;
 use std::path::PathBuf;
@@ -45,7 +49,8 @@ fn version_two_catalog_runs_a_pinned_real_pi_process() {
         &source,
         concat!(
             "{\"type\":\"session\",\"id\":\"catalog-session\"}\n",
-            "{\"type\":\"message\",\"id\":\"assistant-1\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\",\"usage\":{\"input\":8,\"output\":3},\"content\":[]}}\n"
+            "{\"type\":\"message\",\"id\":\"user-1\",\"timestamp\":\"2026-11-20T11:59:59Z\",\"message\":{\"role\":\"user\",\"content\":\"private prompt must not reach the extension\"}}\n",
+            "{\"type\":\"message\",\"id\":\"assistant-1\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"error\",\"usage\":{\"input\":8,\"output\":3},\"content\":[{\"type\":\"toolCall\",\"id\":\"call-1\",\"name\":\"read\"}]}}\n"
         ),
     )
     .expect("write Pi fixture");
@@ -91,13 +96,44 @@ fn version_two_catalog_runs_a_pinned_real_pi_process() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("harness.pi: committed 3 observation(s)")
+        String::from_utf8_lossy(&output.stdout).contains("harness.pi: committed 6 observation(s)")
     );
     let snapshot = execute_inspect(&database).expect("reopen catalog-backed history");
+    assert_eq!(snapshot.observations.len(), 6);
     assert!(snapshot.observations.iter().any(|observation| {
         observation.identity.session_id.as_deref() == Some("catalog-session")
+            && observation.kind
+                == agenturm_kernel::ObservationKind::Lifecycle {
+                    state: "interrupted".into(),
+                    reason_code: Some("pi_stop_error".into()),
+                }
     }));
+    assert!(
+        !format!("{:?}", snapshot.observations)
+            .contains("private prompt must not reach the extension")
+    );
     drop(snapshot);
+    let store = Store::open_read_only(&database).expect("open read-only durable store");
+    let mut app = AgenturmApp::default_composition();
+    app.install_plugin(LifecycleExtensionPlugin)
+        .expect("install independent capability and pane package");
+    let projected = app.refresh_history_query(&store, ObservationQuery::latest(32));
+    assert!(projected.failures.is_empty());
+    assert_eq!(
+        projected.metrics[&ExtensionId::parse("capability.example.lifecycle").unwrap()][1].value,
+        "1"
+    );
+    let pane = &projected.panes[&ExtensionId::parse("pane.example.lifecycle").unwrap()];
+    assert_eq!(pane.title, "Lifecycle by source");
+    assert_eq!(pane.rows[0].label, "harness.pi");
+    assert_eq!(pane.rows[0].value, "2 total · 1 interrupted");
+    assert!(
+        projected
+            .panes
+            .contains_key(&ExtensionId::parse("pane.overview").unwrap())
+    );
+    let model = UiModel::from_snapshot(projected);
+    assert_eq!(model.selected_title(), Some("Lifecycle by source"));
     fs::remove_dir_all(root).expect("remove fixture directory");
 }
 
