@@ -1,0 +1,18 @@
+[package]
+name = "agenturm-app"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+publish = false
+license = "MIT"
+
+[dependencies]
+agenturm-kernel = { path = "../agenturm-kernel" }
+
+[lib]
+name = "agenturm_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agenturm"
+path = "src/main.rs"
