@@ -5097,7 +5097,11 @@ mod tests {
         let before = state(&db);
         let error = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true)
             .expect_err("triggered competing receipt must fail closed");
-        assert!(error.to_string().contains("triggers on real clone admission"));
+        assert!(
+            error
+                .to_string()
+                .contains("triggers on real clone admission")
+        );
         assert_eq!(state(&db), before);
         assert_eq!(admission_receipt_count(&db, request_id), None);
         assert_eq!(activation_receipt_count(&db, request_id), Some(0));
@@ -5135,7 +5139,11 @@ mod tests {
         let before = state(&db);
         let error = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true)
             .expect_err("sibling-source trigger must fail closed");
-        assert!(error.to_string().contains("triggers on real clone admission"));
+        assert!(
+            error
+                .to_string()
+                .contains("triggers on real clone admission")
+        );
         assert_eq!(state(&db), before);
         let sibling_after: (String, i64, i64) = db
             .query_row(
@@ -5169,7 +5177,11 @@ mod tests {
         let before = state(&db);
         let error = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true)
             .expect_err("receiver mutation trigger must fail closed");
-        assert!(error.to_string().contains("triggers on real clone admission"));
+        assert!(
+            error
+                .to_string()
+                .contains("triggers on real clone admission")
+        );
         assert_eq!(state(&db), before);
         let receiver: String = db
             .query_row(
