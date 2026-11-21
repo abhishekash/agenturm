@@ -1,6 +1,6 @@
 # Rust supervised capability and pane plugins
 
-Status: proposed follow-on to the build-time `ExtensionPlugin` contract.
+Status: implementation complete; awaiting merge.
 
 ## Context
 
@@ -9,7 +9,10 @@ and data-only UI contributions. Harnesses can be selected as supervised
 processes through the user-managed source adapter catalog. Capabilities and
 panes have a public Rust trait contract and can be grouped in a build-time
 `ExtensionPlugin`; those packages are trusted code linked into the application.
-The source adapter catalog does not load capability or pane code.
+The source adapter catalog does not load capability or pane code. The trusted
+atomic kernel port, explicit inspector catalog/selection, supervised one-shot
+runner, and independent Rust example are implemented. Full workspace tests, strict Clippy,
+release example build, and independent Rust/security reviews passed locally.
 
 The application must not load third-party Rust dynamic libraries. Kernel traits
 carry Rust-owned types and have no stable cross-version binary ABI. Runtime
@@ -155,18 +158,21 @@ the process fails or either output is invalid. If the catalog declares
 `ui-contribution/1`, a pane is required; otherwise the pane field must be null.
 
 The inspector remains synchronous. At most four process extensions may be
-enabled; each receives a 500 ms total invocation deadline covering artifact
-hash verification, process startup, handshake, request writes, evaluation,
-response validation, EOF and exit. Extension artifacts are bounded regular
-files no larger than 64 MiB; only selected catalog entries are hashed before
-the store opens. Rehash the selected artifact before each spawn, check the
-deadline during every streaming hash chunk, and abort before launch if hashing
-exceeds the remaining budget. Total child wait per refresh is therefore at most 2 seconds;
-bounded serialization and local validation happen outside that wait budget, so
-this is not a hard refresh wall-time guarantee. Reject a set of more than four
-enabled plugins. Initial process-group supervision is Unix-only, matching
-the current runtime; non-Unix hosts return an explicit unsupported-platform
-error rather than running unsupervised.
+enabled; each receives a cooperative 500 ms invocation deadline covering
+artifact hash verification, process startup, handshake, request writes,
+evaluation, response validation, EOF and exit. Deadline checks bound protocol
+polling and run before and after synchronous operations. Standard filesystem
+open/metadata/read calls, process creation, and JSON parsing cannot be
+interrupted by this API; a stalled filesystem, scheduler or OS call may exceed
+the deadline. Extensions should therefore use local executable files. Extension
+artifacts are bounded regular files no larger than 64 MiB; only selected
+catalog entries are hashed before the store opens. Rehash the selected artifact
+before each spawn, check the deadline during every streaming hash chunk, and
+abort before launch if hashing exceeds the remaining budget. The 500 ms limit
+is not a hard wall-clock guarantee for a full invocation or inspector refresh.
+Initial process-group supervision is Unix-only, matching the current runtime;
+non-Unix hosts return an explicit unsupported-platform error rather than
+running unsupervised.
 
 The observation DTO contains only typed fields already admitted by the kernel:
 source ID, timestamp, token counters, message role, tool/check category and
@@ -183,12 +189,15 @@ pin a blocking reader or writer thread. Launch the canonical executable
 directly without a shell, with a fixed working directory of `/` and a cleared
 environment containing only the protocol version. Version 1 cleanup is
 deadline-driven; no mid-call cancellation token is exposed yet. On timeout or
-malformed output, kill and reap the process group as best-effort cleanup, return
-a bounded generic failure for that extension, and keep healthy extensions and
-Overview available. A child that escapes the process group is outside this
-cleanup guarantee. Nonblocking pipes ensure escaped descendants retaining a
-pipe cannot keep an Agenturm worker thread blocked; their inherited file
-descriptors remain outside the host's cleanup guarantee. Do not relay raw
+malformed output, send SIGKILL to the process group, return a bounded generic
+failure for that extension, and keep healthy extensions and Overview available.
+A single shared reaper polls child exit without blocking the inspector; if its
+worker cannot start, pending child handles are retained for a later retry. A
+child that escapes the process group is outside the kill guarantee. Nonblocking
+pipes ensure escaped descendants retaining a pipe cannot keep an Agenturm
+worker thread blocked; their inherited file descriptors remain outside the
+host's cleanup guarantee. If the OS cannot reap a killed child, its handle may
+remain queued until a later reap succeeds or Agenturm exits. Do not relay raw
 stderr or child error text into the UI.
 
 The child still runs as the Agenturm user. Grants constrain only what the host

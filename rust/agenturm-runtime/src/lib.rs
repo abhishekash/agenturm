@@ -7,6 +7,13 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+mod observation_extension;
+
+pub use observation_extension::{
+    ExtensionDataGrant, ProcessObservationExtension, ProcessObservationExtensionConfig,
+    verify_extension_artifact,
+};
+
 use agenturm_kernel::{
     ObservationIdentity, ObservationKind, PreparedSourceBatch, RawObservation, SourceAdapter,
 };

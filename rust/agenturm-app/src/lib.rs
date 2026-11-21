@@ -10,7 +10,11 @@ use agenturm_kernel::{
     ObservationQuery, ObservationStore, PaneModel, RegistrationError, Snapshot, SourceAdapter,
     UiContribution,
 };
-use agenturm_runtime::{BundledObservationDecoder, CODEX_PLUGIN_ID, ProcessConfig, ProcessSource};
+use agenturm_runtime::{
+    BundledObservationDecoder, CODEX_PLUGIN_ID, ExtensionDataGrant, ProcessConfig,
+    ProcessObservationExtension, ProcessObservationExtensionConfig, ProcessSource,
+    verify_extension_artifact,
+};
 #[cfg(target_os = "linux")]
 use agenturm_service::{
     ServiceSpec, Systemctl, install_user_service, status_user_service, uninstall_user_service,
@@ -28,6 +32,9 @@ use std::time::{Duration, Instant};
 
 const MAX_COLLECTION_CONFIG_BYTES: u64 = 256 * 1024;
 const MAX_PLUGIN_CATALOG_BYTES: u64 = 64 * 1024;
+const MAX_PROCESS_EXTENSION_CATALOG_ENTRIES: usize = 64;
+const MAX_ENABLED_PROCESS_EXTENSIONS: usize = 4;
+const MAX_PROCESS_EXTENSION_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CONFIGURED_SOURCES: usize = 16;
 const INSPECT_PAGE_SIZE: usize = 500;
 
@@ -136,11 +143,36 @@ pub enum Command {
     Help,
     Version,
     Status,
-    Inspect(PathBuf),
+    Inspect(InspectOptions),
     Query(HistoryQueryOptions),
     Ingest(IngestOptions),
     Collect(ConfiguredCollectOptions),
     Service(ServiceCommand),
+}
+
+/// Read-only inspector options, including explicitly selected process
+/// extensions resolved from a user-managed catalog.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InspectOptions {
+    pub db: PathBuf,
+    pub extensions: ResolvedExtensionCatalog,
+}
+
+/// Selected extension entries with canonical executable paths. The runtime
+/// owns SHA-256 verification and process startup.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ResolvedExtensionCatalog {
+    pub extensions: Vec<ResolvedProcessExtension>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedProcessExtension {
+    pub plugin_id: ExtensionId,
+    pub executable: PathBuf,
+    pub sha256: String,
+    pub protocol: u32,
+    pub features: BTreeSet<String>,
+    pub grants: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,6 +247,24 @@ struct AdapterCatalogEntry {
     sha256: String,
     protocol: u32,
     features: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProcessExtensionCatalogFile {
+    version: u32,
+    extensions: Vec<ProcessExtensionCatalogEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProcessExtensionCatalogEntry {
+    plugin_id: String,
+    executable: PathBuf,
+    sha256: String,
+    protocol: u32,
+    features: Vec<String>,
+    grants: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -686,12 +736,246 @@ fn parse_collect_options(args: &[String]) -> Result<ConfiguredCollectOptions, St
     })
 }
 
-fn parse_inspect_options(args: &[String]) -> Result<PathBuf, String> {
-    if args.len() == 2 && args[0] == "--db" && !args[1].is_empty() && !args[1].starts_with("--") {
-        Ok(PathBuf::from(&args[1]))
-    } else {
-        Err(usage())
+fn parse_inspect_options(args: &[String]) -> Result<InspectOptions, String> {
+    let mut db = None;
+    let mut extension_catalog = None;
+    let mut selected_extensions = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let key = args[index].as_str();
+        match key {
+            "--db" | "--extension-catalog" | "--extension" => {
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.is_empty() && !value.starts_with("--"))
+                    .ok_or_else(usage)?;
+                match key {
+                    "--db" => {
+                        if db.replace(PathBuf::from(value)).is_some() {
+                            return Err("duplicate option --db\n".to_owned() + &usage());
+                        }
+                    }
+                    "--extension-catalog" => {
+                        if extension_catalog.replace(PathBuf::from(value)).is_some() {
+                            return Err(
+                                "duplicate option --extension-catalog\n".to_owned() + &usage()
+                            );
+                        }
+                    }
+                    "--extension" => {
+                        if selected_extensions.len() == MAX_ENABLED_PROCESS_EXTENSIONS {
+                            return Err(format!(
+                                "at most {MAX_ENABLED_PROCESS_EXTENSIONS} extensions may be selected"
+                            ));
+                        }
+                        selected_extensions.push(value.clone());
+                    }
+                    _ => unreachable!(),
+                }
+                index += 2;
+            }
+            _ => return Err(usage()),
+        }
     }
+
+    let extensions = match (extension_catalog, selected_extensions.is_empty()) {
+        (None, true) => ResolvedExtensionCatalog::default(),
+        (None, false) => {
+            return Err("--extension requires --extension-catalog".into());
+        }
+        (Some(_), true) => {
+            return Err("--extension-catalog requires at least one --extension".into());
+        }
+        (Some(catalog), false) => load_process_extension_catalog(&catalog, &selected_extensions)?,
+    };
+    Ok(InspectOptions {
+        db: db.ok_or_else(usage)?,
+        extensions,
+    })
+}
+
+fn load_process_extension_catalog(
+    path: &std::path::Path,
+    selected_ids: &[String],
+) -> Result<ResolvedExtensionCatalog, String> {
+    if selected_ids.is_empty() || selected_ids.len() > MAX_ENABLED_PROCESS_EXTENSIONS {
+        return Err(format!(
+            "select 1 to {MAX_ENABLED_PROCESS_EXTENSIONS} process extensions"
+        ));
+    }
+    let mut selected = Vec::with_capacity(selected_ids.len());
+    let mut selected_set = BTreeSet::new();
+    for selected_id in selected_ids {
+        let id = ExtensionId::parse(selected_id.clone())
+            .map_err(|_| "invalid extension plugin ID in selection".to_owned())?;
+        if !selected_set.insert(id.clone()) {
+            return Err(format!("duplicate extension selection: {selected_id}"));
+        }
+        selected.push(id);
+    }
+
+    let catalog_path = std::fs::canonicalize(path)
+        .map_err(|_| "cannot resolve extension catalog path".to_owned())?;
+    let file = File::open(&catalog_path).map_err(|_| "cannot open extension catalog".to_owned())?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| "cannot inspect extension catalog".to_owned())?;
+    if !metadata.is_file() {
+        return Err("extension catalog must be a regular file".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PLUGIN_CATALOG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "cannot read extension catalog".to_owned())?;
+    if bytes.len() as u64 > MAX_PLUGIN_CATALOG_BYTES {
+        return Err("extension catalog exceeds the 64 KiB limit".into());
+    }
+    let catalog: ProcessExtensionCatalogFile = serde_json::from_slice(&bytes)
+        .map_err(|_| "extension catalog is invalid JSON".to_owned())?;
+    if catalog.version != 1
+        || catalog.extensions.is_empty()
+        || catalog.extensions.len() > MAX_PROCESS_EXTENSION_CATALOG_ENTRIES
+    {
+        return Err("unsupported or invalid extension catalog size/version".into());
+    }
+
+    let base = catalog_path
+        .parent()
+        .ok_or_else(|| "extension catalog has no parent directory".to_owned())?;
+    let selected_strings = selected
+        .iter()
+        .map(|id| id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut entries = BTreeMap::new();
+    let mut seen_ids = BTreeSet::new();
+    for entry in catalog.extensions {
+        let plugin_id = ExtensionId::parse(entry.plugin_id.clone())
+            .map_err(|_| "extension catalog contains an invalid plugin ID".to_owned())?;
+        if !seen_ids.insert(plugin_id.clone()) {
+            return Err(format!(
+                "extension catalog contains duplicate plugin ID: {}",
+                plugin_id.as_str()
+            ));
+        }
+        if entry.protocol != 1 {
+            return Err(format!(
+                "unsupported process extension protocol for {}",
+                plugin_id.as_str()
+            ));
+        }
+        if entry.sha256.len() != 64
+            || !entry
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(format!(
+                "invalid SHA-256 for process extension {}",
+                plugin_id.as_str()
+            ));
+        }
+
+        let features = entry.features.iter().cloned().collect::<BTreeSet<_>>();
+        if features.len() != entry.features.len()
+            || !features.contains("capability/1")
+            || features
+                .iter()
+                .any(|feature| !matches!(feature.as_str(), "capability/1" | "ui-contribution/1"))
+        {
+            return Err(format!(
+                "invalid process extension features for {}",
+                plugin_id.as_str()
+            ));
+        }
+
+        let grants = entry.grants.iter().cloned().collect::<BTreeSet<_>>();
+        if grants.len() != entry.grants.len()
+            || grants.iter().any(|grant| {
+                !matches!(
+                    grant.as_str(),
+                    "usage" | "message-role" | "tool" | "check" | "lifecycle" | "diagnostic"
+                )
+            })
+        {
+            return Err(format!(
+                "invalid process extension grants for {}",
+                plugin_id.as_str()
+            ));
+        }
+        if entry.executable.as_os_str().is_empty()
+            || entry.executable.to_string_lossy().len() > 4_096
+        {
+            return Err(format!(
+                "invalid executable path for process extension {}",
+                plugin_id.as_str()
+            ));
+        }
+        let executable = if entry.executable.is_absolute() {
+            entry.executable
+        } else {
+            base.join(entry.executable)
+        };
+        if !executable.is_absolute() || executable.to_string_lossy().len() > 4_096 {
+            return Err(format!(
+                "invalid executable path for process extension {}",
+                plugin_id.as_str()
+            ));
+        }
+
+        if selected_strings.contains(plugin_id.as_str()) {
+            let executable = std::fs::canonicalize(&executable).map_err(|_| {
+                format!(
+                    "cannot resolve executable for process extension {}",
+                    plugin_id.as_str()
+                )
+            })?;
+            let metadata = std::fs::metadata(&executable).map_err(|_| {
+                format!(
+                    "cannot inspect executable for process extension {}",
+                    plugin_id.as_str()
+                )
+            })?;
+            if !metadata.is_file() || metadata.len() > MAX_PROCESS_EXTENSION_ARTIFACT_BYTES {
+                return Err(format!(
+                    "executable for process extension {} must be a regular file no larger than 64 MiB",
+                    plugin_id.as_str()
+                ));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o111 == 0 {
+                    return Err(format!(
+                        "executable for process extension {} is not executable",
+                        plugin_id.as_str()
+                    ));
+                }
+            }
+            entries.insert(
+                plugin_id.clone(),
+                ResolvedProcessExtension {
+                    plugin_id,
+                    executable,
+                    sha256: entry.sha256,
+                    protocol: entry.protocol,
+                    features,
+                    grants,
+                },
+            );
+        }
+    }
+
+    let mut extensions = Vec::with_capacity(selected.len());
+    for id in selected {
+        let extension = entries.remove(&id).ok_or_else(|| {
+            format!(
+                "selected extension is not present in catalog: {}",
+                id.as_str()
+            )
+        })?;
+        extensions.push(extension);
+    }
+    Ok(ResolvedExtensionCatalog { extensions })
 }
 
 fn parse_query_options(args: &[String]) -> Result<HistoryQueryOptions, String> {
@@ -817,7 +1101,7 @@ fn parse_ingest_options(
 }
 
 fn usage() -> String {
-    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> | agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>] | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm service install --config <json-path> --db <path> [--interval-ms <100..60000>] | agenturm service status | agenturm service uninstall | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
+    "usage: agenturm [--help|--version|status] | agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...] | agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>] | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm service install --config <json-path> --db <path> [--interval-ms <100..60000>] | agenturm service status | agenturm service uninstall | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
 }
 
 pub fn execute_inspect(db_path: &std::path::Path) -> Result<Snapshot, String> {
@@ -826,9 +1110,39 @@ pub fn execute_inspect(db_path: &std::path::Path) -> Result<Snapshot, String> {
     Ok(app.refresh_history_query(&store, ObservationQuery::latest(INSPECT_PAGE_SIZE)))
 }
 
-pub fn execute_inspect_ui(db_path: &std::path::Path) -> Result<(), String> {
-    let store = Store::open(db_path).map_err(|error| format!("open store failed: {error}"))?;
+pub fn execute_inspect_ui(options: &InspectOptions) -> Result<(), String> {
     let mut app = AgenturmApp::default_composition();
+    for extension in &options.extensions.extensions {
+        verify_extension_artifact(&extension.executable, &extension.sha256)?;
+        let grants = extension
+            .grants
+            .iter()
+            .map(|grant| match grant.as_str() {
+                "usage" => Ok(ExtensionDataGrant::Usage),
+                "message-role" => Ok(ExtensionDataGrant::MessageRole),
+                "tool" => Ok(ExtensionDataGrant::Tool),
+                "check" => Ok(ExtensionDataGrant::Check),
+                "lifecycle" => Ok(ExtensionDataGrant::Lifecycle),
+                "diagnostic" => Ok(ExtensionDataGrant::Diagnostic),
+                _ => Err(format!(
+                    "unsupported data grant for {}",
+                    extension.plugin_id.as_str()
+                )),
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let process_extension =
+            ProcessObservationExtension::new(ProcessObservationExtensionConfig {
+                plugin_id: extension.plugin_id.clone(),
+                executable: extension.executable.clone(),
+                sha256: extension.sha256.clone(),
+                features: extension.features.iter().cloned().collect(),
+                grants,
+            })?;
+        app.register_observation_extension(extension.plugin_id.clone(), process_extension)
+            .map_err(|error| error.to_string())?;
+    }
+    let store = Store::open_read_only(&options.db)
+        .map_err(|error| format!("open store failed: {error}"))?;
     let snapshot = app.refresh_history_query(&store, ObservationQuery::latest(INSPECT_PAGE_SIZE));
     agenturm_ui::run_with_history(snapshot, |before| {
         Ok(Some(app.refresh_history_query(
@@ -1695,7 +2009,7 @@ pub fn render(command: Command) -> String {
             "Agenturm · Rust application (early composition shell)\n",
             "\n",
             "Usage: agenturm [--help|--version|status]\n",
-            "       agenturm inspect --db <path>\n",
+            "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
             "       agenturm collect --config <json-path> --db <path>\n",
             "       agenturm collect --config <json-path> --db <path> --watch [--interval-ms <100..60000>]\n",
@@ -2004,7 +2318,10 @@ mod tests {
         );
         assert_eq!(
             parse_command(&["inspect".into(), "--db".into(), "./state.sqlite".into()]).unwrap(),
-            Command::Inspect(PathBuf::from("./state.sqlite"))
+            Command::Inspect(InspectOptions {
+                db: PathBuf::from("./state.sqlite"),
+                extensions: ResolvedExtensionCatalog::default(),
+            })
         );
         assert_eq!(
             parse_command(&["query".into(), "--db".into(), "./state.sqlite".into()]).unwrap(),
@@ -2167,6 +2484,261 @@ mod tests {
         assert!(parse_command(&["inspect".into()]).is_err());
         assert!(parse_command(&["inspect".into(), "--db".into(), String::new()]).is_err());
         assert!(parse_command(&["unknown".into()]).is_err());
+    }
+
+    #[cfg(unix)]
+    fn extension_catalog_test_directory() -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-app-extension-catalog-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    #[cfg(unix)]
+    fn extension_catalog_entry(plugin_id: &str, executable: &str) -> serde_json::Value {
+        serde_json::json!({
+            "plugin_id": plugin_id,
+            "executable": executable,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "protocol": 1,
+            "features": ["capability/1", "ui-contribution/1"],
+            "grants": ["usage", "message-role"]
+        })
+    }
+
+    #[cfg(unix)]
+    fn write_extension_catalog(path: &std::path::Path, value: &serde_json::Value) {
+        std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inspect_resolves_only_selected_extension_entries_before_store_open() {
+        let directory = extension_catalog_test_directory();
+        let executable = directory.join("extension-fixture");
+        std::fs::copy("/bin/true", &executable).unwrap();
+        let metadata = std::fs::metadata(&executable).unwrap();
+        let mut permissions = metadata.permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&executable, permissions).unwrap();
+
+        let catalog_path = directory.join("extensions.json");
+        let catalog = serde_json::json!({
+            "version": 1,
+            "extensions": [
+                extension_catalog_entry("example.prompt-signals", "extension-fixture"),
+                extension_catalog_entry("example.not-selected", "missing/unselected-plugin")
+            ]
+        });
+        write_extension_catalog(&catalog_path, &catalog);
+
+        let options = parse_command(&[
+            "inspect".into(),
+            "--extension".into(),
+            "example.prompt-signals".into(),
+            "--extension-catalog".into(),
+            catalog_path.to_string_lossy().into_owned(),
+            "--db".into(),
+            "not-created.sqlite".into(),
+        ])
+        .unwrap();
+        let Command::Inspect(options) = options else {
+            panic!("inspect options expected");
+        };
+        assert_eq!(options.db, PathBuf::from("not-created.sqlite"));
+        assert_eq!(options.extensions.extensions.len(), 1);
+        let extension = &options.extensions.extensions[0];
+        assert_eq!(extension.plugin_id.as_str(), "example.prompt-signals");
+        assert_eq!(
+            extension.executable,
+            std::fs::canonicalize(executable).unwrap()
+        );
+        assert_eq!(extension.sha256, "0".repeat(64));
+        assert_eq!(extension.protocol, 1);
+        assert_eq!(
+            extension.features,
+            BTreeSet::from(["capability/1".into(), "ui-contribution/1".into()])
+        );
+        assert_eq!(
+            extension.grants,
+            BTreeSet::from(["usage".into(), "message-role".into()])
+        );
+
+        let database = directory.join("must-not-open.sqlite");
+        let error = execute_inspect_ui(&InspectOptions {
+            db: database.clone(),
+            extensions: options.extensions,
+        })
+        .unwrap_err();
+        assert!(error.contains("SHA-256 mismatch"));
+        assert!(!database.exists());
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inspect_requires_catalog_selection_and_rejects_duplicate_unknown_and_excess_ids() {
+        let directory = extension_catalog_test_directory();
+        let catalog_path = directory.join("extensions.json");
+        let catalog = serde_json::json!({
+            "version": 1,
+            "extensions": [extension_catalog_entry("example.one", "missing-plugin")]
+        });
+        write_extension_catalog(&catalog_path, &catalog);
+        let catalog_arg = catalog_path.to_string_lossy().into_owned();
+
+        assert!(
+            parse_command(&[
+                "inspect".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--extension".into(),
+                "example.one".into(),
+            ])
+            .unwrap_err()
+            .contains("requires --extension-catalog")
+        );
+        assert!(
+            parse_command(&[
+                "inspect".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--extension-catalog".into(),
+                catalog_arg.clone(),
+            ])
+            .unwrap_err()
+            .contains("requires at least one --extension")
+        );
+        assert!(
+            parse_command(&[
+                "inspect".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--extension-catalog".into(),
+                catalog_arg.clone(),
+                "--extension".into(),
+                "example.one".into(),
+                "--extension".into(),
+                "example.one".into(),
+            ])
+            .unwrap_err()
+            .contains("duplicate extension selection")
+        );
+        assert!(
+            parse_command(&[
+                "inspect".into(),
+                "--db".into(),
+                "state.sqlite".into(),
+                "--extension-catalog".into(),
+                catalog_arg.clone(),
+                "--extension".into(),
+                "example.unknown".into(),
+            ])
+            .unwrap_err()
+            .contains("not present in catalog")
+        );
+
+        let mut too_many = vec![
+            "inspect".into(),
+            "--db".into(),
+            "state.sqlite".into(),
+            "--extension-catalog".into(),
+            catalog_arg,
+        ];
+        for _ in 0..=MAX_ENABLED_PROCESS_EXTENSIONS {
+            too_many.extend(["--extension".into(), "example.one".into()]);
+        }
+        assert!(
+            parse_command(&too_many)
+                .unwrap_err()
+                .contains("at most 4 extensions")
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extension_catalog_rejects_bad_schema_declarations_and_oversized_files() {
+        let directory = extension_catalog_test_directory();
+        let executable = directory.join("plugin");
+        std::fs::copy("/bin/true", &executable).unwrap();
+        let catalog_path = directory.join("extensions.json");
+        let valid_entry = extension_catalog_entry("example.selected", "plugin");
+        let selected = vec!["example.selected".to_owned()];
+
+        let invalid_catalogs = [
+            serde_json::json!({"version":2,"extensions":[valid_entry.clone()]}),
+            serde_json::json!({"version":1,"extensions":[valid_entry.clone(),valid_entry.clone()]}),
+            serde_json::json!({"version":1,"extensions":[{
+                "plugin_id":"example.selected","executable":"plugin","sha256":"ABCDEF",
+                "protocol":1,"features":["capability/1"],"grants":[]
+            }]}),
+            serde_json::json!({"version":1,"extensions":[{
+                "plugin_id":"example.selected","executable":"plugin","sha256":"0000000000000000000000000000000000000000000000000000000000000000",
+                "protocol":2,"features":["capability/1"],"grants":[]
+            }]}),
+            serde_json::json!({"version":1,"extensions":[{
+                "plugin_id":"example.selected","executable":"plugin","sha256":"0000000000000000000000000000000000000000000000000000000000000000",
+                "protocol":1,"features":["capability/1","unknown/1"],"grants":[]
+            }]}),
+            serde_json::json!({"version":1,"extensions":[{
+                "plugin_id":"example.selected","executable":"plugin","sha256":"0000000000000000000000000000000000000000000000000000000000000000",
+                "protocol":1,"features":["capability/1"],"grants":["raw-content"]
+            }]}),
+            serde_json::json!({"version":1,"extensions":[{
+                "plugin_id":"example.selected","executable":"plugin","sha256":"0000000000000000000000000000000000000000000000000000000000000000",
+                "protocol":1,"features":["capability/1","capability/1"],"grants":[]
+            }]}),
+            serde_json::json!({"version":1,"extensions":[{
+                "plugin_id":"example.selected","executable":"plugin","sha256":"0000000000000000000000000000000000000000000000000000000000000000",
+                "protocol":1,"features":["capability/1"],"grants":["usage","usage"]
+            }]}),
+        ];
+        for catalog in invalid_catalogs {
+            write_extension_catalog(&catalog_path, &catalog);
+            assert!(load_process_extension_catalog(&catalog_path, &selected).is_err());
+        }
+
+        write_extension_catalog(
+            &catalog_path,
+            &serde_json::json!({
+                "version": 1,
+                "extensions": [valid_entry],
+                "unexpected": true
+            }),
+        );
+        assert!(load_process_extension_catalog(&catalog_path, &selected).is_err());
+
+        std::fs::write(
+            &catalog_path,
+            vec![b' '; MAX_PLUGIN_CATALOG_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert!(
+            load_process_extension_catalog(&catalog_path, &selected)
+                .unwrap_err()
+                .contains("64 KiB limit")
+        );
+
+        let over_count = serde_json::json!({
+            "version": 1,
+            "extensions": (0..=MAX_PROCESS_EXTENSION_CATALOG_ENTRIES)
+                .map(|index| extension_catalog_entry(&format!("example.plugin-{index}"), "plugin"))
+                .collect::<Vec<_>>()
+        });
+        write_extension_catalog(&catalog_path, &over_count);
+        assert!(load_process_extension_catalog(&catalog_path, &selected).is_err());
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

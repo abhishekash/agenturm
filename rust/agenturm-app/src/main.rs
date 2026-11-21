@@ -14,8 +14,8 @@ fn main() -> ExitCode {
     };
 
     match command {
-        Command::Inspect(db) => {
-            if let Err(message) = execute_inspect_ui(&db) {
+        Command::Inspect(options) => {
+            if let Err(message) = execute_inspect_ui(&options) {
                 eprintln!("inspect failed: {message}");
                 return ExitCode::FAILURE;
             }
