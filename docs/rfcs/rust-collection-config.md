@@ -1,6 +1,6 @@
 # Rust configured harness collection
 
-The Rust CLI can load an explicit version 1 JSON configuration and poll up to
+The Rust CLI can load version 1 or version 2 JSON configuration and poll up to
 16 process adapters in one kernel refresh:
 
 ```sh
@@ -18,9 +18,10 @@ agenturm collect --config ./agenturm-sources.json --db ./agenturm.sqlite --watch
 supervised adapter processes. Configuration is loaded once at startup; restart
 the command to apply edits.
 
-The configuration enumerates plugin identities and executable paths. Paths may
-be absolute or relative to the configuration file's directory. Relative paths
-are resolved before any child process starts.
+Version 1 enumerates plugin identities and executable paths directly. Version 2
+selects plugin identities from a separate, explicit catalog. Configuration and
+catalog paths may be absolute or relative to the containing file's directory.
+Relative paths are resolved before any child process starts.
 Source IDs must be unique. Existing adapter and source-root paths are
 canonicalized when checking ownership; missing paths use lexical normalization.
 The same normalized adapter plus source-root pair cannot be listed twice under
@@ -47,6 +48,44 @@ different IDs.
 }
 ```
 
+Version 2 keeps executable paths and integrity pins in a separate catalog. The
+catalog is user-managed JSON; it is not downloaded or discovered automatically.
+Each entry declares the plugin protocol, required source-adapter features, and
+a lower-case SHA-256 pin. Every catalog artifact is checked before the SQLite
+store is opened, then the selected adapter is checked again before each
+supervised host launch. The host handshake must match the catalog's declared
+feature set.
+
+```json
+{
+  "version": 2,
+  "plugin_host": "/opt/agenturm/bin/agenturm-plugin-host",
+  "plugin_catalog": "agenturm-plugins.json",
+  "sources": [
+    {
+      "plugin_id": "example.rust-pi-harness",
+      "source_root": "/home/alex/.pi/agent/sessions",
+      "source_id": "harness.pi"
+    }
+  ]
+}
+```
+
+```json
+{
+  "version": 1,
+  "plugins": [
+    {
+      "plugin_id": "example.rust-pi-harness",
+      "adapter": "/opt/agenturm/bin/agenturm-pi-harness",
+      "sha256": "<64 lowercase hexadecimal characters>",
+      "protocol": 1,
+      "features": ["source-adapter/1", "configured-root/1"]
+    }
+  ]
+}
+```
+
 Each collection cycle performs one bounded poll per configured source. The
 kernel validates each source batch, writes it to the Rust SQLite store, and ACKs
 only after the durable commit. A startup or poll failure for one source is reported in the
@@ -55,14 +94,15 @@ startup is retried at most once per second until it starts or the collector stop
 the command exit nonzero; successful sources still retain their committed
 observations. A durable history read failure is reported as a storage failure
 and also makes the command exit nonzero, even if source commits and ACKs already
-succeeded. The JSON file is a user-managed configuration input. Watch mode
-runs in the foreground; the command does not install an OS service, scan plugin
-directories, or load in-process native libraries.
+succeeded. The JSON files are user-managed configuration inputs. Watch mode
+runs in the foreground; the command does not scan plugin directories or load
+in-process native libraries. Catalog pins detect artifact changes but do not
+sandbox adapters: each child runs with the same OS user privileges as Agenturm.
 
 For this first configured command, adapters must emit Agenturm's shared bounded
 source protocol, and the app installs `BundledObservationDecoder`. It stores token usage and privacy-safe
 tool, lifecycle, check and message-role observations (category/result/operation identity,
 state/reason code, check category/result, and user/assistant role), while counting other validated facts without a stored projection. Message bodies and content are rejected by the typed projection.
 The runtime API accepts injected `SourceBatchDecoder` implementations for other
-typed fact projections; registering those decoders in a general plugin catalog
-is a later step.
+typed fact projections. The catalog selects process adapters for the shared
+source protocol; it does not dynamically load new decoders or capabilities.

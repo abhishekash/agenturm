@@ -19,6 +19,90 @@ fn temporary_directory() -> PathBuf {
 
 #[cfg(unix)]
 #[test]
+fn version_two_catalog_runs_a_pinned_real_pi_process() {
+    let (Ok(plugin_host), Ok(pi_adapter)) = (
+        std::env::var("AGENTURM_RUNTIME_PLUGIN_HOST"),
+        std::env::var("AGENTURM_RUNTIME_PI_ADAPTER"),
+    ) else {
+        eprintln!("skipping real catalog test: set plugin host and Pi adapter paths");
+        return;
+    };
+    let hash = Command::new("sha256sum")
+        .arg(&pi_adapter)
+        .output()
+        .expect("hash Pi adapter")
+        .stdout;
+    let sha256 = String::from_utf8(hash)
+        .expect("sha256sum output is UTF-8")
+        .split_whitespace()
+        .next()
+        .expect("sha256sum emits a digest")
+        .to_owned();
+    let root = temporary_directory();
+    fs::create_dir_all(&root).expect("create fixture directory");
+    let source = root.join("pi.jsonl");
+    fs::write(
+        &source,
+        concat!(
+            "{\"type\":\"session\",\"id\":\"catalog-session\"}\n",
+            "{\"type\":\"message\",\"id\":\"assistant-1\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\",\"usage\":{\"input\":8,\"output\":3},\"content\":[]}}\n"
+        ),
+    )
+    .expect("write Pi fixture");
+    let catalog_path = root.join("plugins.json");
+    let catalog = serde_json::json!({
+        "version": 1,
+        "plugins": [{
+            "plugin_id": "example.rust-pi-harness",
+            "adapter": pi_adapter,
+            "sha256": sha256,
+            "protocol": 1,
+            "features": ["source-adapter/1", "configured-root/1"]
+        }]
+    });
+    fs::write(&catalog_path, serde_json::to_vec(&catalog).unwrap()).expect("write plugin catalog");
+    let config_path = root.join("sources.json");
+    let config = serde_json::json!({
+        "version": 2,
+        "plugin_host": plugin_host,
+        "plugin_catalog": "plugins.json",
+        "sources": [{
+            "plugin_id": "example.rust-pi-harness",
+            "source_root": source,
+            "source_id": "harness.pi"
+        }]
+    });
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).expect("write config");
+    let database = root.join("agenturm.sqlite");
+    let output = Command::new(env!("CARGO_BIN_EXE_agenturm"))
+        .args([
+            "collect",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--db",
+            database.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run catalog-backed collection");
+    assert!(
+        output.status.success(),
+        "catalog-backed process failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("harness.pi: committed 3 observation(s)")
+    );
+    let snapshot = execute_inspect(&database).expect("reopen catalog-backed history");
+    assert!(snapshot.observations.iter().any(|observation| {
+        observation.identity.session_id.as_deref() == Some("catalog-session")
+    }));
+    drop(snapshot);
+    fs::remove_dir_all(root).expect("remove fixture directory");
+}
+
+#[cfg(unix)]
+#[test]
 fn configured_watch_retries_startup_failure_and_shuts_down_on_interrupt() {
     let (Ok(plugin_host), Ok(pi_adapter)) = (
         std::env::var("AGENTURM_RUNTIME_PLUGIN_HOST"),
