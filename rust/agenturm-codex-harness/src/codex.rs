@@ -28,6 +28,35 @@ pub(crate) struct Context {
     pub session_id: String,
     pub worker_id: String,
     pub turn_id: String,
+    parent_thread: Option<String>,
+    header_bytes: usize,
+    in_copied_context: bool,
+}
+
+impl Context {
+    fn copied_checkpoint(&self) -> String {
+        // Checkpoints may be longer than native IDs. Keep this marker outside
+        // the native turn ID length limit to distinguish older checkpoints.
+        format!("fork-copy:{:0>200}", self.session_id)
+    }
+
+    pub(crate) fn checkpoint(&self) -> String {
+        if self.in_copied_context {
+            self.copied_checkpoint()
+        } else {
+            self.turn_id.clone()
+        }
+    }
+
+    pub(crate) fn restore(&mut self, checkpoint: &str) {
+        self.in_copied_context =
+            self.parent_thread.is_some() && checkpoint == self.copied_checkpoint();
+        self.turn_id = if self.in_copied_context {
+            String::new()
+        } else {
+            checkpoint.to_owned()
+        };
+    }
 }
 
 pub(crate) fn header_identity(raw: &[u8]) -> Result<Context> {
@@ -58,6 +87,14 @@ pub(crate) fn header_identity(raw: &[u8]) -> Result<Context> {
             String::new()
         },
         turn_id: String::new(),
+        parent_thread: payload
+            .get("source")
+            .and_then(|source| source.pointer("/subagent/thread_spawn/parent_thread_id"))
+            .and_then(Value::as_str)
+            .filter(|parent| identifier(parent) && *parent != thread)
+            .map(str::to_owned),
+        header_bytes: raw.len(),
+        in_copied_context: false,
     })
 }
 
@@ -377,7 +414,15 @@ pub(crate) fn translate_line(
     if kind == "session_meta" {
         let header = header_identity(raw)?;
         if header.session_id != context.session_id || header.worker_id != context.worker_id {
-            return Err(invalid("Codex session identity changed inside one file"));
+            // A forked worker can embed the parent's rollout immediately
+            // after its own header. Preserve the worker's original identity.
+            if offset != context.header_bytes as u64
+                || context.parent_thread.as_deref() != Some(&header.session_id)
+            {
+                return Err(invalid("Codex session identity changed inside one file"));
+            }
+            next.in_copied_context = true;
+            return Ok((Vec::new(), next));
         }
         let payload = &row["payload"];
         if offset == 0
@@ -398,8 +443,27 @@ pub(crate) fn translate_line(
         }
         return Ok((Vec::new(), next));
     }
-    let time_ns = stamp(&row)?;
     let base = format!("codex:{origin}:{offset}");
+    if context.in_copied_context {
+        let payload = &row["payload"];
+        if kind == "event_msg"
+            && payload["type"] == "thread_settings_applied"
+            && payload["thread_id"].as_str() == Some(context.session_id.as_str())
+        {
+            next.in_copied_context = false;
+            return Ok((
+                vec![diagnostic(
+                    format!("{base}:inherited"),
+                    &stamp(&row)?,
+                    "codex_inherited_prefix",
+                    "info",
+                )],
+                next,
+            ));
+        }
+        return Ok((Vec::new(), next));
+    }
+    let time_ns = stamp(&row)?;
     let payload = row.get("payload").ok_or("Codex row payload missing")?;
     if !payload.is_object() {
         return Err(invalid("Codex row payload is not an object"));
@@ -952,6 +1016,48 @@ mod tests {
         assert!(next.turn_id.is_empty());
         assert!(facts[0]["identity"].get("turn_id").is_none());
         assert!(!serde_json::to_string(&facts).unwrap().contains("private"));
+    }
+
+    #[test]
+    fn worker_resumes_after_copied_parent_context() {
+        let header = br#"{"type":"session_meta","payload":{"id":"worker","session_id":"parent","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}"#;
+        let parent = br#"{"type":"session_meta","payload":{"id":"parent"}}"#;
+        let context = header_identity(header).unwrap();
+        let (facts, copied) =
+            translate_line(parent, &context, "origin", header.len() as u64).unwrap();
+        assert!(facts.is_empty());
+        assert!(translate_line(parent, &context, "origin", header.len() as u64 + 1).is_err());
+        let mut resumed = header_identity(header).unwrap();
+        resumed.restore(&copied.checkpoint());
+
+        let copied_start = row(
+            "event_msg",
+            json!({"type":"task_started","turn_id":"parent-turn"}),
+        );
+        let wrong_marker = row(
+            "event_msg",
+            json!({"type":"thread_settings_applied","thread_id":"parent"}),
+        );
+        for inherited in [&copied_start, &wrong_marker] {
+            let (facts, state) = translate_line(inherited, &resumed, "origin", 1_000).unwrap();
+            assert!(facts.is_empty());
+            assert_eq!(state, resumed);
+        }
+        let worker_marker = row(
+            "event_msg",
+            json!({"type":"thread_settings_applied","thread_id":"worker"}),
+        );
+        let (facts, active) = translate_line(&worker_marker, &resumed, "origin", 2_000).unwrap();
+        assert_eq!(facts[0]["payload"]["code"], "codex_inherited_prefix");
+
+        let worker_start = row(
+            "event_msg",
+            json!({"type":"task_started","turn_id":"worker-turn"}),
+        );
+        let (facts, active) = translate_line(&worker_start, &active, "origin", 3_000).unwrap();
+        assert_eq!(facts[0]["identity"]["session_id"], "worker");
+        assert_eq!(facts[0]["identity"]["turn_id"], "worker-turn");
+        assert_eq!(active.checkpoint(), "worker-turn");
     }
 
     #[test]
