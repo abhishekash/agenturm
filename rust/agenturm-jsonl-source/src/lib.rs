@@ -24,7 +24,7 @@ const MAX_SCAN: u64 = 1024 * 1024;
 const MAX_VERIFIED_PREFIX: u64 = 512 * 1024 * 1024;
 // Match observatory.plugin_wire.MAX_STRUCTURAL_TOKENS for the serialized batch.
 pub const MAX_STRUCTURAL_TOKENS: usize = 8192;
-pub const MAX_CURSOR: usize = 800;
+pub const MAX_CURSOR: usize = agenturm_source_process::MAX_CURSOR_BYTES;
 // The encoded source cursor adds at most 261 bytes around its adapter
 // checkpoint (three u64 fields, three SHA-256 digests and separators).
 const MAX_CHECKPOINT: usize = MAX_CURSOR - 261;

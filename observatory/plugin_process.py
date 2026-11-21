@@ -21,9 +21,9 @@ from typing import BinaryIO, Callable
 from .plugin_batch_handlers import BatchHandlerRegistry, DEFAULT_BATCH_HANDLERS
 from .plugin_frames import FrameError, MAX_FRAME_BYTES, read_frame, write_frame
 from .plugin_manifest import PluginManifest, plan_activation
-from .plugin_wire import (MAX_BATCH_RECORDS, MAX_CONTROL_FRAME_BYTES, MAX_CURSOR_CHARS,
+from .plugin_wire import (MAX_BATCH_RECORDS, MAX_CONTROL_FRAME_BYTES,
                           MAX_DISCOVERY_MEMBERS, MEMBER_ID, PROTOCOL_MAJOR, PollBatch, ProtocolError,
-                          ContentPollBatch, decode_message, encode_message,
+                          ContentPollBatch, _cursor_text, _cursor_valid, decode_message, encode_message,
                           validate_hello_ack)
 
 
@@ -285,8 +285,7 @@ class PluginProcess:
             raise ProtocolError("plugin is not running")
         if self.pending is not None:
             raise ProtocolError("previous batch requires durable acknowledgment")
-        if not isinstance(cursor, str) or len(cursor) > MAX_CURSOR_CHARS:
-            raise ValueError("invalid resume cursor")
+        _cursor_text(cursor, "resume cursor", allow_empty=True)
         if type(max_records) is not int or not 1 <= max_records <= MAX_BATCH_RECORDS:
             raise ValueError("invalid poll record budget")
         request = {"type": "poll", "protocol": PROTOCOL_MAJOR,
@@ -295,8 +294,7 @@ class PluginProcess:
         if "source-discovery/1" in self.required_features:
             if (not isinstance(members, dict) or len(members) > MAX_DISCOVERY_MEMBERS
                     or any(not isinstance(key, str) or not MEMBER_ID.fullmatch(key)
-                           or not isinstance(value, str) or len(value) > MAX_CURSOR_CHARS
-                           or any(ord(char) < 32 or ord(char) == 127 for char in value)
+                           or not _cursor_valid(value, allow_empty=True)
                            for key, value in members.items())):
                 raise ValueError("invalid discovery checkpoint snapshot")
             request["members"] = members
@@ -310,8 +308,10 @@ class PluginProcess:
                 raise ProtocolError("host batch validator returned invalid result")
             if batch.source_id != self.source_id:
                 raise ProtocolError("host batch validator returned another source")
-            if not isinstance(batch.cursor, str) or len(batch.cursor) > MAX_CURSOR_CHARS:
-                raise ProtocolError("host batch validator returned invalid cursor")
+            try:
+                _cursor_text(batch.cursor, "host batch cursor", allow_empty=True)
+            except ProtocolError as exc:
+                raise ProtocolError("host batch validator returned invalid cursor") from exc
             if not isinstance(batch.records, tuple):
                 raise ProtocolError("host batch validator returned invalid records")
             if len(batch.records) > max_records:

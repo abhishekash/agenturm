@@ -130,7 +130,11 @@ class DiscoveryCheckpointTests(unittest.TestCase):
     def test_corrupt_or_excess_checkpoint_rows_are_bounded(self):
         with self.store._connect() as db:
             db.execute("INSERT INTO plugin_source_member_cursor_v1 VALUES(?,?,?)",
-                       (SOURCE, MEMBER, "x" * 801))
+                       (SOURCE, MEMBER, "x" * 800))
+        self.assertEqual(member_cursors(self.store, self.lease), {MEMBER: "x" * 800})
+        with self.store._connect() as db:
+            db.execute("UPDATE plugin_source_member_cursor_v1 SET cursor=? WHERE source_id=?",
+                       ("x" * 801, SOURCE))
         with self.assertRaisesRegex(ProtocolError, "checkpoint limit"):
             member_cursors(self.store, self.lease)
         with self.store._connect() as db:
