@@ -1085,6 +1085,8 @@ fn validate(request: &Request, allow_plugin_facts: bool) -> Result<()> {
         };
         let payload_valid = if row.kind == "lifecycle" {
             lifecycle_payload(&row.payload_json)
+        } else if row.kind == "diagnostic" {
+            allow_plugin_facts && v2::diagnostic_payload_is_valid(&row.payload_json)
         } else {
             allow_plugin_facts
                 && fact_kind.is_some_and(|kind| v2::fact_payload_is_valid(kind, &row.payload_json))
@@ -1099,6 +1101,13 @@ fn validate(request: &Request, allow_plugin_facts: bool) -> Result<()> {
                         && row.native_turn_id.is_empty()
                         && row.native_operation_id.is_empty())
                         || !row.native_session_id.is_empty())
+            }
+            "diagnostic" => {
+                allow_plugin_facts
+                    && row.native_session_id.is_empty()
+                    && row.native_worker_id.is_empty()
+                    && row.native_turn_id.is_empty()
+                    && row.native_operation_id.is_empty()
             }
             _ => false,
         } && (row.kind == "tool" || row.native_operation_id.is_empty());
@@ -1261,7 +1270,7 @@ fn validate_active_source_history(
          OR EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 \
                    AND (revision<>0 OR member_id<>'' OR policy_epoch<>?2 \
                      OR (?6=0 AND kind<>'lifecycle') \
-                     OR (?6=1 AND kind NOT IN('lifecycle','message','tool','check','usage')))) \
+                     OR (?6=1 AND kind NOT IN('lifecycle','message','tool','check','usage','diagnostic')))) \
          OR EXISTS(SELECT 1 FROM plugin_session_projection_v1 p WHERE p.source_id=?1 \
                    AND (p.policy_epoch<>?2 OR p.source_dirty_seq>?3 OR NOT EXISTS(\
                        SELECT 1 FROM plugin_evidence_v1 e WHERE e.source_id=p.source_id \
@@ -1297,6 +1306,24 @@ fn validate_active_source_history(
         return Err(reject(
             "scratch source has private, unsupported, or orphan history",
         ));
+    }
+    let mut diagnostics = db.prepare(
+        "SELECT payload_json,native_session_id,native_worker_id,native_turn_id,native_operation_id \
+         FROM plugin_evidence_v1 WHERE source_id=?1 AND kind='diagnostic'",
+    )?;
+    let mut rows = diagnostics.query([source_id])?;
+    while let Some(row) = rows.next()? {
+        let payload: String = row.get(0)?;
+        let identities = [
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+        ];
+        let has_identity = identities.iter().any(|value| !value.is_empty());
+        if !allow_plugin_facts || has_identity || !v2::diagnostic_payload_is_valid(&payload) {
+            return Err(reject("scratch source has unsupported diagnostic history"));
+        }
     }
     let evidence_dirty: Option<i64> = db
         .query_row(
@@ -1950,6 +1977,100 @@ pub fn apply_activation_clone_policy_v2_json(path: &Path, input: &[u8]) -> Resul
     .map_err(Into::into)
 }
 
+/// Read-only, fixture-only access to source-scoped diagnostics on a marked
+/// detached Store clone. This route creates no schema objects and never opens
+/// a writable SQLite connection.
+pub fn read_activation_clone_diagnostic_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
+    let request = v2::Request::from_json(input)?;
+    let v2::Operation::ReadLastSourceDiagnostic { lease } = &request.operation else {
+        return Err(reject(
+            "diagnostic fixture accepts source diagnostic reads only",
+        ));
+    };
+    require_marked_activation_clone_path(path)?;
+    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    require_activation_clone_markers(&db)?;
+    let diagnostic = read_last_source_diagnostic(&db, lease)?;
+    let replay = request.replay_identity()?;
+    v2::Reply {
+        version: v2::VERSION,
+        request_id: request.request_id.clone(),
+        receiver_id: request.receiver_id.clone(),
+        request_digest: replay.digest,
+        result: v2::OperationResult::SourceDiagnosticRead(v2::SourceDiagnosticReadResult {
+            diagnostic,
+        }),
+    }
+    .to_json(&request)
+    .map_err(Into::into)
+}
+
+fn read_last_source_diagnostic(
+    db: &Connection,
+    lease: &v2::SourceLease,
+) -> Result<Option<v2::SourceDiagnostic>> {
+    let row: Option<(String, i64, i64, String, String, String, String)> = db
+        .query_row(
+            "SELECT e.payload_json,e.time_ns,e.revision,e.native_session_id, \
+                    e.native_worker_id,e.native_turn_id,e.native_operation_id \
+             FROM plugin_evidence_v1 e \
+             JOIN plugin_source_cursor_v1 c USING(source_id) \
+             WHERE e.source_id=?1 AND e.kind='diagnostic' \
+               AND e.policy_epoch=?2 AND c.policy_epoch=?2 \
+               AND c.receiver_id=?3 AND c.plugin_id=?4 AND c.generation=?5 \
+               AND c.capture_enabled=1 \
+             ORDER BY e.admitted_ns DESC,e.rowid DESC LIMIT 1",
+            params![
+                lease.source_id,
+                lease.policy_epoch,
+                lease.receiver_id,
+                lease.plugin_id,
+                lease.generation,
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(
+        |(payload_json, time_ns, revision, session, worker, turn, operation)| {
+            if time_ns < 0
+                || revision != 0
+                || !session.is_empty()
+                || !worker.is_empty()
+                || !turn.is_empty()
+                || !operation.is_empty()
+                || !v2::diagnostic_payload_is_valid(&payload_json)
+            {
+                return Err(reject("stored source diagnostic is invalid"));
+            }
+            let payload: serde_json::Value = serde_json::from_str(&payload_json)?;
+            let code = payload
+                .get("code")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| reject("stored source diagnostic is invalid"))?;
+            let severity = payload
+                .get("severity")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| reject("stored source diagnostic is invalid"))?;
+            Ok(v2::SourceDiagnostic {
+                code: code.to_owned(),
+                severity: severity.to_owned(),
+                time_ns: time_ns.to_string(),
+            })
+        },
+    )
+    .transpose()
+}
+
 fn apply_activation_clone_v2_json_inner(
     path: &Path,
     input: &[u8],
@@ -2304,6 +2425,9 @@ pub fn apply_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
                 cursor: receipt.cursor,
                 dirty_seq: receipt.dirty_seq,
             })
+        }
+        v2::Operation::ReadLastSourceDiagnostic { .. } => {
+            return Err(reject("scratch mode does not expose source diagnostics"));
         }
     };
     v2::Reply {

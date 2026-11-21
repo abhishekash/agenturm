@@ -68,6 +68,8 @@ pub enum Operation {
         expected_dirty_seq: i64,
         expected_capture_enabled: bool,
     },
+    /// Fixture-only, source-scoped read of the latest policy-current diagnostic.
+    ReadLastSourceDiagnostic { lease: SourceLease },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -138,6 +140,7 @@ pub enum BatchRecordKind {
     Tool,
     Check,
     Usage,
+    Diagnostic,
 }
 
 impl BatchRecordKind {
@@ -148,6 +151,7 @@ impl BatchRecordKind {
             Self::Tool => "tool",
             Self::Check => "check",
             Self::Usage => "usage",
+            Self::Diagnostic => "diagnostic",
         }
     }
 }
@@ -187,6 +191,21 @@ struct LifecyclePayload {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiagnosticPayload {
+    code: String,
+    severity: DiagnosticSeverity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum DiagnosticSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum LifecycleState {
     Started,
@@ -218,6 +237,21 @@ pub enum OperationResult {
     BatchAdmission(AdmissionResult),
     SourceRevoked(SourceRevokedResult),
     SourceCaptureSet(SourceCaptureSetResult),
+    SourceDiagnosticRead(SourceDiagnosticReadResult),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceDiagnosticReadResult {
+    pub diagnostic: Option<SourceDiagnostic>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceDiagnostic {
+    pub code: String,
+    pub severity: String,
+    pub time_ns: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -296,6 +330,26 @@ fn reason_code(value: &str) -> bool {
                 || byte.is_ascii_digit()
                 || matches!(byte, b'_' | b'.' | b'/' | b'-')
         })
+}
+
+fn diagnostic_code(value: &str) -> bool {
+    reason_code(value)
+}
+
+pub fn diagnostic_payload_is_valid(raw: &str) -> bool {
+    if raw.len() > 4096 {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    let Ok(typed) = serde_json::from_value::<DiagnosticPayload>(value.clone()) else {
+        return false;
+    };
+    typed.code != "possible_source_gap"
+        && diagnostic_code(&typed.code)
+        && sorted_json(&value).is_ok_and(|canonical| canonical == raw.as_bytes())
+        && serde_json::to_value(typed).is_ok_and(|roundtrip| roundtrip == value)
 }
 
 fn payload(raw: &str) -> bool {
@@ -621,6 +675,9 @@ impl Request {
                         BatchRecordKind::Usage => {
                             fact_payload_is_valid(FactKind::Usage, &row.payload_json)
                         }
+                        BatchRecordKind::Diagnostic => {
+                            diagnostic_payload_is_valid(&row.payload_json)
+                        }
                     };
                     let fact_identity_valid = match row.kind {
                         BatchRecordKind::Lifecycle => true,
@@ -630,6 +687,7 @@ impl Request {
                         BatchRecordKind::Usage => {
                             !has_identity || !row.native_session_id.is_empty()
                         }
+                        BatchRecordKind::Diagnostic => !has_identity,
                     } && (row.kind == BatchRecordKind::Tool
                         || row.native_operation_id.is_empty());
                     if !digest(&row.event_id_hash, 32)
@@ -688,6 +746,19 @@ impl Request {
                             || expected_dirty_seq.checked_add(1).is_none())
                 {
                     return Err(ContractError::Invalid("invalid v2 source capture update"));
+                }
+            }
+            Operation::ReadLastSourceDiagnostic { lease } => {
+                if lease.receiver_id != self.receiver_id
+                    || !identity(&lease.plugin_id, 256)
+                    || !identity(&lease.source_id, 256)
+                    || !digest(&lease.generation, 32)
+                    || lease.epoch <= 0
+                    || lease.policy_epoch <= 0
+                {
+                    return Err(ContractError::Invalid(
+                        "invalid v2 source diagnostic read lease",
+                    ));
                 }
             }
         }
@@ -868,6 +939,19 @@ impl Reply {
                                 != expected_dirty_seq.checked_add(1).unwrap_or_default()
                     }
                 }
+                (
+                    Operation::ReadLastSourceDiagnostic { .. },
+                    OperationResult::SourceDiagnosticRead(result),
+                ) => result.diagnostic.as_ref().is_some_and(|diagnostic| {
+                    !diagnostic_code(&diagnostic.code)
+                        || diagnostic.code == "possible_source_gap"
+                        || !matches!(diagnostic.severity.as_str(), "info" | "warning" | "error")
+                        || diagnostic.time_ns.parse::<i64>().is_err()
+                        || diagnostic
+                            .time_ns
+                            .parse::<i64>()
+                            .is_ok_and(|time| time < 0 || time.to_string() != diagnostic.time_ns)
+                }),
                 _ => true,
             }
         {
@@ -1645,5 +1729,54 @@ mod tests {
             dirty_seq: result.dirty_seq,
         });
         assert!(wrong_kind.to_json(&request).is_err());
+    }
+
+    #[test]
+    fn diagnostic_metadata_is_strict_and_read_reply_is_request_bound() {
+        assert!(diagnostic_payload_is_valid(
+            r#"{"code":"source_timeout","severity":"warning"}"#
+        ));
+        for invalid in [
+            r#"{"code":"possible_source_gap","severity":"warning"}"#,
+            r#"{"code":"SourceTimeout","severity":"warning"}"#,
+            r#"{"code":"source_timeout","severity":"fatal"}"#,
+            r#"{"code":"source_timeout","severity":"warning","text":"x"}"#,
+            r#"{ "code":"source_timeout","severity":"warning"}"#,
+        ] {
+            assert!(!diagnostic_payload_is_valid(invalid), "{invalid}");
+        }
+
+        let lease = SourceLease {
+            receiver_id: "receiver-one".into(),
+            plugin_id: "fixture.plugin".into(),
+            source_id: "source-one".into(),
+            generation: "a".repeat(64),
+            epoch: 7,
+            policy_epoch: 2,
+        };
+        let request = Request {
+            version: VERSION,
+            request_id: "e".repeat(32),
+            receiver_id: lease.receiver_id.clone(),
+            operation: Operation::ReadLastSourceDiagnostic { lease },
+        };
+        let reply = Reply {
+            version: VERSION,
+            request_id: request.request_id.clone(),
+            receiver_id: request.receiver_id.clone(),
+            request_digest: request.replay_identity().unwrap().digest,
+            result: OperationResult::SourceDiagnosticRead(SourceDiagnosticReadResult {
+                diagnostic: Some(SourceDiagnostic {
+                    code: "source_timeout".into(),
+                    severity: "warning".into(),
+                    time_ns: "9007199254740993".into(),
+                }),
+            }),
+        };
+        let bytes = reply.to_json(&request).unwrap();
+        assert_eq!(Reply::from_json(&bytes, &request).unwrap(), reply);
+        let mut changed = reply;
+        changed.request_digest = "f".repeat(64);
+        assert!(changed.to_json(&request).is_err());
     }
 }

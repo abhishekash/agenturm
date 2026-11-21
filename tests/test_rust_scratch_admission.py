@@ -14,7 +14,7 @@ from pathlib import Path
 
 from observatory.core import Store
 from observatory.plugin_admission import (_validated, activate_source, commit_batch,
-                                          set_source_capture)
+                                          last_source_diagnostic, set_source_capture)
 from observatory.plugin_wire import PollBatch, ProtocolError
 
 
@@ -181,6 +181,24 @@ class RustScratchAdmissionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("activation-clone policy rejected", result.stderr)
         return result.stderr
+
+    def apply_clone_diagnostic_read(self, request, *, path, success=True):
+        raw = request if isinstance(request, str) else json.dumps(request)
+        result = subprocess.run([self.binary, "--v2-clone-diagnostic-path", str(path)],
+                                input=raw, text=True, capture_output=True, timeout=10)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("activation-clone diagnostic read rejected", result.stderr)
+        return result.stderr
+
+    @staticmethod
+    def clone_diagnostic_read_request(lease, request_id):
+        return {"version": 2, "request_id": request_id,
+                "receiver_id": lease["receiver_id"],
+                "operation": {"op": "read_last_source_diagnostic",
+                              "lease": dict(lease)}}
 
     @staticmethod
     def mixed_batch_request(batch, lease, request_id, expected_cursor):
@@ -1951,6 +1969,261 @@ with open(sys.argv[1], 'r+b') as stream:
         self.assertIn("existing regular file", self.apply(request, success=False))
         self.assertFalse((self.root / ".rust.db.agenturm-writer.lock").exists())
         self.assertEqual(self.snapshot(self.rust_store)[0][0], "")
+
+    def test_clone_diagnostic_admission_read_and_policy_filtering_match_store(self):
+        from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
+        from observatory.plugin_wire import encode_message
+
+        source_id = "diagnostic-clone-source"
+        generation = "f" * 64
+        canonical_path = self.root / "diagnostic-canonical.db"
+        clone_path = self.root / "diagnostic-clone.db"
+        oracle_path = self.root / "diagnostic-oracle.db"
+        canonical = Store(str(canonical_path))
+        receiver_id = canonical.receiver_id
+        activate_source(canonical, plugin_id=PLUGIN, source_id="diagnostic-seed",
+                        generation=GENERATION)
+        canonical.close()
+        with closing(sqlite3.connect(canonical_path)) as original:
+            for target in (clone_path, oracle_path):
+                with closing(sqlite3.connect(target)) as copied:
+                    original.backup(copied)
+        with closing(sqlite3.connect(clone_path)) as db:
+            db.execute("INSERT INTO schema_meta(key,value) VALUES(?,?)",
+                       ("storage_activation_clone_v1", "enabled"))
+            db.commit()
+
+        def canonical_file_state():
+            paths = (canonical_path, Path(f"{canonical_path}-wal"),
+                     Path(f"{canonical_path}-shm"))
+            return tuple((path.stat().st_ino, path.stat().st_mtime_ns,
+                          hashlib.sha256(path.read_bytes()).hexdigest()) if path.exists() else None
+                         for path in paths)
+
+        canonical_before = canonical_file_state()
+
+        def logical_clone_snapshot(path):
+            with closing(sqlite3.connect(path)) as db:
+                schema = tuple(tuple(row) for row in db.execute(
+                    "SELECT type,name,sql FROM sqlite_master ORDER BY type,name"))
+                tables = [row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+                data = []
+                for table in tables:
+                    quoted_table = table.replace('"', '""')
+                    rows = tuple(sorted(
+                        (tuple(row) for row in db.execute(
+                            f'SELECT * FROM "{quoted_table}"')),
+                        key=repr))
+                    data.append((table, rows))
+                return schema, tuple(data)
+
+        def assert_supported_state_matches_python():
+            rust_state = self.batch_source_snapshot(clone_path, source_id)
+            python_state = self.batch_source_snapshot(oracle_path, source_id)
+            self.assertEqual(rust_state[0][:7] + rust_state[0][8:],
+                             python_state[0][:7] + python_state[0][8:])
+            self.assertEqual(rust_state[1:], python_state[1:])
+
+        def activate_request(request_id):
+            return {"version": 2, "request_id": request_id,
+                    "receiver_id": receiver_id,
+                    "operation": {"op": "activate_source", "plugin_id": PLUGIN,
+                                  "source_id": source_id, "generation": generation}}
+
+        activation = activate_request("9" * 32)
+        activated = self.apply_activation_clone_v2(activation, path=clone_path)["result"]
+        rust_lease = activated["lease"]
+        oracle = Store(str(oracle_path))
+        self.addCleanup(oracle.close)
+        python_lease = activate_source(oracle, plugin_id=PLUGIN, source_id=source_id,
+                                       generation=generation)
+
+        def read_request(lease, request_id):
+            return self.clone_diagnostic_read_request(lease, request_id)
+
+        def rust_read(lease, request_id):
+            request = read_request(lease, request_id)
+            before = logical_clone_snapshot(clone_path)
+            reply = self.apply_clone_diagnostic_read(request, path=clone_path)
+            self.assertEqual(logical_clone_snapshot(clone_path), before)
+            self.assertEqual(set(reply), {
+                "version", "request_id", "receiver_id", "request_digest", "result"})
+            self.assertEqual(set(reply["result"]), {"kind", "diagnostic"})
+            if reply["result"]["diagnostic"] is not None:
+                self.assertEqual(set(reply["result"]["diagnostic"]),
+                                 {"code", "severity", "time_ns"})
+            self.assertEqual(reply["request_id"], request["request_id"])
+            self.assertEqual(reply["receiver_id"], receiver_id)
+            expected_digest = hashlib.sha256(json.dumps(
+                request, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode()).hexdigest()
+            self.assertEqual(reply["request_digest"], expected_digest)
+            return reply["result"]["diagnostic"]
+
+        self.assertIsNone(rust_read(rust_lease, "a" * 32))
+        self.assertEqual(last_source_diagnostic(oracle, python_lease), {})
+        before_normal_read = self.clone_policy_state_snapshot(clone_path, source_id)
+        before_normal_read_logical = logical_clone_snapshot(clone_path)
+        normal_read = self.apply_activation_clone_v2(
+            read_request(rust_lease, "b" * 32), path=clone_path, success=False)
+        self.assertIn("real-schema clone accepts only activation or admission", normal_read)
+        self.assertEqual(logical_clone_snapshot(clone_path), before_normal_read_logical)
+        self.assertEqual(self.clone_policy_state_snapshot(clone_path, source_id),
+                         before_normal_read)
+
+        def diagnostic_batch(event_id, cursor, code="source_timeout", severity="warning",
+                             time_ns="9007199254740993"):
+            return PollBatch(source_id, cursor, ({
+                "event_id": event_id, "revision": 0, "kind": "diagnostic",
+                "time_ns": time_ns,
+                "payload": {"code": code, "severity": severity},
+            },))
+
+        first_batch = diagnostic_batch("timeout-one", "diag-one")
+        first_request = self.mixed_batch_request(first_batch, rust_lease, "c" * 32, "")
+        before_normal_admit = self.clone_policy_state_snapshot(clone_path, source_id)
+        before_normal_admit_logical = logical_clone_snapshot(clone_path)
+        normal_admit = self.apply_activation_clone_v2(
+            first_request, path=clone_path, success=False)
+        self.assertIn("mixed admission is unavailable", normal_admit)
+        self.assertEqual(logical_clone_snapshot(clone_path), before_normal_admit_logical)
+        self.assertEqual(self.clone_policy_state_snapshot(clone_path, source_id),
+                         before_normal_admit)
+        first_reply = self.apply_mixed_clone_batch(first_request, path=clone_path)
+        self.assertEqual(first_reply["result"]["disposition"], "committed")
+        self.assertEqual(commit_batch(oracle, python_lease, "", first_batch), "diag-one")
+        assert_supported_state_matches_python()
+        self.assertEqual(rust_read(rust_lease, "d" * 32),
+                         {"code": "source_timeout", "severity": "warning",
+                          "time_ns": "9007199254740993"})
+        self.assertEqual(last_source_diagnostic(oracle, python_lease),
+                         {"code": "source_timeout", "severity": "warning",
+                          "time_ns": "9007199254740993"})
+
+        committed_state = self.batch_source_snapshot(clone_path, source_id)
+        committed_receipts = self.admission_receipts_snapshot(clone_path, source_id)
+        committed_binding = self.batch_binding_snapshot(clone_path, source_id)
+        self.assertEqual(self.apply_mixed_clone_batch(first_request, path=clone_path)
+                         ["result"]["disposition"], "replay")
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id), committed_state)
+        self.assertEqual(self.admission_receipts_snapshot(clone_path, source_id),
+                         committed_receipts)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id), committed_binding)
+        altered = json.loads(json.dumps(first_request))
+        altered["operation"]["records"][0]["payload_json"] = (
+            '{"code":"source_timeout","severity":"error"}')
+        self.apply_mixed_clone_batch(altered, path=clone_path, success=False)
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id), committed_state)
+        self.assertEqual(self.admission_receipts_snapshot(clone_path, source_id),
+                         committed_receipts)
+        self.assertEqual(self.batch_binding_snapshot(clone_path, source_id), committed_binding)
+
+        second_batch = diagnostic_batch("timeout-two", "diag-two", severity="error")
+        second_request = self.mixed_batch_request(second_batch, rust_lease,
+                                                  "e" * 32, "diag-one")
+        self.apply_mixed_clone_batch(second_request, path=clone_path)
+        commit_batch(oracle, python_lease, "diag-one", second_batch)
+        assert_supported_state_matches_python()
+        # Pin admitted_ns to a tie; rowid DESC is the deterministic tiebreaker.
+        for db_path in (clone_path, oracle_path):
+            with closing(sqlite3.connect(db_path)) as db:
+                db.execute("UPDATE plugin_evidence_v1 SET admitted_ns=777 WHERE source_id=?",
+                           (source_id,))
+                db.commit()
+        self.assertEqual(rust_read(rust_lease, "f" * 32),
+                         {"code": "source_timeout", "severity": "error",
+                          "time_ns": "9007199254740993"})
+        self.assertEqual(last_source_diagnostic(oracle, python_lease),
+                         {"code": "source_timeout", "severity": "error",
+                          "time_ns": "9007199254740993"})
+
+        renewed = self.apply_activation_clone_v2(
+            activate_request("1" * 32), path=clone_path)["result"]["lease"]
+        python_lease = activate_source(oracle, plugin_id=PLUGIN, source_id=source_id,
+                                       generation=generation)
+        self.assertEqual(rust_read(renewed, "2" * 32),
+                         {"code": "source_timeout", "severity": "error",
+                          "time_ns": "9007199254740993"})
+        self.assertEqual(last_source_diagnostic(oracle, python_lease)["severity"], "error")
+
+        disable = self.clone_capture_request(
+            renewed, enabled=False, expected_enabled=True, cursor="diag-two",
+            dirty_seq=2, request_id="3" * 32)
+        disabled = self.apply_clone_policy(disable, path=clone_path)["result"]
+        self.assertEqual(disabled["disposition"], "committed")
+        self.assertIsNone(rust_read(disabled["lease"], "4" * 32))
+        self.assertEqual(set_source_capture(oracle, source_id=source_id, enabled=False), 2)
+        python_disabled_lease = type(python_lease)(
+            python_lease.receiver_id, python_lease.plugin_id, python_lease.source_id,
+            python_lease.generation, python_lease.epoch, python_lease.cursor, 2,
+            python_lease.content_fingerprint)
+        self.assertEqual(last_source_diagnostic(oracle, python_disabled_lease), {})
+
+        enable = self.clone_capture_request(
+            disabled["lease"], enabled=True, expected_enabled=False, cursor="diag-two",
+            dirty_seq=3, request_id="5" * 32)
+        enabled = self.apply_clone_policy(enable, path=clone_path)["result"]
+        self.assertEqual(enabled["disposition"], "committed")
+        self.assertIsNone(rust_read(enabled["lease"], "6" * 32))
+        self.assertEqual(set_source_capture(oracle, source_id=source_id, enabled=True), 3)
+        python_enabled_lease = type(python_lease)(
+            python_lease.receiver_id, python_lease.plugin_id, python_lease.source_id,
+            python_lease.generation, python_lease.epoch, python_lease.cursor, 3,
+            python_lease.content_fingerprint)
+        self.assertEqual(last_source_diagnostic(oracle, python_enabled_lease), {})
+
+        # A fresh but stale-policy diagnostic must not become visible after re-enable.
+        stale_hash = hashlib.sha256((source_id + "\0stale-diagnostic").encode()).hexdigest()
+        stale_record = {"code": "stale_policy", "severity": "error"}
+        stale_json = encode_message(stale_record)
+        stale_digest = hashlib.sha256(encode_message({
+            "event_id": "stale-diagnostic", "revision": 0, "kind": "diagnostic",
+            "time_ns": "8", "payload": stale_record,
+        }).encode()).hexdigest()
+        for db_path in (clone_path, oracle_path):
+            with closing(sqlite3.connect(db_path)) as db:
+                db.execute("INSERT INTO plugin_evidence_v1(source_id,event_id_hash,revision,kind,"
+                           "time_ns,payload_json,record_digest,policy_epoch,admitted_ns) "
+                           "VALUES(?,?,0,'diagnostic',8,?,?,1,999999)",
+                           (source_id, stale_hash, stale_json, stale_digest))
+                db.commit()
+        self.assertIsNone(rust_read(enabled["lease"], "7" * 32))
+        self.assertEqual(last_source_diagnostic(oracle, python_enabled_lease), {})
+
+        # All diagnostic evidence remains non-projecting, and the source of truth
+        # stayed untouched by every operation against its detached clone.
+        final = self.batch_source_snapshot(clone_path, source_id)
+        self.assertEqual(final[4], ())
+        self.assertEqual(final[3], ())
+        self.assertEqual(canonical_file_state(), canonical_before)
+
+        for invalid_payload, invalid_identity in (
+                ({"code": "bad_identity", "severity": "info"}, "session-one"),
+                ({"code": "possible_source_gap", "severity": "warning"}, ""),
+                ({"code": "bad_severity", "severity": "fatal"}, ""),
+                ({"code": "BadCode", "severity": "warning"}, ""),
+                ({"code": "free_text", "severity": "warning", "message": "private"}, ""),
+        ):
+            valid = self.mixed_batch_request(
+                diagnostic_batch("invalid-input", "invalid-cursor"),
+                enabled["lease"], "8" * 32, "diag-two")
+            invalid = json.loads(json.dumps(valid))
+            invalid["operation"]["records"][0]["payload_json"] = encode_message(
+                invalid_payload)
+            invalid["operation"]["records"][0]["native_session_id"] = invalid_identity
+            invalid_before = self.clone_policy_state_snapshot(clone_path, source_id)
+            invalid_receipts = self.admission_receipts_snapshot(clone_path, source_id)
+            invalid_binding = self.batch_binding_snapshot(clone_path, source_id)
+            self.apply_mixed_clone_batch(invalid, path=clone_path, success=False)
+            self.assertEqual(self.clone_policy_state_snapshot(clone_path, source_id),
+                             invalid_before)
+            self.assertEqual(self.admission_receipts_snapshot(clone_path, source_id),
+                             invalid_receipts)
+            self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
+                             invalid_binding)
+        self.assertEqual(canonical_file_state(), canonical_before)
 
 
 if __name__ == "__main__":
