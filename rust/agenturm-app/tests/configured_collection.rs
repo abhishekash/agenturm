@@ -144,12 +144,12 @@ fn configured_watch_retries_startup_failure_and_shuts_down_on_interrupt() {
         installed_adapter,
         "watch reported the initial startup failure"
     );
-    assert!(stdout.contains("harness.pi: committed 2 observation(s)"));
+    assert!(stdout.contains("harness.pi: committed 3 observation(s)"));
     assert!(committed_reports >= 2);
     assert!(stdout.contains("Stopped after"));
 
     let snapshot = execute_inspect(&database).expect("reopen watch history");
-    assert_eq!(snapshot.observations.len(), 2);
+    assert_eq!(snapshot.observations.len(), 3);
     assert_eq!(
         snapshot.observations[0].identity.session_id,
         "watch-session"
@@ -274,7 +274,7 @@ fn configured_watch_exits_cleanly_on_terminate_between_cycles() {
     assert!(stdout.contains("Stopped after"));
     assert!(!stdout.contains("cancelled by shutdown"));
     let snapshot = execute_inspect(&database).expect("reopen watch history");
-    assert_eq!(snapshot.observations.len(), 2);
+    assert_eq!(snapshot.observations.len(), 3);
     assert_eq!(
         snapshot.observations[0].identity.session_id,
         "terminate-session"
@@ -357,13 +357,13 @@ fn configured_collection_admits_pi_and_codex_together_and_reopens_history() {
     assert_eq!(output.status.code(), Some(1));
     let summary = String::from_utf8(output.stdout).expect("collection output is UTF-8");
     assert!(summary.contains("3 sources checked; 1 source failure; 0 global failures"));
-    assert!(summary.contains("harness.pi: committed 3 observation(s)"));
+    assert!(summary.contains("harness.pi: committed 4 observation(s)"));
     assert!(summary.contains("harness.codex: committed 2 observation(s)"));
     assert!(summary.contains("harness.broken: startup failed:"));
     assert!(summary.contains("ACK sent=true"));
 
     let snapshot = execute_inspect(&database).expect("reopen committed collection history");
-    assert_eq!(snapshot.observations.len(), 5);
+    assert_eq!(snapshot.observations.len(), 6);
     assert_eq!(
         snapshot
             .observations

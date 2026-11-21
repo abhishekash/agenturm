@@ -94,6 +94,7 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
         &source_path,
         concat!(
             "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+            "{\"type\":\"message\",\"id\":\"user-1\",\"timestamp\":\"2026-11-20T11:59:59Z\",\"message\":{\"role\":\"user\",\"content\":\"private Pi prompt never stored\"}}\n",
             "{\"type\":\"message\",\"id\":\"assistant-1\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"error\",\"usage\":{\"input\":8,\"output\":3},\"content\":[{\"type\":\"toolCall\",\"id\":\"call-1\",\"name\":\"read\"}]}}\n"
         ),
     )
@@ -148,11 +149,19 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
         .admissions
         .get(&source_id)
         .expect("Pi admission status");
-    assert_eq!(admission.inserted, 3);
-    assert_eq!(admission.skipped_unprojected_facts, 1);
+    assert_eq!(admission.inserted, 6);
+    assert_eq!(admission.skipped_unprojected_facts, 0);
     assert!(admission.source_ack_sent);
     assert_eq!(decode_count.load(Ordering::SeqCst), 2);
-    assert_eq!(snapshot.observations.len(), 3);
+    assert_eq!(snapshot.observations.len(), 6);
+    assert!(snapshot.observations.iter().any(|row| row.kind
+        == agenturm_kernel::ObservationKind::Message {
+            role: "user".into()
+        }));
+    assert!(snapshot.observations.iter().any(|row| row.kind
+        == agenturm_kernel::ObservationKind::Message {
+            role: "assistant".into()
+        }));
     let tool = snapshot
         .observations
         .iter()
@@ -174,6 +183,7 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
             }
     }));
     assert!(!format!("{:?}", snapshot.observations).contains("arguments"));
+    assert!(!format!("{:?}", snapshot.observations).contains("private Pi prompt never stored"));
     let usage = snapshot
         .observations
         .iter()
@@ -191,7 +201,7 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
     );
 
     let idle = kernel.refresh_with_store(&mut store);
-    assert_eq!(idle.observations.len(), 3);
+    assert_eq!(idle.observations.len(), 6);
     assert_eq!(idle.admissions[&source_id].inserted, 0);
     assert!(idle.admissions[&source_id].source_ack_sent);
     drop(kernel);
@@ -199,7 +209,7 @@ fn pi_process_uses_injected_decoder_across_commit_retry_and_restart() {
 
     let mut store = Store::open(&database).expect("reopen Pi store");
     let restored = Kernel::new().refresh_with_store(&mut store);
-    assert_eq!(restored.observations.len(), 3);
+    assert_eq!(restored.observations.len(), 6);
     assert_eq!(restored.observations[0].identity.session_id, "pi-session");
     assert!(restored.failures.is_empty());
     assert!(
