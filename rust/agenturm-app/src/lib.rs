@@ -6,8 +6,9 @@
 
 use agenturm_kernel::{
     Capability, ExtensionId, ExtensionPlugin, Harness, Kernel, MAX_DURABLE_SNAPSHOT_OBSERVATIONS,
-    MetricRow, Observation, ObservationKind, ObservationPosition, ObservationQuery,
-    ObservationStore, PaneModel, RegistrationError, Snapshot, SourceAdapter, UiContribution,
+    MetricRow, Observation, ObservationExtension, ObservationKind, ObservationPosition,
+    ObservationQuery, ObservationStore, PaneModel, RegistrationError, Snapshot, SourceAdapter,
+    UiContribution,
 };
 use agenturm_runtime::{BundledObservationDecoder, CODEX_PLUGIN_ID, ProcessConfig, ProcessSource};
 #[cfg(target_os = "linux")]
@@ -102,6 +103,14 @@ impl AgenturmApp {
         capability: impl Capability + 'static,
     ) -> Result<(), RegistrationError> {
         self.kernel.register_capability(id, capability)
+    }
+
+    pub fn register_observation_extension(
+        &mut self,
+        id: ExtensionId,
+        extension: impl ObservationExtension + 'static,
+    ) -> Result<(), RegistrationError> {
+        self.kernel.register_observation_extension(id, extension)
     }
 
     pub fn register_ui_contribution(
