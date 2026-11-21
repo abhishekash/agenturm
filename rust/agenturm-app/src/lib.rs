@@ -1,12 +1,12 @@
 //! Rust application composition boundary.
 //!
-//! This is intentionally an early shell: the product UI and production
-//! harness/storage composition are not wired yet. Bundled and independently
-//! installed extensions will be registered here through the kernel ports.
+//! This is intentionally an early shell: one explicit Codex usage command
+//! registers a supervised source through kernel admission. The product UI,
+//! persistent configuration, and multi-harness composition are still open.
 
-use agenturm_kernel::{Kernel, Snapshot};
-use agenturm_runtime::{ProcessConfig, ProcessSource, ingest_once};
-use agenturm_store::{CommitOutcome, Store};
+use agenturm_kernel::{ExtensionId, Kernel, Snapshot};
+use agenturm_runtime::{ProcessConfig, ProcessSource};
+use agenturm_store::Store;
 use std::path::PathBuf;
 
 pub struct AgenturmApp {
@@ -95,26 +95,46 @@ fn usage() -> String {
 }
 
 pub fn execute_ingest(options: &IngestOptions) -> Result<String, String> {
+    let source_id = ExtensionId::parse(options.source_id.clone())
+        .map_err(|error| format!("invalid source ID: {error}"))?;
     let config = ProcessConfig::codex(
         options.plugin_host.clone(),
         options.adapter.clone(),
         options.source_root.clone(),
         options.source_id.clone(),
     );
-    let mut source = ProcessSource::spawn(config).map_err(|error| error.to_string())?;
+    let source = ProcessSource::spawn(config).map_err(|error| error.to_string())?;
     let mut store =
         Store::open(&options.db).map_err(|error| format!("open store failed: {error}"))?;
-    let result = ingest_once(&options.source_id, &mut source, &mut store)
-        .map_err(|error| error.to_string())?;
-    let summary = match result.commit {
-        CommitOutcome::Committed { inserted } => {
-            format!("Committed {inserted} usage observation(s)")
-        }
-        CommitOutcome::Replay => "Batch was already committed".into(),
+    let mut kernel = Kernel::new();
+    kernel
+        .register_source_adapter(source_id.clone(), source)
+        .map_err(|error| format!("register source adapter failed: {error}"))?;
+    let snapshot = kernel.refresh_with_store(&mut store);
+    if let Some(failure) = snapshot.failures.first() {
+        return Err(
+            if failure.stage == agenturm_kernel::ExtensionStage::AdmissionAck {
+                format!(
+                    "observations were committed durably, but source ACK failed; retry is safe: {}",
+                    failure.message
+                )
+            } else {
+                format!("{:?}: {}", failure.stage, failure.message)
+            },
+        );
+    }
+    let status = snapshot
+        .admissions
+        .get(&source_id)
+        .ok_or_else(|| "kernel did not return a source admission result".to_owned())?;
+    let summary = if status.replay {
+        "Batch was already committed".into()
+    } else {
+        format!("Committed {} usage observation(s)", status.inserted)
     };
     Ok(format!(
-        "{summary}; sent source ACK. Skipped {} non-usage fact(s) by design.\n",
-        result.skipped_non_usage_facts
+        "{summary}; source ACK sent. Skipped {} non-usage fact(s) by design.\n",
+        status.skipped_non_usage_facts
     ))
 }
 

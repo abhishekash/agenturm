@@ -1,8 +1,40 @@
-use agenturm_runtime::{ProcessConfig, ProcessSource, ingest_once};
-use agenturm_store::{CommitOutcome, ObservationKind, Store};
+use agenturm_kernel::{ExtensionId, Kernel, Observation, ObservationStore, StoreCommit};
+use agenturm_runtime::{ProcessConfig, ProcessSource};
+use agenturm_store::{ObservationKind, Store};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+struct FailOnceStore {
+    inner: Store,
+    fail_next_commit: bool,
+}
+
+impl ObservationStore for FailOnceStore {
+    fn source_cursor(&self, source_id: &str) -> std::result::Result<Option<String>, String> {
+        ObservationStore::source_cursor(&self.inner, source_id)
+    }
+
+    fn commit(
+        &mut self,
+        source_id: &str,
+        expected_cursor: Option<&str>,
+        next_cursor: &str,
+        observations: &[Observation],
+    ) -> std::result::Result<StoreCommit, String> {
+        if self.fail_next_commit {
+            self.fail_next_commit = false;
+            return Err("injected first commit failure".into());
+        }
+        ObservationStore::commit(
+            &mut self.inner,
+            source_id,
+            expected_cursor,
+            next_cursor,
+            observations,
+        )
+    }
+}
 
 fn temporary_directory() -> PathBuf {
     let nonce = SystemTime::now()
@@ -41,7 +73,11 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
     .expect("write Codex fixture");
 
     let database = root.join("agenturm.sqlite");
-    let mut store = Store::open(&database).expect("open store");
+    let store = Store::open(&database).expect("open store");
+    let mut store = FailOnceStore {
+        inner: store,
+        fail_next_commit: true,
+    };
     let mut config = ProcessConfig::codex(
         PathBuf::from(plugin_host),
         PathBuf::from(adapter),
@@ -49,18 +85,37 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         "harness.codex",
     );
     config.timeout = Duration::from_secs(5);
-    let mut source = ProcessSource::spawn(config).expect("start Rust Codex adapter");
-    let result = ingest_once("harness.codex", &mut source, &mut store).expect("ingest fixture");
-    assert_eq!(result.commit, CommitOutcome::Committed { inserted: 1 });
-    assert_eq!(result.skipped_non_usage_facts, 2);
-    let idle = ingest_once("harness.codex", &mut source, &mut store)
-        .expect("poll after source ACK succeeds");
-    assert!(matches!(
-        idle.commit,
-        CommitOutcome::Committed { inserted: 0 }
-    ));
-    assert_eq!(idle.skipped_non_usage_facts, 0);
-    drop(source);
+    let source = ProcessSource::spawn(config).expect("start Rust Codex adapter");
+    let source_id = ExtensionId::parse("harness.codex").unwrap();
+    let mut kernel = Kernel::new();
+    kernel
+        .register_source_adapter(source_id.clone(), source)
+        .expect("register supervised source");
+    let failed = kernel.refresh_with_store(&mut store);
+    assert!(failed.admissions.is_empty());
+    assert_eq!(failed.failures.len(), 1);
+    assert_eq!(
+        failed.failures[0].stage,
+        agenturm_kernel::ExtensionStage::AdmissionCommit
+    );
+
+    // The same kernel and live child re-offer the cached, unacknowledged batch.
+    let snapshot = kernel.refresh_with_store(&mut store);
+    let admission = snapshot
+        .admissions
+        .get(&source_id)
+        .expect("admission status");
+    assert_eq!(admission.inserted, 1);
+    assert!(!admission.replay);
+    assert_eq!(admission.skipped_non_usage_facts, 2);
+    assert!(admission.source_ack_sent);
+
+    let idle = kernel.refresh_with_store(&mut store);
+    let idle_admission = idle.admissions.get(&source_id).expect("idle admission");
+    assert_eq!(idle_admission.inserted, 0);
+    assert_eq!(idle_admission.skipped_non_usage_facts, 0);
+    assert!(idle_admission.source_ack_sent);
+    drop(kernel);
     drop(store);
 
     let store = Store::open(&database).expect("reopen committed store");

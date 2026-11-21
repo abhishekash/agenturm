@@ -26,6 +26,7 @@ const MAX_LABEL_BYTES: usize = 128;
 const MAX_VALUE_BYTES: usize = 1_024;
 const MAX_TITLE_BYTES: usize = 128;
 const MAX_FAILURE_BYTES: usize = 256;
+const MAX_CURSOR_BYTES: usize = 800;
 
 /// Stable package identity for one registered extension.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -55,6 +56,10 @@ impl ExtensionId {
 pub enum RegistrationError {
     InvalidId(String),
     DuplicateId(String),
+    SourceIdentityMismatch {
+        registered: String,
+        configured: String,
+    },
     RegistryFull,
 }
 
@@ -63,6 +68,13 @@ impl std::fmt::Display for RegistrationError {
         match self {
             Self::InvalidId(id) => write!(f, "invalid extension id: {id:?}"),
             Self::DuplicateId(id) => write!(f, "extension id already registered: {id}"),
+            Self::SourceIdentityMismatch {
+                registered,
+                configured,
+            } => write!(
+                f,
+                "source identity mismatch: registered {registered}, configured {configured}"
+            ),
             Self::RegistryFull => write!(f, "extension registry limit reached"),
         }
     }
@@ -113,6 +125,58 @@ pub trait Harness: Send {
     fn poll(&mut self) -> Result<Vec<RawObservation>, String>;
 }
 
+/// Supervised adapter boundary. The kernel owns its cursor, validation,
+/// durable admission, and ACK ordering; adapters only prepare facts and ACK.
+pub trait SourceAdapter: Send {
+    fn source_id(&self) -> &str;
+    fn poll(&mut self, cursor: &str) -> Result<PreparedSourceBatch, String>;
+    fn ack(&mut self, cursor: &str) -> Result<(), String>;
+    /// Clears a rejected or failed protocol session so the next poll can retry
+    /// from the still-durable cursor. Commit failures do not call this: the
+    /// exact prepared batch remains cached for retry.
+    fn reset(&mut self) -> Result<(), String>;
+}
+
+fn reset_source(source: &mut dyn SourceAdapter) -> Result<(), String> {
+    match catch_unwind(AssertUnwindSafe(|| source.reset())) {
+        Ok(result) => result,
+        Err(_) => Err("source adapter panicked during reset".into()),
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedSourceBatch {
+    pub next_cursor: String,
+    pub observations: Vec<RawObservation>,
+    pub skipped_non_usage_facts: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StoreCommit {
+    pub inserted: usize,
+    pub replay: bool,
+}
+
+/// Atomic storage boundary used by kernel admission.
+pub trait ObservationStore {
+    fn source_cursor(&self, source_id: &str) -> Result<Option<String>, String>;
+    fn commit(
+        &mut self,
+        source_id: &str,
+        expected_cursor: Option<&str>,
+        next_cursor: &str,
+        observations: &[Observation],
+    ) -> Result<StoreCommit, String>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdmissionStatus {
+    pub inserted: usize,
+    pub replay: bool,
+    pub skipped_non_usage_facts: usize,
+    pub source_ack_sent: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RawObservation {
     pub event_id: String,
@@ -156,6 +220,11 @@ pub struct ExtensionFailure {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExtensionStage {
     Poll,
+    AdmissionCursor,
+    AdmissionPoll,
+    AdmissionValidation,
+    AdmissionCommit,
+    AdmissionAck,
     Capability,
     UiContribution,
 }
@@ -165,12 +234,14 @@ pub struct Snapshot {
     pub observations: Vec<Observation>,
     pub metrics: BTreeMap<ExtensionId, Vec<MetricRow>>,
     pub panes: BTreeMap<ExtensionId, PaneModel>,
+    pub admissions: BTreeMap<ExtensionId, AdmissionStatus>,
     pub failures: Vec<ExtensionFailure>,
 }
 
 #[derive(Default)]
 pub struct Kernel {
     harnesses: BTreeMap<ExtensionId, Box<dyn Harness>>,
+    sources: BTreeMap<ExtensionId, Box<dyn SourceAdapter>>,
     capabilities: BTreeMap<ExtensionId, Box<dyn Capability>>,
     ui_contributions: BTreeMap<ExtensionId, Box<dyn UiContribution>>,
 }
@@ -186,6 +257,20 @@ impl Kernel {
         harness: impl Harness + 'static,
     ) -> Result<(), RegistrationError> {
         insert_unique(&mut self.harnesses, id, Box::new(harness))
+    }
+
+    pub fn register_source_adapter(
+        &mut self,
+        id: ExtensionId,
+        source: impl SourceAdapter + 'static,
+    ) -> Result<(), RegistrationError> {
+        if source.source_id() != id.as_str() {
+            return Err(RegistrationError::SourceIdentityMismatch {
+                registered: id.as_str().to_owned(),
+                configured: source.source_id().to_owned(),
+            });
+        }
+        insert_unique(&mut self.sources, id, Box::new(source))
     }
 
     pub fn register_capability(
@@ -205,10 +290,27 @@ impl Kernel {
     }
 
     /// Polls trusted in-process extensions in stable ID order. Returned errors
-    /// and unwind panics are recorded so healthy extensions still contribute;
-    /// calls remain synchronous and may block refresh.
+    /// and unwind panics are recorded so healthy extensions still contribute.
     pub fn refresh(&mut self) -> Snapshot {
         let mut snapshot = Snapshot::default();
+        self.poll_harnesses(&mut snapshot);
+        self.evaluate_extensions(&mut snapshot);
+        snapshot
+    }
+
+    /// Admits supervised source batches. For each source the kernel validates
+    /// facts, commits them atomically, and only then ACKs the source cursor.
+    /// This durable snapshot excludes trusted in-process `Harness` output,
+    /// whose port has no cursor/commit lifecycle. Use `refresh` for that
+    /// explicitly in-memory view. Failed sources do not hide healthy results.
+    pub fn refresh_with_store(&mut self, store: &mut impl ObservationStore) -> Snapshot {
+        let mut snapshot = Snapshot::default();
+        self.admit_sources(&mut snapshot, store);
+        self.evaluate_extensions(&mut snapshot);
+        snapshot
+    }
+
+    fn poll_harnesses(&mut self, snapshot: &mut Snapshot) {
         for (id, harness) in &mut self.harnesses {
             let result = catch_unwind(AssertUnwindSafe(|| harness.poll()));
             match result {
@@ -243,6 +345,160 @@ impl Kernel {
                 }
             }
         }
+    }
+
+    fn admit_sources(&mut self, snapshot: &mut Snapshot, store: &mut impl ObservationStore) {
+        for (id, source) in &mut self.sources {
+            let expected_cursor = match store.source_cursor(id.as_str()) {
+                Ok(cursor) => cursor,
+                Err(message) => {
+                    snapshot
+                        .failures
+                        .push(failure(id, ExtensionStage::AdmissionCursor, message));
+                    continue;
+                }
+            };
+            let cursor = expected_cursor.as_deref().unwrap_or_default();
+            if !valid_cursor(cursor) {
+                snapshot.failures.push(failure(
+                    id,
+                    ExtensionStage::AdmissionCursor,
+                    "stored source cursor is invalid",
+                ));
+                continue;
+            }
+            let prepared = match catch_unwind(AssertUnwindSafe(|| source.poll(cursor))) {
+                Ok(Ok(prepared)) => prepared,
+                Ok(Err(message)) => {
+                    let reset_failure = reset_source(source.as_mut()).err();
+                    snapshot.failures.push(failure(
+                        id,
+                        ExtensionStage::AdmissionPoll,
+                        match reset_failure {
+                            Some(reset) => format!("{message}; source reset failed: {reset}"),
+                            None => message,
+                        },
+                    ));
+                    continue;
+                }
+                Err(_) => {
+                    let reset_failure = reset_source(source.as_mut()).err();
+                    snapshot.failures.push(failure(
+                        id,
+                        ExtensionStage::AdmissionPoll,
+                        match reset_failure {
+                            Some(reset) => {
+                                format!("source adapter panicked; source reset failed: {reset}")
+                            }
+                            None => "source adapter panicked".into(),
+                        },
+                    ));
+                    continue;
+                }
+            };
+            if !valid_cursor(&prepared.next_cursor)
+                || prepared
+                    .observations
+                    .len()
+                    .saturating_add(prepared.skipped_non_usage_facts)
+                    > MAX_OBSERVATIONS_PER_HARNESS
+            {
+                let reset_failure = reset_source(source.as_mut()).err();
+                snapshot.failures.push(failure(
+                    id,
+                    ExtensionStage::AdmissionValidation,
+                    match reset_failure {
+                        Some(reset) => format!(
+                            "source batch cursor or fact count exceeds limits; source reset failed: {reset}"
+                        ),
+                        None => "source batch cursor or fact count exceeds limits".into(),
+                    },
+                ));
+                continue;
+            }
+            let rows = match validate_raw_observations(prepared.observations) {
+                Ok(rows) => rows
+                    .into_iter()
+                    .map(|row| Observation {
+                        harness_id: id.clone(),
+                        event_id: row.event_id,
+                        revision: row.revision,
+                        identity: row.identity,
+                        observed_at_unix_ns: row.observed_at_unix_ns,
+                        kind: row.kind,
+                    })
+                    .collect::<Vec<_>>(),
+                Err(message) => {
+                    let reset_failure = reset_source(source.as_mut()).err();
+                    snapshot.failures.push(failure(
+                        id,
+                        ExtensionStage::AdmissionValidation,
+                        match reset_failure {
+                            Some(reset) => format!("{message}; source reset failed: {reset}"),
+                            None => message,
+                        },
+                    ));
+                    continue;
+                }
+            };
+            let committed = match store.commit(
+                id.as_str(),
+                expected_cursor.as_deref(),
+                &prepared.next_cursor,
+                &rows,
+            ) {
+                Ok(result) => result,
+                Err(message) => {
+                    snapshot
+                        .failures
+                        .push(failure(id, ExtensionStage::AdmissionCommit, message));
+                    continue;
+                }
+            };
+            snapshot.observations.extend(rows);
+            let source_ack_sent =
+                match catch_unwind(AssertUnwindSafe(|| source.ack(&prepared.next_cursor))) {
+                    Ok(Ok(())) => true,
+                    Ok(Err(message)) => {
+                        let reset_failure = reset_source(source.as_mut()).err();
+                        snapshot.failures.push(failure(
+                            id,
+                            ExtensionStage::AdmissionAck,
+                            match reset_failure {
+                                Some(reset) => format!("{message}; source reset failed: {reset}"),
+                                None => message,
+                            },
+                        ));
+                        false
+                    }
+                    Err(_) => {
+                        let reset_failure = reset_source(source.as_mut()).err();
+                        snapshot.failures.push(failure(
+                            id,
+                            ExtensionStage::AdmissionAck,
+                            match reset_failure {
+                                Some(reset) => {
+                                    format!("source adapter panicked; source reset failed: {reset}")
+                                }
+                                None => "source adapter panicked".into(),
+                            },
+                        ));
+                        false
+                    }
+                };
+            snapshot.admissions.insert(
+                id.clone(),
+                AdmissionStatus {
+                    inserted: committed.inserted,
+                    replay: committed.replay,
+                    skipped_non_usage_facts: prepared.skipped_non_usage_facts,
+                    source_ack_sent,
+                },
+            );
+        }
+    }
+
+    fn evaluate_extensions(&self, snapshot: &mut Snapshot) {
         for (id, capability) in &self.capabilities {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 capability.evaluate(&snapshot.observations)
@@ -271,7 +527,7 @@ impl Kernel {
             }
         }
         for (id, contribution) in &self.ui_contributions {
-            let result = catch_unwind(AssertUnwindSafe(|| contribution.build_pane(&snapshot)));
+            let result = catch_unwind(AssertUnwindSafe(|| contribution.build_pane(snapshot)));
             match result {
                 Ok(Ok(pane)) => match validate_pane(pane) {
                     Ok(pane) => {
@@ -295,8 +551,11 @@ impl Kernel {
                 )),
             }
         }
-        snapshot
     }
+}
+
+fn valid_cursor(cursor: &str) -> bool {
+    cursor.len() <= MAX_CURSOR_BYTES && !cursor.chars().any(char::is_control)
 }
 
 fn insert_unique<T>(
@@ -423,6 +682,7 @@ fn validate_pane(pane: PaneModel) -> Result<PaneModel, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     struct FixedHarness(Result<Vec<RawObservation>, &'static str>);
 
@@ -483,6 +743,110 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct Log(Arc<Mutex<Vec<String>>>);
+
+    impl Log {
+        fn push(&self, value: impl Into<String>) {
+            self.0.lock().unwrap().push(value.into());
+        }
+
+        fn take(&self) -> Vec<String> {
+            std::mem::take(&mut *self.0.lock().unwrap())
+        }
+    }
+
+    struct FixedSource {
+        name: &'static str,
+        batch: PreparedSourceBatch,
+        fail_ack: bool,
+        panic_ack: bool,
+        fail_poll: bool,
+        fail_reset: bool,
+        panic_reset: bool,
+        log: Log,
+    }
+
+    impl SourceAdapter for FixedSource {
+        fn source_id(&self) -> &str {
+            if self.name == "codex" {
+                "harness.codex"
+            } else if self.name == "alpha" {
+                "harness.alpha"
+            } else {
+                "harness.zeta"
+            }
+        }
+
+        fn poll(&mut self, cursor: &str) -> Result<PreparedSourceBatch, String> {
+            self.log.push(format!("poll:{}:{cursor}", self.name));
+            if self.fail_poll {
+                return Err("injected poll failure".into());
+            }
+            Ok(self.batch.clone())
+        }
+
+        fn ack(&mut self, cursor: &str) -> Result<(), String> {
+            self.log.push(format!("ack:{}:{cursor}", self.name));
+            assert!(!self.panic_ack, "injected ACK panic");
+            if self.fail_ack {
+                Err("injected ACK failure".into())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn reset(&mut self) -> Result<(), String> {
+            self.log.push(format!("reset:{}", self.name));
+            assert!(!self.panic_reset, "injected reset panic");
+            if self.fail_reset {
+                Err("injected reset failure".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct FixedStore {
+        cursor: Option<String>,
+        fail_commit: bool,
+        replay: bool,
+        log: Log,
+    }
+
+    impl ObservationStore for FixedStore {
+        fn source_cursor(&self, source_id: &str) -> Result<Option<String>, String> {
+            self.log.push(format!("cursor:{source_id}"));
+            Ok(self.cursor.clone())
+        }
+
+        fn commit(
+            &mut self,
+            source_id: &str,
+            _expected_cursor: Option<&str>,
+            next_cursor: &str,
+            observations: &[Observation],
+        ) -> Result<StoreCommit, String> {
+            self.log.push(format!("commit:{source_id}:{next_cursor}"));
+            if self.fail_commit {
+                Err("injected storage failure".into())
+            } else {
+                Ok(StoreCommit {
+                    inserted: if self.replay { 0 } else { observations.len() },
+                    replay: self.replay,
+                })
+            }
+        }
+    }
+
+    fn prepared(batch_event: &str) -> PreparedSourceBatch {
+        PreparedSourceBatch {
+            next_cursor: "cursor-1".into(),
+            observations: vec![activity(batch_event)],
+            skipped_non_usage_facts: 0,
+        }
+    }
+
     #[test]
     fn host_stamps_identity_and_builds_capability_and_pane_contributions() {
         let mut kernel = Kernel::new();
@@ -515,6 +879,345 @@ mod tests {
         );
         assert_eq!(snapshot.panes[&id("pane.activity")].title, "Activity");
         assert!(snapshot.failures.is_empty());
+    }
+
+    #[test]
+    fn supervised_admission_commits_before_ack_and_stamps_registered_source() {
+        let log = Log::default();
+        let mut kernel = Kernel::new();
+        kernel
+            .register_source_adapter(
+                id("harness.codex"),
+                FixedSource {
+                    name: "codex",
+                    batch: prepared("fixture:event-1"),
+                    fail_ack: false,
+                    panic_ack: false,
+                    fail_poll: false,
+                    fail_reset: false,
+                    panic_reset: false,
+                    log: log.clone(),
+                },
+            )
+            .unwrap();
+        let mut store = FixedStore {
+            cursor: None,
+            fail_commit: false,
+            replay: false,
+            log: log.clone(),
+        };
+
+        let snapshot = kernel.refresh_with_store(&mut store);
+        assert_eq!(
+            log.take(),
+            [
+                "cursor:harness.codex",
+                "poll:codex:",
+                "commit:harness.codex:cursor-1",
+                "ack:codex:cursor-1"
+            ]
+        );
+        assert_eq!(snapshot.observations.len(), 1);
+        assert_eq!(
+            snapshot.observations[0].harness_id.as_str(),
+            "harness.codex"
+        );
+        let status = snapshot.admissions[&id("harness.codex")];
+        assert_eq!(status.inserted, 1);
+        assert!(status.source_ack_sent);
+        assert!(snapshot.failures.is_empty());
+    }
+
+    #[test]
+    fn durable_snapshot_excludes_uncommitted_in_process_harness_facts() {
+        let log = Log::default();
+        let mut kernel = Kernel::new();
+        kernel
+            .register_harness(
+                id("harness.trusted"),
+                FixedHarness(Ok(vec![activity("uncommitted")])),
+            )
+            .unwrap();
+        kernel
+            .register_source_adapter(
+                id("harness.codex"),
+                FixedSource {
+                    name: "codex",
+                    batch: prepared("committed"),
+                    fail_ack: false,
+                    panic_ack: false,
+                    fail_poll: false,
+                    fail_reset: false,
+                    panic_reset: false,
+                    log: log.clone(),
+                },
+            )
+            .unwrap();
+        let mut store = FixedStore {
+            cursor: None,
+            fail_commit: false,
+            replay: false,
+            log,
+        };
+
+        let snapshot = kernel.refresh_with_store(&mut store);
+        assert_eq!(snapshot.observations.len(), 1);
+        assert_eq!(snapshot.observations[0].event_id, "fixture:committed");
+    }
+
+    #[test]
+    fn malformed_or_uncommitted_source_batch_is_never_acknowledged() {
+        for (bad_event, fail_commit, expected_stage) in [
+            ("bad event", false, ExtensionStage::AdmissionValidation),
+            ("event-1", true, ExtensionStage::AdmissionCommit),
+        ] {
+            let log = Log::default();
+            let mut batch = prepared(bad_event);
+            if fail_commit {
+                batch.observations[0] = activity("event-1");
+            }
+            let mut kernel = Kernel::new();
+            kernel
+                .register_source_adapter(
+                    id("harness.codex"),
+                    FixedSource {
+                        name: "codex",
+                        batch,
+                        fail_ack: false,
+                        panic_ack: false,
+                        fail_poll: false,
+                        fail_reset: false,
+                        panic_reset: false,
+                        log: log.clone(),
+                    },
+                )
+                .unwrap();
+            let mut store = FixedStore {
+                cursor: None,
+                fail_commit,
+                replay: false,
+                log: log.clone(),
+            };
+
+            let snapshot = kernel.refresh_with_store(&mut store);
+            assert_eq!(snapshot.failures.len(), 1);
+            assert_eq!(snapshot.failures[0].stage, expected_stage);
+            assert!(snapshot.admissions.is_empty());
+            assert!(snapshot.observations.is_empty());
+            assert!(!log.take().iter().any(|entry| entry.starts_with("ack:")));
+        }
+    }
+
+    #[test]
+    fn invalid_cursor_batch_resets_source_without_commit_or_ack() {
+        let log = Log::default();
+        let mut batch = prepared("event-1");
+        batch.next_cursor = "c".repeat(MAX_CURSOR_BYTES + 1);
+        let mut kernel = Kernel::new();
+        kernel
+            .register_source_adapter(
+                id("harness.codex"),
+                FixedSource {
+                    name: "codex",
+                    batch,
+                    fail_ack: false,
+                    panic_ack: false,
+                    fail_poll: false,
+                    fail_reset: false,
+                    panic_reset: false,
+                    log: log.clone(),
+                },
+            )
+            .unwrap();
+        let mut store = FixedStore {
+            cursor: None,
+            fail_commit: false,
+            replay: false,
+            log: log.clone(),
+        };
+
+        let snapshot = kernel.refresh_with_store(&mut store);
+        assert_eq!(
+            snapshot.failures[0].stage,
+            ExtensionStage::AdmissionValidation
+        );
+        let events = log.take();
+        assert!(events.iter().any(|event| event == "reset:codex"));
+        assert!(!events.iter().any(|event| event.starts_with("commit:")));
+        assert!(!events.iter().any(|event| event.starts_with("ack:")));
+    }
+
+    #[test]
+    fn exact_store_replay_is_acked_only_after_the_store_confirms_it() {
+        let log = Log::default();
+        let mut kernel = Kernel::new();
+        kernel
+            .register_source_adapter(
+                id("harness.codex"),
+                FixedSource {
+                    name: "codex",
+                    batch: prepared("fixture:event-1"),
+                    fail_ack: false,
+                    panic_ack: false,
+                    fail_poll: false,
+                    fail_reset: false,
+                    panic_reset: false,
+                    log: log.clone(),
+                },
+            )
+            .unwrap();
+        let mut store = FixedStore {
+            cursor: Some("cursor-0".into()),
+            fail_commit: false,
+            replay: true,
+            log: log.clone(),
+        };
+
+        let snapshot = kernel.refresh_with_store(&mut store);
+        assert_eq!(
+            log.take(),
+            [
+                "cursor:harness.codex",
+                "poll:codex:cursor-0",
+                "commit:harness.codex:cursor-1",
+                "ack:codex:cursor-1"
+            ]
+        );
+        assert!(snapshot.admissions[&id("harness.codex")].replay);
+        assert!(snapshot.admissions[&id("harness.codex")].source_ack_sent);
+    }
+
+    #[test]
+    fn source_registry_polls_in_stable_id_order_and_ack_failure_keeps_commit_visible() {
+        let log = Log::default();
+        let mut kernel = Kernel::new();
+        for (id_text, name, fail_ack) in [
+            ("harness.zeta", "zeta", true),
+            ("harness.alpha", "alpha", false),
+        ] {
+            kernel
+                .register_source_adapter(
+                    id(id_text),
+                    FixedSource {
+                        name,
+                        batch: prepared(&format!("fixture:{name}")),
+                        fail_ack,
+                        panic_ack: false,
+                        fail_poll: false,
+                        fail_reset: false,
+                        panic_reset: false,
+                        log: log.clone(),
+                    },
+                )
+                .unwrap();
+        }
+        let mut store = FixedStore {
+            cursor: None,
+            fail_commit: false,
+            replay: false,
+            log: log.clone(),
+        };
+        let snapshot = kernel.refresh_with_store(&mut store);
+        let events = log.take();
+        let alpha_poll = events
+            .iter()
+            .position(|event| event == "poll:alpha:")
+            .unwrap();
+        let zeta_poll = events
+            .iter()
+            .position(|event| event == "poll:zeta:")
+            .unwrap();
+        assert!(alpha_poll < zeta_poll);
+        assert_eq!(snapshot.observations.len(), 2);
+        assert_eq!(snapshot.failures.len(), 1);
+        assert_eq!(snapshot.failures[0].stage, ExtensionStage::AdmissionAck);
+        assert!(!snapshot.admissions[&id("harness.zeta")].source_ack_sent);
+        assert!(snapshot.admissions[&id("harness.alpha")].source_ack_sent);
+    }
+
+    #[test]
+    fn ack_panic_resets_source_and_reports_reset_failure_after_commit() {
+        let log = Log::default();
+        let mut kernel = Kernel::new();
+        kernel
+            .register_source_adapter(
+                id("harness.codex"),
+                FixedSource {
+                    name: "codex",
+                    batch: prepared("fixture:event-1"),
+                    fail_ack: false,
+                    panic_ack: true,
+                    fail_poll: false,
+                    fail_reset: false,
+                    panic_reset: true,
+                    log: log.clone(),
+                },
+            )
+            .unwrap();
+        let mut store = FixedStore {
+            cursor: None,
+            fail_commit: false,
+            replay: false,
+            log: log.clone(),
+        };
+
+        let snapshot = kernel.refresh_with_store(&mut store);
+
+        assert_eq!(snapshot.observations.len(), 1);
+        assert!(!snapshot.admissions[&id("harness.codex")].source_ack_sent);
+        assert_eq!(snapshot.failures.len(), 1);
+        assert_eq!(snapshot.failures[0].stage, ExtensionStage::AdmissionAck);
+        assert!(
+            snapshot.failures[0]
+                .message
+                .contains("source adapter panicked")
+        );
+        assert!(
+            snapshot.failures[0]
+                .message
+                .contains("source reset failed: source adapter panicked during reset")
+        );
+        let events = log.take();
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "commit:harness.codex:cursor-1")
+        );
+        assert!(events.iter().any(|event| event == "reset:codex"));
+    }
+
+    #[test]
+    fn poll_error_resets_source_before_the_next_refresh() {
+        let log = Log::default();
+        let mut kernel = Kernel::new();
+        kernel
+            .register_source_adapter(
+                id("harness.codex"),
+                FixedSource {
+                    name: "codex",
+                    batch: prepared("fixture:event-1"),
+                    fail_ack: false,
+                    panic_ack: false,
+                    fail_poll: true,
+                    fail_reset: false,
+                    panic_reset: false,
+                    log: log.clone(),
+                },
+            )
+            .unwrap();
+        let mut store = FixedStore {
+            cursor: None,
+            fail_commit: false,
+            replay: false,
+            log: log.clone(),
+        };
+
+        let snapshot = kernel.refresh_with_store(&mut store);
+
+        assert_eq!(snapshot.failures.len(), 1);
+        assert_eq!(snapshot.failures[0].stage, ExtensionStage::AdmissionPoll);
+        assert_eq!(snapshot.failures[0].message, "injected poll failure");
+        assert_eq!(log.take().last().unwrap(), "reset:codex");
     }
 
     #[test]
@@ -555,6 +1258,33 @@ mod tests {
                 .register_harness(id("harness.pi"), FixedHarness(Ok(vec![])))
                 .unwrap_err(),
             RegistrationError::DuplicateId("harness.pi".into()),
+        );
+    }
+
+    #[test]
+    fn source_adapter_cannot_be_registered_under_another_source_identity() {
+        let mut kernel = Kernel::new();
+        let error = kernel
+            .register_source_adapter(
+                id("harness.pi"),
+                FixedSource {
+                    name: "codex",
+                    batch: prepared("fixture:event-1"),
+                    fail_ack: false,
+                    panic_ack: false,
+                    fail_poll: false,
+                    fail_reset: false,
+                    panic_reset: false,
+                    log: Log::default(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            RegistrationError::SourceIdentityMismatch {
+                registered: "harness.pi".into(),
+                configured: "harness.codex".into(),
+            }
         );
     }
 
