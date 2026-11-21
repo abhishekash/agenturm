@@ -12,7 +12,7 @@ The application keeps three independent extension families:
 2. **Capabilities** derive optional, typed signals from authorized observations.
 3. **UI contributions** provide data-only panes; the Rust UI owns layout, navigation, focus and terminal lifecycle.
 
-Connectors remain a later extension family. The **target** kernel owns extension identity, policy, durable writes, query boundaries and supervision. The current `agenturm-kernel` only registers and refreshes trusted in-process contributions; it does not yet own policy, persistence, queries or process supervision. Rust performance is a user-chosen implementation direction; no gain is claimed without whole-application measurements.
+Connectors remain a later extension family. The **target** kernel owns extension identity, policy, durable writes, query boundaries and supervision. The current `agenturm-kernel` owns supervised admission and a bounded durable observation read port, but not product policy, persistent app configuration or process supervision. Rust performance is a user-chosen implementation direction; no gain is claimed without whole-application measurements.
 
 ## Milestones and gates
 
@@ -20,11 +20,13 @@ Connectors remain a later extension family. The **target** kernel owns extension
 
 Deliver typed extension ports and deterministic registries for harnesses, capabilities and UI contributions. The host stamps source identity, validates bounded snapshot results, records returned errors/unwind panics, and returns a render-neutral snapshot. This seam is synchronous and trusted; it is not a process, time or allocation isolation boundary.
 
-**Current evidence:** `agenturm-kernel` provides these three ports, stable ID-ordered polling, validated result bounds and per-extension error reporting. Supervised source adapters now register by extension ID; the kernel validates their facts, commits the durable cursor and observations through a storage port, then ACKs. `agenturm-app` uses that path for one explicit Codex usage projection. The product has no general plugin discovery or multi-harness configuration yet. Trait extensions are trusted in-process code: calls are synchronous, result checks follow extension allocation, and caught panics still run the standard panic hook. Independently installed or untrusted extensions must use the supervised process boundary. This does not establish continuous collection, durable query after restart or the full-screen UI.
+**Current evidence:** `agenturm-kernel` provides these three ports, stable ID-ordered polling, validated result bounds and per-extension error reporting. Supervised source adapters register by extension ID; the kernel validates facts, commits the durable cursor and observations through a storage port, then ACKs. The app exposes registration seams for all three in-process extension families. `refresh_with_store` reloads a bounded newest page of committed observations before evaluating capabilities and panes; the Rust store supports close/reopen reads and reports when older rows are outside the page. The product still has no general plugin discovery or persistent multi-harness configuration. Trait extensions are trusted in-process code: calls are synchronous, result checks follow extension allocation, and caught panics still run the standard panic hook. Independently installed or untrusted extensions must use the supervised process boundary. This does not establish continuous collection or the full-screen UI.
 
-### 2. First real Rust vertical slice — partial ingestion path implemented; gate open
+### 2. First real Rust vertical slice — durable admission/read primitives implemented; gate open
 
 Wire one bundled Rust harness through the process protocol into the kernel, persist its observations in a Rust-owned SQLite store, and render/query the same session after restart. Exercise duplicate replay, malformed output, adapter crash, store failure before commit, and process restart. The runtime must not start or import Python.
+
+**Current evidence:** the kernel now reconstructs committed typed observations after reopening the SQLite store, and a generic capability/pane can evaluate that durable history. A real-process test covers Codex ingestion, commit retry, follow-up polling, and kernel rehydration from a reopened database. The app still exposes only one explicit Codex usage ingestion command, not a reusable configured collector or read/query command.
 
 **Gate:** an installed Rust application can discover actual local harness data, commit one session atomically, restart and render it from durable state. A fixture worker alone does not pass.
 
@@ -49,8 +51,8 @@ Package harnesses and capabilities independently while shipping a useful default
 ## Current blockers
 
 - There is a minimal Rust app entry point, but no Rust TUI or production composition yet.
-- Existing harness crates are standalone processes; a narrow Codex usage command now uses kernel-owned admission, but the app does not yet compose multiple harnesses or discover plugins.
-- The Rust observation store is wired through the kernel only for that explicit one-shot command; the installed storage service remains probe/scratch oriented and is not production authority.
+- Existing harness crates are standalone processes; a narrow Codex usage command now uses kernel-owned admission, but the app does not yet compose configured multiple harnesses or discover plugins.
+- The Rust observation store is wired to kernel admission and bounded history reads, but the app still lacks a reusable collector/query command; the installed storage service remains probe/scratch oriented and is not production authority.
 - Existing Rust admission and query work proves bounded subsets, not product semantics across all evidence and policy cases.
 - Cross-platform service identity, packaging, crash recovery and release workflows need separate implementation and review.
 

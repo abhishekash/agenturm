@@ -13,7 +13,8 @@
 #![forbid(unsafe_code)]
 
 use agenturm_kernel::{
-    Observation, ObservationKind as KernelObservationKind, ObservationStore, StoreCommit,
+    MAX_DURABLE_SNAPSHOT_OBSERVATIONS, Observation, ObservationKind as KernelObservationKind,
+    ObservationPage, ObservationStore, StoreCommit,
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -539,6 +540,105 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// Reads the newest bounded durable page, returned in chronological order.
+    /// `has_more` tells callers that older history is outside this snapshot.
+    pub fn observation_page(&self, limit: usize) -> Result<ObservationPage> {
+        if limit == 0 || limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
+            return Err(StoreError::Invalid("observation page limit is invalid"));
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT source_id, event_id, revision, session_id, worker_id, turn_id,
+                    operation_id, observed_at_unix_ns, kind_json
+             FROM agenturm_observations
+             ORDER BY observed_at_unix_ns DESC, source_id DESC, event_id DESC, revision DESC
+             LIMIT ?1",
+        )?;
+        let read_limit = i64::try_from(limit + 1)
+            .map_err(|_| StoreError::Invalid("observation page limit is invalid"))?;
+        let rows = statement.query_map([read_limit], |row| {
+            let revision: i64 = row.get(2)?;
+            let timestamp: i64 = row.get(7)?;
+            let kind_json: String = row.get(8)?;
+            let kind = serde_json::from_str(&kind_json).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    8,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                u32::try_from(revision).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        2,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })?,
+                ObservationIdentity {
+                    session_id: row.get(3)?,
+                    worker_id: row.get(4)?,
+                    turn_id: row.get(5)?,
+                    operation_id: row.get(6)?,
+                },
+                u64::try_from(timestamp).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        7,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })?,
+                kind,
+            ))
+        })?;
+        let mut rows = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        rows.reverse();
+        let mut observations = Vec::with_capacity(rows.len());
+        for (source_id, event_id, revision, identity, observed_at_unix_ns, kind) in rows {
+            let harness_id = agenturm_kernel::ExtensionId::parse(source_id)
+                .map_err(|_| StoreError::Invalid("stored source ID is invalid"))?;
+            observations.push(Observation {
+                harness_id,
+                event_id,
+                revision,
+                identity: agenturm_kernel::ObservationIdentity {
+                    session_id: identity.session_id,
+                    worker_id: identity.worker_id,
+                    turn_id: identity.turn_id,
+                    operation_id: identity.operation_id,
+                },
+                observed_at_unix_ns,
+                kind: match kind {
+                    ObservationKind::SessionStarted => KernelObservationKind::SessionStarted,
+                    ObservationKind::SessionEnded => KernelObservationKind::SessionEnded,
+                    ObservationKind::Activity { category } => {
+                        KernelObservationKind::Activity { category }
+                    }
+                    ObservationKind::Usage {
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                        total_tokens,
+                    } => KernelObservationKind::Usage {
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                        total_tokens,
+                    },
+                },
+            });
+        }
+        Ok(ObservationPage {
+            observations,
+            has_more,
+        })
+    }
+
     /// Returns a source's opaque durable cursor, if any batch has committed.
     pub fn source_cursor(&self, source_id: &str) -> Result<Option<String>> {
         self.connection
@@ -555,6 +655,11 @@ impl Store {
 impl ObservationStore for Store {
     fn source_cursor(&self, source_id: &str) -> std::result::Result<Option<String>, String> {
         Store::source_cursor(self, source_id).map_err(|error| error.to_string())
+    }
+
+    fn load_observations(&self, limit: usize) -> std::result::Result<ObservationPage, String> {
+        self.observation_page(limit)
+            .map_err(|error| error.to_string())
     }
 
     fn commit(
@@ -819,6 +924,47 @@ mod tests {
         );
         assert_eq!(store.commit_batch(&input).unwrap(), CommitOutcome::Replay);
         assert_eq!(store.observations().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn bounded_observation_page_survives_reopen_and_reports_older_rows() {
+        let db = TempDb::new();
+        {
+            let mut store = Store::open(&db.0).unwrap();
+            store
+                .commit_batch(&batch(
+                    "request-page-1",
+                    vec![event("event-1", "session-1", 10)],
+                ))
+                .unwrap();
+            store
+                .commit_batch(&batch_after(
+                    "request-page-2",
+                    "cursor-1",
+                    "cursor-2",
+                    vec![event("event-2", "session-2", 20)],
+                ))
+                .unwrap();
+        }
+
+        let store = Store::open(&db.0).unwrap();
+        let newest = store.observation_page(1).unwrap();
+        assert!(newest.has_more);
+        assert_eq!(newest.observations.len(), 1);
+        assert_eq!(newest.observations[0].event_id, "event-2");
+        assert_eq!(newest.observations[0].harness_id.as_str(), "harness.codex");
+
+        let complete = store.observation_page(2).unwrap();
+        assert!(!complete.has_more);
+        assert_eq!(
+            complete
+                .observations
+                .iter()
+                .map(|row| row.event_id.as_str())
+                .collect::<Vec<_>>(),
+            ["event-1", "event-2"]
+        );
+        assert!(store.observation_page(0).is_err());
     }
 
     #[test]
