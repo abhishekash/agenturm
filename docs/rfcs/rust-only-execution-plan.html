@@ -55,7 +55,7 @@
 <h3>Step 5 — Ship the standalone Rust release</h3>
 <p>Build and publish versioned Rust artifacts with checksums, install and uninstall instructions, and a support matrix for platform and service manager coverage. Use the Linux workflow above as the first release gate and verify each additional platform before advertising support.</p>
 <p><strong>Acceptance.</strong> From a tagged artifact, run install, collect, restart, query, inspect and uninstall on each supported platform. Check upgrades using the previous Rust release database when available. Report performance changes only when measured.</p>
-<p><strong>In progress.</strong> The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-linux-bundle.md">Linux bundle</a> and its checksum passed local archive qualification, including restart, inspection, backup, and reopening an earlier local candidate’s database. The same verifier is wired into CI for pull requests, main, and Rust tags. Qualification from a tagged artifact remains open. The local upgrade used an earlier candidate of the same version. Additional platforms require their own qualification.</p>
+<p><strong>Verified on Ubuntu 24.04.5 x86-64.</strong> The <a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.1.0">first standalone Rust release</a> ships the exact archive and checksum from the successful tag build. The archive passed install, rolling discovery, collection, restart, query, inspection, backup, and uninstall. The database upgrade used an earlier local candidate because this is the first tagged Rust release. Additional platforms require their own qualification.</p>
 <h3>Step 6 — Add connector runtime support after the Rust release gates</h3>
 <p>Use the existing inbound admission path and the connector API as the starting point. Wire explicit grants and supervised processes, then add durable outbound delivery and reconciliation.</p>
 <p><strong>Acceptance.</strong> Use isolated fake sources and sinks to prove revocation, replay, stable idempotency keys and recovery after an ambiguous send. Apply OS isolation and credential boundaries before enabling untrusted connector executables.</p>
@@ -63,6 +63,6 @@
 <ul>
 <li>Full harness parity still needs the unsupported native evidence identified in the coverage matrix. Private-content delivery currently covers the latest committed batch of a pinned, single-file Pi source.</li>
 <li>The collector and child adapters share an OS user. A separate storage authority or child isolation remains necessary for untrusted executables.</li>
-<li>Release gates still require qualification from a tagged artifact, supported platform checks, and upgrade verification where a previous Rust release exists.</li>
+<li>Ubuntu 24.04 x86-64 is the qualified release platform. Other platforms require their own release checks.</li>
 </ul>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
