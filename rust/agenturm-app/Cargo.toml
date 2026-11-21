@@ -8,6 +8,8 @@ license = "MIT"
 
 [dependencies]
 agenturm-kernel = { path = "../agenturm-kernel" }
+agenturm-runtime = { path = "../agenturm-runtime" }
+agenturm-store = { path = "../agenturm-store" }
 
 [lib]
 name = "agenturm_app"

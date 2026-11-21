@@ -13,13 +13,14 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const MAX_EXTENSIONS_PER_KIND: usize = 64;
 const MAX_OBSERVATIONS_PER_HARNESS: usize = 2_048;
 const MAX_METRIC_ROWS: usize = 256;
 const MAX_SESSION_KEY_BYTES: usize = 512;
+const MAX_EVENT_ID_BYTES: usize = 256;
 const MAX_CATEGORY_BYTES: usize = 64;
 const MAX_LABEL_BYTES: usize = 128;
 const MAX_VALUE_BYTES: usize = 1_024;
@@ -74,9 +75,20 @@ impl std::error::Error for RegistrationError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Observation {
     pub harness_id: ExtensionId,
-    pub session_key: String,
-    pub observed_at_unix_ms: u64,
+    pub event_id: String,
+    pub revision: u32,
+    pub identity: ObservationIdentity,
+    pub observed_at_unix_ns: u64,
     pub kind: ObservationKind,
+}
+
+/// Source-native identity components preserved across collection and storage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObservationIdentity {
+    pub session_id: String,
+    pub worker_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub operation_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,8 +99,11 @@ pub enum ObservationKind {
         category: String,
     },
     Usage {
-        input_tokens: u64,
-        output_tokens: u64,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        cache_read_tokens: Option<u64>,
+        cache_write_tokens: Option<u64>,
+        total_tokens: Option<u64>,
     },
 }
 
@@ -100,8 +115,10 @@ pub trait Harness: Send {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RawObservation {
-    pub session_key: String,
-    pub observed_at_unix_ms: u64,
+    pub event_id: String,
+    pub revision: u32,
+    pub identity: ObservationIdentity,
+    pub observed_at_unix_ns: u64,
     pub kind: ObservationKind,
 }
 
@@ -201,8 +218,10 @@ impl Kernel {
                             .observations
                             .extend(rows.into_iter().map(|row| Observation {
                                 harness_id: id.clone(),
-                                session_key: row.session_key,
-                                observed_at_unix_ms: row.observed_at_unix_ms,
+                                event_id: row.event_id,
+                                revision: row.revision,
+                                identity: row.identity,
+                                observed_at_unix_ns: row.observed_at_unix_ns,
                                 kind: row.kind,
                             }))
                     }
@@ -318,9 +337,39 @@ fn validate_raw_observations(rows: Vec<RawObservation>) -> Result<Vec<RawObserva
     if rows.len() > MAX_OBSERVATIONS_PER_HARNESS {
         return Err("observation count exceeds limit".into());
     }
+    let mut event_revisions = BTreeSet::new();
     for row in &rows {
-        if row.session_key.is_empty() || row.session_key.len() > MAX_SESSION_KEY_BYTES {
-            return Err("session identity is empty or exceeds limit".into());
+        if row.event_id.is_empty()
+            || row.event_id.len() > MAX_EVENT_ID_BYTES
+            || !row.event_id.as_bytes()[0].is_ascii_alphanumeric()
+            || !row
+                .event_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
+        {
+            return Err("event identity is invalid or too long".into());
+        }
+        if !event_revisions.insert((row.event_id.as_str(), row.revision)) {
+            return Err("duplicate event identity and revision".into());
+        }
+        if !valid_identity_part(&row.identity.session_id, MAX_SESSION_KEY_BYTES)
+            || !row
+                .identity
+                .worker_id
+                .as_ref()
+                .is_none_or(|value| valid_identity_part(value, MAX_SESSION_KEY_BYTES))
+            || !row
+                .identity
+                .turn_id
+                .as_ref()
+                .is_none_or(|value| valid_identity_part(value, MAX_SESSION_KEY_BYTES))
+            || !row
+                .identity
+                .operation_id
+                .as_ref()
+                .is_none_or(|value| valid_identity_part(value, MAX_SESSION_KEY_BYTES))
+        {
+            return Err("native session, worker, turn, or operation identity is invalid".into());
         }
         if let ObservationKind::Activity { category } = &row.kind
             && (category.is_empty() || category.len() > MAX_CATEGORY_BYTES)
@@ -329,6 +378,15 @@ fn validate_raw_observations(rows: Vec<RawObservation>) -> Result<Vec<RawObserva
         }
     }
     Ok(rows)
+}
+
+fn valid_identity_part(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_bytes
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
 }
 
 fn validate_metric_rows(rows: Vec<MetricRow>) -> Result<Vec<MetricRow>, String> {
@@ -410,8 +468,15 @@ mod tests {
 
     fn activity(session_key: &str) -> RawObservation {
         RawObservation {
-            session_key: session_key.into(),
-            observed_at_unix_ms: 123,
+            event_id: format!("fixture:{session_key}"),
+            revision: 0,
+            identity: ObservationIdentity {
+                session_id: session_key.into(),
+                worker_id: Some("worker-1".into()),
+                turn_id: Some("turn-1".into()),
+                operation_id: Some("operation-1".into()),
+            },
+            observed_at_unix_ns: 123,
             kind: ObservationKind::Activity {
                 category: "tool".into(),
             },
@@ -433,6 +498,13 @@ mod tests {
 
         let snapshot = kernel.refresh();
         assert_eq!(snapshot.observations.len(), 1);
+        assert_eq!(snapshot.observations[0].event_id, "fixture:s1");
+        assert_eq!(snapshot.observations[0].revision, 0);
+        assert_eq!(snapshot.observations[0].identity.session_id, "s1");
+        assert_eq!(
+            snapshot.observations[0].identity.worker_id.as_deref(),
+            Some("worker-1")
+        );
         assert_eq!(
             snapshot.observations[0].harness_id.as_str(),
             "harness.codex"
@@ -484,6 +556,36 @@ mod tests {
                 .unwrap_err(),
             RegistrationError::DuplicateId("harness.pi".into()),
         );
+    }
+
+    #[test]
+    fn duplicate_event_identity_in_one_harness_batch_is_rejected() {
+        let mut kernel = Kernel::new();
+        kernel
+            .register_harness(
+                id("harness.duplicate"),
+                FixedHarness(Ok(vec![activity("same"), activity("same")])),
+            )
+            .unwrap();
+        let snapshot = kernel.refresh();
+        assert!(snapshot.observations.is_empty());
+        assert_eq!(snapshot.failures.len(), 1);
+        assert_eq!(snapshot.failures[0].stage, ExtensionStage::Poll);
+    }
+
+    #[test]
+    fn invalid_optional_native_identity_rejects_the_harness_batch() {
+        let mut row = activity("session");
+        row.identity.turn_id = Some("turn with spaces".into());
+        let mut kernel = Kernel::new();
+        kernel
+            .register_harness(id("harness.invalid-identity"), FixedHarness(Ok(vec![row])))
+            .unwrap();
+
+        let snapshot = kernel.refresh();
+        assert!(snapshot.observations.is_empty());
+        assert_eq!(snapshot.failures.len(), 1);
+        assert_eq!(snapshot.failures[0].stage, ExtensionStage::Poll);
     }
 
     #[test]
