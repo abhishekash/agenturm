@@ -119,6 +119,29 @@ class ReferenceAdmissionSPITests(unittest.TestCase):
             self.commit(refs=("audit-b",))
         self.assertEqual(self.snapshot(), after)
 
+    def test_empty_cursor_only_batch_rolls_back_after_provider_write_failure(self):
+        self.batch = PollBatch("fixture-source", "cursor-only", ())
+        with self.store._connect() as db:
+            before = tuple(tuple(row) for row in db.execute(
+                "SELECT * FROM plugin_source_cursor_v1 WHERE source_id=?",
+                (self.lease.source_id,)))
+        self.provider.fail_after_write = True
+        with self.assertRaisesRegex(RuntimeError, "injected trusted hook failure"):
+            self.commit()
+        self.assertEqual(self.snapshot(), (("", 0), 0, []))
+        with self.store._connect() as db:
+            self.assertEqual(tuple(tuple(row) for row in db.execute(
+                "SELECT * FROM plugin_source_cursor_v1 WHERE source_id=?",
+                (self.lease.source_id,))), before)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM plugin_reference_owner_v1 WHERE source_id=?",
+                (self.lease.source_id,)).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM plugin_content_batch_v1 WHERE source_id=?",
+                (self.lease.source_id,)).fetchone()[0], 0)
+        self.provider.fail_after_write = False
+        self.assertEqual(self.commit(), "cursor-only")
+
     def test_default_receiver_cannot_select_fixture_or_mix_legacy_arguments(self):
         before = self.snapshot()
         with self.assertRaisesRegex(ProtocolError, "provider is unavailable"):

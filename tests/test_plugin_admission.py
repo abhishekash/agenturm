@@ -38,6 +38,71 @@ class AdmissionTests(unittest.TestCase):
             dirty = db.execute("SELECT source_id,dirty_seq FROM plugin_evidence_dirty_v1").fetchall()
             return tuple(cursor), [tuple(row) for row in evidence], [tuple(row) for row in dirty]
 
+    def durable_snapshot(self):
+        """Capture every source-owned row touched by a metadata-only empty batch."""
+        with self.store._connect() as db:
+            tables = (
+                "plugin_source_cursor_v1", "plugin_evidence_v1",
+                "plugin_evidence_dirty_v1", "plugin_content_batch_v1",
+                "plugin_content_status_v1", "plugin_reference_owner_v1",
+            )
+            return tuple(
+                tuple(tuple(row) for row in db.execute(
+                    f"SELECT * FROM {table} WHERE source_id=? ORDER BY rowid",
+                    (self.lease.source_id,)))
+                for table in tables
+            )
+
+    def test_empty_batch_cursor_policy_and_exact_replay(self):
+        idle = PollBatch("fixture-source", "", ())
+        initial = self.durable_snapshot()
+        self.assertEqual(commit_batch(self.store, self.lease, "", idle), "")
+        self.assertEqual(self.durable_snapshot(), initial)
+
+        cursor_only = PollBatch("fixture-source", "cursor-one", ())
+        self.assertEqual(commit_batch(self.store, self.lease, "", cursor_only), "cursor-one")
+        committed = self.durable_snapshot()
+        with self.store._connect() as db:
+            source = db.execute(
+                "SELECT cursor,prior_cursor,last_batch_digest,dirty_seq "
+                "FROM plugin_source_cursor_v1 WHERE source_id=?",
+                (self.lease.source_id,)).fetchone()
+            evidence = db.execute(
+                "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id=?",
+                (self.lease.source_id,)).fetchone()[0]
+            refs = db.execute(
+                "SELECT cursor,refs_digest FROM plugin_content_batch_v1 WHERE source_id=?",
+                (self.lease.source_id,)).fetchone()
+        self.assertEqual(tuple(source)[:2], ("cursor-one", ""))
+        self.assertEqual(source["dirty_seq"], 0)
+        self.assertRegex(source["last_batch_digest"], r"^[0-9a-f]{64}$")
+        self.assertEqual(evidence, 0)
+        self.assertEqual(refs["cursor"], "cursor-one")
+
+        self.assertEqual(commit_batch(self.store, self.lease, "", cursor_only), "cursor-one")
+        self.assertEqual(self.durable_snapshot(), committed)
+        self.assertEqual(commit_batch(self.store, self.lease, "cursor-one", cursor_only),
+                         "cursor-one")
+        self.assertEqual(self.durable_snapshot(), committed)
+
+        with self.assertRaisesRegex(ProtocolError, "cannot return to empty"):
+            commit_batch(self.store, self.lease, "cursor-one", idle)
+        self.assertEqual(self.durable_snapshot(), committed)
+        with self.assertRaisesRegex(ProtocolError, "stale plugin cursor"):
+            commit_batch(self.store, self.lease, "stale",
+                         PollBatch("fixture-source", "cursor-two", ()))
+        self.assertEqual(self.durable_snapshot(), committed)
+
+        renewed = activate_source(self.store, plugin_id="fixture.plugin",
+                                  source_id="fixture-source", generation=GENERATION)
+        after_renewal = self.durable_snapshot()
+        with self.assertRaisesRegex(ProtocolError, "stale plugin source lease"):
+            commit_batch(self.store, self.lease, "cursor-one",
+                         PollBatch("fixture-source", "cursor-two", ()))
+        self.assertEqual(self.durable_snapshot(), after_renewal)
+        self.assertEqual(commit_batch(self.store, renewed, "", cursor_only), "cursor-one")
+        self.assertEqual(self.durable_snapshot(), after_renewal)
+
     def test_evidence_cursor_and_dirty_marker_are_atomic_and_replay_is_exact(self):
         batch = self.batch()
         self.assertEqual(commit_batch(self.store, self.lease, "", batch), "next")

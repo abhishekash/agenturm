@@ -848,6 +848,7 @@ fn validate(request: &Request, allow_plugin_facts: bool) -> Result<()> {
         || !cursor(&request.cursor)
         || !hash(&request.batch_digest)
         || request.records.len() > MAX_RECORDS
+        || (request.cursor.is_empty() && !request.records.is_empty())
     {
         return Err(reject("invalid prepared admission request"));
     }
@@ -1186,6 +1187,9 @@ fn commit_guarded_mode(
     } else {
         None
     };
+    if request.cursor.is_empty() && !current_cursor.is_empty() {
+        return Err(reject("source cursor cannot return to empty"));
+    }
     if real_clone {
         // A real Store clone must pass the same complete history gate as
         // activation. Stale or private content receipts cannot be overwritten
