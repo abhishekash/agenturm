@@ -7,6 +7,7 @@ not claim PluginAdmissionPort conformance.
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,24 @@ from observatory.plugin_wire import PollBatch
 
 
 SUPPORTED_RECORD_KINDS = frozenset({"lifecycle", "message", "tool", "check", "usage"})
+
+
+def logical_clone_snapshot(path: str | Path) -> tuple:
+    """Read every schema object and table row for no-write dispatch checks."""
+    with sqlite3.connect(path) as db:
+        schema = tuple(tuple(row) for row in db.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"))
+        tables = [row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        contents = []
+        for table in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            rows = tuple(sorted((tuple(row) for row in db.execute(
+                f"SELECT * FROM {quoted}")), key=repr))
+            contents.append((table, rows))
+        return schema, tuple(contents)
 
 
 class RustFixtureError(RuntimeError):
@@ -123,6 +142,8 @@ class RustMarkedCloneMetadataAdapter:
         if unsupported:
             raise UnsupportedMetadataSubset(
                 f"unsupported metadata record kinds: {', '.join(unsupported)}")
+        if any(row[2] != 0 for row in rows):
+            raise UnsupportedMetadataSubset("correction revisions are not admitted")
         records = [{
             "event_id_hash": row[1], "revision": row[2], "kind": row[3],
             "time_ns": row[4], "payload_json": row[5], "record_digest": row[6],

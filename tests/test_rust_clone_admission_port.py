@@ -22,6 +22,7 @@ from tests.support.rust_metadata_adapter import (
     RustFixtureError,
     RustMarkedCloneMetadataAdapter,
     UnsupportedMetadataSubset,
+    logical_clone_snapshot,
 )
 
 
@@ -139,12 +140,36 @@ class RustCloneMetadataSubsetContractTests(unittest.TestCase):
         lease = self.activate()
         self.assertEqual(lease.cursor, "")
         first = PollBatch(SOURCE, "cursor-1", (
-            lifecycle("event-life"), message("event-message")))
+            lifecycle("event-life"), message("event-message"),
+            {"event_id": "event-tool", "revision": 0, "kind": "tool",
+             "time_ns": "9007199254740995",
+             "payload": {"category": "shell", "result": "succeeded"},
+             "identity": {"session_id": "tool-session", "operation_id": "op-1"}},
+            {"event_id": "event-check", "revision": 0, "kind": "check",
+             "time_ns": "9007199254740996",
+             "payload": {"category": "test", "result": "passed"},
+             "identity": {"session_id": "check-session"}},
+            {"event_id": "event-usage", "revision": 0, "kind": "usage",
+             "time_ns": "9007199254740997",
+             "payload": {"input_tokens": 42, "output_tokens": 7}},
+        ))
         request = self.adapter.batch_request(lease, "", first, request_id="2" * 32)
         committed = self.adapter.commit_batch(
             lease, "", first, request_id=request["request_id"])
         self.assertEqual((committed["disposition"], committed["cursor"]),
                          ("committed", "cursor-1"))
+        with closing(sqlite3.connect(self.adapter.clone_path)) as db:
+            persisted = {kind: (payload, session_id, operation_id) for kind, payload,
+                         session_id, operation_id in db.execute(
+                             "SELECT kind,payload_json,native_session_id,native_operation_id "
+                             "FROM plugin_evidence_v1 WHERE source_id=?", (SOURCE,))}
+        self.assertEqual(persisted, {
+            "lifecycle": ('{"state":"completed"}', "session-1", ""),
+            "message": ('{"role":"assistant"}', "session-2", ""),
+            "tool": ('{"category":"shell","result":"succeeded"}', "tool-session", "op-1"),
+            "check": ('{"category":"test","result":"passed"}', "check-session", ""),
+            "usage": ('{"input_tokens":42,"output_tokens":7}', "", ""),
+        })
         before_replay = self.snapshot()
         replay = self.adapter.commit_batch(
             lease, "", first, request_id=request["request_id"])
@@ -168,6 +193,12 @@ class RustCloneMetadataSubsetContractTests(unittest.TestCase):
         self.adapter.close()
         self.adapter = RustMarkedCloneMetadataAdapter(
             os.environ["AGENTURM_RUST_METADATA_ADAPTER_BIN"], self.adapter.clone_path)
+        before_restart_replay = logical_clone_snapshot(self.adapter.clone_path)
+        replay = self.adapter.commit_batch(
+            lease, "", first, request_id=request["request_id"])
+        self.assertEqual(replay["disposition"], "replay")
+        self.assertEqual(logical_clone_snapshot(self.adapter.clone_path),
+                         before_restart_replay)
         resumed = self.activate(request_id="4" * 32)
         self.assertEqual(resumed.cursor, "cursor-1")
 
@@ -274,6 +305,47 @@ class RustCloneMetadataSubsetContractTests(unittest.TestCase):
                                               request_id=f"{index:032x}", **kwargs)
                 self.assertEqual(self.snapshot(), before)
 
+    def test_correction_revision_is_classified_outside_subset(self):
+        lease = self.activate()
+        correction = lifecycle("revision-one", "failed")
+        correction["revision"] = 1
+        before = self.snapshot()
+        with self.assertRaisesRegex(UnsupportedMetadataSubset, "correction revisions"):
+            self.adapter.commit_batch(
+                lease, "", PollBatch(SOURCE, "cursor-1", (correction,)),
+                request_id="2" * 32)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_raw_prompt_and_output_fields_fail_before_rust_dispatch(self):
+        from unittest.mock import patch
+
+        from observatory.plugin_wire import ProtocolError
+
+        lease = self.activate()
+        batches = (
+            PollBatch(SOURCE, "cursor-1", ({
+                "event_id": "raw-message", "revision": 0, "kind": "message",
+                "time_ns": "1", "payload": {"role": "assistant", "prompt": "secret",
+                                               "output": "secret"},
+                "identity": {"session_id": "private-session"},
+            },)),
+            PollBatch(SOURCE, "cursor-1", ({
+                "event_id": "raw-tool", "revision": 0, "kind": "tool",
+                "time_ns": "1", "payload": {"category": "shell", "result": "succeeded",
+                                               "prompt": "secret", "output": "secret"},
+                "identity": {"session_id": "private-session"},
+            },)),
+        )
+        before = self.snapshot()
+        with patch.object(self.adapter, "_run", wraps=self.adapter._run) as rust_call:
+            for index, batch in enumerate(batches, start=2):
+                with self.subTest(kind=batch.records[0]["kind"]):
+                    with self.assertRaises(ProtocolError):
+                        self.adapter.commit_batch(
+                            lease, "", batch, request_id=f"{index:032x}")
+            rust_call.assert_not_called()
+        self.assertEqual(self.snapshot(), before)
+
     def test_unsupported_reference_member_and_gap_histories_fail_closed(self):
         histories = (
             ("provider reference owner",
@@ -324,7 +396,7 @@ class RustCloneMetadataSubsetContractTests(unittest.TestCase):
         for label, request in (("AdmitBatch", admit), ("SetSourceCapture", capture),
                                ("RevokeSource", revoke)):
             with self.subTest(operation=label):
-                before = self.snapshot()
+                before = logical_clone_snapshot(self.adapter.clone_path)
                 with self.assertRaises(RustFixtureError) as raised:
                     self.adapter.send_normal_dispatch(request)
                 expected_message = {
@@ -333,7 +405,7 @@ class RustCloneMetadataSubsetContractTests(unittest.TestCase):
                     "RevokeSource": "clone revocation is unavailable through the storage service path",
                 }[label]
                 self.assertIn(expected_message, str(raised.exception))
-                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(logical_clone_snapshot(self.adapter.clone_path), before)
 
 
 if __name__ == "__main__":

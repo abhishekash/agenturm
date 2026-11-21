@@ -845,6 +845,8 @@ class RustScratchAdmissionTests(unittest.TestCase):
                          committed_binding)
 
     def test_normal_clone_dispatch_rejects_all_metadata_subset_writes(self):
+        from tests.support.rust_metadata_adapter import logical_clone_snapshot
+
         source_id = "normal-subset-dispatch-source"
         generation = "c" * 64
         canonical_path = self.root / "normal-subset-canonical.db"
@@ -882,6 +884,7 @@ class RustScratchAdmissionTests(unittest.TestCase):
         )
         for label, request, reason in requests:
             with self.subTest(operation=label):
+                full_before = logical_clone_snapshot(clone_path)
                 source_before = self.batch_source_snapshot(clone_path, source_id)
                 state_before = self.clone_policy_state_snapshot(clone_path, source_id)
                 binding_before = self.batch_binding_snapshot(clone_path, source_id)
@@ -902,6 +905,7 @@ class RustScratchAdmissionTests(unittest.TestCase):
                     clone_path, "storage_source_capture_set_v2", source_id), capture_before)
                 self.assertEqual(self.policy_receipts_snapshot(
                     clone_path, "storage_source_revoke_v2", source_id), revoke_before)
+                self.assertEqual(logical_clone_snapshot(clone_path), full_before)
 
     def test_marked_clone_capture_revoke_and_reactivation_match_python(self):
         from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
