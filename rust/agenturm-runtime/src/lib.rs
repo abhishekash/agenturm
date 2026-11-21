@@ -18,7 +18,8 @@ use std::io::BufReader;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -93,6 +94,7 @@ pub struct ProcessConfig {
     pub source_id: String,
     pub plugin_id: String,
     pub timeout: Duration,
+    pub stop_flag: Option<Arc<AtomicBool>>,
 }
 
 impl ProcessConfig {
@@ -111,7 +113,15 @@ impl ProcessConfig {
             source_id: source_id.into(),
             plugin_id: plugin_id.into(),
             timeout: DEFAULT_TIMEOUT,
+            stop_flag: None,
         }
+    }
+
+    /// Stops waiting for child replies when the shared flag is set. The
+    /// process group is terminated on cancellation and is not restarted.
+    pub fn with_stop_flag(mut self, stop_flag: Arc<AtomicBool>) -> Self {
+        self.stop_flag = Some(stop_flag);
+        self
     }
 
     /// Configuration for the bundled Codex adapter.
@@ -258,19 +268,59 @@ impl ProcessSource {
     }
 
     fn read_reply(&mut self) -> Result<String> {
-        match self.replies.recv_timeout(self.config.timeout) {
+        match receive_until_cancelled(
+            &self.replies,
+            self.config.timeout,
+            self.config.stop_flag.as_deref(),
+        ) {
             Ok(Ok(Some(frame))) => Ok(frame),
             Ok(Ok(None)) => Err(RuntimeError::new("plugin host closed its data pipe")),
             Ok(Err(_)) => Err(RuntimeError::new("plugin host returned an invalid frame")),
-            Err(RecvTimeoutError::Timeout) => {
+            Err(ReplyWaitError::TimedOut) => {
                 self.terminate();
                 Err(RuntimeError::new(
                     "source adapter exceeded its response deadline",
                 ))
             }
-            Err(RecvTimeoutError::Disconnected) => {
+            Err(ReplyWaitError::Disconnected) => {
                 Err(RuntimeError::new("plugin host frame reader stopped"))
             }
+            Err(ReplyWaitError::Cancelled) => Err(RuntimeError::new("source operation cancelled")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplyWaitError {
+    TimedOut,
+    Disconnected,
+    Cancelled,
+}
+
+fn receive_until_cancelled<T>(
+    receiver: &Receiver<T>,
+    timeout: Duration,
+    stop_flag: Option<&AtomicBool>,
+) -> std::result::Result<T, ReplyWaitError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if stop_flag.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
+            return Err(ReplyWaitError::Cancelled);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ReplyWaitError::TimedOut);
+        }
+        let wait = if stop_flag.is_some() {
+            remaining.min(Duration::from_millis(25))
+        } else {
+            remaining
+        };
+        match receiver.recv_timeout(wait) {
+            Ok(value) => return Ok(value),
+            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => return Err(ReplyWaitError::TimedOut),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(ReplyWaitError::Disconnected),
         }
     }
 }
@@ -350,6 +400,15 @@ impl SourceAdapter for ProcessSource {
     }
 
     fn reset(&mut self) -> std::result::Result<(), String> {
+        if self
+            .config
+            .stop_flag
+            .as_ref()
+            .is_some_and(|stop| stop.load(Ordering::Relaxed))
+        {
+            self.terminate();
+            return Ok(());
+        }
         let config = self.config.clone();
         let decoder = self.decoder.clone();
         self.terminate();
@@ -382,6 +441,15 @@ impl ProcessSource {
     }
 
     fn shutdown(&mut self) {
+        if self
+            .config
+            .stop_flag
+            .as_ref()
+            .is_some_and(|stop| stop.load(Ordering::Relaxed))
+        {
+            self.terminate();
+            return;
+        }
         if self.child.try_wait().ok().flatten().is_some() {
             let _ = self.child.wait();
             return;
@@ -781,6 +849,22 @@ fn parse_decimal_timestamp(value: &str) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reply_wait_observes_stop_flag_before_long_deadline() {
+        let (_sender, receiver) = mpsc::channel::<u8>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let signal = Arc::clone(&stop);
+        let setter = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            signal.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let result = receive_until_cancelled(&receiver, Duration::from_secs(5), Some(&stop));
+        setter.join().unwrap();
+        assert_eq!(result, Err(ReplyWaitError::Cancelled));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn plugin_ids_use_the_kernel_extension_identifier_grammar() {
