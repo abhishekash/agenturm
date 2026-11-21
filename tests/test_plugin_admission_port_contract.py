@@ -2,9 +2,9 @@
 
 A backend conformance test can subclass ``PluginAdmissionPortContract`` and
 supply a fixture with a durable receiver, a port factory, a receiver-owned
-    capture-policy mutation and a durable-state snapshot. This base suite covers
-    metadata admission only. Reference-capable backends need additional provider
-    schema, verification, commit, replay and revocation-erasure conformance tests.
+capture-policy mutation and a durable-state snapshot. This base suite covers
+metadata admission only. Reference-capable backends need additional provider
+schema, verification, commit, replay and revocation-erasure conformance tests.
 The default Python Store backend exercises this suite below; structural
 Protocol checks alone are not conformance evidence.
 """
@@ -77,10 +77,24 @@ class PluginAdmissionPortContract:
             reference_admissions=self.reference_admissions)
 
     def test_activation_and_initial_reads_have_empty_baseline(self):
+        self.port.install_reference_schema(self.reference_admissions)
         lease = self.activate()
         self.assertEqual(lease.cursor, "")
         self.assertEqual(self.port.member_cursors(lease), {})
         self.assertEqual(self.port.last_source_diagnostic(lease), {})
+
+    def test_source_ownership_and_artifact_generation_are_fenced(self):
+        self.activate()
+        before = self.durable_snapshot(SOURCE_ID)
+        for plugin_id, generation in (("other.plugin", GENERATION),
+                                      (PLUGIN_ID, "b" * 64)):
+            with self.subTest(plugin_id=plugin_id, generation=generation):
+                with self.assertRaises(Exception):
+                    self.port.activate_source(
+                        plugin_id=plugin_id, source_id=SOURCE_ID,
+                        generation=generation, content_fingerprint="",
+                        reference_admissions=self.reference_admissions)
+                self.assertEqual(self.durable_snapshot(SOURCE_ID), before)
 
     def test_diagnostic_and_member_cursors_round_trip_through_port(self):
         lease = self.activate()
