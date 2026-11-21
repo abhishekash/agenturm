@@ -88,28 +88,37 @@ class PluginReferenceAdmissionPortContract:
         return ReferenceSubmission(provider_id, (ref,), grant)
 
     def commit(self, *, expected="", cursor="cursor-1", ref="audit-a",
-               provider_id="audit-fixture", grant="host-owned-audit"):
+               provider_id="audit-fixture", grant="host-owned-audit",
+               request_id=None):
+        options = {}
+        if request_id is not None and getattr(self.port, "supports_request_id", False):
+            options["request_id"] = request_id
         return self.port.commit_batch(
             self.lease, expected, reference_batch(cursor), allow_root_gap=False,
             reference_submission=self.submission(ref, provider_id=provider_id,
                                                  grant=grant),
-            reference_admissions=self.registry)
+            reference_admissions=self.registry, **options)
 
     def test_provider_commit_and_exact_replay_are_durable(self):
-        self.assertEqual(self.commit(), "cursor-1")
+        request_id = "a" * 32
+        self.assertEqual(self.commit(request_id=request_id), "cursor-1")
         self._close_port()
         self.port = self.new_port()
         self._close_port = self._track_port(self.port)
+        committed = self.durable_snapshot(SOURCE_ID)
+        self.assertEqual(self.commit(request_id=request_id), "cursor-1")
+        self.assertEqual(self.durable_snapshot(SOURCE_ID), committed)
         self.lease = self.port.activate_source(
             plugin_id=PLUGIN_ID, source_id=SOURCE_ID,
             generation=GENERATION, content_fingerprint="",
             reference_admissions=self.registry)
-        committed = self.durable_snapshot(SOURCE_ID)
-        self.assertEqual(self.commit(), "cursor-1")
-        self.assertEqual(self.durable_snapshot(SOURCE_ID), committed)
+        after_reactivation = self.durable_snapshot(SOURCE_ID)
+        self.assertEqual(self.commit(request_id="b" * 32), "cursor-1")
+        after_replay = self.durable_snapshot(SOURCE_ID)
+        self.assertEqual(after_replay[:4], after_reactivation[:4])
         with self.assertRaises(Exception):
-            self.commit(ref="audit-b")
-        self.assertEqual(self.durable_snapshot(SOURCE_ID), committed)
+            self.commit(ref="audit-b", request_id="b" * 32)
+        self.assertEqual(self.durable_snapshot(SOURCE_ID), after_replay)
 
     def test_unregistered_provider_and_invalid_grant_fail_without_changes(self):
         before = self.durable_snapshot(SOURCE_ID)
@@ -119,6 +128,41 @@ class PluginReferenceAdmissionPortContract:
         with self.assertRaises(Exception):
             self.commit(grant="forged-grant")
         self.assertEqual(self.durable_snapshot(SOURCE_ID), before)
+
+    def test_nonselected_batch_erases_receipt_but_keeps_registry_owners(self):
+        self.assertEqual(self.commit(), "cursor-1")
+        selected = self.durable_snapshot(SOURCE_ID)
+        self.assertEqual(len(selected[2]), 1)
+        self.assertEqual(selected[3], (('audit-fixture',), ('pi-command',), ('pi-content',)))
+
+        unselected_batch = PollBatch(SOURCE_ID, "cursor-2", ({
+            "event_id": "reference-event-two", "revision": 0,
+            "kind": "lifecycle", "time_ns": "9007199254740994",
+            "payload": {"state": "completed"},
+        },))
+        self.assertEqual(self.port.commit_batch(
+            self.lease, "cursor-1", unselected_batch, allow_root_gap=False,
+            reference_submission=None, reference_admissions=self.registry), "cursor-2")
+        unselected = self.durable_snapshot(SOURCE_ID)
+        self.assertEqual(unselected[2], ())
+        self.assertEqual(unselected[3], selected[3])
+
+        later = PollBatch(SOURCE_ID, "cursor-3", ({
+            "event_id": "reference-event-three", "revision": 0,
+            "kind": "lifecycle", "time_ns": "9007199254740995",
+            "payload": {"state": "completed"},
+        },))
+        self.assertEqual(self.port.commit_batch(
+            self.lease, "cursor-2", later, allow_root_gap=False,
+            reference_submission=self.submission("audit-b"),
+            reference_admissions=self.registry), "cursor-3")
+        self.assertEqual(self.durable_snapshot(SOURCE_ID)[2][0][1:],
+                         ("cursor-3", self.provider_digest("audit-b")))
+
+    @staticmethod
+    def provider_digest(ref):
+        import hashlib
+        return hashlib.sha256(ref.encode()).hexdigest()
 
     def test_provider_failure_rolls_back_evidence_cursor_and_provider_state(self):
         before = self.durable_snapshot(SOURCE_ID)
