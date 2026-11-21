@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import signal
 import sqlite3
@@ -24,15 +25,19 @@ from validate_rust_storage_service_accounts import check, drop_to, identities, w
 _CODEX_CHILDREN: list[subprocess.Popen] = []
 
 
+def _terminate_codex_child(child: subprocess.Popen) -> None:
+    if child.poll() is None:
+        child.kill()
+    try:
+        child.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.communicate()
+
+
 def _stop_codex_children() -> None:
     for child in _CODEX_CHILDREN:
-        if child.poll() is None:
-            child.kill()
-            try:
-                child.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                child.kill()
-                child.communicate()
+        _terminate_codex_child(child)
 
 
 atexit.register(_stop_codex_children)
@@ -73,26 +78,51 @@ def child_write_frame(process: subprocess.Popen, message: dict) -> None:
     process.stdin.flush()
 
 
-def child_read_exact(stream, length: int) -> bytes | None:
+def child_read_exact(stream, length: int, deadline: float) -> bytes | None:
     result = bytearray()
     while len(result) < length:
-        chunk = stream.read(length - len(result))
+        remaining = deadline - time.monotonic()
+        ready, _, _ = select.select([stream], [], [], max(0, remaining))
+        check(bool(ready), "Codex child frame read timed out")
+        chunk = os.read(stream.fileno(), length - len(result))
         if not chunk:
             return None if not result else bytes(result)
         result.extend(chunk)
     return bytes(result)
 
 
-def child_read_frame(process: subprocess.Popen) -> dict | None:
-    prefix = child_read_exact(process.stdout, 4)
-    if prefix is None:
-        return None
-    check(len(prefix) == 4, "Codex child sent a truncated frame prefix")
-    length = struct.unpack(">I", prefix)[0]
-    check(0 < length <= 4 * 1024 * 1024, "Codex child frame length is invalid")
-    raw = child_read_exact(process.stdout, length)
-    check(raw is not None and len(raw) == length, "Codex child sent a truncated frame")
-    return json.loads(raw)
+def child_read_frame(process: subprocess.Popen, *, timeout: float = 5) -> dict | None:
+    deadline = time.monotonic() + timeout
+    try:
+        prefix = child_read_exact(process.stdout, 4, deadline)
+        if prefix is None:
+            return None
+        check(len(prefix) == 4, "Codex child sent a truncated frame prefix")
+        length = struct.unpack(">I", prefix)[0]
+        check(0 < length <= 4 * 1024 * 1024, "Codex child frame length is invalid")
+        raw = child_read_exact(process.stdout, length, deadline)
+        check(raw is not None and len(raw) == length, "Codex child sent a truncated frame")
+        return json.loads(raw)
+    except BaseException:
+        _terminate_codex_child(process)
+        raise
+
+
+def verify_codex_frame_timeout() -> None:
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _CODEX_CHILDREN.append(child)
+    started = time.monotonic()
+    try:
+        child_read_frame(child, timeout=0.05)
+    except AssertionError as error:
+        check("frame read timed out" in str(error),
+              f"unexpected stalled-child failure: {error}")
+    else:
+        raise AssertionError("stalled Codex child frame read did not time out")
+    check(child.poll() is not None and time.monotonic() - started < 2,
+          "stalled Codex child was not killed and reaped promptly")
 
 
 def new_batch(source_id: str, cursor: str):
@@ -155,6 +185,7 @@ def request_for(lease: dict, batch, request_id: str, expected_cursor: str,
 
 def exercise_codex_fact_path(*, root: Path, codex_binary: Path, clone: Path,
                              oracle: Path, receiver: str, socket_path: Path,
+                             service_uid: int, service_gid: int,
                              client_uid: int, client_gid: int) -> None:
     from observatory.core import Store
     from observatory.plugin_admission import activate_source, commit_batch
@@ -187,10 +218,24 @@ def exercise_codex_fact_path(*, root: Path, codex_binary: Path, clone: Path,
                                "cached_input_tokens": 2,
                                "reasoning_output_tokens": 1}}},
     ]
-    source_path.write_text("".join(
-        json.dumps(row, separators=(",", ":")) + "\n" for row in corpus))
-    source_path.chmod(0o644)
-    os.chown(source_path, client_uid, client_gid)
+    def write_private_source(path: Path, rows: list[dict]) -> None:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write("".join(
+                json.dumps(row, separators=(",", ":")) + "\n" for row in rows))
+        os.chown(path, client_uid, client_gid)
+
+    write_private_source(source_path, corpus)
+
+    def assert_source_private(path: Path, label: str) -> None:
+        probe = subprocess.run(
+            [sys.executable, "-c", "open(__import__('sys').argv[1], 'rb').read(1)", str(path)],
+            cwd=root, preexec_fn=drop_to(service_uid, service_gid),
+            capture_output=True, text=True, timeout=5)
+        check(probe.returncode != 0 and "PermissionError" in probe.stderr,
+              f"storage service UID could read {label} source contents")
+
+    assert_source_private(source_path, "Codex")
 
     activation = {
         "version": 2, "request_id": "c" * 32, "receiver_id": receiver,
@@ -394,14 +439,12 @@ def exercise_codex_fact_path(*, root: Path, codex_binary: Path, clone: Path,
         reply_path=root / "client-results" / "codex-unsupported-activation-reply.json")
     unsupported_lease = unsupported_reply["result"]["lease"]
     unsupported_source = root / "codex-unsupported.jsonl"
-    unsupported_source.write_text("".join(
-        json.dumps(row, separators=(",", ":")) + "\n" for row in (
+    write_private_source(unsupported_source, [
             {"type": "session_meta", "payload": {"id": "codex-thread-unsupported"}},
             {"type": "event_msg", "timestamp": "2026-11-14T10:01:00Z",
              "payload": {"type": "item_completed", "item":{"type":"UnknownItem"}}},
-        )))
-    unsupported_source.chmod(0o644)
-    os.chown(unsupported_source, client_uid, client_gid)
+        ])
+    assert_source_private(unsupported_source, "unsupported Codex")
     child = launch(unsupported_source, unsupported_id)
     unsupported_batch_reply = poll(child, unsupported_id)
     check([row["kind"] for row in unsupported_batch_reply["records"]] == ["diagnostic"],
@@ -446,15 +489,13 @@ def exercise_codex_fact_path(*, root: Path, codex_binary: Path, clone: Path,
     # admitted. No source lease or evidence row is created for this input.
     malformed_id = "codex-malformed-source"
     malformed_source = root / "codex-malformed.jsonl"
-    malformed_source.write_text("".join(
-        json.dumps(row, separators=(",", ":")) + "\n" for row in (
+    write_private_source(malformed_source, [
             {"type": "session_meta", "payload": {"id": "codex-thread-malformed"}},
             {"type": "token_usage_record", "timestamp": "2026-11-14T10:02:00Z",
              "payload": {"response_id": "response-bad",
                          "usage": {"input_tokens": "not-a-number"}}},
-        )))
-    malformed_source.chmod(0o644)
-    os.chown(malformed_source, client_uid, client_gid)
+        ])
+    assert_source_private(malformed_source, "malformed Codex")
     child = launch(malformed_source, malformed_id)
     child_write_frame(child, {
         "type": "poll", "protocol": 1, "source_id": malformed_id,
@@ -480,6 +521,7 @@ def exercise_codex_fact_path(*, root: Path, codex_binary: Path, clone: Path,
 def main(binary: Path, codex_binary: Path) -> None:
     check(sys.platform == "linux" and os.geteuid() == 0,
           "run as root on isolated Linux")
+    verify_codex_frame_timeout()
     binary_source = binary.resolve(strict=True)
     from observatory.core import Store
     from observatory.plugin_admission import activate_source, commit_batch, set_source_capture
@@ -867,6 +909,7 @@ def main(binary: Path, codex_binary: Path) -> None:
             exercise_codex_fact_path(
                 root=root, codex_binary=codex_service_binary, clone=clone, oracle=oracle,
                 receiver=receiver, socket_path=socket_path,
+                service_uid=service_uid, service_gid=service_gid,
                 client_uid=client_uid, client_gid=client_gid)
 
             with closing(sqlite3.connect(clone)) as db, closing(sqlite3.connect(oracle)) as py:
