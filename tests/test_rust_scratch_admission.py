@@ -193,11 +193,30 @@ class RustScratchAdmissionTests(unittest.TestCase):
         self.assertIn("activation-clone diagnostic read rejected", result.stderr)
         return result.stderr
 
+    def apply_clone_member_cursor_read(self, request, *, path, success=True):
+        raw = request if isinstance(request, str) else json.dumps(request)
+        result = subprocess.run(
+            [self.binary, "--v2-clone-member-cursor-path", str(path)],
+            input=raw, text=True, capture_output=True, timeout=10)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("member cursor read rejected", result.stderr)
+        return result.stderr
+
     @staticmethod
     def clone_diagnostic_read_request(lease, request_id):
         return {"version": 2, "request_id": request_id,
                 "receiver_id": lease["receiver_id"],
                 "operation": {"op": "read_last_source_diagnostic",
+                              "lease": dict(lease)}}
+
+    @staticmethod
+    def clone_member_cursor_read_request(lease, request_id):
+        return {"version": 2, "request_id": request_id,
+                "receiver_id": lease["receiver_id"],
+                "operation": {"op": "read_source_member_cursors",
                               "lease": dict(lease)}}
 
     @staticmethod
@@ -214,11 +233,15 @@ class RustScratchAdmissionTests(unittest.TestCase):
             "native_session_id": row[7], "native_worker_id": row[8],
             "native_turn_id": row[9], "native_operation_id": row[10],
         } for row in rows]
+        operation = {"op": "admit_batch", "lease": operation_lease,
+                     "expected_cursor": expected_cursor, "cursor": batch.cursor,
+                     "batch_digest": digest, "records": records}
+        if batch.member_id:
+            operation["member_update"] = {"member_id": batch.member_id,
+                                           "cursor": batch.member_cursor}
         return {"version": 2, "request_id": request_id,
                 "receiver_id": lease["receiver_id"],
-                "operation": {"op": "admit_batch", "lease": operation_lease,
-                              "expected_cursor": expected_cursor, "cursor": batch.cursor,
-                              "batch_digest": digest, "records": records}}
+                "operation": operation}
 
     @staticmethod
     def batch_source_snapshot(store, source_id):
@@ -248,7 +271,14 @@ class RustScratchAdmissionTests(unittest.TestCase):
             projected = tuple(tuple(row) for row in db.execute(
                 "SELECT projected_seq,policy_epoch FROM plugin_projection_cursor_v1 "
                 "WHERE source_id=?", (source_id,)))
-            return source, evidence, dirty, projection, activity, projected
+            member_cursors = tuple(tuple(row) for row in db.execute(
+                "SELECT member_id,cursor FROM plugin_source_member_cursor_v1 "
+                "WHERE source_id=? ORDER BY member_id", (source_id,)))
+            session_members = tuple(tuple(row) for row in db.execute(
+                "SELECT native_session_id,member_id FROM plugin_session_member_v1 "
+                "WHERE source_id=? ORDER BY native_session_id", (source_id,)))
+            return (source, evidence, dirty, projection, activity, projected,
+                    member_cursors, session_members)
 
         if hasattr(store, "_connect"):
             with store._connect() as db:
@@ -2256,6 +2286,483 @@ with open(sys.argv[1], 'r+b') as stream:
             self.assertEqual(self.batch_binding_snapshot(clone_path, source_id),
                              invalid_binding)
         self.assertEqual(canonical_file_state(), canonical_before)
+
+    def test_v1_binding_migrates_only_in_clone_fixture_and_replays(self):
+        from observatory.plugin_admission import PollBatch, activate_source, commit_batch
+
+        source_id = "member-migration-source"
+        generation = "e" * 64
+        canonical_path = self.root / "member-migration-canonical.db"
+        clone_path = self.root / "member-migration-clone.db"
+        failed_path = self.root / "member-migration-failure.db"
+        oracle_path = self.root / "member-migration-oracle.db"
+        canonical = Store(str(canonical_path))
+        receiver_id = canonical.receiver_id
+        activate_source(canonical, plugin_id=PLUGIN, source_id="clone-seed",
+                        generation=GENERATION)
+        canonical.close()
+        with closing(sqlite3.connect(canonical_path)) as original:
+            for target in (clone_path, failed_path, oracle_path):
+                with closing(sqlite3.connect(target)) as copied:
+                    original.backup(copied)
+        with closing(sqlite3.connect(clone_path)) as db:
+            db.execute("INSERT INTO schema_meta(key,value) VALUES(?,?)",
+                       ("storage_activation_clone_v1", "enabled"))
+            db.commit()
+        with closing(sqlite3.connect(failed_path)) as db:
+            db.execute("INSERT INTO schema_meta(key,value) VALUES(?,?)",
+                       ("storage_activation_clone_v1", "enabled"))
+            db.commit()
+        oracle = Store(str(oracle_path))
+        self.addCleanup(oracle.close)
+        activation = {"version": 2, "request_id": "1" * 32,
+                      "receiver_id": receiver_id,
+                      "operation": {"op": "activate_source", "plugin_id": PLUGIN,
+                                    "source_id": source_id, "generation": generation}}
+        lease = self.apply_activation_clone_v2(
+            activation, path=clone_path)["result"]["lease"]
+        self.apply_activation_clone_v2(activation, path=failed_path)
+        python_lease = activate_source(oracle, plugin_id=PLUGIN, source_id=source_id,
+                                       generation=generation)
+
+        initial = PollBatch(source_id, "migration-one", ({
+            "event_id": "migration-event", "revision": 0, "kind": "usage",
+            "time_ns": "101", "payload": {"input_tokens": 4},
+        },))
+        mixed = self.mixed_batch_request(initial, lease, "2" * 32, "")
+        facts = json.loads(json.dumps(mixed))
+        facts["request_id"] = "3" * 32
+        facts["operation"]["op"] = "admit_facts"
+        result = self.apply_activation_clone_v2(facts, path=clone_path)
+        self.assertEqual(result["result"]["disposition"], "committed")
+        self.assertEqual(commit_batch(oracle, python_lease, "", initial), initial.cursor)
+        with closing(sqlite3.connect(clone_path)) as db:
+            legacy_columns = tuple(row[1] for row in db.execute(
+                "PRAGMA table_info(storage_admission_batch_binding_v1)"))
+            self.assertEqual(len(legacy_columns), 8)
+            v1_digest = db.execute(
+                "SELECT prepared_digest FROM storage_admission_batch_binding_v1 "
+                "WHERE source_id=?", (source_id,)).fetchone()[0]
+
+        # A failed late-row admission must roll back the ALTER itself as well
+        # as the first row inserted in that transaction.
+        failure_request = self.mixed_batch_request(PollBatch(
+            source_id, "migration-two", (
+                {"event_id": "migration-new", "revision": 0, "kind": "usage",
+                 "time_ns": "102", "payload": {"output_tokens": 3}},
+                {"event_id": "migration-event", "revision": 0, "kind": "usage",
+                 "time_ns": "101", "payload": {"input_tokens": 9}},
+            )), lease, "4" * 32, "migration-one")
+        with closing(sqlite3.connect(clone_path)) as original:
+            with closing(sqlite3.connect(failed_path)) as failed:
+                original.backup(failed)
+        before_failed_migration = self.batch_source_snapshot(failed_path, source_id)
+        self.apply_mixed_clone_batch(failure_request, path=failed_path, success=False)
+        self.assertEqual(self.batch_source_snapshot(failed_path, source_id),
+                         before_failed_migration)
+        with closing(sqlite3.connect(failed_path)) as db:
+            self.assertEqual(len(tuple(row[1] for row in db.execute(
+                "PRAGMA table_info(storage_admission_batch_binding_v1)"))), 8)
+
+        # V1 no-member digest remains usable after the marked fixture performs
+        # its transactional 8→11 column migration.
+        replay = self.apply_mixed_clone_batch(mixed, path=clone_path)["result"]
+        self.assertEqual(replay["disposition"], "replay")
+        with closing(sqlite3.connect(clone_path)) as db:
+            columns = tuple(row[1] for row in db.execute(
+                "PRAGMA table_info(storage_admission_batch_binding_v1)"))
+            self.assertEqual(len(columns), 11)
+            binding = db.execute(
+                "SELECT prepared_version,member_id,member_cursor,prepared_digest "
+                "FROM storage_admission_batch_binding_v1 WHERE source_id=?",
+                (source_id,)).fetchone()
+            self.assertEqual(binding, (1, "", "", v1_digest))
+        migrated_snapshot = self.batch_source_snapshot(clone_path, source_id)
+        replay_again = self.apply_mixed_clone_batch(mixed, path=clone_path)["result"]
+        self.assertEqual(replay_again["disposition"], "replay")
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id),
+                         migrated_snapshot)
+
+    def test_member_cursor_keeps_legacy_session_owner_ambiguous(self):
+        from observatory.plugin_admission import PollBatch, activate_source, commit_batch
+
+        source_id = "member-legacy-source"
+        generation = "e" * 64
+        canonical_path = self.root / "member-legacy-canonical.db"
+        clone_path = self.root / "member-legacy-clone.db"
+        oracle_path = self.root / "member-legacy-oracle.db"
+        canonical = Store(str(canonical_path))
+        receiver_id = canonical.receiver_id
+        activate_source(canonical, plugin_id=PLUGIN, source_id="clone-seed",
+                        generation=GENERATION)
+        canonical.close()
+        with closing(sqlite3.connect(canonical_path)) as original:
+            for target in (clone_path, oracle_path):
+                with closing(sqlite3.connect(target)) as copied:
+                    original.backup(copied)
+        with closing(sqlite3.connect(clone_path)) as db:
+            db.execute("INSERT INTO schema_meta(key,value) VALUES(?,?)",
+                       ("storage_activation_clone_v1", "enabled"))
+            db.commit()
+        oracle = Store(str(oracle_path))
+        self.addCleanup(oracle.close)
+        activation = {"version": 2, "request_id": "1" * 32,
+                      "receiver_id": receiver_id,
+                      "operation": {"op": "activate_source", "plugin_id": PLUGIN,
+                                    "source_id": source_id, "generation": generation}}
+        rust_lease = self.apply_activation_clone_v2(
+            activation, path=clone_path)["result"]["lease"]
+        python_lease = activate_source(oracle, plugin_id=PLUGIN, source_id=source_id,
+                                       generation=generation)
+        legacy = PollBatch(source_id, "legacy-one", ({
+            "event_id": "legacy-event", "revision": 0, "kind": "lifecycle",
+            "time_ns": "100", "payload": {"state": "started"},
+            "identity": {"session_id": "legacy-session"},
+        },))
+        legacy_req = self.mixed_batch_request(legacy, rust_lease, "2" * 32, "")
+        self.apply_mixed_clone_batch(legacy_req, path=clone_path)
+        commit_batch(oracle, python_lease, "", legacy)
+        next_batch = PollBatch(source_id, "legacy-two", ({
+            "event_id": "member-event", "revision": 0, "kind": "usage",
+            "time_ns": "101", "payload": {"input_tokens": 5},
+            "identity": {"session_id": "legacy-session"},
+        },), "a" * 64, "member-file-two")
+        member_req = self.mixed_batch_request(
+            next_batch, rust_lease, "3" * 32, "legacy-one")
+        self.apply_mixed_clone_batch(member_req, path=clone_path)
+        commit_batch(oracle, python_lease, "legacy-one", next_batch)
+        rust = self.batch_source_snapshot(clone_path, source_id)
+        python = self.batch_source_snapshot(oracle, source_id)
+        self.assertEqual(rust[1:], python[1:])
+        self.assertEqual(rust[6], (("a" * 64, "member-file-two"),))
+        self.assertEqual(rust[7], (("legacy-session", ""),))
+        member_hash = hashlib.sha256(
+            (source_id + "\0member-event").encode()).hexdigest()
+        self.assertEqual(next(row for row in rust[1] if row[0] == member_hash)[10], "")
+
+    def test_member_cursor_mixed_batches_match_python_and_stay_clone_only(self):
+        from observatory.plugin_admission import (
+            PollBatch, SourceLease, activate_source, commit_batch,
+            last_source_diagnostic, member_cursors, set_source_capture,
+        )
+
+        source_id = "member-cursor-source"
+        generation = "e" * 64
+        canonical_path = self.root / "member-canonical.db"
+        clone_path = self.root / "member-clone.db"
+        oracle_path = self.root / "member-oracle.db"
+        canonical = Store(str(canonical_path))
+        receiver_id = canonical.receiver_id
+        activate_source(canonical, plugin_id=PLUGIN, source_id="clone-seed",
+                        generation=GENERATION)
+        canonical.close()
+        with closing(sqlite3.connect(canonical_path)) as original:
+            for target in (clone_path, oracle_path):
+                with closing(sqlite3.connect(target)) as copied:
+                    original.backup(copied)
+        with closing(sqlite3.connect(clone_path)) as db:
+            db.execute("INSERT INTO schema_meta(key,value) VALUES(?,?)",
+                       ("storage_activation_clone_v1", "enabled"))
+            db.commit()
+        oracle = Store(str(oracle_path))
+        self.addCleanup(oracle.close)
+
+        def canonical_files():
+            return tuple((path.stat().st_ino, path.stat().st_mtime_ns,
+                          hashlib.sha256(path.read_bytes()).hexdigest()) if path.exists() else None
+                         for path in (canonical_path, Path(f"{canonical_path}-wal"),
+                                      Path(f"{canonical_path}-shm")))
+
+        def logical_snapshot(path):
+            with closing(sqlite3.connect(path)) as db:
+                schema = tuple(tuple(row) for row in db.execute(
+                    "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"))
+                tables = [row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+                rows = []
+                for name in tables:
+                    quoted = '"' + name.replace('"', '""') + '"'
+                    values = tuple(sorted((tuple(row) for row in db.execute(
+                        f"SELECT * FROM {quoted}")), key=repr))
+                    rows.append((name, values))
+                return schema, tuple(rows)
+
+        before_canonical = canonical_files()
+        activation = {"version": 2, "request_id": "1" * 32,
+                      "receiver_id": receiver_id,
+                      "operation": {"op": "activate_source", "plugin_id": PLUGIN,
+                                    "source_id": source_id, "generation": generation}}
+        rust_lease = self.apply_activation_clone_v2(
+            activation, path=clone_path)["result"]["lease"]
+        python_lease = activate_source(oracle, plugin_id=PLUGIN, source_id=source_id,
+                                       generation=generation)
+
+        def parity():
+            rust = self.batch_source_snapshot(clone_path, source_id)
+            python = self.batch_source_snapshot(oracle, source_id)
+            self.assertEqual(rust[0][:7] + rust[0][8:],
+                             python[0][:7] + python[0][8:])
+            self.assertEqual(rust[1:], python[1:])
+
+        def batch(cursor, member, checkpoint, records=()):
+            return PollBatch(source_id, cursor, tuple(records), member, checkpoint)
+
+        member_one = "a" * 64
+        first = batch("member-global-one", member_one, "file-checkpoint-one", (
+            {"event_id": "member-life", "revision": 0, "kind": "lifecycle",
+             "time_ns": "101", "payload": {"state": "started"},
+             "identity": {"session_id": "member-session"}},
+            {"event_id": "member-usage", "revision": 0, "kind": "usage",
+             "time_ns": "102", "payload": {"input_tokens": 11}},
+            {"event_id": "member-diagnostic", "revision": 0, "kind": "diagnostic",
+             "time_ns": "103", "payload": {"code": "source_timeout",
+                                                "severity": "warning"}},
+        ))
+        request = self.mixed_batch_request(first, rust_lease, "2" * 32, "")
+        other_activation = {"version": 2, "request_id": "d" * 32,
+                            "receiver_id": receiver_id,
+                            "operation": {"op": "activate_source", "plugin_id": PLUGIN,
+                                          "source_id": "member-trigger-target",
+                                          "generation": "f" * 64}}
+        self.apply_activation_clone_v2(other_activation, path=clone_path)
+        for table in ("plugin_session_member_v1", "plugin_source_member_cursor_v1"):
+            trigger = f"member_cross_source_{table}"
+            with closing(sqlite3.connect(clone_path)) as db:
+                db.execute(
+                    f"CREATE TRIGGER {trigger} AFTER INSERT ON {table} BEGIN "
+                    "UPDATE plugin_source_cursor_v1 SET cursor='trigger-write' "
+                    "WHERE source_id='member-trigger-target'; END")
+                db.commit()
+            trigger_before = logical_snapshot(clone_path)
+            self.assertIn("real clone admission write tables",
+                          self.apply_mixed_clone_batch(request, path=clone_path,
+                                                       success=False))
+            self.assertEqual(logical_snapshot(clone_path), trigger_before)
+            with closing(sqlite3.connect(clone_path)) as db:
+                db.execute(f"DROP TRIGGER {trigger}")
+                db.commit()
+        before_normal = logical_snapshot(clone_path)
+        self.assertIn("mixed admission is unavailable",
+                      self.apply_activation_clone_v2(request, path=clone_path,
+                                                     success=False))
+        self.assertEqual(logical_snapshot(clone_path), before_normal)
+        self.assertEqual(self.apply_mixed_clone_batch(
+            request, path=clone_path)["result"]["disposition"], "committed")
+        self.assertEqual(commit_batch(oracle, python_lease, "", first), first.cursor)
+        parity()
+        with closing(sqlite3.connect(clone_path)) as db:
+            self.assertEqual(db.execute(
+                "SELECT member_id,cursor FROM plugin_source_member_cursor_v1 "
+                "WHERE source_id=?", (source_id,)).fetchall(),
+                [(member_one, "file-checkpoint-one")])
+            self.assertEqual(db.execute(
+                "SELECT prepared_version,member_id,member_cursor FROM "
+                "storage_admission_batch_binding_v1 WHERE source_id=?",
+                (source_id,)).fetchone(), (2, member_one, "file-checkpoint-one"))
+
+        # The next process reopens the same clone, exact replay is mutation-free,
+        # and the read envelope is bound to the request without writes.
+        replay_before = logical_snapshot(clone_path)
+        self.assertEqual(self.apply_mixed_clone_batch(
+            request, path=clone_path)["result"]["disposition"], "replay")
+        self.assertEqual(logical_snapshot(clone_path), replay_before)
+        read = self.clone_member_cursor_read_request(rust_lease, "3" * 32)
+        read_before = logical_snapshot(clone_path)
+        reply = self.apply_clone_member_cursor_read(read, path=clone_path)
+        self.assertEqual(reply["result"]["cursors"], [
+            {"member_id": member_one, "cursor": "file-checkpoint-one"}])
+        self.assertEqual(reply["request_digest"], hashlib.sha256(json.dumps(
+            read, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest())
+        self.assertEqual(logical_snapshot(clone_path), read_before)
+        normal_read_before = logical_snapshot(clone_path)
+        self.apply_activation_clone_v2(read, path=clone_path, success=False)
+        self.assertEqual(logical_snapshot(clone_path), normal_read_before)
+        self.assertEqual(member_cursors(oracle, python_lease),
+                         {member_one: "file-checkpoint-one"})
+        self.assertEqual(last_source_diagnostic(oracle, python_lease),
+                         {"code": "source_timeout", "severity": "warning",
+                          "time_ns": "103"})
+
+        malformed_read = self.clone_member_cursor_read_request(rust_lease, "f" * 32)
+        with closing(sqlite3.connect(clone_path)) as db:
+            db.execute("INSERT INTO plugin_source_member_cursor_v1 "
+                       "(source_id,member_id,cursor) VALUES(?,?,?)",
+                       (source_id, "bad-member", "bad-checkpoint"))
+            db.commit()
+        malformed_before = logical_snapshot(clone_path)
+        self.apply_clone_member_cursor_read(
+            malformed_read, path=clone_path, success=False)
+        self.assertEqual(logical_snapshot(clone_path), malformed_before)
+        with closing(sqlite3.connect(clone_path)) as db:
+            db.execute("DELETE FROM plugin_source_member_cursor_v1 "
+                       "WHERE source_id=? AND member_id='bad-member'", (source_id,))
+            db.commit()
+
+        dirty_before = self.batch_source_snapshot(clone_path, source_id)[0][6]
+        member_two = "b" * 64
+        member_only = batch("member-global-two", member_two, "file-checkpoint-two")
+        member_only_req = self.mixed_batch_request(
+            member_only, rust_lease, "4" * 32, "member-global-one")
+        self.assertEqual(self.apply_mixed_clone_batch(
+            member_only_req, path=clone_path)["result"]["dirty_seq"], dirty_before)
+        self.assertEqual(commit_batch(oracle, python_lease, "member-global-one", member_only),
+                         member_only.cursor)
+        parity()
+
+        for unsupported in (
+            batch("member-global-three", member_one, ""),
+            batch("member-global-three", member_one, "gap-checkpoint", ({
+                "event_id": "source-gap", "revision": 0, "kind": "diagnostic",
+                "time_ns": "107", "payload": {"code": "possible_source_gap",
+                                                   "severity": "warning"},
+            },)),
+        ):
+            unsupported_req = self.mixed_batch_request(
+                unsupported, rust_lease, "e" * 32, "member-global-two")
+            unsupported_before = logical_snapshot(clone_path)
+            self.apply_mixed_clone_batch(
+                unsupported_req, path=clone_path, success=False)
+            self.assertEqual(logical_snapshot(clone_path), unsupported_before)
+
+        tampered = json.loads(json.dumps(member_only_req))
+        tampered["request_id"] = "5" * 32
+        tampered["operation"]["member_update"]["cursor"] = "changed-checkpoint"
+        tamper_before = logical_snapshot(clone_path)
+        self.apply_mixed_clone_batch(tampered, path=clone_path, success=False)
+        self.assertEqual(logical_snapshot(clone_path), tamper_before)
+
+        cross_member = batch("member-global-three", member_two, "new-checkpoint", ({
+            "event_id": "cross-member", "revision": 0, "kind": "lifecycle",
+            "time_ns": "104", "payload": {"state": "running"},
+            "identity": {"session_id": "member-session"},
+        },))
+        cross_req = self.mixed_batch_request(
+            cross_member, rust_lease, "6" * 32, "member-global-two")
+        cross_before = logical_snapshot(clone_path)
+        with self.assertRaises(ProtocolError):
+            commit_batch(oracle, python_lease, "member-global-two", cross_member)
+        self.apply_mixed_clone_batch(cross_req, path=clone_path, success=False)
+        self.assertEqual(logical_snapshot(clone_path), cross_before)
+
+        late_failure = batch("member-global-three", member_one, "late-checkpoint", (
+            {"event_id": "late-new", "revision": 0, "kind": "lifecycle",
+             "time_ns": "105", "payload": {"state": "running"},
+             "identity": {"session_id": "late-session"}},
+            {"event_id": "member-life", "revision": 0, "kind": "lifecycle",
+             "time_ns": "101", "payload": {"state": "failed"},
+             "identity": {"session_id": "member-session"}},
+        ))
+        late_req = self.mixed_batch_request(
+            late_failure, rust_lease, "7" * 32, "member-global-two")
+        late_before = logical_snapshot(clone_path)
+        with self.assertRaises(ProtocolError):
+            commit_batch(oracle, python_lease, "member-global-two", late_failure)
+        self.apply_mixed_clone_batch(late_req, path=clone_path, success=False)
+        self.assertEqual(logical_snapshot(clone_path), late_before)
+
+        # Cursor-only member updates count toward the actual 48-member bound;
+        # the 49th fails before any state or receipt is written.
+        for index in range(1, 47):
+            member = f"{index:064x}"
+            next_global = f"member-global-cap-{index}"
+            cap_batch = batch(next_global, member, f"member-checkpoint-{index}")
+            expected = "member-global-two" if index == 1 else f"member-global-cap-{index - 1}"
+            cap_req = self.mixed_batch_request(
+                cap_batch, rust_lease, f"{index + 16:032x}", expected)
+            self.apply_mixed_clone_batch(cap_req, path=clone_path)
+            commit_batch(oracle, python_lease, expected, cap_batch)
+        self.assertEqual(len(member_cursors(oracle, python_lease)), 48)
+        at_limit = logical_snapshot(clone_path)
+        over_limit = batch("member-global-over-limit", f"{47:064x}", "too-many")
+        over_req = self.mixed_batch_request(
+            over_limit, rust_lease, "8" * 32, "member-global-cap-46")
+        with self.assertRaises(ProtocolError):
+            commit_batch(oracle, python_lease, "member-global-cap-46", over_limit)
+        self.apply_mixed_clone_batch(over_req, path=clone_path, success=False)
+        self.assertEqual(logical_snapshot(clone_path), at_limit)
+
+        with closing(sqlite3.connect(clone_path)) as db:
+            current_cursor, dirty_seq = db.execute(
+                "SELECT cursor,dirty_seq FROM plugin_source_cursor_v1 WHERE source_id=?",
+                (source_id,)).fetchone()
+        disable = self.clone_capture_request(
+            rust_lease, enabled=False, expected_enabled=True, cursor=current_cursor,
+            dirty_seq=dirty_seq, request_id="9" * 32)
+        self.apply_clone_policy(disable, path=clone_path)
+        set_source_capture(oracle, source_id=source_id, enabled=False)
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id)[6],
+                         self.batch_source_snapshot(oracle, source_id)[6])
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id)[1], ())
+        stale_batch = batch("member-global-stale", member_one, "stale-checkpoint")
+        stale_request = self.mixed_batch_request(
+            stale_batch, rust_lease, "a" * 32, current_cursor)
+        stale_before = logical_snapshot(clone_path)
+        self.assertIn("stale or unsupported source lease",
+                      self.apply_mixed_clone_batch(stale_request, path=clone_path,
+                                                   success=False))
+        self.assertEqual(logical_snapshot(clone_path), stale_before)
+        self.apply_clone_member_cursor_read(
+            self.clone_member_cursor_read_request(rust_lease, "a" * 32),
+            path=clone_path, success=False)
+        disabled_lease = self.apply_clone_policy(disable, path=clone_path)["result"]["lease"]
+        enable = self.clone_capture_request(
+            disabled_lease, enabled=True, expected_enabled=False, cursor=current_cursor,
+            dirty_seq=dirty_seq + 1, request_id="b" * 32)
+        enabled = self.apply_clone_policy(enable, path=clone_path)["result"]
+        set_source_capture(oracle, source_id=source_id, enabled=True)
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id)[6],
+                         self.batch_source_snapshot(oracle, source_id)[6])
+        with oracle._connect() as db:
+            row = db.execute(
+                "SELECT receiver_id,plugin_id,source_id,generation,lease_epoch,cursor,"
+                "policy_epoch,content_fingerprint FROM plugin_source_cursor_v1 "
+                "WHERE source_id=?", (source_id,)).fetchone()
+        python_enabled = SourceLease(*row)
+        resumed = batch("member-global-resumed", member_one,
+                        "file-checkpoint-resumed", ({
+            "event_id": "after-resume", "revision": 0, "kind": "usage",
+            "time_ns": "106", "payload": {"output_tokens": 9},
+        },))
+        resume_req = self.mixed_batch_request(
+            resumed, enabled["lease"], "c" * 32, current_cursor)
+        self.apply_mixed_clone_batch(resume_req, path=clone_path)
+        commit_batch(oracle, python_enabled, current_cursor, resumed)
+        parity()
+
+        # Explicit revoke fences the lease, removes member ownership/evidence,
+        # and retains per-member checkpoints. Re-enabling must not resurrect
+        # any erased evidence.
+        with closing(sqlite3.connect(clone_path)) as db:
+            revoke_cursor, revoke_dirty = db.execute(
+                "SELECT cursor,dirty_seq FROM plugin_source_cursor_v1 WHERE source_id=?",
+                (source_id,)).fetchone()
+        revoke = self.clone_revoke_request(
+            enabled["lease"], cursor=revoke_cursor, dirty_seq=revoke_dirty,
+            request_id="f" * 32)
+        revoked = self.apply_clone_policy(revoke, path=clone_path)["result"]
+        set_source_capture(oracle, source_id=source_id, enabled=False)
+        revoked_state = self.batch_source_snapshot(clone_path, source_id)
+        oracle_revoked = self.batch_source_snapshot(oracle, source_id)
+        self.assertEqual(revoked_state[1], ())
+        self.assertEqual(revoked_state[7], ())
+        self.assertEqual(revoked_state[6], oracle_revoked[6])
+        self.assertEqual(revoked_state[0][:7] + revoked_state[0][8:],
+                         oracle_revoked[0][:7] + oracle_revoked[0][8:])
+        revoked_lease = dict(enabled["lease"])
+        revoked_lease["epoch"] = revoked["lease_epoch"]
+        revoked_lease["policy_epoch"] = revoked["policy_epoch"]
+        reenable = self.clone_capture_request(
+            revoked_lease, enabled=True, expected_enabled=False, cursor=revoke_cursor,
+            dirty_seq=revoke_dirty + 1, request_id="0" * 32)
+        reenabling = self.apply_clone_policy(reenable, path=clone_path)["result"]
+        set_source_capture(oracle, source_id=source_id, enabled=True)
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id)[1], ())
+        self.assertEqual(self.batch_source_snapshot(clone_path, source_id)[6],
+                         self.batch_source_snapshot(oracle, source_id)[6])
+        self.assertEqual(len(revoked["cursor"]), len(revoke_cursor))
+        self.assertEqual(len(reenabling["lease"]["generation"]), 64)
+        self.assertEqual(canonical_files(), before_canonical)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ use rusqlite::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::error::Error;
 use std::fs;
 use std::io::Read;
@@ -28,6 +28,9 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 48;
 const MAX_SOURCE_RECORDS: i64 = 50_000;
+const MAX_DISCOVERY_MEMBERS: i64 = v2::MAX_DISCOVERY_MEMBERS as i64;
+// Matches observatory.plugin_retention.MAX_INVALIDATED_SESSIONS.
+const MAX_SESSION_MEMBER_OWNERS: i64 = 2_000;
 const MAX_CURSOR_CHARS: usize = v2::MAX_CURSOR_CHARS;
 const SCRATCH_MARKER: &str = "storage_admission_scratch_v1";
 const CLONE_MARKER: &str = "storage_activation_clone_v1";
@@ -135,6 +138,8 @@ struct PreparedRecord {
     native_worker_id: String,
     native_turn_id: String,
     native_operation_id: String,
+    #[serde(default)]
+    member_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,6 +152,8 @@ struct Request {
     cursor: String,
     batch_digest: String,
     records: Vec<PreparedRecord>,
+    #[serde(default)]
+    member_update: Option<v2::MemberCursor>,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,6 +188,9 @@ struct BatchBinding {
     batch_digest: String,
     prepared_digest: String,
     dirty_seq: i64,
+    prepared_version: i64,
+    member_id: String,
+    member_cursor: String,
 }
 
 fn prepared_rows_digest(records: &[PreparedRecord]) -> Result<String> {
@@ -211,28 +221,210 @@ fn prepared_rows_digest(records: &[PreparedRecord]) -> Result<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-fn read_batch_binding(db: &Connection, source_id: &str) -> Result<Option<BatchBinding>> {
-    Ok(db
-        .query_row(
-            "SELECT generation,policy_epoch,expected_cursor,cursor,batch_digest,prepared_digest,dirty_seq \
-             FROM storage_admission_batch_binding_v1 WHERE source_id=?",
-            [source_id],
-            |row| {
-                Ok(BatchBinding {
-                    generation: row.get(0)?,
-                    policy_epoch: row.get(1)?,
-                    expected_cursor: row.get(2)?,
-                    cursor: row.get(3)?,
-                    batch_digest: row.get(4)?,
-                    prepared_digest: row.get(5)?,
-                    dirty_seq: row.get(6)?,
-                })
-            },
-        )
-        .optional()?)
+fn prepared_state_digest(
+    records: &[PreparedRecord],
+    member_update: Option<&v2::MemberCursor>,
+) -> Result<(i64, String)> {
+    let Some(member_update) = member_update else {
+        return Ok((1, prepared_rows_digest(records)?));
+    };
+    let rows = records
+        .iter()
+        .map(|row| {
+            (
+                row.event_id_hash.as_str(),
+                row.revision,
+                row.kind.as_str(),
+                row.time_ns,
+                row.payload_json.as_str(),
+                row.record_digest.as_str(),
+                row.native_session_id.as_str(),
+                row.native_worker_id.as_str(),
+                row.native_turn_id.as_str(),
+                row.native_operation_id.as_str(),
+                row.member_id.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let encoded = serde_json::to_vec(&(2_u8, member_update, rows))?;
+    let mut digest = Sha256::new();
+    digest.update(b"agenturm-prepared-member-state-v2\0");
+    digest.update(encoded);
+    Ok((2, format!("{:x}", digest.finalize())))
 }
 
-fn binding_for_request(request: &Request, dirty_seq: i64, prepared_digest: String) -> BatchBinding {
+fn batch_binding_columns(db: &Connection) -> Result<Vec<(String, String)>> {
+    let exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' \
+         AND name='storage_admission_batch_binding_v1')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(Vec::new());
+    }
+    let mut statement = db.prepare("PRAGMA table_info(storage_admission_batch_binding_v1)")?;
+    let rows = statement.query_map([], |row| Ok((row.get(1)?, row.get(2)?)))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn ensure_batch_binding_schema(db: &Connection) -> Result<()> {
+    const LEGACY: &[(&str, &str)] = &[
+        ("source_id", "TEXT"),
+        ("generation", "TEXT"),
+        ("policy_epoch", "INTEGER"),
+        ("expected_cursor", "TEXT"),
+        ("cursor", "TEXT"),
+        ("batch_digest", "TEXT"),
+        ("prepared_digest", "TEXT"),
+        ("dirty_seq", "INTEGER"),
+    ];
+    const CURRENT: &[(&str, &str)] = &[
+        ("source_id", "TEXT"),
+        ("generation", "TEXT"),
+        ("policy_epoch", "INTEGER"),
+        ("expected_cursor", "TEXT"),
+        ("cursor", "TEXT"),
+        ("batch_digest", "TEXT"),
+        ("prepared_digest", "TEXT"),
+        ("dirty_seq", "INTEGER"),
+        ("prepared_version", "INTEGER"),
+        ("member_id", "TEXT"),
+        ("member_cursor", "TEXT"),
+    ];
+    let columns = batch_binding_columns(db)?;
+    let matches = |expected: &[(&str, &str)]| {
+        columns.len() == expected.len()
+            && columns
+                .iter()
+                .zip(expected)
+                .all(|((name, kind), (expected_name, expected_kind))| {
+                    name == expected_name && kind.eq_ignore_ascii_case(expected_kind)
+                })
+    };
+    if columns.is_empty() {
+        db.execute_batch(
+            "CREATE TABLE storage_admission_batch_binding_v1(\
+             source_id TEXT PRIMARY KEY,generation TEXT NOT NULL,policy_epoch INTEGER NOT NULL,\
+             expected_cursor TEXT NOT NULL,cursor TEXT NOT NULL,batch_digest TEXT NOT NULL,\
+             prepared_digest TEXT NOT NULL,dirty_seq INTEGER NOT NULL,\
+             prepared_version INTEGER NOT NULL DEFAULT 1,member_id TEXT NOT NULL DEFAULT '',\
+             member_cursor TEXT NOT NULL DEFAULT '')",
+        )?;
+        return Ok(());
+    }
+    if matches(LEGACY) {
+        db.execute_batch(
+            "ALTER TABLE storage_admission_batch_binding_v1 ADD COLUMN \
+             prepared_version INTEGER NOT NULL DEFAULT 1;\
+             ALTER TABLE storage_admission_batch_binding_v1 ADD COLUMN \
+             member_id TEXT NOT NULL DEFAULT '';\
+             ALTER TABLE storage_admission_batch_binding_v1 ADD COLUMN \
+             member_cursor TEXT NOT NULL DEFAULT '';",
+        )?;
+        return Ok(());
+    }
+    if matches(CURRENT) {
+        return Ok(());
+    }
+    Err(reject("unsupported prepared batch binding schema"))
+}
+
+fn read_batch_binding(db: &Connection, source_id: &str) -> Result<Option<BatchBinding>> {
+    let columns = batch_binding_columns(db)?;
+    const LEGACY: &[(&str, &str)] = &[
+        ("source_id", "TEXT"),
+        ("generation", "TEXT"),
+        ("policy_epoch", "INTEGER"),
+        ("expected_cursor", "TEXT"),
+        ("cursor", "TEXT"),
+        ("batch_digest", "TEXT"),
+        ("prepared_digest", "TEXT"),
+        ("dirty_seq", "INTEGER"),
+    ];
+    const CURRENT: &[(&str, &str)] = &[
+        ("source_id", "TEXT"),
+        ("generation", "TEXT"),
+        ("policy_epoch", "INTEGER"),
+        ("expected_cursor", "TEXT"),
+        ("cursor", "TEXT"),
+        ("batch_digest", "TEXT"),
+        ("prepared_digest", "TEXT"),
+        ("dirty_seq", "INTEGER"),
+        ("prepared_version", "INTEGER"),
+        ("member_id", "TEXT"),
+        ("member_cursor", "TEXT"),
+    ];
+    let matches = |expected: &[(&str, &str)]| {
+        columns.len() == expected.len()
+            && columns
+                .iter()
+                .zip(expected)
+                .all(|((name, kind), (expected_name, expected_kind))| {
+                    name == expected_name && kind.eq_ignore_ascii_case(expected_kind)
+                })
+    };
+    if columns.is_empty() {
+        return Ok(None);
+    }
+    if matches(CURRENT) {
+        return Ok(db
+            .query_row(
+                "SELECT generation,policy_epoch,expected_cursor,cursor,batch_digest,\
+                 prepared_digest,dirty_seq,prepared_version,member_id,member_cursor \
+                 FROM storage_admission_batch_binding_v1 WHERE source_id=?",
+                [source_id],
+                |row| {
+                    Ok(BatchBinding {
+                        generation: row.get(0)?,
+                        policy_epoch: row.get(1)?,
+                        expected_cursor: row.get(2)?,
+                        cursor: row.get(3)?,
+                        batch_digest: row.get(4)?,
+                        prepared_digest: row.get(5)?,
+                        dirty_seq: row.get(6)?,
+                        prepared_version: row.get(7)?,
+                        member_id: row.get(8)?,
+                        member_cursor: row.get(9)?,
+                    })
+                },
+            )
+            .optional()?);
+    }
+    if matches(LEGACY) {
+        return Ok(db
+            .query_row(
+                "SELECT generation,policy_epoch,expected_cursor,cursor,batch_digest,\
+                 prepared_digest,dirty_seq FROM storage_admission_batch_binding_v1 \
+                 WHERE source_id=?",
+                [source_id],
+                |row| {
+                    Ok(BatchBinding {
+                        generation: row.get(0)?,
+                        policy_epoch: row.get(1)?,
+                        expected_cursor: row.get(2)?,
+                        cursor: row.get(3)?,
+                        batch_digest: row.get(4)?,
+                        prepared_digest: row.get(5)?,
+                        dirty_seq: row.get(6)?,
+                        prepared_version: 1,
+                        member_id: String::new(),
+                        member_cursor: String::new(),
+                    })
+                },
+            )
+            .optional()?);
+    }
+    Err(reject("unsupported prepared batch binding schema"))
+}
+
+fn binding_for_request(
+    request: &Request,
+    dirty_seq: i64,
+    prepared_version: i64,
+    prepared_digest: String,
+) -> BatchBinding {
     BatchBinding {
         generation: request.lease.generation.clone(),
         policy_epoch: request.lease.policy_epoch,
@@ -241,6 +433,15 @@ fn binding_for_request(request: &Request, dirty_seq: i64, prepared_digest: Strin
         batch_digest: request.batch_digest.clone(),
         prepared_digest,
         dirty_seq,
+        prepared_version,
+        member_id: request
+            .member_update
+            .as_ref()
+            .map_or_else(String::new, |member| member.member_id.clone()),
+        member_cursor: request
+            .member_update
+            .as_ref()
+            .map_or_else(String::new, |member| member.cursor.clone()),
     }
 }
 
@@ -274,6 +475,8 @@ struct AdmissionSnapshot {
     evidence_count: i64,
     dirty_marker_before: Option<i64>,
     batch_binding_before: Option<BatchBinding>,
+    member_cursors_before: Vec<(String, String)>,
+    session_members_before: Vec<(String, String)>,
     tables: Vec<(&'static str, &'static str, &'static str, bool)>,
 }
 
@@ -299,6 +502,16 @@ struct AdmissionReadback<'a> {
     expected_source: &'a SourceState,
     inserted_hashes: &'a HashSet<String>,
     admitted_ns: Option<i64>,
+    effective_records: &'a [PreparedRecord],
+    member_cursors_after: &'a [(String, String)],
+    session_members_after: &'a [(String, String)],
+}
+
+struct MemberAdmissionPlan {
+    effective_records: Vec<PreparedRecord>,
+    session_member_inserts: Vec<(String, String)>,
+    member_cursors_after: Vec<(String, String)>,
+    session_members_after: Vec<(String, String)>,
 }
 
 impl AdmissionSnapshot {
@@ -310,7 +523,7 @@ impl AdmissionSnapshot {
                 |row| row.get(0),
             )
             .optional()?;
-        let specs: [(&str, &str, &str, bool); 7] = [
+        let specs: [(&str, &str, &str, bool); 9] = [
             (
                 "_agenturm_fact_before_evidence",
                 "plugin_evidence_v1",
@@ -353,6 +566,18 @@ impl AdmissionSnapshot {
                 "source_id=?",
                 false,
             ),
+            (
+                "_agenturm_fact_before_member_cursor",
+                "plugin_source_member_cursor_v1",
+                "source_id=?",
+                false,
+            ),
+            (
+                "_agenturm_fact_before_session_member",
+                "plugin_session_member_v1",
+                "source_id=?",
+                false,
+            ),
         ];
         let mut tables = Vec::new();
         for (snapshot, table, filter, verify_unchanged) in specs {
@@ -377,10 +602,14 @@ impl AdmissionSnapshot {
             |row| row.get(0),
         )?;
         let batch_binding_before = read_batch_binding(db, source_id)?;
+        let member_cursors_before = read_member_cursor_rows(db, source_id)?;
+        let session_members_before = read_session_member_rows(db, source_id)?;
         Ok(Self {
             evidence_count,
             dirty_marker_before,
             batch_binding_before,
+            member_cursors_before,
+            session_members_before,
             tables,
         })
     }
@@ -465,6 +694,135 @@ impl AdmissionSnapshot {
     }
 }
 
+fn read_member_cursor_rows(db: &Connection, source_id: &str) -> Result<Vec<(String, String)>> {
+    let mut statement = db.prepare(
+        "SELECT member_id,cursor FROM plugin_source_member_cursor_v1 \
+         WHERE source_id=? ORDER BY member_id LIMIT ?",
+    )?;
+    let rows = statement.query_map(params![source_id, MAX_DISCOVERY_MEMBERS + 1], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
+    let values = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    if values.len() > MAX_DISCOVERY_MEMBERS as usize {
+        return Err(reject("source member cursor capacity exceeded"));
+    }
+    Ok(values)
+}
+
+fn read_session_member_rows(db: &Connection, source_id: &str) -> Result<Vec<(String, String)>> {
+    let mut statement = db.prepare(
+        "SELECT native_session_id,member_id FROM plugin_session_member_v1 \
+         WHERE source_id=? ORDER BY native_session_id LIMIT ?",
+    )?;
+    let rows = statement.query_map(params![source_id, MAX_SESSION_MEMBER_OWNERS + 1], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
+    let values = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    if values.len() as i64 > MAX_SESSION_MEMBER_OWNERS {
+        return Err(reject("source session-member capacity exceeded"));
+    }
+    Ok(values)
+}
+
+fn plan_member_admission(
+    db: &Connection,
+    request: &Request,
+    snapshot: &AdmissionSnapshot,
+) -> Result<MemberAdmissionPlan> {
+    let mut effective_records = request.records.clone();
+    if request.member_update.is_none() {
+        if effective_records
+            .iter()
+            .any(|row| !row.member_id.is_empty())
+        {
+            return Err(reject("member evidence requires a member cursor update"));
+        }
+        let owners: BTreeMap<&str, &str> = snapshot
+            .session_members_before
+            .iter()
+            .map(|(session, member)| (session.as_str(), member.as_str()))
+            .collect();
+        for row in &effective_records {
+            if owners
+                .get(row.native_session_id.as_str())
+                .is_some_and(|owner| !owner.is_empty())
+            {
+                return Err(reject("plugin session changed discovery member"));
+            }
+        }
+        return Ok(MemberAdmissionPlan {
+            effective_records,
+            session_member_inserts: Vec::new(),
+            member_cursors_after: snapshot.member_cursors_before.clone(),
+            session_members_after: snapshot.session_members_before.clone(),
+        });
+    }
+
+    let update = request
+        .member_update
+        .as_ref()
+        .expect("member update checked");
+    let mut member_cursors: BTreeMap<String, String> =
+        snapshot.member_cursors_before.iter().cloned().collect();
+    if !member_cursors.contains_key(&update.member_id)
+        && member_cursors.len() >= MAX_DISCOVERY_MEMBERS as usize
+    {
+        return Err(reject("discovery member limit exceeded"));
+    }
+    member_cursors.insert(update.member_id.clone(), update.cursor.clone());
+
+    let mut session_members: BTreeMap<String, String> =
+        snapshot.session_members_before.iter().cloned().collect();
+    let mut session_member_inserts = Vec::new();
+    let incoming_sessions: BTreeSet<&str> = effective_records
+        .iter()
+        .filter_map(|row| {
+            (!row.native_session_id.is_empty()).then_some(row.native_session_id.as_str())
+        })
+        .collect();
+    let mut ambiguous_sessions = HashSet::new();
+    for session in incoming_sessions {
+        if let Some(owner) = session_members.get(session) {
+            if owner.is_empty() {
+                ambiguous_sessions.insert(session.to_owned());
+            } else if owner != &update.member_id {
+                return Err(reject("plugin session changed discovery member"));
+            }
+            continue;
+        }
+        let legacy: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 \
+             AND native_session_id=?2)",
+            params![request.lease.source_id, session],
+            |row| row.get(0),
+        )?;
+        if session_members.len() >= MAX_SESSION_MEMBER_OWNERS as usize {
+            return Err(reject("plugin session member capacity reached"));
+        }
+        let owner = if legacy {
+            ambiguous_sessions.insert(session.to_owned());
+            String::new()
+        } else {
+            update.member_id.clone()
+        };
+        session_members.insert(session.to_owned(), owner.clone());
+        session_member_inserts.push((session.to_owned(), owner));
+    }
+    for row in &mut effective_records {
+        row.member_id = if ambiguous_sessions.contains(&row.native_session_id) {
+            String::new()
+        } else {
+            update.member_id.clone()
+        };
+    }
+    Ok(MemberAdmissionPlan {
+        effective_records,
+        session_member_inserts,
+        member_cursors_after: member_cursors.into_iter().collect(),
+        session_members_after: session_members.into_iter().collect(),
+    })
+}
+
 fn verify_fact_admission_readback(
     db: &Connection,
     request: &Request,
@@ -486,10 +844,13 @@ fn verify_fact_admission_readback(
     )?;
     let actual_binding = read_batch_binding(db, &request.lease.source_id)?;
     if receipt.disposition == "committed" {
+        let (prepared_version, prepared_digest) =
+            prepared_state_digest(readback.effective_records, request.member_update.as_ref())?;
         let expected_binding = binding_for_request(
             request,
             receipt.dirty_seq,
-            prepared_rows_digest(&request.records)?,
+            prepared_version,
+            prepared_digest,
         );
         if actual_binding.as_ref() != Some(&expected_binding) {
             return Err(reject("prepared batch binding was not persisted exactly"));
@@ -497,7 +858,7 @@ fn verify_fact_admission_readback(
     } else if actual_binding != readback.snapshot.batch_binding_before {
         return Err(reject("non-commit changed the prepared batch binding"));
     }
-    for row in &request.records {
+    for (row, effective) in request.records.iter().zip(readback.effective_records) {
         let stored: Option<StoredFactRow> = db
             .query_row(
                 "SELECT source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest,\
@@ -539,13 +900,21 @@ fn verify_fact_admission_readback(
             || stored.8 != row.native_worker_id
             || stored.9 != row.native_turn_id
             || stored.10 != row.native_operation_id
-            || !stored.11.is_empty()
+            || stored.11 != effective.member_id
             || stored.12 != request.lease.policy_epoch
             || (readback.inserted_hashes.contains(&row.event_id_hash)
                 && Some(stored.13) != readback.admitted_ns)
         {
             return Err(reject("admission evidence row was changed by a trigger"));
         }
+    }
+
+    if read_member_cursor_rows(db, &request.lease.source_id)? != readback.member_cursors_after
+        || read_session_member_rows(db, &request.lease.source_id)? != readback.session_members_after
+    {
+        return Err(reject(
+            "member cursor or session ownership readback mismatch",
+        ));
     }
 
     let expected_dirty_marker = if readback.inserted_hashes.is_empty() {
@@ -712,6 +1081,8 @@ fn reject_real_clone_admission_triggers(db: &Connection) -> Result<()> {
             "plugin_evidence_v1",
             "plugin_source_cursor_v1",
             "plugin_evidence_dirty_v1",
+            "plugin_session_member_v1",
+            "plugin_source_member_cursor_v1",
             "plugin_content_batch_v1",
             "plugin_content_status_v1",
             "storage_admission_request_v2",
@@ -1074,6 +1445,18 @@ fn validate(request: &Request, allow_plugin_facts: bool) -> Result<()> {
     {
         return Err(reject("invalid prepared admission request"));
     }
+    if request.member_update.as_ref().is_some_and(|member| {
+        !allow_plugin_facts
+            || !v2::member_id_is_valid(&member.member_id)
+            || !v2::member_cursor_is_valid(&member.cursor)
+    }) {
+        return Err(reject("invalid or unavailable member cursor update"));
+    }
+    if request.records.iter().any(|row| !row.member_id.is_empty()) {
+        return Err(reject(
+            "member identity is assigned by the admission fixture",
+        ));
+    }
     let mut seen = HashSet::new();
     for row in &request.records {
         let fact_kind = match row.kind.as_str() {
@@ -1250,6 +1633,85 @@ fn activation_has_orphan_rows(db: &Connection, source_id: &str) -> Result<bool> 
         )?)
 }
 
+fn validate_member_history(db: &Connection, source_id: &str) -> Result<()> {
+    let invalid_cursor: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 \
+         WHERE source_id=?1 AND (length(CAST(member_id AS BLOB))<>64 OR \
+           length(CAST(cursor AS BLOB))>?2 OR cursor=''))",
+        params![source_id, MAX_CURSOR_CHARS],
+        |row| row.get(0),
+    )?;
+    if invalid_cursor {
+        return Err(reject("source has malformed member cursor history"));
+    }
+    let member_cursors = read_member_cursor_rows(db, source_id)?;
+    if member_cursors.len() > MAX_DISCOVERY_MEMBERS as usize
+        || member_cursors.iter().any(|(member, cursor)| {
+            !v2::member_id_is_valid(member)
+                || !v2::member_cursor_is_valid(cursor)
+                || cursor.len() > MAX_CURSOR_CHARS
+        })
+    {
+        return Err(reject(
+            "source member cursor history exceeds supported limits",
+        ));
+    }
+    let member_ids: HashSet<&str> = member_cursors
+        .iter()
+        .map(|(member, _)| member.as_str())
+        .collect();
+
+    let owner_count: i64 = db.query_row(
+        "SELECT COUNT(*) FROM plugin_session_member_v1 WHERE source_id=?",
+        [source_id],
+        |row| row.get(0),
+    )?;
+    if owner_count > MAX_SESSION_MEMBER_OWNERS {
+        return Err(reject(
+            "source session-member ownership exceeds supported limits",
+        ));
+    }
+    let session_members = read_session_member_rows(db, source_id)?;
+    let mut owners = BTreeMap::new();
+    for (native_session, member) in session_members {
+        if !identity(&native_session)
+            || (!member.is_empty() && !v2::member_id_is_valid(&member))
+            || (!member.is_empty() && !member_ids.contains(member.as_str()))
+            || owners.insert(native_session, member).is_some()
+        {
+            return Err(reject("source session-member ownership is malformed"));
+        }
+    }
+
+    let mut evidence =
+        db.prepare("SELECT native_session_id,member_id FROM plugin_evidence_v1 WHERE source_id=?")?;
+    let mut rows = evidence.query([source_id])?;
+    while let Some(row) = rows.next()? {
+        let native_session: String = row.get(0)?;
+        let member: String = row.get(1)?;
+        if !member.is_empty()
+            && (!v2::member_id_is_valid(&member) || !member_ids.contains(member.as_str()))
+        {
+            return Err(reject("source evidence has an unsupported member identity"));
+        }
+        if native_session.is_empty() {
+            continue;
+        }
+        if let Some(owner) = owners.get(&native_session) {
+            if (!owner.is_empty() && member != *owner) || (owner.is_empty() && !member.is_empty()) {
+                return Err(reject(
+                    "source evidence conflicts with session-member ownership",
+                ));
+            }
+        } else if !member.is_empty() {
+            return Err(reject(
+                "source evidence member has no session ownership row",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_active_source_history(
     db: &Connection,
     source_id: &str,
@@ -1262,20 +1724,20 @@ fn validate_active_source_history(
     let unsupported: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1) \
+         OR (?6=0 AND EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1)) \
          OR EXISTS(SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_retention_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1) \
+         OR (?6=0 AND EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1)) \
          OR EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 \
-                   AND (revision<>0 OR member_id<>'' OR policy_epoch<>?2 \
+                   AND (revision<>0 OR policy_epoch<>?2 OR (?6=0 AND member_id<>'') \
                      OR (?6=0 AND kind<>'lifecycle') \
                      OR (?6=1 AND kind NOT IN('lifecycle','message','tool','check','usage','diagnostic')))) \
          OR EXISTS(SELECT 1 FROM plugin_session_projection_v1 p WHERE p.source_id=?1 \
                    AND (p.policy_epoch<>?2 OR p.source_dirty_seq>?3 OR NOT EXISTS(\
                        SELECT 1 FROM plugin_evidence_v1 e WHERE e.source_id=p.source_id \
                          AND e.native_session_id=p.native_session_id \
-                         AND e.policy_epoch=?2 AND e.revision=0 AND e.member_id='' \
+                         AND e.policy_epoch=?2 AND e.revision=0 AND (?6=1 OR e.member_id='') \
                          AND ((?6=0 AND e.kind='lifecycle') OR (?6=1 AND \
                            e.kind IN('lifecycle','message','tool','check','usage')))))) \
          OR EXISTS(SELECT 1 FROM plugin_content_batch_v1 WHERE source_id=?1 \
@@ -1306,6 +1768,9 @@ fn validate_active_source_history(
         return Err(reject(
             "scratch source has private, unsupported, or orphan history",
         ));
+    }
+    if allow_plugin_facts {
+        validate_member_history(db, source_id)?;
     }
     let mut diagnostics = db.prepare(
         "SELECT payload_json,native_session_id,native_worker_id,native_turn_id,native_operation_id \
@@ -1377,7 +1842,26 @@ fn commit_guarded_mode(
     replay: Option<&v2::ReplayIdentity>,
     real_clone: bool,
 ) -> Result<Receipt> {
+    commit_guarded_member_mode(db, request, writer_lease, replay, real_clone, false)
+}
+
+fn commit_guarded_member_mode(
+    db: &mut Connection,
+    request: &Request,
+    writer_lease: Option<&WriterLease>,
+    replay: Option<&v2::ReplayIdentity>,
+    real_clone: bool,
+    allow_member_fixture: bool,
+) -> Result<Receipt> {
     validate(request, real_clone)?;
+    if allow_member_fixture && !real_clone {
+        return Err(reject("member cursor fixture requires a marked real clone"));
+    }
+    if request.member_update.is_some() && !allow_member_fixture {
+        return Err(reject(
+            "member cursor update requires clone fixture dispatch",
+        ));
+    }
     let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if let Some(lease) = writer_lease {
         lease.verify_admission()?;
@@ -1385,12 +1869,16 @@ fn commit_guarded_mode(
     if real_clone {
         require_activation_clone_markers(&transaction)?;
         reject_real_clone_admission_triggers(&transaction)?;
-        transaction.execute_batch(
-            "CREATE TABLE IF NOT EXISTS storage_admission_batch_binding_v1(\
-             source_id TEXT PRIMARY KEY,generation TEXT NOT NULL,policy_epoch INTEGER NOT NULL,\
-             expected_cursor TEXT NOT NULL,cursor TEXT NOT NULL,batch_digest TEXT NOT NULL,\
-             prepared_digest TEXT NOT NULL,dirty_seq INTEGER NOT NULL)",
-        )?;
+        if allow_member_fixture {
+            ensure_batch_binding_schema(&transaction)?;
+        } else {
+            transaction.execute_batch(
+                "CREATE TABLE IF NOT EXISTS storage_admission_batch_binding_v1(\
+                 source_id TEXT PRIMARY KEY,generation TEXT NOT NULL,policy_epoch INTEGER NOT NULL,\
+                 expected_cursor TEXT NOT NULL,cursor TEXT NOT NULL,batch_digest TEXT NOT NULL,\
+                 prepared_digest TEXT NOT NULL,dirty_seq INTEGER NOT NULL)",
+            )?;
+        }
     } else {
         require_scratch(&transaction)?;
     }
@@ -1432,11 +1920,6 @@ fn commit_guarded_mode(
     {
         return Err(reject("stale or unsupported source lease"));
     }
-    let prepared_digest = if real_clone {
-        Some(prepared_rows_digest(&request.records)?)
-    } else {
-        None
-    };
     if request.cursor.is_empty() && !current_cursor.is_empty() {
         return Err(reject("source cursor cannot return to empty"));
     }
@@ -1519,8 +2002,53 @@ fn commit_guarded_mode(
     } else {
         None
     };
+    if real_clone && !allow_member_fixture {
+        let has_member_evidence: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 AND member_id<>'') \
+             OR EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1)",
+            [&request.lease.source_id],
+            |row| row.get(0),
+        )?;
+        let has_member_binding = snapshot
+            .as_ref()
+            .and_then(|value| value.batch_binding_before.as_ref())
+            .is_some_and(|binding| {
+                !binding.member_id.is_empty() || !binding.member_cursor.is_empty()
+            });
+        if has_member_evidence || has_member_binding {
+            return Err(reject(
+                "member history is available only through the clone member fixture",
+            ));
+        }
+    }
+    let empty_member_plan = MemberAdmissionPlan {
+        effective_records: request.records.clone(),
+        session_member_inserts: Vec::new(),
+        member_cursors_after: Vec::new(),
+        session_members_after: Vec::new(),
+    };
+    let member_plan = if let Some(snapshot) = snapshot.as_ref() {
+        plan_member_admission(&transaction, request, snapshot)?
+    } else {
+        if request.member_update.is_some() {
+            return Err(reject("member cursor update requires marked clone fixture"));
+        }
+        empty_member_plan
+    };
+    let prepared_state = if real_clone && allow_member_fixture {
+        Some(prepared_state_digest(
+            &member_plan.effective_records,
+            request.member_update.as_ref(),
+        )?)
+    } else if real_clone {
+        Some((1, prepared_rows_digest(&member_plan.effective_records)?))
+    } else {
+        None
+    };
     let empty_inserted_hashes = HashSet::new();
     if request.records.is_empty()
+        && request.member_update.is_none()
         && request.cursor == current_cursor
         && request.expected_cursor == current_cursor
     {
@@ -1540,6 +2068,9 @@ fn commit_guarded_mode(
                 expected_source: &source,
                 inserted_hashes: &empty_inserted_hashes,
                 admitted_ns: None,
+                effective_records: &member_plan.effective_records,
+                member_cursors_after: &member_plan.member_cursors_after,
+                session_members_after: &member_plan.session_members_after,
             }),
         );
     }
@@ -1547,19 +2078,35 @@ fn commit_guarded_mode(
         && request.batch_digest == prior_digest
         && (request.expected_cursor == prior_cursor || request.expected_cursor == current_cursor)
     {
-        if let Some(prepared_digest) = prepared_digest.as_deref() {
+        if let Some((prepared_version, prepared_digest)) = prepared_state.as_ref() {
             let binding = read_batch_binding(&transaction, &request.lease.source_id)?
                 .ok_or_else(|| reject("prepared batch replay binding is missing"))?;
             if binding.generation != request.lease.generation
                 || binding.policy_epoch != request.lease.policy_epoch
                 || binding.cursor != request.cursor
                 || binding.batch_digest != request.batch_digest
-                || binding.prepared_digest != prepared_digest
+                || binding.prepared_version != *prepared_version
+                || binding.prepared_digest != *prepared_digest
+                || binding.member_id
+                    != request
+                        .member_update
+                        .as_ref()
+                        .map_or("", |m| m.member_id.as_str())
+                || binding.member_cursor
+                    != request
+                        .member_update
+                        .as_ref()
+                        .map_or("", |m| m.cursor.as_str())
                 || binding.dirty_seq != dirty_seq
                 || (binding.expected_cursor != request.expected_cursor
                     && request.expected_cursor != request.cursor)
             {
                 return Err(reject("conflicting prepared batch replay identity"));
+            }
+            if member_plan.member_cursors_after != snapshot.as_ref().unwrap().member_cursors_before
+                && request.member_update.is_some()
+            {
+                return Err(reject("member cursor replay state mismatch"));
             }
         }
         let receipt: Option<(String, String)> = transaction
@@ -1591,6 +2138,9 @@ fn commit_guarded_mode(
                 expected_source: &source,
                 inserted_hashes: &empty_inserted_hashes,
                 admitted_ns: None,
+                effective_records: &member_plan.effective_records,
+                member_cursors_after: &member_plan.member_cursors_after,
+                session_members_after: &member_plan.session_members_after,
             }),
         );
     }
@@ -1608,7 +2158,7 @@ fn commit_guarded_mode(
     let admitted_ns = now_ns()?;
     let mut inserted = false;
     let mut inserted_hashes = HashSet::new();
-    for row in &request.records {
+    for row in &member_plan.effective_records {
         type Existing = (i64, String, String, String, String, String, String, String);
         let latest: Option<Existing> = transaction
             .query_row(
@@ -1637,7 +2187,7 @@ fn commit_guarded_mode(
                 || worker != row.native_worker_id
                 || turn != row.native_turn_id
                 || operation != row.native_operation_id
-                || !member.is_empty()
+                || member != row.member_id
                 || digest != row.record_digest
             {
                 return Err(reject("conflicting or unsupported event revision"));
@@ -1664,7 +2214,7 @@ fn commit_guarded_mode(
                 row.native_worker_id,
                 row.native_turn_id,
                 row.native_operation_id,
-                "",
+                row.member_id,
                 request.lease.policy_epoch,
                 admitted_ns
             ],
@@ -1723,26 +2273,77 @@ fn commit_guarded_mode(
             request.lease.policy_epoch
         ],
     )?;
-    if let Some(prepared_digest) = prepared_digest.as_deref() {
-        let binding = binding_for_request(request, next_dirty, prepared_digest.to_owned());
-        let changed = transaction.execute(
-            "INSERT INTO storage_admission_batch_binding_v1(source_id,generation,policy_epoch,\
-             expected_cursor,cursor,batch_digest,prepared_digest,dirty_seq) VALUES(?,?,?,?,?,?,?,?) \
+    for (session_id, member_id) in &member_plan.session_member_inserts {
+        transaction.execute(
+            "INSERT INTO plugin_session_member_v1(source_id,native_session_id,member_id) \
+             VALUES(?,?,?)",
+            params![request.lease.source_id, session_id, member_id],
+        )?;
+    }
+    if let Some(member_update) = request.member_update.as_ref() {
+        transaction.execute(
+            "INSERT INTO plugin_source_member_cursor_v1(source_id,member_id,cursor) VALUES(?,?,?) \
+             ON CONFLICT(source_id,member_id) DO UPDATE SET cursor=excluded.cursor",
+            params![
+                request.lease.source_id,
+                member_update.member_id,
+                member_update.cursor
+            ],
+        )?;
+    }
+    if let Some((prepared_version, prepared_digest)) = prepared_state.as_ref() {
+        let binding = binding_for_request(
+            request,
+            next_dirty,
+            *prepared_version,
+            prepared_digest.clone(),
+        );
+        let changed = if allow_member_fixture {
+            transaction.execute(
+                "INSERT INTO storage_admission_batch_binding_v1(source_id,generation,policy_epoch,\
+             expected_cursor,cursor,batch_digest,prepared_digest,dirty_seq,prepared_version,\
+             member_id,member_cursor) VALUES(?,?,?,?,?,?,?,?,?,?,?) \
              ON CONFLICT(source_id) DO UPDATE SET generation=excluded.generation,\
              policy_epoch=excluded.policy_epoch,expected_cursor=excluded.expected_cursor,\
              cursor=excluded.cursor,batch_digest=excluded.batch_digest,\
-             prepared_digest=excluded.prepared_digest,dirty_seq=excluded.dirty_seq",
-            params![
-                request.lease.source_id,
-                binding.generation,
-                binding.policy_epoch,
-                binding.expected_cursor,
-                binding.cursor,
-                binding.batch_digest,
-                binding.prepared_digest,
-                binding.dirty_seq,
-            ],
-        )?;
+             prepared_digest=excluded.prepared_digest,dirty_seq=excluded.dirty_seq,\
+             prepared_version=excluded.prepared_version,member_id=excluded.member_id,\
+             member_cursor=excluded.member_cursor",
+                params![
+                    request.lease.source_id,
+                    binding.generation,
+                    binding.policy_epoch,
+                    binding.expected_cursor,
+                    binding.cursor,
+                    binding.batch_digest,
+                    binding.prepared_digest,
+                    binding.dirty_seq,
+                    binding.prepared_version,
+                    binding.member_id,
+                    binding.member_cursor,
+                ],
+            )?
+        } else {
+            transaction.execute(
+                "INSERT INTO storage_admission_batch_binding_v1(source_id,generation,policy_epoch,\
+                 expected_cursor,cursor,batch_digest,prepared_digest,dirty_seq) \
+                 VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET \
+                 generation=excluded.generation,policy_epoch=excluded.policy_epoch,\
+                 expected_cursor=excluded.expected_cursor,cursor=excluded.cursor,\
+                 batch_digest=excluded.batch_digest,prepared_digest=excluded.prepared_digest,\
+                 dirty_seq=excluded.dirty_seq",
+                params![
+                    request.lease.source_id,
+                    binding.generation,
+                    binding.policy_epoch,
+                    binding.expected_cursor,
+                    binding.cursor,
+                    binding.batch_digest,
+                    binding.prepared_digest,
+                    binding.dirty_seq,
+                ],
+            )?
+        };
         if changed != 1 {
             return Err(reject(
                 "prepared batch binding did not persist exactly one row",
@@ -1775,6 +2376,9 @@ fn commit_guarded_mode(
             expected_source: &expected_source,
             inserted_hashes: &inserted_hashes,
             admitted_ns: Some(admitted_ns),
+            effective_records: &member_plan.effective_records,
+            member_cursors_after: &member_plan.member_cursors_after,
+            session_members_after: &member_plan.session_members_after,
         }),
     )
 }
@@ -2005,6 +2609,56 @@ pub fn read_activation_clone_diagnostic_v2_json(path: &Path, input: &[u8]) -> Re
     .map_err(Into::into)
 }
 
+/// Read the bounded member cursor map from a marked detached Store clone.
+/// This is fixture-only and opens SQLite read-only; it has no service caller.
+pub fn read_activation_clone_member_cursors_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
+    let request = v2::Request::from_json(input)?;
+    let v2::Operation::ReadSourceMemberCursors { lease } = &request.operation else {
+        return Err(reject(
+            "member cursor fixture accepts member cursor reads only",
+        ));
+    };
+    require_marked_activation_clone_path(path)?;
+    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    require_activation_clone_markers(&db)?;
+    let current = source_state(&db, &lease.source_id)?;
+    if current.receiver_id != lease.receiver_id
+        || current.plugin_id != lease.plugin_id
+        || current.generation != lease.generation
+        || current.lease_epoch != lease.epoch
+        || current.policy_epoch != lease.policy_epoch
+        || current.capture_enabled != 1
+    {
+        return Err(reject(
+            "stale or disabled source lease for member cursor read",
+        ));
+    }
+    validate_active_source_history(
+        &db,
+        &lease.source_id,
+        &current.cursor,
+        current.dirty_seq,
+        current.policy_epoch,
+        true,
+    )?;
+    let cursors = read_member_cursor_rows(&db, &lease.source_id)?
+        .into_iter()
+        .map(|(member_id, cursor)| v2::MemberCursor { member_id, cursor })
+        .collect();
+    let replay = request.replay_identity()?;
+    v2::Reply {
+        version: v2::VERSION,
+        request_id: request.request_id.clone(),
+        receiver_id: request.receiver_id.clone(),
+        request_digest: replay.digest,
+        result: v2::OperationResult::SourceMemberCursorsRead(v2::SourceMemberCursorsReadResult {
+            cursors,
+        }),
+    }
+    .to_json(&request)
+    .map_err(Into::into)
+}
+
 fn read_last_source_diagnostic(
     db: &Connection,
     lease: &v2::SourceLease,
@@ -2047,7 +2701,15 @@ fn read_last_source_diagnostic(
         ];
         if time_ns < 0
             || revision != 0
-            || !member_id.is_empty()
+            || (!member_id.is_empty()
+                && (!v2::member_id_is_valid(&member_id)
+                    || !db.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 \
+                         WHERE source_id=?1 AND member_id=?2 AND length(CAST(cursor AS BLOB))<=800 \
+                           AND cursor<>'')",
+                        params![lease.source_id, member_id],
+                        |found| found.get::<_, bool>(0),
+                    )?))
             || identities.iter().any(|value| !value.is_empty())
             || !v2::diagnostic_payload_is_valid(&payload_json)
         {
@@ -2135,8 +2797,10 @@ fn apply_activation_clone_v2_json_inner(
                         native_worker_id: row.native_worker_id.clone(),
                         native_turn_id: row.native_turn_id.clone(),
                         native_operation_id: row.native_operation_id.clone(),
+                        member_id: String::new(),
                     })
                     .collect(),
+                member_update: None,
             };
             let receipt = with_marked_activation_clone(path, |db, lease| {
                 commit_guarded_mode(db, &prepared, Some(lease), Some(&replay), true)
@@ -2191,8 +2855,10 @@ fn apply_activation_clone_v2_json_inner(
                         native_worker_id: row.native_worker_id.clone(),
                         native_turn_id: row.native_turn_id.clone(),
                         native_operation_id: row.native_operation_id.clone(),
+                        member_id: String::new(),
                     })
                     .collect(),
+                member_update: None,
             };
             let receipt = with_marked_activation_clone(path, |db, lease| {
                 commit_guarded_mode(db, &prepared, Some(lease), Some(&replay), true)
@@ -2216,6 +2882,7 @@ fn apply_activation_clone_v2_json_inner(
             cursor,
             batch_digest,
             records,
+            member_update,
         } => {
             if !allow_mixed_batch_fixture {
                 return Err(reject(
@@ -2252,11 +2919,20 @@ fn apply_activation_clone_v2_json_inner(
                         native_worker_id: row.native_worker_id.clone(),
                         native_turn_id: row.native_turn_id.clone(),
                         native_operation_id: row.native_operation_id.clone(),
+                        member_id: String::new(),
                     })
                     .collect(),
+                member_update: member_update.clone(),
             };
             let receipt = with_marked_activation_clone(path, |db, writer_lease| {
-                commit_guarded_mode(db, &prepared, Some(writer_lease), Some(&replay), true)
+                commit_guarded_member_mode(
+                    db,
+                    &prepared,
+                    Some(writer_lease),
+                    Some(&replay),
+                    true,
+                    true,
+                )
             })?;
             let disposition = match receipt.disposition {
                 "committed" => v2::Disposition::Committed,
@@ -2357,8 +3033,10 @@ pub fn apply_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
                         native_worker_id: row.native_worker_id.clone(),
                         native_turn_id: row.native_turn_id.clone(),
                         native_operation_id: row.native_operation_id.clone(),
+                        member_id: String::new(),
                     })
                     .collect(),
+                member_update: None,
             };
             let receipt = with_marked_scratch(path, |db, writer_lease| {
                 commit_guarded(db, &prepared, Some(writer_lease), Some(&replay))
@@ -2430,6 +3108,9 @@ pub fn apply_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
         }
         v2::Operation::ReadLastSourceDiagnostic { .. } => {
             return Err(reject("scratch mode does not expose source diagnostics"));
+        }
+        v2::Operation::ReadSourceMemberCursors { .. } => {
+            return Err(reject("scratch mode does not expose member cursors"));
         }
     };
     v2::Reply {
@@ -3060,10 +3741,6 @@ fn revoke_source_guarded_mode(
         [&lease.source_id],
     )?;
     transaction.execute(
-        "DELETE FROM plugin_source_member_cursor_v1 WHERE source_id=?",
-        [&lease.source_id],
-    )?;
-    transaction.execute(
         "DELETE FROM plugin_content_v1 WHERE source_id=?",
         [&lease.source_id],
     )?;
@@ -3152,6 +3829,7 @@ fn revoke_source_guarded_mode(
             cursor,
             next_dirty,
             next_policy,
+            real_clone,
         )?;
         if read_batch_binding(&transaction, &lease.source_id)?.is_some() {
             return Err(reject("source revoke retained prepared batch binding"));
@@ -3236,12 +3914,12 @@ fn validate_disabled_capture_state(
     cursor: &str,
     dirty_seq: i64,
     policy_epoch: i64,
+    real_clone: bool,
 ) -> Result<()> {
     require_no_provider_reference_rows(db, source_id)?;
     let unsupported: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_retention_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=?1) \
@@ -3257,6 +3935,20 @@ fn validate_disabled_capture_state(
         return Err(reject(
             "disabled scratch source has private, unsupported, or residual history",
         ));
+    }
+    if real_clone {
+        validate_member_history(db, source_id)?;
+    } else {
+        let has_member_rows: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?)",
+            [source_id],
+            |row| row.get(0),
+        )?;
+        if has_member_rows {
+            return Err(reject(
+                "scratch source has unsupported member cursor history",
+            ));
+        }
     }
     let evidence_dirty: Option<i64> = db
         .query_row(
@@ -3698,6 +4390,7 @@ fn set_source_capture_guarded_mode(
             &cursor,
             dirty_seq,
             current_policy,
+            real_clone,
         )?;
     }
     let previous_markers = source_marker_state(&transaction, &lease.source_id)?;
@@ -3736,6 +4429,10 @@ fn set_source_capture_guarded_mode(
             )?;
             transaction.execute(
                 "DELETE FROM plugin_session_projection_v1 WHERE source_id=?",
+                [&lease.source_id],
+            )?;
+            transaction.execute(
+                "DELETE FROM plugin_session_member_v1 WHERE source_id=?",
                 [&lease.source_id],
             )?;
             transaction.execute(
@@ -4058,6 +4755,7 @@ fn validate_capture_set_persisted_state(
             cursor,
             expected_source.10,
             expected_source.4,
+            mode.allow_plugin_facts,
         )?;
     }
     if enabled != (expected_source.5 == 1) {
@@ -4121,12 +4819,15 @@ mod tests {
              CREATE TABLE plugin_projection_cursor_v1(source_id TEXT PRIMARY KEY,projected_seq INTEGER,policy_epoch INTEGER); \
              CREATE TABLE activity_index_v1(event_key TEXT,kind TEXT,owner_key TEXT); \
              CREATE TABLE investigation_dirty_v1(kind TEXT,owner_key TEXT); \
-             CREATE TABLE plugin_source_member_cursor_v1(source_id TEXT); \
+             CREATE TABLE plugin_source_member_cursor_v1( \
+               source_id TEXT,member_id TEXT,cursor TEXT,PRIMARY KEY(source_id,member_id)); \
              CREATE TABLE plugin_content_v1(source_id TEXT); \
              CREATE TABLE plugin_source_gap_invalidated_v1(source_id TEXT); \
              CREATE TABLE plugin_retention_v1(source_id TEXT); \
              CREATE TABLE plugin_retention_invalidated_v1(source_id TEXT); \
-             CREATE TABLE plugin_session_member_v1(source_id TEXT); \
+             CREATE TABLE plugin_session_member_v1( \
+               source_id TEXT,native_session_id TEXT,member_id TEXT, \
+               PRIMARY KEY(source_id,native_session_id)); \
              CREATE TABLE plugin_content_batch_v1(source_id TEXT PRIMARY KEY,cursor TEXT,refs_digest TEXT); \
              CREATE TABLE plugin_content_status_v1( \
                source_id TEXT PRIMARY KEY,cursor TEXT,reason TEXT,refs_count INTEGER,policy_epoch INTEGER);",
@@ -4170,6 +4871,7 @@ mod tests {
             native_worker_id: String::new(),
             native_turn_id: String::new(),
             native_operation_id: String::new(),
+            member_id: String::new(),
         };
         let second = PreparedRecord {
             event_id_hash: "3".repeat(64),
@@ -4188,6 +4890,55 @@ mod tests {
         let mut changed = row.clone();
         changed.native_session_id = "different-session".to_owned();
         assert_ne!(baseline, prepared_rows_digest(&[changed, second]).unwrap());
+    }
+
+    #[test]
+    fn prepared_state_digest_v2_binds_effective_member_and_empty_updates() {
+        let row = PreparedRecord {
+            event_id_hash: "1".repeat(64),
+            revision: 0,
+            kind: "usage".to_owned(),
+            time_ns: 10,
+            payload_json: "{\"input_tokens\":1}".to_owned(),
+            record_digest: "2".repeat(64),
+            native_session_id: String::new(),
+            native_worker_id: String::new(),
+            native_turn_id: String::new(),
+            native_operation_id: String::new(),
+            member_id: "a".repeat(64),
+        };
+        let update = v2::MemberCursor {
+            member_id: "a".repeat(64),
+            cursor: "member-one".to_owned(),
+        };
+        let first = prepared_state_digest(std::slice::from_ref(&row), Some(&update)).unwrap();
+        assert_eq!(
+            first,
+            prepared_state_digest(std::slice::from_ref(&row), Some(&update)).unwrap()
+        );
+        let mut changed_row = row.clone();
+        changed_row.member_id = "b".repeat(64);
+        assert_ne!(
+            first,
+            prepared_state_digest(&[changed_row], Some(&update)).unwrap()
+        );
+        let changed_cursor = v2::MemberCursor {
+            cursor: "member-two".to_owned(),
+            ..update.clone()
+        };
+        assert_ne!(
+            first,
+            prepared_state_digest(std::slice::from_ref(&row), Some(&changed_cursor)).unwrap()
+        );
+        assert_ne!(first, prepared_state_digest(&[], Some(&update)).unwrap());
+        assert_ne!(
+            prepared_state_digest(&[], Some(&update)).unwrap(),
+            prepared_state_digest(&[], Some(&changed_cursor)).unwrap()
+        );
+        assert_eq!(
+            prepared_state_digest(&[], None).unwrap(),
+            (1, prepared_rows_digest(&[]).unwrap())
+        );
     }
 
     fn state(db: &Connection) -> (String, i64, i64) {
@@ -5086,7 +5837,7 @@ mod tests {
             ),
             (
                 "plugin_source_member_cursor_v1",
-                "INSERT INTO plugin_source_member_cursor_v1 VALUES('source-one')",
+                "INSERT INTO plugin_source_member_cursor_v1 VALUES('source-one','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','cursor-one')",
                 "unsupported",
             ),
             (
@@ -5101,7 +5852,7 @@ mod tests {
             ),
             (
                 "plugin_session_member_v1",
-                "INSERT INTO plugin_session_member_v1 VALUES('source-one')",
+                "INSERT INTO plugin_session_member_v1 VALUES('source-one','native-one','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')",
                 "unsupported",
             ),
         ] {
@@ -5843,8 +6594,10 @@ mod tests {
                     native_worker_id: row.native_worker_id,
                     native_turn_id: row.native_turn_id,
                     native_operation_id: row.native_operation_id,
+                    member_id: String::new(),
                 })
                 .collect(),
+            member_update: None,
         };
         (wire, prepared)
     }
@@ -5912,7 +6665,9 @@ mod tests {
                 native_worker_id: String::new(),
                 native_turn_id: String::new(),
                 native_operation_id: String::new(),
+                member_id: String::new(),
             }],
+            member_update: None,
         };
         let committed = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true).unwrap();
         assert_eq!(committed.disposition, "committed");
@@ -6311,7 +7066,9 @@ mod tests {
                 native_worker_id: String::new(),
                 native_turn_id: String::new(),
                 native_operation_id: String::new(),
+                member_id: String::new(),
             }],
+            member_update: None,
         };
         let error = commit_guarded_mode(
             &mut db,
@@ -7063,7 +7820,7 @@ mod tests {
                     .unwrap(),
                 "member" => db
                     .execute(
-                        "INSERT INTO plugin_source_member_cursor_v1 VALUES('source-one')",
+                        "INSERT INTO plugin_source_member_cursor_v1 VALUES('source-one','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','cursor-one')",
                         [],
                     )
                     .unwrap(),
