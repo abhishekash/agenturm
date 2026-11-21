@@ -111,6 +111,10 @@ pub enum ObservationKind {
     Activity {
         category: String,
     },
+    Tool {
+        category: String,
+        result: String,
+    },
     Usage {
         input_tokens: Option<u64>,
         output_tokens: Option<u64>,
@@ -149,7 +153,7 @@ fn reset_source(source: &mut dyn SourceAdapter) -> Result<(), String> {
 pub struct PreparedSourceBatch {
     pub next_cursor: String,
     pub observations: Vec<RawObservation>,
-    pub skipped_non_usage_facts: usize,
+    pub skipped_unprojected_facts: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -231,7 +235,7 @@ pub trait ObservationStore {
 pub struct AdmissionStatus {
     pub inserted: usize,
     pub replay: bool,
-    pub skipped_non_usage_facts: usize,
+    pub skipped_unprojected_facts: usize,
     pub source_ack_sent: bool,
 }
 
@@ -542,7 +546,7 @@ impl Kernel {
                 || prepared
                     .observations
                     .len()
-                    .saturating_add(prepared.skipped_non_usage_facts)
+                    .saturating_add(prepared.skipped_unprojected_facts)
                     > MAX_OBSERVATIONS_PER_HARNESS
             {
                 let reset_failure = reset_source(source.as_mut()).err();
@@ -632,7 +636,7 @@ impl Kernel {
                 AdmissionStatus {
                     inserted: committed.inserted,
                     replay: committed.replay,
-                    skipped_non_usage_facts: prepared.skipped_non_usage_facts,
+                    skipped_unprojected_facts: prepared.skipped_unprojected_facts,
                     source_ack_sent,
                 },
             );
@@ -792,6 +796,18 @@ fn validate_raw_observation_slice(
                 || category.chars().any(char::is_control))
         {
             return Err("activity category is invalid or exceeds limit".into());
+        }
+        if let ObservationKind::Tool { category, result } = &row.kind
+            && (category.is_empty()
+                || category.len() > MAX_CATEGORY_BYTES
+                || category.chars().any(char::is_control)
+                || !matches!(category.as_str(), "shell" | "file" | "mcp" | "other")
+                || !matches!(
+                    result.as_str(),
+                    "started" | "succeeded" | "failed" | "denied"
+                ))
+        {
+            return Err("tool observation is invalid or exceeds limit".into());
         }
     }
     Ok(())
@@ -1015,7 +1031,7 @@ mod tests {
         PreparedSourceBatch {
             next_cursor: "cursor-1".into(),
             observations: vec![activity(batch_event)],
-            skipped_non_usage_facts: 0,
+            skipped_unprojected_facts: 0,
         }
     }
 

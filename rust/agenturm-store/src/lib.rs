@@ -23,7 +23,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -31,7 +31,8 @@ const MAX_EVENT_ID_BYTES: usize = 256;
 const MAX_SESSION_KEY_BYTES: usize = 512;
 const MAX_CATEGORY_BYTES: usize = 64;
 const MAX_CURSOR_BYTES: usize = 800;
-const STORE_MARKER: &str = "agenturm.observation-store.v3";
+const STORE_MARKER: &str = "agenturm.observation-store.v4";
+const STORE_MARKER_V3: &str = "agenturm.observation-store.v3";
 const STORE_MARKER_V2: &str = "agenturm.observation-store.v2";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -41,6 +42,10 @@ pub enum ObservationKind {
     SessionEnded,
     Activity {
         category: String,
+    },
+    Tool {
+        category: String,
+        result: String,
     },
     Usage {
         input_tokens: Option<u64>,
@@ -199,7 +204,7 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         ("table".to_owned(), "agenturm_source_state".to_owned()),
         ("table".to_owned(), "agenturm_store_meta".to_owned()),
     ];
-    if version == 3 {
+    if version >= 3 {
         expected.push(("table".to_owned(), "agenturm_history_batches".to_owned()));
         expected.sort();
     }
@@ -213,10 +218,11 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
             |row| row.get(0),
         )
         .optional()?;
-    let expected_marker = if version == 2 {
-        STORE_MARKER_V2
-    } else {
-        STORE_MARKER
+    let expected_marker = match version {
+        2 => STORE_MARKER_V2,
+        3 => STORE_MARKER_V3,
+        4 => STORE_MARKER,
+        _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
         return Err(StoreError::UnrecognizedDatabase);
@@ -256,7 +262,7 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
             ],
         ),
     ];
-    if version == 3 {
+    if version >= 3 {
         expected_tables.push((
             "agenturm_history_batches",
             vec![("sequence", "INTEGER", 0, 1), ("request_id", "TEXT", 1, 0)],
@@ -308,7 +314,7 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
     {
         return Err(StoreError::UnrecognizedDatabase);
     }
-    if version == 3 {
+    if version >= 3 {
         let history_sql: String = connection.query_row(
             "SELECT sql FROM sqlite_schema WHERE type='table' AND name='agenturm_history_batches'",
             [],
@@ -376,7 +382,7 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens or creates a store at `path`. A new database receives the v3
+    /// Opens or creates a store at `path`. A new database receives the v4
     /// schema; an unknown or unrelated database is rejected without changing
     /// its journal mode or schema.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -386,7 +392,7 @@ impl Store {
         )
     }
 
-    /// Opens an existing v3 store through a read-only connection. This path
+    /// Opens an existing v4 store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -421,7 +427,7 @@ impl Store {
                     value TEXT NOT NULL
                 );
                 INSERT INTO agenturm_store_meta (key, value)
-                    VALUES ('format', 'agenturm.observation-store.v3');
+                    VALUES ('format', 'agenturm.observation-store.v4');
                 CREATE TABLE agenturm_ingest_receipts (
                     request_id TEXT PRIMARY KEY NOT NULL,
                     source_id TEXT NOT NULL,
@@ -456,7 +462,7 @@ impl Store {
                 CREATE INDEX agenturm_observations_by_session
                     ON agenturm_observations
                         (session_id, observed_at_unix_ns, event_id, revision);
-                PRAGMA user_version = 3;",
+                PRAGMA user_version = 4;",
             )?;
             transaction.commit()?;
         } else if schema_version == 2 {
@@ -477,6 +483,26 @@ impl Store {
             )?;
             transaction.commit()?;
             validate_marked_shape(&connection, 3)?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "UPDATE agenturm_store_meta
+                    SET value='agenturm.observation-store.v4' WHERE key='format';
+                PRAGMA user_version = 4;",
+            )?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 4)?;
+        } else if schema_version == 3 {
+            validate_marked_shape(&connection, 3)?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "UPDATE agenturm_store_meta
+                    SET value='agenturm.observation-store.v4' WHERE key='format';
+                PRAGMA user_version = 4;",
+            )?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 4)?;
         } else if schema_version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(schema_version));
         } else {
@@ -798,6 +824,9 @@ impl Store {
                     ObservationKind::Activity { category } => {
                         KernelObservationKind::Activity { category }
                     }
+                    ObservationKind::Tool { category, result } => {
+                        KernelObservationKind::Tool { category, result }
+                    }
                     ObservationKind::Usage {
                         input_tokens,
                         output_tokens,
@@ -878,6 +907,10 @@ impl ObservationStore for Store {
                     KernelObservationKind::SessionEnded => ObservationKind::SessionEnded,
                     KernelObservationKind::Activity { category } => ObservationKind::Activity {
                         category: category.clone(),
+                    },
+                    KernelObservationKind::Tool { category, result } => ObservationKind::Tool {
+                        category: category.clone(),
+                        result: result.clone(),
                     },
                     KernelObservationKind::Usage {
                         input_tokens,
@@ -961,6 +994,15 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
             return Err(StoreError::Invalid(
                 "activity category is invalid or too long",
             ));
+        }
+        if let ObservationKind::Tool { category, result } = &observation.kind
+            && (!(matches!(category.as_str(), "shell" | "file" | "mcp" | "other"))
+                || !(matches!(
+                    result.as_str(),
+                    "started" | "succeeded" | "failed" | "denied"
+                )))
+        {
+            return Err(StoreError::Invalid("tool category or result is invalid"));
         }
     }
     Ok(())
@@ -1078,6 +1120,15 @@ mod tests {
         }
     }
 
+    fn tool_event(event_id: &str, session_id: &str, timestamp: u64) -> StoredObservation {
+        let mut observation = event(event_id, session_id, timestamp);
+        observation.kind = ObservationKind::Tool {
+            category: "shell".into(),
+            result: "succeeded".into(),
+        };
+        observation
+    }
+
     fn batch(request_id: &str, observations: Vec<StoredObservation>) -> ObservationBatch {
         ObservationBatch {
             request_id: request_id.into(),
@@ -1114,6 +1165,33 @@ mod tests {
         );
         assert_eq!(store.commit_batch(&input).unwrap(), CommitOutcome::Replay);
         assert_eq!(store.observations().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn typed_tool_observation_survives_store_reopen_and_history_query() {
+        let db = TempDb::new();
+        {
+            let mut store = Store::open(&db.0).unwrap();
+            let mut observation = tool_event("tool-event-1", "session-1", 10);
+            observation.identity.operation_id = Some("opaque-operation-1".into());
+            store
+                .commit_batch(&batch("tool-request-1", vec![observation]))
+                .unwrap();
+        }
+        let store = Store::open_read_only(&db.0).unwrap();
+        let page = store.observation_page(10).unwrap();
+        assert_eq!(page.observations.len(), 1);
+        assert_eq!(
+            page.observations[0].kind,
+            KernelObservationKind::Tool {
+                category: "shell".into(),
+                result: "succeeded".into(),
+            }
+        );
+        assert_eq!(
+            page.observations[0].identity.operation_id.as_deref(),
+            Some("opaque-operation-1")
+        );
     }
 
     #[test]
@@ -1187,7 +1265,37 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
+    }
+
+    #[test]
+    fn v3_store_upgrades_to_v4_without_changing_history() {
+        let db = TempDb::new();
+        {
+            let mut store = Store::open(&db.0).unwrap();
+            store
+                .commit_batch(&batch("v3-request", vec![event("v3-event", "s1", 1)]))
+                .unwrap();
+            store
+                .connection
+                .execute_batch(
+                    "UPDATE agenturm_store_meta SET value='agenturm.observation-store.v3'
+                       WHERE key='format';
+                     PRAGMA user_version=3;",
+                )
+                .unwrap();
+        }
+        let store = Store::open(&db.0).unwrap();
+        let page = store.observation_page(10).unwrap();
+        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.observations.len(), 1);
+        assert_eq!(
+            store
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
     }
 
     #[test]

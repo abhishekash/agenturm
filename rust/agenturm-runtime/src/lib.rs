@@ -2,7 +2,7 @@
 //!
 //! Process supervision is independent of harness identity. `SourceBatchDecoder`
 //! implementations normalize one shared bounded batch protocol into kernel
-//! facts; `UsageBatchDecoder` provides the first common usage projection.
+//! facts; `BundledObservationDecoder` projects privacy-safe shared observations.
 //! Cursor commit and ACK ordering live in the kernel.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -69,18 +69,19 @@ pub trait SourceBatchDecoder: Send + Sync {
     fn decode_batch(&self, encoded: &str, expected_source_id: &str) -> Result<PreparedSourceBatch>;
 }
 
-/// Decoder for the shared metadata and token-usage fact subset emitted by
-/// bundled harness adapters.
+/// Decoder for the shared usage and privacy-safe tool-fact subset emitted by
+/// bundled harness adapters. Other validated source facts are counted without
+/// being retained as observations.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct UsageBatchDecoder;
+pub struct BundledObservationDecoder;
 
-impl SourceBatchDecoder for UsageBatchDecoder {
+impl SourceBatchDecoder for BundledObservationDecoder {
     fn decode_batch(&self, encoded: &str, expected_source_id: &str) -> Result<PreparedSourceBatch> {
-        let batch = parse_usage_batch(encoded, expected_source_id)?;
+        let batch = parse_source_batch(encoded, expected_source_id)?;
         Ok(PreparedSourceBatch {
             next_cursor: batch.cursor,
             observations: batch.observations,
-            skipped_non_usage_facts: batch.skipped_non_usage_facts,
+            skipped_unprojected_facts: batch.skipped_unprojected_facts,
         })
     }
 }
@@ -155,7 +156,7 @@ pub struct ProcessSource {
 
 impl ProcessSource {
     pub fn spawn(config: ProcessConfig) -> Result<Self> {
-        Self::spawn_with_decoder(config, UsageBatchDecoder)
+        Self::spawn_with_decoder(config, BundledObservationDecoder)
     }
 
     pub fn spawn_with_decoder(
@@ -552,7 +553,7 @@ fn kill_process_group(process_id: u32) {
 #[cfg(not(unix))]
 fn kill_process_group(_process_id: u32) {}
 
-fn parse_usage_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedBatch> {
+fn parse_source_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedBatch> {
     let batch: WireBatch = serde_json::from_str(encoded)?;
     if batch.kind != "batch"
         || batch.protocol != PROTOCOL_VERSION
@@ -563,16 +564,21 @@ fn parse_usage_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedBa
     }
     validate_cursor(&batch.cursor)?;
     let mut observations = Vec::with_capacity(batch.records.len());
-    let mut skipped_non_usage_facts = 0;
+    let mut skipped_unprojected_facts = 0;
     for record in batch.records {
         let kind = record
             .get("kind")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| RuntimeError::new("source fact is missing a kind"))?;
+        if kind == "tool" {
+            let typed: WireToolRecord = serde_json::from_value(record)?;
+            observations.push(typed.try_into()?);
+            continue;
+        }
         if kind != "usage" {
             let skipped: WireSkippedRecord = serde_json::from_value(record)?;
             validate_skipped_record(&skipped)?;
-            skipped_non_usage_facts += 1;
+            skipped_unprojected_facts += 1;
             continue;
         }
         let typed: WireUsageRecord = serde_json::from_value(record)?;
@@ -581,7 +587,7 @@ fn parse_usage_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedBa
     Ok(ParsedBatch {
         cursor: batch.cursor,
         observations,
-        skipped_non_usage_facts,
+        skipped_unprojected_facts,
     })
 }
 
@@ -609,7 +615,7 @@ struct WireBatch {
 struct ParsedBatch {
     cursor: String,
     observations: Vec<RawObservation>,
-    skipped_non_usage_facts: usize,
+    skipped_unprojected_facts: usize,
 }
 
 #[derive(Deserialize)]
@@ -621,6 +627,17 @@ struct WireUsageRecord {
     time_ns: String,
     identity: WireIdentity,
     payload: WireUsage,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireToolRecord {
+    event_id: String,
+    revision: u32,
+    kind: String,
+    time_ns: String,
+    identity: WireIdentity,
+    payload: WireTool,
 }
 
 #[derive(Deserialize)]
@@ -826,6 +843,42 @@ impl TryFrom<WireUsageRecord> for RawObservation {
     }
 }
 
+impl TryFrom<WireToolRecord> for RawObservation {
+    type Error = RuntimeError;
+
+    fn try_from(record: WireToolRecord) -> Result<Self> {
+        if record.kind != "tool"
+            || !valid_source_identifier(&record.event_id, 256)
+            || !matches!(
+                record.payload.category.as_str(),
+                "shell" | "file" | "mcp" | "other"
+            )
+            || !matches!(
+                record.payload.result.as_str(),
+                "started" | "succeeded" | "failed" | "denied"
+            )
+        {
+            return Err(RuntimeError::new("source tool payload is invalid"));
+        }
+        validate_wire_identity(&record.identity)?;
+        Ok(RawObservation {
+            event_id: record.event_id,
+            revision: record.revision,
+            identity: ObservationIdentity {
+                session_id: record.identity.session_id,
+                worker_id: record.identity.worker_id,
+                turn_id: record.identity.turn_id,
+                operation_id: record.identity.operation_id,
+            },
+            observed_at_unix_ns: parse_decimal_timestamp(&record.time_ns)?,
+            kind: ObservationKind::Tool {
+                category: record.payload.category,
+                result: record.payload.result,
+            },
+        })
+    }
+}
+
 fn parse_decimal_timestamp(value: &str) -> Result<u64> {
     if value.is_empty()
         || !value.bytes().all(|byte| byte.is_ascii_digit())
@@ -880,7 +933,7 @@ mod tests {
     #[test]
     fn parser_preserves_native_event_identity_revision_and_nanoseconds() {
         let response = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"codex:file:1:usage:hash","revision":2,"kind":"usage","time_ns":"1700000000123456789","identity":{"session_id":"session-1","worker_id":"worker-1","turn_id":"turn-1","operation_id":"operation-1"},"payload":{"input_tokens":7,"output_tokens":3}}]}"#;
-        let batch = parse_usage_batch(response, "harness.codex").unwrap();
+        let batch = parse_source_batch(response, "harness.codex").unwrap();
         assert_eq!(batch.observations[0].revision, 2);
         assert_eq!(
             batch.observations[0].observed_at_unix_ns,
@@ -895,20 +948,27 @@ mod tests {
     #[test]
     fn strict_usage_wire_schema_rejects_unknown_fields_and_noncanonical_times() {
         let unknown = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"e1","revision":0,"kind":"usage","time_ns":"1","identity":{"session_id":"s1"},"payload":{"input_tokens":1,"output_tokens":2,"cached_input_tokens":3}}]}"#;
-        assert!(parse_usage_batch(unknown, "harness.codex").is_err());
+        assert!(parse_source_batch(unknown, "harness.codex").is_err());
         assert!(parse_decimal_timestamp("01").is_err());
         assert!(parse_decimal_timestamp("+1").is_err());
         assert!(parse_decimal_timestamp("9223372036854775808").is_err());
     }
 
     #[test]
-    fn usage_projection_preserves_partial_and_cached_counters_and_counts_skips() {
+    fn bundled_projection_preserves_usage_and_typed_tool_facts() {
         let response = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"tool-1","revision":0,"kind":"tool","time_ns":"1","identity":{"session_id":"s1"},"payload":{"category":"shell","result":"succeeded"}},{"event_id":"usage-1","revision":0,"kind":"usage","time_ns":"2","identity":{"session_id":"s1"},"payload":{"cache_read_tokens":0,"cache_write_tokens":4,"total_tokens":4}}]}"#;
-        let batch = parse_usage_batch(response, "harness.codex").unwrap();
-        assert_eq!(batch.skipped_non_usage_facts, 1);
-        assert_eq!(batch.observations.len(), 1);
+        let batch = parse_source_batch(response, "harness.codex").unwrap();
+        assert_eq!(batch.skipped_unprojected_facts, 0);
+        assert_eq!(batch.observations.len(), 2);
         assert_eq!(
             batch.observations[0].kind,
+            ObservationKind::Tool {
+                category: "shell".into(),
+                result: "succeeded".into(),
+            }
+        );
+        assert_eq!(
+            batch.observations[1].kind,
             ObservationKind::Usage {
                 input_tokens: None,
                 output_tokens: None,
@@ -922,9 +982,9 @@ mod tests {
     #[test]
     fn projection_rejects_unknown_or_malformed_non_usage_facts() {
         let unknown_kind = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"e1","revision":0,"kind":"usgae","time_ns":"1","identity":{"session_id":"s1"},"payload":{"input_tokens":1}}]}"#;
-        assert!(parse_usage_batch(unknown_kind, "harness.codex").is_err());
+        assert!(parse_source_batch(unknown_kind, "harness.codex").is_err());
 
         let malformed_tool = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"e1","revision":0,"kind":"tool","time_ns":"1","identity":{"session_id":"s1"},"payload":{"category":"shell"}}]}"#;
-        assert!(parse_usage_batch(malformed_tool, "harness.codex").is_err());
+        assert!(parse_source_batch(malformed_tool, "harness.codex").is_err());
     }
 }
