@@ -8,15 +8,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 import uuid
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
 from observatory.plugin_admission import _validated
-from observatory.plugin_reference_admission import DEFAULT_REFERENCE_ADMISSIONS
+from observatory.plugin_reference_admission import (DEFAULT_REFERENCE_ADMISSIONS,
+                                                     ReferenceAdmissionRegistry,
+                                                     ReferenceSubmission)
 from observatory.plugin_wire import PollBatch
+from tests.test_plugin_reference_admission_spi import AuditAdmission
 
 
 SUPPORTED_RECORD_KINDS = frozenset({
@@ -26,7 +31,7 @@ SUPPORTED_RECORD_KINDS = frozenset({
 
 def logical_clone_snapshot(path: str | Path) -> tuple:
     """Read every schema object and table row for no-write dispatch checks."""
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db:
         schema = tuple(tuple(row) for row in db.execute(
             "SELECT type,name,tbl_name,sql FROM sqlite_master "
             "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"))
@@ -42,12 +47,74 @@ def logical_clone_snapshot(path: str | Path) -> tuple:
         return schema, tuple(contents)
 
 
+def open_clone_database_handles(path: str | Path) -> tuple[tuple[str, str, int, int], ...]:
+    """Report open descriptor paths and inode identities for a clone (Linux CI)."""
+    root = str(Path(path).resolve())
+    targets = {root, root + "-wal", root + "-shm", root + "-journal"}
+    proc_fds = Path("/proc/self/fd")
+    if not proc_fds.is_dir():
+        raise RuntimeError("clone handle assertion requires /proc/self/fd")
+    handles = []
+    for descriptor in proc_fds.iterdir():
+        try:
+            target = os.readlink(descriptor)
+        except OSError:
+            continue
+        normalized = target.removesuffix(" (deleted)")
+        if normalized in targets:
+            info = os.fstat(int(descriptor.name))
+            handles.append((descriptor.name, target, info.st_dev, info.st_ino))
+    return tuple(handles)
+
+
+def assert_clone_database_quiescent(path: str | Path) -> None:
+    handles = open_clone_database_handles(path)
+    if handles:
+        raise AssertionError(f"Rust clone operation has open Python SQLite handles: {handles}")
+
+
+def assert_clone_database_reader_current(path: str | Path) -> None:
+    """Require current non-deleted main/WAL/SHM fds (duplicate main fds are okay)."""
+    root = str(Path(path).resolve())
+    expected = {root, root + "-wal", root + "-shm"}
+    handles = open_clone_database_handles(path)
+    seen = set()
+    counts: dict[str, int] = {}
+    for descriptor, target, device, inode in handles:
+        if target.endswith(" (deleted)"):
+            raise AssertionError(f"SQLite reader holds a deleted sidecar: {handles}")
+        if target not in expected:
+            raise AssertionError(f"SQLite reader has unexpected or duplicate fd targets: {handles}")
+        info = os.stat(target)
+        if (device, inode) != (info.st_dev, info.st_ino):
+            raise AssertionError(f"SQLite reader fd no longer matches its path inode: {handles}")
+        seen.add(target)
+        counts[target] = counts.get(target, 0) + 1
+    if seen != expected:
+        raise AssertionError(f"SQLite reader does not hold the current main/WAL/SHM set: {handles}")
+    if counts.get(root + "-wal") != 1 or counts.get(root + "-shm") != 1:
+        raise AssertionError(f"expected one WAL and SHM descriptor, got {handles}")
+
+
 class RustFixtureError(RuntimeError):
     """A marked-clone fixture operation failed in the Rust executable."""
 
 
 class UnsupportedMetadataSubset(ValueError):
     """The request is valid Python wire data outside the Rust fixture subset."""
+
+
+def _audit_fixture_registry(registry) -> bool:
+    providers = getattr(registry, "providers", ())
+    defaults = DEFAULT_REFERENCE_ADMISSIONS.providers
+    return (type(registry) is ReferenceAdmissionRegistry
+            and len(providers) == 3
+            and tuple(provider.id for provider in providers[:2])
+            == tuple(provider.id for provider in defaults)
+            and tuple(type(provider) for provider in providers[:2])
+            == tuple(type(provider) for provider in defaults)
+            and type(providers[2]) is AuditAdmission
+            and providers[2].id == "audit-fixture")
 
 
 @dataclass(frozen=True)
@@ -70,8 +137,8 @@ class RustMarkedCloneMetadataAdapter:
     """Exercise feature-off v2 metadata operations on one marked clone path.
 
     Supported: the session-facing activation/read/commit shape for content-free
-    lifecycle, typed fact, diagnostic, and one-member gap batches, plus fixture
-    capture policy changes and source revoke. This remains a deliberately
+    lifecycle, typed fact, diagnostic, one-member gap batches, and the fixed
+    AuditAdmission fixture, plus fixture capture policy changes and source revoke. This remains a deliberately
     incomplete subset: a separate test-only façade exercises PluginSession's
     structural seam, but no runtime composition uses this adapter and it does
     not claim full PluginAdmissionPort conformance. Relationships, root gaps, references,
@@ -126,7 +193,8 @@ class RustMarkedCloneMetadataAdapter:
                         ) -> RustMetadataLease:
         if content_fingerprint:
             raise UnsupportedMetadataSubset("content fingerprints are not admitted")
-        if reference_admissions is not DEFAULT_REFERENCE_ADMISSIONS:
+        if (reference_admissions is not DEFAULT_REFERENCE_ADMISSIONS
+                and not _audit_fixture_registry(reference_admissions)):
             raise UnsupportedMetadataSubset("custom reference providers are not admitted")
         request_id = request_id or self._request_id()
         request = self._request(request_id, self._receiver_id(), {
@@ -137,9 +205,19 @@ class RustMarkedCloneMetadataAdapter:
         return self._lease(result)
 
     def install_reference_schema(self, reference_admissions=DEFAULT_REFERENCE_ADMISSIONS) -> None:
-        """The detached Store copy already has default schema; custom providers fail closed."""
-        if reference_admissions is not DEFAULT_REFERENCE_ADMISSIONS:
+        """Install only the literal Audit fixture table into this detached clone."""
+        if reference_admissions is DEFAULT_REFERENCE_ADMISSIONS:
+            return
+        if not _audit_fixture_registry(reference_admissions):
             raise UnsupportedMetadataSubset("custom reference providers are not admitted")
+        with closing(sqlite3.connect(self.clone_path)) as db:
+            existing = db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='audit_fixture'").fetchone()
+            expected = "CREATE TABLE audit_fixture(source_id TEXT PRIMARY KEY,cursor TEXT NOT NULL,digest TEXT NOT NULL)"
+            if existing is None:
+                db.execute("CREATE TABLE audit_fixture(source_id TEXT PRIMARY KEY,cursor TEXT NOT NULL,digest TEXT NOT NULL)")
+            elif "".join(existing[0].lower().split()) != "".join(expected.lower().split()):
+                raise UnsupportedMetadataSubset("existing audit fixture schema is unsupported")
 
     def _read(self, mode: str, operation: dict, request_id: str | None = None) -> dict:
         request = self._request(request_id or self._request_id(),
@@ -196,7 +274,7 @@ class RustMarkedCloneMetadataAdapter:
     def _receiver_id(self) -> str:
         import sqlite3
 
-        with sqlite3.connect(self.clone_path) as db:
+        with closing(sqlite3.connect(self.clone_path)) as db:
             row = db.execute(
                 "SELECT value FROM schema_meta WHERE key='receiver_id'").fetchone()
         if row is None:
@@ -205,12 +283,35 @@ class RustMarkedCloneMetadataAdapter:
 
     def batch_request(self, lease: RustMetadataLease, expected_cursor: str,
                       batch: PollBatch, *, request_id: str,
-                      reference_refs: tuple = (), allow_root_gap: bool = False) -> dict:
+                      reference_refs: tuple = (), allow_root_gap: bool = False,
+                      reference_submission=None,
+                      reference_admissions=DEFAULT_REFERENCE_ADMISSIONS) -> dict:
         # Python's existing validation and metadata minimization define the host
         # side of this limited fixture protocol before Rust receives any rows.
         digest, rows, checked = _validated(batch, lease.source_id)
         if reference_refs:
             raise UnsupportedMetadataSubset("reference payloads are not admitted")
+        audit_fixture = None
+        if reference_submission is not None:
+            if (not _audit_fixture_registry(reference_admissions)
+                    or type(reference_submission) is not ReferenceSubmission
+                    or type(reference_submission.provider_id) is not str
+                    or reference_submission.provider_id != "audit-fixture"
+                    or type(reference_submission.refs) is not tuple
+                    or len(reference_submission.refs) != 1
+                    or type(reference_submission.refs[0]) is not str
+                    or reference_submission.refs[0] not in ("audit-a", "audit-b")
+                    or type(reference_submission.grant) is not str
+                    or reference_submission.grant != "host-owned-audit"):
+                raise UnsupportedMetadataSubset("invalid audit fixture reference submission")
+            audit_fixture = {
+                "provider_id": "audit-fixture",
+                "refs": list(reference_submission.refs),
+                "grant": "host-owned-audit",
+            }
+        elif (reference_admissions is not DEFAULT_REFERENCE_ADMISSIONS
+              and not _audit_fixture_registry(reference_admissions)):
+            raise UnsupportedMetadataSubset("custom reference provider registry is not admitted")
         if checked.root_gap or allow_root_gap:
             raise UnsupportedMetadataSubset("discovery root gaps are not admitted")
         gap_rows = [row for row in rows if row[3] == "diagnostic"
@@ -246,6 +347,8 @@ class RustMarkedCloneMetadataAdapter:
             operation["member_update"] = {
                 "member_id": checked.member_id, "cursor": checked.member_cursor,
             }
+        if audit_fixture is not None:
+            operation["audit_fixture"] = audit_fixture
         return self._request(request_id, lease.receiver_id, operation)
 
     def commit_batch(self, lease: RustMetadataLease, expected_cursor: str,
@@ -253,12 +356,12 @@ class RustMarkedCloneMetadataAdapter:
                      reference_refs: tuple = (), allow_root_gap: bool = False,
                      reference_submission=None,
                      reference_admissions=DEFAULT_REFERENCE_ADMISSIONS) -> dict:
-        if reference_submission is not None or reference_admissions is not DEFAULT_REFERENCE_ADMISSIONS:
-            raise UnsupportedMetadataSubset("reference providers are not admitted")
         request = self.batch_request(lease, expected_cursor, batch,
                                      request_id=request_id or self._request_id(),
                                      reference_refs=reference_refs,
-                                     allow_root_gap=allow_root_gap)
+                                     allow_root_gap=allow_root_gap,
+                                     reference_submission=reference_submission,
+                                     reference_admissions=reference_admissions)
         return self._run("--v2-mixed-clone-batch", request)["result"]
 
     def set_capture_enabled(self, lease: RustMetadataLease, *, enabled: bool,
@@ -285,7 +388,7 @@ class RustMarkedCloneMetadataAdapter:
     def capture_revoked(self, source_id: str) -> bool:
         import sqlite3
 
-        with sqlite3.connect(self.clone_path) as db:
+        with closing(sqlite3.connect(self.clone_path)) as db:
             row = db.execute(
                 "SELECT capture_enabled FROM plugin_source_cursor_v1 "
                 "WHERE source_id=? AND receiver_id=?",
@@ -321,6 +424,11 @@ class RustMarkedCloneSessionPortSubset:
 
     def __init__(self, adapter: RustMarkedCloneMetadataAdapter):
         self.adapter = adapter
+        self.supports_request_id = True
+
+    @property
+    def clone_path(self):
+        return self.adapter.clone_path
 
     def install_reference_schema(self, reference_admissions) -> None:
         self.adapter.install_reference_schema(reference_admissions)
@@ -342,16 +450,28 @@ class RustMarkedCloneSessionPortSubset:
     def commit_batch(self, lease: RustMetadataLease, expected_cursor: str,
                      batch: PollBatch, *, allow_root_gap: bool,
                      reference_submission,
-                     reference_admissions) -> str:
-        if reference_submission is not None:
-            raise UnsupportedMetadataSubset("reference submissions are not admitted")
+                     reference_admissions, request_id: str | None = None) -> str:
         result = self.adapter.commit_batch(
             lease, expected_cursor, batch, allow_root_gap=allow_root_gap,
+            request_id=request_id,
+            reference_submission=reference_submission,
             reference_admissions=reference_admissions)
         return result["cursor"]
 
+    def batch_request(self, *args, **kwargs):
+        return self.adapter.batch_request(*args, **kwargs)
+
+    def send_normal_dispatch(self, request: dict) -> None:
+        self.adapter.send_normal_dispatch(request)
+
     def capture_revoked(self, source_id: str) -> bool:
         return self.adapter.capture_revoked(source_id)
+
+    def set_capture_enabled(self, *args, **kwargs):
+        return self.adapter.set_capture_enabled(*args, **kwargs)
+
+    def revoke_source(self, *args, **kwargs):
+        return self.adapter.revoke_source(*args, **kwargs)
 
     def classify_lease_failure(self, error: BaseException,
                                source_id: str) -> str | None:

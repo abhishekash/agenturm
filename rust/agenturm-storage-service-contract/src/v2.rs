@@ -58,6 +58,9 @@ pub enum Operation {
         records: Vec<PreparedBatchRecord>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         member_update: Option<MemberCursor>,
+        /// Fixed trusted-provider fixture. Only the marked-clone adapter accepts it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        audit_fixture: Option<AuditFixtureSubmission>,
     },
     RevokeSource {
         lease: SourceLease,
@@ -75,6 +78,17 @@ pub enum Operation {
     ReadLastSourceDiagnostic { lease: SourceLease },
     /// Fixture-only read of the bounded per-member source checkpoints.
     ReadSourceMemberCursors { lease: SourceLease },
+}
+
+/// Narrow test fixture for the one audited reference provider. This is not a
+/// provider callback or arbitrary provider payload; production dispatch rejects
+/// the enclosing mixed-admission operation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditFixtureSubmission {
+    pub provider_id: String,
+    pub refs: Vec<String>,
+    pub grant: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -682,6 +696,7 @@ impl Request {
                 batch_digest,
                 records,
                 member_update,
+                audit_fixture,
             } => {
                 if lease.receiver_id != self.receiver_id
                     || !identity(&lease.plugin_id, 256)
@@ -698,6 +713,15 @@ impl Request {
                         !member_id_is_valid(&member.member_id)
                             || (!member.cursor.is_empty()
                                 && !member_cursor_is_valid(&member.cursor))
+                    })
+                    || audit_fixture.as_ref().is_some_and(|submission| {
+                        submission.provider_id != "audit-fixture"
+                            || submission.refs.len() != 1
+                            || !matches!(
+                                submission.refs.first().map(String::as_str),
+                                Some("audit-a" | "audit-b")
+                            )
+                            || submission.grant != "host-owned-audit"
                     })
                 {
                     return Err(ContractError::Invalid(
@@ -1189,6 +1213,7 @@ mod tests {
                 batch_digest: "f".repeat(64),
                 records: vec![lifecycle_record, fact],
                 member_update: None,
+                audit_fixture: None,
             },
         }
     }
@@ -1267,6 +1292,46 @@ mod tests {
             native_operation_id: String::new(),
         });
         assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn audit_fixture_submission_is_a_fixed_typed_subset() {
+        let mut request = mixed_fixture();
+        let Operation::AdmitBatch { audit_fixture, .. } = &mut request.operation else {
+            panic!("fixture is mixed admission")
+        };
+        *audit_fixture = Some(AuditFixtureSubmission {
+            provider_id: "audit-fixture".to_owned(),
+            refs: vec!["audit-a".to_owned()],
+            grant: "host-owned-audit".to_owned(),
+        });
+        let encoded = request.to_json().unwrap();
+        assert_eq!(Request::from_json(&encoded).unwrap(), request);
+        let original_digest = request.replay_identity().unwrap().digest;
+
+        if let Operation::AdmitBatch { audit_fixture, .. } = &mut request.operation {
+            audit_fixture.as_mut().unwrap().grant = "forged".to_owned();
+        }
+        assert!(request.validate().is_err());
+        if let Operation::AdmitBatch { audit_fixture, .. } = &mut request.operation {
+            let submission = audit_fixture.as_mut().unwrap();
+            submission.grant = "host-owned-audit".to_owned();
+            submission.refs[0] = "filesystem:/tmp/private".to_owned();
+        }
+        assert!(request.validate().is_err());
+        if let Operation::AdmitBatch { audit_fixture, .. } = &mut request.operation {
+            let submission = audit_fixture.as_mut().unwrap();
+            submission.refs[0] = "audit-a".to_owned();
+            submission.provider_id = "arbitrary-provider".to_owned();
+        }
+        assert!(request.validate().is_err());
+
+        if let Operation::AdmitBatch { audit_fixture, .. } = &mut request.operation {
+            let submission = audit_fixture.as_mut().unwrap();
+            submission.provider_id = "audit-fixture".to_owned();
+            submission.refs[0] = "audit-b".to_owned();
+        }
+        assert_ne!(request.replay_identity().unwrap().digest, original_digest);
     }
 
     #[test]

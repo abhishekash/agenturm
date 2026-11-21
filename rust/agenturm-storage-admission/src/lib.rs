@@ -125,7 +125,7 @@ struct Lease {
     policy_epoch: i64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PreparedRecord {
     event_id_hash: String,
@@ -154,6 +154,8 @@ struct Request {
     records: Vec<PreparedRecord>,
     #[serde(default)]
     member_update: Option<v2::MemberCursor>,
+    #[serde(default)]
+    audit_fixture: Option<v2::AuditFixtureSubmission>,
 }
 
 #[derive(Debug, Serialize)]
@@ -224,7 +226,16 @@ fn prepared_rows_digest(records: &[PreparedRecord]) -> Result<String> {
 fn prepared_state_digest(
     records: &[PreparedRecord],
     member_update: Option<&v2::MemberCursor>,
+    audit_fixture: Option<&v2::AuditFixtureSubmission>,
 ) -> Result<(i64, String)> {
+    if let Some(audit_fixture) = audit_fixture {
+        let member = member_update.map(|value| (&value.member_id, &value.cursor));
+        let encoded = serde_json::to_vec(&(3_u8, member, records, audit_fixture))?;
+        let mut digest = Sha256::new();
+        digest.update(b"agenturm-prepared-audit-fixture-v3\0");
+        digest.update(encoded);
+        return Ok((3, format!("{:x}", digest.finalize())));
+    }
     let Some(member_update) = member_update else {
         return Ok((1, prepared_rows_digest(records)?));
     };
@@ -474,6 +485,8 @@ fn source_state(db: &Connection, source_id: &str) -> Result<SourceState> {
 struct AdmissionSnapshot {
     evidence_count: i64,
     dirty_marker_before: Option<i64>,
+    reference_owners_before: Vec<String>,
+    audit_receipt_before: Option<(String, String)>,
     batch_binding_before: Option<BatchBinding>,
     member_cursors_before: Vec<(String, String)>,
     session_members_before: Vec<(String, String)>,
@@ -611,6 +624,22 @@ impl AdmissionSnapshot {
             [source_id],
             |row| row.get(0),
         )?;
+        let mut owner_statement = db.prepare(
+            "SELECT provider_id FROM plugin_reference_owner_v1 WHERE source_id=? ORDER BY provider_id",
+        )?;
+        let reference_owners_before = owner_statement
+            .query_map([source_id], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<String>, _>>()?;
+        let audit_receipt_before = if audit_fixture_table_installed(db)? {
+            db.query_row(
+                "SELECT cursor,digest FROM audit_fixture WHERE source_id=?",
+                [source_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+        } else {
+            None
+        };
         let batch_binding_before = read_batch_binding(db, source_id)?;
         let member_cursors_before = read_member_cursor_rows(db, source_id)?;
         let session_members_before = read_session_member_rows(db, source_id)?;
@@ -618,6 +647,8 @@ impl AdmissionSnapshot {
         Ok(Self {
             evidence_count,
             dirty_marker_before,
+            reference_owners_before,
+            audit_receipt_before,
             batch_binding_before,
             member_cursors_before,
             session_members_before,
@@ -1038,8 +1069,11 @@ fn verify_fact_admission_readback(
     )?;
     let actual_binding = read_batch_binding(db, &request.lease.source_id)?;
     if receipt.disposition == "committed" {
-        let (prepared_version, prepared_digest) =
-            prepared_state_digest(readback.effective_records, request.member_update.as_ref())?;
+        let (prepared_version, prepared_digest) = prepared_state_digest(
+            readback.effective_records,
+            request.member_update.as_ref(),
+            request.audit_fixture.as_ref(),
+        )?;
         let expected_binding = binding_for_request(
             request,
             receipt.dirty_seq,
@@ -1171,6 +1205,60 @@ fn verify_fact_admission_readback(
             }
         }
     }
+    verify_audit_fixture_readback(db, request, receipt, readback.snapshot)?;
+    Ok(())
+}
+
+fn verify_audit_fixture_readback(
+    db: &Connection,
+    request: &Request,
+    receipt: &Receipt,
+    snapshot: &AdmissionSnapshot,
+) -> Result<()> {
+    let source_id = &request.lease.source_id;
+    let mut owners = db.prepare(
+        "SELECT provider_id FROM plugin_reference_owner_v1 WHERE source_id=? ORDER BY provider_id",
+    )?;
+    let owner_rows = owners
+        .query_map([source_id], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let row = if audit_fixture_table_installed(db)? {
+        db.query_row(
+            "SELECT cursor,digest FROM audit_fixture WHERE source_id=?",
+            [source_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?
+    } else {
+        None
+    };
+    if receipt.disposition == "idle"
+        || (receipt.disposition == "replay" && request.audit_fixture.is_none())
+    {
+        if owner_rows != snapshot.reference_owners_before || row != snapshot.audit_receipt_before {
+            return Err(reject("idle admission changed audit provider state"));
+        }
+        return Ok(());
+    }
+    let installed = audit_fixture_table_installed(db)?;
+    let expected_owners: Vec<&str> = if installed {
+        AUDIT_OWNER_IDS.to_vec()
+    } else {
+        Vec::new()
+    };
+    let expected_row = request.audit_fixture.as_ref().map(|submission| {
+        (
+            receipt.cursor.clone(),
+            audit_fixture_digest(&submission.refs[0]),
+        )
+    });
+    if owner_rows.iter().map(String::as_str).collect::<Vec<_>>() != expected_owners
+        || row != expected_row
+    {
+        return Err(reject(
+            "audit provider receipt or ownership readback mismatch",
+        ));
+    }
     Ok(())
 }
 
@@ -1279,6 +1367,8 @@ fn reject_real_clone_admission_triggers(db: &Connection) -> Result<()> {
             "plugin_session_member_v1",
             "plugin_source_member_cursor_v1",
             "plugin_source_gap_invalidated_v1",
+            AUDIT_TABLE,
+            "plugin_reference_owner_v1",
             "plugin_content_batch_v1",
             "plugin_content_status_v1",
             "storage_admission_request_v2",
@@ -1407,6 +1497,7 @@ fn reject_real_clone_policy_triggers(db: &Connection) -> Result<()> {
             "plugin_content_batch_v1",
             "plugin_content_status_v1",
             "plugin_reference_owner_v1",
+            AUDIT_TABLE,
             "plugin_retention_v1",
             "plugin_retention_invalidated_v1",
             "plugin_source_gap_invalidated_v1",
@@ -2005,10 +2096,14 @@ fn validate_active_source_history(
     dirty_seq: i64,
     policy_epoch: i64,
     allow_plugin_facts: bool,
+    allow_audit_fixture: bool,
 ) -> Result<()> {
     require_no_provider_reference_rows(db, source_id)?;
+    if allow_audit_fixture {
+        validate_audit_fixture_history(db, source_id, cursor)?;
+    }
     let unsupported: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
+        "SELECT (?7=0 AND EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1)) \
          OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
          OR (?6=0 AND EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1)) \
          OR (?6=0 AND EXISTS(SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=?1)) \
@@ -2051,6 +2146,7 @@ fn validate_active_source_history(
             cursor,
             format!("{:x}", Sha256::digest(b"{\"refs\":[]}")),
             i64::from(allow_plugin_facts),
+            i64::from(allow_audit_fixture),
         ],
         |row| row.get(0),
     )?;
@@ -2158,6 +2254,11 @@ fn commit_guarded_member_mode(
             "member cursor update requires clone fixture dispatch",
         ));
     }
+    if request.audit_fixture.is_some() && (!real_clone || !allow_member_fixture) {
+        return Err(reject(
+            "audit reference fixture requires marked clone fixture dispatch",
+        ));
+    }
     let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if let Some(lease) = writer_lease {
         lease.verify_admission()?;
@@ -2230,7 +2331,11 @@ fn commit_guarded_member_mode(
             dirty_seq,
             policy,
             true,
+            real_clone,
         )?;
+        if request.audit_fixture.is_some() && !audit_fixture_table_installed(&transaction)? {
+            return Err(reject("audit fixture provider schema is unavailable"));
+        }
     } else {
         // Preserve the scratch-only replay fixture's historical narrow gate.
         let unsupported: i64 = transaction.query_row(
@@ -2338,6 +2443,7 @@ fn commit_guarded_member_mode(
         Some(prepared_state_digest(
             &member_plan.effective_records,
             request.member_update.as_ref(),
+            request.audit_fixture.as_ref(),
         )?)
     } else if real_clone {
         Some((1, prepared_rows_digest(&member_plan.effective_records)?))
@@ -2350,11 +2456,20 @@ fn commit_guarded_member_mode(
         && request.cursor == current_cursor
         && request.expected_cursor == current_cursor
     {
+        if request.audit_fixture.is_some() {
+            return Err(reject(
+                "audit fixture reference submission requires a committed cursor advance",
+            ));
+        }
         return finish(
             transaction,
             Receipt {
                 cursor: current_cursor,
-                disposition: "idle",
+                disposition: if existing_v2_receipt {
+                    "replay"
+                } else {
+                    "idle"
+                },
                 dirty_seq,
             },
             request,
@@ -2572,6 +2687,12 @@ fn commit_guarded_member_mode(
             "not_requested",
             request.lease.policy_epoch
         ],
+    )?;
+    commit_audit_fixture_provider(
+        &transaction,
+        &request.lease.source_id,
+        &request.cursor,
+        request.audit_fixture.as_ref(),
     )?;
     for (session_id, member_id) in &member_plan.session_member_inserts {
         transaction.execute(
@@ -2964,6 +3085,7 @@ pub fn read_activation_clone_member_cursors_v2_json(path: &Path, input: &[u8]) -
         current.dirty_seq,
         current.policy_epoch,
         true,
+        true,
     )?;
     let cursors = read_member_cursor_rows(&db, &lease.source_id)?
         .into_iter()
@@ -3141,6 +3263,7 @@ fn apply_activation_clone_v2_json_inner(
                     })
                     .collect(),
                 member_update: None,
+                audit_fixture: None,
             };
             let receipt = with_marked_activation_clone(path, |db, lease| {
                 commit_guarded_mode(db, &prepared, Some(lease), Some(&replay), true)
@@ -3199,6 +3322,7 @@ fn apply_activation_clone_v2_json_inner(
                     })
                     .collect(),
                 member_update: None,
+                audit_fixture: None,
             };
             let receipt = with_marked_activation_clone(path, |db, lease| {
                 commit_guarded_mode(db, &prepared, Some(lease), Some(&replay), true)
@@ -3223,6 +3347,7 @@ fn apply_activation_clone_v2_json_inner(
             batch_digest,
             records,
             member_update,
+            audit_fixture,
         } => {
             if !allow_mixed_batch_fixture {
                 return Err(reject(
@@ -3263,6 +3388,7 @@ fn apply_activation_clone_v2_json_inner(
                     })
                     .collect(),
                 member_update: member_update.clone(),
+                audit_fixture: audit_fixture.clone(),
             };
             let receipt = with_marked_activation_clone(path, |db, writer_lease| {
                 commit_guarded_member_mode(
@@ -3377,6 +3503,7 @@ pub fn apply_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
                     })
                     .collect(),
                 member_update: None,
+                audit_fixture: None,
             };
             let receipt = with_marked_scratch(path, |db, writer_lease| {
                 commit_guarded(db, &prepared, Some(writer_lease), Some(&replay))
@@ -3656,6 +3783,7 @@ fn activate_source_guarded(
             &cursor,
             dirty_seq,
             policy,
+            real_clone,
             real_clone,
         )?;
         let epoch = fresh_lease_epoch(Some(old_epoch))?;
@@ -4036,6 +4164,7 @@ fn revoke_source_guarded_mode(
             dirty_seq,
             policy,
             true,
+            real_clone,
         )?;
         preflight_clone_policy_deletes(&transaction, &lease.source_id)?;
     } else {
@@ -4084,6 +4213,18 @@ fn revoke_source_guarded_mode(
         "DELETE FROM plugin_content_v1 WHERE source_id=?",
         [&lease.source_id],
     )?;
+    if real_clone && audit_fixture_table_installed(&transaction)? {
+        transaction.execute(
+            "DELETE FROM audit_fixture WHERE source_id=?",
+            [&lease.source_id],
+        )?;
+    }
+    if real_clone {
+        transaction.execute(
+            "DELETE FROM plugin_reference_owner_v1 WHERE source_id=?",
+            [&lease.source_id],
+        )?;
+    }
     if !real_clone {
         transaction.execute(
             "DELETE FROM plugin_content_batch_v1 WHERE source_id=?",
@@ -4276,6 +4417,16 @@ fn validate_disabled_capture_state(
             "disabled scratch source has private, unsupported, or residual history",
         ));
     }
+    if audit_fixture_table_installed(db)? {
+        let residual_audit: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM audit_fixture WHERE source_id=?)",
+            [source_id],
+            |row| row.get(0),
+        )?;
+        if residual_audit {
+            return Err(reject("disabled source retains audit fixture data"));
+        }
+    }
     if real_clone {
         validate_member_history(db, source_id)?;
     } else {
@@ -4330,6 +4481,129 @@ fn require_no_provider_reference_rows(db: &Connection, source_id: &str) -> Resul
         }
     }
     Ok(())
+}
+
+const AUDIT_PROVIDER_ID: &str = "audit-fixture";
+const AUDIT_TABLE: &str = "audit_fixture";
+const AUDIT_OWNER_IDS: &[&str] = &["audit-fixture", "pi-command", "pi-content"];
+
+fn audit_fixture_table_installed(db: &Connection) -> Result<bool> {
+    let sql: Option<String> = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='audit_fixture'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(sql) = sql else {
+        return Ok(false);
+    };
+    let expected = "CREATE TABLE audit_fixture(source_id TEXT PRIMARY KEY,cursor TEXT NOT NULL,digest TEXT NOT NULL)";
+    if normalized_trigger_sql(&sql) != normalized_trigger_sql(expected) {
+        return Err(reject("audit fixture table schema is unsupported"));
+    }
+    Ok(true)
+}
+
+fn audit_fixture_digest(reference: &str) -> String {
+    format!("{:x}", Sha256::digest(reference.as_bytes()))
+}
+
+fn validate_audit_fixture_history(db: &Connection, source_id: &str, cursor: &str) -> Result<()> {
+    let installed = audit_fixture_table_installed(db)?;
+    let mut owners = db.prepare(
+        "SELECT provider_id FROM plugin_reference_owner_v1 WHERE source_id=? ORDER BY provider_id",
+    )?;
+    let owner_rows = owners
+        .query_map([source_id], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if owner_rows.is_empty() {
+        if installed {
+            let row: Option<(String, String)> = db
+                .query_row(
+                    "SELECT cursor,digest FROM audit_fixture WHERE source_id=?",
+                    [source_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if row.is_some() {
+                return Err(reject(
+                    "audit fixture receipt has no durable provider owner",
+                ));
+            }
+        }
+        return Ok(());
+    }
+    if owner_rows.iter().map(String::as_str).collect::<Vec<_>>() != AUDIT_OWNER_IDS {
+        return Err(reject("source has unsupported trusted provider ownership"));
+    }
+    if !installed {
+        return Err(reject("audit fixture provider schema is unavailable"));
+    }
+    let row: Option<(String, String)> = db
+        .query_row(
+            "SELECT cursor,digest FROM audit_fixture WHERE source_id=?",
+            [source_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((stored_cursor, digest)) = row {
+        let expected_a = audit_fixture_digest("audit-a");
+        let expected_b = audit_fixture_digest("audit-b");
+        if stored_cursor != cursor || (digest != expected_a && digest != expected_b) {
+            return Err(reject("audit fixture receipt does not match source cursor"));
+        }
+    }
+    Ok(())
+}
+
+fn commit_audit_fixture_provider(
+    db: &Connection,
+    source_id: &str,
+    cursor: &str,
+    submission: Option<&v2::AuditFixtureSubmission>,
+) -> Result<()> {
+    let installed = audit_fixture_table_installed(db)?;
+    let owners: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?)",
+        [source_id],
+        |row| row.get(0),
+    )?;
+    if installed || owners || submission.is_some() {
+        if !installed {
+            return Err(reject("audit fixture provider schema is unavailable"));
+        }
+        if let Some(submission) = submission {
+            if submission.provider_id != AUDIT_PROVIDER_ID
+                || submission.refs.len() != 1
+                || !matches!(
+                    submission.refs.first().map(String::as_str),
+                    Some("audit-a" | "audit-b")
+                )
+                || submission.grant != "host-owned-audit"
+            {
+                return Err(reject("invalid trusted audit fixture submission"));
+            }
+            let digest = audit_fixture_digest(&submission.refs[0]);
+            let changed = db.execute(
+                "INSERT INTO audit_fixture(source_id,cursor,digest) VALUES(?,?,?) \
+                 ON CONFLICT(source_id) DO UPDATE SET cursor=excluded.cursor,digest=excluded.digest",
+                params![source_id, cursor, digest],
+            )?;
+            if changed != 1 {
+                return Err(reject("audit fixture receipt did not persist exactly"));
+            }
+        } else {
+            db.execute("DELETE FROM audit_fixture WHERE source_id=?", [source_id])?;
+        }
+        for provider_id in AUDIT_OWNER_IDS {
+            let _ = db.execute(
+                "INSERT OR IGNORE INTO plugin_reference_owner_v1(source_id,provider_id) VALUES(?,?)",
+                params![source_id, provider_id],
+            )?;
+        }
+    }
+    validate_audit_fixture_history(db, source_id, cursor)
 }
 
 fn validate_metadata_content_receipts(
@@ -4722,6 +4996,7 @@ fn set_source_capture_guarded_mode(
             dirty_seq,
             current_policy,
             real_clone,
+            real_clone,
         )?;
     } else {
         validate_disabled_capture_state(
@@ -4775,6 +5050,18 @@ fn set_source_capture_guarded_mode(
                 "DELETE FROM plugin_session_member_v1 WHERE source_id=?",
                 [&lease.source_id],
             )?;
+            if real_clone && audit_fixture_table_installed(&transaction)? {
+                transaction.execute(
+                    "DELETE FROM audit_fixture WHERE source_id=?",
+                    [&lease.source_id],
+                )?;
+            }
+            if real_clone {
+                transaction.execute(
+                    "DELETE FROM plugin_reference_owner_v1 WHERE source_id=?",
+                    [&lease.source_id],
+                )?;
+            }
             transaction.execute(
                 "DELETE FROM plugin_source_gap_invalidated_v1 WHERE source_id=?",
                 [&lease.source_id],
@@ -5076,6 +5363,7 @@ fn validate_capture_set_persisted_state(
             expected_source.10,
             expected_source.4,
             mode.allow_plugin_facts,
+            mode.allow_plugin_facts,
         )?;
         if mode.require_empty_lifecycle {
             let residual: bool = db.query_row(
@@ -5258,16 +5546,16 @@ mod tests {
             member_id: "a".repeat(64),
             cursor: "member-one".to_owned(),
         };
-        let first = prepared_state_digest(std::slice::from_ref(&row), Some(&update)).unwrap();
+        let first = prepared_state_digest(std::slice::from_ref(&row), Some(&update), None).unwrap();
         assert_eq!(
             first,
-            prepared_state_digest(std::slice::from_ref(&row), Some(&update)).unwrap()
+            prepared_state_digest(std::slice::from_ref(&row), Some(&update), None).unwrap()
         );
         let mut changed_row = row.clone();
         changed_row.member_id = "b".repeat(64);
         assert_ne!(
             first,
-            prepared_state_digest(&[changed_row], Some(&update)).unwrap()
+            prepared_state_digest(&[changed_row], Some(&update), None).unwrap()
         );
         let changed_cursor = v2::MemberCursor {
             cursor: "member-two".to_owned(),
@@ -5275,16 +5563,71 @@ mod tests {
         };
         assert_ne!(
             first,
-            prepared_state_digest(std::slice::from_ref(&row), Some(&changed_cursor)).unwrap()
+            prepared_state_digest(std::slice::from_ref(&row), Some(&changed_cursor), None).unwrap()
         );
-        assert_ne!(first, prepared_state_digest(&[], Some(&update)).unwrap());
         assert_ne!(
-            prepared_state_digest(&[], Some(&update)).unwrap(),
-            prepared_state_digest(&[], Some(&changed_cursor)).unwrap()
+            first,
+            prepared_state_digest(&[], Some(&update), None).unwrap()
+        );
+        assert_ne!(
+            prepared_state_digest(&[], Some(&update), None).unwrap(),
+            prepared_state_digest(&[], Some(&changed_cursor), None).unwrap()
         );
         assert_eq!(
-            prepared_state_digest(&[], None).unwrap(),
+            prepared_state_digest(&[], None, None).unwrap(),
             (1, prepared_rows_digest(&[]).unwrap())
+        );
+    }
+
+    #[test]
+    fn prepared_state_digest_v3_binds_audit_reference_and_preserves_legacy_versions() {
+        let row = PreparedRecord {
+            event_id_hash: "1".repeat(64),
+            revision: 0,
+            kind: "lifecycle".to_owned(),
+            time_ns: 10,
+            payload_json: "{\"state\":\"completed\"}".to_owned(),
+            record_digest: "2".repeat(64),
+            native_session_id: "session-one".to_owned(),
+            native_worker_id: String::new(),
+            native_turn_id: String::new(),
+            native_operation_id: String::new(),
+            member_id: String::new(),
+        };
+        let submission = v2::AuditFixtureSubmission {
+            provider_id: AUDIT_PROVIDER_ID.to_owned(),
+            refs: vec!["audit-a".to_owned()],
+            grant: "host-owned-audit".to_owned(),
+        };
+        let first =
+            prepared_state_digest(std::slice::from_ref(&row), None, Some(&submission)).unwrap();
+        assert_eq!(first.0, 3);
+        assert_eq!(
+            first,
+            prepared_state_digest(std::slice::from_ref(&row), None, Some(&submission)).unwrap()
+        );
+        let changed_reference = v2::AuditFixtureSubmission {
+            refs: vec!["audit-b".to_owned()],
+            ..submission.clone()
+        };
+        assert_ne!(
+            first,
+            prepared_state_digest(std::slice::from_ref(&row), None, Some(&changed_reference))
+                .unwrap()
+        );
+        let changed_grant = v2::AuditFixtureSubmission {
+            grant: "different-grant".to_owned(),
+            ..submission.clone()
+        };
+        assert_ne!(
+            first,
+            prepared_state_digest(std::slice::from_ref(&row), None, Some(&changed_grant)).unwrap()
+        );
+        assert_eq!(
+            prepared_state_digest(std::slice::from_ref(&row), None, None)
+                .unwrap()
+                .0,
+            1
         );
     }
 
@@ -6945,6 +7288,7 @@ mod tests {
                 })
                 .collect(),
             member_update: None,
+            audit_fixture: None,
         };
         (wire, prepared)
     }
@@ -7015,6 +7359,7 @@ mod tests {
                 member_id: String::new(),
             }],
             member_update: None,
+            audit_fixture: None,
         };
         let committed = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true).unwrap();
         assert_eq!(committed.disposition, "committed");
@@ -7416,6 +7761,7 @@ mod tests {
                 member_id: String::new(),
             }],
             member_update: None,
+            audit_fixture: None,
         };
         let error = commit_guarded_mode(
             &mut db,
