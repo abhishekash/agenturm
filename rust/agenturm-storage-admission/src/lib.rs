@@ -808,7 +808,11 @@ fn validate(request: &Request, allow_plugin_facts: bool) -> Result<()> {
             || !payload_valid
             || !identity_policy_valid
         {
-            return Err(reject("unsupported prepared plugin fact"));
+            return Err(reject(if row.kind == "lifecycle" {
+                "unsupported prepared lifecycle"
+            } else {
+                "unsupported prepared plugin fact"
+            }));
         }
     }
     Ok(())
@@ -6304,5 +6308,15 @@ mod tests {
         ] {
             assert!(!lifecycle_payload(payload));
         }
+    }
+
+    #[test]
+    fn shared_fact_validator_preserves_lifecycle_rejection_reason() {
+        let hash = "e".repeat(64);
+        let digest = "f".repeat(64);
+        let mut prepared = request("cursor-one", "", &[(&hash, &digest)]);
+        prepared.records[0].payload_json = "{\"state\":\"started\",\"text\":\"prompt\"}".to_owned();
+        let error = validate(&prepared, true).unwrap_err();
+        assert!(error.to_string().contains("unsupported prepared lifecycle"));
     }
 }
