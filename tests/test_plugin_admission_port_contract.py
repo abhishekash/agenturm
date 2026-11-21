@@ -219,7 +219,8 @@ class PythonStoreAdmissionPortContractTests(PluginAdmissionPortContract,
     def snapshot(store, source_id):
         with store._connect() as db:
             source = db.execute(
-                "SELECT cursor,dirty_seq,lease_epoch,policy_epoch,capture_enabled "
+                "SELECT receiver_id,plugin_id,generation,cursor,dirty_seq,lease_epoch,"
+                "policy_epoch,capture_enabled,content_fingerprint "
                 "FROM plugin_source_cursor_v1 WHERE source_id=?", (source_id,)).fetchone()
             evidence = db.execute(
                 "SELECT event_id_hash,revision,record_digest FROM plugin_evidence_v1 "
