@@ -5009,14 +5009,47 @@ mod tests {
     }
 
     #[test]
-    fn real_clone_fact_admission_rejects_ignored_second_insert_atomically() {
-        let trigger = format!(
-            "CREATE TRIGGER ignore_second_fact BEFORE INSERT ON plugin_evidence_v1 \
-             WHEN NEW.event_id_hash='{}' BEGIN SELECT RAISE(IGNORE); END;",
-            "b".repeat(64)
+    fn real_clone_fact_admission_rolls_back_first_insert_on_late_fact_conflict() {
+        let mut db = fixture();
+        add_real_clone_markers(&db);
+        let conflicting_hash = "b".repeat(64);
+        db.execute(
+            "INSERT INTO plugin_evidence_v1 \
+             (source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest,\
+              native_session_id,native_worker_id,native_turn_id,native_operation_id,member_id,\
+              policy_epoch,admitted_ns) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            params![
+                "source-one",
+                conflicting_hash,
+                0,
+                "tool",
+                110,
+                r#"{"category":"shell","result":"started"}"#,
+                "9".repeat(64),
+                "native-one",
+                "",
+                "turn-one",
+                "op-one",
+                "",
+                1,
+                1,
+            ],
+        )
+        .unwrap();
+        let request_id = "7123456789abcdef0123456789abcdef";
+        let (wire, prepared) = clone_fact_admission_request(request_id, "facts-one");
+        let replay = wire.replay_identity().unwrap();
+        let before = state(&db);
+
+        let error = commit_guarded_mode(&mut db, &prepared, None, Some(&replay), true)
+            .expect_err("conflicting second fact must abort the transaction");
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting or unsupported event revision")
         );
-        let error = assert_fact_trigger_rolls_back(&trigger, "7123456789abcdef0123456789abcdef");
-        assert!(error.contains("triggers on real clone admission"));
+        assert_eq!(state(&db), before, "first fact or cursor survived rollback");
+        assert_eq!(admission_receipt_count(&db, request_id), None);
     }
 
     #[test]

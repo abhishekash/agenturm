@@ -407,14 +407,24 @@ def main(binary: Path) -> None:
             check(replay["result"]["disposition"] == "replay",
                   "same-process admission retry was not a replay")
 
-            # A failure on the second insert must roll back the first fact,
-            # cursor, dirty marker and shared request receipt.
-            second_fact_hash = facts_request["operation"]["records"][1]["event_id_hash"]
+            # A late conflict on the second fact must roll back the first
+            # insert, cursor, dirty marker and shared request receipt.
+            records = facts_request["operation"]["records"]
+            first_fact_hash = records[0]["event_id_hash"]
+            conflicting_fact = records[1]
             with closing(sqlite3.connect(clone)) as db:
                 db.execute(
-                    "CREATE TRIGGER abort_second_fact BEFORE INSERT ON plugin_evidence_v1 "
-                    f"WHEN NEW.source_id='facts-source' AND NEW.event_id_hash='{second_fact_hash}' "
-                    "BEGIN SELECT RAISE(ABORT,'test second-fact abort'); END")
+                    "INSERT INTO plugin_evidence_v1 "
+                    "(source_id,event_id_hash,revision,kind,time_ns,payload_json,record_digest,"
+                    "native_session_id,native_worker_id,native_turn_id,native_operation_id,"
+                    "member_id,policy_epoch,admitted_ns) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("facts-source", conflicting_fact["event_id_hash"],
+                     conflicting_fact["revision"], conflicting_fact["kind"],
+                     conflicting_fact["time_ns"], conflicting_fact["payload_json"],
+                     "0" * 64, conflicting_fact["native_session_id"],
+                     conflicting_fact["native_worker_id"], conflicting_fact["native_turn_id"],
+                     conflicting_fact["native_operation_id"], "", facts_lease["policy_epoch"], 1),
+                )
                 db.commit()
             run_client(facts_request_path, socket_path, uid=client_uid,
                        gid=client_gid, reject=True)
@@ -424,12 +434,21 @@ def main(binary: Path) -> None:
                     "WHERE source_id='facts-source'").fetchone()[0]
                 facts_count = db.execute(
                     "SELECT COUNT(*) FROM plugin_evidence_v1 WHERE source_id='facts-source'").fetchone()[0]
+                first_fact_count = db.execute(
+                    "SELECT COUNT(*) FROM plugin_evidence_v1 "
+                    "WHERE source_id='facts-source' AND event_id_hash=?",
+                    (first_fact_hash,)).fetchone()[0]
                 facts_receipts = db.execute(
                     "SELECT COUNT(*) FROM storage_admission_request_v2 WHERE request_id=?",
                     (facts_request["request_id"],)).fetchone()[0]
-                check((facts_cursor, facts_count, facts_receipts) == ("", 0, 0),
-                      "second-fact abort left partial transaction state")
-                db.execute("DROP TRIGGER abort_second_fact")
+                check((facts_cursor, facts_count, first_fact_count, facts_receipts) == ("", 1, 0, 0),
+                      "late second-fact conflict did not roll back the first insert")
+                removed = db.execute(
+                    "DELETE FROM plugin_evidence_v1 WHERE source_id='facts-source' "
+                    "AND event_id_hash=? AND record_digest=?",
+                    (conflicting_fact["event_id_hash"], "0" * 64),
+                ).rowcount
+                check(removed == 1, "could not remove the fixture's conflicting seed row")
                 db.commit()
 
             run_client(facts_request_path, socket_path, uid=client_uid, gid=client_gid,
@@ -616,7 +635,7 @@ def main(binary: Path) -> None:
                     "WHERE key='storage_activation_clone_v1'").fetchone()
                 check((marker_cursor, marker_evidence, marker_receipt, clone_marker) ==
                       ("facts-cursor-one", 4, 0, ("enabled",)),
-                      "marker trigger did not roll back the complete fact batch")
+                      "marker-changing trigger was not rejected before fact writes")
                 db.execute("DROP TRIGGER delete_clone_marker_during_fact")
                 db.commit()
 
