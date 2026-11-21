@@ -77,8 +77,7 @@ a backup. The verifier also opened and replayed the database created by an
 earlier local candidate of the same version. A separate run exercised the
 systemd user service with a fresh database, new PID after restart, PTY
 inspection, and retained data after uninstall. CI qualifies <code>rust-v*</code> tags and
-uploads verified artifacts. The worktree has yet to produce a published
-Rust tag or exercise an upgrade from one.</p>
+uploads verified artifacts. The first published tag is recorded below.</p>
 <h2>Rolling discovery and scoped preview</h2>
 <p>On Ubuntu 24.04.5 x86-64, a fresh archive started collection with empty
 discovery roots and admitted new Pi and Codex files in the same watch process.
@@ -91,4 +90,20 @@ approval, rejection after revocation or source replacement, exact byte
 verification, and denial while another process holds the writer lease.
 See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-content-grant-fence.md">Pi preview record</a> for the proof
 window and operating instructions.</p>
+<h2>Published Rust 0.1.0</h2>
+<p>Tag <code>rust-v0.1.0</code> resolves to commit
+<code>45c1f4409f9c7daa2a9deadde4d33629083900cc</code>. The tag workflow completed
+successfully and published its verified CI artifact for promotion. The
+<a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.1.0">release</a>
+contains that archive and checksum. The archive SHA-256 is
+<code>ebb1c5eb3c7383a79bb793fc940254deb292a76cc7a6464271a7f648dc7de9f5</code>.
+<a href="https://github.com/abhishekash/agenturm/actions/runs/44956542239">Tag workflow</a></p>
+<p>The downloaded CI archive passed on Ubuntu 24.04.5 x86-64 with a systemd
+user manager. It discovered real Pi and Codex records, rejected a second
+writer, reopened a live backup, restarted the unit into a new process,
+rendered both sessions in the inspector, and preserved history after
+uninstall. It also collected and reopened both real sources in a filesystem
+containing no Python binaries or libraries. Fixture runs verified rolling
+discovery and replay from an earlier local candidate’s database. There is
+no earlier tagged standalone Rust release to use for upgrade qualification.</p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

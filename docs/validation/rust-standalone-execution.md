@@ -88,8 +88,7 @@ a backup. The verifier also opened and replayed the database created by an
 earlier local candidate of the same version. A separate run exercised the
 systemd user service with a fresh database, new PID after restart, PTY
 inspection, and retained data after uninstall. CI qualifies `rust-v*` tags and
-uploads verified artifacts. The worktree has yet to produce a published
-Rust tag or exercise an upgrade from one.
+uploads verified artifacts. The first published tag is recorded below.
 
 ## Rolling discovery and scoped preview
 
@@ -105,3 +104,22 @@ approval, rejection after revocation or source replacement, exact byte
 verification, and denial while another process holds the writer lease.
 See the [Pi preview record](rust-content-grant-fence.md) for the proof
 window and operating instructions.
+
+## Published Rust 0.1.0
+
+Tag `rust-v0.1.0` resolves to commit
+`45c1f4409f9c7daa2a9deadde4d33629083900cc`. The tag workflow completed
+successfully and published its verified CI artifact for promotion. The
+[release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.1.0)
+contains that archive and checksum. The archive SHA-256 is
+`ebb1c5eb3c7383a79bb793fc940254deb292a76cc7a6464271a7f648dc7de9f5`.
+[Tag workflow](https://github.com/abhishekash/agenturm/actions/runs/44956542239)
+
+The downloaded CI archive passed on Ubuntu 24.04.5 x86-64 with a systemd
+user manager. It discovered real Pi and Codex records, rejected a second
+writer, reopened a live backup, restarted the unit into a new process,
+rendered both sessions in the inspector, and preserved history after
+uninstall. It also collected and reopened both real sources in a filesystem
+containing no Python binaries or libraries. Fixture runs verified rolling
+discovery and replay from an earlier local candidate’s database. There is
+no earlier tagged standalone Rust release to use for upgrade qualification.

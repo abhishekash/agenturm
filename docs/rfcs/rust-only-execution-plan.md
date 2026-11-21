@@ -98,7 +98,7 @@ Build and publish versioned Rust artifacts with checksums, install and uninstall
 
 **Acceptance.** From a tagged artifact, run install, collect, restart, query, inspect and uninstall on each supported platform. Check upgrades using the previous Rust release database when available. Report performance changes only when measured.
 
-**In progress.** The [Linux bundle](rust-linux-bundle.md) and its checksum passed local archive qualification, including restart, inspection, backup, and reopening an earlier local candidate’s database. The same verifier is wired into CI for pull requests, main, and Rust tags. Qualification from a tagged artifact remains open. The local upgrade used an earlier candidate of the same version. Additional platforms require their own qualification.
+**Verified on Ubuntu 24.04.5 x86-64.** The [first standalone Rust release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.1.0) ships the exact archive and checksum from the successful tag build. The archive passed install, rolling discovery, collection, restart, query, inspection, backup, and uninstall. The database upgrade used an earlier local candidate because this is the first tagged Rust release. Additional platforms require their own qualification.
 
 ### Step 6 — Add connector runtime support after the Rust release gates
 
@@ -110,4 +110,4 @@ Use the existing inbound admission path and the connector API as the starting po
 
 - Full harness parity still needs the unsupported native evidence identified in the coverage matrix. Private-content delivery currently covers the latest committed batch of a pinned, single-file Pi source.
 - The collector and child adapters share an OS user. A separate storage authority or child isolation remains necessary for untrusted executables.
-- Release gates still require qualification from a tagged artifact, supported platform checks, and upgrade verification where a previous Rust release exists.
+- Ubuntu 24.04 x86-64 is the qualified release platform. Other platforms require their own release checks.
