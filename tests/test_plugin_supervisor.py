@@ -4,12 +4,15 @@ import time
 import json
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from urllib.request import urlopen
 
 from observatory.core import Store
-from observatory.plugin_admission import set_source_capture
+from observatory.plugin_admission import activate_source, set_source_capture
+from observatory.plugin_admission_port import PythonStoreAdmissionPort
 from observatory.plugin_supervisor import PluginSource, PluginSupervisor
+from observatory.plugin_wire import ProtocolError
 from tests import test_plugin_process
 
 
@@ -23,12 +26,13 @@ class SupervisorTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
 
-    def supervisor(self, mode, *, max_failures=3):
+    def supervisor(self, mode, *, max_failures=3, admission_port_factory=None):
         source = PluginSource(self.fixture.manifest(mode), "fixture-source",
                               allowed_grants=("configured-source-read",),
                               poll_interval=0.05, timeout=0.5)
         manager = PluginSupervisor(self.store, (source,), max_failures=max_failures,
-                                   backoff_seconds=0.05)
+                                   backoff_seconds=0.05,
+                                   admission_port_factory=admission_port_factory)
         self.addCleanup(manager.close)
         return manager
 
@@ -83,6 +87,80 @@ class SupervisorTests(unittest.TestCase):
         set_source_capture(self.store, source_id="fixture-source", enabled=False)
         status = self.wait_state(manager, "revoked")
         self.assertEqual(status["last_error_code"], "capture_revoked")
+
+    def test_supervisor_uses_port_factory_for_preflight_and_each_worker(self):
+        created = []
+
+        def factory(store):
+            port = PythonStoreAdmissionPort(store)
+            created.append(port)
+            return port
+
+        manager = self.supervisor("idle", admission_port_factory=factory).start()
+        self.wait_state(manager, "running")
+        self.assertGreaterEqual(len(created), 2)
+
+    def test_factory_failure_is_reported_and_retried(self):
+        calls = 0
+
+        def factory(store):
+            nonlocal calls
+            calls += 1
+            if calls == 2:  # preflight succeeds; first worker creation fails once
+                raise RuntimeError("temporary admission backend failure")
+            return PythonStoreAdmissionPort(store)
+
+        manager = self.supervisor("idle", admission_port_factory=factory).start()
+        status = self.wait_state(manager, "running")
+        self.assertGreaterEqual(status["restart_count"], 1)
+        self.assertEqual(status["last_failure_code"], "worker_error")
+        self.assertGreaterEqual(calls, 3)
+
+    def test_unowned_port_close_failure_does_not_kill_worker(self):
+        manager = self.supervisor("idle", max_failures=2)
+
+        class CloseFailurePort(PythonStoreAdmissionPort):
+            def close(self):
+                raise RuntimeError("backend close failed")
+
+        manager.admission_port_factory = CloseFailurePort
+        with patch("observatory.plugin_supervisor.PluginSession",
+                   side_effect=RuntimeError("session construction failed")):
+            manager.start()
+            status = self.wait_state(manager, "quarantined")
+
+        self.assertEqual(status["restart_count"], 1)
+        self.assertEqual(status["last_error_code"], "worker_error")
+        self.assertEqual(status["last_cleanup_error"], "RuntimeError")
+
+    def test_backend_specific_revocation_is_classified_by_port(self):
+        class RustCodePort(PythonStoreAdmissionPort):
+            def classify_lease_failure(self, error, source_id):
+                if str(error) == "RUST_SOURCE_REVOKED":
+                    return "capture_revoked"
+                return super().classify_lease_failure(error, source_id)
+
+        port = RustCodePort(self.store)
+        from observatory.plugin_supervisor import _failure
+        self.assertEqual(_failure(ProtocolError("RUST_SOURCE_REVOKED"), port,
+                                  "fixture-source"), ("capture_revoked", True))
+
+    def test_failed_lease_classification_probe_falls_back_to_fence(self):
+        class BrokenProbePort(PythonStoreAdmissionPort):
+            def classify_lease_failure(self, error, source_id):
+                if "stale plugin source lease" in str(error):
+                    raise RuntimeError("temporary status query failure")
+                return super().classify_lease_failure(error, source_id)
+
+        manager = self.supervisor(
+            "idle", admission_port_factory=BrokenProbePort).start()
+        self.wait_state(manager, "running")
+        source = manager.sources[0]
+        activate_source(self.store, plugin_id=source.manifest.id,
+                        source_id=source.source_id,
+                        generation=source.manifest.artifact_sha256)
+        status = self.wait_state(manager, "fenced")
+        self.assertEqual(status["last_error_code"], "source_fenced")
 
     def test_close_terminates_worker_and_threads(self):
         manager = self.supervisor("timeout").start()
