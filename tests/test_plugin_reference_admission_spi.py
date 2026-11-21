@@ -95,6 +95,36 @@ class ReferenceAdmissionSPITests(unittest.TestCase):
             audit = db.execute("SELECT cursor,digest FROM audit_fixture").fetchall()
         return tuple(cursor), evidence, [tuple(row) for row in audit]
 
+    def transition_snapshot(self):
+        source_id = self.lease.source_id
+        queries = (
+            ("plugin_source_cursor_v1", "source_id=?", (source_id,)),
+            ("plugin_evidence_v1", "source_id=?", (source_id,)),
+            ("plugin_evidence_dirty_v1", "source_id=?", (source_id,)),
+            ("plugin_session_projection_v1", "source_id=?", (source_id,)),
+            ("plugin_projection_cursor_v1", "source_id=?", (source_id,)),
+            ("plugin_session_member_v1", "source_id=?", (source_id,)),
+            ("plugin_source_member_cursor_v1", "source_id=?", (source_id,)),
+            ("plugin_content_v1", "source_id=?", (source_id,)),
+            ("plugin_content_batch_v1", "source_id=?", (source_id,)),
+            ("plugin_content_status_v1", "source_id=?", (source_id,)),
+            ("plugin_command_content_v1", "source_id=?", (source_id,)),
+            ("plugin_command_batch_v1", "source_id=?", (source_id,)),
+            ("plugin_reference_owner_v1", "source_id=?", (source_id,)),
+            ("plugin_retention_v1", "source_id=?", (source_id,)),
+            ("plugin_retention_invalidated_v1", "source_id=?", (source_id,)),
+            ("plugin_source_gap_invalidated_v1", "source_id=?", (source_id,)),
+            ("activity_index_v1", "kind='plugin' AND owner_key=?", (source_id,)),
+            ("investigation_dirty_v1", "kind='plugin' AND owner_key=?", (source_id,)),
+            ("audit_fixture", "source_id=?", (source_id,)),
+        )
+        with self.store._connect() as db:
+            return tuple(
+                tuple(tuple(row) for row in db.execute(
+                    f"SELECT * FROM {table} WHERE {where} ORDER BY rowid", params))
+                for table, where, params in queries
+            )
+
     def commit(self, refs=("audit-a",), expected=""):
         return commit_batch(
             self.store, self.lease, expected, self.batch,
@@ -193,12 +223,12 @@ class ReferenceAdmissionSPITests(unittest.TestCase):
 
     def test_provider_erase_failure_rolls_back_policy_and_all_rows(self):
         self.commit()
-        before = self.snapshot()
+        before = self.transition_snapshot()
         self.provider.fail_erase = True
         with self.assertRaisesRegex(RuntimeError, "injected trusted erase failure"):
             set_source_capture(self.store, source_id=self.lease.source_id, enabled=False,
                                reference_admissions=self.registry)
-        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.transition_snapshot(), before)
         with self.store._connect() as db:
             row = db.execute("SELECT capture_enabled,policy_epoch FROM plugin_source_cursor_v1 "
                              "WHERE source_id=?", (self.lease.source_id,)).fetchone()

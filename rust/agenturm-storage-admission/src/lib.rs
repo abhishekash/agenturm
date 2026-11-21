@@ -729,6 +729,228 @@ fn reject_real_clone_activation_triggers(db: &Connection) -> Result<()> {
     )
 }
 
+fn normalized_trigger_sql(sql: &str) -> String {
+    let mut normalized = String::with_capacity(sql.len());
+    let mut quote = None;
+    let mut chars = sql.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if let Some(delimiter) = quote {
+            normalized.push(ch);
+            if ch == delimiter {
+                if chars.peek() == Some(&delimiter) {
+                    normalized.push(chars.next().expect("peeked SQL quote"));
+                } else {
+                    quote = None;
+                }
+            }
+        } else if ch == '\'' || ch == '"' || ch == '`' {
+            quote = Some(ch);
+            normalized.push(ch);
+        } else if !ch.is_whitespace() {
+            normalized.push(ch.to_ascii_lowercase());
+        }
+    }
+    normalized
+}
+
+fn verify_exact_trigger_set(db: &Connection, table: &str, expected: &[(&str, &str)]) -> Result<()> {
+    let mut actual = Vec::<(String, String)>::new();
+    for schema in ["sqlite_master", "sqlite_temp_master"] {
+        let query = format!(
+            "SELECT name,sql FROM {schema} WHERE type='trigger' AND tbl_name=? ORDER BY name"
+        );
+        let mut statement = db.prepare(&query)?;
+        let rows = statement.query_map([table], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            actual.push(row?);
+        }
+    }
+    actual.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut expected = expected
+        .iter()
+        .map(|(name, sql)| ((*name).to_owned(), normalized_trigger_sql(sql)))
+        .collect::<Vec<_>>();
+    expected.sort_by(|left, right| left.0.cmp(&right.0));
+    if actual.len() != expected.len()
+        || actual.iter().zip(&expected).any(|(actual, expected)| {
+            actual.0 != expected.0 || normalized_trigger_sql(&actual.1) != expected.1
+        })
+    {
+        return Err(reject(
+            "real clone policy encountered unsupported SQLite triggers",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_real_clone_policy_triggers(db: &Connection) -> Result<()> {
+    const ACTIVITY_TRIGGERS: &[(&str, &str)] = &[
+        (
+            "investigation_activity_delete_v1",
+            "CREATE TRIGGER investigation_activity_delete_v1 AFTER DELETE ON activity_index_v1 BEGIN DELETE FROM investigation_terms_v1 WHERE event_key=OLD.event_key; END",
+        ),
+        (
+            "investigation_dirty_delete_v1",
+            "CREATE TRIGGER investigation_dirty_delete_v1 AFTER DELETE ON activity_index_v1 BEGIN INSERT OR IGNORE INTO investigation_dirty_v1 VALUES(OLD.kind,OLD.owner_key); END",
+        ),
+        (
+            "investigation_dirty_insert_v1",
+            "CREATE TRIGGER investigation_dirty_insert_v1 AFTER INSERT ON activity_index_v1 BEGIN INSERT OR IGNORE INTO investigation_dirty_v1 VALUES(NEW.kind,NEW.owner_key); END",
+        ),
+        (
+            "investigation_dirty_update_v1",
+            "CREATE TRIGGER investigation_dirty_update_v1 AFTER UPDATE ON activity_index_v1 BEGIN INSERT OR IGNORE INTO investigation_dirty_v1 VALUES(NEW.kind,NEW.owner_key);INSERT OR IGNORE INTO investigation_dirty_v1 VALUES(OLD.kind,OLD.owner_key); END",
+        ),
+        (
+            "native_activity_delete_v1",
+            "CREATE TRIGGER native_activity_delete_v1 AFTER DELETE ON activity_index_v1 BEGIN INSERT OR IGNORE INTO native_lifecycle_dirty_v1 SELECT OLD.kind,OLD.owner_key WHERE json_type(OLD.payload,'$.native_lifecycle')='object';DELETE FROM native_lifecycle_index_v1 WHERE event_key=OLD.event_key; END",
+        ),
+        (
+            "native_activity_insert_v1",
+            "CREATE TRIGGER native_activity_insert_v1 AFTER INSERT ON activity_index_v1 BEGIN INSERT OR IGNORE INTO native_lifecycle_dirty_v1 SELECT NEW.kind,NEW.owner_key WHERE json_type(NEW.payload,'$.native_lifecycle')='object'; END",
+        ),
+        (
+            "native_activity_update_v1",
+            "CREATE TRIGGER native_activity_update_v1 AFTER UPDATE ON activity_index_v1 BEGIN INSERT OR IGNORE INTO native_lifecycle_dirty_v1 SELECT NEW.kind,NEW.owner_key WHERE json_type(NEW.payload,'$.native_lifecycle')='object';INSERT OR IGNORE INTO native_lifecycle_dirty_v1 SELECT OLD.kind,OLD.owner_key WHERE json_type(OLD.payload,'$.native_lifecycle')='object'; END",
+        ),
+    ];
+    const INVESTIGATION_TERM_TRIGGERS: &[(&str, &str)] = &[
+        (
+            "investigation_delete_v1",
+            "CREATE TRIGGER investigation_delete_v1 AFTER DELETE ON investigation_terms_v1 BEGIN INSERT INTO investigation_fts_v1(investigation_fts_v1,rowid,text) VALUES('delete',OLD.term_id,OLD.text); END",
+        ),
+        (
+            "investigation_insert_v1",
+            "CREATE TRIGGER investigation_insert_v1 AFTER INSERT ON investigation_terms_v1 BEGIN INSERT INTO investigation_fts_v1(rowid,text) VALUES(NEW.term_id,NEW.text); END",
+        ),
+    ];
+    reject_clone_write_triggers(
+        db,
+        &[
+            "plugin_evidence_v1",
+            "plugin_source_cursor_v1",
+            "plugin_evidence_dirty_v1",
+            "plugin_session_projection_v1",
+            "plugin_projection_cursor_v1",
+            "plugin_session_member_v1",
+            "plugin_source_member_cursor_v1",
+            "plugin_content_v1",
+            "plugin_content_batch_v1",
+            "plugin_content_status_v1",
+            "plugin_reference_owner_v1",
+            "plugin_retention_v1",
+            "plugin_retention_invalidated_v1",
+            "plugin_source_gap_invalidated_v1",
+            "investigation_dirty_v1",
+            "native_lifecycle_dirty_v1",
+            "native_lifecycle_index_v1",
+            "investigation_fts_v1",
+            "storage_source_revoke_v2",
+            "storage_source_capture_set_v2",
+            BATCH_BINDING_TABLE,
+        ],
+        "SQLite triggers on real clone policy write tables are unsupported",
+    )?;
+    verify_exact_trigger_set(db, "activity_index_v1", ACTIVITY_TRIGGERS)?;
+    verify_exact_trigger_set(db, "investigation_terms_v1", INVESTIGATION_TERM_TRIGGERS)?;
+    Ok(())
+}
+
+fn preflight_clone_policy_deletes(db: &Connection, source_id: &str) -> Result<()> {
+    for table in ["plugin_command_content_v1", "plugin_command_batch_v1"] {
+        let exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if exists {
+            let query = format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE source_id=?)");
+            if db.query_row(&query, [source_id], |row| row.get::<_, bool>(0))? {
+                return Err(reject(
+                    "real clone source has unsupported provider reference history",
+                ));
+            }
+        }
+    }
+    let overlap: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM activity_index_v1 a \
+         JOIN native_lifecycle_index_v1 n ON n.event_key=a.event_key \
+         WHERE a.kind='plugin' AND a.owner_key=?)",
+        [source_id],
+        |row| row.get(0),
+    )?;
+    if overlap {
+        return Err(reject(
+            "real clone activity overlaps native lifecycle index ownership",
+        ));
+    }
+    let mut statement =
+        db.prepare("SELECT payload FROM activity_index_v1 WHERE kind='plugin' AND owner_key=?")?;
+    let payloads = statement.query_map([source_id], |row| row.get::<_, String>(0))?;
+    for payload in payloads {
+        let payload: serde_json::Value = serde_json::from_str(&payload?)
+            .map_err(|_| reject("real clone activity payload is malformed"))?;
+        if payload.get("native_lifecycle").is_some() {
+            return Err(reject("real clone activity has native lifecycle metadata"));
+        }
+    }
+    let native_dirty: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_lifecycle_dirty_v1 WHERE kind='plugin' AND owner_key=?)",
+        [source_id],
+        |row| row.get(0),
+    )?;
+    if native_dirty {
+        return Err(reject(
+            "real clone source has unsupported native lifecycle dirty state",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_clone_policy_replay_source(
+    db: &Connection,
+    source_id: &str,
+    receiver: &str,
+    plugin_id: &str,
+    generation: &str,
+    receipt_policy_epoch: i64,
+    receipt_dirty_seq: i64,
+) -> Result<()> {
+    let current: Option<(String, String, String, i64, i64)> = db
+        .query_row(
+            "SELECT receiver_id,plugin_id,generation,policy_epoch,dirty_seq \
+             FROM plugin_source_cursor_v1 WHERE source_id=?",
+            [source_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((current_receiver, current_plugin, current_generation, policy, dirty_seq)) = current
+    else {
+        return Err(reject("clone policy replay has no persisted source"));
+    };
+    if current_receiver != receiver
+        || current_plugin != plugin_id
+        || current_generation != generation
+        || policy < receipt_policy_epoch
+        || dirty_seq < receipt_dirty_seq
+    {
+        return Err(reject(
+            "clone policy replay is not fenced by the current source state",
+        ));
+    }
+    Ok(())
+}
+
 fn verify_real_clone_lifecycle_commit(
     db: &Connection,
     request: &Request,
@@ -1027,6 +1249,7 @@ fn validate_active_source_history(
     policy_epoch: i64,
     allow_plugin_facts: bool,
 ) -> Result<()> {
+    require_no_provider_reference_rows(db, source_id)?;
     let unsupported: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
@@ -1657,6 +1880,74 @@ pub fn apply_activation_clone_mixed_batch_v2_json(path: &Path, input: &[u8]) -> 
         return Err(reject("fixture entry point accepts mixed admission only"));
     }
     apply_activation_clone_v2_json_inner(path, input, true)
+}
+
+/// Fixture-only capture and revoke transitions for an explicitly marked
+/// detached real-Store clone. The storage service dispatcher does not call it.
+pub fn apply_activation_clone_policy_v2_json(path: &Path, input: &[u8]) -> Result<Vec<u8>> {
+    let request = v2::Request::from_json(input)?;
+    let replay = request.replay_identity()?;
+    let result = match &request.operation {
+        v2::Operation::RevokeSource {
+            expected_dirty_seq, ..
+        } => {
+            let receipt = with_marked_activation_clone(path, |db, writer_lease| {
+                revoke_source_guarded_mode(
+                    db,
+                    &request,
+                    *expected_dirty_seq,
+                    Some(writer_lease),
+                    &replay,
+                    true,
+                )
+            })?;
+            let disposition = match receipt.disposition {
+                "committed" => v2::Disposition::Committed,
+                "replay" => v2::Disposition::Replay,
+                _ => return Err(reject("unexpected clone revocation disposition")),
+            };
+            v2::OperationResult::SourceRevoked(v2::SourceRevokedResult {
+                disposition,
+                cursor: receipt.cursor,
+                dirty_seq: receipt.dirty_seq,
+                lease_epoch: receipt.lease_epoch,
+                policy_epoch: receipt.policy_epoch,
+                capture_enabled: receipt.capture_enabled,
+            })
+        }
+        v2::Operation::SetSourceCapture { .. } => {
+            let receipt = with_marked_activation_clone(path, |db, writer_lease| {
+                set_source_capture_guarded_mode(db, &request, Some(writer_lease), &replay, true)
+            })?;
+            let disposition = match receipt.disposition {
+                "committed" => v2::Disposition::Committed,
+                "replay" => v2::Disposition::Replay,
+                "idle" => v2::Disposition::Idle,
+                _ => return Err(reject("unexpected clone capture disposition")),
+            };
+            v2::OperationResult::SourceCaptureSet(v2::SourceCaptureSetResult {
+                disposition,
+                lease: receipt.lease,
+                enabled: receipt.enabled,
+                cursor: receipt.cursor,
+                dirty_seq: receipt.dirty_seq,
+            })
+        }
+        _ => {
+            return Err(reject(
+                "clone policy fixture accepts capture or revoke only",
+            ));
+        }
+    };
+    v2::Reply {
+        version: v2::VERSION,
+        request_id: request.request_id.clone(),
+        receiver_id: request.receiver_id.clone(),
+        request_digest: replay.digest,
+        result,
+    }
+    .to_json(&request)
+    .map_err(Into::into)
 }
 
 fn apply_activation_clone_v2_json_inner(
@@ -2415,6 +2706,17 @@ fn revoke_source_guarded(
     writer_lease: Option<&WriterLease>,
     replay: &v2::ReplayIdentity,
 ) -> Result<SourceRevocationReceipt> {
+    revoke_source_guarded_mode(db, request, expected_dirty_seq, writer_lease, replay, false)
+}
+
+fn revoke_source_guarded_mode(
+    db: &mut Connection,
+    request: &v2::Request,
+    expected_dirty_seq: i64,
+    writer_lease: Option<&WriterLease>,
+    replay: &v2::ReplayIdentity,
+    real_clone: bool,
+) -> Result<SourceRevocationReceipt> {
     let v2::Operation::RevokeSource {
         lease,
         cursor,
@@ -2430,7 +2732,11 @@ fn revoke_source_guarded(
     if let Some(writer_lease) = writer_lease {
         writer_lease.verify_admission()?;
     }
-    require_scratch(&transaction)?;
+    if real_clone {
+        require_activation_clone_markers(&transaction)?;
+    } else {
+        require_scratch(&transaction)?;
+    }
     let receiver: String = transaction.query_row(
         "SELECT value FROM schema_meta WHERE key='receiver_id'",
         [],
@@ -2452,6 +2758,15 @@ fn revoke_source_guarded(
          source_id TEXT NOT NULL, cursor TEXT NOT NULL, dirty_seq INTEGER NOT NULL,\
          lease_epoch INTEGER NOT NULL, policy_epoch INTEGER NOT NULL, capture_enabled INTEGER NOT NULL)",
     )?;
+    if real_clone {
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS storage_admission_batch_binding_v1(\
+             source_id TEXT PRIMARY KEY,generation TEXT NOT NULL,policy_epoch INTEGER NOT NULL,\
+             expected_cursor TEXT NOT NULL,cursor TEXT NOT NULL,batch_digest TEXT NOT NULL,\
+             prepared_digest TEXT NOT NULL,dirty_seq INTEGER NOT NULL)",
+        )?;
+        reject_real_clone_policy_triggers(&transaction)?;
+    }
     type Stored = (String, String, String, String, i64, i64, i64, i64);
     let stored: Option<Stored> = transaction
         .query_row(
@@ -2470,6 +2785,32 @@ fn revoke_source_guarded(
         if stored_receiver != receiver || digest != replay.digest || source != lease.source_id {
             return Err(reject("conflicting v2 source revocation request"));
         }
+        if real_clone {
+            let expected_dirty = request_dirty_seq
+                .checked_add(1)
+                .ok_or_else(|| reject("source revoke dirty sequence overflow"))?;
+            let expected_policy = lease
+                .policy_epoch
+                .checked_add(1)
+                .ok_or_else(|| reject("source revoke policy epoch overflow"))?;
+            if stored_cursor != *cursor
+                || dirty != expected_dirty
+                || epoch == lease.epoch
+                || policy != expected_policy
+                || enabled != 0
+            {
+                return Err(reject("conflicting v2 source revocation receipt"));
+            }
+            validate_clone_policy_replay_source(
+                &transaction,
+                &lease.source_id,
+                &receiver,
+                &lease.plugin_id,
+                &lease.generation,
+                policy,
+                dirty,
+            )?;
+        }
         transaction.commit()?;
         return Ok(SourceRevocationReceipt {
             cursor: stored_cursor,
@@ -2481,10 +2822,23 @@ fn revoke_source_guarded(
         });
     }
 
-    type Source = (String, String, String, i64, i64, i64, String, String, i64);
+    type Source = (
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        i64,
+    );
     let source: Source = transaction.query_row(
         "SELECT receiver_id,plugin_id,generation,lease_epoch,policy_epoch,capture_enabled,\
-         content_fingerprint,cursor,dirty_seq FROM plugin_source_cursor_v1 WHERE source_id=?",
+         content_fingerprint,cursor,prior_cursor,last_batch_digest,dirty_seq \
+         FROM plugin_source_cursor_v1 WHERE source_id=?",
         [&lease.source_id],
         |row| {
             Ok((
@@ -2497,6 +2851,8 @@ fn revoke_source_guarded(
                 row.get(6)?,
                 row.get(7)?,
                 row.get(8)?,
+                row.get(9)?,
+                row.get(10)?,
             ))
         },
     )?;
@@ -2509,6 +2865,8 @@ fn revoke_source_guarded(
         enabled,
         fingerprint,
         source_cursor,
+        prior_cursor,
+        last_digest,
         dirty_seq,
     ) = source;
     if source_receiver != receiver
@@ -2523,23 +2881,35 @@ fn revoke_source_guarded(
     {
         return Err(reject("stale or unsupported source revocation lease"));
     }
-    let unsupported: i64 = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_retention_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
-         OR EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 \
-                   AND (revision<>0 OR kind<>'lifecycle' OR member_id<>''))",
-        [&lease.source_id],
-        |row| row.get(0),
-    )?;
-    if unsupported != 0 {
-        return Err(reject(
-            "scratch source has unsupported or privately owned history",
-        ));
+    if real_clone {
+        validate_active_source_history(
+            &transaction,
+            &lease.source_id,
+            &source_cursor,
+            dirty_seq,
+            policy,
+            true,
+        )?;
+        preflight_clone_policy_deletes(&transaction, &lease.source_id)?;
+    } else {
+        let unsupported: i64 = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM plugin_source_member_cursor_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_source_gap_invalidated_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_retention_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_retention_invalidated_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_session_member_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
+             OR EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 \
+                       AND (revision<>0 OR kind<>'lifecycle' OR member_id<>''))",
+            [&lease.source_id],
+            |row| row.get(0),
+        )?;
+        if unsupported != 0 {
+            return Err(reject(
+                "scratch source has unsupported or privately owned history",
+            ));
+        }
     }
     let next_epoch = epoch
         .checked_add(1)
@@ -2571,14 +2941,16 @@ fn revoke_source_guarded(
         "DELETE FROM plugin_content_v1 WHERE source_id=?",
         [&lease.source_id],
     )?;
-    transaction.execute(
-        "DELETE FROM plugin_content_batch_v1 WHERE source_id=?",
-        [&lease.source_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM plugin_content_status_v1 WHERE source_id=?",
-        [&lease.source_id],
-    )?;
+    if !real_clone {
+        transaction.execute(
+            "DELETE FROM plugin_content_batch_v1 WHERE source_id=?",
+            [&lease.source_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM plugin_content_status_v1 WHERE source_id=?",
+            [&lease.source_id],
+        )?;
+    }
     transaction.execute(
         "DELETE FROM plugin_retention_v1 WHERE source_id=?",
         [&lease.source_id],
@@ -2599,7 +2971,7 @@ fn revoke_source_guarded(
         "DELETE FROM investigation_dirty_v1 WHERE kind='plugin' AND owner_key=?",
         [&lease.source_id],
     )?;
-    transaction.execute(
+    let source_changed = transaction.execute(
         "UPDATE plugin_source_cursor_v1 SET lease_epoch=?,policy_epoch=?,capture_enabled=0,\
          content_fingerprint='',dirty_seq=?,updated_ns=? WHERE source_id=?",
         params![
@@ -2610,6 +2982,27 @@ fn revoke_source_guarded(
             lease.source_id
         ],
     )?;
+    if source_changed != 1 {
+        return Err(reject(
+            "source revoke update did not affect exactly one row",
+        ));
+    }
+    if real_clone {
+        let deleted = transaction.execute(
+            "DELETE FROM storage_admission_batch_binding_v1 WHERE source_id=?",
+            [&lease.source_id],
+        )?;
+        if deleted > 1 {
+            return Err(reject("prepared batch binding cleanup was not unique"));
+        }
+        set_metadata_content_receipts_mode(
+            &transaction,
+            &lease.source_id,
+            cursor,
+            next_policy,
+            true,
+        )?;
+    }
     transaction.execute(
         "INSERT INTO plugin_evidence_dirty_v1(source_id,dirty_seq) VALUES(?,?) \
          ON CONFLICT(source_id) DO UPDATE SET dirty_seq=excluded.dirty_seq",
@@ -2626,6 +3019,80 @@ fn revoke_source_guarded(
         params![replay.request_id, receiver, replay.digest, lease.source_id, cursor,
                 next_dirty, next_epoch, next_policy],
     )?;
+    if real_clone {
+        validate_disabled_capture_state(
+            &transaction,
+            &lease.source_id,
+            cursor,
+            next_dirty,
+            next_policy,
+        )?;
+        if read_batch_binding(&transaction, &lease.source_id)?.is_some() {
+            return Err(reject("source revoke retained prepared batch binding"));
+        }
+        let persisted: Option<Source> = transaction
+            .query_row(
+                "SELECT receiver_id,plugin_id,generation,lease_epoch,policy_epoch,capture_enabled,\
+                 content_fingerprint,cursor,prior_cursor,last_batch_digest,dirty_seq \
+                 FROM plugin_source_cursor_v1 WHERE source_id=?",
+                [&lease.source_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get(10)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let expected: Source = (
+            receiver.clone(),
+            plugin.clone(),
+            generation.clone(),
+            next_epoch,
+            next_policy,
+            0,
+            String::new(),
+            cursor.clone(),
+            prior_cursor,
+            last_digest,
+            next_dirty,
+        );
+        if persisted.as_ref() != Some(&expected) {
+            return Err(reject("source revoke state was not persisted exactly"));
+        }
+        let stored_receipt: Option<Stored> = transaction
+            .query_row(
+                "SELECT receiver_id,request_digest,source_id,cursor,dirty_seq,lease_epoch,policy_epoch,capture_enabled \
+                 FROM storage_source_revoke_v2 WHERE request_id=?",
+                [&replay.request_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
+                    row.get(5)?, row.get(6)?, row.get(7)?)),
+            )
+            .optional()?;
+        let expected_receipt: Stored = (
+            receiver.clone(),
+            replay.digest.clone(),
+            lease.source_id.clone(),
+            cursor.clone(),
+            next_dirty,
+            next_epoch,
+            next_policy,
+            0,
+        );
+        if stored_receipt.as_ref() != Some(&expected_receipt) {
+            return Err(reject("source revoke receipt was not persisted exactly"));
+        }
+        require_activation_clone_markers(&transaction)?;
+    }
     transaction.commit()?;
     Ok(SourceRevocationReceipt {
         cursor: cursor.clone(),
@@ -2644,6 +3111,7 @@ fn validate_disabled_capture_state(
     dirty_seq: i64,
     policy_epoch: i64,
 ) -> Result<()> {
+    require_no_provider_reference_rows(db, source_id)?;
     let unsupported: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM plugin_reference_owner_v1 WHERE source_id=?1) \
          OR EXISTS(SELECT 1 FROM plugin_content_v1 WHERE source_id=?1) \
@@ -2685,6 +3153,25 @@ fn validate_disabled_capture_state(
         return Err(reject("disabled source projection marker is inconsistent"));
     }
     validate_metadata_content_receipts(db, source_id, cursor, policy_epoch, true)
+}
+
+fn require_no_provider_reference_rows(db: &Connection, source_id: &str) -> Result<()> {
+    for table in ["plugin_command_content_v1", "plugin_command_batch_v1"] {
+        let exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if exists {
+            let query = format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE source_id=?)");
+            if db.query_row(&query, [source_id], |row| row.get::<_, bool>(0))? {
+                return Err(reject(
+                    "source has unsupported provider-owned reference history",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_metadata_content_receipts(
@@ -2740,11 +3227,12 @@ fn validate_metadata_content_receipts(
     }
 }
 
-fn set_metadata_content_receipts(
+fn set_metadata_content_receipts_mode(
     transaction: &Transaction<'_>,
     source_id: &str,
     cursor: &str,
     policy_epoch: i64,
+    record_empty_initial: bool,
 ) -> Result<()> {
     let batch_exists: bool = transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM plugin_content_batch_v1 WHERE source_id=?)",
@@ -2761,7 +3249,7 @@ fn set_metadata_content_receipts(
             "scratch source has an incomplete content receipt pair",
         ));
     }
-    if !batch_exists && cursor.is_empty() {
+    if !batch_exists && cursor.is_empty() && !record_empty_initial {
         return Ok(());
     }
     if batch_exists {
@@ -2823,6 +3311,16 @@ fn set_source_capture_guarded(
     writer_lease: Option<&WriterLease>,
     replay: &v2::ReplayIdentity,
 ) -> Result<SourceCaptureSetReceipt> {
+    set_source_capture_guarded_mode(db, request, writer_lease, replay, false)
+}
+
+fn set_source_capture_guarded_mode(
+    db: &mut Connection,
+    request: &v2::Request,
+    writer_lease: Option<&WriterLease>,
+    replay: &v2::ReplayIdentity,
+    real_clone: bool,
+) -> Result<SourceCaptureSetReceipt> {
     let v2::Operation::SetSourceCapture {
         lease,
         enabled,
@@ -2837,7 +3335,11 @@ fn set_source_capture_guarded(
     if let Some(writer_lease) = writer_lease {
         writer_lease.verify_admission()?;
     }
-    require_scratch(&transaction)?;
+    if real_clone {
+        require_activation_clone_markers(&transaction)?;
+    } else {
+        require_scratch(&transaction)?;
+    }
     let receiver: String = transaction.query_row(
         "SELECT value FROM schema_meta WHERE key='receiver_id'",
         [],
@@ -2854,14 +3356,24 @@ fn set_source_capture_guarded(
          lease_epoch INTEGER NOT NULL,policy_epoch INTEGER NOT NULL,cursor TEXT NOT NULL,\
          dirty_seq INTEGER NOT NULL)",
     )?;
-    let has_receipt_trigger: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' \
-         AND tbl_name='storage_source_capture_set_v2')",
-        [],
-        |row| row.get(0),
-    )?;
-    if has_receipt_trigger {
-        return Err(reject("source capture receipt triggers are unsupported"));
+    if real_clone {
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS storage_admission_batch_binding_v1(\
+             source_id TEXT PRIMARY KEY,generation TEXT NOT NULL,policy_epoch INTEGER NOT NULL,\
+             expected_cursor TEXT NOT NULL,cursor TEXT NOT NULL,batch_digest TEXT NOT NULL,\
+             prepared_digest TEXT NOT NULL,dirty_seq INTEGER NOT NULL)",
+        )?;
+        reject_real_clone_policy_triggers(&transaction)?;
+    } else {
+        let has_receipt_trigger: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' \
+             AND tbl_name='storage_source_capture_set_v2')",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_receipt_trigger {
+            return Err(reject("source capture receipt triggers are unsupported"));
+        }
     }
     reject_cross_operation_request_id(
         &transaction,
@@ -2943,6 +3455,17 @@ fn set_source_capture_guarded(
             || dirty_seq != expected_dirty
         {
             return Err(reject("conflicting v2 source capture request"));
+        }
+        if real_clone {
+            validate_clone_policy_replay_source(
+                &transaction,
+                &lease.source_id,
+                &receiver,
+                &lease.plugin_id,
+                &lease.generation,
+                policy,
+                dirty_seq,
+            )?;
         }
         transaction.commit()?;
         return Ok(SourceCaptureSetReceipt {
@@ -3040,7 +3563,7 @@ fn set_source_capture_guarded(
             &cursor,
             dirty_seq,
             current_policy,
-            false,
+            real_clone,
         )?;
     } else {
         validate_disabled_capture_state(
@@ -3052,6 +3575,11 @@ fn set_source_capture_guarded(
         )?;
     }
     let previous_markers = source_marker_state(&transaction, &lease.source_id)?;
+    let binding_before = if real_clone {
+        read_batch_binding(&transaction, &lease.source_id)?
+    } else {
+        None
+    };
 
     let is_noop = *enabled == current_enabled;
     let (next_epoch, next_policy, next_dirty, disposition) = if is_noop {
@@ -3073,6 +3601,9 @@ fn set_source_capture_guarded(
     };
     if !is_noop {
         if !enabled {
+            if real_clone {
+                preflight_clone_policy_deletes(&transaction, &lease.source_id)?;
+            }
             transaction.execute(
                 "DELETE FROM plugin_evidence_v1 WHERE source_id=?",
                 [&lease.source_id],
@@ -3090,7 +3621,22 @@ fn set_source_capture_guarded(
                 [&lease.source_id],
             )?;
         }
-        set_metadata_content_receipts(&transaction, &lease.source_id, &cursor, next_policy)?;
+        set_metadata_content_receipts_mode(
+            &transaction,
+            &lease.source_id,
+            &cursor,
+            next_policy,
+            real_clone,
+        )?;
+        if real_clone {
+            let deleted = transaction.execute(
+                "DELETE FROM storage_admission_batch_binding_v1 WHERE source_id=?",
+                [&lease.source_id],
+            )?;
+            if deleted > 1 {
+                return Err(reject("prepared batch binding cleanup was not unique"));
+            }
+        }
         let changed = transaction.execute(
             "UPDATE plugin_source_cursor_v1 SET lease_epoch=?,policy_epoch=?,capture_enabled=?,\
              dirty_seq=?,content_fingerprint='',updated_ns=? WHERE source_id=?",
@@ -3151,6 +3697,10 @@ fn set_source_capture_guarded(
         last_digest,
         next_dirty,
     );
+    let validation_mode = CaptureValidationMode {
+        require_empty_lifecycle: !*expected_capture_enabled || !*enabled,
+        allow_plugin_facts: real_clone,
+    };
     validate_capture_set_persisted_state(
         &transaction,
         &lease.source_id,
@@ -3158,8 +3708,20 @@ fn set_source_capture_guarded(
         &expected_markers,
         &cursor,
         *enabled,
-        !*expected_capture_enabled || !*enabled,
+        validation_mode,
     )?;
+    if real_clone {
+        let expected_binding = if is_noop {
+            binding_before.clone()
+        } else {
+            None
+        };
+        if read_batch_binding(&transaction, &lease.source_id)? != expected_binding {
+            return Err(reject(
+                "source capture changed the prepared batch binding unexpectedly",
+            ));
+        }
+    }
     let receipt_changed = transaction.execute(
         "INSERT INTO storage_source_capture_set_v2(request_id,receiver_id,request_digest,source_id,\
          plugin_id,generation,expected_capture_enabled,enabled,disposition,lease_epoch,policy_epoch,\
@@ -3217,6 +3779,10 @@ fn set_source_capture_guarded(
     if persisted_receipt.as_ref() != Some(&expected_receipt) {
         return Err(reject("source capture receipt was not persisted exactly"));
     }
+    let validation_mode = CaptureValidationMode {
+        require_empty_lifecycle: !*expected_capture_enabled || !*enabled,
+        allow_plugin_facts: real_clone,
+    };
     validate_capture_set_persisted_state(
         &transaction,
         &lease.source_id,
@@ -3224,14 +3790,26 @@ fn set_source_capture_guarded(
         &expected_markers,
         &cursor,
         *enabled,
-        !*expected_capture_enabled || !*enabled,
+        validation_mode,
     )?;
+    if real_clone {
+        let expected_binding = if is_noop { binding_before } else { None };
+        if read_batch_binding(&transaction, &lease.source_id)? != expected_binding {
+            return Err(reject(
+                "source capture changed the prepared batch binding unexpectedly",
+            ));
+        }
+    }
     reject_cross_operation_request_id(
         &transaction,
         &replay.request_id,
         "storage_source_capture_set_v2",
     )?;
-    require_scratch(&transaction)?;
+    if real_clone {
+        require_activation_clone_markers(&transaction)?;
+    } else {
+        require_scratch(&transaction)?;
+    }
     let receiver_after_mutation: String = transaction.query_row(
         "SELECT value FROM schema_meta WHERE key='receiver_id'",
         [],
@@ -3250,6 +3828,11 @@ fn set_source_capture_guarded(
         dirty_seq: next_dirty,
         disposition,
     })
+}
+
+struct CaptureValidationMode {
+    require_empty_lifecycle: bool,
+    allow_plugin_facts: bool,
 }
 
 fn validate_capture_set_persisted_state(
@@ -3271,7 +3854,7 @@ fn validate_capture_set_persisted_state(
     expected_markers: &SourceMarkerState,
     cursor: &str,
     enabled: bool,
-    require_empty_lifecycle: bool,
+    mode: CaptureValidationMode,
 ) -> Result<()> {
     type Source = (
         String,
@@ -3325,9 +3908,9 @@ fn validate_capture_set_persisted_state(
             cursor,
             expected_source.10,
             expected_source.4,
-            false,
+            mode.allow_plugin_facts,
         )?;
-        if require_empty_lifecycle {
+        if mode.require_empty_lifecycle {
             let residual: bool = db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1) \
                  OR EXISTS(SELECT 1 FROM plugin_session_projection_v1 WHERE source_id=?1) \
