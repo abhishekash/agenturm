@@ -86,7 +86,7 @@
   "observatory/plugin_projection.py | sessions | _connect": {"count": 1, "authority": "telemetry", "effect": "may_write"},
   "observatory/plugin_reference_admission.py | ReferenceAdmissionRegistry.install_schema | _connect": {"count": 1, "authority": "telemetry", "effect": "may_write"},
   "observatory/plugin_reference_admission.py | ReferenceAdmissionRegistry.install_schema | _source_write": {"count": 1, "authority": "telemetry", "effect": "may_write"},
-  "observatory/plugin_supervisor.py | _failure | _connect": {"count": 1, "authority": "telemetry", "effect": "may_write"},
+  "observatory/plugin_admission_port.py | PythonStoreAdmissionPort.capture_revoked | _connect": {"count": 1, "authority": "telemetry", "effect": "read_only"},
   "observatory/read_connections.py | ReadConnections.read | sqlite3.connect": {"count": 1, "authority": "read_only", "effect": "read_only"},
   "observatory/receiver_state.py | migrate_database | sqlite3.connect": {"count": 2, "authority": "offline", "effect": "backup_target"},
   "observatory/receiver_state.py | retention_policy | _connect": {"count": 1, "authority": "telemetry", "effect": "may_write"},

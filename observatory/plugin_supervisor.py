@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import threading
 import time
-import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .plugin_batch_handlers import BatchHandlerRegistry, DEFAULT_BATCH_HANDLERS
 from .plugin_capture_modes import CaptureModeRegistry, DEFAULT_CAPTURE_MODES
+from .plugin_admission_port import (PluginAdmissionPort,
+                                    PythonStoreAdmissionPort,
+                                    require_plugin_admission_port)
 from .plugin_reference_admission import (DEFAULT_REFERENCE_ADMISSIONS,
                                          ReferenceAdmissionRegistry)
 from .plugin_manifest import PluginManifest
@@ -51,22 +54,24 @@ _REASONS = {
 }
 
 
-def _failure(exc: BaseException, store: Store, source_id: str) -> tuple[str, bool]:
+def _failure(exc: BaseException, admission_port: PluginAdmissionPort | None,
+             source_id: str) -> tuple[str, bool]:
+    if admission_port is not None:
+        try:
+            lease_reason = admission_port.classify_lease_failure(exc, source_id)
+        except Exception:
+            lease_reason = None
+        if lease_reason == "capture_revoked":
+            return "capture_revoked", True
+        if lease_reason == "source_fenced":
+            return "source_fenced", True
     if isinstance(exc, ProtocolError):
         message = str(exc)
         if "capture revoked" in message:
             return "capture_revoked", True
         if "stale plugin source lease" in message:
-            try:
-                receiver_id = store.receiver_namespace()
-                with store._connect() as db:
-                    row = db.execute("SELECT capture_enabled FROM plugin_source_cursor_v1 "
-                                     "WHERE source_id=? AND receiver_id=?",
-                                     (source_id, receiver_id)).fetchone()
-                if row is not None and not row["capture_enabled"]:
-                    return "capture_revoked", True
-            except (OSError, sqlite3.Error, ValueError):
-                pass
+            # The port failed to classify a known stale-lease signal. Fencing
+            # is safer than retrying a batch against an uncertain lease.
             return "source_fenced", True
         if "ownership or artifact" in message:
             return "ownership_changed", True
@@ -75,7 +80,7 @@ def _failure(exc: BaseException, store: Store, source_id: str) -> tuple[str, boo
         if "timed out" in message:
             return "timeout", False
         return "protocol_error", False
-    if isinstance(exc, (OSError, ValueError)):
+    if isinstance(exc, (OSError, TypeError, ValueError)):
         return "startup_error", False
     return "worker_error", False
 
@@ -94,7 +99,8 @@ class PluginSupervisor:
                  capture_modes: CaptureModeRegistry = DEFAULT_CAPTURE_MODES,
                  reference_admissions: ReferenceAdmissionRegistry =
                  DEFAULT_REFERENCE_ADMISSIONS,
-                 batch_handlers: BatchHandlerRegistry = DEFAULT_BATCH_HANDLERS):
+                 batch_handlers: BatchHandlerRegistry = DEFAULT_BATCH_HANDLERS,
+                 admission_port_factory: Callable[[Store], PluginAdmissionPort] | None = None):
         sources = tuple(sources)
         if len(sources) > MAX_PROCESSES or len({item.source_id for item in sources}) != len(sources):
             raise ValueError("duplicate or excessive plugin sources")
@@ -108,21 +114,32 @@ class PluginSupervisor:
             raise TypeError("trusted reference admission registry required")
         if not isinstance(batch_handlers, BatchHandlerRegistry):
             raise TypeError("trusted batch handler registry required")
+        self.admission_port_factory = (
+            admission_port_factory if admission_port_factory is not None
+            else PythonStoreAdmissionPort)
+        if not callable(self.admission_port_factory):
+            raise TypeError("plugin admission port factory must be callable")
         for source in sources:
             if not isinstance(source, PluginSource) or not isinstance(source.manifest, PluginManifest):
                 raise TypeError("plugin source requires a manifest")
             if (type(source.poll_interval) not in (int, float)
                     or not 0.05 <= source.poll_interval <= 60):
                 raise ValueError("invalid plugin poll interval")
-            PluginSession(store, source.manifest, source_id=source.source_id,
-                          allowed_grants=source.allowed_grants, timeout=source.timeout,
-                          source_root=source.source_root,
-                          required_features=source.runtime_features,
-                          capture_source=source, capture_modes=capture_modes,
-                          reference_admissions=reference_admissions,
-                          batch_handlers=batch_handlers,
-                          rust_host_executable=rust_host_executable,
-                          rust_host_sha256=rust_host_sha256)
+            admission_port = require_plugin_admission_port(
+                self.admission_port_factory(store))
+            try:
+                PluginSession(store, source.manifest, source_id=source.source_id,
+                              allowed_grants=source.allowed_grants, timeout=source.timeout,
+                              source_root=source.source_root,
+                              required_features=source.runtime_features,
+                              capture_source=source, capture_modes=capture_modes,
+                              reference_admissions=reference_admissions,
+                              batch_handlers=batch_handlers,
+                              admission_port=admission_port,
+                              rust_host_executable=rust_host_executable,
+                              rust_host_sha256=rust_host_sha256)
+            finally:
+                admission_port.close()
         self.store = store
         self.sources = sources
         self.max_failures = max_failures
@@ -142,7 +159,8 @@ class PluginSupervisor:
             "last_failure_code": "", "last_failure_reason": "", "last_failure_ns": 0,
             "restart_count": 0, "consecutive_failures": 0,
             "last_success_ns": 0, "last_commit_ns": 0, "last_cursor": "",
-            "projection_error_code": "", "last_source_diagnostic": {}} for item in sources}
+            "projection_error_code": "", "last_source_diagnostic": {},
+            "last_cleanup_error": ""} for item in sources}
 
     def _update(self, source_id: str, **values) -> None:
         with self.lock:
@@ -171,18 +189,25 @@ class PluginSupervisor:
         attempts = 0
         last_commit_ns = 0
         while not self.stop.is_set():
-            session = PluginSession(self.store, source.manifest, source_id=source_id,
-                                    allowed_grants=source.allowed_grants,
-                                    timeout=source.timeout, source_root=source.source_root,
-                                    required_features=source.runtime_features,
-                                    capture_source=source, capture_modes=self.capture_modes,
-                                    reference_admissions=self.reference_admissions,
-                                    batch_handlers=self.batch_handlers,
-                                    rust_host_executable=self.rust_host_executable,
-                                    rust_host_sha256=self.rust_host_sha256)
+            session = None
+            admission_port = None
             try:
                 self._update(source_id, state="starting", restart_count=max(0, attempts))
                 attempts += 1
+                admission_port = require_plugin_admission_port(
+                    self.admission_port_factory(self.store))
+                session = PluginSession(
+                    self.store, source.manifest, source_id=source_id,
+                    allowed_grants=source.allowed_grants, timeout=source.timeout,
+                    source_root=source.source_root,
+                    required_features=source.runtime_features,
+                    capture_source=source, capture_modes=self.capture_modes,
+                    reference_admissions=self.reference_admissions,
+                    batch_handlers=self.batch_handlers,
+                    admission_port=admission_port,
+                    rust_host_executable=self.rust_host_executable,
+                    rust_host_sha256=self.rust_host_sha256)
+                admission_port = None  # The session owns the port from here.
                 with session:
                     with self.lock:
                         self.current[source_id] = session
@@ -204,7 +229,9 @@ class PluginSupervisor:
             except Exception as exc:
                 if self.stop.is_set():
                     break
-                code, permanent = _failure(exc, self.store, source_id)
+                code, permanent = _failure(
+                    exc, (session.admission_port if session is not None
+                          else admission_port), source_id)
                 failures += 1
                 diagnostic_reset = {"last_source_diagnostic": {}} if code == "capture_revoked" else {}
                 self._update(source_id, state="failed" if permanent else "degraded",
@@ -221,7 +248,22 @@ class PluginSupervisor:
             finally:
                 with self.lock:
                     self.current.pop(source_id, None)
-                session.close()
+                if session is not None:
+                    try:
+                        session.close()
+                    except Exception as close_error:
+                        self._update(source_id,
+                                     last_cleanup_error=type(close_error).__name__)
+                    if session.admission_port_close_error:
+                        self._update(source_id,
+                                     last_cleanup_error=session.admission_port_close_error)
+                elif admission_port is not None:
+                    try:
+                        admission_port.close()
+                    except Exception as close_error:
+                        self._update(source_id,
+                                     last_cleanup_error=type(close_error).__name__)
+                    admission_port = None
         if self.stop.is_set():
             self._update(source_id, state="stopped")
 

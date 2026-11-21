@@ -385,7 +385,7 @@ class CodexDirectoryTests(unittest.TestCase):
 
     def test_checkpoint_load_failure_closes_directly_started_worker(self):
         worker = self.worker()
-        with patch("observatory.plugin_runtime.member_cursors",
+        with patch("observatory.plugin_admission_port.PythonStoreAdmissionPort.member_cursors",
                    side_effect=ProtocolError("damaged member checkpoints")):
             with self.assertRaisesRegex(ProtocolError, "damaged member checkpoints"):
                 worker.start()

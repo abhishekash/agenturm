@@ -12,8 +12,10 @@ from typing import TYPE_CHECKING
 
 from .plugin_batch_handlers import BatchHandlerRegistry, DEFAULT_BATCH_HANDLERS
 from .plugin_capture_modes import CaptureModeRegistry, DEFAULT_CAPTURE_MODES
-from .plugin_admission import (SourceLease, activate_source, commit_batch,
-                               last_source_diagnostic, member_cursors)
+from .plugin_admission import SourceLease
+from .plugin_admission_port import (PluginAdmissionPort,
+                                    PythonStoreAdmissionPort,
+                                    require_plugin_admission_port)
 from .plugin_manifest import PluginManifest
 from .plugin_process import PluginProcess
 from .plugin_projection import project_source
@@ -41,7 +43,8 @@ class PluginSession:
                  capture_modes: CaptureModeRegistry = DEFAULT_CAPTURE_MODES,
                  reference_admissions: ReferenceAdmissionRegistry =
                  DEFAULT_REFERENCE_ADMISSIONS,
-                 batch_handlers: BatchHandlerRegistry = DEFAULT_BATCH_HANDLERS):
+                 batch_handlers: BatchHandlerRegistry = DEFAULT_BATCH_HANDLERS,
+                 admission_port: PluginAdmissionPort | None = None):
         if not isinstance(manifest, PluginManifest):
             raise TypeError("plugin manifest required")
         if not isinstance(capture_modes, CaptureModeRegistry):
@@ -51,6 +54,9 @@ class PluginSession:
         if not isinstance(batch_handlers, BatchHandlerRegistry):
             raise TypeError("trusted batch handler registry required")
         self.store = store
+        self.admission_port = require_plugin_admission_port(
+            admission_port if admission_port is not None else PythonStoreAdmissionPort(store))
+        self._admission_port_closed = False
         self.capture_source = None
         self.capture_grant = None
         self.content_grant = None
@@ -99,6 +105,7 @@ class PluginSession:
         self.members: dict[str, str] | None = None
         self.projection_error: str | None = None
         self.last_diagnostic: dict = {}
+        self.admission_port_close_error: str | None = None
         self._projection_event = threading.Event()
         self._projection_stop = threading.Event()
         self._projection_thread: threading.Thread | None = None
@@ -123,22 +130,18 @@ class PluginSession:
     def start(self) -> PluginSession:
         if self.lease is not None:
             raise ProtocolError("plugin session already started")
-        manifest = self.process.manifest
-        fingerprint = (self.capture_mode.fingerprint(self.capture_source)
-                       if self.capture_source is not None else "")
-        if self.capture_source is not None:
-            self.capture_modes.require_source(self.capture_mode, self.capture_source)
-        # Store startup already installed the bundled providers. Only a
-        # receiver-supplied extension registry needs this extra writer step.
-        if self.reference_admissions is not DEFAULT_REFERENCE_ADMISSIONS:
-            self.reference_admissions.install_schema(self.store)
-        self.lease = activate_source(self.store, plugin_id=manifest.id,
-                                     source_id=self.process.source_id,
-                                     generation=manifest.artifact_sha256,
-                                     content_fingerprint=fingerprint,
-                                     reference_admissions=self.reference_admissions)
-        self.cursor = self.lease.cursor
         try:
+            manifest = self.process.manifest
+            fingerprint = (self.capture_mode.fingerprint(self.capture_source)
+                           if self.capture_source is not None else "")
+            if self.capture_source is not None:
+                self.capture_modes.require_source(self.capture_mode, self.capture_source)
+            self.admission_port.install_reference_schema(self.reference_admissions)
+            self.lease = self.admission_port.activate_source(
+                plugin_id=manifest.id, source_id=self.process.source_id,
+                generation=manifest.artifact_sha256, content_fingerprint=fingerprint,
+                reference_admissions=self.reference_admissions)
+            self.cursor = self.lease.cursor
             self.process.start()
             if self.capture_source is not None:
                 self.capture_grant = self.capture_mode.grant(self.capture_source, self.lease)
@@ -147,9 +150,9 @@ class PluginSession:
             elif self.capture_mode.reference_family == "command":
                 self.command_grant = self.capture_grant
             if "source-discovery/1" in self.process.required_features:
-                self.members = member_cursors(self.store, self.lease)
-            self.last_diagnostic = last_source_diagnostic(self.store, self.lease)
-        except BaseException:
+                self.members = self.admission_port.member_cursors(self.lease)
+            self.last_diagnostic = self.admission_port.last_source_diagnostic(self.lease)
+        except BaseException as startup_error:
             try:
                 self.process.close(force=True)
             except BaseException:
@@ -160,6 +163,11 @@ class PluginSession:
             self.capture_grant = None
             self.content_grant = None
             self.command_grant = None
+            try:
+                self._close_admission_port()
+            except Exception as close_error:
+                startup_error.add_note(
+                    f"admission port cleanup also failed: {type(close_error).__name__}")
             raise
         self._projection_stop.clear()
         self._projection_thread = threading.Thread(target=self._projection_loop,
@@ -191,8 +199,8 @@ class PluginSession:
                     return ReferenceSubmission(self.capture_mode.reference_provider_id,
                                                received.reference_refs, self.capture_grant)
             return None
-        batch = self.process.poll_commit(expected, lambda received: commit_batch(
-            self.store, self.lease, expected, received,
+        batch = self.process.poll_commit(expected, lambda received: self.admission_port.commit_batch(
+            self.lease, expected, received,
             allow_root_gap="source-discovery-root-gap/1" in self.process.required_features,
             reference_submission=trusted_submission(received),
             reference_admissions=self.reference_admissions),
@@ -219,13 +227,28 @@ class PluginSession:
         if self._projection_thread is not None:
             self._projection_thread.join(timeout=2.0)
             self._projection_thread = None
-        self.process.close()
-        self.lease = None
-        self.cursor = None
-        self.members = None
-        self.capture_grant = None
-        self.content_grant = None
-        self.command_grant = None
+        try:
+            self.process.close()
+        finally:
+            try:
+                self._close_admission_port()
+            finally:
+                self.lease = None
+                self.cursor = None
+                self.members = None
+                self.capture_grant = None
+                self.content_grant = None
+                self.command_grant = None
+
+    def _close_admission_port(self) -> None:
+        if self._admission_port_closed:
+            return
+        self._admission_port_closed = True
+        try:
+            self.admission_port.close()
+        except Exception as exc:
+            self.admission_port_close_error = type(exc).__name__
+            raise
 
     def __enter__(self) -> PluginSession:
         return self.start()
