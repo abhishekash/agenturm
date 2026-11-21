@@ -382,6 +382,39 @@ pub trait UiContribution: Send + Sync {
     fn build_pane(&self, snapshot: &Snapshot) -> Result<PaneModel, String>;
 }
 
+/// Selection context for a durable observation page passed to an extension.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ObservationSelectionScope {
+    #[default]
+    Latest,
+    Filtered,
+    Continuation,
+}
+
+/// Minimal context for one atomic metrics-and-pane extension evaluation.
+pub struct ObservationExtensionInput<'a> {
+    pub observations: &'a [Observation],
+    pub snapshot_id: u64,
+    pub observations_truncated: bool,
+    pub selection_scope: ObservationSelectionScope,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ObservationExtensionOutput {
+    pub metrics: Vec<MetricRow>,
+    pub pane: Option<PaneModel>,
+}
+
+/// Extension port for one evaluation that contributes metrics and optionally
+/// one data-only pane under the same ID. The host validates both outputs before
+/// publishing either of them.
+pub trait ObservationExtension: Send + Sync {
+    fn evaluate(
+        &self,
+        input: &ObservationExtensionInput<'_>,
+    ) -> Result<ObservationExtensionOutput, String>;
+}
+
 /// Build-time extension package that installs one or more kernel contributions.
 /// Registration runs against a staging kernel and is committed atomically only
 /// after every contribution succeeds and all IDs/capacity checks pass.
@@ -413,6 +446,7 @@ pub enum ExtensionStage {
     AdmissionAck,
     AdmissionRead,
     Capability,
+    ObservationExtension,
     UiContribution,
 }
 
@@ -433,6 +467,7 @@ pub struct Kernel {
     harnesses: BTreeMap<ExtensionId, Box<dyn Harness>>,
     sources: BTreeMap<ExtensionId, Box<dyn SourceAdapter>>,
     capabilities: BTreeMap<ExtensionId, Box<dyn Capability>>,
+    observation_extensions: BTreeMap<ExtensionId, Box<dyn ObservationExtension>>,
     ui_contributions: BTreeMap<ExtensionId, Box<dyn UiContribution>>,
 }
 
@@ -476,7 +511,28 @@ impl Kernel {
         if let Some(duplicate) = first_duplicate_id(&self.harnesses, &staged.harnesses)
             .or_else(|| first_duplicate_id(&self.sources, &staged.sources))
             .or_else(|| first_duplicate_id(&self.capabilities, &staged.capabilities))
+            .or_else(|| first_duplicate_id(&self.capabilities, &staged.observation_extensions))
+            .or_else(|| first_duplicate_id(&self.observation_extensions, &staged.capabilities))
+            .or_else(|| first_duplicate_id(&self.ui_contributions, &staged.observation_extensions))
+            .or_else(|| first_duplicate_id(&self.observation_extensions, &staged.ui_contributions))
+            .or_else(|| {
+                first_duplicate_id(&self.observation_extensions, &staged.observation_extensions)
+            })
             .or_else(|| first_duplicate_id(&self.ui_contributions, &staged.ui_contributions))
+        {
+            return Err(RegistrationError::DuplicateId(duplicate));
+        }
+        if let Some(duplicate) =
+            first_duplicate_id(&staged.capabilities, &staged.observation_extensions)
+                .or_else(|| {
+                    first_duplicate_id(&staged.observation_extensions, &staged.capabilities)
+                })
+                .or_else(|| {
+                    first_duplicate_id(&staged.ui_contributions, &staged.observation_extensions)
+                })
+                .or_else(|| {
+                    first_duplicate_id(&staged.observation_extensions, &staged.ui_contributions)
+                })
         {
             return Err(RegistrationError::DuplicateId(duplicate));
         }
@@ -491,6 +547,7 @@ impl Kernel {
         if staged.harnesses.is_empty()
             && staged.sources.is_empty()
             && staged.capabilities.is_empty()
+            && staged.observation_extensions.is_empty()
             && staged.ui_contributions.is_empty()
             && staged.plugins.is_empty()
         {
@@ -502,6 +559,8 @@ impl Kernel {
         if self.harnesses.len() + staged.harnesses.len() > MAX_EXTENSIONS_PER_KIND
             || self.sources.len() + staged.sources.len() > MAX_EXTENSIONS_PER_KIND
             || self.capabilities.len() + staged.capabilities.len() > MAX_EXTENSIONS_PER_KIND
+            || self.observation_extensions.len() + staged.observation_extensions.len()
+                > MAX_EXTENSIONS_PER_KIND
             || self.ui_contributions.len() + staged.ui_contributions.len() > MAX_EXTENSIONS_PER_KIND
         {
             return Err(RegistrationError::RegistryFull);
@@ -511,6 +570,8 @@ impl Kernel {
         self.harnesses.extend(staged.harnesses);
         self.sources.extend(staged.sources);
         self.capabilities.extend(staged.capabilities);
+        self.observation_extensions
+            .extend(staged.observation_extensions);
         self.ui_contributions.extend(staged.ui_contributions);
         Ok(())
     }
@@ -534,7 +595,21 @@ impl Kernel {
         id: ExtensionId,
         capability: impl Capability + 'static,
     ) -> Result<(), RegistrationError> {
+        if self.observation_extensions.contains_key(&id) {
+            return Err(RegistrationError::DuplicateId(id.0));
+        }
         insert_unique(&mut self.capabilities, id, Box::new(capability))
+    }
+
+    pub fn register_observation_extension(
+        &mut self,
+        id: ExtensionId,
+        extension: impl ObservationExtension + 'static,
+    ) -> Result<(), RegistrationError> {
+        if self.capabilities.contains_key(&id) || self.ui_contributions.contains_key(&id) {
+            return Err(RegistrationError::DuplicateId(id.0));
+        }
+        insert_unique(&mut self.observation_extensions, id, Box::new(extension))
     }
 
     pub fn register_ui_contribution(
@@ -542,6 +617,9 @@ impl Kernel {
         id: ExtensionId,
         contribution: impl UiContribution + 'static,
     ) -> Result<(), RegistrationError> {
+        if self.observation_extensions.contains_key(&id) {
+            return Err(RegistrationError::DuplicateId(id.0));
+        }
         insert_unique(&mut self.ui_contributions, id, Box::new(contribution))
     }
 
@@ -550,7 +628,7 @@ impl Kernel {
     pub fn refresh(&mut self) -> Snapshot {
         let mut snapshot = Snapshot::default();
         self.poll_harnesses(&mut snapshot);
-        self.evaluate_extensions(&mut snapshot);
+        self.evaluate_extensions(&mut snapshot, ObservationSelectionScope::Latest);
         snapshot
     }
 
@@ -562,12 +640,12 @@ impl Kernel {
     pub fn refresh_with_store(&mut self, store: &mut impl ObservationStore) -> Snapshot {
         let mut snapshot = Snapshot::default();
         self.admit_sources(&mut snapshot, store);
-        self.load_observations(
+        let selection_scope = self.load_observations(
             &mut snapshot,
             store,
             &ObservationQuery::latest(MAX_DURABLE_SNAPSHOT_OBSERVATIONS),
         );
-        self.evaluate_extensions(&mut snapshot);
+        self.evaluate_extensions(&mut snapshot, selection_scope);
         snapshot
     }
 
@@ -579,8 +657,8 @@ impl Kernel {
         query: ObservationQuery,
     ) -> Snapshot {
         let mut snapshot = Snapshot::default();
-        self.load_observations(&mut snapshot, store, &query);
-        self.evaluate_extensions(&mut snapshot);
+        let selection_scope = self.load_observations(&mut snapshot, store, &query);
+        self.evaluate_extensions(&mut snapshot, selection_scope);
         snapshot
     }
 
@@ -589,7 +667,14 @@ impl Kernel {
         snapshot: &mut Snapshot,
         store: &impl ObservationStore,
         query: &ObservationQuery,
-    ) {
+    ) -> ObservationSelectionScope {
+        let selection_scope = if query.before.is_some() {
+            ObservationSelectionScope::Continuation
+        } else if query.harness_id.is_some() || query.session_id.is_some() {
+            ObservationSelectionScope::Filtered
+        } else {
+            ObservationSelectionScope::Latest
+        };
         let store_id = ExtensionId("kernel.store".into());
         match store.query_observations(query) {
             Ok(page) => {
@@ -599,7 +684,7 @@ impl Kernel {
                         ExtensionStage::AdmissionRead,
                         "observation store returned more rows than requested",
                     ));
-                    return;
+                    return selection_scope;
                 }
                 snapshot.observations_truncated = page.has_more;
                 snapshot.history_snapshot_id = page.snapshot_id;
@@ -645,6 +730,7 @@ impl Kernel {
                     .push(failure(&store_id, ExtensionStage::AdmissionRead, message))
             }
         }
+        selection_scope
     }
 
     fn poll_harnesses(&mut self, snapshot: &mut Snapshot) {
@@ -834,7 +920,11 @@ impl Kernel {
         }
     }
 
-    fn evaluate_extensions(&self, snapshot: &mut Snapshot) {
+    fn evaluate_extensions(
+        &self,
+        snapshot: &mut Snapshot,
+        selection_scope: ObservationSelectionScope,
+    ) {
         for (id, capability) in &self.capabilities {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 capability.evaluate(&snapshot.observations)
@@ -860,6 +950,50 @@ impl Kernel {
                     ExtensionStage::Capability,
                     "extension panicked",
                 )),
+            }
+        }
+        // Do not let a durable-history extension interpret a failed read as an
+        // empty dataset. The store failure is already visible in the snapshot.
+        let history_read_failed = snapshot
+            .failures
+            .iter()
+            .any(|entry| entry.stage == ExtensionStage::AdmissionRead);
+        if !history_read_failed {
+            let input = ObservationExtensionInput {
+                observations: &snapshot.observations,
+                snapshot_id: snapshot.history_snapshot_id,
+                observations_truncated: snapshot.observations_truncated,
+                selection_scope,
+            };
+            for (id, extension) in &self.observation_extensions {
+                let result = catch_unwind(AssertUnwindSafe(|| extension.evaluate(&input)));
+                match result {
+                    Ok(Ok(output)) => {
+                        let metrics = validate_metric_rows(output.metrics);
+                        let pane = output.pane.map(validate_pane).transpose();
+                        match (metrics, pane) {
+                            (Ok(metrics), Ok(pane)) => {
+                                snapshot.metrics.insert(id.clone(), metrics);
+                                if let Some(pane) = pane {
+                                    snapshot.panes.insert(id.clone(), pane);
+                                }
+                            }
+                            (Err(message), _) | (_, Err(message)) => snapshot
+                                .failures
+                                .push(failure(id, ExtensionStage::ObservationExtension, message)),
+                        }
+                    }
+                    Ok(Err(message)) => snapshot.failures.push(failure(
+                        id,
+                        ExtensionStage::ObservationExtension,
+                        message,
+                    )),
+                    Err(_) => snapshot.failures.push(failure(
+                        id,
+                        ExtensionStage::ObservationExtension,
+                        "extension panicked",
+                    )),
+                }
             }
         }
         for (id, contribution) in &self.ui_contributions {
@@ -1142,6 +1276,36 @@ mod tests {
         }
     }
 
+    struct FixedObservationExtension(ObservationExtensionOutput);
+
+    impl ObservationExtension for FixedObservationExtension {
+        fn evaluate(
+            &self,
+            _input: &ObservationExtensionInput<'_>,
+        ) -> Result<ObservationExtensionOutput, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    type ObservationExtensionContext = (u64, bool, ObservationSelectionScope, usize);
+
+    struct RecordingObservationExtension(Arc<Mutex<Vec<ObservationExtensionContext>>>);
+
+    impl ObservationExtension for RecordingObservationExtension {
+        fn evaluate(
+            &self,
+            input: &ObservationExtensionInput<'_>,
+        ) -> Result<ObservationExtensionOutput, String> {
+            self.0.lock().unwrap().push((
+                input.snapshot_id,
+                input.observations_truncated,
+                input.selection_scope,
+                input.observations.len(),
+            ));
+            Ok(ObservationExtensionOutput::default())
+        }
+    }
+
     fn id(value: &str) -> ExtensionId {
         ExtensionId::parse(value).unwrap()
     }
@@ -1252,6 +1416,10 @@ mod tests {
             })
         }
 
+        fn query_observations(&self, query: &ObservationQuery) -> Result<ObservationPage, String> {
+            self.load_observations(query.limit)
+        }
+
         fn commit(
             &mut self,
             source_id: &str,
@@ -1317,6 +1485,204 @@ mod tests {
         );
         assert_eq!(snapshot.panes[&id("pane.activity")].title, "Activity");
         assert!(snapshot.failures.is_empty());
+    }
+
+    struct OnePageStore(ObservationPage);
+
+    impl ObservationStore for OnePageStore {
+        fn source_cursor(&self, _source_id: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn load_observations(&self, _limit: usize) -> Result<ObservationPage, String> {
+            Ok(self.0.clone())
+        }
+
+        fn query_observations(&self, _query: &ObservationQuery) -> Result<ObservationPage, String> {
+            Ok(self.0.clone())
+        }
+
+        fn commit(
+            &mut self,
+            _source_id: &str,
+            _expected_cursor: Option<&str>,
+            _next_cursor: &str,
+            _observations: &[Observation],
+        ) -> Result<StoreCommit, String> {
+            Ok(StoreCommit {
+                inserted: 0,
+                replay: false,
+            })
+        }
+    }
+
+    struct FailingReadStore;
+
+    impl ObservationStore for FailingReadStore {
+        fn source_cursor(&self, _source_id: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn load_observations(&self, _limit: usize) -> Result<ObservationPage, String> {
+            Err("store unavailable".into())
+        }
+
+        fn query_observations(&self, _query: &ObservationQuery) -> Result<ObservationPage, String> {
+            Err("store unavailable".into())
+        }
+
+        fn commit(
+            &mut self,
+            _source_id: &str,
+            _expected_cursor: Option<&str>,
+            _next_cursor: &str,
+            _observations: &[Observation],
+        ) -> Result<StoreCommit, String> {
+            Err("store unavailable".into())
+        }
+    }
+
+    #[test]
+    fn observation_extension_is_not_evaluated_when_durable_history_read_fails() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let mut kernel = Kernel::new();
+        kernel
+            .register_observation_extension(
+                id("plugin.context"),
+                RecordingObservationExtension(Arc::clone(&received)),
+            )
+            .unwrap();
+
+        let snapshot =
+            kernel.refresh_query_with_store(&FailingReadStore, ObservationQuery::latest(10));
+
+        assert!(received.lock().unwrap().is_empty());
+        assert!(snapshot.observations.is_empty());
+        assert_eq!(snapshot.failures.len(), 1);
+        assert_eq!(snapshot.failures[0].stage, ExtensionStage::AdmissionRead);
+    }
+
+    #[test]
+    fn observation_extension_publishes_metrics_and_pane_atomically() {
+        let mut kernel = Kernel::new();
+        kernel
+            .register_harness(id("harness.pi"), FixedHarness(Ok(vec![activity("s1")])))
+            .unwrap();
+        kernel
+            .register_observation_extension(
+                id("plugin.lifecycle"),
+                FixedObservationExtension(ObservationExtensionOutput {
+                    metrics: vec![MetricRow {
+                        label: "interrupted".into(),
+                        value: "1".into(),
+                    }],
+                    pane: Some(PaneModel {
+                        title: "Lifecycle".into(),
+                        rows: vec![MetricRow {
+                            label: "harness.pi".into(),
+                            value: "1 interrupted".into(),
+                        }],
+                    }),
+                }),
+            )
+            .unwrap();
+
+        let snapshot = kernel.refresh();
+        assert_eq!(snapshot.metrics[&id("plugin.lifecycle")][0].value, "1");
+        assert_eq!(snapshot.panes[&id("plugin.lifecycle")].title, "Lifecycle");
+        assert!(snapshot.failures.is_empty());
+    }
+
+    #[test]
+    fn invalid_observation_extension_pane_does_not_publish_its_metrics() {
+        let mut kernel = Kernel::new();
+        kernel
+            .register_observation_extension(
+                id("plugin.invalid"),
+                FixedObservationExtension(ObservationExtensionOutput {
+                    metrics: vec![MetricRow {
+                        label: "valid".into(),
+                        value: "1".into(),
+                    }],
+                    pane: Some(PaneModel {
+                        title: "x".repeat(MAX_TITLE_BYTES + 1),
+                        rows: vec![],
+                    }),
+                }),
+            )
+            .unwrap();
+        let snapshot = kernel.refresh();
+        assert!(!snapshot.metrics.contains_key(&id("plugin.invalid")));
+        assert!(!snapshot.panes.contains_key(&id("plugin.invalid")));
+        assert_eq!(snapshot.failures.len(), 1);
+        assert_eq!(
+            snapshot.failures[0].stage,
+            ExtensionStage::ObservationExtension
+        );
+    }
+
+    #[test]
+    fn observation_extension_context_preserves_query_scope_and_truncation() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let mut kernel = Kernel::new();
+        kernel
+            .register_observation_extension(
+                id("plugin.context"),
+                RecordingObservationExtension(Arc::clone(&received)),
+            )
+            .unwrap();
+        let store = OnePageStore(ObservationPage {
+            observations: vec![],
+            has_more: true,
+            snapshot_id: 23,
+        });
+        kernel.refresh_query_with_store(
+            &store,
+            ObservationQuery {
+                harness_id: Some("harness.pi".into()),
+                session_id: None,
+                before: Some(ObservationPosition {
+                    observed_at_unix_ns: 10,
+                    harness_id: "harness.pi".into(),
+                    event_id: "event-9".into(),
+                    revision: 1,
+                    snapshot_id: 23,
+                }),
+                snapshot_id: Some(23),
+                limit: 10,
+            },
+        );
+        assert_eq!(
+            received.lock().unwrap().as_slice(),
+            [(23, true, ObservationSelectionScope::Continuation, 0)]
+        );
+    }
+
+    #[test]
+    fn observation_extension_ids_cannot_overwrite_capability_or_pane_outputs() {
+        let mut kernel = Kernel::new();
+        kernel
+            .register_capability(id("plugin.shared"), ActivityCount)
+            .unwrap();
+        assert!(matches!(
+            kernel.register_observation_extension(
+                id("plugin.shared"),
+                FixedObservationExtension(ObservationExtensionOutput::default())
+            ),
+            Err(RegistrationError::DuplicateId(_))
+        ));
+
+        let mut other_kernel = Kernel::new();
+        other_kernel
+            .register_observation_extension(
+                id("plugin.shared"),
+                FixedObservationExtension(ObservationExtensionOutput::default()),
+            )
+            .unwrap();
+        assert!(matches!(
+            other_kernel.register_ui_contribution(id("plugin.shared"), ActivityPane),
+            Err(RegistrationError::DuplicateId(_))
+        ));
     }
 
     #[test]

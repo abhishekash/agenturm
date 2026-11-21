@@ -1,7 +1,8 @@
 use agenturm_app::AgenturmApp;
 use agenturm_kernel::{
-    Capability, ExtensionId, ExtensionPlugin, Harness, Kernel, MetricRow, ObservationIdentity,
-    ObservationKind, ObservationScope, RawObservation, RegistrationError,
+    Capability, ExtensionId, ExtensionPlugin, Harness, Kernel, MetricRow, ObservationExtension,
+    ObservationExtensionInput, ObservationExtensionOutput, ObservationIdentity, ObservationKind,
+    ObservationScope, RawObservation, RegistrationError,
 };
 use agenturm_lifecycle_extension_example::LifecycleExtensionPlugin;
 use agenturm_ui::UiModel;
@@ -68,6 +69,71 @@ impl ExtensionPlugin for ConflictingPackage {
             .map_err(|error| error.to_string())?;
         kernel
             .register_ui_contribution(id("pane.conflict"), LifecyclePaneFixture)
+            .map_err(|error| error.to_string())
+    }
+}
+
+struct EmptyObservationExtension;
+
+impl ObservationExtension for EmptyObservationExtension {
+    fn evaluate(
+        &self,
+        _input: &ObservationExtensionInput<'_>,
+    ) -> Result<ObservationExtensionOutput, String> {
+        Ok(ObservationExtensionOutput::default())
+    }
+}
+
+struct LifecycleObservationPackage;
+
+impl ExtensionPlugin for LifecycleObservationPackage {
+    fn id(&self) -> ExtensionId {
+        id("example.lifecycle-observation")
+    }
+
+    fn register(&self, kernel: &mut Kernel) -> Result<(), String> {
+        kernel
+            .register_observation_extension(id("plugin.lifecycle-observation"), LifecycleOutput)
+            .map_err(|error| error.to_string())
+    }
+}
+
+struct LifecycleOutput;
+
+impl ObservationExtension for LifecycleOutput {
+    fn evaluate(
+        &self,
+        _input: &ObservationExtensionInput<'_>,
+    ) -> Result<ObservationExtensionOutput, String> {
+        Ok(ObservationExtensionOutput {
+            metrics: vec![MetricRow {
+                label: "prompt efficacy".into(),
+                value: "not yet measured".into(),
+            }],
+            pane: Some(agenturm_kernel::PaneModel {
+                title: "Lifecycle signals".into(),
+                rows: vec![MetricRow {
+                    label: "interrupted".into(),
+                    value: "1".into(),
+                }],
+            }),
+        })
+    }
+}
+
+struct ConflictingObservationPackage(&'static str);
+
+impl ExtensionPlugin for ConflictingObservationPackage {
+    fn id(&self) -> ExtensionId {
+        id("example.observation-collision")
+    }
+
+    fn register(&self, kernel: &mut Kernel) -> Result<(), String> {
+        kernel
+            .register_capability(id("capability.must-not-leak"), BrokenCapability)
+            .map_err(|error| error.to_string())?;
+        kernel
+            .register_observation_extension(id(self.0), EmptyObservationExtension)
             .map_err(|error| error.to_string())
     }
 }
@@ -200,6 +266,60 @@ fn fixture_registration_keeps_duplicate_ids_rejected() {
         app.register_ui_contribution(id("pane.example.lifecycle"), LifecyclePaneFixture),
         Err(RegistrationError::DuplicateId(_))
     ));
+}
+
+#[test]
+fn separately_packaged_observation_extension_composes_metrics_and_pane() {
+    let mut app = AgenturmApp::empty_composition();
+    app.install_plugin(LifecycleObservationPackage).unwrap();
+    let snapshot = app.refresh();
+    assert_eq!(
+        snapshot.metrics[&id("plugin.lifecycle-observation")][0].label,
+        "prompt efficacy"
+    );
+    assert_eq!(
+        snapshot.panes[&id("plugin.lifecycle-observation")].title,
+        "Lifecycle signals"
+    );
+    let mut model = UiModel::from_snapshot(snapshot);
+    let mut selectable_titles = vec![model.selected_title().unwrap_or_default().to_owned()];
+    for _ in 0..4 {
+        model.select_next();
+        selectable_titles.push(model.selected_title().unwrap_or_default().to_owned());
+    }
+    assert!(
+        selectable_titles
+            .iter()
+            .any(|title| title == "Lifecycle signals")
+    );
+}
+
+#[test]
+fn staged_observation_extension_collision_rejects_whole_package() {
+    for occupied_id in ["capability.shared", "pane.shared"] {
+        let mut app = AgenturmApp::empty_composition();
+        if occupied_id.starts_with("capability.") {
+            app.register_capability(id(occupied_id), BrokenCapability)
+                .unwrap();
+        } else {
+            app.register_ui_contribution(id(occupied_id), LifecyclePaneFixture)
+                .unwrap();
+        }
+        assert!(matches!(
+            app.install_plugin(ConflictingObservationPackage(occupied_id)),
+            Err(RegistrationError::DuplicateId(id)) if id == occupied_id
+        ));
+        let snapshot = app.refresh();
+        assert!(
+            !snapshot
+                .metrics
+                .contains_key(&id("capability.must-not-leak"))
+        );
+        assert_eq!(
+            snapshot.panes.len(),
+            usize::from(occupied_id.starts_with("pane."))
+        );
+    }
 }
 
 #[test]
