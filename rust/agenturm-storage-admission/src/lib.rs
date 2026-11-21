@@ -801,8 +801,8 @@ fn plan_member_admission(
             )?;
             let retired_gap: bool = db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 AND kind='diagnostic' \
-                 AND member_id=?2 AND payload_json=?)",
-                params![request.lease.source_id, update.member_id, r#"{"code":"possible_source_gap","severity":"warning"}"#],
+                 AND member_id=?2 AND json_extract(payload_json,'$.code')='possible_source_gap')",
+                params![request.lease.source_id, update.member_id],
                 |row| row.get(0),
             )?;
             if source.0 != request.cursor || source.1 != request.batch_digest || !retired_gap {
@@ -3041,8 +3041,8 @@ fn read_last_source_diagnostic(
         } else {
             db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM plugin_evidence_v1 WHERE source_id=?1 AND kind='diagnostic' \
-                 AND member_id=?2 AND payload_json=?)",
-                params![lease.source_id, member_id, r#"{"code":"possible_source_gap","severity":"warning"}"#],
+                 AND member_id=?2 AND json_extract(payload_json,'$.code')='possible_source_gap')",
+                params![lease.source_id, member_id],
                 |found| found.get(0),
             )?
         };

@@ -383,7 +383,22 @@ pub fn diagnostic_payload_is_valid(raw: &str) -> bool {
 }
 
 pub fn member_gap_diagnostic_payload_is_valid(raw: &str) -> bool {
-    raw == r#"{"code":"possible_source_gap","severity":"warning"}"#
+    if raw.len() > 4096 {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    let Ok(typed) = serde_json::from_value::<DiagnosticPayload>(value.clone()) else {
+        return false;
+    };
+    typed.code == "possible_source_gap"
+        && matches!(
+            typed.severity,
+            DiagnosticSeverity::Info | DiagnosticSeverity::Warning | DiagnosticSeverity::Error
+        )
+        && sorted_json(&value).is_ok_and(|canonical| canonical == raw.as_bytes())
+        && serde_json::to_value(typed).is_ok_and(|roundtrip| roundtrip == value)
 }
 
 fn payload(raw: &str) -> bool {
@@ -1017,8 +1032,6 @@ impl Reply {
                     OperationResult::SourceDiagnosticRead(result),
                 ) => result.diagnostic.as_ref().is_some_and(|diagnostic| {
                     !diagnostic_code(&diagnostic.code)
-                        || (diagnostic.code == "possible_source_gap"
-                            && diagnostic.severity != "warning")
                         || !matches!(diagnostic.severity.as_str(), "info" | "warning" | "error")
                         || diagnostic.time_ns.parse::<i64>().is_err()
                         || diagnostic
@@ -1833,6 +1846,17 @@ mod tests {
             r#"{ "code":"source_timeout","severity":"warning"}"#,
         ] {
             assert!(!diagnostic_payload_is_valid(invalid), "{invalid}");
+        }
+        for severity in ["info", "warning", "error"] {
+            let payload = format!(r#"{{"code":"possible_source_gap","severity":"{severity}"}}"#);
+            assert!(member_gap_diagnostic_payload_is_valid(&payload));
+        }
+        for invalid_gap in [
+            r#"{"code":"possible_source_gap","severity":"fatal"}"#,
+            r#"{ "code":"possible_source_gap","severity":"warning"}"#,
+            r#"{"code":"possible_source_gap","severity":"warning","text":"x"}"#,
+        ] {
+            assert!(!member_gap_diagnostic_payload_is_valid(invalid_gap));
         }
 
         let lease = SourceLease {
