@@ -1,4 +1,5 @@
 """Durable plugin inbox: atomicity, lease fencing and child acknowledgment."""
+import hashlib
 import tempfile
 import unittest
 import sqlite3
@@ -242,14 +243,28 @@ class AdmissionTests(unittest.TestCase):
             row = db.execute("SELECT cursor,dirty_seq,policy_epoch,capture_enabled "
                              "FROM plugin_source_cursor_v1 WHERE source_id='fixture-source'").fetchone()
             evidence = db.execute("SELECT COUNT(*) FROM plugin_evidence_v1").fetchone()[0]
+            refs = db.execute("SELECT cursor,refs_digest FROM plugin_content_batch_v1 "
+                              "WHERE source_id='fixture-source'").fetchone()
+            status = db.execute("SELECT cursor,reason,refs_count,policy_epoch "
+                                "FROM plugin_content_status_v1 WHERE source_id='fixture-source'").fetchone()
         self.assertEqual(tuple(row), ("next", 2, 2, 0))
         self.assertEqual(evidence, 0)
+        empty_refs = hashlib.sha256(b'{"refs":[]}').hexdigest()
+        self.assertEqual(tuple(refs), ("next", empty_refs))
+        self.assertEqual(tuple(status), ("next", "not_requested", 0, 2))
         with self.assertRaisesRegex(ProtocolError, "stale plugin source lease"):
             commit_batch(self.store, self.lease, "next", self.batch("later", [record("two")]))
         with self.assertRaisesRegex(ProtocolError, "capture revoked"):
             activate_source(self.store, plugin_id="fixture.plugin",
                             source_id="fixture-source", generation=GENERATION)
         self.assertEqual(set_source_capture(self.store, source_id="fixture-source", enabled=True), 3)
+        with self.store._connect() as db:
+            refs = db.execute("SELECT cursor,refs_digest FROM plugin_content_batch_v1 "
+                              "WHERE source_id='fixture-source'").fetchone()
+            status = db.execute("SELECT cursor,reason,refs_count,policy_epoch "
+                                "FROM plugin_content_status_v1 WHERE source_id='fixture-source'").fetchone()
+        self.assertEqual(tuple(refs), ("next", empty_refs))
+        self.assertEqual(tuple(status), ("next", "not_requested", 0, 3))
         resumed = activate_source(self.store, plugin_id="fixture.plugin",
                                   source_id="fixture-source", generation=GENERATION)
         self.assertEqual((resumed.cursor, resumed.policy_epoch), ("next", 3))

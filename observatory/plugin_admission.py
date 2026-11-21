@@ -39,6 +39,7 @@ _STATES = frozenset({"started", "running", "paused", "completed", "failed",
 _SEVERITIES = frozenset({"info", "warning", "error"})
 _RELATIONSHIPS = frozenset({"delegated", "review"})
 MAX_SOURCE_RECORDS = 50_000
+_EMPTY_CONTENT_DIGEST = hashlib.sha256(encode_message({"refs": []}).encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -298,6 +299,19 @@ def set_source_capture(store: Store, *, source_id: str, enabled: bool,
                    "VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
                    "projected_seq=excluded.projected_seq,policy_epoch=excluded.policy_epoch",
                    (source_id, dirty_seq, epoch))
+        # Keep an explicit empty-reference checkpoint for the retained cursor.
+        # This lets later admission distinguish a policy transition that erased
+        # all provider content from a deleted or partial receipt after commit.
+        db.execute("INSERT INTO plugin_content_batch_v1(source_id,cursor,refs_digest) "
+                   "VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
+                   "cursor=excluded.cursor,refs_digest=excluded.refs_digest",
+                   (source_id, row["cursor"], _EMPTY_CONTENT_DIGEST))
+        db.execute("INSERT INTO plugin_content_status_v1 "
+                   "(source_id,cursor,reason,refs_count,policy_epoch) "
+                   "VALUES(?,?,'not_requested',0,?) ON CONFLICT(source_id) DO UPDATE SET "
+                   "cursor=excluded.cursor,reason=excluded.reason,refs_count=0,"
+                   "policy_epoch=excluded.policy_epoch",
+                   (source_id, row["cursor"], epoch))
     return epoch
 
 
