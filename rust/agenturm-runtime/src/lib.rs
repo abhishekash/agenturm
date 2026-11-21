@@ -69,9 +69,9 @@ pub trait SourceBatchDecoder: Send + Sync {
     fn decode_batch(&self, encoded: &str, expected_source_id: &str) -> Result<PreparedSourceBatch>;
 }
 
-/// Decoder for the shared usage, tool, and lifecycle facts emitted by bundled
-/// harness adapters. Other validated source facts are counted without being
-/// retained as observations.
+/// Decoder for shared usage, tool, lifecycle, and check facts emitted by
+/// bundled harness adapters. Other validated source facts are counted without
+/// being retained as observations.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BundledObservationDecoder;
 
@@ -580,6 +580,11 @@ fn parse_source_batch(encoded: &str, expected_source_id: &str) -> Result<ParsedB
             observations.push(typed.try_into()?);
             continue;
         }
+        if kind == "check" {
+            let typed: WireCheckRecord = serde_json::from_value(record)?;
+            observations.push(typed.try_into()?);
+            continue;
+        }
         if kind != "usage" {
             let skipped: WireSkippedRecord = serde_json::from_value(record)?;
             validate_skipped_record(&skipped)?;
@@ -654,6 +659,17 @@ struct WireLifecycleRecord {
     time_ns: String,
     identity: WireIdentity,
     payload: WireLifecycle,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireCheckRecord {
+    event_id: String,
+    revision: u32,
+    kind: String,
+    time_ns: String,
+    identity: WireIdentity,
+    payload: WireCheck,
 }
 
 #[derive(Deserialize)]
@@ -940,6 +956,39 @@ impl TryFrom<WireLifecycleRecord> for RawObservation {
     }
 }
 
+impl TryFrom<WireCheckRecord> for RawObservation {
+    type Error = RuntimeError;
+
+    fn try_from(record: WireCheckRecord) -> Result<Self> {
+        if record.kind != "check"
+            || !valid_source_identifier(&record.event_id, 256)
+            || !matches!(record.payload.category.as_str(), "test" | "lint" | "build")
+            || !matches!(
+                record.payload.result.as_str(),
+                "passed" | "failed" | "unknown"
+            )
+        {
+            return Err(RuntimeError::new("source check payload is invalid"));
+        }
+        validate_wire_identity(&record.identity)?;
+        Ok(RawObservation {
+            event_id: record.event_id,
+            revision: record.revision,
+            identity: ObservationIdentity {
+                session_id: record.identity.session_id,
+                worker_id: record.identity.worker_id,
+                turn_id: record.identity.turn_id,
+                operation_id: record.identity.operation_id,
+            },
+            observed_at_unix_ns: parse_decimal_timestamp(&record.time_ns)?,
+            kind: ObservationKind::Check {
+                category: record.payload.category,
+                result: record.payload.result,
+            },
+        })
+    }
+}
+
 fn parse_decimal_timestamp(value: &str) -> Result<u64> {
     if value.is_empty()
         || !value.bytes().all(|byte| byte.is_ascii_digit())
@@ -1064,6 +1113,30 @@ mod tests {
         let unknown_field = response.replace(
             "\"reason_code\":\"codex_task_aborted\"",
             "\"reason_code\":\"codex_task_aborted\",\"message\":\"secret\"",
+        );
+        assert!(parse_source_batch(&unknown_field, "harness.codex").is_err());
+    }
+
+    #[test]
+    fn check_projection_preserves_only_typed_category_and_result() {
+        let response = r#"{"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next","records":[{"event_id":"check-1","revision":0,"kind":"check","time_ns":"10","identity":{"session_id":"s1","turn_id":"turn-1"},"payload":{"category":"lint","result":"passed"}}]}"#;
+        let batch = parse_source_batch(response, "harness.codex").unwrap();
+        assert_eq!(batch.skipped_unprojected_facts, 0);
+        assert_eq!(batch.observations.len(), 1);
+        assert_eq!(
+            batch.observations[0].kind,
+            ObservationKind::Check {
+                category: "lint".into(),
+                result: "passed".into(),
+            }
+        );
+        let invalid_result = response.replace("passed", "successful");
+        assert!(parse_source_batch(&invalid_result, "harness.codex").is_err());
+        let invalid_category = response.replace("lint", "coverage");
+        assert!(parse_source_batch(&invalid_category, "harness.codex").is_err());
+        let unknown_field = response.replace(
+            "\"category\":\"lint\"",
+            "\"category\":\"lint\",\"command\":\"secret\"",
         );
         assert!(parse_source_batch(&unknown_field, "harness.codex").is_err());
     }

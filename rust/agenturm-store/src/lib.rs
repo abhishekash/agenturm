@@ -23,7 +23,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -31,7 +31,8 @@ const MAX_EVENT_ID_BYTES: usize = 256;
 const MAX_SESSION_KEY_BYTES: usize = 512;
 const MAX_CATEGORY_BYTES: usize = 64;
 const MAX_CURSOR_BYTES: usize = 800;
-const STORE_MARKER: &str = "agenturm.observation-store.v5";
+const STORE_MARKER: &str = "agenturm.observation-store.v6";
+const STORE_MARKER_V5: &str = "agenturm.observation-store.v5";
 const STORE_MARKER_V4: &str = "agenturm.observation-store.v4";
 const STORE_MARKER_V3: &str = "agenturm.observation-store.v3";
 const STORE_MARKER_V2: &str = "agenturm.observation-store.v2";
@@ -51,6 +52,10 @@ pub enum ObservationKind {
     Lifecycle {
         state: String,
         reason_code: Option<String>,
+    },
+    Check {
+        category: String,
+        result: String,
     },
     Usage {
         input_tokens: Option<u64>,
@@ -227,7 +232,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         2 => STORE_MARKER_V2,
         3 => STORE_MARKER_V3,
         4 => STORE_MARKER_V4,
-        5 => STORE_MARKER,
+        5 => STORE_MARKER_V5,
+        6 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -388,7 +394,7 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens or creates a store at `path`. A new database receives the v5
+    /// Opens or creates a store at `path`. A new database receives the v6
     /// schema; an unknown or unrelated database is rejected without changing
     /// its journal mode or schema.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -398,7 +404,7 @@ impl Store {
         )
     }
 
-    /// Opens an existing v5 store through a read-only connection. This path
+    /// Opens an existing v6 store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -433,7 +439,7 @@ impl Store {
                     value TEXT NOT NULL
                 );
                 INSERT INTO agenturm_store_meta (key, value)
-                    VALUES ('format', 'agenturm.observation-store.v5');
+                    VALUES ('format', 'agenturm.observation-store.v6');
                 CREATE TABLE agenturm_ingest_receipts (
                     request_id TEXT PRIMARY KEY NOT NULL,
                     source_id TEXT NOT NULL,
@@ -468,7 +474,7 @@ impl Store {
                 CREATE INDEX agenturm_observations_by_session
                     ON agenturm_observations
                         (session_id, observed_at_unix_ns, event_id, revision);
-                PRAGMA user_version = 5;",
+                PRAGMA user_version = 6;",
             )?;
             transaction.commit()?;
         } else if schema_version == 2 {
@@ -507,6 +513,15 @@ impl Store {
             )?;
             transaction.commit()?;
             validate_marked_shape(&connection, 5)?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "UPDATE agenturm_store_meta
+                    SET value='agenturm.observation-store.v6' WHERE key='format';
+                PRAGMA user_version = 6;",
+            )?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 6)?;
         } else if schema_version == 3 {
             validate_marked_shape(&connection, 3)?;
             let transaction =
@@ -527,6 +542,15 @@ impl Store {
             )?;
             transaction.commit()?;
             validate_marked_shape(&connection, 5)?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "UPDATE agenturm_store_meta
+                    SET value='agenturm.observation-store.v6' WHERE key='format';
+                PRAGMA user_version = 6;",
+            )?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 6)?;
         } else if schema_version == 4 {
             validate_marked_shape(&connection, 4)?;
             let transaction =
@@ -538,6 +562,26 @@ impl Store {
             )?;
             transaction.commit()?;
             validate_marked_shape(&connection, 5)?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "UPDATE agenturm_store_meta
+                    SET value='agenturm.observation-store.v6' WHERE key='format';
+                PRAGMA user_version = 6;",
+            )?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 6)?;
+        } else if schema_version == 5 {
+            validate_marked_shape(&connection, 5)?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "UPDATE agenturm_store_meta
+                    SET value='agenturm.observation-store.v6' WHERE key='format';
+                PRAGMA user_version = 6;",
+            )?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 6)?;
         } else if schema_version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(schema_version));
         } else {
@@ -865,6 +909,9 @@ impl Store {
                     ObservationKind::Lifecycle { state, reason_code } => {
                         KernelObservationKind::Lifecycle { state, reason_code }
                     }
+                    ObservationKind::Check { category, result } => {
+                        KernelObservationKind::Check { category, result }
+                    }
                     ObservationKind::Usage {
                         input_tokens,
                         output_tokens,
@@ -956,6 +1003,10 @@ impl ObservationStore for Store {
                             reason_code: reason_code.clone(),
                         }
                     }
+                    KernelObservationKind::Check { category, result } => ObservationKind::Check {
+                        category: category.clone(),
+                        result: result.clone(),
+                    },
                     KernelObservationKind::Usage {
                         input_tokens,
                         output_tokens,
@@ -1061,6 +1112,12 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
             }))
         {
             return Err(StoreError::Invalid("lifecycle state or reason is invalid"));
+        }
+        if let ObservationKind::Check { category, result } = &observation.kind
+            && (!matches!(category.as_str(), "test" | "lint" | "build")
+                || !matches!(result.as_str(), "passed" | "failed" | "unknown"))
+        {
+            return Err(StoreError::Invalid("check category or result is invalid"));
         }
     }
     Ok(())
@@ -1226,7 +1283,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_tool_and_lifecycle_observations_survive_store_reopen_and_history_query() {
+    fn typed_tool_lifecycle_and_check_observations_survive_store_reopen() {
         let db = TempDb::new();
         {
             let mut store = Store::open(&db.0).unwrap();
@@ -1237,13 +1294,21 @@ mod tests {
                 state: "interrupted".into(),
                 reason_code: Some("codex_task_aborted".into()),
             };
+            let mut check = event("check-event-1", "session-1", 12);
+            check.kind = ObservationKind::Check {
+                category: "lint".into(),
+                result: "passed".into(),
+            };
             store
-                .commit_batch(&batch("tool-request-1", vec![observation, lifecycle]))
+                .commit_batch(&batch(
+                    "tool-request-1",
+                    vec![observation, lifecycle, check],
+                ))
                 .unwrap();
         }
         let store = Store::open_read_only(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.observations.len(), 2);
+        assert_eq!(page.observations.len(), 3);
         let tool = page
             .observations
             .iter()
@@ -1265,6 +1330,13 @@ mod tests {
                 == KernelObservationKind::Lifecycle {
                     state: "interrupted".into(),
                     reason_code: Some("codex_task_aborted".into()),
+                }
+        }));
+        assert!(page.observations.iter().any(|row| {
+            row.kind
+                == KernelObservationKind::Check {
+                    category: "lint".into(),
+                    result: "passed".into(),
                 }
         }));
     }
@@ -1340,11 +1412,11 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]
-    fn v3_store_upgrades_through_v4_to_v5_without_changing_history() {
+    fn v3_store_upgrades_through_v4_and_v5_to_v6_without_changing_history() {
         let db = TempDb::new();
         {
             let mut store = Store::open(&db.0).unwrap();
@@ -1369,12 +1441,12 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            5
+            6
         );
     }
 
     #[test]
-    fn v4_store_upgrades_to_v5_without_changing_history() {
+    fn v4_store_upgrades_through_v5_to_v6_without_changing_history() {
         let db = TempDb::new();
         {
             let mut store = Store::open(&db.0).unwrap();
@@ -1399,7 +1471,37 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            5
+            6
+        );
+    }
+
+    #[test]
+    fn v5_store_upgrades_to_v6_without_changing_history() {
+        let db = TempDb::new();
+        {
+            let mut store = Store::open(&db.0).unwrap();
+            store
+                .commit_batch(&batch("v5-request", vec![event("v5-event", "s1", 1)]))
+                .unwrap();
+            store
+                .connection
+                .execute_batch(
+                    "UPDATE agenturm_store_meta SET value='agenturm.observation-store.v5'
+                       WHERE key='format';
+                     PRAGMA user_version=5;",
+                )
+                .unwrap();
+        }
+        let store = Store::open(&db.0).unwrap();
+        let page = store.observation_page(10).unwrap();
+        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.observations.len(), 1);
+        assert_eq!(
+            store
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            6
         );
     }
 
@@ -1829,6 +1931,22 @@ mod tests {
         assert!(matches!(
             store.commit_batch(&invalid),
             Err(StoreError::Invalid(_))
+        ));
+        assert!(store.observations().unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_check_category_is_rejected_before_database_writes() {
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        let mut invalid = event("event-1", "session-1", 10);
+        invalid.kind = ObservationKind::Check {
+            category: "coverage".into(),
+            result: "passed".into(),
+        };
+        assert!(matches!(
+            store.commit_batch(&batch("request-1", vec![invalid])),
+            Err(StoreError::Invalid("check category or result is invalid"))
         ));
         assert!(store.observations().unwrap().is_empty());
     }
