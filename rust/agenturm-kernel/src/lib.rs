@@ -27,6 +27,7 @@ const MAX_VALUE_BYTES: usize = 1_024;
 const MAX_TITLE_BYTES: usize = 128;
 const MAX_FAILURE_BYTES: usize = 256;
 const MAX_CURSOR_BYTES: usize = 800;
+pub const MAX_DURABLE_SNAPSHOT_OBSERVATIONS: usize = 16_384;
 
 /// Stable package identity for one registered extension.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -157,9 +158,18 @@ pub struct StoreCommit {
     pub replay: bool,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ObservationPage {
+    pub observations: Vec<Observation>,
+    pub has_more: bool,
+}
+
 /// Atomic storage boundary used by kernel admission.
 pub trait ObservationStore {
     fn source_cursor(&self, source_id: &str) -> Result<Option<String>, String>;
+    /// Returns at most `limit` rows ordered oldest-to-newest within the
+    /// selected newest page. `has_more` indicates older rows were omitted.
+    fn load_observations(&self, limit: usize) -> Result<ObservationPage, String>;
     fn commit(
         &mut self,
         source_id: &str,
@@ -225,6 +235,7 @@ pub enum ExtensionStage {
     AdmissionValidation,
     AdmissionCommit,
     AdmissionAck,
+    AdmissionRead,
     Capability,
     UiContribution,
 }
@@ -235,6 +246,7 @@ pub struct Snapshot {
     pub metrics: BTreeMap<ExtensionId, Vec<MetricRow>>,
     pub panes: BTreeMap<ExtensionId, PaneModel>,
     pub admissions: BTreeMap<ExtensionId, AdmissionStatus>,
+    pub observations_truncated: bool,
     pub failures: Vec<ExtensionFailure>,
 }
 
@@ -306,8 +318,66 @@ impl Kernel {
     pub fn refresh_with_store(&mut self, store: &mut impl ObservationStore) -> Snapshot {
         let mut snapshot = Snapshot::default();
         self.admit_sources(&mut snapshot, store);
+        self.load_observations(&mut snapshot, store);
         self.evaluate_extensions(&mut snapshot);
         snapshot
+    }
+
+    fn load_observations(&self, snapshot: &mut Snapshot, store: &impl ObservationStore) {
+        let store_id = ExtensionId("kernel.store".into());
+        match store.load_observations(MAX_DURABLE_SNAPSHOT_OBSERVATIONS) {
+            Ok(page) => {
+                if page.observations.len() > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
+                    snapshot.failures.push(failure(
+                        &store_id,
+                        ExtensionStage::AdmissionRead,
+                        "observation store returned more rows than requested",
+                    ));
+                    return;
+                }
+                snapshot.observations_truncated = page.has_more;
+                let mut grouped = BTreeMap::<ExtensionId, Vec<RawObservation>>::new();
+                let mut ordered = Vec::with_capacity(page.observations.len());
+                let mut conversion_error = None;
+                for observation in page.observations {
+                    grouped
+                        .entry(observation.harness_id.clone())
+                        .or_default()
+                        .push(RawObservation {
+                            event_id: observation.event_id.clone(),
+                            revision: observation.revision,
+                            identity: observation.identity.clone(),
+                            observed_at_unix_ns: observation.observed_at_unix_ns,
+                            kind: observation.kind.clone(),
+                        });
+                    ordered.push(observation);
+                }
+                for rows in grouped.values() {
+                    match validate_raw_observation_slice(rows, MAX_DURABLE_SNAPSHOT_OBSERVATIONS) {
+                        Ok(_) => {}
+                        Err(message) => {
+                            conversion_error = Some(message);
+                            break;
+                        }
+                    }
+                }
+                if let Some(message) = conversion_error {
+                    snapshot.observations.clear();
+                    snapshot.failures.push(failure(
+                        &store_id,
+                        ExtensionStage::AdmissionRead,
+                        message,
+                    ));
+                } else {
+                    snapshot.observations.extend(ordered);
+                }
+            }
+            Err(message) => {
+                snapshot
+                    .failures
+                    .push(failure(&store_id, ExtensionStage::AdmissionRead, message))
+            }
+        }
     }
 
     fn poll_harnesses(&mut self, snapshot: &mut Snapshot) {
@@ -455,7 +525,6 @@ impl Kernel {
                     continue;
                 }
             };
-            snapshot.observations.extend(rows);
             let source_ack_sent =
                 match catch_unwind(AssertUnwindSafe(|| source.ack(&prepared.next_cursor))) {
                     Ok(Ok(())) => true,
@@ -593,11 +662,26 @@ fn bounded(value: &str, max_bytes: usize) -> String {
 }
 
 fn validate_raw_observations(rows: Vec<RawObservation>) -> Result<Vec<RawObservation>, String> {
-    if rows.len() > MAX_OBSERVATIONS_PER_HARNESS {
+    validate_raw_observations_limit(rows, MAX_OBSERVATIONS_PER_HARNESS)
+}
+
+fn validate_raw_observations_limit(
+    rows: Vec<RawObservation>,
+    max_observations: usize,
+) -> Result<Vec<RawObservation>, String> {
+    validate_raw_observation_slice(&rows, max_observations)?;
+    Ok(rows)
+}
+
+fn validate_raw_observation_slice(
+    rows: &[RawObservation],
+    max_observations: usize,
+) -> Result<(), String> {
+    if rows.len() > max_observations {
         return Err("observation count exceeds limit".into());
     }
     let mut event_revisions = BTreeSet::new();
-    for row in &rows {
+    for row in rows {
         if row.event_id.is_empty()
             || row.event_id.len() > MAX_EVENT_ID_BYTES
             || !row.event_id.as_bytes()[0].is_ascii_alphanumeric()
@@ -631,12 +715,14 @@ fn validate_raw_observations(rows: Vec<RawObservation>) -> Result<Vec<RawObserva
             return Err("native session, worker, turn, or operation identity is invalid".into());
         }
         if let ObservationKind::Activity { category } = &row.kind
-            && (category.is_empty() || category.len() > MAX_CATEGORY_BYTES)
+            && (category.is_empty()
+                || category.len() > MAX_CATEGORY_BYTES
+                || category.chars().any(char::is_control))
         {
-            return Err("activity category is empty or exceeds limit".into());
+            return Err("activity category is invalid or exceeds limit".into());
         }
     }
-    Ok(rows)
+    Ok(())
 }
 
 fn valid_identity_part(value: &str, max_bytes: usize) -> bool {
@@ -811,6 +897,7 @@ mod tests {
         cursor: Option<String>,
         fail_commit: bool,
         replay: bool,
+        rows: Vec<Observation>,
         log: Log,
     }
 
@@ -818,6 +905,15 @@ mod tests {
         fn source_cursor(&self, source_id: &str) -> Result<Option<String>, String> {
             self.log.push(format!("cursor:{source_id}"));
             Ok(self.cursor.clone())
+        }
+
+        fn load_observations(&self, limit: usize) -> Result<ObservationPage, String> {
+            let has_more = self.rows.len() > limit;
+            let start = self.rows.len().saturating_sub(limit);
+            Ok(ObservationPage {
+                observations: self.rows[start..].to_vec(),
+                has_more,
+            })
         }
 
         fn commit(
@@ -831,6 +927,9 @@ mod tests {
             if self.fail_commit {
                 Err("injected storage failure".into())
             } else {
+                if !self.replay {
+                    self.rows.extend_from_slice(observations);
+                }
                 Ok(StoreCommit {
                     inserted: if self.replay { 0 } else { observations.len() },
                     replay: self.replay,
@@ -904,6 +1003,7 @@ mod tests {
             cursor: None,
             fail_commit: false,
             replay: false,
+            rows: Vec::new(),
             log: log.clone(),
         };
 
@@ -957,12 +1057,61 @@ mod tests {
             cursor: None,
             fail_commit: false,
             replay: false,
+            rows: Vec::new(),
             log,
         };
 
         let snapshot = kernel.refresh_with_store(&mut store);
         assert_eq!(snapshot.observations.len(), 1);
         assert_eq!(snapshot.observations[0].event_id, "fixture:committed");
+    }
+
+    #[test]
+    fn read_only_refresh_rehydrates_committed_history_for_capabilities_and_panes() {
+        let mut kernel = Kernel::new();
+        kernel
+            .register_capability(id("capability.activity-count"), ActivityCount)
+            .unwrap();
+        kernel
+            .register_ui_contribution(id("pane.activity"), ActivityPane)
+            .unwrap();
+        let stored = |harness_id: &str, session_id: &str, timestamp| {
+            let raw = activity(session_id);
+            Observation {
+                harness_id: id(harness_id),
+                event_id: raw.event_id,
+                revision: raw.revision,
+                identity: raw.identity,
+                observed_at_unix_ns: timestamp,
+                kind: raw.kind,
+            }
+        };
+        let mut store = FixedStore {
+            cursor: None,
+            fail_commit: false,
+            replay: false,
+            rows: vec![
+                stored("harness.zeta", "stored-session-1", 10),
+                stored("harness.alpha", "stored-session-2", 20),
+            ],
+            log: Log::default(),
+        };
+
+        let snapshot = kernel.refresh_with_store(&mut store);
+
+        assert_eq!(snapshot.observations.len(), 2);
+        assert_eq!(snapshot.observations[0].harness_id.as_str(), "harness.zeta");
+        assert_eq!(
+            snapshot.observations[1].harness_id.as_str(),
+            "harness.alpha"
+        );
+        assert_eq!(
+            snapshot.metrics[&id("capability.activity-count")][0].value,
+            "2"
+        );
+        assert_eq!(snapshot.panes[&id("pane.activity")].rows[0].value, "2");
+        assert!(!snapshot.observations_truncated);
+        assert!(snapshot.failures.is_empty());
     }
 
     #[test]
@@ -996,6 +1145,7 @@ mod tests {
                 cursor: None,
                 fail_commit,
                 replay: false,
+                rows: Vec::new(),
                 log: log.clone(),
             };
 
@@ -1033,6 +1183,7 @@ mod tests {
             cursor: None,
             fail_commit: false,
             replay: false,
+            rows: Vec::new(),
             log: log.clone(),
         };
 
@@ -1070,6 +1221,7 @@ mod tests {
             cursor: Some("cursor-0".into()),
             fail_commit: false,
             replay: true,
+            rows: Vec::new(),
             log: log.clone(),
         };
 
@@ -1115,6 +1267,7 @@ mod tests {
             cursor: None,
             fail_commit: false,
             replay: false,
+            rows: Vec::new(),
             log: log.clone(),
         };
         let snapshot = kernel.refresh_with_store(&mut store);
@@ -1158,6 +1311,7 @@ mod tests {
             cursor: None,
             fail_commit: false,
             replay: false,
+            rows: Vec::new(),
             log: log.clone(),
         };
 
@@ -1209,6 +1363,7 @@ mod tests {
             cursor: None,
             fail_commit: false,
             replay: false,
+            rows: Vec::new(),
             log: log.clone(),
         };
 

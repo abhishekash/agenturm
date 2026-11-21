@@ -1,4 +1,6 @@
-use agenturm_kernel::{ExtensionId, Kernel, Observation, ObservationStore, StoreCommit};
+use agenturm_kernel::{
+    ExtensionId, Kernel, Observation, ObservationPage, ObservationStore, StoreCommit,
+};
 use agenturm_runtime::{ProcessConfig, ProcessSource};
 use agenturm_store::{ObservationKind, Store};
 use std::fs;
@@ -13,6 +15,10 @@ struct FailOnceStore {
 impl ObservationStore for FailOnceStore {
     fn source_cursor(&self, source_id: &str) -> std::result::Result<Option<String>, String> {
         ObservationStore::source_cursor(&self.inner, source_id)
+    }
+
+    fn load_observations(&self, limit: usize) -> std::result::Result<ObservationPage, String> {
+        ObservationStore::load_observations(&self.inner, limit)
     }
 
     fn commit(
@@ -118,7 +124,7 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
     drop(kernel);
     drop(store);
 
-    let store = Store::open(&database).expect("reopen committed store");
+    let mut store = Store::open(&database).expect("reopen committed store");
     let cursor = store
         .source_cursor("harness.codex")
         .expect("read source cursor")
@@ -126,6 +132,14 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
     assert!(!cursor.is_empty());
     let observations = store.observations().expect("read committed observations");
     assert_eq!(observations.len(), 1);
+    let mut restarted_kernel = Kernel::new();
+    let restored = restarted_kernel.refresh_with_store(&mut store);
+    assert_eq!(restored.observations.len(), 1);
+    assert_eq!(
+        restored.observations[0].event_id,
+        observations[0].1.event_id
+    );
+    assert!(restored.failures.is_empty());
     let (source_id, observation) = &observations[0];
     assert_eq!(source_id, "harness.codex");
     assert!(observation.event_id.len() > 32);

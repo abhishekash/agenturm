@@ -4,7 +4,10 @@
 //! registers a supervised source through kernel admission. The product UI,
 //! persistent configuration, and multi-harness composition are still open.
 
-use agenturm_kernel::{ExtensionId, Kernel, Snapshot};
+use agenturm_kernel::{
+    Capability, ExtensionId, Harness, Kernel, ObservationStore, RegistrationError, Snapshot,
+    SourceAdapter, UiContribution,
+};
 use agenturm_runtime::{ProcessConfig, ProcessSource};
 use agenturm_store::Store;
 use std::path::PathBuf;
@@ -24,6 +27,42 @@ impl AgenturmApp {
 
     pub fn refresh(&mut self) -> Snapshot {
         self.kernel.refresh()
+    }
+
+    pub fn refresh_durable(&mut self, store: &mut impl ObservationStore) -> Snapshot {
+        self.kernel.refresh_with_store(store)
+    }
+
+    pub fn register_harness(
+        &mut self,
+        id: ExtensionId,
+        harness: impl Harness + 'static,
+    ) -> Result<(), RegistrationError> {
+        self.kernel.register_harness(id, harness)
+    }
+
+    pub fn register_source_adapter(
+        &mut self,
+        id: ExtensionId,
+        source: impl SourceAdapter + 'static,
+    ) -> Result<(), RegistrationError> {
+        self.kernel.register_source_adapter(id, source)
+    }
+
+    pub fn register_capability(
+        &mut self,
+        id: ExtensionId,
+        capability: impl Capability + 'static,
+    ) -> Result<(), RegistrationError> {
+        self.kernel.register_capability(id, capability)
+    }
+
+    pub fn register_ui_contribution(
+        &mut self,
+        id: ExtensionId,
+        contribution: impl UiContribution + 'static,
+    ) -> Result<(), RegistrationError> {
+        self.kernel.register_ui_contribution(id, contribution)
     }
 }
 
@@ -112,6 +151,17 @@ pub fn execute_ingest(options: &IngestOptions) -> Result<String, String> {
         .map_err(|error| format!("register source adapter failed: {error}"))?;
     let snapshot = kernel.refresh_with_store(&mut store);
     if let Some(failure) = snapshot.failures.first() {
+        if failure.stage == agenturm_kernel::ExtensionStage::AdmissionRead
+            && snapshot
+                .admissions
+                .get(&source_id)
+                .is_some_and(|status| status.source_ack_sent)
+        {
+            return Err(format!(
+                "source ACK was sent after durable admission, but refreshing stored history failed; retrying the read is safe: {}",
+                failure.message
+            ));
+        }
         return Err(
             if failure.stage == agenturm_kernel::ExtensionStage::AdmissionAck {
                 format!(
@@ -168,6 +218,55 @@ pub fn render(command: Command) -> String {
 mod tests {
     use super::*;
 
+    struct FixtureHarness;
+
+    impl Harness for FixtureHarness {
+        fn poll(&mut self) -> Result<Vec<agenturm_kernel::RawObservation>, String> {
+            Ok(vec![agenturm_kernel::RawObservation {
+                event_id: "fixture:event-1".into(),
+                revision: 0,
+                identity: agenturm_kernel::ObservationIdentity {
+                    session_id: "session-1".into(),
+                    worker_id: None,
+                    turn_id: None,
+                    operation_id: None,
+                },
+                observed_at_unix_ns: 1,
+                kind: agenturm_kernel::ObservationKind::Activity {
+                    category: "tool".into(),
+                },
+            }])
+        }
+    }
+
+    struct ActivityCount;
+
+    impl Capability for ActivityCount {
+        fn evaluate(
+            &self,
+            observations: &[agenturm_kernel::Observation],
+        ) -> Result<Vec<agenturm_kernel::MetricRow>, String> {
+            Ok(vec![agenturm_kernel::MetricRow {
+                label: "Activity events".into(),
+                value: observations.len().to_string(),
+            }])
+        }
+    }
+
+    struct ActivityPane;
+
+    impl UiContribution for ActivityPane {
+        fn build_pane(&self, snapshot: &Snapshot) -> Result<agenturm_kernel::PaneModel, String> {
+            Ok(agenturm_kernel::PaneModel {
+                title: "Activity".into(),
+                rows: vec![agenturm_kernel::MetricRow {
+                    label: "Events".into(),
+                    value: snapshot.observations.len().to_string(),
+                }],
+            })
+        }
+    }
+
     #[test]
     fn empty_application_refresh_is_explicitly_empty() {
         let mut app = AgenturmApp::empty_composition();
@@ -218,5 +317,34 @@ mod tests {
         assert!(status.contains("Registered harnesses: 0"));
         assert!(status.contains("Production storage: not connected"));
         assert!(status.contains("Explicit one-shot Codex usage projection: available"));
+    }
+
+    #[test]
+    fn app_composes_harness_capability_and_generic_pane_without_kernel_access() {
+        let mut app = AgenturmApp::empty_composition();
+        app.register_harness(
+            ExtensionId::parse("harness.fixture").unwrap(),
+            FixtureHarness,
+        )
+        .unwrap();
+        app.register_capability(
+            ExtensionId::parse("capability.activity-count").unwrap(),
+            ActivityCount,
+        )
+        .unwrap();
+        app.register_ui_contribution(ExtensionId::parse("pane.activity").unwrap(), ActivityPane)
+            .unwrap();
+
+        let snapshot = app.refresh();
+
+        assert_eq!(snapshot.observations.len(), 1);
+        assert_eq!(
+            snapshot.metrics[&ExtensionId::parse("capability.activity-count").unwrap()][0].value,
+            "1"
+        );
+        assert_eq!(
+            snapshot.panes[&ExtensionId::parse("pane.activity").unwrap()].rows[0].value,
+            "1"
+        );
     }
 }
