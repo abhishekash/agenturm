@@ -429,7 +429,8 @@ def exercise_codex_fact_path(*, root: Path, codex_binary: Path, clone: Path,
     # Activity, session metadata, and Review/export projections remain Python.
     from observatory.plugin_projection import project_source
     from observatory.plugin_activity import export_proof
-    from observatory.ui_export import investigation_json, review_investigation_json
+    # Exercise the production serializers without loading Textual in this root-only gate.
+    from observatory.export_serialization import investigation_json, review_investigation_json
 
     projected_store = Store(clone)
     try:
