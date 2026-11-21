@@ -64,12 +64,24 @@ class PluginReferenceAdmissionPortContract:
         (self.new_port, self.set_capture_enabled, self.durable_snapshot,
          self.set_failure_mode) = self.make_backend(self.root, self.registry)
         self.port = self.new_port()
-        self.addCleanup(self.port.close)
+        self._close_port = self._track_port(self.port)
         self.port.install_reference_schema(self.registry)
         self.lease = self.port.activate_source(
             plugin_id=PLUGIN_ID, source_id=SOURCE_ID,
             generation=GENERATION, content_fingerprint="",
             reference_admissions=self.registry)
+
+    def _track_port(self, port):
+        closed = False
+
+        def close():
+            nonlocal closed
+            if not closed:
+                closed = True
+                port.close()
+
+        self.addCleanup(close)
+        return close
 
     def submission(self, ref="audit-a", *, provider_id="audit-fixture",
                    grant="host-owned-audit"):
@@ -85,6 +97,13 @@ class PluginReferenceAdmissionPortContract:
 
     def test_provider_commit_and_exact_replay_are_durable(self):
         self.assertEqual(self.commit(), "cursor-1")
+        self._close_port()
+        self.port = self.new_port()
+        self._close_port = self._track_port(self.port)
+        self.lease = self.port.activate_source(
+            plugin_id=PLUGIN_ID, source_id=SOURCE_ID,
+            generation=GENERATION, content_fingerprint="",
+            reference_admissions=self.registry)
         committed = self.durable_snapshot(SOURCE_ID)
         self.assertEqual(self.commit(), "cursor-1")
         self.assertEqual(self.durable_snapshot(SOURCE_ID), committed)
@@ -125,6 +144,7 @@ class PluginReferenceAdmissionPortContract:
         self.set_capture_enabled(SOURCE_ID, False)
         revoked = self.durable_snapshot(SOURCE_ID)
         self.assertTrue(self.port.capture_revoked(SOURCE_ID))
+        self.assertEqual(revoked[1], (), "revoke left admitted evidence")
         self.assertEqual(revoked[2], (), "revoke left provider-owned reference rows")
         self.assertEqual(revoked[3], (), "revoke left provider ownership behind")
         with self.assertRaises(Exception) as raised:
