@@ -33,4 +33,21 @@ allowlist.</p>
 and read access to allowed sources. Grant administration, retention commands,
 private-content disclosure and workspace mutations over that endpoint are
 remaining work. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md">Broker commands</a></p>
+<h2>Published archive</h2>
+<p>PR 367 merged as <code>a1e64afcd60780a63c975817b07390049a128f4c</code> and
+is tagged <code>rust-v0.3.2</code>. The published Ubuntu x86-64 archive has SHA-256
+<code>7dc8228578601e138f7face3a4556ead7b48ce7929b37641201a082b23aa11e6</code>.
+The source tree matched the tag exactly. The archive passed installation,
+Python-free startup and collection, rolling discovery, restart, inspection,
+backup, upgrade from 0.3.1 and systemd restart/uninstall with retained history.
+GitHub's uploaded asset digest matched the qualified local archive.
+The tagged Linux bundle build also passed.</p>
+<p>The earlier integrated archive
+<code>a277953901b7c1106802f3bca6595ba48069cb2cccfd280890fa6025286d1d2a</code>
+passed the packaged MCP/edit PTY and independent capability checks.
+In the guest it also ran broker follow collection for 12.12 seconds,
+discovered a new Pi source, recovered the same rows and watermark after
+SIGKILL, and resumed an appended event after restarting the watcher.</p>
+<p><a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.2">Published release</a> ·
+<a href="https://github.com/abhishekash/agenturm/actions/runs/45043063446">Tagged bundle build</a></p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

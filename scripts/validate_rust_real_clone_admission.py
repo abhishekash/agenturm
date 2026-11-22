@@ -260,6 +260,8 @@ def exercise_codex_fact_path(*, root: Path, codex_binary: Path, clone: Path,
     def launch(path: Path, child_source_id: str) -> subprocess.Popen:
         environment = os.environ.copy()
         environment["AGENTURM_PLUGIN_SOURCE_ROOT"] = str(path)
+        # This proof feeds the same batch to the legacy Python admission oracle.
+        environment["AGENTURM_PLUGIN_LEGACY_ADMISSION"] = "1"
         process = subprocess.Popen(
             [str(codex_binary)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, env=environment, cwd=root,

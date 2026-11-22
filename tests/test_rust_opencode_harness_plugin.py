@@ -217,7 +217,7 @@ class RustOpenCodeHarnessTests(unittest.TestCase):
             self.drain(worker)
             current = worker.cursor
         fields = current.split(":")
-        self.assertEqual(fields[0], "oc3")
+        self.assertEqual(fields[0], "oc4")
         def old_mark(path):
             stat = path.stat()
             return f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"
@@ -226,7 +226,7 @@ class RustOpenCodeHarnessTests(unittest.TestCase):
             f"{old_mark(self.source)}|{old_mark(wal) if wal.exists() else ''}".encode()
         ).hexdigest()
         self.assertNotEqual(previous_signature, fields[2])
-        legacy = ":".join(["oc1", fields[1], previous_signature, *fields[4:]])
+        legacy = ":".join(["oc1", fields[1], previous_signature, *fields[4:13]])
         with self.store._connect() as db:
             db.execute("UPDATE plugin_source_cursor_v1 SET cursor=? WHERE source_id=?",
                        (legacy, self.plugin.source_id))

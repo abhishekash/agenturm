@@ -37,3 +37,24 @@ The native broker grants the configured collector principal both admission
 and read access to allowed sources. Grant administration, retention commands,
 private-content disclosure and workspace mutations over that endpoint are
 remaining work. [Broker commands](../rfcs/rust-broker-commands.md)
+
+## Published archive
+
+PR 367 merged as `a1e64afcd60780a63c975817b07390049a128f4c` and
+is tagged `rust-v0.3.2`. The published Ubuntu x86-64 archive has SHA-256
+`7dc8228578601e138f7face3a4556ead7b48ce7929b37641201a082b23aa11e6`.
+The source tree matched the tag exactly. The archive passed installation,
+Python-free startup and collection, rolling discovery, restart, inspection,
+backup, upgrade from 0.3.1 and systemd restart/uninstall with retained history.
+GitHub's uploaded asset digest matched the qualified local archive.
+The tagged Linux bundle build also passed.
+
+The earlier integrated archive
+`a277953901b7c1106802f3bca6595ba48069cb2cccfd280890fa6025286d1d2a`
+passed the packaged MCP/edit PTY and independent capability checks.
+In the guest it also ran broker follow collection for 12.12 seconds,
+discovered a new Pi source, recovered the same rows and watermark after
+SIGKILL, and resumed an appended event after restarting the watcher.
+
+[Published release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.2) ·
+[Tagged bundle build](https://github.com/abhishekash/agenturm/actions/runs/45043063446)
