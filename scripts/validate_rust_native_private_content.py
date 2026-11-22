@@ -175,14 +175,14 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         blocked=None;pipe_revoke=None
         try:
             blocked=subprocess.Popen([APP,'broker','content','preview','--selection',selection,'--broker-config',endpoint],preexec_fn=drop(READER),stdout=write_end,stderr=subprocess.PIPE)
-            time.sleep(.8)
-            pipe_revoke=subprocess.Popen([APP,'broker','grant','revoke','--binding',binding,'--broker-config',endpoint],preexec_fn=drop(ADMIN),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             time.sleep(.3)
-            assert blocked.poll() is None and pipe_revoke.poll() is None
+            assert blocked.poll() is None
             _,errors=blocked.communicate(timeout=30)
             assert blocked.returncode!=0 and b'Review the bounded broker fixture' not in errors,errors
-            output,errors=pipe_revoke.communicate(timeout=10)
-            assert pipe_revoke.returncode==0,(output,errors)
+            # Revoke after the client expires, before the pipe consumer drains.
+            # Ordinary broker RPCs have a shorter two-second reply deadline.
+            run(ADMIN,'grant','revoke','--binding',binding)
+            assert json.loads(run(READER,'grant','check','--binding',binding).stdout)['epoch'] is None
             assert fcntl.fcntl(write_end,fcntl.F_GETFL)==before_flags
             os.set_blocking(read_end,False)
             drained=b''
