@@ -833,6 +833,7 @@ impl Workspace {
             return key == KeyCode::Char('q') && !self.agents.editing;
         }
         if self.agents.editing {
+            let identity = self.agents.current().map(session_key);
             match key {
                 KeyCode::Enter | KeyCode::Esc => self.agents.editing = false,
                 KeyCode::Char(c) if self.agents.search.len() < 128 => self.agents.search.push(c),
@@ -841,7 +842,7 @@ impl Workspace {
                 }
                 _ => return false,
             }
-            self.agents.apply_filters(None);
+            self.agents.apply_filters(identity.as_ref());
             return false;
         }
         match key {
@@ -859,9 +860,10 @@ impl Workspace {
             KeyCode::Left => self.agents.expand(false),
             KeyCode::Right => self.agents.expand(true),
             KeyCode::Char('x') => {
+                let identity = self.agents.current().map(session_key);
                 self.agents.search.clear();
                 self.agents.filter = Filter::All;
-                self.agents.apply_filters(None);
+                self.agents.apply_filters(identity.as_ref());
             }
             KeyCode::Char('f') => {
                 self.agents.filter = self.agents.filter.next();
@@ -1521,6 +1523,40 @@ mod tests {
             assert!(!press(&mut workspace, KeyCode::F(1)));
             assert!(press(&mut workspace, KeyCode::Char('q')));
         }
+    }
+
+    #[test]
+    fn agents_search_keeps_the_selected_source_when_session_ids_match() {
+        let mut workspace = Workspace::new();
+        let (sender, requests) = mpsc::channel();
+        let selected = session("harness.codex", "d3-main", "completed", None);
+        workspace.agents.update(catalog(vec![
+            session("otlp.d3", "d3-main", "unknown", None),
+            selected.clone(),
+            session("harness.pi", "other", "running", None),
+        ]));
+        let press = |workspace: &mut Workspace, code| {
+            workspace.key(&sender, event::KeyEvent::new(code, KeyModifiers::NONE))
+        };
+        assert!(!press(&mut workspace, KeyCode::Down));
+        assert_eq!(workspace.agents.current(), Some(&selected));
+        assert!(!press(&mut workspace, KeyCode::Char('/')));
+        for ch in "d3-main".chars() {
+            assert!(!press(&mut workspace, KeyCode::Char(ch)));
+            assert_eq!(workspace.agents.current(), Some(&selected));
+        }
+        assert!(!press(&mut workspace, KeyCode::Esc));
+        assert_eq!(workspace.agents.visible.len(), 2);
+        assert_eq!(workspace.agents.current(), Some(&selected));
+        assert!(!press(&mut workspace, KeyCode::Char('x')));
+        assert_eq!(workspace.agents.visible.len(), 3);
+        assert_eq!(workspace.agents.current(), Some(&selected));
+        assert!(!press(&mut workspace, KeyCode::Enter));
+        assert!(
+            matches!(requests.try_recv().unwrap(), WorkspaceRequest::History {
+            selection: HistorySelection::Session(ref session, _), before: None,
+        } if session == &selected)
+        );
     }
 
     #[test]
