@@ -136,7 +136,7 @@ class Client:
         try:
             if self._configuration_error is not None:
                 raise self._configuration_error
-            self._otlp.export(spans, scope)
+            self._otlp.export(spans, scope, strict=self.strict)
             self.last_error = None
             return True
         except (OSError, ValueError, KeyError, TypeError) as exc:

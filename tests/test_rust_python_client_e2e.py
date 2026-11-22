@@ -8,7 +8,9 @@ import select
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 
@@ -141,6 +143,47 @@ assert client.last_error is None, client.last_error
         spans = [row["observation"] for row in rows]
         root = next(span for span in spans if span.get("parent_span_id") is None)
         self.assertEqual({span.get("parent_span_id") for span in spans}, {None, root["span_id"]})
+
+    def test_slow_reply_cannot_extend_the_request_deadline(self):
+        from observatory.client import Client
+
+        stopping = threading.Event()
+        replied = threading.Event()
+
+        class SlowReply(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                body = b'{"partialSuccess":{"rejectedSpans":"0"}}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                replied.set()
+                try:
+                    for byte in body:
+                        if stopping.wait(0.04):
+                            break
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                except OSError:
+                    pass
+
+            def log_message(self, *_):
+                pass
+
+        with HTTPServer(("127.0.0.1", 0), SlowReply) as receiver:
+            thread = threading.Thread(target=receiver.handle_request, daemon=True)
+            thread.start()
+            try:
+                client = Client(f"http://127.0.0.1:{receiver.server_port}", transport="otlp",
+                                session_id="deadline", timeout=0.35)
+                with client.trace():
+                    pass
+                self.assertTrue(replied.is_set())
+                self.assertIsInstance(client.last_error, TimeoutError)
+            finally:
+                stopping.set()
+                thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
 
     @unittest.skipUnless(SDK_AVAILABLE, "install the optional OpenTelemetry SDK")
     def test_automatic_mode_uses_real_sdk_with_offline_instrumentor_fixture(self):

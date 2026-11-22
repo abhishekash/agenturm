@@ -94,6 +94,8 @@ turn and `worker_id` when the record has a worker identity.
 The transport sends IDs, parent relationships, timing, status, and explicit
 native linkage. It bounds each request to 1,024 spans and 4 MiB. Delivery
 failures, including partial rejections, are available in `Client.last_error`.
+The timeout covers connecting, writing, and reading each request. Best-effort
+export skips invalid spans and attempts later batches after a failed request.
 With `strict=True`, a delivery error is raised when the application completes
 successfully. An application exception still propagates. Progress messages
 belong to the legacy transport.

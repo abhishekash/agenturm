@@ -11,7 +11,7 @@ _LOGGER = logging.getLogger(__name__)
 def _span_metadata(span):
     context = span.get_span_context()
     if context is None:
-        raise ValueError("OTLP span context is unavailable")
+        return None
     return {
         "trace_id": f"{context.trace_id:032x}",
         "span_id": f"{context.span_id:016x}",

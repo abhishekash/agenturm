@@ -7,6 +7,8 @@ import json
 import math
 import os
 import re
+import socket
+import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -99,6 +101,8 @@ def _span_id(value, width):
 
 
 def _project(span, attributes):
+    if span is None:
+        raise ValueError("OTLP span context is unavailable")
     start = span["start_unix_nano"]
     end = span["end_unix_nano"]
     if type(start) is not int or type(end) is not int or not 0 < start <= end <= (1 << 63) - 1:
@@ -154,6 +158,44 @@ def _check_reply(response):
         raise OSError("OTLP receiver rejected one or more spans")
 
 
+class _DeadlineSocket(socket.socket):
+    """Apply one deadline to every send and buffered HTTP receive."""
+
+    def __init__(self, family, deadline):
+        super().__init__(family, socket.SOCK_STREAM)
+        self.deadline = deadline
+
+    def _arm_timeout(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("OTLP request deadline exceeded")
+        self.settimeout(remaining)
+
+    def connect(self, address):
+        self._arm_timeout()
+        return super().connect(address)
+
+    def sendall(self, data, flags=0):
+        self._arm_timeout()
+        return super().sendall(data, flags)
+
+    def recv_into(self, buffer, nbytes=0, flags=0):
+        self._arm_timeout()
+        return super().recv_into(buffer, nbytes, flags)
+
+
+class _DeadlineConnection(http.client.HTTPConnection):
+    def __init__(self, host, port, timeout):
+        super().__init__(host, port, timeout=timeout)
+        self.deadline = time.monotonic() + timeout
+
+    def connect(self):
+        # The endpoint validator already pins a numeric loopback address.
+        family = socket.AF_INET6 if ":" in self.host else socket.AF_INET
+        self.sock = _DeadlineSocket(family, self.deadline)
+        self.sock.connect((self.host, self.port))
+
+
 class OtlpTransport:
     """Send structural span evidence without inherited proxies or redirects."""
 
@@ -166,27 +208,46 @@ class OtlpTransport:
         if not math.isfinite(self.timeout) or not 0 < self.timeout <= 30:
             raise ValueError("OTLP timeout must be between 0 and 30 seconds")
 
-    def export(self, spans, scope):
+    def export(self, spans, scope, *, strict):
         attributes = scope.attributes()
         batch = []
         overhead = len(_PREFIX) + len(_SUFFIX)
         size = overhead
-        for span in spans:
-            item = _project(span, attributes)
-            if overhead + len(item) > MAX_EXPORT_BYTES:
-                raise ValueError("OTLP span exceeds the request byte limit")
-            if batch and (len(batch) == MAX_EXPORT_SPANS or size + len(item) + 1 > MAX_EXPORT_BYTES):
+        failure = None
+
+        def send():
+            nonlocal failure
+            try:
                 self._send(batch)
+            except OSError as exc:
+                if strict:
+                    raise
+                failure = exc
+
+        for span in spans:
+            try:
+                item = _project(span, attributes)
+                if overhead + len(item) > MAX_EXPORT_BYTES:
+                    raise ValueError("OTLP span exceeds the request byte limit")
+            except (KeyError, TypeError, ValueError) as exc:
+                if strict:
+                    raise
+                failure = exc
+                continue
+            if batch and (len(batch) == MAX_EXPORT_SPANS or size + len(item) + 1 > MAX_EXPORT_BYTES):
+                send()
                 batch = []
                 size = overhead
             size += len(item) + bool(batch)
             batch.append(item)
         if batch:
-            self._send(batch)
+            send()
+        if failure is not None:
+            raise failure
 
     def _send(self, batch):
         body = _PREFIX + b",".join(batch) + _SUFFIX
-        connection = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
+        connection = _DeadlineConnection(self.host, self.port, self.timeout)
         try:
             connection.request(
                 "POST", "/v1/traces", body=body,

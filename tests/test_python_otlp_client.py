@@ -63,15 +63,18 @@ class PythonOtlpClientTests(unittest.TestCase):
     def setUp(self):
         self.requests = []
         self.response = Response()
+        self.responses = []
 
         def connect(host, port, timeout):
             def send(method, path, *, body, headers):
                 self.requests.append((host, port, method, path, body, headers))
             return SimpleNamespace(
-                request=send, getresponse=lambda: self.response, close=lambda: None,
+                request=send,
+                getresponse=lambda: self.responses.pop(0) if self.responses else self.response,
+                close=lambda: None,
             )
 
-        network = patch("observatory.otlp_transport.http.client.HTTPConnection", side_effect=connect)
+        network = patch("observatory.otlp_transport._DeadlineConnection", side_effect=connect)
         self.addCleanup(network.stop)
         network.start()
 
@@ -207,6 +210,26 @@ class PythonOtlpClientTests(unittest.TestCase):
                 "trace_id": "unsupported", "span_id": "01" * 8, "status": "OK",
                 "start_unix_nano": 1, "end_unix_nano": 2,
             }])
+
+    def test_best_effort_retains_valid_spans_and_attempts_later_batches(self):
+        client = Client(ENDPOINT, transport="otlp", session_id="session")
+        parent = {
+            "trace_id": "01" * 16, "span_id": "01" * 8, "status": "OK",
+            "start_unix_nano": 1, "end_unix_nano": 2,
+        }
+        child = {**parent, "span_id": "02" * 8, "parent_span_id": parent["span_id"]}
+        bad = {**parent, "span_id": "invalid"}
+        self.assertFalse(client._post_spans([parent, bad, child]))
+        self.assertIn("identity", str(client.last_error))
+        self.assertEqual([row["spanId"] for row in self.sent_spans()], [parent["span_id"], child["span_id"]])
+
+        self.requests.clear()
+        self.responses = [Response(status=503), Response()]
+        with patch("observatory.otlp_transport.MAX_EXPORT_SPANS", 1):
+            self.assertFalse(client._post_spans([parent, child]))
+        self.assertEqual([row["spanId"] for row in self.sent_spans()], [parent["span_id"], child["span_id"]])
+        self.assertEqual(len(self.requests), 2)
+        self.assertIn("HTTP 503", str(client.last_error))
 
     def test_vendor_callback_ids_preserve_existing_ancestry(self):
         client = Client(
