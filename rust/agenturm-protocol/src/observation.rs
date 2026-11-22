@@ -129,6 +129,8 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             Usage,
             CreditUsage,
             Tool,
+            McpCall,
+            TraceSpan,
             Lifecycle,
             Check,
             PullRequestRaised,
@@ -145,6 +147,8 @@ impl<'de> Deserialize<'de> for ObservationRecord {
                 serde_json::from_str(payload).map(ObservationFact::CreditUsage)
             }
             FactKind::Tool => serde_json::from_str(payload).map(ObservationFact::Tool),
+            FactKind::McpCall => serde_json::from_str(payload).map(ObservationFact::McpCall),
+            FactKind::TraceSpan => serde_json::from_str(payload).map(ObservationFact::TraceSpan),
             FactKind::Lifecycle => serde_json::from_str(payload).map(ObservationFact::Lifecycle),
             FactKind::Check => serde_json::from_str(payload).map(ObservationFact::Check),
             FactKind::PullRequestRaised => {
@@ -198,6 +202,8 @@ pub enum ObservationFact {
     Usage(Usage),
     CreditUsage(CreditUsage),
     Tool(Tool),
+    McpCall(McpCall),
+    TraceSpan(TraceSpan),
     Lifecycle(Lifecycle),
     Check(Check),
     PullRequestRaised(PullRequestRaised),
@@ -237,6 +243,110 @@ pub struct Tool {
     pub category: String,
     /// `started`, `succeeded`, `failed`, or `denied`.
     pub result: String,
+}
+
+/// Privacy-bounded details of a native MCP call, linked by the record's
+/// session and operation identity.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpCall {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    pub method: McpMethod,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ns: Option<u64>,
+    pub result: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum McpMethod {
+    #[serde(rename = "tools/call")]
+    ToolsCall,
+}
+
+impl McpMethod {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ToolsCall => "tools/call",
+        }
+    }
+}
+
+/// MCP labels are identifiers, so paths, arguments, and free text cannot
+/// cross the metadata boundary through these fields.
+pub fn is_mcp_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+}
+
+pub fn is_valid_mcp_metadata(
+    server: Option<&str>,
+    tool: Option<&str>,
+    duration_ns: Option<u64>,
+    result: &str,
+) -> bool {
+    (server.is_some() || tool.is_some() || duration_ns.is_some())
+        && server.is_none_or(is_mcp_identifier)
+        && tool.is_none_or(is_mcp_identifier)
+        && duration_ns.is_none_or(|duration| duration <= i64::MAX as u64)
+        && matches!(result, "started" | "succeeded" | "failed" | "denied")
+}
+
+/// Structural OTLP trace evidence. The observation time is the native span
+/// end time. Span names, attributes, events, and links are outside this DTO.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TraceSpan {
+    pub trace_id: String,
+    pub span_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_span_id: Option<String>,
+    pub started_at_unix_ns: u64,
+    pub status: TraceStatus,
+}
+
+impl TraceSpan {
+    pub fn is_valid(&self, ended_at_unix_ns: u64) -> bool {
+        fn id(value: &str, bytes: usize) -> bool {
+            value.len() == bytes * 2
+                && value
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+                && value.bytes().any(|byte| byte != b'0')
+        }
+        id(&self.trace_id, 16)
+            && id(&self.span_id, 8)
+            && self
+                .parent_span_id
+                .as_deref()
+                .is_none_or(|parent| id(parent, 8) && parent != self.span_id)
+            && (1..=ended_at_unix_ns).contains(&self.started_at_unix_ns)
+            && ended_at_unix_ns <= i64::MAX as u64
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceStatus {
+    Unset,
+    Ok,
+    Error,
+}
+
+impl TraceStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unset => "unset",
+            Self::Ok => "ok",
+            Self::Error => "error",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]

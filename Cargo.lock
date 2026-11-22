@@ -310,6 +310,7 @@ dependencies = [
  "agenturm-lifecycle-extension-example",
  "crossterm",
  "ratatui",
+ "serde_json",
  "unicode-width",
 ]
 

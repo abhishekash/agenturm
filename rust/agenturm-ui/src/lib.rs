@@ -6,7 +6,13 @@
 
 #![forbid(unsafe_code)]
 
+mod workbench;
 mod workspace;
+
+pub use workbench::{
+    HandoffEntry, PromptDelivery, PromptEntry, RequestEntry, TaskEntry, WorkAnchor, WorkCommand,
+    WorkResult,
+};
 
 pub use workspace::{
     HistorySelection, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor, SessionView,

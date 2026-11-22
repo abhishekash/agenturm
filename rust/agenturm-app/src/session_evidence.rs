@@ -1,6 +1,6 @@
 use agenturm_kernel::{
     ExtensionId, MetricRow, Observation, ObservationKind, ObservationScope, PaneModel, Snapshot,
-    format_credits,
+    TraceSpan, format_credits,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,6 +17,7 @@ pub(super) struct WorkspacePaneIds {
     pub(super) findings: ExtensionId,
     pub(super) operations: ExtensionId,
     pub(super) usage: ExtensionId,
+    pub(super) traces: ExtensionId,
 }
 
 #[derive(Clone, Copy)]
@@ -53,6 +54,10 @@ pub(super) fn add_workspace_panes(snapshot: &mut Snapshot) -> WorkspacePaneIds {
         "No recorded operation identities on this page",
     );
     let usage = usage_rows(&evidence, scope);
+    let traces = rows_or_empty(
+        trace_rows(&evidence, scope),
+        "No native trace spans on this page",
+    );
     WorkspacePaneIds {
         activity: insert_pane(snapshot, "app.workspace-activity", "Activity", activity),
         mcp: insert_pane(snapshot, "app.workspace-mcp", "MCP", mcp),
@@ -64,6 +69,7 @@ pub(super) fn add_workspace_panes(snapshot: &mut Snapshot) -> WorkspacePaneIds {
             operations,
         ),
         usage: insert_pane(snapshot, "app.workspace-usage", "Usage", usage),
+        traces: insert_pane(snapshot, "app.workspace-traces", "Traces", traces),
     }
 }
 
@@ -130,11 +136,15 @@ pub(super) fn add_session_panes(
     let mcp = mcp_rows(&evidence, ViewScope::Session);
     let operations = operation_rows(&evidence, ViewScope::Session);
     let usage = usage_rows(&evidence, ViewScope::Session);
+    let traces = trace_rows(&evidence, ViewScope::Session);
     if !mcp.is_empty() {
         insert_pane(snapshot, "app.session-mcp", "MCP", mcp);
     }
     if !operations.is_empty() {
         insert_pane(snapshot, "app.session-operations", "Operations", operations);
+    }
+    if !traces.is_empty() {
+        insert_pane(snapshot, "app.session-traces", "Traces", traces);
     }
     SessionPaneIds {
         overview: insert_pane(
@@ -250,13 +260,46 @@ fn review_rows(evidence: &[&Observation], turn_endings: &TurnEndings<'_>) -> Vec
 }
 
 fn mcp_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
+    let detailed: BTreeSet<_> = evidence
+        .iter()
+        .filter_map(|row| match &row.kind {
+            ObservationKind::McpCall { result, .. } => mcp_occurrence(row, result),
+            _ => None,
+        })
+        .collect();
     evidence
         .iter()
-        .filter(
-            |row| matches!(&row.kind, ObservationKind::Tool { category, .. } if category == "mcp"),
-        )
+        .filter(|row| match &row.kind {
+            ObservationKind::McpCall { .. } => true,
+            ObservationKind::Tool { category, result } if category == "mcp" => {
+                mcp_occurrence(row, result).is_none_or(|occurrence| !detailed.contains(&occurrence))
+            }
+            _ => false,
+        })
         .map(|row| activity_row(row, scope))
         .collect()
+}
+
+type McpOccurrence<'a> = (
+    &'a str,
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+    &'a str,
+    u64,
+    &'a str,
+);
+
+fn mcp_occurrence<'a>(row: &'a Observation, result: &'a str) -> Option<McpOccurrence<'a>> {
+    Some((
+        row.harness_id.as_str(),
+        row.identity.session_id.as_deref(),
+        row.identity.worker_id.as_deref(),
+        row.identity.turn_id.as_deref(),
+        row.identity.operation_id.as_deref()?,
+        row.observed_at_unix_ns,
+        result,
+    ))
 }
 
 fn usage_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
@@ -273,6 +316,50 @@ fn usage_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
             .collect(),
         "No reported token or credit usage on this page",
     )
+}
+
+fn trace_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
+    let mut traces = BTreeMap::<_, Vec<_>>::new();
+    for row in evidence {
+        let (Some(session), ObservationKind::TraceSpan(span)) =
+            (row.identity.session_id.as_deref(), &row.kind)
+        else {
+            continue;
+        };
+        traces
+            .entry((row.harness_id.as_str(), session, span.trace_id.as_str()))
+            .or_default()
+            .push((*row, span));
+    }
+    let mut groups: Vec<_> = traces.into_iter().collect();
+    for (_, spans) in &mut groups {
+        spans
+            .sort_unstable_by_key(|&(row, span)| (span.started_at_unix_ns, observation_order(row)));
+    }
+    groups.sort_unstable_by_key(|(identity, spans)| (spans[0].1.started_at_unix_ns, *identity));
+    groups
+        .into_iter()
+        .flat_map(|((source, session, trace), spans)| {
+            let label = match scope {
+                ViewScope::Workspace => format!("{trace} · {source} · session {session}"),
+                ViewScope::Session => trace.to_owned(),
+            };
+            std::iter::once(metric("Trace", label)).chain(spans.into_iter().map(|(row, span)| {
+                let duration = row
+                    .observed_at_unix_ns
+                    .saturating_sub(span.started_at_unix_ns);
+                metric(
+                    "Span",
+                    format!(
+                        "{} · {} · {}",
+                        span_description(span),
+                        timestamp_at(span.started_at_unix_ns),
+                        duration_millis(duration),
+                    ),
+                )
+            }))
+        })
+        .collect()
 }
 
 fn operation_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
@@ -391,6 +478,10 @@ fn timestamp(row: &Observation) -> String {
     if nanos == 0 && matches!(row.kind, ObservationKind::Diagnostic { .. }) {
         return "Time unavailable".into();
     }
+    timestamp_at(nanos)
+}
+
+fn timestamp_at(nanos: u64) -> String {
     #[cfg(target_os = "linux")]
     if let Ok(instant) = time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(nanos)) {
         return format!(
@@ -406,6 +497,24 @@ fn timestamp(row: &Observation) -> String {
         nanos / 1_000_000_000,
         nanos % 1_000_000_000
     )
+}
+
+fn duration_millis(duration: u64) -> String {
+    let ms = duration / 1_000_000;
+    let nanos = duration % 1_000_000;
+    if nanos == 0 {
+        return format!("{ms} ms");
+    }
+    let fraction = format!("{nanos:06}");
+    format!("{ms}.{} ms", fraction.trim_end_matches('0'))
+}
+
+fn span_description(span: &TraceSpan) -> String {
+    let status = span.status.as_str();
+    match span.parent_span_id.as_deref() {
+        Some(parent) => format!("{} · {status} · parent {parent}", span.span_id),
+        None => format!("{} · {status}", span.span_id),
+    }
 }
 
 fn lifecycle(state: &str, reason: Option<&str>) -> String {
@@ -443,6 +552,29 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
             format!("{} credits", format_credits(*nanocredits)),
         ),
         ObservationKind::Tool { category, result } => ("Tool", format!("{category} · {result}")),
+        ObservationKind::McpCall {
+            server,
+            tool,
+            method,
+            duration_ns,
+            result,
+        } => {
+            let mut fields = vec![method.as_str().to_owned(), result.clone()];
+            if let Some(server) = server {
+                fields.push(format!("server {server}"));
+            }
+            if let Some(tool) = tool {
+                fields.push(format!("tool {tool}"));
+            }
+            if let Some(duration) = duration_ns {
+                fields.push(duration_millis(*duration));
+            }
+            ("MCP call", fields.join(" · "))
+        }
+        ObservationKind::TraceSpan(span) => (
+            "Trace span",
+            format!("{} · trace {}", span_description(span), span.trace_id),
+        ),
         ObservationKind::Lifecycle { state, reason_code } => {
             ("Lifecycle", lifecycle(state, reason_code.as_deref()))
         }
@@ -471,7 +603,42 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agenturm_kernel::ObservationIdentity;
+    use agenturm_kernel::{McpMethod, ObservationIdentity};
+
+    #[test]
+    fn mcp_view_prefers_exact_details_and_retains_other_call_evidence() {
+        let coarse = tool(1, "mcp", "failed", Some("turn-1"));
+        let mut detailed = coarse.clone();
+        detailed.event_id = "mcp-details".into();
+        detailed.kind = ObservationKind::McpCall {
+            server: Some("github".into()),
+            tool: Some("search_code".into()),
+            method: McpMethod::ToolsCall,
+            duration_ns: Some(1_000_000_005),
+            result: "failed".into(),
+        };
+        let mut other_source = coarse.clone();
+        other_source.harness_id = ExtensionId::parse("harness.pi").unwrap();
+        let rows = mcp_rows(
+            &[
+                &coarse,
+                &other_source,
+                &detailed,
+                &tool(2, "mcp", "started", None),
+            ],
+            ViewScope::Workspace,
+        );
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].label, "Tool");
+        assert_eq!(rows[1].label, "MCP call");
+        assert!(rows[1].value.contains("tools/call · failed"));
+        assert!(
+            rows[1]
+                .value
+                .contains("server github · tool search_code · 1000.000005 ms")
+        );
+        assert!(rows[2].value.contains("mcp · started"));
+    }
 
     fn observation(sequence: u64, kind: ObservationKind, turn: Option<&str>) -> Observation {
         let mut identity = ObservationIdentity::session("session-a");

@@ -28,6 +28,8 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
         "\n",
         r#"{"type":"message","id":"turn-2","timestamp":"2026-11-20T12:00:01Z","message":{"role":"user","content":"API_KEY=fixture-private-value"}}"#,
         "\n",
+        r#"{"type":"message","id":"turn-safe","timestamp":"2026-11-20T12:00:01.500Z","message":{"role":"user","content":"second private prompt"}}"#,
+        "\n",
     );
     fs::write(&source, initial).unwrap();
     let artifact_sha256 = format!("{:x}", Sha256::digest(fs::read(&adapter).unwrap()));
@@ -70,6 +72,7 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
         "review message",
         "PRIVATE_IMAGE_BYTES",
         "fixture-private-value",
+        "second private prompt",
     ] {
         assert!(!query.contains(private));
     }
@@ -98,6 +101,12 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
         command.extend_from_slice(args);
         run(&command)
     };
+    let list = |session_id: &str| {
+        content(
+            "list",
+            &["--config", config_arg, "--session-id", session_id],
+        )
+    };
     let approve = || content("grant", &["--config", config_arg]);
     let preview = |event_id: &str| {
         content(
@@ -113,9 +122,61 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
         )
     };
 
+    denied(list("pi-fixture"), "requires approval");
     denied(preview(event("turn-1")), "requires approval");
     checked(approve());
+    let references = checked(list("pi-fixture"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&references).unwrap(),
+        json!([
+            {
+                "event_id": event("turn-1"),
+                "revision": 0,
+                "turn_id": "turn-1",
+                "observed_at_unix_ns": 1795176000000000000u64,
+            },
+            {
+                "event_id": event("turn-safe"),
+                "revision": 0,
+                "turn_id": "turn-safe",
+                "observed_at_unix_ns": 1795176001500000000u64,
+            },
+        ])
+    );
+    assert_eq!(checked(list("another-session")), "[]\n");
+    denied(
+        content(
+            "preview",
+            &[
+                "--config",
+                config_arg,
+                "--event-id",
+                event("turn-1"),
+                "--revision",
+                "0",
+                "--session-id",
+                "another-session",
+            ],
+        ),
+        "selected revision is unavailable",
+    );
     assert_eq!(checked(preview(event("turn-1"))), "\"review message\"\n");
+    assert_eq!(
+        checked(content(
+            "preview",
+            &[
+                "--config",
+                config_arg,
+                "--event-id",
+                event("turn-safe"),
+                "--revision",
+                "0",
+                "--session-id",
+                "pi-fixture",
+            ],
+        )),
+        "\"second private prompt\"\n"
+    );
     denied(preview(event("turn-2")), "possible credential");
     denied(preview("pi:forged"), "selected revision is unavailable");
 
@@ -124,13 +185,19 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
         preview(event("turn-1")),
         "no longer matches the committed checkpoint",
     );
+    denied(
+        list("pi-fixture"),
+        "no longer matches the committed checkpoint",
+    );
     fs::write(&source, initial).unwrap();
     assert_eq!(checked(preview(event("turn-1"))), "\"review message\"\n");
 
     let holder = agenturm_store::Store::open(&database).unwrap();
+    denied(list("pi-fixture"), "writer lease unavailable");
     denied(preview(event("turn-1")), "writer lease unavailable");
     drop(holder);
     checked(content("revoke", &[]));
+    denied(list("pi-fixture"), "requires approval");
     denied(preview(event("turn-1")), "requires approval");
     checked(approve());
 
@@ -145,10 +212,14 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
     assert_eq!(checked(preview(event("turn-1"))), "\"review message\"\n");
     checked(collect());
     denied(preview(event("turn-1")), "selected revision is unavailable");
+    let newer: Value = serde_json::from_str(&checked(list("pi-fixture"))).unwrap();
+    assert_eq!(newer.as_array().unwrap().len(), 1);
+    assert_eq!(newer[0]["turn_id"], "turn-3");
 
     let replacement = scratch.0.join("replacement.jsonl");
     fs::copy(&source, &replacement).unwrap();
     fs::rename(replacement, &source).unwrap();
+    denied(list("pi-fixture"), "requires approval");
     denied(preview(event("turn-1")), "requires approval");
 }
 

@@ -217,6 +217,14 @@ pub enum ObservationKind {
         category: String,
         result: String,
     },
+    McpCall {
+        server: Option<String>,
+        tool: Option<String>,
+        method: McpMethod,
+        duration_ns: Option<u64>,
+        result: String,
+    },
+    TraceSpan(TraceSpan),
     Lifecycle {
         state: String,
         reason_code: Option<String>,
@@ -274,8 +282,15 @@ pub fn is_anchored_pull_request(
 }
 
 pub use agenturm_protocol::observation::{
-    NANOCREDITS_PER_CREDIT, RelationshipKind, is_github_pull_request,
+    McpMethod, NANOCREDITS_PER_CREDIT, RelationshipKind, TraceSpan, TraceStatus,
+    is_github_pull_request, is_valid_mcp_metadata,
 };
+
+pub fn is_mcp_operation(identity: &ObservationIdentity) -> bool {
+    identity.scope == ObservationScope::Session
+        && identity.session_id.is_some()
+        && identity.operation_id.is_some()
+}
 
 /// Formats native credits without introducing floating-point rounding.
 pub fn format_credits(nanocredits: u64) -> String {
@@ -1326,6 +1341,23 @@ fn validate_raw_observation_slice(
                 ))
         {
             return Err("tool observation is invalid or exceeds limit".into());
+        }
+        if let ObservationKind::McpCall {
+            server,
+            tool,
+            duration_ns,
+            result,
+            ..
+        } = &row.kind
+            && (!is_mcp_operation(&row.identity)
+                || !is_valid_mcp_metadata(server.as_deref(), tool.as_deref(), *duration_ns, result))
+        {
+            return Err("MCP call metadata or operation identity is invalid".into());
+        }
+        if let ObservationKind::TraceSpan(span) = &row.kind
+            && !span.is_valid(row.observed_at_unix_ns)
+        {
+            return Err("trace identity or timing is invalid".into());
         }
         if let ObservationKind::Lifecycle { state, reason_code } = &row.kind
             && (!is_lifecycle_state(state)

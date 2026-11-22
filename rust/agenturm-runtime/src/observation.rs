@@ -6,7 +6,8 @@ use crate::{
 };
 use agenturm_kernel::{
     ObservationIdentity, ObservationKind, ObservationScope, PreparedSourceBatch, RawObservation,
-    is_anchored_pull_request, is_lifecycle_state, is_safe_diagnostic_code, is_session_relationship,
+    is_anchored_pull_request, is_lifecycle_state, is_mcp_operation, is_safe_diagnostic_code,
+    is_session_relationship, is_valid_mcp_metadata,
 };
 use agenturm_protocol::observation::{ObservationBatch, ObservationFact, ObservationRecord};
 
@@ -128,6 +129,35 @@ fn project_record(record: ObservationRecord) -> Result<Option<RawObservation>> {
                 result: tool.result,
             }
         }
+        ObservationFact::McpCall(call) => {
+            if !is_mcp_operation(&identity)
+                || !is_valid_mcp_metadata(
+                    call.server.as_deref(),
+                    call.tool.as_deref(),
+                    call.duration_ns,
+                    &call.result,
+                )
+            {
+                return Err(RuntimeError::new(
+                    "source MCP call metadata or operation identity is invalid",
+                ));
+            }
+            ObservationKind::McpCall {
+                server: call.server,
+                tool: call.tool,
+                method: call.method,
+                duration_ns: call.duration_ns,
+                result: call.result,
+            }
+        }
+        ObservationFact::TraceSpan(span) => {
+            if !span.is_valid(observed_at_unix_ns) {
+                return Err(RuntimeError::new(
+                    "source trace identity or timing is invalid",
+                ));
+            }
+            ObservationKind::TraceSpan(span)
+        }
         ObservationFact::Lifecycle(lifecycle) => {
             if !is_lifecycle_state(&lifecycle.state)
                 || lifecycle
@@ -247,6 +277,49 @@ pub(super) fn parse_decimal_timestamp(value: &str) -> Result<u64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn native_mcp_details_require_an_operation_and_bounded_metadata() {
+        let mut batch = json!({
+            "type":"batch","protocol":1,"source_id":"harness.codex","cursor":"next",
+            "records":[{
+                "event_id":"mcp","revision":0,"kind":"mcp_call","time_ns":"1",
+                "identity":{"session_id":"session","operation_id":"operation"},
+                "payload":{
+                    "server":"github","tool":"search_code","method":"tools/call",
+                    "duration_ns":0,"result":"succeeded"
+                }
+            }]
+        });
+        let good = batch["records"][0].clone();
+        let decoded = parse_source_batch(&batch.to_string(), "harness.codex").unwrap();
+        assert_eq!(
+            decoded.observations[0].kind,
+            ObservationKind::McpCall {
+                server: Some("github".into()),
+                tool: Some("search_code".into()),
+                method: agenturm_kernel::McpMethod::ToolsCall,
+                duration_ns: Some(0),
+                result: "succeeded".into(),
+            },
+        );
+
+        for (pointer, invalid) in [
+            ("/identity/operation_id", json!(null)),
+            ("/payload/server", json!("../private-source")),
+            ("/payload/tool", json!("raw call argument")),
+            ("/payload/duration_ns", json!(i64::MAX as u64 + 1)),
+            ("/payload/method", json!("other")),
+        ] {
+            batch["records"][0] = good.clone();
+            *batch["records"][0].pointer_mut(pointer).unwrap() = invalid;
+            assert!(parse_source_batch(&batch.to_string(), "harness.codex").is_err());
+        }
+        batch["records"][0] = good;
+        batch["records"][0]["payload"]["arguments"] = json!({"secret": "private"});
+        let error = parse_source_batch(&batch.to_string(), "harness.codex").unwrap_err();
+        assert!(!error.to_string().contains("private"));
+    }
 
     #[test]
     fn credit_usage_keeps_zero_and_rejects_invalid_units_or_amounts() {

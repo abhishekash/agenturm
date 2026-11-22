@@ -3,7 +3,10 @@
 //! result, EOF or ordinary assistant message never supplies a terminal state.
 
 use agenturm_jsonl_source::Result;
-use agenturm_protocol::observation::{RelationshipKind, is_github_pull_request};
+use agenturm_protocol::observation::{
+    McpCall, McpMethod, RelationshipKind, is_github_pull_request, is_mcp_identifier,
+    is_valid_mcp_metadata,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -242,6 +245,37 @@ fn explicit_tool_result(item: &Value) -> Result<Option<&'static str>> {
         return Ok(Some("succeeded"));
     }
     Ok(None)
+}
+
+fn mcp_duration_ns(item: &Value) -> Option<u64> {
+    let duration = item.get("duration")?.as_object()?;
+    let seconds = duration.get("secs")?.as_u64()?;
+    let nanos = duration.get("nanos")?.as_u64()?;
+    if nanos >= 1_000_000_000 {
+        return None;
+    }
+    seconds
+        .checked_mul(1_000_000_000)?
+        .checked_add(nanos)
+        .filter(|duration| *duration <= i64::MAX as u64)
+}
+
+fn mcp_call(item: &Value, result: &str) -> Option<McpCall> {
+    let label = |field| {
+        item.get(field)
+            .and_then(Value::as_str)
+            .filter(|name| is_mcp_identifier(name))
+    };
+    let server = label("server");
+    let tool = label("tool");
+    let duration_ns = mcp_duration_ns(item);
+    is_valid_mcp_metadata(server, tool, duration_ns, result).then(|| McpCall {
+        server: server.map(str::to_owned),
+        tool: tool.map(str::to_owned),
+        method: McpMethod::ToolsCall,
+        duration_ns,
+        result: result.to_owned(),
+    })
 }
 
 fn check_category(item: &Value) -> Option<&'static str> {
@@ -693,6 +727,19 @@ pub(crate) fn translate_line(
                                     json!({"category":category,"result":result}),
                                     operation.as_deref(),
                                 ));
+                                if item_kind == "McpToolCall"
+                                    && let Some(operation) = operation.as_deref()
+                                    && let Some(call) = mcp_call(item, result)
+                                {
+                                    facts.push(fact(
+                                        format!("{base}:mcp-call"),
+                                        "mcp_call",
+                                        &time_ns,
+                                        &row_context,
+                                        json!(call),
+                                        Some(operation),
+                                    ));
+                                }
                                 if item_kind == "CommandExecution"
                                     && let Some(check) = check_category(item)
                                 {
@@ -768,6 +815,46 @@ mod tests {
 
     fn translate(payload: Value, context: &Context) -> (Vec<Value>, Context) {
         translate_line(&row("event_msg", payload), context, "generation", 10).unwrap()
+    }
+
+    #[test]
+    fn native_mcp_metadata_keeps_explicit_names_and_duration_without_content() {
+        let context =
+            header_identity(br#"{"type":"session_meta","payload":{"id":"thread-1"}}"#).unwrap();
+        let payload = json!({
+            "type":"item_completed","turn_id":"turn-1",
+            "item":{
+                "type":"McpToolCall","id":"mcp-1","server":"github",
+                "tool":"search_code","duration":{"secs":2,"nanos":123_456},
+                "status":"completed",
+                "arguments":{"query":"private invocation"},
+                "result":{"isError":true,"content":"private result"},
+                "trace_id":"diagnostic-fixture-unused"
+            }
+        });
+        let (facts, _) = translate(payload.clone(), &context);
+        assert_eq!(facts.len(), 2);
+        let call = &facts[1];
+        assert_eq!(call["kind"], "mcp_call");
+        assert_eq!(call["identity"], facts[0]["identity"]);
+        assert_eq!(call["identity"]["turn_id"], "turn-1");
+        assert_eq!(
+            call["payload"],
+            json!({
+                "server":"github","tool":"search_code","method":"tools/call",
+                "duration_ns":2_000_123_456u64,"result":"failed"
+            })
+        );
+        assert!(!facts.iter().any(|row| row.to_string().contains("private")));
+        assert!(!call.to_string().contains("trace_id"));
+
+        let mut malformed = payload;
+        malformed["item"]["server"] = json!("../private-path");
+        malformed["item"]["tool"] = json!("raw argument text");
+        malformed["item"]["duration"]["nanos"] = json!(1_000_000_000);
+        let (facts, _) = translate(malformed, &context);
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0]["kind"], "tool");
     }
 
     #[test]
