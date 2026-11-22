@@ -25,6 +25,8 @@ pub enum ContentKind {
     CodexMcpPayload,
     #[serde(rename = "codex.edit_detail")]
     CodexEditDetail,
+    #[serde(rename = "codex.command_detail")]
+    CodexCommandDetail,
 }
 
 impl ContentKind {
@@ -37,6 +39,7 @@ impl ContentKind {
             Self::OpenCodeUserText => "opencode.user_text",
             Self::CodexMcpPayload => "codex.mcp_payload",
             Self::CodexEditDetail => "codex.edit_detail",
+            Self::CodexCommandDetail => "codex.command_detail",
         }
     }
 }
@@ -151,6 +154,9 @@ pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()>
         13 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail')"
         }
+        14 => {
+            "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail')"
+        }
         _ => return Err(StoreError::UnsupportedSchema(version)),
     };
     connection.execute_batch(&format!(
@@ -240,6 +246,10 @@ pub(super) fn migrate_v11(connection: &Connection) -> Result<()> {
 
 pub(super) fn migrate_v12(connection: &Connection) -> Result<()> {
     migrate_grant_schema(connection, 13)
+}
+
+pub(super) fn migrate_v13(connection: &Connection) -> Result<()> {
+    migrate_grant_schema(connection, 14)
 }
 
 pub(super) fn migrate_grant_schema(connection: &Connection, version: i64) -> Result<()> {
@@ -440,6 +450,7 @@ impl Store {
         let observation_kind = match scope.kind {
             ContentKind::CodexMcpPayload => "mcp_call",
             ContentKind::CodexEditDetail if selection.turn_id.is_some() => "file_edit",
+            ContentKind::CodexCommandDetail if selection.turn_id.is_some() => "tool",
             _ => return Err(StoreError::StaleContentGrant),
         };
         self.verify_content_grant(scope, grant)?;
@@ -454,6 +465,7 @@ impl Store {
                    AND o.scope = 'session' AND o.worker_id IS NULL AND o.turn_id IS NOT NULL
                    AND (?6 IS NULL OR o.turn_id = ?6)
                    AND proof.cursor GLOB 'v2:*' AND json_extract(o.kind_json, '$.kind') = ?7
+                   AND (?7 <> 'tool' OR json_extract(o.kind_json, '$.category') = 'shell')
                    AND NOT EXISTS (
                        SELECT 1 FROM agenturm_observations AS newer
                        WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
@@ -506,7 +518,9 @@ impl Store {
         self.require_content_writer()?;
         if matches!(
             scope.kind,
-            ContentKind::CodexMcpPayload | ContentKind::CodexEditDetail
+            ContentKind::CodexMcpPayload
+                | ContentKind::CodexEditDetail
+                | ContentKind::CodexCommandDetail
         ) {
             return Err(StoreError::StaleContentGrant);
         }

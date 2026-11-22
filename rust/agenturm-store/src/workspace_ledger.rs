@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APPLICATION_ID: i64 = 0x4157_5350;
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
+pub const MAX_WORKSPACE_GIT_DIFF_BYTES: usize = 64 * 1024;
 pub const MAX_WORKSPACE_PAGE_SIZE: usize = 200;
 const MAX_TITLE_BYTES: usize = 256;
 const MAX_NOTE_BYTES: usize = 4 * 1024;
@@ -122,6 +123,7 @@ pub struct TaskHandoff {
     pub links: Vec<WorkspaceAnchor>,
     pub links_truncated: bool,
     pub git_snapshot: Option<WorkspaceGitSnapshot>,
+    pub git_diff: Option<WorkspaceGitDiff>,
     pub continuity: Vec<ApprovedTaskDraft>,
 }
 
@@ -171,6 +173,31 @@ pub struct WorkspaceGitSnapshot {
     pub unstaged_changes: u32,
     pub untracked_files: u32,
     pub captured_at_unix_ns: u64,
+}
+
+/// Private text patches from a single explicit task capture.
+#[derive(Clone, Eq, PartialEq, Serialize)]
+pub struct WorkspaceGitDiff {
+    pub staged: String,
+    pub unstaged: String,
+}
+
+impl WorkspaceGitDiff {
+    pub fn byte_len(&self) -> usize {
+        self.staged.len().saturating_add(self.unstaged.len())
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.byte_len() > MAX_WORKSPACE_GIT_DIFF_BYTES
+            || !display_safe(&self.staged, true)
+            || !display_safe(&self.unstaged, true)
+        {
+            return Err(WorkspaceError::Invalid(
+                "Git patch is oversized or contains unsafe characters",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -479,6 +506,14 @@ impl WorkspaceLedger {
     }
 
     pub fn task_handoff(&self, id: u64) -> Result<Option<TaskHandoff>> {
+        self.task_handoff_with_git_diff(id, false)
+    }
+
+    pub fn task_handoff_with_git_diff(
+        &self,
+        id: u64,
+        include_diff: bool,
+    ) -> Result<Option<TaskHandoff>> {
         self.read_task(id, |connection, task, version| {
             let mut links =
                 load_task_links(connection, task, version, MAX_WORKSPACE_PAGE_SIZE + 1)?;
@@ -499,6 +534,11 @@ impl WorkspaceLedger {
                 links,
                 links_truncated,
                 git_snapshot: load_task_git_snapshot(connection, id, version)?,
+                git_diff: if include_diff && version >= 5 {
+                    load_task_git_diff(connection, id)?
+                } else {
+                    None
+                },
                 continuity: continuity::load_approvals(connection, id, version)?,
             })
         })
@@ -722,7 +762,20 @@ impl WorkspaceLedger {
         snapshot: &WorkspaceGitSnapshot,
         expected_revision: Option<u64>,
     ) -> Result<Option<SavedTask>> {
+        self.save_task_workspace_capture_if_current(id, snapshot, None, expected_revision)
+    }
+
+    pub fn save_task_workspace_capture_if_current(
+        &self,
+        id: u64,
+        snapshot: &WorkspaceGitSnapshot,
+        diff: Option<&WorkspaceGitDiff>,
+        expected_revision: Option<u64>,
+    ) -> Result<Option<SavedTask>> {
         validate_git_snapshot(snapshot)?;
+        if let Some(diff) = diff {
+            diff.validate()?;
+        }
         self.edit_task(id, expected_revision, |connection, _| {
             connection.execute(
                 "INSERT INTO agenturm_task_git_snapshots
@@ -738,6 +791,16 @@ impl WorkspaceLedger {
                     snapshot.staged_changes, snapshot.unstaged_changes, snapshot.untracked_files,
                     snapshot.captured_at_unix_ns],
             )?;
+            if let Some(diff) = diff {
+                connection.execute(
+                    "INSERT INTO agenturm_task_git_diffs (task_id, staged, unstaged)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT (task_id) DO UPDATE SET staged = excluded.staged, unstaged = excluded.unstaged",
+                    params![id, diff.staged, diff.unstaged],
+                )?;
+            } else {
+                connection.execute("DELETE FROM agenturm_task_git_diffs WHERE task_id = ?1", [id])?;
+            }
             Ok(())
         }).map(|saved| saved.map(|(task, ())| task))
     }
@@ -1104,6 +1167,9 @@ impl WorkspaceLedger {
         if version < 4 {
             continuity::create_schema(&transaction)?;
         }
+        if version < 5 {
+            create_task_git_diffs(&transaction)?;
+        }
         let value = action(&transaction)?;
         self.verify_history()?;
         transaction.commit()?;
@@ -1143,6 +1209,9 @@ impl WorkspaceLedger {
             Connection::open_with_flags(&self.path, mode | OpenFlags::SQLITE_OPEN_NOFOLLOW)?;
         connection.busy_timeout(Duration::from_millis(500))?;
         connection.pragma_update(None, "foreign_keys", true)?;
+        if write {
+            connection.pragma_update(None, "secure_delete", true)?;
+        }
         Ok(Some(connection))
     }
 }
@@ -1281,6 +1350,25 @@ fn load_task_git_snapshot(
             staged_changes: row.get(3)?, unstaged_changes: row.get(4)?, untracked_files: row.get(5)?, captured_at_unix_ns: row.get(6)?,
         }),
     ).optional()?)
+}
+
+fn load_task_git_diff(connection: &Connection, id: u64) -> Result<Option<WorkspaceGitDiff>> {
+    let diff = connection
+        .query_row(
+            "SELECT staged, unstaged FROM agenturm_task_git_diffs WHERE task_id = ?1",
+            [id],
+            |row| {
+                Ok(WorkspaceGitDiff {
+                    staged: row.get(0)?,
+                    unstaged: row.get(1)?,
+                })
+            },
+        )
+        .optional()?;
+    if let Some(diff) = &diff {
+        diff.validate()?;
+    }
+    Ok(diff)
 }
 
 fn load_task_decisions(
@@ -1528,6 +1616,19 @@ fn create_task_planning(connection: &Connection) -> Result<()> {
          );",
     )?;
     connection.pragma_update(None, "user_version", 3)?;
+    Ok(())
+}
+
+fn create_task_git_diffs(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE agenturm_task_git_diffs (
+            task_id INTEGER PRIMARY KEY REFERENCES agenturm_task_git_snapshots(task_id) ON DELETE CASCADE,
+            staged TEXT NOT NULL,
+            unstaged TEXT NOT NULL,
+            CHECK (length(CAST(staged AS BLOB)) + length(CAST(unstaged AS BLOB)) <= 65536)
+         );",
+    )?;
+    connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
 

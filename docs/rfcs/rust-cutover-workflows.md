@@ -2,6 +2,14 @@
 
 Baseline is the Python `v0.2.8` tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.
 
+The current implementation scope retains the remaining workflows. Remote
+receiver access, explicit span-JSONL and eval imports, automatic retention,
+recorded cost and historical host views remain required gaps. No retirement
+has been approved for these features. The default entry-point switch stays
+gated while they and the paired keyboard journeys are incomplete. Explicit
+format imports are separate from automatic migration of Python-era state,
+which the Rust-only product decision excludes.
+
 ## Command inventory
 
 | Python 0.2.8 workflow | Rust path and cutover disposition |
@@ -14,13 +22,42 @@ Baseline is the Python `v0.2.8` tag and the published Rust 0.3.1 Linux bundle. T
 | `migrate-db` | Retired by the Rust-only product decision. Rust `backup` and `restore` operate on Rust-owned state. |
 | `prune` | Keep explicit age-based retention. Rust `prune --before-unix-ns` exists. Verify equivalent retained history and checkpoint behavior. Automatic retention remains a scope decision. |
 | `attention status`, `attention watch` | Keep durable pending and seen state and a scriptable status/watch path. Rust reads the local store. Remote receiver watch remains an open scope decision. |
-| `review` | Rust cockpit and noninteractive Review use exact source, session, turn, and worker scope. The CLI reads a bounded page and exports metadata receipts in Markdown, HTML, and JSON. Trace-to-turn selection remains open. |
-| `investigate path\|command\|instruction\|source` | Keep bounded exact-scope investigation when the evidence and current grant support it. Rust session search and history queries do not cover these search and source-reference workflows. B6 depends on content proofs for protected data. |
+| `review` | Rust cockpit and noninteractive Review use exact source, session, turn, and worker scope. The CLI reads a bounded page and exports metadata receipts in Markdown, HTML, and JSON. It can list the explicitly linked spans of a turn, or resolve a trace to its unique retained turn using producer-provided source, session, turn, and worker identity. |
+| `investigate path\|command\|instruction\|source` | Rust local and broker investigations use exact source/session scope, bounded paging, current-grant proofs, and pinned source references. Paths and recorded command invocations currently come from verified Codex occurrences. Receiver-wide search and legacy failure filtering remain open. |
 | `task list\|create\|show\|archive` | Rust supports create, exact show, completion, archiving and restoration. The default task list hides archived entries. `list --all` and `show` can still read them. |
 | `task link\|unlink\|handoff\|backup` | Rust links use exact native source/session/turn/worker identities. `task handoff` reads one saved task revision and renders Markdown, HTML, or JSON. Its private export writes a Markdown and HTML pair. Workspace backup retains the ledger and supports restore into a new history directory. |
-| `task update\|snapshot\|brief\|decide\|decisions\|draft\|approve-draft` | Rust supports revision-checked editing, local Git summaries, five structured brief fields, and immutable decisions with supersession. Drafts and decision citations can use one exact retained user prompt. Approval and excerpt reopening require revalidation of the original grant and source receipt. Full Git diff capture and broader Review evidence projections remain open. |
+| `task update\|snapshot\|brief\|decide\|decisions\|draft\|approve-draft` | Rust supports revision-checked editing, local Git summaries, opt-in tracked text patches, five structured brief fields, and immutable decisions with supersession. Drafts and decision citations can use one exact retained user prompt. Approval and excerpt reopening require revalidation of the original grant and source receipt. Broader Review evidence projections remain open. |
 
-The release owner records the disposition of legacy format support, remote receiver access, launcher injection, eval import, automatic retention, and task or review compatibility. Until there is a recorded disposition, any partially mapped workflow remains open. The CLI maintainer owns the implementation and installed scenarios for retained commands. [Python command source](https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py) · [Rust workflow coverage](rust-cockpit-workflow-coverage.md)
+The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. [Python command source](https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py) · [Rust workflow coverage](rust-cockpit-workflow-coverage.md)
+
+### Task Git patches
+
+Save a patch from the Linux checkout attached to a task. The optional revision
+checks which version of the task receives the capture. The command reports
+the updated task, Git summary, and saved patch byte count.
+
+```sh
+agenturm task snapshot 42 --db history.sqlite --expected-revision 3 --include-diff
+agenturm task handoff 42 --db history.sqlite --include-diff --format json
+agenturm task handoff 42 --db history.sqlite --include-diff --output ./handoff-42
+```
+
+The patch has separate staged and unstaged sections for tracked files. Git
+records binary changes as notices. Untracked files contribute only to the
+summary count. Capture uses detached Git configuration, a sealed index copy,
+and bounded regular-file inputs. Git hooks, filters, external diff drivers,
+text conversion and submodule traversal are disabled during patch generation.
+The patch accepts display-safe UTF-8 up to 64 KiB combined across 64 changed
+paths and 8 MiB of file and Git blob inputs. A changed HEAD or index, a split
+index, an unsupported path, or a limit failure leaves the task unchanged.
+Concurrent changes in the checkout can require another capture.
+
+The patch stays in the private workspace ledger and its portable backups.
+Only handoffs with `--include-diff` read the patch for display or export.
+`--output` writes a new private directory with Markdown and HTML. A plain
+snapshot or a workspace remap clears the previously saved patch. Broker task
+commands use the same options with `--broker-config` and capture from the
+client's checkout.
 
 ## SDK and evidence scope
 

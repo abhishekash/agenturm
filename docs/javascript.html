@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Node.js</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/javascript.md">Markdown source ↗</a></nav><h1>JavaScript client</h1>
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.4 producer integration</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/javascript.md">Markdown source ↗</a></nav><h1>JavaScript client</h1>
 <p>The dependency-free client supports Node.js 18+.</p>
 <p>From a repository checkout:</p>
 <pre><code class="language-bash">npm install ./clients/javascript
@@ -26,12 +26,19 @@ await telemetry.trace(
 <p>Choose the <code>otlp</code> transport when running against a standalone Rust receiver.
 Set <code>sessionId</code> to the exact native session and <code>harnessId</code> to its collected
 source ID to make the trace available from that session. The client attaches
-those identities to every span in the trace.</p>
+those identities to every span in the trace. Add <code>turnId</code> for a collected
+native turn with a Rust receiver that supports exact trace Review. It requires
+both <code>sessionId</code> and <code>harnessId</code>. Add <code>workerId</code> when that turn belongs to
+a worker. These options set <code>agenturm.turn.id</code> and <code>agenturm.worker.id</code>
+on every span in the trace.</p>
 <pre><code class="language-js">import { Client } from '@agenturm/client';
 
 const telemetry = new Client({ transport: 'otlp', strict: true });
 await telemetry.trace(
-  { sessionId: 'thread-42', harnessId: 'harness.codex' },
+  {
+    sessionId: 'thread-42', harnessId: 'harness.codex',
+    turnId: 'turn-7', workerId: 'worker-1',
+  },
   async run =&gt; run.span('work', async span =&gt; {
     await doWork();
     span.setStatus('OK');
@@ -42,6 +49,11 @@ await telemetry.trace(
 trace endpoint for this invocation.</p>
 <pre><code class="language-sh">agenturm run --db history.sqlite --source-id otlp.node -- node agent.mjs
 </code></pre>
+<p>Open the linked spans from an exact retained turn and worker in Rust Review.
+For a main turn, omit <code>workerId</code> in the producer and <code>--worker-id</code> in Review.</p>
+<pre><code class="language-sh">agenturm review --db history.sqlite --harness-id harness.codex \
+  --session-id thread-42 --turn-id turn-7 --worker-id worker-1 --linked-traces
+</code></pre>
 <p>To send from an existing process, start the receiver with
 <code>agenturm serve-traces --listen 127.0.0.1:14318 --db history.sqlite --source-id otlp.node</code>.
 Set <code>OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:14318/v1/traces</code> for the
@@ -49,7 +61,7 @@ producer. Use a literal loopback IP. An explicit <code>endpoint</code> overrides
 <code>OTEL_EXPORTER_OTLP_TRACES_ENDPOINT</code> nor <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> set,
 the transport uses that same loopback address.</p>
 <p>OTLP/HTTP JSON exports trace IDs, parent relationships, timestamps, status
-and optional session and harness identity. Payloads use fixed span names
+and optional session, harness, turn, and worker identity. Payloads use fixed span names
 and omit custom attributes, events and task text. The <code>agenturm</code> transport
 remains the default and supports progress messages. The OTLP receiver can
 group unscoped traces under an <code>agenturm run</code> invocation. Supply a
@@ -59,4 +71,7 @@ the launcher, durable parent and source/session identity, nonzero producer
 exit status, and standalone partial rejection and 1,025-span export across
 the receiver's bounded requests. The existing JavaScript-to-Python
 integration test also passed.</p>
+<p>The exact-turn integration test collects native Pi worker turns, launches a
+Node producer, and reopens its trace in Rust Review. It checks that spans from
+other workers, turns, sessions, and sources stay outside the selected scope.</p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

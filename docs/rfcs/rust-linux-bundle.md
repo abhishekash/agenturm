@@ -217,6 +217,13 @@ accepts uncompressed JSON or protobuf at
 also set `agenturm.source.id` to the exact collected harness source ID.
 Press `8` from a native session to see its linked spans.
 
+For turn-level evidence, set the span's `agenturm.turn.id` to the exact
+native turn ID. When the turn belongs to a worker, also set the span's
+`agenturm.worker.id` to its native worker ID. Use string values and put all
+IDs on each span you want to link. A turn-scoped span requires its own
+source and session attributes. Agenturm checks the native turn and worker
+against the same history snapshot as the span.
+
 ```sh
 "$agenturm" serve-traces --listen 127.0.0.1:4318 --db traces.sqlite --source-id otlp.local
 ```
@@ -226,6 +233,26 @@ You can also load an export directly.
 ```sh
 "$agenturm" import-traces --file export.json --db traces.sqlite --source-id otlp.local
 ```
+
+To list trace spans for a known native turn, add `--linked-traces` to
+the exact Review command. Supply `--worker-id` if the turn belongs to
+a worker. To open the native turn of a known trace, supply the trace ID,
+its OTLP source, and the expected native source and session.
+
+```sh
+"$agenturm" review --db traces.sqlite --harness-id "$source_id" \
+  --session-id "$session" --turn-id "$turn" --linked-traces --format json
+"$agenturm" review --db traces.sqlite --harness-id "$source_id" \
+  --session-id "$session" --turn-of-trace "$trace_id" \
+  --trace-source-id otlp.local --format json
+```
+
+Trace-to-turn selection requires one explicit native scope among the
+trace's turn-scoped spans and a retained anchor for that scope. It checks
+up to 4,096 retained span rows for one trace. Spans with
+session-only attributes remain available in the session trace view. If a
+trace names conflicting turns or its native anchor has expired, choose an
+explicit source, session, and turn for Review.
 
 After the first stored span, open the cockpit in another terminal and press
 `8` in Agents.

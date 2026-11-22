@@ -323,6 +323,28 @@ pub fn is_trace_source_link_valid(import_source_id: &str, span: &TraceSpan) -> b
     })
 }
 
+/// A turn-scoped trace must explicitly identify the native harness. A worker
+/// without its turn cannot identify a native execution anchor.
+pub fn is_trace_turn_link_valid(
+    span: &TraceSpan,
+    event_id: &str,
+    turn_id: Option<&str>,
+    worker_id: Option<&str>,
+    operation_id: Option<&str>,
+) -> bool {
+    match turn_id {
+        Some(_) => {
+            span.target_source_id.is_some()
+                && operation_id.is_none()
+                && event_id
+                    .strip_prefix("otlp:")
+                    .and_then(|ids| ids.split_once(':'))
+                    == Some((span.trace_id.as_str(), span.span_id.as_str()))
+        }
+        None => worker_id.is_none(),
+    }
+}
+
 /// Formats native credits without introducing floating-point rounding.
 pub fn format_credits(nanocredits: u64) -> String {
     let whole = nanocredits / NANOCREDITS_PER_CREDIT;
@@ -1394,7 +1416,14 @@ fn validate_raw_observation_slice(
             return Err("MCP call metadata or operation identity is invalid".into());
         }
         if let ObservationKind::TraceSpan(span) = &row.kind
-            && !span.is_valid(row.observed_at_unix_ns)
+            && (!span.is_valid(row.observed_at_unix_ns)
+                || !is_trace_turn_link_valid(
+                    span,
+                    &row.event_id,
+                    row.identity.turn_id.as_deref(),
+                    row.identity.worker_id.as_deref(),
+                    row.identity.operation_id.as_deref(),
+                ))
         {
             return Err("trace identity or timing is invalid".into());
         }

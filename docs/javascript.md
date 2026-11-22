@@ -32,14 +32,21 @@ The client sends completed spans to the local receiver. By default, delivery is 
 Choose the `otlp` transport when running against a standalone Rust receiver.
 Set `sessionId` to the exact native session and `harnessId` to its collected
 source ID to make the trace available from that session. The client attaches
-those identities to every span in the trace.
+those identities to every span in the trace. Add `turnId` for a collected
+native turn with a Rust receiver that supports exact trace Review. It requires
+both `sessionId` and `harnessId`. Add `workerId` when that turn belongs to
+a worker. These options set `agenturm.turn.id` and `agenturm.worker.id`
+on every span in the trace.
 
 ```js
 import { Client } from '@agenturm/client';
 
 const telemetry = new Client({ transport: 'otlp', strict: true });
 await telemetry.trace(
-  { sessionId: 'thread-42', harnessId: 'harness.codex' },
+  {
+    sessionId: 'thread-42', harnessId: 'harness.codex',
+    turnId: 'turn-7', workerId: 'worker-1',
+  },
   async run => run.span('work', async span => {
     await doWork();
     span.setStatus('OK');
@@ -54,6 +61,14 @@ trace endpoint for this invocation.
 agenturm run --db history.sqlite --source-id otlp.node -- node agent.mjs
 ```
 
+Open the linked spans from an exact retained turn and worker in Rust Review.
+For a main turn, omit `workerId` in the producer and `--worker-id` in Review.
+
+```sh
+agenturm review --db history.sqlite --harness-id harness.codex \
+  --session-id thread-42 --turn-id turn-7 --worker-id worker-1 --linked-traces
+```
+
 To send from an existing process, start the receiver with
 `agenturm serve-traces --listen 127.0.0.1:14318 --db history.sqlite --source-id otlp.node`.
 Set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:14318/v1/traces` for the
@@ -62,7 +77,7 @@ producer. Use a literal loopback IP. An explicit `endpoint` overrides the enviro
 the transport uses that same loopback address.
 
 OTLP/HTTP JSON exports trace IDs, parent relationships, timestamps, status
-and optional session and harness identity. Payloads use fixed span names
+and optional session, harness, turn, and worker identity. Payloads use fixed span names
 and omit custom attributes, events and task text. The `agenturm` transport
 remains the default and supports progress messages. The OTLP receiver can
 group unscoped traces under an `agenturm run` invocation. Supply a
@@ -73,3 +88,7 @@ the launcher, durable parent and source/session identity, nonzero producer
 exit status, and standalone partial rejection and 1,025-span export across
 the receiver's bounded requests. The existing JavaScript-to-Python
 integration test also passed.
+
+The exact-turn integration test collects native Pi worker turns, launches a
+Node producer, and reopens its trace in Rust Review. It checks that spans from
+other workers, turns, sessions, and sources stay outside the selected scope.

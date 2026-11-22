@@ -3,7 +3,7 @@
 use agenturm_content::{OperationDetailKind, PromptReference, ResolvedSource};
 use agenturm_kernel::ExtensionId;
 use agenturm_storage_service_contract::native;
-use agenturm_store::{CodexOperationSelection, Store};
+use agenturm_store::{CodexOperationSelection, Store, StoreError};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -34,6 +34,8 @@ pub(crate) struct PrivatePromptSelection {
     pub(crate) session_id: String,
     pub(crate) event_id: String,
     pub(crate) revision: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) snapshot_id: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -48,6 +50,40 @@ pub enum PrivateEvidenceKind {
         turn_id: String,
         operation_id: String,
     },
+    CodexCommandDetail {
+        turn_id: String,
+        operation_id: String,
+    },
+}
+
+impl PrivateEvidenceSelection {
+    fn operation(&self) -> Option<(OperationDetailKind, CodexOperationSelection<'_>)> {
+        let (kind, turn_id, operation_id) = match &self.kind {
+            PrivateEvidenceKind::UserText {} => return None,
+            PrivateEvidenceKind::CodexMcpPayload {
+                turn_id,
+                operation_id,
+            } => (OperationDetailKind::Mcp, turn_id, operation_id),
+            PrivateEvidenceKind::CodexEditDetail {
+                turn_id,
+                operation_id,
+            } => (OperationDetailKind::Edit, turn_id, operation_id),
+            PrivateEvidenceKind::CodexCommandDetail {
+                turn_id,
+                operation_id,
+            } => (OperationDetailKind::Command, turn_id, operation_id),
+        };
+        Some((
+            kind,
+            CodexOperationSelection {
+                event_id: &self.event_id,
+                revision: self.revision,
+                session_id: &self.session_id,
+                turn_id: Some(turn_id),
+                operation_id,
+            },
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -55,6 +91,7 @@ pub enum PrivateEvidenceKind {
 pub enum PrivateEvidenceFailure {
     Unauthorized,
     HistoryReplaced,
+    SnapshotExpired,
     Unavailable,
 }
 
@@ -269,40 +306,24 @@ pub(crate) fn disclose(
 ) -> Result<(), PrivateEvidenceFailure> {
     let config = config.ok_or(PrivateEvidenceFailure::Unavailable)?;
     let resolve = config.resolver(allowed);
-    let (kind, turn_id, operation_id) = match &selection.kind {
-        PrivateEvidenceKind::UserText {} => {
-            return agenturm_content::reveal_fenced(
-                store,
-                &resolve,
-                &selection.source_id,
-                Some(&selection.session_id),
-                &selection.event_id,
-                selection.revision,
-                output,
-            )
-            .map_err(|_| PrivateEvidenceFailure::Unavailable);
-        }
-        PrivateEvidenceKind::CodexMcpPayload {
-            turn_id,
-            operation_id,
-        } => (OperationDetailKind::Mcp, turn_id, operation_id),
-        PrivateEvidenceKind::CodexEditDetail {
-            turn_id,
-            operation_id,
-        } => (OperationDetailKind::Edit, turn_id, operation_id),
+    let Some((kind, operation)) = selection.operation() else {
+        return agenturm_content::reveal_fenced(
+            store,
+            &resolve,
+            &selection.source_id,
+            Some(&selection.session_id),
+            &selection.event_id,
+            selection.revision,
+            output,
+        )
+        .map_err(|_| PrivateEvidenceFailure::Unavailable);
     };
     agenturm_content::reveal_operation_fenced(
         store,
         &resolve,
         &selection.source_id,
         kind,
-        &CodexOperationSelection {
-            event_id: &selection.event_id,
-            revision: selection.revision,
-            session_id: &selection.session_id,
-            turn_id: Some(turn_id),
-            operation_id,
-        },
+        &operation,
         output,
         terminal,
     )
@@ -324,10 +345,58 @@ pub(crate) fn verify_prompt(
         Some(&selection.session_id),
         &selection.event_id,
         selection.revision,
-        |prompt| output.publish(prompt),
+        |prompt| {
+            output.publish_proof(
+                store,
+                selection.snapshot_id,
+                (
+                    &selection.source_id,
+                    &selection.event_id,
+                    selection.revision,
+                ),
+                prompt,
+            )
+        },
     )
     .map_err(|_| PrivateEvidenceFailure::Unavailable)?
-    .map_err(|_| PrivateEvidenceFailure::Unavailable)
+}
+
+pub(crate) fn verify_operation(
+    store: &Store,
+    config: Option<&PrivateConfig>,
+    allowed: &BTreeSet<ExtensionId>,
+    selection: &PrivateEvidenceSelection,
+    snapshot_id: u64,
+    output: &mut Disclosure<'_>,
+) -> Result<(), PrivateEvidenceFailure> {
+    let config = config.ok_or(PrivateEvidenceFailure::Unavailable)?;
+    let (kind, operation) = selection
+        .operation()
+        .ok_or(PrivateEvidenceFailure::Unavailable)?;
+    let resolver = config.resolver(allowed);
+    let occurrence = (
+        &selection.source_id,
+        selection.event_id.as_str(),
+        selection.revision,
+    );
+    match kind {
+        OperationDetailKind::Edit => agenturm_content::with_verified_edit(
+            store,
+            &resolver,
+            &selection.source_id,
+            &operation,
+            |edit| output.publish_proof(store, Some(snapshot_id), occurrence, edit),
+        ),
+        OperationDetailKind::Command => agenturm_content::with_verified_command(
+            store,
+            &resolver,
+            &selection.source_id,
+            &operation,
+            |command| output.publish_proof(store, Some(snapshot_id), occurrence, command),
+        ),
+        OperationDetailKind::Mcp => return Err(PrivateEvidenceFailure::Unavailable),
+    }
+    .map_err(|_| PrivateEvidenceFailure::Unavailable)?
 }
 
 pub(crate) struct Disclosure<'a> {
@@ -356,6 +425,31 @@ impl<'a> Disclosure<'a> {
             let denied = result.err().unwrap_or(PrivateEvidenceFailure::Unavailable);
             let _ = native::send_reply(self.stream, self.request, Err::<EvidenceFrame, _>(denied));
         }
+    }
+
+    fn publish_proof(
+        &mut self,
+        store: &Store,
+        snapshot_id: Option<u64>,
+        occurrence: (&ExtensionId, &str, u32),
+        payload: impl Serialize,
+    ) -> Result<(), PrivateEvidenceFailure> {
+        if let Some(snapshot_id) = snapshot_id {
+            let (source_id, event_id, revision) = occurrence;
+            let retained = store
+                .contains_observation_at_snapshot(source_id, event_id, revision, snapshot_id)
+                .map_err(|error| match error {
+                    StoreError::ExpiredHistorySnapshot { .. } => {
+                        PrivateEvidenceFailure::SnapshotExpired
+                    }
+                    _ => PrivateEvidenceFailure::Unavailable,
+                })?;
+            if !retained {
+                return Err(PrivateEvidenceFailure::Unavailable);
+            }
+        }
+        self.publish(payload)
+            .map_err(|_| PrivateEvidenceFailure::Unavailable)
     }
 
     fn publish<T: Serialize>(&mut self, payload: T) -> io::Result<()> {
@@ -633,14 +727,29 @@ mod tests {
         let fixture = Fixture::new();
         let mut authorizer = fixture.open_store();
         let history = authorizer.ensure_history_identity().unwrap();
-        let operation = |history_identity, session_id: &str| NativeOperation::VerifyPrivatePrompt {
-            history_identity,
-            selection: PrivatePromptSelection {
-                source_id: fixture.selection.source_id.clone(),
-                session_id: session_id.into(),
-                event_id: fixture.selection.event_id.clone(),
-                revision: fixture.selection.revision,
-            },
+        let old_snapshot = authorizer
+            .query_observations(&agenturm_kernel::ObservationQuery::latest(1))
+            .unwrap()
+            .snapshot_id;
+        // The grant and exact row survive; the old snapshot does not.
+        assert_eq!(
+            authorizer
+                .prune_observations_before(1)
+                .unwrap()
+                .removed_observations,
+            0
+        );
+        let operation = |history_identity, session_id: &str, snapshot_id| {
+            NativeOperation::VerifyPrivatePrompt {
+                history_identity,
+                selection: PrivatePromptSelection {
+                    source_id: fixture.selection.source_id.clone(),
+                    session_id: session_id.into(),
+                    event_id: fixture.selection.event_id.clone(),
+                    revision: fixture.selection.revision,
+                    snapshot_id,
+                },
+            }
         };
         let identity: native::ReplyIdentity = serde_json::from_value(json!({
             "version": 1, "request_id": "0123456789abcdef0123456789abcdef",
@@ -650,18 +759,23 @@ mod tests {
         for (role, request, failure) in [
             (
                 Role::Collector,
-                operation(history.clone(), "proof-session"),
+                operation(history.clone(), "proof-session", None),
                 PrivateEvidenceFailure::Unauthorized,
             ),
             (
                 Role::Reader,
-                operation("f".repeat(32), "proof-session"),
+                operation("f".repeat(32), "proof-session", None),
                 PrivateEvidenceFailure::HistoryReplaced,
             ),
             (
                 Role::Reader,
-                operation(history.clone(), "another-session"),
+                operation(history.clone(), "another-session", None),
                 PrivateEvidenceFailure::Unavailable,
+            ),
+            (
+                Role::Reader,
+                operation(history.clone(), "proof-session", Some(old_snapshot)),
+                PrivateEvidenceFailure::SnapshotExpired,
             ),
         ] {
             let (mut service, mut client) = UnixStream::pair().unwrap();
@@ -684,7 +798,7 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         let mut revoker = fixture.open_store();
-        let request = operation(history, "proof-session");
+        let request = operation(history, "proof-session", None);
         thread::scope(|threads| {
             let fixture = &fixture;
             let delivery = threads.spawn(move || {

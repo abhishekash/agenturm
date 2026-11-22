@@ -10,6 +10,8 @@ import time
 import urllib.request
 from typing import Any
 
+from .otlp_transport import OtlpTransport, TraceScope
+
 _ACTIVE_RUN: contextvars.ContextVar["Run | None"] = contextvars.ContextVar("observatory_run", default=None)
 _ACTIVE_SPAN: contextvars.ContextVar["Span | None"] = contextvars.ContextVar("observatory_span", default=None)
 _AUTO_PARENT = object()
@@ -24,30 +26,66 @@ def _random_hex(byte_count):
 
 
 class Client:
-    """Emit framework-neutral spans and progress to an Goechala receiver."""
+    """Emit Python spans to the selected receiver transport."""
 
-    def __init__(self, endpoint="http://127.0.0.1:4318", service="python-agent",
+    def __init__(self, endpoint=None, service="python-agent",
                  token=None, timeout=3.0, strict=False, capture_exception_message=False,
-                 resource_attributes=None):
-        self.endpoint = endpoint.rstrip("/")
+                 resource_attributes=None, *, transport="agenturm", session_id=None,
+                 harness_id=None, turn_id=None, worker_id=None):
+        if transport not in {"agenturm", "otlp"}:
+            raise ValueError("Unknown trace transport")
+        if transport == "agenturm" and any(
+            value is not None for value in (session_id, harness_id, turn_id, worker_id)
+        ):
+            raise ValueError("Client-level native linkage requires OTLP transport")
+        self.transport = transport
         self.service = str(service)
-        from .receiver_state import endpoint_token
         self._configuration_error = None
-        try:self.token = endpoint_token(endpoint, token)
-        except (ValueError, OSError) as exc:
-            if strict:raise
-            self.token = None
-            self._configuration_error = exc
-        self.timeout = float(timeout)
+        self._otlp = None
+        self._trace_scope = TraceScope()
+        self.token = None
         self.strict = bool(strict)
-        self.capture_exception_message = bool(capture_exception_message)
+        self.capture_exception_message = bool(capture_exception_message) and transport == "agenturm"
         self.resource_attributes = dict(resource_attributes or {})
+        if transport == "agenturm":
+            endpoint = "http://127.0.0.1:4318" if endpoint is None else endpoint
+            self.endpoint = endpoint.rstrip("/")
+            self.timeout = float(timeout)
+        else:
+            self.endpoint = ""
+            self.timeout = None
+        try:
+            if transport == "otlp":
+                if token is not None:
+                    raise ValueError("The Rust OTLP transport accepts no receiver token")
+                self._trace_scope = TraceScope(session_id, harness_id, turn_id, worker_id)
+                self._otlp = OtlpTransport(endpoint, timeout)
+                self.endpoint = self._otlp.endpoint
+                self.timeout = self._otlp.timeout
+            else:
+                from .receiver_state import endpoint_token
+                self.token = endpoint_token(endpoint, token)
+        except (ValueError, OSError) as exc:
+            if self.strict:
+                raise
+            self._configuration_error = exc
         self.last_error: Exception | None = self._configuration_error
 
-    def trace(self, name="agent.run", *, task=None, session_id=None, attributes=None):
-        return Run(self, name, task, session_id, attributes or {})
+    def trace(self, name="agent.run", *, task=None, session_id=None, attributes=None,
+              harness_id=None, turn_id=None, worker_id=None):
+        scope = None
+        if self.transport == "otlp":
+            scope = self._trace_scope
+            if any(value is not None for value in (session_id, harness_id, turn_id, worker_id)):
+                scope = TraceScope(session_id, harness_id, turn_id, worker_id)
+            session_id = scope.session_id
+        elif any(value is not None for value in (harness_id, turn_id, worker_id)):
+            raise ValueError("Native harness, turn, and worker linkage requires OTLP transport")
+        return Run(self, name, task, session_id, attributes or {}, scope)
 
     def _post_spans(self, spans):
+        if self.transport == "otlp":
+            return self._post_otlp_spans(spans, self._trace_scope)
         base = {"service": self.service, "spans": []}
         base_size = len(json.dumps(base, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         batch = []
@@ -94,7 +132,25 @@ class Client:
             self.last_error = last_error
         return successful
 
+    def _post_otlp_spans(self, spans, scope):
+        try:
+            if self._configuration_error is not None:
+                raise self._configuration_error
+            self._otlp.export(spans, scope, strict=self.strict)
+            self.last_error = None
+            return True
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return self._failure(exc)
+
+    def _failure(self, exc):
+        self.last_error = exc
+        if self.strict:
+            raise exc
+        return False
+
     def _post(self, path, payload):
+        if self.transport == "otlp":
+            return self._failure(ValueError("OTLP transport accepts only trace spans"))
         try:
             if self._configuration_error is not None:raise self._configuration_error
             data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -115,7 +171,7 @@ class Client:
 
 
 class Run:
-    def __init__(self, client, name, task, session_id, attributes):
+    def __init__(self, client, name, task, session_id, attributes, otlp_scope=None):
         self.client = client
         self.trace_id = _random_hex(16)
         self.session_id = str(session_id).strip() if session_id is not None else None
@@ -131,6 +187,7 @@ class Run:
         self.spans.append(self.root)
         self._run_token = None
         self._closed = False
+        self._otlp_scope = otlp_scope
 
     def __enter__(self):
         if self._closed or self._run_token is not None:
@@ -141,7 +198,7 @@ class Run:
 
     def __exit__(self, exc_type, exc, tb):
         self._finish(exc_type, exc, tb)
-        self._flush()
+        self._flush_after(exc)
         return False
 
     async def __aenter__(self):
@@ -149,7 +206,7 @@ class Run:
 
     async def __aexit__(self, exc_type, exc, tb):
         self._finish(exc_type, exc, tb)
-        await asyncio.to_thread(self._flush)
+        await asyncio.to_thread(self._flush_after, exc)
         return False
 
     def _finish(self, exc_type, exc, tb):
@@ -174,6 +231,8 @@ class Run:
     def progress(self, stage, message="", percent=None):
         if self._closed:
             raise RuntimeError("run is already closed")
+        if self._otlp_scope is not None:
+            return self.client._failure(ValueError("OTLP transport does not export progress messages"))
         payload = {"trace_id": self.trace_id, "stage": str(stage), "message": str(message), "service": self.client.service}
         if percent is not None:
             payload["percent"] = percent
@@ -184,16 +243,26 @@ class Run:
     async def aprogress(self, stage, message="", percent=None):
         return await asyncio.to_thread(self.progress, stage, message, percent)
 
+    def _flush_after(self, application_error):
+        try:
+            return self._flush()
+        except Exception:
+            if application_error is None or self._otlp_scope is None:
+                raise
+
     def _flush(self):
-        payload = []
-        for span in self.spans:
-            payload.append({"trace_id": self.trace_id, "span_id": span.span_id,
-                            "parent_span_id": span.parent_span_id, "name": span.name,
-                            "start_unix_nano": span.start_ns, "end_unix_nano": span.end_ns,
-                            "status": span.status, "attributes": span.attributes,
-                            "events": span.events,
-                            "resource_attributes": self.client.resource_attributes})
-        return self.client._post_spans(payload)
+        metadata = (
+            {"trace_id": self.trace_id, "span_id": span.span_id, "parent_span_id": span.parent_span_id,
+             "start_unix_nano": span.start_ns, "end_unix_nano": span.end_ns, "status": span.status}
+            for span in self.spans
+        )
+        if self._otlp_scope is not None:
+            return self.client._post_otlp_spans(metadata, self._otlp_scope)
+        return self.client._post_spans([
+            {**row, "name": span.name, "attributes": span.attributes, "events": span.events,
+             "resource_attributes": self.client.resource_attributes}
+            for row, span in zip(metadata, self.spans)
+        ])
 
 
 class Span:

@@ -1,9 +1,10 @@
 use agenturm_app::{
     AgenturmApp, Command, discover, execute_attention, execute_backup, execute_backup_workspace,
     execute_cockpit_with_extensions, execute_collect, execute_content_stdout, execute_ingest,
-    execute_inspect_ui, execute_prune, execute_query, execute_restore_workspace,
-    execute_review_with_output, execute_service, execute_task_stdout, execute_trace_import,
-    execute_trace_receiver, execute_trace_run, execute_watch, parse_os_command, render,
+    execute_inspect_ui, execute_investigation, execute_prune, execute_query,
+    execute_restore_workspace, execute_selected_review, execute_service, execute_task_stdout,
+    execute_trace_import, execute_trace_receiver, execute_trace_run, execute_watch,
+    parse_os_command, render, with_private_stdout,
 };
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -47,6 +48,14 @@ fn main() -> ExitCode {
             if let Err(message) = execute_task_stdout(&options) {
                 eprintln!("task failed: {message}");
                 return ExitCode::from(message.exit_code());
+            }
+        }
+        Command::Investigate(options) => {
+            if let Err(message) =
+                with_private_stdout(|output| execute_investigation(&options, output))
+            {
+                eprintln!("investigate failed: {message}");
+                return ExitCode::from(2);
             }
         }
         Command::Cockpit { db, extensions } => {
@@ -99,10 +108,9 @@ fn main() -> ExitCode {
         },
         Command::Review {
             query,
-            turn_id,
-            worker_id,
+            selection,
             output,
-        } => match execute_review_with_output(&query, &turn_id, worker_id.as_deref(), &output) {
+        } => match execute_selected_review(&query, &selection, &output) {
             Ok(result) => println!("{result}"),
             Err(message) => {
                 eprintln!("review failed: {message}");

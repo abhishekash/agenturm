@@ -138,10 +138,106 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
             ],
         )
     };
+    let investigate = |phrase: &str, cursor: Option<&str>| {
+        let mut args = vec![
+            "investigate",
+            "instruction",
+            phrase,
+            "--db",
+            db_arg,
+            "--config",
+            config_arg,
+            "--source-id",
+            "harness.pi",
+            "--session-id",
+            "pi-fixture",
+            "--limit",
+            "1",
+        ];
+        if let Some(cursor) = cursor {
+            args.extend(["--cursor", cursor]);
+        }
+        run(&args)
+    };
+    let inspect_source = |event_id: &str, reference: &str| {
+        run(&[
+            "investigate",
+            "source",
+            event_id,
+            "--reference",
+            reference,
+            "--db",
+            db_arg,
+            "--config",
+            config_arg,
+        ])
+    };
+    let exact_match = || {
+        let result = records(run(&[
+            "investigate",
+            "instruction",
+            "review message",
+            "--db",
+            db_arg,
+            "--config",
+            config_arg,
+            "--source-id",
+            "harness.pi",
+            "--session-id",
+            "pi-fixture",
+            "--turn-id",
+            "turn-1",
+        ]));
+        assert_eq!(result[0]["type"], "match");
+        result[0]["source_reference"].as_str().unwrap().to_owned()
+    };
 
     denied(list("pi-fixture"), "requires approval");
     denied(preview(event("turn-1")), "requires approval");
+    let blocked = records(investigate("review message", None));
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked[0]["unavailable_candidates"], 1);
+    assert_eq!(blocked[0]["matched"], 0);
     checked(approve());
+
+    let first_page = records(investigate("REVIEW message", None));
+    let first_cursor = first_page[0]["next_cursor"].as_str().unwrap();
+    denied(
+        investigate("different phrase", Some(first_cursor)),
+        "another query",
+    );
+    let mut changed: Value = serde_json::from_str(first_cursor).unwrap();
+    changed["before"]["snapshot_id"] = json!(u64::MAX);
+    denied(
+        investigate("REVIEW message", Some(&changed.to_string())),
+        "another query",
+    );
+    let snapshot = first_page[0]["snapshot_id"].clone();
+    let mut matches = Vec::new();
+    let mut next = Some(first_cursor.to_owned());
+    for _ in 0..8 {
+        let Some(cursor) = next.take() else { break };
+        let mut page = records(investigate("REVIEW message", Some(&cursor)));
+        let coverage = page.pop().unwrap();
+        assert_eq!(coverage["snapshot_id"], snapshot);
+        next = coverage["next_cursor"].as_str().map(str::to_owned);
+        assert_eq!(coverage["scope_exhausted"], next.is_none());
+        matches.extend(page);
+    }
+    assert!(next.is_none());
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0]["event_id"], event("turn-1"));
+    assert_eq!(matches[0]["excerpt"], "review message");
+    let reference = matches[0]["source_reference"].as_str().unwrap();
+    assert!(!reference.contains("review message"));
+    assert_eq!(
+        records(inspect_source(event("turn-1"), reference))[0]["evidence"],
+        json!({"text": "review message"})
+    );
+    denied(
+        inspect_source(event("turn-safe"), reference),
+        "selected occurrence",
+    );
     let references = checked(list("pi-fixture"));
     assert_eq!(
         serde_json::from_str::<Value>(&references).unwrap(),
@@ -199,6 +295,10 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
 
     fs::write(&source, initial.replace("review message", "changed source")).unwrap();
     denied(
+        inspect_source(event("turn-1"), reference),
+        "source evidence is unavailable",
+    );
+    denied(
         preview(event("turn-1")),
         "no longer matches the committed checkpoint",
     );
@@ -214,9 +314,18 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
     denied(preview(event("turn-1")), "writer lease unavailable");
     drop(holder);
     checked(content("revoke", &[]));
+    denied(
+        inspect_source(event("turn-1"), reference),
+        "source evidence is unavailable",
+    );
     denied(list("pi-fixture"), "requires approval");
     denied(preview(event("turn-1")), "requires approval");
     checked(approve());
+    denied(
+        inspect_source(event("turn-1"), reference),
+        "source evidence is unavailable",
+    );
+    let renewed_reference = exact_match();
 
     fs::write(
         &source,
@@ -233,6 +342,21 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
     assert_eq!(newer.as_array().unwrap().len(), 3);
     assert_eq!(newer[0]["turn_id"], "turn-1");
     assert_eq!(newer[2]["turn_id"], "turn-3");
+    assert_eq!(
+        records(inspect_source(event("turn-1"), &renewed_reference))[0]["revision"],
+        0
+    );
+    checked(run(&[
+        "prune",
+        "--db",
+        db_arg,
+        "--before-unix-ns",
+        "1795176000000000001",
+    ]));
+    denied(
+        inspect_source(event("turn-1"), &renewed_reference),
+        "source evidence is unavailable",
+    );
 
     let replacement = scratch.0.join("replacement.jsonl");
     fs::copy(&source, &replacement).unwrap();
@@ -436,7 +560,7 @@ fn codex_preview_reveals_only_exact_completed_native_user_items() {
 }
 
 #[test]
-fn codex_edit_detail_follows_exact_retained_edit_and_its_own_approval() {
+fn codex_edit_and_command_details_require_exact_occurrences_and_independent_approvals() {
     use agenturm_store::{ReviewKey, ReviewLedger, SessionQuery, Store};
 
     let (Some(host), Some(adapter)) = (
@@ -465,6 +589,15 @@ fn codex_edit_detail_follows_exact_retained_edit_and_its_own_approval() {
                     "stdout":"fixture output outside edit detail"}},
         })
     };
+    let command = |turn: &str, second: u8, invocation: Value| {
+        json!({
+            "type":"event_msg", "timestamp":format!("2026-11-20T12:00:0{second}Z"),
+            "payload": {"type":"item_completed", "thread_id":"edit-fixture", "turn_id":turn,
+                "item":{"type":"CommandExecution", "id":turn, "status":"completed",
+                    "command":invocation, "aggregated_output":"private stdout from fixture",
+                    "cwd":"/private/fixture", "environment":{"EXAMPLE":"private environment"}}}
+        })
+    };
     let rows = [
         json!({"type":"session_meta", "payload":{"id":"edit-fixture"}}),
         edit("operation-first", "turn-first", 1, first),
@@ -476,6 +609,35 @@ fn codex_edit_detail_follows_exact_retained_edit_and_its_own_approval() {
                 "fixture/other-edit.txt": {"type":"add", "content":"unrelated edit"},
             }),
         ),
+        command(
+            "turn-command",
+            4,
+            json!(["/bin/bash", "-lc", "pytest suite --quiet"]),
+        ),
+        command("turn-command-text", 5, json!("cargo test --lib")),
+        command(
+            "turn-command-secret",
+            6,
+            json!("API_KEY=fixture-private-value pytest suite"),
+        ),
+        command(
+            "turn-command-multiline",
+            7,
+            json!("pytest suite\nnext command"),
+        ),
+        command(
+            "turn-command-large",
+            8,
+            json!(format!("pytest suite {}", "x".repeat(2100))),
+        ),
+        command(
+            "turn-command-argv-credential",
+            9,
+            json!(["pytest", "suite", "--password", "fixture-private-value"]),
+        ),
+        json!({"type":"response_item","timestamp":"2026-11-20T12:00:10Z",
+            "payload":{"type":"function_call","turn_id":"turn-fallback","call_id":"fallback",
+                "name":"functions.exec","arguments":"{\"command\":\"fallback fixture command\"}"}}),
         edit(
             "operation-large",
             "turn-large",
@@ -514,6 +676,15 @@ fn codex_edit_detail_follows_exact_retained_edit_and_its_own_approval() {
     let query = checked(run(&["query", "--db", db_arg]));
     assert!(!query.contains("fixture/path.txt"));
     assert!(!query.contains("unrelated edit"));
+    for private in [
+        "pytest suite",
+        "cargo test",
+        "private stdout",
+        "/private/fixture",
+        "private environment",
+    ] {
+        assert!(!query.contains(private));
+    }
     let history: Value = serde_json::from_str(&query).unwrap();
     let occurrence = |turn: &str| {
         history["observations"]
@@ -566,6 +737,49 @@ fn codex_edit_detail_follows_exact_retained_edit_and_its_own_approval() {
         ]))
     };
     let preview = || select(db_arg, "turn-first", "turn-first", "turn-first");
+    let investigate = |path: &str| {
+        run(&[
+            "investigate",
+            "path",
+            path,
+            "--db",
+            db_arg,
+            "--config",
+            config_arg,
+            "--source-id",
+            "harness.codex",
+            "--session-id",
+            "edit-fixture",
+        ])
+    };
+    let find_command = |query: &str, history: &str| {
+        records(run(&[
+            "investigate",
+            "command",
+            query,
+            "--db",
+            history,
+            "--config",
+            config_arg,
+            "--source-id",
+            "harness.codex",
+            "--session-id",
+            "edit-fixture",
+        ]))
+    };
+    let command_source = |event: &str, reference: &str, history: &str| {
+        run(&[
+            "investigate",
+            "source",
+            event,
+            "--reference",
+            reference,
+            "--db",
+            history,
+            "--config",
+            config_arg,
+        ])
+    };
     let page = Store::open_read_only(&db)
         .unwrap()
         .query_sessions(&SessionQuery::latest(4))
@@ -586,6 +800,10 @@ fn codex_edit_detail_follows_exact_retained_edit_and_its_own_approval() {
         .unwrap();
     grant("codex.mcp_payload");
     denied(preview(), "requires approval");
+    let denied_paths = records(investigate("fixture/new.txt"));
+    assert_eq!(denied_paths.len(), 1);
+    assert_eq!(denied_paths[0]["matched"], 0);
+    assert!(denied_paths[0]["unavailable_candidates"].as_u64().unwrap() > 0);
     grant("codex.edit_detail");
     denied(
         select(db_arg, "turn-first", "turn-second", "turn-first"),
@@ -607,6 +825,111 @@ fn codex_edit_detail_follows_exact_retained_edit_and_its_own_approval() {
             {"path":"fixture/path.txt", "type":"update", "diff":"@@ -1 +1 @@\n-first\n+second\n", "move_path":"fixture/new.txt"},
         ]})
     );
+    for path in ["fixture/path.txt", "fixture/new.txt"] {
+        let results = records(investigate(path));
+        let found = &results[0];
+        assert_eq!(found["type"], "match");
+        assert_eq!(found["excerpt"], path);
+        assert_eq!(found["scope"]["turn_id"], "turn-first");
+        assert_eq!(results[1]["matched"], 1);
+        let reference = found["source_reference"].as_str().unwrap();
+        assert!(!reference.contains(path));
+        let source = records(run(&[
+            "investigate",
+            "source",
+            found["event_id"].as_str().unwrap(),
+            "--reference",
+            reference,
+            "--db",
+            db_arg,
+            "--config",
+            config_arg,
+        ]));
+        assert_eq!(source[0]["evidence"], details);
+    }
+    let wrong_case = records(investigate("Fixture/new.txt"));
+    assert_eq!(wrong_case.len(), 1);
+    assert_eq!(wrong_case[0]["matched"], 0);
+    let blocked_commands = find_command("pytest suite", db_arg);
+    assert_eq!(blocked_commands.len(), 1);
+    assert_eq!(blocked_commands[0]["matched"], 0);
+    grant("codex.command_detail");
+    let matches = find_command("PYTEST suite", db_arg);
+    assert_eq!(matches.len(), 2);
+    assert_eq!(
+        matches[0]["recorded_invocation"],
+        json!(["/bin/bash", "-lc", "pytest suite --quiet"])
+    );
+    assert_eq!(matches[0]["scope"]["turn_id"], "turn-command");
+    assert!(!matches[0].to_string().contains("private stdout"));
+    assert!(!matches[0].to_string().contains("fixture-private-value"));
+    let event = matches[0]["event_id"].as_str().unwrap();
+    let reference = matches[0]["source_reference"].as_str().unwrap();
+    assert!(!reference.contains("pytest suite"));
+    assert_eq!(
+        records(command_source(event, reference, db_arg))[0]["evidence"],
+        json!({"recorded_invocation": ["/bin/bash", "-lc", "pytest suite --quiet"]})
+    );
+    let text = find_command("cargo test", db_arg);
+    assert_eq!(text[0]["recorded_invocation"], "cargo test --lib");
+    denied(
+        command_source(text[0]["event_id"].as_str().unwrap(), reference, db_arg),
+        "selected occurrence",
+    );
+    let base: Value = serde_json::from_str(reference).unwrap();
+    for (field, altered) in [
+        ("operation_id", json!("another-operation")),
+        ("scope", {
+            let mut scope = base["scope"].clone();
+            scope["turn_id"] = json!("turn-command-text");
+            scope
+        }),
+    ] {
+        let mut changed = base.clone();
+        changed[field] = altered;
+        denied(
+            command_source(event, &changed.to_string(), db_arg),
+            "source evidence is unavailable",
+        );
+    }
+    let fallback = find_command("fallback fixture", db_arg);
+    assert_eq!(fallback.len(), 1);
+    assert_eq!(fallback[0]["matched"], 0);
+    assert!(fallback[0]["unavailable_candidates"].as_u64().unwrap() >= 5);
+    fs::write(
+        &source,
+        rows.replace("pytest suite --quiet", "pytest suite --edited"),
+    )
+    .unwrap();
+    denied(
+        command_source(event, reference, db_arg),
+        "source evidence is unavailable",
+    );
+    fs::write(&source, &rows).unwrap();
+    checked(run(&[
+        "content",
+        "revoke",
+        "--db",
+        db_arg,
+        "--source-id",
+        "harness.codex",
+        "--kind",
+        "codex.command_detail",
+    ]));
+    denied(
+        command_source(event, reference, db_arg),
+        "source evidence is unavailable",
+    );
+    assert_eq!(find_command("pytest suite", db_arg)[0]["matched"], 0);
+    assert_eq!(
+        serde_json::from_str::<Value>(&checked(preview())).unwrap(),
+        details
+    );
+    grant("codex.command_detail");
+    denied(
+        command_source(event, reference, db_arg),
+        "source evidence is unavailable",
+    );
     let bundle = scratch.0.join("bundle");
     let restored = scratch.0.join("restored");
     checked(run(&[
@@ -624,6 +947,13 @@ fn codex_edit_detail_follows_exact_retained_edit_and_its_own_approval() {
         restored.to_str().unwrap(),
     ]));
     let restored_db = restored.join("history.sqlite");
+    let restored_commands = find_command("pytest suite", restored_db.to_str().unwrap());
+    assert_eq!(restored_commands.len(), 1);
+    assert_eq!(restored_commands[0]["matched"], 0);
+    denied(
+        command_source(event, reference, restored_db.to_str().unwrap()),
+        "another history",
+    );
     denied(
         select(
             restored_db.to_str().unwrap(),
@@ -785,6 +1115,13 @@ fn checked(output: Output) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap()
+}
+
+fn records(output: Output) -> Vec<Value> {
+    checked(output)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
 }
 
 fn denied(output: Output, expected: &str) {

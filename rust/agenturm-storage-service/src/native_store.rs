@@ -14,8 +14,8 @@ use agenturm_kernel::{
 };
 use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
 use agenturm_store::{
-    ObservationBatch, RetentionOutcome, SessionPage, SessionQuery, Store, WorkspaceAnchor,
-    WorkspaceHistory,
+    ObservationBatch, ResolvedTraceReview, RetentionOutcome, SessionPage, SessionQuery, Store,
+    TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
@@ -44,6 +44,10 @@ pub(crate) enum NativeOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_history_identity: Option<String>,
     },
+    ReviewTraceTurn {
+        query: TraceReviewQuery,
+        expected_history_identity: String,
+    },
     HistoryIdentity {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_history_identity: Option<String>,
@@ -66,6 +70,11 @@ pub(crate) enum NativeOperation {
     VerifyPrivatePrompt {
         history_identity: String,
         selection: PrivatePromptSelection,
+    },
+    VerifyPrivateOperation {
+        history_identity: String,
+        selection: PrivateEvidenceSelection,
+        snapshot_id: u64,
     },
     Admin {
         request: AdminRequest,
@@ -91,6 +100,10 @@ pub(crate) enum NativeSelection {
         worker_id: Option<String>,
     },
     LinkedTraces,
+    LinkedTurnTraces {
+        turn_id: String,
+        worker_id: Option<String>,
+    },
 }
 
 #[derive(Serialize)]
@@ -99,6 +112,7 @@ pub(crate) enum NativeReply {
     Admission(Result<AdmissionReply, AdmissionFailure>),
     History(Result<ObservationPage, ReadFailure>),
     Sessions(Result<SessionPage, ReadFailure>),
+    TraceReview(Result<Option<ResolvedTraceReview>, ReadFailure>),
     Identity(Result<String, ReadFailure>),
     Workspace(Result<bool, ReadFailure>),
     PrivatePrompts(Result<Vec<agenturm_content::PromptReference>, PrivateEvidenceFailure>),
@@ -109,7 +123,9 @@ impl NativeOperation {
     pub(crate) fn delivers_private(&self) -> bool {
         matches!(
             self,
-            Self::RevealPrivate { .. } | Self::VerifyPrivatePrompt { .. }
+            Self::RevealPrivate { .. }
+                | Self::VerifyPrivatePrompt { .. }
+                | Self::VerifyPrivateOperation { .. }
         )
     }
 
@@ -148,6 +164,27 @@ impl NativeOperation {
                     &selection.source_id,
                 )?;
                 native_content::verify_prompt(store, private, allowed, &selection, output)
+            }
+            Self::VerifyPrivateOperation {
+                history_identity,
+                selection,
+                snapshot_id,
+            } => {
+                authorize_private(
+                    store,
+                    allowed,
+                    role,
+                    &history_identity,
+                    &selection.source_id,
+                )?;
+                native_content::verify_operation(
+                    store,
+                    private,
+                    allowed,
+                    &selection,
+                    snapshot_id,
+                    output,
+                )
             }
             _ => Err(PrivateEvidenceFailure::Unauthorized),
         }
@@ -191,6 +228,12 @@ pub(crate) fn dispatch(
                     worker_id: worker_id.as_deref(),
                 },
                 NativeSelection::LinkedTraces => HistorySelection::LinkedTraces,
+                NativeSelection::LinkedTurnTraces { turn_id, worker_id } => {
+                    HistorySelection::LinkedTurnTraces {
+                        turn_id,
+                        worker_id: worker_id.as_deref(),
+                    }
+                }
             };
             return NativeReply::History(native_read::query_history(
                 store, allowed, &query, selection,
@@ -203,6 +246,15 @@ pub(crate) fn dispatch(
             return NativeReply::Sessions(
                 authorize_read(store, role, expected_history_identity.as_deref())
                     .and_then(|()| native_read::query_sessions(store, allowed, &query)),
+            );
+        }
+        NativeOperation::ReviewTraceTurn {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::TraceReview(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::review_trace_turn(store, allowed, query)),
             );
         }
         NativeOperation::HistoryIdentity {
@@ -241,7 +293,9 @@ pub(crate) fn dispatch(
                 ),
             );
         }
-        NativeOperation::RevealPrivate { .. } | NativeOperation::VerifyPrivatePrompt { .. } => {
+        NativeOperation::RevealPrivate { .. }
+        | NativeOperation::VerifyPrivatePrompt { .. }
+        | NativeOperation::VerifyPrivateOperation { .. } => {
             return NativeReply::PrivatePrompts(Err(PrivateEvidenceFailure::Unauthorized));
         }
         NativeOperation::Admin { request } => {
@@ -367,6 +421,10 @@ impl Display for NativeClientError {
                     "history snapshot expired (minimum {minimum_snapshot_id})"
                 )
             }
+            Self::Read(ReadFailure::TraceScopeTooLarge { max_rows }) => write!(
+                formatter,
+                "trace exceeds the {max_rows}-row turn-resolution limit; select an explicit turn"
+            ),
             Self::Admission(AdmissionFailure::Unavailable)
             | Self::Read(ReadFailure::Unavailable)
             | Self::Admin(AdminFailure::Unavailable) => {
@@ -392,6 +450,9 @@ impl Display for NativeClientError {
             }
             Self::Private(PrivateEvidenceFailure::HistoryReplaced) => {
                 formatter.write_str("broker history changed since this workspace opened")
+            }
+            Self::Private(PrivateEvidenceFailure::SnapshotExpired) => {
+                formatter.write_str("broker history snapshot expired after retention")
             }
             Self::Private(PrivateEvidenceFailure::Unavailable) => formatter
                 .write_str("broker could not verify private evidence for the selected occurrence"),
@@ -574,6 +635,19 @@ impl NativeStore {
         revision: u32,
         consume: impl FnOnce(&agenturm_content::VerifiedPrompt) -> Result<T, String>,
     ) -> Result<T, NativeClientError> {
+        self.with_verified_prompt_at_snapshot(source, session_id, event_id, revision, None, consume)
+    }
+
+    /// Recheck an optional history snapshot under the same fence as the proof.
+    pub fn with_verified_prompt_at_snapshot<T>(
+        &self,
+        source: &ExtensionId,
+        session_id: &str,
+        event_id: &str,
+        revision: u32,
+        snapshot_id: Option<u64>,
+        consume: impl FnOnce(&agenturm_content::VerifiedPrompt) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
         self.consume_private(
             NativeOperation::VerifyPrivatePrompt {
                 history_identity: self.private_history_identity()?,
@@ -582,6 +656,7 @@ impl NativeStore {
                     session_id: session_id.into(),
                     event_id: event_id.into(),
                     revision,
+                    snapshot_id,
                 },
             },
             |prompt: &agenturm_content::VerifiedPrompt| {
@@ -590,6 +665,42 @@ impl NativeStore {
                 }
                 consume(prompt).map_err(|_| NativeClientError::PrivateConsumer)
             },
+        )
+    }
+
+    /// Consume one exact edit before acknowledging the broker's proof.
+    pub fn with_verified_edit<T>(
+        &self,
+        selection: &PrivateEvidenceSelection,
+        snapshot_id: u64,
+        consume: impl FnOnce(&agenturm_content::VerifiedEdit) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_private_operation(selection, snapshot_id, consume)
+    }
+
+    /// Consume a recorded Codex invocation under its independent grant.
+    pub fn with_verified_command<T>(
+        &self,
+        selection: &PrivateEvidenceSelection,
+        snapshot_id: u64,
+        consume: impl FnOnce(&agenturm_content::VerifiedCommand) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_private_operation(selection, snapshot_id, consume)
+    }
+
+    fn consume_private_operation<P: DeserializeOwned, T>(
+        &self,
+        selection: &PrivateEvidenceSelection,
+        snapshot_id: u64,
+        consume: impl FnOnce(&P) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_private(
+            NativeOperation::VerifyPrivateOperation {
+                history_identity: self.private_history_identity()?,
+                selection: selection.clone(),
+                snapshot_id,
+            },
+            |proof| consume(proof).map_err(|_| NativeClientError::PrivateConsumer),
         )
     }
 
@@ -693,6 +804,38 @@ impl NativeStore {
         query: &ObservationQuery,
     ) -> Result<ObservationPage, NativeClientError> {
         self.query(query, NativeSelection::LinkedTraces)
+    }
+
+    pub fn query_linked_turn_traces(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+        worker_id: Option<&str>,
+    ) -> Result<ObservationPage, NativeClientError> {
+        self.query(
+            query,
+            NativeSelection::LinkedTurnTraces {
+                turn_id: turn_id.into(),
+                worker_id: worker_id.map(str::to_owned),
+            },
+        )
+    }
+
+    pub fn review_trace_turn(
+        &self,
+        query: &TraceReviewQuery,
+    ) -> Result<Option<ResolvedTraceReview>, NativeClientError> {
+        let identity = self
+            .workspace_identity
+            .as_ref()
+            .ok_or(NativeClientError::Read(ReadFailure::InvalidRequest))?;
+        self.exchange::<Result<Option<ResolvedTraceReview>, ReadFailure>>(
+            NativeOperation::ReviewTraceTurn {
+                query: query.clone(),
+                expected_history_identity: identity.clone(),
+            },
+        )?
+        .map_err(NativeClientError::Read)
     }
 
     fn admission(&self, operation: NativeOperation) -> Result<AdmissionReply, NativeClientError> {
@@ -804,5 +947,238 @@ impl ObservationStore for NativeStore {
             }),
             AdmissionReply::Cursor { .. } => Err(NativeClientError::InvalidReply.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agenturm_kernel::{ObservationIdentity, ObservationKind, TraceSpan, TraceStatus};
+    use agenturm_store::TraceTurnQuery;
+
+    #[test]
+    fn trace_review_resolves_and_reads_under_the_same_incarnation_after_rollback() {
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-broker-trace-rollback-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let source = "harness.codex";
+        let trace_source = "otlp.test";
+        let trace_id = "11111111111111111111111111111111";
+        let span_id = "2222222222222222";
+        let session = "session-1";
+        let turn = "turn-1";
+        let allowed = BTreeSet::from([
+            ExtensionId::parse(source).unwrap(),
+            ExtensionId::parse(trace_source).unwrap(),
+        ]);
+        let mut scope = ObservationIdentity::session(session);
+        scope.turn_id = Some(turn.into());
+        let native = |event_id: &str, timestamp| Observation {
+            harness_id: ExtensionId::parse(source).unwrap(),
+            event_id: event_id.into(),
+            revision: 0,
+            identity: scope.clone(),
+            observed_at_unix_ns: timestamp,
+            kind: ObservationKind::Message {
+                role: "user".into(),
+            },
+        };
+
+        let mut original = Store::open_collector(directory.join("original.sqlite")).unwrap();
+        let history_identity = original.ensure_history_identity().unwrap();
+        original
+            .commit(source, None, "first", &[native("before-backup", 1)])
+            .unwrap();
+        let backup = directory.join("backup.sqlite");
+        original.backup_to(&backup).unwrap();
+        original
+            .commit(
+                trace_source,
+                None,
+                "trace",
+                &[Observation {
+                    harness_id: ExtensionId::parse(trace_source).unwrap(),
+                    event_id: format!("otlp:{trace_id}:{span_id}"),
+                    revision: 0,
+                    identity: scope.clone(),
+                    observed_at_unix_ns: 3,
+                    kind: ObservationKind::TraceSpan(TraceSpan {
+                        trace_id: trace_id.into(),
+                        span_id: span_id.into(),
+                        parent_span_id: None,
+                        target_source_id: Some(source.into()),
+                        started_at_unix_ns: 2,
+                        status: TraceStatus::Ok,
+                    }),
+                }],
+            )
+            .unwrap();
+        let resolved = original
+            .resolve_trace_turn(&TraceTurnQuery {
+                harness_id: source.into(),
+                session_id: session.into(),
+                trace_source_id: trace_source.into(),
+                trace_id: trace_id.into(),
+                snapshot_id: None,
+            })
+            .unwrap()
+            .unwrap();
+        let query = ObservationQuery {
+            harness_id: Some(source.into()),
+            session_id: Some(session.into()),
+            snapshot_id: Some(resolved.snapshot_id),
+            ..ObservationQuery::latest(10)
+        };
+        let request = |linked_traces| NativeOperation::ReviewTraceTurn {
+            query: TraceReviewQuery {
+                page: query.clone(),
+                trace_source_id: trace_source.into(),
+                trace_id: trace_id.into(),
+                expected_worker_id: None,
+                linked_traces,
+            },
+            expected_history_identity: history_identity.clone(),
+        };
+        for linked_traces in [false, true] {
+            let native_request = serde_json::to_vec(&request(linked_traces)).unwrap();
+            let decoded = serde_json::from_slice(&native_request).unwrap();
+            let NativeReply::TraceReview(Ok(Some(review))) =
+                dispatch(&mut original, &allowed, Role::Reader, decoded, None, None)
+            else {
+                panic!("original turn must resolve");
+            };
+            assert_eq!(review.turn_id, turn);
+            assert_eq!(review.page.snapshot_id, resolved.snapshot_id);
+            assert_eq!(review.page.observations.len(), 1);
+            let returned_source = if linked_traces { trace_source } else { source };
+            assert_eq!(
+                review.page.observations[0].harness_id.as_str(),
+                returned_source
+            );
+        }
+
+        // Model an older backup taking over the same endpoint, then receiving
+        // enough writes to recreate the original numeric snapshot ID.
+        let restored_path = directory.join("restored.sqlite");
+        Store::open_read_only(&backup)
+            .unwrap()
+            .backup_to(&restored_path)
+            .unwrap();
+        let mut restored = Store::open_collector(restored_path).unwrap();
+        assert_eq!(
+            restored.ensure_history_identity().unwrap(),
+            history_identity
+        );
+        restored
+            .commit(
+                source,
+                Some("first"),
+                "regrown",
+                &[native("rollback-branch", 4)],
+            )
+            .unwrap();
+        let split_read = NativeOperation::QueryHistory {
+            query: query.clone(),
+            selection: NativeSelection::Worker {
+                turn_id: resolved.turn_id,
+                worker_id: resolved.worker_id,
+            },
+            expected_history_identity: Some(history_identity.clone()),
+        };
+        assert!(matches!(
+            dispatch(&mut restored, &allowed, Role::Reader, split_read, None, None),
+            NativeReply::History(Ok(page))
+                if page.snapshot_id == resolved.snapshot_id
+                    && page.observations.iter().any(|row| row.event_id == "rollback-branch")
+        ));
+        for linked_traces in [false, true] {
+            assert!(matches!(
+                dispatch(
+                    &mut restored,
+                    &allowed,
+                    Role::Reader,
+                    request(linked_traces),
+                    None,
+                    None
+                ),
+                NativeReply::TraceReview(Ok(None))
+            ));
+        }
+        drop((original, restored));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn trace_review_requests_reject_a_replacement_history_at_the_same_snapshot() {
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-broker-trace-history-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let mut original = Store::open_collector(directory.join("original.sqlite")).unwrap();
+        let identity = original.ensure_history_identity().unwrap();
+        let mut replacement = Store::open_collector(directory.join("replacement.sqlite")).unwrap();
+        assert_ne!(replacement.ensure_history_identity().unwrap(), identity);
+
+        let mut query = ObservationQuery::latest(1);
+        query.harness_id = Some("harness.codex".into());
+        query.session_id = Some("session-1".into());
+        query.snapshot_id = Some(0);
+        let allowed = BTreeSet::from([
+            ExtensionId::parse("harness.codex").unwrap(),
+            ExtensionId::parse("otlp.test").unwrap(),
+        ]);
+        let resolve = || NativeOperation::ReviewTraceTurn {
+            query: TraceReviewQuery {
+                page: query.clone(),
+                trace_source_id: "otlp.test".into(),
+                trace_id: "11111111111111111111111111111111".into(),
+                expected_worker_id: None,
+                linked_traces: false,
+            },
+            expected_history_identity: identity.clone(),
+        };
+        let linked = || NativeOperation::QueryHistory {
+            query: query.clone(),
+            selection: NativeSelection::LinkedTurnTraces {
+                turn_id: "turn-1".into(),
+                worker_id: None,
+            },
+            expected_history_identity: Some(identity.clone()),
+        };
+        assert!(matches!(
+            dispatch(&mut original, &allowed, Role::Reader, resolve(), None, None),
+            NativeReply::TraceReview(Ok(None))
+        ));
+        assert!(matches!(
+            dispatch(&mut original, &allowed, Role::Reader, linked(), None, None),
+            NativeReply::History(Ok(page)) if page.snapshot_id == 0
+        ));
+        assert!(matches!(
+            dispatch(
+                &mut replacement,
+                &allowed,
+                Role::Reader,
+                resolve(),
+                None,
+                None
+            ),
+            NativeReply::TraceReview(Err(ReadFailure::HistoryReplaced))
+        ));
+        assert!(matches!(
+            dispatch(
+                &mut replacement,
+                &allowed,
+                Role::Reader,
+                linked(),
+                None,
+                None
+            ),
+            NativeReply::History(Err(ReadFailure::HistoryReplaced))
+        ));
+        drop((original, replacement));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

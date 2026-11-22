@@ -13,6 +13,7 @@
 
 mod backup;
 mod content_grant;
+mod linked_trace;
 mod retention;
 mod review_ledger;
 mod session_catalog;
@@ -23,6 +24,7 @@ pub use content_grant::{
     CodexOperationEvidence, CodexOperationSelection, ContentGrant, ContentGrantScope, ContentKind,
     UserTextEvidence,
 };
+pub use linked_trace::{ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
 pub use retention::RetentionOutcome;
 pub use review_ledger::{ReviewDecisionNote, ReviewError, ReviewKey, ReviewLedger, ReviewVersion};
 pub use session_catalog::{
@@ -30,10 +32,10 @@ pub use session_catalog::{
     SessionSummary,
 };
 pub use workspace_ledger::{
-    ApprovedTaskDraft, MAX_WORKSPACE_PAGE_SIZE, SavedHandoff, SavedTask, SavedTaskDecision,
-    TaskBrief, TaskBriefUpdate, TaskDecisionInput, TaskDecisionKind, TaskDraftApproval,
-    TaskHandoff, TaskSourceProof, WorkspaceAnchor, WorkspaceError, WorkspaceGitSnapshot,
-    WorkspaceHistory, WorkspaceLedger, WorkspacePage,
+    ApprovedTaskDraft, MAX_WORKSPACE_GIT_DIFF_BYTES, MAX_WORKSPACE_PAGE_SIZE, SavedHandoff,
+    SavedTask, SavedTaskDecision, TaskBrief, TaskBriefUpdate, TaskDecisionInput, TaskDecisionKind,
+    TaskDraftApproval, TaskHandoff, TaskSourceProof, WorkspaceAnchor, WorkspaceError,
+    WorkspaceGitDiff, WorkspaceGitSnapshot, WorkspaceHistory, WorkspaceLedger, WorkspacePage,
 };
 
 use agenturm_kernel::{
@@ -49,7 +51,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -60,7 +62,8 @@ const MAX_CURSOR_BYTES: usize = 800;
 const STORE_MARKER_V10: &str = "agenturm.observation-store.v10";
 const STORE_MARKER_V11: &str = "agenturm.observation-store.v11";
 const STORE_MARKER_V12: &str = "agenturm.observation-store.v12";
-const STORE_MARKER: &str = "agenturm.observation-store.v13";
+const STORE_MARKER_V13: &str = "agenturm.observation-store.v13";
+const STORE_MARKER: &str = "agenturm.observation-store.v14";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -345,6 +348,7 @@ pub enum StoreError {
     StaleCursor,
     StaleContentGrant,
     ExpiredHistorySnapshot { minimum_snapshot_id: u64 },
+    TraceScopeTooLarge { max_rows: usize },
     EventConflict { event_id: String },
     UnrecognizedDatabase,
     UnsupportedSchema(i64),
@@ -366,6 +370,10 @@ impl Display for StoreError {
             } => write!(
                 f,
                 "history snapshot expired after retention; start a new query at snapshot {minimum_snapshot_id} or later"
+            ),
+            Self::TraceScopeTooLarge { max_rows } => write!(
+                f,
+                "trace exceeds the {max_rows}-row turn-resolution limit; select an explicit turn"
             ),
             Self::EventConflict { event_id } => {
                 write!(f, "event ID was reused with different content: {event_id}")
@@ -472,7 +480,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         10 => STORE_MARKER_V10,
         11 => STORE_MARKER_V11,
         12 => STORE_MARKER_V12,
-        13 => STORE_MARKER,
+        13 => STORE_MARKER_V13,
+        14 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -816,7 +825,7 @@ impl Store {
         read_history_identity(&self.connection)
     }
 
-    /// Opens a v8 through v13 store through a read-only connection. This path
+    /// Opens a v8 through v14 store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -869,8 +878,6 @@ impl Store {
                     key TEXT PRIMARY KEY NOT NULL,
                     value TEXT NOT NULL
                 );
-                INSERT INTO agenturm_store_meta (key, value)
-                    VALUES ('format', 'agenturm.observation-store.v13');
                 CREATE TABLE agenturm_ingest_receipts (
                     request_id TEXT PRIMARY KEY NOT NULL,
                     source_id TEXT NOT NULL,
@@ -908,9 +915,13 @@ impl Store {
                 );
                 CREATE INDEX agenturm_observations_by_session
                     ON agenturm_observations
-                        (session_id, observed_at_unix_ns, event_id, revision);
-                PRAGMA user_version = 13;",
+                        (session_id, observed_at_unix_ns, event_id, revision);",
             )?;
+            transaction.execute(
+                "INSERT INTO agenturm_store_meta (key, value) VALUES ('format', ?1)",
+                [STORE_MARKER],
+            )?;
+            transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             content_grant::create_schema(&transaction, SCHEMA_VERSION)?;
             content_grant::create_receipt_proof_schema(&transaction)?;
             retention::create_schema(&transaction)?;
@@ -1069,7 +1080,7 @@ impl Store {
             validate_marked_shape(&connection, 7)?;
         } else if schema_version == 7 {
             validate_marked_shape(&connection, 7)?;
-        } else if matches!(schema_version, 8..=12) {
+        } else if (8..SCHEMA_VERSION).contains(&schema_version) {
             validate_marked_shape(&connection, schema_version)?;
         } else if schema_version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(schema_version));
@@ -1127,10 +1138,22 @@ impl Store {
             transaction.commit()?;
             validate_marked_shape(&connection, 12)?;
         }
-        if (2..SCHEMA_VERSION).contains(&schema_version) {
+        if (2..13).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             content_grant::migrate_v12(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V13],
+            )?;
+            transaction.pragma_update(None, "user_version", 13)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 13)?;
+        }
+        if (2..SCHEMA_VERSION).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_v13(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -1411,7 +1434,7 @@ impl Store {
     /// Reads imported traces explicitly attached to the selected native
     /// source/session at the same history snapshot as the session evidence.
     pub fn query_linked_traces(&self, query: &ObservationQuery) -> Result<ObservationPage> {
-        self.query_linked_traces_impl(query, None)
+        self.query_linked_traces_impl(query, None, None)
     }
 
     pub fn query_linked_traces_from_sources(
@@ -1419,12 +1442,33 @@ impl Store {
         query: &ObservationQuery,
         allowed_sources: &BTreeSet<ExtensionId>,
     ) -> Result<ObservationPage> {
-        self.query_linked_traces_impl(query, Some(allowed_sources))
+        self.query_linked_traces_impl(query, None, Some(allowed_sources))
+    }
+
+    /// Reads traces attached to one native turn and its exact worker scope.
+    pub fn query_linked_turn_traces(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+        worker_id: Option<&str>,
+    ) -> Result<ObservationPage> {
+        self.query_linked_traces_impl(query, Some((turn_id, worker_id)), None)
+    }
+
+    pub fn query_linked_turn_traces_from_sources(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+        worker_id: Option<&str>,
+        allowed_sources: &BTreeSet<ExtensionId>,
+    ) -> Result<ObservationPage> {
+        self.query_linked_traces_impl(query, Some((turn_id, worker_id)), Some(allowed_sources))
     }
 
     fn query_linked_traces_impl(
         &self,
         query: &ObservationQuery,
+        turn: Option<(&str, Option<&str>)>,
         allowed_sources: Option<&BTreeSet<ExtensionId>>,
     ) -> Result<ObservationPage> {
         if query
@@ -1437,11 +1481,36 @@ impl Store {
                 "linked traces require a harness source and session",
             ));
         }
-        self.query_history(query, None, None, true, allowed_sources)
+        self.query_history(
+            query,
+            turn.map(|(turn_id, _)| turn_id),
+            turn.map(|(_, worker_id)| worker_id),
+            true,
+            allowed_sources,
+        )
     }
 
     fn query_history(
         &self,
+        query: &ObservationQuery,
+        turn_id: Option<&str>,
+        worker_filter: Option<Option<&str>>,
+        linked_traces: bool,
+        allowed_sources: Option<&BTreeSet<ExtensionId>>,
+    ) -> Result<ObservationPage> {
+        let transaction = self.connection.unchecked_transaction()?;
+        Self::query_history_in(
+            &transaction,
+            query,
+            turn_id,
+            worker_filter,
+            linked_traces,
+            allowed_sources,
+        )
+    }
+
+    fn query_history_in(
+        connection: &Connection,
         query: &ObservationQuery,
         turn_id: Option<&str>,
         worker_filter: Option<Option<&str>>,
@@ -1486,10 +1555,9 @@ impl Store {
         }
         // Use the same SQLite snapshot for the retention barrier, receipt head,
         // and result rows so a concurrent prune cannot shift an active page.
-        let transaction = self.connection.unchecked_transaction()?;
         let (snapshot_id, receipt_watermark) =
-            retention::resolve_read_snapshot(&transaction, query.snapshot_id)?;
-        let mut statement = transaction.prepare(
+            retention::resolve_read_snapshot(connection, query.snapshot_id)?;
+        let mut statement = connection.prepare(
             "SELECT observation.source_id, observation.event_id, observation.revision,
                     observation.scope, observation.session_id, observation.worker_id, observation.turn_id,
                     observation.operation_id, observation.observed_at_unix_ns,
@@ -1514,6 +1582,9 @@ impl Store {
                     WHERE anchor.source_id=?2 AND anchor.session_id=?3
                       AND anchor.scope='session' AND anchor_batch.sequence<=?1
                       AND json_extract(anchor.kind_json,'$.kind')<>'trace_span'
+                      AND (observation.turn_id IS NULL
+                           OR (anchor.turn_id=observation.turn_id
+                               AND anchor.worker_id IS observation.worker_id))
                ))
                AND (?9 IS NULL OR observation.turn_id=?9)
                AND (?10 = 0 OR observation.worker_id IS ?11)
@@ -1875,7 +1946,14 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         }
         if let ObservationKind::TraceSpan(span) = &observation.kind
             && (!span.is_valid(observation.observed_at_unix_ns)
-                || !agenturm_kernel::is_trace_source_link_valid(&batch.source_id, span))
+                || !agenturm_kernel::is_trace_source_link_valid(&batch.source_id, span)
+                || !agenturm_kernel::is_trace_turn_link_valid(
+                    span,
+                    &observation.event_id,
+                    observation.identity.turn_id.as_deref(),
+                    observation.identity.worker_id.as_deref(),
+                    observation.identity.operation_id.as_deref(),
+                ))
         {
             return Err(StoreError::Invalid(
                 "trace identity, timing, or source link is invalid",
@@ -2126,6 +2204,40 @@ mod tests {
         reopened.verify_content_grant(&edit, &edit_grant).unwrap();
     }
 
+    #[test]
+    fn v13_edit_approval_survives_upgrade_without_authorizing_commands() {
+        let db = TempDb::new();
+        let source = agenturm_kernel::ExtensionId::parse("harness.codex").unwrap();
+        let edit = ContentGrantScope::new(source.clone(), ContentKind::CodexEditDetail, [1; 32]);
+        let command = ContentGrantScope::new(source, ContentKind::CodexCommandDetail, [2; 32]);
+        let mut store = Store::open(&db.0).unwrap();
+        let existing = store.grant_content(&edit).unwrap();
+        let transaction = store.connection.transaction().unwrap();
+        content_grant::migrate_grant_schema(&transaction, 13).unwrap();
+        transaction
+            .execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V13],
+            )
+            .unwrap();
+        transaction.pragma_update(None, "user_version", 13).unwrap();
+        transaction.commit().unwrap();
+        drop(store);
+        let read_only = Store::open_read_only(&db.0).unwrap();
+        assert!(read_only.current_content_grant(&command).unwrap().is_none());
+        drop(read_only);
+        let mut reopened = Store::open(&db.0).unwrap();
+        reopened.verify_content_grant(&edit, &existing).unwrap();
+        assert!(reopened.current_content_grant(&command).unwrap().is_none());
+        let grant = reopened.grant_content(&command).unwrap();
+        assert_ne!(grant.binding_fingerprint(), existing.binding_fingerprint());
+        drop(reopened);
+        Store::open_read_only(&db.0)
+            .unwrap()
+            .verify_content_grant(&command, &grant)
+            .unwrap();
+    }
+
     fn downgrade_fixture_to_v7(connection: &Connection) {
         downgrade_fixture_to_v9(connection);
         connection
@@ -2349,6 +2461,42 @@ mod tests {
             reader.observation_page(1).unwrap().snapshot_id,
             second.minimum_snapshot_id
         );
+    }
+
+    #[test]
+    fn exact_snapshot_membership_accepts_maximum_revision_and_enforces_receipt_watermark() {
+        let db = TempDb::new();
+        let mut store = Store::open_collector(&db.0).unwrap();
+        let source = agenturm_kernel::ExtensionId::parse("harness.codex").unwrap();
+        let before = store.observation_page(1).unwrap().snapshot_id;
+        let mut selected = event("maximum-revision", "session-1", 10);
+        selected.revision = u32::MAX;
+        store
+            .commit_batch(&batch("maximum", vec![selected]))
+            .unwrap();
+        let visible = store.observation_page(1).unwrap().snapshot_id;
+        let contains = |store: &Store, revision, snapshot| {
+            store
+                .with_user_content_fence(|store| {
+                    store.contains_observation_at_snapshot(
+                        &source,
+                        "maximum-revision",
+                        revision,
+                        snapshot,
+                    )
+                })
+                .unwrap()
+        };
+        assert!(!contains(&store, u32::MAX, before).unwrap());
+        assert!(!contains(&store, u32::MAX - 1, visible).unwrap());
+        assert!(contains(&store, u32::MAX, visible).unwrap());
+        let retained = store.prune_observations_before(1).unwrap();
+        assert_eq!(retained.removed_observations, 0);
+        assert!(matches!(
+            contains(&store, u32::MAX, visible),
+            Err(StoreError::ExpiredHistorySnapshot { .. })
+        ));
+        assert!(contains(&store, u32::MAX, retained.minimum_snapshot_id).unwrap());
     }
 
     #[test]

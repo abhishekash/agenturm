@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Rust development</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md">Markdown source ↗</a></nav><h1>Native broker commands</h1>
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.4 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md">Markdown source ↗</a></nav><h1>Native broker commands</h1>
 <p>The Linux bundle includes <code>agenturm-storage-service</code> and explicit broker clients. The broker owns the history database and authenticates the client UID and primary GID. The client verifies the configured broker UID and GID before sending a request. Configure each native source ID in the service allowlist.</p>
 <p>Create the data directory as mode <code>0700</code>, owned by the broker identity. Create the transport directory as mode <code>2710</code>, owned by the broker identity with the client's primary group. Run the service as its dedicated non-root identity.</p>
 <pre><code class="language-sh">agenturm-storage-service --data-root /srv/agenturm/history \
@@ -41,6 +41,12 @@ An exact retry recovers the committed result after a lost reply.</p>
 Continue a traversal with the same filters and watermark. The broker limits
 source-free reads to its configured allowlist. The inspector uses the
 background workspace request loop for session and turn navigation.</p>
+<p>Use <code>broker review --linked-traces</code> with an exact turn to page its linked
+spans. Use <code>--turn-of-trace &lt;trace-id&gt; --trace-source-id &lt;otlp-source&gt;</code>
+in place of <code>--turn-id</code> to select the native turn from an explicitly
+scoped trace. The broker checks both source IDs against its allowlist.
+Each trace-selected Review page resolves the turn and reads its evidence
+in a single authenticated request and SQLite snapshot.</p>
 <p>The broker cockpit supports saved tasks, handoffs, request seen state and
 review decisions alongside remote history. These user-owned records live
 under the client's state directory. Their namespace binds the authenticated
@@ -63,8 +69,8 @@ agenturm broker grant check --broker-config reader.json --binding binding.json
 agenturm broker grant approve --broker-config grant-admin.json --binding binding.json
 agenturm broker grant revoke --broker-config grant-admin.json --binding binding.json
 </code></pre>
-<p>For Codex operation content, add <code>--kind codex.mcp_payload</code> or
-<code>--kind codex.edit_detail</code> when deriving the binding. A different content
+<p>For Codex operation content, add <code>--kind codex.mcp_payload</code>,
+<code>--kind codex.edit_detail</code>, or <code>--kind codex.command_detail</code> when deriving the binding. Each
 kind has its own approval. The JSON response reports the current epoch
 when approved. It contains no disclosure token or source content.</p>
 <h2>Maintenance</h2>
@@ -89,6 +95,13 @@ pinned collection configuration. The broker must have read access to the
 source transcript and pinned adapter. It reopens this configuration and
 verifies the adapter hash during proof checks. No client request chooses a
 source filesystem path.</p>
+<p>Give the collector ownership of its transcript and set its mode to
+<code>0640</code> with a dedicated source-read group. Give the broker this group as
+a supplementary group and allow it to traverse the source directory. Keep
+the reader and grant administrator outside the source-read group. Preserve
+these permissions when the collector creates or rotates transcripts. Socket
+access uses a separate transport group, and the broker authenticates each
+caller's configured UID and primary GID.</p>
 <p>The separate reader can list and reveal approved occurrences. Collection
 and grant administration identities cannot disclose private evidence.</p>
 <pre><code class="language-sh">agenturm broker content list --broker-config reader.json \
@@ -105,7 +118,8 @@ agenturm broker cockpit --broker-config reader.json
   &quot;kind&quot;: { &quot;kind&quot;: &quot;user_text&quot; }
 }
 </code></pre>
-<p>For Codex operation details, use <code>codex_mcp_payload</code> or <code>codex_edit_detail</code>
+<p>For Codex operation details, use <code>codex_mcp_payload</code>, <code>codex_edit_detail</code>,
+or <code>codex_command_detail</code>
 as the nested kind and include its exact <code>turn_id</code> and <code>operation_id</code> there.
 Each operation kind requires its own approval. The cockpit builds these
 selections from retained operation metadata.</p>
@@ -116,6 +130,42 @@ acknowledgement to one bounded delivery; missing or incorrect
 acknowledgements fail within the display deadline. Every private operation
 pins the broker history identity, preventing stale selections from silently
 crossing a replaced database. Ordinary queries retain metadata only.</p>
+<h2>Investigate retained source evidence</h2>
+<pre><code class="language-sh">agenturm broker investigate instruction 'keep the public API' \
+  --broker-config reader.json --source-id harness.pi --session-id session-1
+agenturm broker investigate path src/retry.py \
+  --broker-config reader.json --source-id harness.codex --session-id session-2
+agenturm broker investigate command 'pytest suite' \
+  --broker-config reader.json --source-id harness.codex --session-id session-2
+agenturm broker investigate source &quot;$event_id&quot; --reference &quot;$source_reference&quot; \
+  --broker-config reader.json
+</code></pre>
+<p>For local history, run <code>agenturm investigate</code> and supply <code>--db</code> and
+<code>--config</code>. Instruction search matches literal word
+phrases in bounded approved user prompts. Path search matches the exact
+recorded path or move destination of a Codex edit approved under
+<code>codex.edit_detail</code>. Each search requires a source and session. Add
+<code>--turn-id</code> to select the main worker in a particular turn, or give
+<code>--worker-id</code> with the turn to select that worker.</p>
+<p>Command search uses the independent <code>codex.command_detail</code> grant and the
+exact retained native Codex <code>CommandExecution</code> occurrence. A match has a
+<code>recorded_invocation</code> string or argument array in its original format.
+It carries no execution-success claim. The proof withholds incomplete,
+oversized, credential-like, or control-bearing invocations. Output, working
+directory, and environment fields stay outside the projection.</p>
+<p>The command emits JSON Lines. Every match includes its event ID and
+<code>source_reference</code>. A final coverage record reports rows examined, proved
+and unavailable candidates, and any <code>next_cursor</code>. One invocation examines
+up to <code>--limit</code> history rows (default 30, maximum 100) and proves at most 12
+candidates. Pass <code>next_cursor</code> as <code>--cursor</code> with the same query and scope.
+Exhausted coverage refers to retained, bounded evidence. Unavailable
+candidates may include revoked, replaced, or unreadable source evidence.</p>
+<p>Exact source reads take the event ID and reference from a match. They
+recheck the retained snapshot, occurrence, and grant fingerprint under the
+same proof fence.
+Revocation, a renewed grant, or an expired snapshot requires a fresh
+investigation. Match and source records flush while their individual
+proof fences are held. Coverage, cursors, and references contain metadata.</p>
 <h2>Source-backed task continuity</h2>
 <p>The reader can prepare an exact prompt draft using broker-owned sources.
 The draft file contains a bounded approved excerpt and editable continuation.

@@ -196,6 +196,13 @@ impl UiModel {
 
     /// Applies one key press. Returns true when the user requests exit.
     pub fn handle_key(&mut self, key: KeyCode) -> bool {
+        if matches!(key, KeyCode::F(1) | KeyCode::Char('?')) || (self.help && key == KeyCode::Esc) {
+            self.help = !self.help;
+            return false;
+        }
+        if self.help {
+            return key == KeyCode::Char('q');
+        }
         match key {
             KeyCode::Char('q') | KeyCode::Esc => true,
             KeyCode::Right | KeyCode::Tab => {
@@ -212,10 +219,6 @@ impl UiModel {
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.scroll_up();
-                false
-            }
-            KeyCode::Char('?') => {
-                self.help = !self.help;
                 false
             }
             _ => false,
@@ -401,7 +404,7 @@ pub fn run_with_turn_activity(
                     KeyCode::Char('t') if page.ui.turn_available && !page.ui.help => {
                         page.turn_picker = Some(ListState::default().with_selected(Some(0)));
                     }
-                    KeyCode::Esc if active_turn.is_some() => {
+                    KeyCode::Esc if active_turn.is_some() && !page.ui.help => {
                         if let Some((previous, cached)) = overview.take() {
                             page = previous;
                             newer_pages = cached;
@@ -415,6 +418,8 @@ pub fn run_with_turn_activity(
         }
     })
 }
+
+const HELP_CLOSE_HINT: &str = "Esc, F1 or ? close help · q quit";
 
 fn draw(
     frame: &mut Frame,
@@ -482,10 +487,8 @@ fn draw(
 
     let footer = if picking_turn {
         "↑/↓ select · Enter open · Esc back"
-    } else if model.help && model.turn_available {
-        " Tab panes · ↑/↓ scroll · t turns · ? close help · q quit "
     } else if model.help {
-        " Tab panes · ↑/↓ scroll · ? close help · q quit "
+        HELP_CLOSE_HINT
     } else if model.older_cursor.is_some() && has_newer_page {
         " ←/→ panes · ↑/↓ scroll · [ older · ] newer · ? help · q quit "
     } else if model.older_cursor.is_some() {

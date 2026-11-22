@@ -90,6 +90,11 @@ jobs:
         run: python -m unittest tests.test_rust_javascript_client_e2e -v
         env:
           AGENTURM_RUST_APP_BIN: ${{ github.workspace }}/target/debug/agenturm
+      - run: python -m pip install 'opentelemetry-sdk>=1.27,<2'
+      - name: Verify Python producer through the Rust OTLP launcher and receiver
+        run: python -m unittest tests.test_python_otlp_client tests.test_rust_python_client_e2e -v
+        env:
+          AGENTURM_RUST_APP_BIN: ${{ github.workspace }}/target/debug/agenturm
       - run: python -m unittest tests.test_plugin_reference_wire_spi -v
       - run: python -m unittest tests.test_plugin_private_reference_e2e -v
       - run: python -m unittest tests.test_store_writer_lease -v

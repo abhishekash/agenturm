@@ -51,6 +51,13 @@ Continue a traversal with the same filters and watermark. The broker limits
 source-free reads to its configured allowlist. The inspector uses the
 background workspace request loop for session and turn navigation.
 
+Use `broker review --linked-traces` with an exact turn to page its linked
+spans. Use `--turn-of-trace <trace-id> --trace-source-id <otlp-source>`
+in place of `--turn-id` to select the native turn from an explicitly
+scoped trace. The broker checks both source IDs against its allowlist.
+Each trace-selected Review page resolves the turn and reads its evidence
+in a single authenticated request and SQLite snapshot.
+
 The broker cockpit supports saved tasks, handoffs, request seen state and
 review decisions alongside remote history. These user-owned records live
 under the client's state directory. Their namespace binds the authenticated
@@ -79,8 +86,8 @@ agenturm broker grant approve --broker-config grant-admin.json --binding binding
 agenturm broker grant revoke --broker-config grant-admin.json --binding binding.json
 ```
 
-For Codex operation content, add `--kind codex.mcp_payload` or
-`--kind codex.edit_detail` when deriving the binding. A different content
+For Codex operation content, add `--kind codex.mcp_payload`,
+`--kind codex.edit_detail`, or `--kind codex.command_detail` when deriving the binding. Each
 kind has its own approval. The JSON response reports the current epoch
 when approved. It contains no disclosure token or source content.
 
@@ -113,6 +120,14 @@ source transcript and pinned adapter. It reopens this configuration and
 verifies the adapter hash during proof checks. No client request chooses a
 source filesystem path.
 
+Give the collector ownership of its transcript and set its mode to
+`0640` with a dedicated source-read group. Give the broker this group as
+a supplementary group and allow it to traverse the source directory. Keep
+the reader and grant administrator outside the source-read group. Preserve
+these permissions when the collector creates or rotates transcripts. Socket
+access uses a separate transport group, and the broker authenticates each
+caller's configured UID and primary GID.
+
 The separate reader can list and reveal approved occurrences. Collection
 and grant administration identities cannot disclose private evidence.
 
@@ -135,7 +150,8 @@ A user-text selection identifies the exact retained occurrence.
 }
 ```
 
-For Codex operation details, use `codex_mcp_payload` or `codex_edit_detail`
+For Codex operation details, use `codex_mcp_payload`, `codex_edit_detail`,
+or `codex_command_detail`
 as the nested kind and include its exact `turn_id` and `operation_id` there.
 Each operation kind requires its own approval. The cockpit builds these
 selections from retained operation metadata.
@@ -147,6 +163,49 @@ acknowledgement to one bounded delivery; missing or incorrect
 acknowledgements fail within the display deadline. Every private operation
 pins the broker history identity, preventing stale selections from silently
 crossing a replaced database. Ordinary queries retain metadata only.
+
+## Investigate retained source evidence
+
+```sh
+agenturm broker investigate instruction 'keep the public API' \
+  --broker-config reader.json --source-id harness.pi --session-id session-1
+agenturm broker investigate path src/retry.py \
+  --broker-config reader.json --source-id harness.codex --session-id session-2
+agenturm broker investigate command 'pytest suite' \
+  --broker-config reader.json --source-id harness.codex --session-id session-2
+agenturm broker investigate source "$event_id" --reference "$source_reference" \
+  --broker-config reader.json
+```
+
+For local history, run `agenturm investigate` and supply `--db` and
+`--config`. Instruction search matches literal word
+phrases in bounded approved user prompts. Path search matches the exact
+recorded path or move destination of a Codex edit approved under
+`codex.edit_detail`. Each search requires a source and session. Add
+`--turn-id` to select the main worker in a particular turn, or give
+`--worker-id` with the turn to select that worker.
+
+Command search uses the independent `codex.command_detail` grant and the
+exact retained native Codex `CommandExecution` occurrence. A match has a
+`recorded_invocation` string or argument array in its original format.
+It carries no execution-success claim. The proof withholds incomplete,
+oversized, credential-like, or control-bearing invocations. Output, working
+directory, and environment fields stay outside the projection.
+
+The command emits JSON Lines. Every match includes its event ID and
+`source_reference`. A final coverage record reports rows examined, proved
+and unavailable candidates, and any `next_cursor`. One invocation examines
+up to `--limit` history rows (default 30, maximum 100) and proves at most 12
+candidates. Pass `next_cursor` as `--cursor` with the same query and scope.
+Exhausted coverage refers to retained, bounded evidence. Unavailable
+candidates may include revoked, replaced, or unreadable source evidence.
+
+Exact source reads take the event ID and reference from a match. They
+recheck the retained snapshot, occurrence, and grant fingerprint under the
+same proof fence.
+Revocation, a renewed grant, or an expired snapshot requires a fresh
+investigation. Match and source records flush while their individual
+proof fences are held. Coverage, cursors, and references contain metadata.
 
 ## Source-backed task continuity
 

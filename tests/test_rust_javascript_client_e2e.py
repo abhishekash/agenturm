@@ -1,6 +1,7 @@
 """Verify the dependency-free Node producer against the standalone Rust receiver."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import select
@@ -51,6 +52,8 @@ await client.trace({
     await run.span('child', child => {
       identities.child = child.span_id;
       child.setAttribute('agenturm.source.id', 'harness.unverified');
+      child.setAttribute('agenturm.turn.id', 'unverified-turn');
+      child.setAttribute('agenturm.worker.id', 'unverified-worker');
       child.setStatus('OK');
     });
   });
@@ -73,6 +76,8 @@ process.exitCode = 23;
         self.assertEqual(len(rows), 3)
         for row in rows:
             self.assertEqual(row["identity"]["session_id"], "node-session")
+            self.assertIsNone(row["identity"].get("turn_id"))
+            self.assertIsNone(row["identity"].get("worker_id"))
             self.assertEqual(row["observation"]["target_source_id"], "harness.node")
             self.assertEqual(row["observation"]["trace_id"], identities["trace"])
         spans = {row["observation"]["span_id"]: row["observation"] for row in rows}
@@ -81,6 +86,151 @@ process.exitCode = 23;
         self.assertEqual(child["parent_span_id"], identities["parent"])
         self.assertEqual(child["status"], "ok")
         self.assertIsNone(spans[parent["parent_span_id"]]["parent_span_id"])
+
+    def test_explicit_turn_and_worker_reopen_with_exact_native_scope(self):
+        binaries = Path(RUST_APP).resolve().parent
+        plugin_host = Path(os.getenv("AGENTURM_RUNTIME_PLUGIN_HOST", binaries / "agenturm-plugin-host"))
+        pi_adapter = Path(os.getenv("AGENTURM_RUNTIME_PI_ADAPTER", binaries / "agenturm-pi-harness"))
+        if not plugin_host.is_file() or not pi_adapter.is_file():
+            self.skipTest("build the Rust plugin host and Pi adapter for native turn fixtures")
+        adapter = self.root / "agenturm-pi-harness"
+        shutil.copyfile(pi_adapter, adapter)
+        adapter.chmod(0o755)
+        catalog = self.root / "catalog.json"
+        catalog.write_text(json.dumps({"version": 1, "plugins": [{
+            "plugin_id": "example.rust-pi-harness",
+            "adapter": str(adapter),
+            "sha256": hashlib.sha256(adapter.read_bytes()).hexdigest(),
+            "protocol": 1,
+            "features": ["source-adapter/1", "configured-root/1"],
+            "observation_format": "agenturm-observations/1",
+        }]}))
+        sources = []
+        for source_id in ["harness.node", "harness.sibling"]:
+            source = self.root / f"{source_id}.jsonl"
+            rows = [
+                {"type": "session", "id": source_id,
+                 "sessionId": "node-worker-session", "agentId": "worker.one"},
+                *[
+                    {"type": "message", "id": turn, "timestamp": f"2026-11-20T12:00:0{index}Z",
+                     "message": {"role": "user", "content": "Synthetic native turn"}}
+                    for index, turn in enumerate(["turn.one", "turn.two"])
+                ],
+            ]
+            source.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            sources.append({"source_id": source_id, "source_root": str(source),
+                            "plugin_id": "example.rust-pi-harness"})
+        config = self.root / "sources.json"
+        config.write_text(json.dumps({"version": 2, "plugin_host": str(plugin_host.resolve()),
+                                      "plugin_catalog": str(catalog), "sources": sources}))
+        collected = subprocess.run(
+            [RUST_APP, "collect", "--config", config, "--db", self.database],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(collected.returncode, 0, collected.stderr)
+        self.assertEqual(collected.stdout.count("ACK sent=true"), 2, collected.stdout)
+
+        self.write_producer("""
+const client = new Client({ transport: 'otlp', strict: true });
+const scope = {
+  sessionId: 'node-worker-session', harnessId: 'harness.node',
+  turnId: 'turn.one', workerId: 'worker.one',
+};
+for (const invalid of [
+  {sessionId: undefined}, {harnessId: undefined}, {turnId: undefined},
+  {turnId: 'invalid\\n'}, {turnId: 42}, {workerId: 'x'.repeat(513)},
+]) {
+  try {
+    await client.trace({...scope, ...invalid}, () => {
+      throw new Error('invalid scope reached the callback');
+    });
+    throw new Error('invalid scope was accepted');
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+  }
+}
+const traces = {};
+traces.exact = await client.trace(scope, async run => {
+  await run.span('parent', async () => {
+    await run.span('child', child => {
+      child.setAttribute('agenturm.turn.id', 'unverified-turn');
+      child.setAttribute('agenturm.worker.id', 'unverified-worker');
+    });
+  });
+  return run.trace_id;
+});
+for (const [key, fields] of Object.entries({
+  otherTurn: {turnId: 'turn.two'},
+  otherWorker: {workerId: 'worker.two'},
+  mainWorker: {workerId: undefined},
+  otherSession: {sessionId: 'other-session'},
+  otherSource: {harnessId: 'harness.sibling'},
+  sessionOnly: {turnId: undefined, workerId: undefined},
+})) {
+  traces[key] = await client.trace({...scope, ...fields}, run => run.trace_id);
+}
+console.log(JSON.stringify(traces));
+""")
+        completed = subprocess.run(
+            [RUST_APP, "run", "--db", self.database, "--source-id", "otlp.node",
+             "--", NODE, self.producer],
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        traces = json.loads(completed.stdout)
+        observations = self.observations("otlp.node")
+        self.assertEqual(len(observations), 9)
+        selected = [
+            row for row in observations if row["observation"]["trace_id"] == traces["exact"]
+        ]
+        self.assertEqual(len(selected), 3)
+        for row in selected:
+            self.assertEqual(row["identity"]["session_id"], "node-worker-session")
+            self.assertEqual(row["identity"]["turn_id"], "turn.one")
+            self.assertEqual(row["identity"]["worker_id"], "worker.one")
+            self.assertEqual(row["observation"]["target_source_id"], "harness.node")
+
+        def review(*options, source="harness.node", session="node-worker-session"):
+            return subprocess.run(
+                [RUST_APP, "review", "--db", self.database, "--harness-id", source,
+                 "--session-id", session, "--format", "json", *options],
+                capture_output=True, text=True, timeout=10,
+            )
+
+        def read_review(result):
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+        def linked(turn, worker=None):
+            worker_args = ["--worker-id", worker] if worker else []
+            receipt = read_review(review("--turn-id", turn, "--linked-traces", *worker_args))
+            return [row["observation"]["trace_id"] for row in receipt["observations"]]
+
+        self.assertEqual(linked("turn.one", "worker.one"), [traces["exact"]] * 3)
+        self.assertEqual(linked("turn.two", "worker.one"), [traces["otherTurn"]])
+        self.assertEqual(linked("turn.one", "worker.two"), [])
+        self.assertEqual(linked("turn.one"), [])
+
+        exact_trace = ["--turn-of-trace", traces["exact"], "--trace-source-id", "otlp.node"]
+        resolved = read_review(review(*exact_trace))
+        self.assertEqual(resolved["scope"]["turn_id"], "turn.one")
+        self.assertEqual(resolved["scope"]["worker_id"], "worker.one")
+        self.assertEqual(
+            {row["observation"]["kind"] for row in resolved["observations"]},
+            {"lifecycle", "message"},
+        )
+        for row in resolved["observations"]:
+            self.assertEqual(row["harness_id"], "harness.node")
+            self.assertEqual(row["identity"]["turn_id"], "turn.one")
+            self.assertEqual(row["identity"]["worker_id"], "worker.one")
+        for denied in [
+            review(*exact_trace, source="harness.sibling"),
+            review(*exact_trace, session="other-session"),
+            review(*exact_trace, "--worker-id", "worker.two"),
+            review("--turn-of-trace", traces["sessionOnly"], "--trace-source-id", "otlp.node"),
+        ]:
+            self.assertNotEqual(denied.returncode, 0, denied.stdout)
+            self.assertEqual(denied.stdout, "")
 
     def test_standalone_receiver_rejects_unscoped_spans_and_accepts_bounded_batches(self):
         self.write_producer("""

@@ -42,6 +42,7 @@ binaries=args.bin_dir.resolve(strict=True)
 APP=str(binaries/'agenturm')
 SERVICE=str(binaries/'agenturm-storage-service')
 ADAPTER=str(binaries/'agenturm-pi-harness')
+CODEX=str(binaries/'agenturm-codex-harness')
 HOST=str(binaries/'agenturm-plugin-host')
 
 def drop(uid,gid=GID,groups=()):
@@ -61,13 +62,32 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
     source=root/'pi.jsonl'
     original='{"type":"session","id":"private-session"}\n{"type":"message","id":"prompt-1","timestamp":"2026-11-20T12:00:00Z","message":{"role":"user","content":"Review the bounded broker fixture"}}\n'
     source.write_text(original);os.chown(source,COLLECTOR,SOURCE_GID);source.chmod(0o640)
-    pin=hashlib.sha256(Path(ADAPTER).read_bytes()).hexdigest()
+    codex=root/'codex.jsonl'
+    codex.write_text(''.join(json.dumps(row)+'\n' for row in [
+        {'type':'session_meta','payload':{'id':'edit-session'}},
+        {'type':'event_msg','timestamp':'2026-11-19T12:00:01Z','payload':{
+            'type':'item_completed','thread_id':'edit-session','turn_id':'edit-turn',
+            'item':{'type':'FileChange','id':'fixture-edit','status':'completed','changes':{
+                'src/before.txt':{'type':'update','unified_diff':'@@ -1 +1 @@\n-old\n+verified line\n','move_path':'src/after.txt'}
+            }}
+        }},
+        {'type':'event_msg','timestamp':'2026-11-19T12:00:02Z','payload':{
+            'type':'item_completed','thread_id':'edit-session','turn_id':'command-turn',
+            'item':{'type':'CommandExecution','id':'fixture-command','status':'completed',
+                    'command':['/bin/bash','-lc','pytest isolated smoke'],
+                    'aggregated_output':'private command output'}
+        }},
+    ]))
+    os.chown(codex,COLLECTOR,SOURCE_GID);codex.chmod(0o640)
+    sources=[('harness.pi','example.rust-pi-harness',ADAPTER,source),
+             ('harness.codex','example.rust-codex-harness',CODEX,codex)]
+    pins={artifact:hashlib.sha256(Path(artifact).read_bytes()).hexdigest() for _,_,artifact,_ in sources}
     features=['source-adapter/1','configured-root/1']
-    catalog=root/'catalog.json';catalog.write_text(json.dumps(dict(version=1,plugins=[dict(plugin_id='example.rust-pi-harness',adapter=ADAPTER,sha256=pin,protocol=1,features=features,observation_format='agenturm-observations/1')])))
-    config=root/'sources.json';config.write_text(json.dumps(dict(version=2,plugin_host=HOST,plugin_catalog=str(catalog),sources=[dict(plugin_id='example.rust-pi-harness',source_root=str(source),source_id='harness.pi')])))
-    private=root/'content.json';private.write_text(json.dumps(dict(version=1,sources=[dict(source_id='harness.pi',plugin_id='example.rust-pi-harness',plugin_host=HOST,adapter=ADAPTER,artifact_sha256=pin,features=features,source_root=str(source))])));os.chown(private,BROKER,BROKER);private.chmod(0o600)
+    catalog=root/'catalog.json';catalog.write_text(json.dumps(dict(version=1,plugins=[dict(plugin_id=plugin,adapter=artifact,sha256=pins[artifact],protocol=1,features=features,observation_format='agenturm-observations/1') for _,plugin,artifact,_ in sources])))
+    config=root/'sources.json';config.write_text(json.dumps(dict(version=2,plugin_host=HOST,plugin_catalog=str(catalog),sources=[dict(plugin_id=plugin,source_root=str(path),source_id=source_id) for source_id,plugin,_,path in sources])))
+    private=root/'content.json';private.write_text(json.dumps(dict(version=1,sources=[dict(source_id=source_id,plugin_id=plugin,plugin_host=HOST,adapter=artifact,artifact_sha256=pins[artifact],features=features,source_root=str(path)) for source_id,plugin,artifact,path in sources])));os.chown(private,BROKER,BROKER);private.chmod(0o600)
     endpoint=root/'broker.json';endpoint.write_text(json.dumps(dict(version=1,socket=str(transport/'agenturm-native-storage-v1.sock'),receiver_id='receiver:private',service_uid=BROKER,service_gid=BROKER)))
-    service=subprocess.Popen([SERVICE,'--data-root',data,'--transport-dir',transport,'--receiver-id','receiver:private','--client-uid',str(COLLECTOR),'--client-gid',str(GID),'--native-sources','harness.pi','--native-reader',f'{READER}:{GID}','--native-grant-admin',f'{ADMIN}:{GID}','--native-content-config',private],preexec_fn=drop(BROKER,BROKER,(SOURCE_GID,)))
+    service=subprocess.Popen([SERVICE,'--data-root',data,'--transport-dir',transport,'--receiver-id','receiver:private','--client-uid',str(COLLECTOR),'--client-gid',str(GID),'--native-sources','harness.pi,harness.codex','--native-reader',f'{READER}:{GID}','--native-grant-admin',f'{ADMIN}:{GID}','--native-content-config',private],preexec_fn=drop(BROKER,BROKER,(SOURCE_GID,)))
     def run(uid,*args,ok=True,broker=True):
         command=[APP]
         if broker: command+=['broker']
@@ -77,6 +97,8 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         assert (result.returncode==0)==ok,(command,result.returncode,result.stdout,result.stderr)
         if not ok:
             assert 'Review the bounded broker fixture' not in result.stdout
+            assert 'verified line' not in result.stdout
+            assert 'pytest isolated smoke' not in result.stdout
         return result
     try:
         for _ in range(250):
@@ -90,6 +112,12 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         prompt=next(row for row in rows if row['observation']['kind']=='message')
         listing=['content','list','--source-id','harness.pi','--session-id','private-session']
         run(READER,*listing,ok=False)
+        instruction=['investigate','instruction','bounded broker','--source-id','harness.pi','--session-id','private-session']
+        path_search=['investigate','path','src/after.txt','--source-id','harness.codex','--session-id','edit-session']
+        command_search=['investigate','command','isolated smoke','--source-id','harness.codex','--session-id','edit-session']
+        for investigation in [instruction,path_search,command_search]:
+            coverage=json.loads(run(READER,*investigation).stdout)
+            assert coverage['matched']==0 and coverage['unavailable_candidates']==1,coverage
         binding=root/'binding.json';binding.write_text(run(COLLECTOR,'content','binding','--config',config,'--source-id','harness.pi',broker=False).stdout)
         run(ADMIN,'grant','approve','--binding',binding)
         references=json.loads(run(READER,*listing).stdout)
@@ -100,6 +128,39 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         preview=['content','preview','--selection',selection]
         assert json.loads(run(READER,*preview).stdout)=='Review the bounded broker fixture'
         for uid in [COLLECTOR,ADMIN]:run(uid,*preview,ok=False)
+        match,coverage=map(json.loads,run(READER,*instruction).stdout.splitlines())
+        assert match['event_id']==prompt['event_id'] and coverage['matched']==1,(match,coverage)
+        assert 'Review the bounded broker fixture' not in match['source_reference']
+        prompt_source=['investigate','source',prompt['event_id'],'--reference',match['source_reference']]
+        assert json.loads(run(READER,*prompt_source).stdout)['evidence']['text']==match['excerpt']
+        for uid in [COLLECTOR,ADMIN]:
+            run(uid,*instruction,ok=False)
+            run(uid,*prompt_source,ok=False)
+        edit_binding=root/'edit-binding.json'
+        edit_binding.write_text(run(COLLECTOR,'content','binding','--config',config,
+                                    '--source-id','harness.codex','--kind','codex.edit_detail',broker=False).stdout)
+        run(ADMIN,'grant','approve','--binding',edit_binding)
+        found,coverage=map(json.loads,run(READER,*path_search).stdout.splitlines())
+        assert found['scope']['turn_id']=='edit-turn' and coverage['matched']==1,(found,coverage)
+        assert 'verified line' not in json.dumps(found)
+        edit_source=['investigate','source',found['event_id'],'--reference',found['source_reference']]
+        change=json.loads(run(READER,*edit_source).stdout)['evidence']['changes'][0]
+        assert change['path']=='src/before.txt' and change['move_path']=='src/after.txt',change
+        assert 'verified line' in change['diff'],change
+        run(ADMIN,'grant','revoke','--binding',edit_binding)
+        run(READER,*edit_source,ok=False)
+        command_binding=root/'command-binding.json'
+        command_binding.write_text(run(COLLECTOR,'content','binding','--config',config,
+                                       '--source-id','harness.codex','--kind','codex.command_detail',broker=False).stdout)
+        run(ADMIN,'grant','approve','--binding',command_binding)
+        command,coverage=map(json.loads,run(READER,*command_search).stdout.splitlines())
+        expected=['/bin/bash','-lc','pytest isolated smoke']
+        assert command['recorded_invocation']==expected and coverage['matched']==1,(command,coverage)
+        command_source=['investigate','source',command['event_id'],'--reference',command['source_reference']]
+        assert json.loads(run(READER,*command_source).stdout)['evidence']=={'recorded_invocation':expected}
+        assert 'private command output' not in json.dumps(command)
+        run(ADMIN,'grant','revoke','--binding',command_binding)
+        run(READER,*command_source,ok=False)
         draft=json.loads(run(READER,'task','draft','--source-id','harness.pi','--session-id','private-session','--turn-id','prompt-1','--event-id',prompt['event_id'],'--revision',prompt['revision']).stdout)
         assert draft['excerpt']=='Review the bounded broker fixture'
         draft['continuation']='Verify the next bounded step'
@@ -161,6 +222,7 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
                 if revoke is not None and revoke.poll() is None:revoke.kill();revoke.wait(timeout=5)
                 os.close(master);os.close(slave)
         run(READER,*preview,ok=False)
+        run(READER,*prompt_source,ok=False)
         run(READER,'task','continuity',task_id,'--approval-id',approval_id,ok=False)
         assert draft['excerpt'] not in run(READER,'task','continuity',task_id).stdout
         run(ADMIN,'grant','approve','--binding',binding)
@@ -195,8 +257,25 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
                 if process is not None and process.poll() is None:process.kill();process.wait(timeout=5)
             os.close(read_end);os.close(write_end)
         run(ADMIN,'grant','approve','--binding',binding)
+        run(READER,*prompt_source,ok=False)
         wrong=json.loads(selection.read_text());wrong['session_id']='other';selection.write_text(json.dumps(wrong));run(READER,*preview,ok=False)
         wrong['session_id']='private-session';selection.write_text(json.dumps(wrong))
+        with source.open('a') as transcript:
+            for index in range(13):
+                transcript.write(json.dumps({
+                    'type':'message','id':f'budget-{index}',
+                    'timestamp':f'2026-11-20T12:01:{index:02}Z',
+                    'message':{'role':'user','content':'scan budget fixture'}
+                })+'\n')
+        run(COLLECTOR,'collect','--config',config)
+        budget=['investigate','instruction','scan budget','--source-id','harness.pi',
+                '--session-id','private-session','--limit','100']
+        first=list(map(json.loads,run(READER,*budget).stdout.splitlines()))
+        assert len(first)==13 and first[-1]['matched']==12 and first[-1]['next_cursor'],first[-1]
+        second=list(map(json.loads,run(READER,*budget,'--cursor',first[-1]['next_cursor']).stdout.splitlines()))
+        assert len(second)==2 and second[-1]['matched']==1 and second[-1]['scope_exhausted'],second[-1]
+        assert first[-1]['snapshot_id']==second[-1]['snapshot_id']
+        assert len({row['event_id'] for row in first[:-1]+second[:-1]})==13
         source.rename(root/'old-source.jsonl');source.write_text(original);os.chown(source,COLLECTOR,SOURCE_GID);source.chmod(0o640)
         run(READER,*preview,ok=False)
         deny_script='import pathlib,sys\ntry: pathlib.Path(sys.argv[1]).read_bytes()\nexcept PermissionError: sys.exit(73)\nelse: sys.exit(1)'
@@ -204,9 +283,10 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
             denied=subprocess.run([os.sys.executable,'-c',deny_script,str(data/'history.sqlite')],preexec_fn=drop(uid),capture_output=True)
             assert denied.returncode==73,(uid,denied.returncode,denied.stdout,denied.stderr)
         for uid in [READER,ADMIN]:
-            denied=subprocess.run([os.sys.executable,'-c',deny_script,str(source)],preexec_fn=drop(uid),capture_output=True)
-            assert denied.returncode==73,(uid,denied.returncode,denied.stdout,denied.stderr)
-        print('PASS bounded private pipe and broker source-backed task draft/approval/decision/CAS, 60x18 cockpit display/redaction/revocation fence, private delivery, distinct reader, grant revocation, exact session/inode proof and metadata-only queries',flush=True)
+            for path in [source,codex]:
+                denied=subprocess.run([os.sys.executable,'-c',deny_script,str(path)],preexec_fn=drop(uid),capture_output=True)
+                assert denied.returncode==73,(uid,denied.returncode,denied.stdout,denied.stderr)
+        print('PASS bounded private pipe and broker instruction/path/command/source investigation, source-backed task draft/approval/decision/CAS, 60x18 cockpit display/redaction/revocation fence, private delivery, distinct reader, grant revocation, exact session/inode proof and metadata-only queries',flush=True)
     finally:
         service.terminate()
         assert service.wait(timeout=10)==0

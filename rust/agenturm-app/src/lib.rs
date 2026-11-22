@@ -16,6 +16,7 @@ mod content_preview;
 mod discovery;
 mod handoff_export;
 mod inspector_activity;
+mod investigate_cli;
 mod private_output;
 mod review_receipt;
 mod session_evidence;
@@ -35,6 +36,7 @@ pub use adapter_install::execute as execute_adapter_install;
 pub use attention::{AttentionOptions, execute_attention};
 pub use content_preview::{ContentOptions, execute_content, execute_content_stdout};
 pub use discovery::{discover, execute_discover};
+pub use investigate_cli::{InvestigationOptions, execute_investigation};
 pub use private_output::with_private_stdout;
 pub use review_receipt::ReviewOutput;
 pub use task_cli::{TaskOptions, execute_task, execute_task_stdout};
@@ -58,8 +60,8 @@ use agenturm_service::{
     ServiceSpec, Systemctl, install_user_service, status_user_service, uninstall_user_service,
 };
 use agenturm_store::{
-    ReviewKey, ReviewLedger, ReviewVersion as StoredReviewVersion, SessionPosition, SessionQuery,
-    Store,
+    ResolvedTraceReview, ReviewKey, ReviewLedger, ReviewVersion as StoredReviewVersion,
+    SessionPosition, SessionQuery, Store, TraceReviewQuery,
 };
 use agenturm_ui::{
     HistorySelection, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor, SessionView,
@@ -203,10 +205,10 @@ pub enum Command {
     InstallAdapter(adapter_install::Options),
     Review {
         query: HistoryQueryOptions,
-        turn_id: String,
-        worker_id: Option<String>,
+        selection: ReviewSelection,
         output: ReviewOutput,
     },
+    Investigate(InvestigationOptions),
     Backup {
         db: PathBuf,
         output: PathBuf,
@@ -401,6 +403,37 @@ pub struct HistoryQueryOptions {
     pub before: Option<ObservationPosition>,
     pub snapshot_id: Option<u64>,
     pub limit: usize,
+}
+
+impl HistoryQueryOptions {
+    fn observation_query(&self) -> ObservationQuery {
+        ObservationQuery {
+            harness_id: self.harness_id.clone(),
+            session_id: self.session_id.clone(),
+            before: self.before.clone(),
+            snapshot_id: self.snapshot_id,
+            limit: self.limit,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewSelection {
+    anchor: ReviewAnchor,
+    linked_traces: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ReviewAnchor {
+    Turn {
+        turn_id: String,
+        worker_id: Option<String>,
+    },
+    Trace {
+        trace_id: String,
+        trace_source_id: String,
+        expected_worker_id: Option<String>,
+    },
 }
 
 struct OverviewCapability;
@@ -741,6 +774,7 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("inspect") => parse_inspect_options(&args[1..]).map(Command::Inspect),
         Some("query") => parse_query_options(&args[1..], false),
         Some("review") => parse_query_options(&args[1..], true),
+        Some("investigate") => investigate_cli::parse(&args[1..], false).map(Command::Investigate),
         Some("backup") => {
             if let Ok((db, output)) = parse_db_and_option(&args[1..], "--bundle") {
                 return Ok(Command::BackupWorkspace {
@@ -1349,7 +1383,7 @@ fn default_cockpit_extensions(
 fn parse_query_options(args: &[String], review: bool) -> Result<Command, String> {
     let usage = || {
         if review {
-            "usage: agenturm review --db <path> --harness-id <id> --session-id <id> --turn-id <id> [--worker-id <id>] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]".to_owned()
+            "usage: agenturm review --db <path> --harness-id <id> --session-id <id> (--turn-id <id> | --turn-of-trace <trace-id> --trace-source-id <id>) [--worker-id <id>] [--linked-traces] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]".to_owned()
         } else {
             self::usage()
         }
@@ -1359,6 +1393,9 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
     let mut session_id = None;
     let mut turn_id = None;
     let mut worker_id = None;
+    let mut trace_id = None;
+    let mut trace_source_id = None;
+    let mut linked_traces = false;
     let mut format = None;
     let mut output = None;
     let mut before_timestamp = None;
@@ -1370,6 +1407,14 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
     let mut index = 0;
     while index < args.len() {
         let key = &args[index];
+        if review && key == "--linked-traces" {
+            if linked_traces {
+                return Err(usage());
+            }
+            linked_traces = true;
+            index += 1;
+            continue;
+        }
         let value = args.get(index + 1).ok_or_else(usage)?;
         if value.starts_with("--") || value.is_empty() {
             return Err(usage());
@@ -1380,6 +1425,8 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
             "--session-id" => &mut session_id,
             "--turn-id" if review => &mut turn_id,
             "--worker-id" if review => &mut worker_id,
+            "--turn-of-trace" if review => &mut trace_id,
+            "--trace-source-id" if review => &mut trace_source_id,
             "--format" if review => &mut format,
             "--output" if review => &mut output,
             "--before-timestamp-ns" => &mut before_timestamp,
@@ -1441,16 +1488,24 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
         limit,
     };
     if review {
-        let Some(turn_id) = turn_id else {
-            return Err(usage());
+        let anchor = match (turn_id, trace_id, trace_source_id) {
+            (Some(turn_id), None, None) => ReviewAnchor::Turn { turn_id, worker_id },
+            (None, Some(trace_id), Some(trace_source_id)) => ReviewAnchor::Trace {
+                trace_id: trace_id.to_ascii_lowercase(),
+                trace_source_id,
+                expected_worker_id: worker_id,
+            },
+            _ => return Err(usage()),
         };
         if query.harness_id.is_none() || query.session_id.is_none() {
             return Err(usage());
         }
         Ok(Command::Review {
             query,
-            turn_id,
-            worker_id,
+            selection: ReviewSelection {
+                anchor,
+                linked_traces,
+            },
             output: ReviewOutput {
                 format: format
                     .as_deref()
@@ -1813,6 +1868,16 @@ trait HistoryReader: ObservationStore {
         &self,
         query: &ObservationQuery,
     ) -> Result<agenturm_kernel::ObservationPage, String>;
+    fn query_linked_turn_traces(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+        worker_id: Option<&str>,
+    ) -> Result<agenturm_kernel::ObservationPage, String>;
+    fn review_trace_turn(
+        &self,
+        query: &TraceReviewQuery,
+    ) -> Result<Option<ResolvedTraceReview>, String>;
 }
 
 impl HistoryReader for Store {
@@ -1830,6 +1895,21 @@ impl HistoryReader for Store {
         query: &ObservationQuery,
     ) -> Result<agenturm_kernel::ObservationPage, String> {
         Store::query_linked_traces(self, query).map_err(|error| error.to_string())
+    }
+    fn query_linked_turn_traces(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+        worker_id: Option<&str>,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        Store::query_linked_turn_traces(self, query, turn_id, worker_id)
+            .map_err(|error| error.to_string())
+    }
+    fn review_trace_turn(
+        &self,
+        query: &TraceReviewQuery,
+    ) -> Result<Option<ResolvedTraceReview>, String> {
+        Store::review_trace_turn(self, query, None).map_err(|error| error.to_string())
     }
 }
 
@@ -1851,6 +1931,22 @@ impl HistoryReader for agenturm_storage_service::NativeStore {
         query: &ObservationQuery,
     ) -> Result<agenturm_kernel::ObservationPage, String> {
         self.query_linked_traces(query)
+            .map_err(|error| error.to_string())
+    }
+    fn query_linked_turn_traces(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+        worker_id: Option<&str>,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        self.query_linked_turn_traces(query, turn_id, worker_id)
+            .map_err(|error| error.to_string())
+    }
+    fn review_trace_turn(
+        &self,
+        query: &TraceReviewQuery,
+    ) -> Result<Option<ResolvedTraceReview>, String> {
+        self.review_trace_turn(query)
             .map_err(|error| error.to_string())
     }
 }
@@ -1978,61 +2074,93 @@ pub fn execute_review_with_output(
     worker_id: Option<&str>,
     output: &ReviewOutput,
 ) -> Result<String, String> {
+    execute_selected_review(
+        options,
+        &ReviewSelection {
+            anchor: ReviewAnchor::Turn {
+                turn_id: turn_id.into(),
+                worker_id: worker_id.map(str::to_owned),
+            },
+            linked_traces: false,
+        },
+        output,
+    )
+}
+
+pub fn execute_selected_review(
+    options: &HistoryQueryOptions,
+    selection: &ReviewSelection,
+    output: &ReviewOutput,
+) -> Result<String, String> {
     let store = Store::open_read_only(&options.db)
         .map_err(|error| format!("open existing store failed: {error}"))?;
-    review_from_store(&store, options, turn_id, worker_id, output)
+    review_from_store(&store, options, selection, output)
 }
 
 fn query_from_store(
     store: &impl ObservationStore,
     options: &HistoryQueryOptions,
 ) -> Result<String, String> {
-    let (data, _) = history_data_from_store(store, options, None)?;
+    let page = store
+        .query_observations(&options.observation_query())
+        .map_err(|error| format!("query store failed: {error}"))?;
+    let data = history_page_data(page);
     serde_json::to_string_pretty(&data).map_err(|_| "serialize history query failed".into())
 }
 
 fn review_from_store(
-    store: &impl ObservationStore,
+    store: &impl HistoryReader,
     options: &HistoryQueryOptions,
-    turn_id: &str,
-    worker_id: Option<&str>,
+    selection: &ReviewSelection,
     output: &ReviewOutput,
 ) -> Result<String, String> {
-    let scope = review_receipt::ReviewScope {
-        harness_id: options
-            .harness_id
-            .as_deref()
-            .ok_or("Review requires a source ID")?,
-        session_id: options
-            .session_id
-            .as_deref()
-            .ok_or("Review requires a session ID")?,
-        turn_id,
-        worker_id,
+    let harness_id = options
+        .harness_id
+        .as_deref()
+        .ok_or("Review requires a source ID")?;
+    let session_id = options
+        .session_id
+        .as_deref()
+        .ok_or("Review requires a session ID")?;
+    let query = options.observation_query();
+    let (turn_id, worker_id, page) = match &selection.anchor {
+        ReviewAnchor::Turn { turn_id, worker_id } => {
+            let page = if selection.linked_traces {
+                store.query_linked_turn_traces(&query, turn_id, worker_id.as_deref())
+            } else {
+                store.query_worker_turn_observations(&query, turn_id, worker_id.as_deref())
+            }
+            .map_err(|error| format!("query store failed: {error}"))?;
+            (turn_id.clone(), worker_id.clone(), page)
+        }
+        ReviewAnchor::Trace {
+            trace_id,
+            trace_source_id,
+            expected_worker_id,
+        } => {
+            let resolved = store
+                .review_trace_turn(&TraceReviewQuery {
+                    page: query,
+                    trace_source_id: trace_source_id.clone(),
+                    trace_id: trace_id.clone(),
+                    expected_worker_id: expected_worker_id.clone(),
+                    linked_traces: selection.linked_traces,
+                })?
+                .ok_or("Trace has no unique explicit turn for the selected native scope at this snapshot")?;
+            (resolved.turn_id, resolved.worker_id, resolved.page)
+        }
     };
-    let (data, snapshot) = history_data_from_store(store, options, Some((turn_id, worker_id)))?;
-    review_receipt::render(data, scope, snapshot, output)
+    let scope = review_receipt::ReviewScope {
+        harness_id,
+        session_id,
+        turn_id: &turn_id,
+        worker_id: worker_id.as_deref(),
+    };
+    let snapshot = page.snapshot_id;
+    review_receipt::render(history_page_data(page), scope, snapshot, output)
 }
 
-fn history_data_from_store(
-    store: &impl ObservationStore,
-    options: &HistoryQueryOptions,
-    turn: Option<(&str, Option<&str>)>,
-) -> Result<(serde_json::Value, u64), String> {
-    let query = ObservationQuery {
-        harness_id: options.harness_id.clone(),
-        session_id: options.session_id.clone(),
-        before: options.before.clone(),
-        snapshot_id: options.snapshot_id,
-        limit: options.limit,
-    };
-    let page = match turn {
-        Some((turn_id, worker_id)) => {
-            store.query_worker_turn_observations(&query, turn_id, worker_id)
-        }
-        None => store.query_observations(&query),
-    }
-    .map_err(|error| format!("query store failed: {error}"))?;
+fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Value {
     let next_before = page
         .has_more
         .then(|| {
@@ -2151,14 +2279,11 @@ fn history_data_from_store(
             })
         })
         .collect::<Vec<_>>();
-    Ok((
-        serde_json::json!({
-            "observations":observations,
-            "has_more":page.has_more,
-            "next_before":next_before,
-        }),
-        page.snapshot_id,
-    ))
+    serde_json::json!({
+        "observations":observations,
+        "has_more":page.has_more,
+        "next_before":next_before,
+    })
 }
 
 pub fn execute_collect(options: &ConfiguredCollectOptions) -> Result<CollectionReport, String> {
@@ -3122,7 +3247,8 @@ pub fn render(command: Command) -> String {
             "       agenturm cockpit [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
-            "       agenturm review --db <path> --harness-id <id> --session-id <id> --turn-id <id> [--worker-id <id>] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]\n",
+            "       agenturm review --db <path> --harness-id <id> --session-id <id> (--turn-id <id> | --turn-of-trace <trace-id> --trace-source-id <id>) [--worker-id <id>] [--linked-traces] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]\n",
+            "       agenturm investigate <instruction|path|command|source> <query> [options]\n",
             "       agenturm backup --db <path> --output <new-path>\n",
             "       agenturm backup --db <path> --bundle <new-directory>\n",
             "       agenturm restore --bundle <directory> --output <new-directory>\n",
@@ -3171,7 +3297,7 @@ pub fn render(command: Command) -> String {
         Command::Inspect(_) => String::new(),
         #[cfg(target_os = "linux")]
         Command::Broker(_) | Command::InstallAdapter(_) => String::new(),
-        Command::Query(_) | Command::Review { .. } | Command::Attention(_) | Command::Task(_) => {
+        Command::Query(_) | Command::Review { .. } | Command::Attention(_) | Command::Task(_) | Command::Investigate(_) => {
             String::new()
         }
         Command::Ingest(_) | Command::ImportTraces(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),

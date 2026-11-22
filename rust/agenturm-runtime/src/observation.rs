@@ -161,6 +161,13 @@ fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<R
         ObservationFact::TraceSpan(span) => {
             if !span.is_valid(observed_at_unix_ns)
                 || !agenturm_kernel::is_trace_source_link_valid(source_id, &span)
+                || !agenturm_kernel::is_trace_turn_link_valid(
+                    &span,
+                    &record.event_id,
+                    identity.turn_id.as_deref(),
+                    identity.worker_id.as_deref(),
+                    identity.operation_id.as_deref(),
+                )
             {
                 return Err(RuntimeError::new(
                     "source trace identity, timing, or source link is invalid",

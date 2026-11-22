@@ -54,6 +54,9 @@ const client = new Client({{
 const value = await client.trace({{
   task: 'Review the current release',
   sessionId: 'node-session-42',
+  harnessId: 'legacy scope is ignored',
+  turnId: 'legacy turn is ignored',
+  workerId: 'legacy worker is ignored',
   attributes: {{ 'gen_ai.agent.name': 'release-reviewer' }},
 }}, async run => {{
   await run.progress('planning', 'Checking release metadata', 15);
@@ -100,6 +103,9 @@ console.log(JSON.stringify({{ value }}));
         model = next(span for span in detail['spans'] if span['name'] == 'chat completion')
         tool = next(span for span in detail['spans'] if span['name'] == 'github / search_issues')
         self.assertEqual(root['attributes']['gen_ai.agent.name'], 'release-reviewer')
+        self.assertNotIn('agenturm.source.id', root['attributes'])
+        self.assertNotIn('agenturm.turn.id', root['attributes'])
+        self.assertNotIn('agenturm.worker.id', root['attributes'])
         self.assertEqual(model['parent_span_id'], root['span_id'])
         self.assertEqual(tool['parent_span_id'], model['span_id'])
         self.assertEqual(tool['resource_attributes']['deployment.environment.name'], 'test')

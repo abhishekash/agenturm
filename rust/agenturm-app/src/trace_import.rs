@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 pub(super) const MAX_EXPORT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_EXPORT_SPANS: usize = 1_024;
 const CURSOR_PREFIX: &str = "otlp-json/1:";
+const TURN_KEY: &str = "agenturm.turn.id";
+const WORKER_KEY: &str = "agenturm.worker.id";
 pub(super) const TRACE_IMPORT_USAGE: &str =
     "agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>";
 
@@ -127,11 +129,14 @@ fn import_cursor(observations: &[Observation]) -> Result<String, String> {
         let ObservationKind::TraceSpan(span) = &row.kind else {
             return Err("invalid trace import observation".into());
         };
-        let serial = serde_json::to_vec(&(
-            row.identity.session_id.as_deref(),
-            row.observed_at_unix_ns,
-            span,
-        ))
+        let session_id = row.identity.session_id.as_deref();
+        let legacy = (session_id, row.observed_at_unix_ns, span);
+        let serial = match row.identity.turn_id.as_deref() {
+            Some(turn_id) => {
+                serde_json::to_vec(&(legacy, turn_id, row.identity.worker_id.as_deref()))
+            }
+            None => serde_json::to_vec(&legacy),
+        }
         .map_err(|_| "cannot encode trace import metadata".to_owned())?;
         hasher.update(serial);
         hasher.update([0]);
@@ -206,6 +211,14 @@ fn project(
             return Err("OTLP export exceeds 1024 spans".into());
         }
         let scope = trace_scope(span.attributes)?;
+        if scope.turn_id.is_some()
+            && (scope.target_source_id.is_none() || scope.session_id.is_none())
+        {
+            return Err("An OTLP span turn requires an explicit harness source and session".into());
+        }
+        if scope.worker_id.is_some() && scope.turn_id.is_none() {
+            return Err("An OTLP span worker requires an explicit turn".into());
+        }
         let Some(session_id) = scope
             .session_id
             .or_else(|| launch_session.map(str::to_owned))
@@ -240,11 +253,14 @@ fn project(
             return Err("invalid OTLP span identity or timing".into());
         }
         let event_id = format!("otlp:{}:{}", native.trace_id, native.span_id);
+        let mut identity = ObservationIdentity::session(session_id);
+        identity.turn_id = scope.turn_id;
+        identity.worker_id = scope.worker_id;
         let observation = Observation {
             harness_id: source_id.clone(),
             event_id: event_id.clone(),
             revision: 0,
-            identity: ObservationIdentity::session(session_id),
+            identity,
             observed_at_unix_ns: ended_at,
             kind: ObservationKind::TraceSpan(native),
         };
@@ -266,6 +282,8 @@ fn project(
 struct TraceScope {
     session_id: Option<String>,
     target_source_id: Option<String>,
+    turn_id: Option<String>,
+    worker_id: Option<String>,
 }
 
 fn trace_scope(attributes: Vec<Attribute>) -> Result<TraceScope, String> {
@@ -281,6 +299,16 @@ fn trace_scope(attributes: Vec<Attribute>) -> Result<TraceScope, String> {
                 &mut scope.target_source_id,
                 |value| !value.starts_with("otlp.") && ExtensionId::parse(value).is_ok(),
                 "invalid or conflicting OTLP span harness source",
+            ),
+            TURN_KEY => (
+                &mut scope.turn_id,
+                valid_execution_id,
+                "invalid or conflicting OTLP span turn identity",
+            ),
+            WORKER_KEY => (
+                &mut scope.worker_id,
+                valid_execution_id,
+                "invalid or conflicting OTLP span worker identity",
             ),
             _ => continue,
         };
@@ -304,6 +332,15 @@ fn valid_session_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+}
+
+fn valid_execution_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
 }
 
 #[derive(Deserialize)]
@@ -578,5 +615,66 @@ mod tests {
             }
             assert!(from_spans(vec![span]).is_err());
         }
+    }
+
+    #[test]
+    fn turn_scope_requires_complete_explicit_ids_even_with_a_launch_session() {
+        fn decode_attributes(
+            attributes: Value,
+            launch_session: Option<&str>,
+        ) -> Result<Observation, String> {
+            let mut span = fixture();
+            span["attributes"] = attributes;
+            let export = json!({"resourceSpans":[{"scopeSpans":[{"spans":[span]}]}]});
+            decode_json(
+                export.to_string().as_bytes(),
+                &ExtensionId::parse("otlp.synthetic").unwrap(),
+                launch_session,
+            )?
+            .0
+            .pop()
+            .ok_or("No observation".into())
+        }
+
+        let attribute = |key: &str, value: &str| json!({"key":key,"value":{"stringValue":value}});
+        let source = attribute("agenturm.source.id", "harness.codex");
+        let session = attribute("session.id", "turn-session");
+        let turn = attribute(TURN_KEY, "turn/1");
+        let worker = attribute(WORKER_KEY, "worker/1");
+        let valid = vec![
+            source.clone(),
+            session.clone(),
+            turn.clone(),
+            worker.clone(),
+        ];
+        let observation = decode_attributes(json!(valid), None).unwrap();
+        assert_eq!(observation.identity.turn_id.as_deref(), Some("turn/1"));
+        assert_eq!(observation.identity.worker_id.as_deref(), Some("worker/1"));
+
+        for invalid in [
+            vec![source.clone(), turn.clone()],
+            vec![session.clone(), turn],
+            vec![source.clone(), session.clone(), worker],
+            vec![
+                source.clone(),
+                session.clone(),
+                attribute(TURN_KEY, "contains space"),
+            ],
+            [&valid[..], &[attribute(WORKER_KEY, "another-worker")]].concat(),
+            [
+                &valid[..],
+                &[json!({"key": TURN_KEY,"value":{"intValue":"1"}})],
+            ]
+            .concat(),
+        ] {
+            assert!(decode_attributes(json!(invalid), Some("launch-session")).is_err());
+        }
+
+        let mut changed = observation.clone();
+        changed.identity.worker_id = None;
+        assert_ne!(
+            import_cursor(&[observation]).unwrap(),
+            import_cursor(&[changed]).unwrap()
+        );
     }
 }

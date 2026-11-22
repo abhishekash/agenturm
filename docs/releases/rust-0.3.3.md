@@ -1,6 +1,6 @@
 # Agenturm Rust 0.3.3
 
-The Linux release candidate adds broker-backed workspaces, private evidence
+The published Linux release adds broker-backed workspaces, private evidence
 and source-backed task continuity, alongside local decoder installation and
 JavaScript OTLP traces.
 
@@ -53,3 +53,14 @@ Ubuntu 24.04 x86-64. A real Kiro transcript, production connector endpoint,
 additional platforms and the remaining full-distribution cutover journeys
 still need their own qualification. The default Python distribution has its
 separate release and entry point.
+
+The release tag `rust-v0.3.3` points to
+`5fbe503a229594dba990d91da4c8acf26d30a54f`. The published x86-64 archive
+has SHA-256 `54176000e12f3a5a30f5f46a385247a5c0fd3900b987f7f8dee77929f3491733`.
+That exact archive passed managed installation, restart, upgrade from Rust
+0.3.2, Python-free startup, separate-principal private-content checks,
+blocked-output expiry and terminal redaction. The GitHub asset digest
+matched the qualified archive.
+
+[Published release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.3) ·
+[Tagged build](https://github.com/abhishekash/agenturm/actions/runs/45080059783)

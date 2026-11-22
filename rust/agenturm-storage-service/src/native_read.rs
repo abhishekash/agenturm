@@ -3,7 +3,9 @@
 use agenturm_kernel::{
     ExtensionId, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, ObservationPage, ObservationQuery,
 };
-use agenturm_store::{SessionPage, SessionQuery, Store, StoreError};
+use agenturm_store::{
+    ResolvedTraceReview, SessionPage, SessionQuery, Store, StoreError, TraceReviewQuery,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -21,6 +23,10 @@ pub enum HistorySelection<'a> {
         turn_id: &'a str,
     },
     LinkedTraces,
+    LinkedTurnTraces {
+        turn_id: &'a str,
+        worker_id: Option<&'a str>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -30,6 +36,7 @@ pub enum ReadFailure {
     InvalidRequest,
     HistoryReplaced,
     ExpiredSnapshot { minimum_snapshot_id: u64 },
+    TraceScopeTooLarge { max_rows: usize },
     Unavailable,
 }
 
@@ -39,6 +46,34 @@ pub fn query_history(
     query: &ObservationQuery,
     selection: HistorySelection<'_>,
 ) -> Result<ObservationPage, ReadFailure> {
+    let include_linked_traces = matches!(
+        selection,
+        HistorySelection::LinkedTraces | HistorySelection::LinkedTurnTraces { .. }
+    );
+    let query = bounded_history_query(allowed_sources, query, include_linked_traces)?;
+    match selection {
+        HistorySelection::Observations => {
+            store.query_observations_from_sources(&query, allowed_sources)
+        }
+        HistorySelection::Turn { turn_id, worker_id } => {
+            store.query_worker_turn_observations(&query, turn_id, worker_id)
+        }
+        HistorySelection::AllWorkers { turn_id } => store.query_turn_observations(&query, turn_id),
+        HistorySelection::LinkedTraces => {
+            store.query_linked_traces_from_sources(&query, allowed_sources)
+        }
+        HistorySelection::LinkedTurnTraces { turn_id, worker_id } => {
+            store.query_linked_turn_traces_from_sources(&query, turn_id, worker_id, allowed_sources)
+        }
+    }
+    .map_err(failure)
+}
+
+fn bounded_history_query(
+    allowed_sources: &BTreeSet<ExtensionId>,
+    query: &ObservationQuery,
+    include_linked_traces: bool,
+) -> Result<ObservationQuery, ReadFailure> {
     authorize(allowed_sources, query.harness_id.as_deref())?;
     authorize(
         allowed_sources,
@@ -51,7 +86,7 @@ pub fn query_history(
         return Err(ReadFailure::InvalidRequest);
     }
     if let Some(before) = &query.before
-        && !matches!(selection, HistorySelection::LinkedTraces)
+        && !include_linked_traces
         && query
             .harness_id
             .as_ref()
@@ -61,19 +96,22 @@ pub fn query_history(
     }
     let mut query = query.clone();
     query.limit = query.limit.min(MAX_NATIVE_HISTORY_ROWS);
-    match selection {
-        HistorySelection::Observations => {
-            store.query_observations_from_sources(&query, allowed_sources)
-        }
-        HistorySelection::Turn { turn_id, worker_id } => {
-            store.query_worker_turn_observations(&query, turn_id, worker_id)
-        }
-        HistorySelection::AllWorkers { turn_id } => store.query_turn_observations(&query, turn_id),
-        HistorySelection::LinkedTraces => {
-            store.query_linked_traces_from_sources(&query, allowed_sources)
-        }
-    }
-    .map_err(failure)
+    Ok(query)
+}
+
+pub fn review_trace_turn(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    query: TraceReviewQuery,
+) -> Result<Option<ResolvedTraceReview>, ReadFailure> {
+    authorize(allowed_sources, Some(&query.trace_source_id))?;
+    let query = TraceReviewQuery {
+        page: bounded_history_query(allowed_sources, &query.page, query.linked_traces)?,
+        ..query
+    };
+    store
+        .review_trace_turn(&query, Some(allowed_sources))
+        .map_err(failure)
 }
 
 pub fn query_sessions(
@@ -116,6 +154,7 @@ fn failure(error: StoreError) -> ReadFailure {
         } => ReadFailure::ExpiredSnapshot {
             minimum_snapshot_id,
         },
+        StoreError::TraceScopeTooLarge { max_rows } => ReadFailure::TraceScopeTooLarge { max_rows },
         _ => ReadFailure::Unavailable,
     }
 }
@@ -127,6 +166,34 @@ mod tests {
     use agenturm_store::{
         ObservationBatch, ObservationIdentity, ObservationKind, StoredObservation, StoredScope,
     };
+
+    #[test]
+    fn trace_turn_resolution_requires_both_sources_on_the_allowlist() {
+        let store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse("harness.authorized").unwrap();
+        let trace_source = ExtensionId::parse("otlp.authorized").unwrap();
+        let query = TraceReviewQuery {
+            page: ObservationQuery {
+                harness_id: Some(source.as_str().into()),
+                session_id: Some("session-1".into()),
+                ..ObservationQuery::latest(1)
+            },
+            trace_source_id: trace_source.as_str().into(),
+            trace_id: "11111111111111111111111111111111".into(),
+            expected_worker_id: None,
+            linked_traces: false,
+        };
+        for one_source in [source.clone(), trace_source.clone()] {
+            assert_eq!(
+                review_trace_turn(&store, &BTreeSet::from([one_source]), query.clone()),
+                Err(ReadFailure::Unauthorized),
+            );
+        }
+        assert_eq!(
+            review_trace_turn(&store, &BTreeSet::from([source, trace_source]), query),
+            Ok(None),
+        );
+    }
 
     #[test]
     fn scoped_queries_preserve_the_snapshot_and_report_expiry() {
