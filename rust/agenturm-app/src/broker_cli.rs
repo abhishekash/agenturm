@@ -347,17 +347,19 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
     let command = match &options.command {
         BrokerCommand::Application(command) => command.as_ref(),
         BrokerCommand::Investigation(options) => {
-            return investigate_cli::execute_broker(
-                options,
-                store,
-                (
-                    &config.socket,
-                    &config.receiver_id,
-                    config.service_uid,
-                    config.service_gid,
-                ),
-                std::io::stdout().lock(),
-            )
+            return crate::with_private_stdout(|output| {
+                investigate_cli::execute_broker(
+                    options,
+                    store,
+                    (
+                        &config.socket,
+                        &config.receiver_id,
+                        config.service_uid,
+                        config.service_gid,
+                    ),
+                    output,
+                )
+            })
             .map_err(|message| BrokerExecutionError {
                 message,
                 exit_code: 2,

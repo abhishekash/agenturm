@@ -102,10 +102,27 @@ pub(super) fn resolve_read_snapshot(
 }
 
 impl Store {
-    /// Checks a snapshot against the current receipt head and retention barrier.
-    /// Call inside the same transaction as the read or disclosure it guards.
-    pub fn verify_history_snapshot(&self, snapshot_id: u64) -> Result<()> {
-        resolve_read_snapshot(&self.connection, Some(snapshot_id)).map(|_| ())
+    /// Checks the exact retained revision against the snapshot's receipt
+    /// watermark. Call within the same fence as the disclosure it guards.
+    pub fn contains_observation_at_snapshot(
+        &self,
+        source: &agenturm_kernel::ExtensionId,
+        event_id: &str,
+        revision: u32,
+        snapshot_id: u64,
+    ) -> Result<bool> {
+        crate::validate_identifier(event_id, crate::MAX_EVENT_ID_BYTES, "event ID")?;
+        let (_, watermark) = resolve_read_snapshot(&self.connection, Some(snapshot_id))?;
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM agenturm_observations AS observation
+                JOIN agenturm_history_batches AS batch USING (request_id)
+                WHERE observation.source_id = ?1 AND observation.event_id = ?2
+                  AND observation.revision = ?3 AND batch.sequence <= ?4
+            )",
+            params![source.as_str(), event_id, revision, watermark],
+            |row| row.get(0),
+        )?)
     }
 
     /// Atomically removes observations strictly older than the supplied cutoff.

@@ -355,7 +355,7 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
     ]));
     denied(
         inspect_source(event("turn-1"), &renewed_reference),
-        "snapshot expired",
+        "source evidence is unavailable",
     );
 
     let replacement = scratch.0.join("replacement.jsonl");

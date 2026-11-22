@@ -220,6 +220,8 @@ pub(super) fn parse(args: &[String], broker: bool) -> Result<InvestigationOption
     Ok(InvestigationOptions { db, config, action })
 }
 
+/// Writes matching evidence while its grant is fenced. A custom output sink
+/// must finish writes and flushes within the disclosure deadline.
 pub fn execute_investigation(
     options: &InvestigationOptions,
     output: impl Write,
@@ -365,7 +367,7 @@ mod linux {
                         event,
                         revision,
                         |prompt| {
-                            fenced_snapshot(store, position.snapshot_id, || {
+                            with_retained_occurrence(store, selected, || {
                                 consume(Proven::Prompt(prompt))
                             })
                         },
@@ -410,7 +412,9 @@ mod linux {
                                 source,
                                 &local,
                                 |edit| {
-                                    fenced_snapshot(store, snapshot, || consume(Proven::Edit(edit)))
+                                    with_retained_occurrence(store, selected, || {
+                                        consume(Proven::Edit(edit))
+                                    })
                                 },
                             )
                             .map_err(|_| ProofError::Unavailable)?
@@ -422,7 +426,7 @@ mod linux {
                                 source,
                                 &local,
                                 |command| {
-                                    fenced_snapshot(store, snapshot, || {
+                                    with_retained_occurrence(store, selected, || {
                                         consume(Proven::Command(command))
                                     })
                                 },
@@ -458,14 +462,23 @@ mod linux {
         }
     }
 
-    fn fenced_snapshot<T>(
+    fn with_retained_occurrence<T>(
         store: &Store,
-        snapshot_id: u64,
+        selected: &SourceReference,
         consume: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, ProofError> {
-        store
-            .verify_history_snapshot(snapshot_id)
+        let position = &selected.position;
+        let retained = store
+            .contains_observation_at_snapshot(
+                &selected.scope.source_id,
+                &position.event_id,
+                position.revision,
+                position.snapshot_id,
+            )
             .map_err(|error| ProofError::Failed(error.to_string()))?;
+        if !retained {
+            return Err(ProofError::Unavailable);
+        }
         consume().map_err(ProofError::Failed)
     }
 
@@ -641,22 +654,8 @@ mod linux {
         if reference.history_sha256 != history {
             return Err("Source reference belongs to another history".into());
         }
-        // Use the immediate successor key so the first row has to be the
-        // same occurrence inside the original durable snapshot.
-        let mut successor = reference.position.clone();
-        successor.revision = successor.revision.checked_add(1).ok_or(WITHHELD)?;
-        let retained = page(authority, &reference.scope, Some(successor), 1)?;
-        let exact = retained
-            .observations
-            .first()
-            .and_then(|row| candidate(row, reference.kind, history, retained.snapshot_id))
-            .ok_or(WITHHELD)?;
-        if exact.position != reference.position
-            || exact.scope != reference.scope
-            || exact.operation_id != reference.operation_id
-        {
-            return Err(WITHHELD.into());
-        }
+        // The shared proof binds the exact native occurrence, and its fenced
+        // snapshot check requires that row at the original receipt watermark.
         let disclosed = authority.prove(reference, |proof| {
             if !proof.confirms(reference) || proof.grant() != reference.grant_sha256 {
                 return Ok(false);

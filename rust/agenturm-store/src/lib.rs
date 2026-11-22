@@ -2402,6 +2402,42 @@ mod tests {
     }
 
     #[test]
+    fn exact_snapshot_membership_accepts_maximum_revision_and_enforces_receipt_watermark() {
+        let db = TempDb::new();
+        let mut store = Store::open_collector(&db.0).unwrap();
+        let source = agenturm_kernel::ExtensionId::parse("harness.codex").unwrap();
+        let before = store.observation_page(1).unwrap().snapshot_id;
+        let mut selected = event("maximum-revision", "session-1", 10);
+        selected.revision = u32::MAX;
+        store
+            .commit_batch(&batch("maximum", vec![selected]))
+            .unwrap();
+        let visible = store.observation_page(1).unwrap().snapshot_id;
+        let contains = |store: &Store, revision, snapshot| {
+            store
+                .with_user_content_fence(|store| {
+                    store.contains_observation_at_snapshot(
+                        &source,
+                        "maximum-revision",
+                        revision,
+                        snapshot,
+                    )
+                })
+                .unwrap()
+        };
+        assert!(!contains(&store, u32::MAX, before).unwrap());
+        assert!(!contains(&store, u32::MAX - 1, visible).unwrap());
+        assert!(contains(&store, u32::MAX, visible).unwrap());
+        let retained = store.prune_observations_before(1).unwrap();
+        assert_eq!(retained.removed_observations, 0);
+        assert!(matches!(
+            contains(&store, u32::MAX, visible),
+            Err(StoreError::ExpiredHistorySnapshot { .. })
+        ));
+        assert!(contains(&store, u32::MAX, retained.minimum_snapshot_id).unwrap());
+    }
+
+    #[test]
     fn v9_readers_and_leased_migration_preserve_existing_snapshot_ids() {
         let db = TempDb::new();
         let initial = batch("initial", vec![event("event-1", "session-1", 10)]);

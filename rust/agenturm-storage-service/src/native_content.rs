@@ -345,7 +345,18 @@ pub(crate) fn verify_prompt(
         Some(&selection.session_id),
         &selection.event_id,
         selection.revision,
-        |prompt| output.publish_proof(store, selection.snapshot_id, prompt),
+        |prompt| {
+            output.publish_proof(
+                store,
+                selection.snapshot_id,
+                (
+                    &selection.source_id,
+                    &selection.event_id,
+                    selection.revision,
+                ),
+                prompt,
+            )
+        },
     )
     .map_err(|_| PrivateEvidenceFailure::Unavailable)?
 }
@@ -363,20 +374,25 @@ pub(crate) fn verify_operation(
         .operation()
         .ok_or(PrivateEvidenceFailure::Unavailable)?;
     let resolver = config.resolver(allowed);
+    let occurrence = (
+        &selection.source_id,
+        selection.event_id.as_str(),
+        selection.revision,
+    );
     match kind {
         OperationDetailKind::Edit => agenturm_content::with_verified_edit(
             store,
             &resolver,
             &selection.source_id,
             &operation,
-            |edit| output.publish_proof(store, Some(snapshot_id), edit),
+            |edit| output.publish_proof(store, Some(snapshot_id), occurrence, edit),
         ),
         OperationDetailKind::Command => agenturm_content::with_verified_command(
             store,
             &resolver,
             &selection.source_id,
             &operation,
-            |command| output.publish_proof(store, Some(snapshot_id), command),
+            |command| output.publish_proof(store, Some(snapshot_id), occurrence, command),
         ),
         OperationDetailKind::Mcp => return Err(PrivateEvidenceFailure::Unavailable),
     }
@@ -415,17 +431,22 @@ impl<'a> Disclosure<'a> {
         &mut self,
         store: &Store,
         snapshot_id: Option<u64>,
+        occurrence: (&ExtensionId, &str, u32),
         payload: impl Serialize,
     ) -> Result<(), PrivateEvidenceFailure> {
         if let Some(snapshot_id) = snapshot_id {
-            store
-                .verify_history_snapshot(snapshot_id)
+            let (source_id, event_id, revision) = occurrence;
+            let retained = store
+                .contains_observation_at_snapshot(source_id, event_id, revision, snapshot_id)
                 .map_err(|error| match error {
                     StoreError::ExpiredHistorySnapshot { .. } => {
                         PrivateEvidenceFailure::SnapshotExpired
                     }
                     _ => PrivateEvidenceFailure::Unavailable,
                 })?;
+            if !retained {
+                return Err(PrivateEvidenceFailure::Unavailable);
+            }
         }
         self.publish(payload)
             .map_err(|_| PrivateEvidenceFailure::Unavailable)
