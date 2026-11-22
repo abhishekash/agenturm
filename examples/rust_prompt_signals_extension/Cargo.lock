@@ -16,6 +16,7 @@ name = "agenturm-kernel"
 version = "0.1.0"
 dependencies = [
  "agenturm-protocol",
+ "serde",
 ]
 
 [[package]]

@@ -409,6 +409,7 @@ struct Workspace {
 
 struct PromptScreen {
     text: String,
+    title: &'static str,
     scroll: u16,
     acknowledge: Option<mpsc::Sender<()>>,
     active: Arc<Mutex<bool>>,
@@ -428,7 +429,7 @@ impl PromptScreen {
             Paragraph::new(text)
                 .wrap(Wrap { trim: false })
                 .scroll((self.scroll, 0))
-                .block(Block::bordered().title("Granted prompt")),
+                .block(Block::bordered().title(self.title)),
             main,
         );
         frame.render_widget(
@@ -523,7 +524,7 @@ impl Workspace {
             }
             (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::Status(status)))) => {
                 self.prompt_receiver = None;
-                self.message = Some(status);
+                self.message = (!status.is_empty()).then_some(status);
             }
             (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::Seen(entry)))) => {
                 if let Some(work) = &mut self.work {
@@ -618,6 +619,54 @@ impl Workspace {
             return self.agent_key(sender, key.code);
         }
         let view = self.history.last_mut().expect("history exists");
+        if let Some((kind, picker)) = &mut view.page.operation_picker {
+            let kind = *kind;
+            let entries = view
+                .page
+                .operation_details
+                .iter()
+                .filter(|entry| entry.kind == kind);
+            match key.code {
+                KeyCode::Char('q') => return true,
+                KeyCode::Esc => {
+                    view.page.operation_picker = None;
+                    self.discard_work_result = matches!(self.pending, Some(Change::Work(_)));
+                    self.prompt_receiver = None;
+                    self.message = None;
+                }
+                KeyCode::Down | KeyCode::Char('j') if self.pending.is_none() => {
+                    move_selection(picker, entries.count(), true);
+                    self.message = None;
+                }
+                KeyCode::Up | KeyCode::Char('k') if self.pending.is_none() => {
+                    move_selection(picker, entries.count(), false);
+                    self.message = None;
+                }
+                KeyCode::Enter if self.pending.is_none() => {
+                    if let Some(operation) = picker
+                        .selected()
+                        .and_then(|i| entries.clone().nth(i))
+                        .cloned()
+                    {
+                        let (delivery, mut receiver) = prompt_channel();
+                        receiver.title = match kind {
+                            OperationDetailKind::Mcp => "Granted MCP payload",
+                            OperationDetailKind::Edit => "Granted file edit",
+                        };
+                        self.request(
+                            sender,
+                            WorkspaceRequest::Work(WorkCommand::RevealOperation(
+                                operation, delivery,
+                            )),
+                            Change::Work(None),
+                        );
+                        self.prompt_receiver = Some(receiver);
+                    }
+                }
+                _ => {}
+            }
+            return false;
+        }
         if let Some(picker) = &mut view.page.turn_picker {
             match key.code {
                 KeyCode::Char('q') => return true,
@@ -642,6 +691,25 @@ impl Workspace {
             return false;
         }
 
+        let detail = match key.code {
+            KeyCode::Char('m') => Some(OperationDetailKind::Mcp),
+            KeyCode::Char('e') if view.page.reviewing() || view.page.ui.in_turn => {
+                Some(OperationDetailKind::Edit)
+            }
+            _ => None,
+        };
+        if !view.page.ui.help
+            && let Some(kind) = detail
+            && view
+                .page
+                .operation_details
+                .iter()
+                .any(|entry| entry.kind == kind)
+        {
+            view.page.operation_picker = Some((kind, ListState::default().with_selected(Some(0))));
+            self.message = None;
+            return false;
+        }
         match key.code {
             KeyCode::Esc if self.pending.is_none() => {
                 self.history.pop();
@@ -898,13 +966,14 @@ pub fn run_workspace(
                     if let Ok(text) = serde_json::from_slice::<String>(&bytes) {
                         workspace.prompt = Some(PromptScreen {
                             text,
+                            title: receiver.title,
                             scroll: 0,
                             acknowledge: Some(receiver.acknowledgement),
                             active: receiver.active,
                             expires: Instant::now() + Duration::from_secs(25),
                         });
                     } else {
-                        workspace.message = Some("Invalid prompt delivery".into());
+                        workspace.message = Some("Invalid private content delivery".into());
                     }
                     dirty = true;
                 }
@@ -968,7 +1037,7 @@ pub fn run_workspace(
                     if active.is_some() && !gate.as_deref().copied().unwrap_or(false) {
                         workspace.prompt = None;
                         workspace.message =
-                            Some("Prompt authorization expired before display".into());
+                            Some("Content authorization expired before display".into());
                     }
                     terminal.draw(|frame| draw_workspace(frame, &mut workspace))?;
                     if let Some(acknowledge) = workspace.redact_then_acknowledge.take() {
@@ -1013,6 +1082,39 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
     }
     let area = frame.area();
     if let Some(view) = workspace.history.last_mut() {
+        if area.width >= MIN_WIDTH
+            && area.height >= MIN_HEIGHT
+            && let Some((kind, selection)) = &mut view.page.operation_picker
+        {
+            let [body, foot] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+            let items = view
+                .page
+                .operation_details
+                .iter()
+                .filter(|entry| entry.kind == *kind)
+                .map(|entry| ListItem::new(visible_text(&entry.label)));
+            frame.render_stateful_widget(
+                List::new(items)
+                    .block(Block::bordered().title(match kind {
+                        OperationDetailKind::Mcp => "MCP operations",
+                        OperationDetailKind::Edit => "File edits",
+                    }))
+                    .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+                body,
+                selection,
+            );
+            let footer = workspace
+                .message
+                .as_deref()
+                .unwrap_or(if workspace.pending.is_some() {
+                    "Checking content approval…"
+                } else {
+                    "↑↓ select · Enter reveal · Esc back"
+                });
+            frame.render_widget(Paragraph::new(visible_text(footer)), foot);
+            return;
+        }
         view.page.ui.set_viewport(area.width, area.height);
         draw(
             frame,
@@ -1024,6 +1126,12 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 .map(|state| (view.page.turns.as_slice(), state)),
         );
         if area.height != 0 {
+            let has_details = |kind| {
+                view.page
+                    .operation_details
+                    .iter()
+                    .any(|entry| entry.kind == kind)
+            };
             let status = if let Some(error) = workspace.message.as_deref() {
                 error
             } else if workspace.pending.is_some() {
@@ -1031,11 +1139,29 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
             } else if let HistorySelection::Session(session, _) = &view.selection
                 && view.page.reviewing()
             {
-                if session.reviewed {
+                if has_details(OperationDetailKind::Edit) {
+                    if session.reviewed {
+                        "Reviewed · e edits · n decisions · 8 traces · Esc back"
+                    } else {
+                        "y review · e edits · n decisions · 8 traces · Esc back"
+                    }
+                } else if session.reviewed {
                     "Reviewed · n decisions · 8 traces · Esc back"
                 } else {
                     "y mark reviewed · n decisions · 8 traces · Esc back"
                 }
+            } else if view.page.ui.in_turn && has_details(OperationDetailKind::Edit) {
+                if has_details(OperationDetailKind::Mcp) {
+                    "e edits · m MCP payloads · Esc back · [ ] pages"
+                } else {
+                    "e edits · Esc back · [ ] history pages"
+                }
+            } else if has_details(OperationDetailKind::Mcp)
+                && matches!(view.selection, HistorySelection::Session(_, kind) if !matches!(kind, SessionView::Traces))
+            {
+                "m payloads · 8 traces · Esc back · [ ] pages"
+            } else if has_details(OperationDetailKind::Mcp) {
+                "m MCP payloads · Esc back · [ ] history pages"
             } else if matches!(view.selection, HistorySelection::Session(_, kind) if !matches!(kind, SessionView::Traces))
             {
                 "8 session traces · Esc back · [ ] history pages"

@@ -4,6 +4,15 @@
 
 - Discover Kiro sessions from `$KIRO_HOME/sessions` (default `~/.kiro`): prompts, replies, shell commands with their recorded exit codes, file edits, MCP calls, turn outcomes and errors. Kiro tool approvals become waiting requests until answered. Delegated workers link to the session or worker that spawned them and take their outcome from it. List Kiro MCP servers from user and workspace `mcp.json`, and offer `kiro-cli chat --resume-id` for top-level sessions. Show Kiro-reported credits for each run, each session and all stored history, where other runtimes show tokens. List the tool-approval answers recorded in each Kiro session in the inspector, with rule-blocked calls, the standing user, workspace and agent rules that apply, and the folders trusted in Kiro.
 
+## Rust 0.3.2
+
+- Preserve structured Codex turn failures and pair recognized Codex, Pi, and OpenCode checks with their recorded tool operations and exit outcomes.
+- Show recorded Codex edit counts in Review and expose an exact-turn `agenturm review` command.
+- Reopen eligible older OpenCode prompts using retained source proofs. Inspect a selected Codex MCP payload with a current, separate grant.
+- Add an opt-in Linux x86-64 isolation profile for pinned static connectors that use the local process protocol without credentials or network access.
+
+[Rust 0.3.2 release notes](docs/releases/rust-0.3.2.md)
+
 ## 0.2.8
 
 - Simplify the default UI with compact global controls, four primary tabs plus More, five footer actions and fewer repeated counts and evidence previews. Retain detailed history/provenance routes and explicit error, empty and loading states.

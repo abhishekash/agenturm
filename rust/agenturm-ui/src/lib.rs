@@ -10,8 +10,8 @@ mod workbench;
 mod workspace;
 
 pub use workbench::{
-    HandoffEntry, PromptDelivery, PromptEntry, RequestEntry, ReviewNoteEntry, TaskEntry,
-    WorkAnchor, WorkCommand, WorkResult,
+    HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery, PromptEntry,
+    RequestEntry, ReviewNoteEntry, TaskEntry, WorkAnchor, WorkCommand, WorkResult,
 };
 
 pub use workspace::{
@@ -245,6 +245,7 @@ pub struct HistoryPage {
     pub turns: Vec<RecordedTurn>,
     pub initial_pane: Option<ExtensionId>,
     pub review_pane: Option<ExtensionId>,
+    pub operation_details: Vec<OperationDetailEntry>,
 }
 
 struct PageView {
@@ -252,6 +253,8 @@ struct PageView {
     turns: Vec<RecordedTurn>,
     turn_picker: Option<ListState>,
     review_pane: Option<ExtensionId>,
+    operation_details: Vec<OperationDetailEntry>,
+    operation_picker: Option<(OperationDetailKind, ListState)>,
 }
 
 impl PageView {
@@ -271,6 +274,8 @@ impl PageView {
             turns: page.turns,
             turn_picker: None,
             review_pane: page.review_pane,
+            operation_details: page.operation_details,
+            operation_picker: None,
         }
     }
     fn reviewing(&self) -> bool {
@@ -294,6 +299,7 @@ pub fn run_with_history(
         turns: Vec::new(),
         initial_pane: None,
         review_pane: None,
+        operation_details: Vec::new(),
     };
     run_with_turn_activity(initial, |_, before| {
         let Some(cursor) = before else {
@@ -304,6 +310,7 @@ pub fn run_with_history(
             turns: Vec::new(),
             initial_pane: None,
             review_pane: None,
+            operation_details: Vec::new(),
         }))
     })
 }

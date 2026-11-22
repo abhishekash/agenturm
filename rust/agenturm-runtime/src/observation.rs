@@ -6,8 +6,8 @@ use crate::{
 };
 use agenturm_kernel::{
     ObservationIdentity, ObservationKind, ObservationScope, PreparedSourceBatch, RawObservation,
-    is_anchored_pull_request, is_lifecycle_state, is_mcp_operation, is_safe_diagnostic_code,
-    is_session_relationship, is_valid_mcp_metadata,
+    is_anchored_pull_request, is_file_edit_operation, is_lifecycle_state, is_mcp_operation,
+    is_safe_diagnostic_code, is_session_relationship, is_valid_mcp_metadata,
 };
 use agenturm_protocol::observation::{ObservationBatch, ObservationFact, ObservationRecord};
 
@@ -128,6 +128,14 @@ fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<R
                 category: tool.category,
                 result: tool.result,
             }
+        }
+        ObservationFact::FileEdit(edit) => {
+            if !edit.is_valid() || !is_file_edit_operation(&identity) {
+                return Err(RuntimeError::new(
+                    "source file edit or operation identity is invalid",
+                ));
+            }
+            ObservationKind::FileEdit(edit)
         }
         ObservationFact::McpCall(call) => {
             if !is_mcp_operation(&identity)

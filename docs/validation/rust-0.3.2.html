@@ -1,0 +1,36 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust 0.3.2</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.3.2</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-0.3.2.md">Markdown source ↗</a></nav><h1>Rust 0.3.2 validation</h1>
+<p>Ubuntu 24.04.5 x86-64 exercised the integrated source on the
+<code>feature/rust-cutover-parallel-checkpoint</code> branch. The full Rust workspace
+test suite, all-target Clippy with warnings denied, formatting and diff
+checks passed.</p>
+<p>The legacy-facing Codex failure was reproduced with the old packaged adapter.
+The corrected source passed the 31 affected Python-side harness checks and
+the native Rust process reopen scenario. Rust-only typed file edits remain
+available on native admission.</p>
+<h2>Private evidence</h2>
+<p>The Codex edit integration covers an edit-only receipt, independent approval,
+exact source/event/revision/session/turn/operation selection, bounded paths
+and diff bodies, changed bytes, revocation and restored-state denial.
+Review notes remain tied to the original evidence version. Existing MCP
+integration still passes with its separate approval kind.</p>
+<h2>Broker clients</h2>
+<p>A network-free x86-64 Linux guest ran the broker under UID/GID 45000 and
+its CLI under UID/GID 45001. The real app collected a Pi fixture through
+the broker, received commit-before-ACK, reopened typed token evidence and
+replayed collection without additional observations. The client could not
+read the broker-owned SQLite file. A PTY opened the broker inspector at
+60×18, selected the retained session and quit with its original terminal
+settings restored.</p>
+<p>Scoped service tests cover source filtering before pagination, exact worker
+identity, stable snapshot watermarks, denial after retention expiry and
+bounded partial-frame timeouts. Source-free queries only read the broker
+allowlist.</p>
+<p>The native broker grants the configured collector principal both admission
+and read access to allowed sources. Grant administration, retention commands,
+private-content disclosure and workspace mutations over that endpoint are
+remaining work. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md">Broker commands</a></p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

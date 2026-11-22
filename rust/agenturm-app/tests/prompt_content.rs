@@ -320,6 +320,95 @@ fn codex_preview_reveals_only_exact_completed_native_user_items() {
     };
     assert_eq!(checked(preview()), "\"review recorded output\"\n");
     assert!(!checked(run(&["query", "--db", db_arg])).contains("review recorded output"));
+
+    let calls = concat!(
+        r#"{"type":"event_msg","timestamp":"2026-11-20T12:00:03Z","payload":{"type":"item_completed","thread_id":"codex-fixture","turn_id":"turn-1","item":{"type":"McpToolCall","id":"operation-a","server":"fixture","tool":"alpha","status":"completed","arguments":{"query":"fixture first argument"},"result":{"content":"fixture first result"}}}}"#,
+        "\n",
+        r#"{"type":"event_msg","timestamp":"2026-11-20T12:00:04Z","payload":{"type":"item_completed","thread_id":"codex-fixture","turn_id":"turn-1","item":{"type":"McpToolCall","id":"operation-b","server":"fixture","tool":"beta","status":"completed","arguments":{"query":"fixture second argument"}}}}"#,
+        "\n",
+        r#"{"type":"event_msg","timestamp":"2026-11-20T12:00:05Z","payload":{"type":"item_completed","thread_id":"codex-fixture","turn_id":"turn-1","item":{"type":"McpToolCall","id":"operation-c","server":"fixture","tool":"gamma","status":"completed"}}}"#,
+        "\n",
+        r#"{"type":"event_msg","timestamp":"2026-11-20T12:00:06Z","payload":{"type":"item_completed","thread_id":"codex-fixture","turn_id":"turn-1","item":{"type":"McpToolCall","id":"operation-d","server":"fixture","tool":"delta","status":"completed","arguments":null,"result":false}}}"#,
+        "\n",
+    );
+    fs::write(&source, format!("{initial}{calls}")).unwrap();
+    checked(run(&["collect", "--config", config_arg, "--db", db_arg]));
+    let query = checked(run(&["query", "--db", db_arg]));
+    assert!(!query.contains("fixture first argument"));
+    assert!(!query.contains("fixture first result"));
+    assert!(!query.contains("fixture second argument"));
+    let evidence: Value = serde_json::from_str(&query).unwrap();
+    let mcp_row = |tool: &str| {
+        evidence["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| {
+                row["observation"]["kind"] == "mcp_call" && row["observation"]["tool"] == tool
+            })
+            .unwrap()
+    };
+    let mcp = |tool, operation_tool, session| {
+        content(
+            "preview",
+            &[
+                "--kind",
+                "codex.mcp_payload",
+                "--config",
+                config_arg,
+                "--event-id",
+                mcp_row(tool)["event_id"].as_str().unwrap(),
+                "--revision",
+                "0",
+                "--session-id",
+                session,
+                "--operation-id",
+                mcp_row(operation_tool)["identity"]["operation_id"]
+                    .as_str()
+                    .unwrap(),
+            ],
+        )
+    };
+    denied(mcp("alpha", "alpha", "codex-fixture"), "requires approval");
+    checked(content(
+        "grant",
+        &["--kind", "codex.mcp_payload", "--config", config_arg],
+    ));
+    denied(mcp("alpha", "beta", "codex-fixture"), "no verified payload");
+    denied(
+        mcp("alpha", "alpha", "wrong-session"),
+        "no verified payload",
+    );
+    denied(
+        mcp("gamma", "gamma", "codex-fixture"),
+        "no verified payload",
+    );
+    let revealed = checked(mcp("alpha", "alpha", "codex-fixture"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&revealed).unwrap(),
+        json!({
+            "arguments": {"query": "fixture first argument"},
+            "result": {"content": "fixture first result"},
+        })
+    );
+    let partial = checked(mcp("beta", "beta", "codex-fixture"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&partial).unwrap(),
+        json!({
+            "arguments": {"query": "fixture second argument"},
+        })
+    );
+    let explicit = checked(mcp("delta", "delta", "codex-fixture"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&explicit).unwrap(),
+        json!({
+            "arguments": null,
+            "result": false,
+        })
+    );
+    checked(content("revoke", &["--kind", "codex.mcp_payload"]));
+    denied(mcp("alpha", "alpha", "codex-fixture"), "requires approval");
+    assert_eq!(checked(preview()), "\"review recorded output\"\n");
     fs::write(
         &source,
         initial.replace("review recorded output", "edited recorded output"),
@@ -328,6 +417,226 @@ fn codex_preview_reveals_only_exact_completed_native_user_items() {
     denied(preview(), "no longer matches the committed checkpoint");
     checked(content("revoke", &[]));
     denied(list(), "requires approval");
+}
+
+#[test]
+fn codex_edit_detail_follows_exact_retained_edit_and_its_own_approval() {
+    use agenturm_store::{ReviewKey, ReviewLedger, SessionQuery, Store};
+
+    let (Some(host), Some(adapter)) = (
+        std::env::var_os("AGENTURM_RUNTIME_PLUGIN_HOST"),
+        std::env::var_os("AGENTURM_RUNTIME_CODEX_ADAPTER"),
+    ) else {
+        eprintln!("skipping Codex edit proof: set plugin host and Codex adapter paths");
+        return;
+    };
+    let scratch = Scratch::new();
+    let adapter = pin_fixture_adapter(&scratch, &adapter);
+    let source = scratch.0.join("edits.jsonl");
+    let config = scratch.0.join("sources.json");
+    let db = scratch.0.join("history.sqlite");
+    let catalog = scratch.0.join("catalog.json");
+    let plugin_id = agenturm_runtime::CODEX_PLUGIN_ID;
+    let first = json!({
+        "fixture/path.txt": {"type":"update", "unified_diff":"@@ -1 +1 @@\n-first\n+second\n", "move_path":"fixture/new.txt"},
+        "fixture/empty.txt": {"type":"add", "content":""},
+    });
+    let edit = |id: &str, turn: &str, second: u8, changes: Value| {
+        json!({
+            "type":"event_msg", "timestamp":format!("2026-11-20T12:00:0{second}Z"),
+            "payload": {"type":"item_completed", "thread_id":"edit-fixture", "turn_id":turn,
+                "item":{"type":"FileChange", "id":id, "status":"completed", "changes":changes,
+                    "stdout":"fixture output outside edit detail"}},
+        })
+    };
+    let rows = [
+        json!({"type":"session_meta", "payload":{"id":"edit-fixture"}}),
+        edit("operation-first", "turn-first", 1, first),
+        edit(
+            "operation-second",
+            "turn-second",
+            2,
+            json!({
+                "fixture/other-edit.txt": {"type":"add", "content":"unrelated edit"},
+            }),
+        ),
+        edit(
+            "operation-large",
+            "turn-large",
+            3,
+            json!({
+                "fixture/large.txt": {"type":"update", "unified_diff":"x".repeat(8_192)},
+            }),
+        ),
+    ]
+    .map(|row| format!("{row}\n"))
+    .concat();
+    fs::write(&source, &rows).unwrap();
+    fs::write(
+        catalog.as_path(),
+        json!({
+            "version": 1,
+            "plugins":[{"plugin_id":plugin_id, "adapter":adapter,
+                "sha256":format!("{:x}", Sha256::digest(fs::read(&adapter).unwrap())),
+                "protocol":1,"features":["source-adapter/1","configured-root/1"],
+                "observation_format":"agenturm-observations/1"}],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        config.as_path(),
+        json!({
+            "version":2, "plugin_host":PathBuf::from(host), "plugin_catalog":catalog,
+            "sources":[{"plugin_id":plugin_id, "source_id":"harness.codex", "source_root":source}],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (db_arg, config_arg) = (db.to_str().unwrap(), config.to_str().unwrap());
+    checked(run(&["collect", "--db", db_arg, "--config", config_arg]));
+    let query = checked(run(&["query", "--db", db_arg]));
+    assert!(!query.contains("fixture/path.txt"));
+    assert!(!query.contains("unrelated edit"));
+    let history: Value = serde_json::from_str(&query).unwrap();
+    let occurrence = |turn: &str| {
+        history["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| {
+                row["observation"]["kind"] == "file_edit" && row["identity"]["turn_id"] == turn
+            })
+            .unwrap()
+    };
+    let select = |db_path: &str, event_turn: &str, turn: &str, operation_turn: &str| {
+        run(&[
+            "content",
+            "preview",
+            "--kind",
+            "codex.edit_detail",
+            "--source-id",
+            "harness.codex",
+            "--db",
+            db_path,
+            "--config",
+            config_arg,
+            "--session-id",
+            "edit-fixture",
+            "--turn-id",
+            turn,
+            "--event-id",
+            occurrence(event_turn)["event_id"].as_str().unwrap(),
+            "--revision",
+            "0",
+            "--operation-id",
+            occurrence(operation_turn)["identity"]["operation_id"]
+                .as_str()
+                .unwrap(),
+        ])
+    };
+    let grant = |kind: &str| {
+        checked(run(&[
+            "content",
+            "grant",
+            "--db",
+            db_arg,
+            "--config",
+            config_arg,
+            "--source-id",
+            "harness.codex",
+            "--kind",
+            kind,
+        ]))
+    };
+    let preview = || select(db_arg, "turn-first", "turn-first", "turn-first");
+    let page = Store::open_read_only(&db)
+        .unwrap()
+        .query_sessions(&SessionQuery::latest(4))
+        .unwrap();
+    let session = &page.sessions[0];
+    let key = ReviewKey {
+        harness_id: session.harness_id.clone(),
+        session_id: session.session_id.clone(),
+    };
+    ReviewLedger::open(&db)
+        .unwrap()
+        .save_decision_note(
+            &key,
+            session.review_version,
+            page.snapshot_id,
+            "Preserve review decision",
+        )
+        .unwrap();
+    grant("codex.mcp_payload");
+    denied(preview(), "requires approval");
+    grant("codex.edit_detail");
+    denied(
+        select(db_arg, "turn-first", "turn-second", "turn-first"),
+        "no verified detail",
+    );
+    denied(
+        select(db_arg, "turn-first", "turn-first", "turn-second"),
+        "no verified detail",
+    );
+    denied(
+        select(db_arg, "turn-large", "turn-large", "turn-large"),
+        "no verified detail",
+    );
+    let details: Value = serde_json::from_str(&checked(preview())).unwrap();
+    assert_eq!(
+        details,
+        json!({"changes":[
+            {"path":"fixture/empty.txt","type":"add", "content":""},
+            {"path":"fixture/path.txt", "type":"update", "diff":"@@ -1 +1 @@\n-first\n+second\n", "move_path":"fixture/new.txt"},
+        ]})
+    );
+    let bundle = scratch.0.join("bundle");
+    let restored = scratch.0.join("restored");
+    checked(run(&[
+        "backup",
+        "--db",
+        db_arg,
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]));
+    checked(run(&[
+        "restore",
+        "--bundle",
+        bundle.to_str().unwrap(),
+        "--output",
+        restored.to_str().unwrap(),
+    ]));
+    let restored_db = restored.join("history.sqlite");
+    denied(
+        select(
+            restored_db.to_str().unwrap(),
+            "turn-first",
+            "turn-first",
+            "turn-first",
+        ),
+        "requires approval",
+    );
+    let notes = ReviewLedger::open(restored_db)
+        .unwrap()
+        .decision_notes(&key)
+        .unwrap();
+    assert_eq!(notes[0].note, "Preserve review decision");
+    assert_eq!(notes[0].version, session.review_version);
+    fs::write(&source, rows.replace("+second", "+edited")).unwrap();
+    denied(preview(), "no longer matches the committed checkpoint");
+    fs::write(&source, rows).unwrap();
+    checked(run(&[
+        "content",
+        "revoke",
+        "--db",
+        db_arg,
+        "--source-id",
+        "harness.codex",
+        "--kind",
+        "codex.edit_detail",
+    ]));
+    denied(preview(), "requires approval");
 }
 
 #[test]

@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::error::Error;
+use std::path::Path;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -141,6 +142,43 @@ fn category(name: &str) -> &'static str {
         "shell"
     } else {
         "other"
+    }
+}
+
+// Only a direct check command is attributed to this row's shell exit.
+fn shell_check(command: &str) -> Option<&'static str> {
+    if command.len() > 4096
+        || !command.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b' ' | b'\t' | b'/' | b'.' | b'_' | b'-' | b':')
+        })
+    {
+        return None;
+    }
+    let mut words = command.split_ascii_whitespace();
+    let program = Path::new(words.next()?).file_name()?.to_str()?;
+    let args = words.collect::<Vec<_>>();
+    if args.iter().any(|word| {
+        matches!(
+            *word,
+            "-h" | "--help"
+                | "--version"
+                | "--collect-only"
+                | "--co"
+                | "--dry-run"
+                | "--list"
+                | "--no-run"
+        )
+    }) {
+        return None;
+    }
+    match (program, args.as_slice()) {
+        ("cargo" | "go", ["test", ..])
+        | ("pytest", _)
+        | ("python" | "python3", ["-m", "pytest" | "unittest", ..]) => Some("test"),
+        ("cargo", ["clippy", ..]) | ("ruff", ["check", ..]) => Some("lint"),
+        ("cargo" | "go", ["build", ..]) => Some("build"),
+        _ => None,
     }
 }
 
@@ -306,6 +344,14 @@ pub(crate) fn translate_line(
                     json!({"state":"interrupted","reason_code":"pi_stop_error"}),
                     None,
                 )),
+                Some("aborted") => facts.push(fact(
+                    format!("{base}:lifecycle"),
+                    "lifecycle",
+                    &time_ns,
+                    &next,
+                    json!({"state":"interrupted","reason_code":"pi_stop_aborted"}),
+                    None,
+                )),
                 _ => facts.push(fact(
                     format!("{base}:lifecycle"),
                     "lifecycle",
@@ -354,6 +400,51 @@ pub(crate) fn translate_line(
                 json!({"state":"running"}),
                 None,
             ));
+        }
+        "bashExecution" => {
+            // User-side shell commands can be queued while the model is
+            // streaming. The row provides no exact model turn correlation.
+            let mut shell_context = next.clone();
+            shell_context.turn_id.clear();
+            let operation = format!("pi-shell/{:x}", Sha256::digest(&base));
+            let exit = message.get("exitCode").and_then(Value::as_i64);
+            if message.get("cancelled").and_then(Value::as_bool) == Some(false)
+                && let Some(exit) = exit.filter(|exit| *exit >= 0)
+            {
+                let (tool_result, check_result) = if exit == 0 {
+                    ("succeeded", "passed")
+                } else {
+                    ("failed", "failed")
+                };
+                facts.push(fact(
+                    format!("{base}:shell"),
+                    "tool",
+                    &time_ns,
+                    &shell_context,
+                    json!({"category":"shell","result":tool_result}),
+                    Some(&operation),
+                ));
+                if let Some(check) = message
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .and_then(shell_check)
+                {
+                    facts.push(fact(
+                        format!("{base}:check"),
+                        "check",
+                        &time_ns,
+                        &shell_context,
+                        json!({"category":check,"result":check_result}),
+                        Some(&operation),
+                    ));
+                }
+            } else {
+                facts.push(
+                    json!({"event_id":format!("{base}:shell-unknown"),"revision":0,
+                    "kind":"diagnostic","time_ns":time_ns,
+                    "payload":{"code":"unsupported_pi_role","severity":"info"}}),
+                );
+            }
         }
         _ => facts.push(
             json!({"event_id":format!("{base}:unsupported"),"revision":0,
@@ -507,5 +598,62 @@ mod tests {
         assert_eq!(facts[1]["identity"]["turn_id"], "user-2");
         assert_eq!(next, context);
         assert!(!serde_json::to_string(&facts).unwrap().contains("private"));
+    }
+
+    #[test]
+    fn native_user_shell_checks_require_an_explicit_exit_and_remain_session_scoped() {
+        let context = Context {
+            session_id: "pi-session".into(),
+            turn_id: "later-turn".into(),
+            ..Context::default()
+        };
+        for (command, exit, cancelled, expected) in [
+            (
+                "python3 -m unittest test_probe",
+                json!(0),
+                false,
+                Some("passed"),
+            ),
+            (
+                "python3 -m unittest test_probe",
+                json!(1),
+                false,
+                Some("failed"),
+            ),
+            ("python3 -m unittest test_probe", Value::Null, false, None),
+            ("python3 -m unittest test_probe", json!(0), true, None),
+            (
+                "python3 -m unittest test_probe | cat",
+                json!(0),
+                false,
+                None,
+            ),
+            ("cargo test --no-run", json!(0), false, None),
+        ] {
+            let row = json!({"type":"message","id":"bash-1","timestamp":"2026-11-20T12:00:00Z",
+                "message":{"role":"bashExecution","command":command,"exitCode":exit,
+                "cancelled":cancelled,"output":"private output"}});
+            let (facts, next) =
+                translate_line(&serde_json::to_vec(&row).unwrap(), &context, "origin", 40).unwrap();
+            assert_eq!(next, context);
+            assert_eq!(
+                facts
+                    .iter()
+                    .find(|fact| fact["kind"] == "check")
+                    .and_then(|fact| fact["payload"]["result"].as_str()),
+                expected
+            );
+            if expected.is_some() {
+                assert_eq!(facts[0]["identity"], facts[1]["identity"]);
+                assert!(facts[1]["identity"].get("turn_id").is_none());
+                assert_eq!(facts[1]["payload"]["category"], "test");
+            }
+            assert!(
+                !serde_json::to_string(&facts)
+                    .unwrap()
+                    .contains("private output")
+            );
+            assert!(!serde_json::to_string(&facts).unwrap().contains(command));
+        }
     }
 }

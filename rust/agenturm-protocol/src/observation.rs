@@ -129,6 +129,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             Usage,
             CreditUsage,
             Tool,
+            FileEdit,
             McpCall,
             TraceSpan,
             Lifecycle,
@@ -147,6 +148,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
                 serde_json::from_str(payload).map(ObservationFact::CreditUsage)
             }
             FactKind::Tool => serde_json::from_str(payload).map(ObservationFact::Tool),
+            FactKind::FileEdit => serde_json::from_str(payload).map(ObservationFact::FileEdit),
             FactKind::McpCall => serde_json::from_str(payload).map(ObservationFact::McpCall),
             FactKind::TraceSpan => serde_json::from_str(payload).map(ObservationFact::TraceSpan),
             FactKind::Lifecycle => serde_json::from_str(payload).map(ObservationFact::Lifecycle),
@@ -202,6 +204,7 @@ pub enum ObservationFact {
     Usage(Usage),
     CreditUsage(CreditUsage),
     Tool(Tool),
+    FileEdit(FileEdit),
     McpCall(McpCall),
     TraceSpan(TraceSpan),
     Lifecycle(Lifecycle),
@@ -210,6 +213,29 @@ pub enum ObservationFact {
     Relationship(Relationship),
     Message(Message),
     Diagnostic(Diagnostic),
+}
+
+/// Counts from one explicitly successful file edit. Native paths and diffs
+/// stay in the source transcript and are outside this observation contract.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileEdit {
+    pub added: u16,
+    pub updated: u16,
+    pub deleted: u16,
+    pub moved: u16,
+}
+
+impl FileEdit {
+    pub const MAX_CHANGES: usize = 256;
+
+    pub fn is_valid(self) -> bool {
+        let total = self.added as usize
+            + self.updated as usize
+            + self.deleted as usize
+            + self.moved as usize;
+        (1..=Self::MAX_CHANGES).contains(&total)
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

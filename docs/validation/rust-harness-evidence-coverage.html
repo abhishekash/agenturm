@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.3.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-harness-evidence-coverage.md">Markdown source ↗</a></nav><h1>Rust harness evidence coverage</h1>
+</style></head><body><main><nav><strong>Agenturm / 0.3.1</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-harness-evidence-coverage.md">Markdown source ↗</a></nav><h1>Rust harness evidence coverage</h1>
 <p>This matrix describes the evidence each Rust adapter can emit and the checks
 that exercise it. The Linux bundle discovers Pi, Codex, Claude Code, Kiro, and OpenCode
 through separate Rust adapter executables. Source continuity diagnostics report specific gaps the adapter
@@ -20,17 +20,17 @@ detected.</p>
 <tbody>
 <tr>
 <td>Pi</td>
-<td>The JSONL header supplies session and optional worker identity. User row IDs identify turns. An explicit stop records completion or interruption, and a stop error carries <code>pi_stop_error</code>. Tool continuation records ongoing activity.</td>
-<td>User and assistant roles, token and cache counters, tool calls and explicit results. A result carries its call ID and can omit turn identity. Check outcomes are open.</td>
+<td>The JSONL header supplies session and optional worker identity. User row IDs identify turns. Native stop, error and abort reasons supply terminal evidence. Tool continuation records ongoing activity.</td>
+<td>User and assistant roles, token and cache counters, tool calls and explicit results. A result carries its call ID and can omit turn identity. Recognized user shell checks with a noncancelled native exit produce session-scoped outcomes.</td>
 <td>Shared JSONL continuity diagnostics and unsupported-row or role evidence. The header's <code>parentSessionId</code> supplies delegation between distinct sessions. Worker relationships are open.</td>
-<td><a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-pi-harness/src/pi.rs">Adapter tests</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-runtime/tests/pi_process.rs">commit, retry, ACK and reopen through the real adapter</a> cover a fixture with explicit <code>parentSessionId</code>.</td>
+<td><a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-pi-harness/src/pi.rs">Adapter tests</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-runtime/tests/pi_process.rs">commit, retry, ACK and reopen through the real adapter</a> cover a fixture with explicit <code>parentSessionId</code>. Real Pi RPC shell rows supplied passing and failing checks.</td>
 </tr>
 <tr>
 <td>Codex</td>
-<td>The rollout header supplies thread identity and can identify a worker. Native turn IDs attach when present. Task completion, explicit final answers and aborts produce bounded lifecycle evidence. The adapter diagnoses late outcomes it cannot attribute to the current turn.</td>
-<td>User and assistant roles, token and cache counters, tool activity, a bounded set of explicit test, lint and build results, and a typed work result for an explicitly successful GitHub PR creation. A missing tool outcome produces a diagnostic.</td>
+<td>The rollout header supplies thread identity and can identify a worker. Native turn IDs attach when present. Task completion, structured task errors, explicit final answers and aborts produce bounded lifecycle evidence. The adapter diagnoses late outcomes it cannot attribute to the current turn.</td>
+<td>User and assistant roles, token and cache counters, tool activity, a bounded set of explicit test, lint and build results, and a typed work result for an explicitly successful GitHub PR creation. Checks require a recognized command, its operation ID, and a consistent terminal status and exit code.</td>
 <td>Shared JSONL continuity diagnostics and unsupported, historical or unknown-result diagnostics. Explicit delegation and fork relationships retain child and parent thread IDs. Complete check coverage is open.</td>
-<td><a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-codex-harness/src/codex.rs">Adapter tests</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-runtime/tests/codex_process.rs">commit, retry, ACK and reopen through the real adapter</a>. A real local Codex rollout also passed collect, reopen and terminal inspection for delegation.</td>
+<td><a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-codex-harness/src/codex.rs">Adapter tests</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-runtime/tests/codex_process.rs">commit, retry, ACK and reopen through the real adapter</a>. Actual rollouts retained delegation, interruptions, a task failure, a later completion, and typed unittest results.</td>
 </tr>
 <tr>
 <td>Claude Code</td>
@@ -85,8 +85,69 @@ A fresh configured collection and query returned 323456789 nanocredits for
 one fixture turn. The reopened 60×18 inspector rendered the same value as
 0.323456789 credits in Turn Activity and restored the terminal on quit.</p>
 <p>Claude Code's local worker transcripts exposed native agent IDs and their
-owning session. Direct Claude worker relationships still require parent
-evidence.</p>
+owning session. The sampled worker rows repeated the shared session ID and
+supplied transcript message ancestry. The sampled root transcripts also
+contained Task or Agent results with a child agent ID. An exact spawn relation
+therefore needs a worker-to-worker edge within a shared session and correlation
+with the spawning call. The current durable relationship contract represents
+distinct sessions. The sampled Bash results exposed output and interruption
+metadata without a native exit field.</p>
+<h2>Native qualification on Ubuntu 24.04.5 x86-64</h2>
+<p>The Rust 1.100.0 development archive had SHA-256
+<code>87a11b63f765d69669152d5bd24455a7b994bb0abf7e612b77e5718378821912</code>.
+Each scenario used the bundle's pinned discovery catalog, a separate fresh
+Rust store, an empty executable PATH, restarted collectors and a fresh query
+process.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Task</th>
+<th>Native scenario</th>
+<th>Durable result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A1</td>
+<td>Pi 1.3.0 RPC appended two explicit shell checks to a temporary copy of a real session. A metadata sample of 29 local headers had no parent or worker IDs.</td>
+<td>Both checks reopened with their paired tool operations and session identity. Their native rows lacked a model turn key. A synthetic distinct-session parent fixture remains the direct relationship proof.</td>
+</tr>
+<tr>
+<td>A2</td>
+<td>Three local Codex rollouts covered a structured completion error, explicit interruptions followed by later completion, and direct unittest execution.</td>
+<td>The failed turn reopened with <code>codex_task_failed</code>. The interrupted rollout retained two interruptions and two explicit successful completions. An exit of <code>-1</code> produced tool evidence with no check. Direct unittest exits produced one passed and one failed check with exact operation IDs.</td>
+</tr>
+<tr>
+<td>A3</td>
+<td>An unmodified 43-row Claude Code worker transcript carried an agent ID and a shared session ID.</td>
+<td>The worker identity and its explicit completion reopened through the supervised adapter. No durable worker-parent or shell check evidence was present.</td>
+</tr>
+<tr>
+<td>A4</td>
+<td>No Kiro executable, configured transcript root, or default transcript directory was available on the qualification host.</td>
+<td>The real-session gate remains open. Existing fixture runs cover native-format credit, failure, and delegation.</td>
+</tr>
+<tr>
+<td>A5</td>
+<td>Two bounded samples of actual OpenCode SQLite rows covered an earlier idle boundary, subsequent inline tool activity, terminal idle outcomes, explicit shell exits and missing exits.</td>
+<td>The 36-row sample retained first activity at session scope and later tools at turn scope, with both successful and interrupted endings. A 26-row window reopened one direct unittest pass and one failure, each paired to its scoped tool operation.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The Codex failure mapping follows its producer's structured terminal outcome.
+Pi's documented <code>parentSession</code> records the parent transcript file path for a
+fork. A file path alone leaves the native parent identity unresolved in the
+current adapter.
+<a href="https://github.com/openai/codex/blob/main/codex-rs/core/src/tasks/mod.rs">Codex terminal event source</a> ·
+<a href="https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md">Pi session format</a></p>
+<p>At 60×18, the installed cockpit opened Activity and a recorded turn for
+each available provider. It displayed the Pi stop error, the separate Codex
+failure and abort reasons, the Claude Code worker completion, and the
+OpenCode idle interruption. Escape returned to the marked turn selection,
+then Activity and Agents. Review opened from Agents and quitting restored
+the terminal settings. The native Codex and OpenCode queries also verified
+separate later or earlier turns. The missing lifecycle and Kiro terminal
+scenarios below continue to rely on fixture evidence.</p>
 <h2>Inspector acceptance</h2>
 <p>The Overview pane displays the latest recorded lifecycle state with the source,
 session and optional reason. A separate row shows the exact turn ID when present.

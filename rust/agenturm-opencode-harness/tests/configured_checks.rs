@@ -356,21 +356,98 @@ fn opencode_turns_and_granted_prompts_survive_collection_and_reopen() {
     assert_ne!(listed[0]["turn_id"], listed[1]["turn_id"]);
     assert_eq!(listed[1]["turn_id"], mcp["identity"]["turn_id"]);
     let mut preview = request("preview");
-    preview.args([
-        "--event-id",
-        listed[0]["event_id"].as_str().unwrap(),
-        "--revision",
-        "0",
-    ]);
+    let event = listed[0]["event_id"].as_str().unwrap();
+    preview.args(["--event-id", event, "--revision", "0"]);
     assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
-    Connection::open(&source)
-        .unwrap()
-        .execute(
-            "UPDATE session_message SET data=?1 WHERE id='msg_request'",
-            [r#"{"text":"modified fixture scenario"}"#],
-        )
-        .unwrap();
-    assert!(!preview.output().unwrap().status.success());
+
+    let collect = || {
+        run(Command::new(&app)
+            .arg("collect")
+            .args(args)
+            .arg("--config")
+            .arg(&config));
+    };
+    let mutate = |id, data| {
+        Connection::open(&source)
+            .unwrap()
+            .execute(
+                "UPDATE session_message SET data=?1 WHERE id=?2",
+                params![data, id],
+            )
+            .unwrap();
+    };
+    mutate("msg_end", r#"{"outcome":"interrupted"}"#);
+    collect();
+    assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
+    let current = run(request("list").args(["--session-id", "ses_schema_fixture"]));
+    let current: Value = serde_json::from_str(&current).unwrap();
+    assert_eq!(current.as_array().unwrap().len(), 2);
+    assert_eq!(current[0]["event_id"], event);
+    assert_eq!(current[0]["revision"], 1);
+
+    let bundle = root.join("bundle");
+    let restored = root.join("restored");
+    run(Command::new(&app)
+        .arg("backup")
+        .args(args)
+        .arg("--bundle")
+        .arg(&bundle));
+    run(Command::new(&app)
+        .arg("restore")
+        .arg("--bundle")
+        .arg(&bundle)
+        .arg("--output")
+        .arg(&restored));
+    assert!(
+        !Command::new(&app)
+            .args(["content", "preview", "--db"])
+            .arg(restored.join("history.sqlite"))
+            .args([
+                "--source-id",
+                "harness.opencode",
+                "--event-id",
+                event,
+                "--revision",
+                "0",
+                "--config"
+            ])
+            .arg(&config)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
     run(&mut request("revoke"));
+    assert!(!preview.output().unwrap().status.success());
+    run(&mut request("grant"));
+    assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
+
+    // Updating native bytes without changing the recorded timestamp must
+    // fail even after the collector has committed a current sweep again.
+    mutate("msg_request", r#"{"text":"modified fixture scenario"}"#);
+    assert!(!preview.output().unwrap().status.success());
+    collect();
+    assert!(!preview.output().unwrap().status.success());
+    mutate("msg_request", r#"{"text":"review fixture scenario"}"#);
+    collect();
+    assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
+
+    let replacement = root.join("replacement.sqlite");
+    fs::rename(&source, &replacement).unwrap();
+    fs::copy(&replacement, &source).unwrap();
+    assert!(!preview.output().unwrap().status.success());
+    fs::rename(&replacement, &source).unwrap();
+    collect();
+    assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
+
+    run(Command::new(&app)
+        .arg("prune")
+        .args(args)
+        .args(["--before-unix-ns", "1794650400003000000"]));
+    assert!(!preview.output().unwrap().status.success());
+    let newer = run(request("list").args(["--session-id", "ses_schema_fixture"]));
+    let newer: Value = serde_json::from_str(&newer).unwrap();
+    assert_eq!(newer.as_array().unwrap().len(), 1);
     fs::remove_dir_all(root).unwrap();
 }

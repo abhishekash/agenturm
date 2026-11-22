@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agenturm-app"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agenturm-jsonl-source",
  "agenturm-kernel",
@@ -12,6 +12,7 @@ dependencies = [
  "agenturm-opencode-harness",
  "agenturm-runtime",
  "agenturm-service",
+ "agenturm-storage-service",
  "agenturm-store",
  "agenturm-ui",
  "libc",
@@ -128,6 +129,7 @@ name = "agenturm-kernel"
 version = "0.1.0"
 dependencies = [
  "agenturm-protocol",
+ "serde",
 ]
 
 [[package]]
@@ -271,9 +273,12 @@ dependencies = [
 name = "agenturm-storage-service"
 version = "0.1.0"
 dependencies = [
+ "agenturm-kernel",
  "agenturm-storage-admission",
  "agenturm-storage-service-contract",
+ "agenturm-store",
  "libc",
+ "serde",
 ]
 
 [[package]]

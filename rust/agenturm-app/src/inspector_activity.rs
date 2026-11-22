@@ -1,5 +1,5 @@
 use agenturm_kernel::{MetricRow, ObservationKind, Snapshot};
-use agenturm_ui::{HistoryPage, RecordedTurn};
+use agenturm_ui::{HistoryPage, OperationDetailEntry, OperationDetailKind, RecordedTurn};
 use std::collections::HashMap;
 
 pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
@@ -40,11 +40,57 @@ pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
         }
     }
     HistoryPage {
+        operation_details: operation_details(&snapshot),
         snapshot,
         turns,
         initial_pane: None,
         review_pane: None,
     }
+}
+
+fn operation_details(snapshot: &Snapshot) -> Vec<OperationDetailEntry> {
+    snapshot
+        .observations
+        .iter()
+        .rev()
+        .filter_map(|row| {
+            if !row.event_id.starts_with("codex:") || row.identity.worker_id.is_some() {
+                return None;
+            }
+            let (kind, label) = match &row.kind {
+                ObservationKind::McpCall { server, tool, .. } => (
+                    OperationDetailKind::Mcp,
+                    format!(
+                        "{} · {}",
+                        tool.as_deref().unwrap_or("MCP call"),
+                        server.as_deref().unwrap_or("server unavailable")
+                    ),
+                ),
+                ObservationKind::FileEdit(_) => (
+                    OperationDetailKind::Edit,
+                    crate::session_evidence::describe_observation(&row.kind).1,
+                ),
+                _ => return None,
+            };
+            let session = row.identity.session_id.as_ref()?;
+            let turn = row.identity.turn_id.as_ref()?;
+            let operation = row.identity.operation_id.as_ref()?;
+            Some(OperationDetailEntry {
+                kind,
+                source_id: row.harness_id.as_str().to_owned(),
+                session_id: session.clone(),
+                turn_id: turn.clone(),
+                event_id: row.event_id.clone(),
+                revision: row.revision,
+                operation_id: operation.clone(),
+                label: format!(
+                    "{label} · {} · turn {}",
+                    operation.chars().take(8).collect::<String>(),
+                    turn.chars().take(8).collect::<String>()
+                ),
+            })
+        })
+        .collect()
 }
 
 fn is_turn_end(state: &str) -> bool {
@@ -90,6 +136,7 @@ pub(super) fn turn_page(mut snapshot: Snapshot, turn: &RecordedTurn) -> HistoryP
         rows,
     );
     HistoryPage {
+        operation_details: operation_details(&snapshot),
         snapshot,
         turns: Vec::new(),
         initial_pane: Some(pane_id),

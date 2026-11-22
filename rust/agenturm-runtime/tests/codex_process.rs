@@ -1,5 +1,5 @@
 use agenturm_kernel::{
-    ExtensionId, Kernel, McpMethod, Observation, ObservationPage, ObservationStore,
+    ExtensionId, FileEdit, Kernel, McpMethod, Observation, ObservationPage, ObservationStore,
     RelationshipKind, StoreCommit,
 };
 use agenturm_runtime::{ProcessConfig, ProcessSource};
@@ -76,6 +76,7 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:02Z\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"type\":\"CommandExecution\",\"id\":\"pr-operation\",\"command\":[\"/usr/bin/zsh\",\"-lc\",\"gh pr create --body 'private PR body never stored'\"],\"status\":\"completed\",\"exit_code\":0,\"aggregated_output\":\"https://github.com/example/agenturm/pull/42\\n\"}}}\n",
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:03Z\",\"payload\":{\"type\":\"task_aborted\",\"turn_id\":\"turn-1\"}}\n",
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:02.5Z\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"type\":\"McpToolCall\",\"id\":\"mcp-operation\",\"server\":\"github\",\"tool\":\"search_code\",\"duration\":{\"secs\":1,\"nanos\":5},\"status\":\"completed\",\"arguments\":{},\"result\":{\"isError\":true,\"content\":\"private MCP result never stored\"}}}}\n",
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:02.8Z\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"type\":\"FileChange\",\"id\":\"edit-operation\",\"status\":\"completed\",\"changes\":{\"private-edited-path\":{\"type\":\"update\",\"unified_diff\":\"private diff never stored\"},\"new\":{\"type\":\"add\"}}}}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"private text never stored\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"exec_command\",\"arguments\":\"private command never stored\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"isError\":false,\"output\":\"private output never stored\"}}\n",
@@ -119,7 +120,7 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .admissions
         .get(&source_id)
         .expect("admission status");
-    assert_eq!(admission.inserted, 15);
+    assert_eq!(admission.inserted, 17);
     assert!(!admission.replay);
     assert_eq!(admission.skipped_unprojected_facts, 0);
     assert!(admission.source_ack_sent);
@@ -139,10 +140,10 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .expect("durable cursor committed");
     assert!(!cursor.is_empty());
     let observations = store.observations().expect("read committed observations");
-    assert_eq!(observations.len(), 15);
+    assert_eq!(observations.len(), 17);
     let mut restarted_kernel = Kernel::new();
     let restored = restarted_kernel.refresh_with_store(&mut store);
-    assert_eq!(restored.observations.len(), 15);
+    assert_eq!(restored.observations.len(), 17);
     assert_eq!(
         restored
             .observations
@@ -220,7 +221,28 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .iter()
         .filter(|(_, row)| matches!(row.kind, ObservationKind::Tool { .. }))
         .collect::<Vec<_>>();
-    assert_eq!(tools.len(), 5);
+    assert_eq!(tools.len(), 6);
+    let (_, edit) = observations
+        .iter()
+        .find(|(_, row)| {
+            row.kind
+                == ObservationKind::FileEdit(FileEdit {
+                    added: 1,
+                    updated: 1,
+                    deleted: 0,
+                    moved: 0,
+                })
+        })
+        .expect("reopen typed file edit evidence");
+    assert_eq!(edit.identity.turn_id.as_deref(), Some("turn-1"));
+    assert!(tools.iter().any(|(_, row)| {
+        row.kind
+            == ObservationKind::Tool {
+                category: "file".into(),
+                result: "succeeded".into(),
+            }
+            && row.identity.operation_id == edit.identity.operation_id
+    }));
     let (_, mcp) = observations
         .iter()
         .find(|(_, row)| {
@@ -290,6 +312,8 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
     assert!(!encoded.contains("private text never stored"));
     assert!(!encoded.contains("npm run check"));
     assert!(!encoded.contains("private PR body never stored"));
+    assert!(!encoded.contains("private diff never stored"));
+    assert!(!encoded.contains("private-edited-path"));
     assert!(!encoded.contains("https://"));
     fs::remove_dir_all(root).expect("remove fixture directory");
 }

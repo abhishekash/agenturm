@@ -19,7 +19,10 @@ mod session_catalog;
 mod workspace_ledger;
 
 pub use backup::BackupError;
-pub use content_grant::{ContentGrant, ContentGrantScope, ContentKind, UserTextEvidence};
+pub use content_grant::{
+    CodexOperationEvidence, CodexOperationSelection, ContentGrant, ContentGrantScope, ContentKind,
+    UserTextEvidence,
+};
 pub use retention::RetentionOutcome;
 pub use review_ledger::{ReviewDecisionNote, ReviewError, ReviewKey, ReviewLedger, ReviewVersion};
 pub use session_catalog::{
@@ -32,18 +35,19 @@ pub use workspace_ledger::{
 };
 
 use agenturm_kernel::{
-    MAX_DURABLE_SNAPSHOT_OBSERVATIONS, Observation, ObservationKind as KernelObservationKind,
-    ObservationPage, ObservationQuery, ObservationScope as KernelObservationScope,
-    ObservationStore, StoreCommit,
+    ExtensionId, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, Observation,
+    ObservationKind as KernelObservationKind, ObservationPage, ObservationQuery,
+    ObservationScope as KernelObservationScope, ObservationStore, StoreCommit,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 13;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -52,7 +56,9 @@ const MAX_SESSION_KEY_BYTES: usize = 512;
 const MAX_CATEGORY_BYTES: usize = 64;
 const MAX_CURSOR_BYTES: usize = 800;
 const STORE_MARKER_V10: &str = "agenturm.observation-store.v10";
-const STORE_MARKER: &str = "agenturm.observation-store.v11";
+const STORE_MARKER_V11: &str = "agenturm.observation-store.v11";
+const STORE_MARKER_V12: &str = "agenturm.observation-store.v12";
+const STORE_MARKER: &str = "agenturm.observation-store.v13";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -74,6 +80,7 @@ pub enum ObservationKind {
         category: String,
         result: String,
     },
+    FileEdit(agenturm_kernel::FileEdit),
     McpCall {
         server: Option<String>,
         tool: Option<String>,
@@ -202,6 +209,119 @@ impl ObservationBatch {
         batch.request_id = batch_digest(&batch)?;
         validate_batch(&batch)?;
         Ok(batch)
+    }
+
+    /// Converts kernel observations into the deterministic admission batch
+    /// shared by local and broker-backed storage.
+    pub fn from_observations(
+        source_id: &str,
+        expected_cursor: Option<&str>,
+        next_cursor: &str,
+        observations: &[Observation],
+    ) -> std::result::Result<Self, String> {
+        let mut stored = Vec::with_capacity(observations.len());
+        for observation in observations {
+            if observation.harness_id.as_str() != source_id {
+                return Err("observation source identity mismatch".into());
+            }
+            stored.push(StoredObservation {
+                event_id: observation.event_id.clone(),
+                revision: observation.revision,
+                identity: ObservationIdentity {
+                    scope: stored_scope(observation.identity.scope),
+                    session_id: observation.identity.session_id.clone(),
+                    worker_id: observation.identity.worker_id.clone(),
+                    turn_id: observation.identity.turn_id.clone(),
+                    operation_id: observation.identity.operation_id.clone(),
+                },
+                observed_at_unix_ns: observation.observed_at_unix_ns,
+                kind: match &observation.kind {
+                    KernelObservationKind::SessionStarted => ObservationKind::SessionStarted,
+                    KernelObservationKind::SessionEnded => ObservationKind::SessionEnded,
+                    KernelObservationKind::Activity { category } => ObservationKind::Activity {
+                        category: category.clone(),
+                    },
+                    KernelObservationKind::Tool { category, result } => ObservationKind::Tool {
+                        category: category.clone(),
+                        result: result.clone(),
+                    },
+                    KernelObservationKind::FileEdit(edit) => ObservationKind::FileEdit(*edit),
+                    KernelObservationKind::McpCall {
+                        server,
+                        tool,
+                        method,
+                        duration_ns,
+                        result,
+                    } => ObservationKind::McpCall {
+                        server: server.clone(),
+                        tool: tool.clone(),
+                        method: *method,
+                        duration_ns: *duration_ns,
+                        result: result.clone(),
+                    },
+                    KernelObservationKind::TraceSpan(span) => {
+                        ObservationKind::TraceSpan(span.clone())
+                    }
+                    KernelObservationKind::Lifecycle { state, reason_code } => {
+                        ObservationKind::Lifecycle {
+                            state: state.clone(),
+                            reason_code: reason_code.clone(),
+                        }
+                    }
+                    KernelObservationKind::Check { category, result } => ObservationKind::Check {
+                        category: category.clone(),
+                        result: result.clone(),
+                    },
+                    KernelObservationKind::PullRequestRaised { repository, number } => {
+                        ObservationKind::PullRequestRaised {
+                            repository: repository.clone(),
+                            number: *number,
+                        }
+                    }
+                    KernelObservationKind::Relationship {
+                        relationship_kind,
+                        parent_session_id,
+                    } => ObservationKind::Relationship {
+                        relationship_kind: *relationship_kind,
+                        parent_session_id: parent_session_id.clone(),
+                    },
+                    KernelObservationKind::Message { role } => {
+                        ObservationKind::Message { role: role.clone() }
+                    }
+                    KernelObservationKind::CreditUsage { nanocredits } => {
+                        ObservationKind::CreditUsage {
+                            nanocredits: *nanocredits,
+                        }
+                    }
+                    KernelObservationKind::Diagnostic { code, severity } => {
+                        ObservationKind::Diagnostic {
+                            code: code.clone(),
+                            severity: severity.clone(),
+                        }
+                    }
+                    KernelObservationKind::Usage {
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                        total_tokens,
+                    } => ObservationKind::Usage {
+                        input_tokens: *input_tokens,
+                        output_tokens: *output_tokens,
+                        cache_read_tokens: *cache_read_tokens,
+                        cache_write_tokens: *cache_write_tokens,
+                        total_tokens: *total_tokens,
+                    },
+                },
+            });
+        }
+        Self::new_deterministic(
+            source_id,
+            expected_cursor.map(str::to_owned),
+            next_cursor,
+            stored,
+        )
+        .map_err(|error| error.to_string())
     }
 
     /// Returns the canonical content digest used as this batch's request ID.
@@ -348,7 +468,9 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         8 => STORE_MARKER_V8,
         9 => STORE_MARKER_V9,
         10 => STORE_MARKER_V10,
-        11 => STORE_MARKER,
+        11 => STORE_MARKER_V11,
+        12 => STORE_MARKER_V12,
+        13 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -663,7 +785,7 @@ impl Store {
         Self::open(path)
     }
 
-    /// Opens a v8 through v11 store through a read-only connection. This path
+    /// Opens a v8 through v13 store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -717,7 +839,7 @@ impl Store {
                     value TEXT NOT NULL
                 );
                 INSERT INTO agenturm_store_meta (key, value)
-                    VALUES ('format', 'agenturm.observation-store.v11');
+                    VALUES ('format', 'agenturm.observation-store.v13');
                 CREATE TABLE agenturm_ingest_receipts (
                     request_id TEXT PRIMARY KEY NOT NULL,
                     source_id TEXT NOT NULL,
@@ -756,9 +878,9 @@ impl Store {
                 CREATE INDEX agenturm_observations_by_session
                     ON agenturm_observations
                         (session_id, observed_at_unix_ns, event_id, revision);
-                PRAGMA user_version = 11;",
+                PRAGMA user_version = 13;",
             )?;
-            content_grant::create_schema(&transaction, true)?;
+            content_grant::create_schema(&transaction, SCHEMA_VERSION)?;
             content_grant::create_receipt_proof_schema(&transaction)?;
             retention::create_schema(&transaction)?;
             transaction.commit()?;
@@ -916,7 +1038,7 @@ impl Store {
             validate_marked_shape(&connection, 7)?;
         } else if schema_version == 7 {
             validate_marked_shape(&connection, 7)?;
-        } else if matches!(schema_version, 8..=10) {
+        } else if matches!(schema_version, 8..=12) {
             validate_marked_shape(&connection, schema_version)?;
         } else if schema_version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(schema_version));
@@ -929,7 +1051,7 @@ impl Store {
         if (2..9).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            content_grant::create_schema(&transaction, false)?;
+            content_grant::create_schema(&transaction, 9)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER_V9],
@@ -950,10 +1072,34 @@ impl Store {
             transaction.commit()?;
             validate_marked_shape(&connection, 10)?;
         }
-        if (2..SCHEMA_VERSION).contains(&schema_version) {
+        if (2..11).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             content_grant::migrate_v10(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V11],
+            )?;
+            transaction.pragma_update(None, "user_version", 11)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 11)?;
+        }
+        if (2..12).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_v11(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V12],
+            )?;
+            transaction.pragma_update(None, "user_version", 12)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 12)?;
+        }
+        if (2..SCHEMA_VERSION).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_v12(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -1097,11 +1243,13 @@ impl Store {
                     .map_err(|_| StoreError::Invalid("event count exceeds SQLite INTEGER"))?,
             ],
         )?;
-        if batch
-            .observations
-            .iter()
-            .any(|row| matches!(&row.kind, ObservationKind::Message { role } if role == "user"))
-        {
+        if batch.observations.iter().any(|row| {
+            matches!(&row.kind, ObservationKind::Message { role } if role == "user")
+                || matches!(
+                    &row.kind,
+                    ObservationKind::McpCall { .. } | ObservationKind::FileEdit(_)
+                )
+        }) {
             content_grant::record_receipt_proof(
                 &transaction,
                 &batch.request_id,
@@ -1197,7 +1345,16 @@ impl Store {
     /// Reads one filtered, keyset-paginated page in chronological order.
     /// `before` is exclusive and uses the full stable sort key.
     pub fn query_observations(&self, query: &ObservationQuery) -> Result<ObservationPage> {
-        self.query_history(query, None, None, false)
+        self.query_history(query, None, None, false, None)
+    }
+
+    /// Applies the broker's source allowlist before reading and paging rows.
+    pub fn query_observations_from_sources(
+        &self,
+        query: &ObservationQuery,
+        allowed_sources: &BTreeSet<ExtensionId>,
+    ) -> Result<ObservationPage> {
+        self.query_history(query, None, None, false, Some(allowed_sources))
     }
 
     /// Reads a bounded history page for one exact native turn.
@@ -1206,7 +1363,7 @@ impl Store {
         query: &ObservationQuery,
         turn_id: &str,
     ) -> Result<ObservationPage> {
-        self.query_history(query, Some(turn_id), None, false)
+        self.query_history(query, Some(turn_id), None, false, None)
     }
 
     /// Reads a turn for one exact worker anchor. `None` selects rows whose
@@ -1217,12 +1374,28 @@ impl Store {
         turn_id: &str,
         worker_id: Option<&str>,
     ) -> Result<ObservationPage> {
-        self.query_history(query, Some(turn_id), Some(worker_id), false)
+        self.query_history(query, Some(turn_id), Some(worker_id), false, None)
     }
 
     /// Reads imported traces explicitly attached to the selected native
     /// source/session at the same history snapshot as the session evidence.
     pub fn query_linked_traces(&self, query: &ObservationQuery) -> Result<ObservationPage> {
+        self.query_linked_traces_impl(query, None)
+    }
+
+    pub fn query_linked_traces_from_sources(
+        &self,
+        query: &ObservationQuery,
+        allowed_sources: &BTreeSet<ExtensionId>,
+    ) -> Result<ObservationPage> {
+        self.query_linked_traces_impl(query, Some(allowed_sources))
+    }
+
+    fn query_linked_traces_impl(
+        &self,
+        query: &ObservationQuery,
+        allowed_sources: Option<&BTreeSet<ExtensionId>>,
+    ) -> Result<ObservationPage> {
         if query
             .harness_id
             .as_deref()
@@ -1233,7 +1406,7 @@ impl Store {
                 "linked traces require a harness source and session",
             ));
         }
-        self.query_history(query, None, None, true)
+        self.query_history(query, None, None, true, allowed_sources)
     }
 
     fn query_history(
@@ -1242,6 +1415,7 @@ impl Store {
         turn_id: Option<&str>,
         worker_filter: Option<Option<&str>>,
         linked_traces: bool,
+        allowed_sources: Option<&BTreeSet<ExtensionId>>,
     ) -> Result<ObservationPage> {
         if query.limit == 0 || query.limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
             return Err(StoreError::Invalid("observation page limit is invalid"));
@@ -1312,6 +1486,7 @@ impl Store {
                ))
                AND (?9 IS NULL OR observation.turn_id=?9)
                AND (?10 = 0 OR observation.worker_id IS ?11)
+               AND (?13 IS NULL OR observation.source_id IN (SELECT value FROM json_each(?13)))
                AND (?4 IS NULL OR
                     (observation.observed_at_unix_ns,observation.source_id,
                      observation.event_id,observation.revision) <
@@ -1337,6 +1512,7 @@ impl Store {
                 worker_filter.is_some(),
                 worker_filter.flatten(),
                 linked_traces,
+                allowed_sources.map(serde_json::to_string).transpose()?,
             ],
             |row| {
                 let revision: i64 = row.get(2)?;
@@ -1417,6 +1593,7 @@ impl Store {
                     ObservationKind::Tool { category, result } => {
                         KernelObservationKind::Tool { category, result }
                     }
+                    ObservationKind::FileEdit(edit) => KernelObservationKind::FileEdit(edit),
                     ObservationKind::McpCall {
                         server,
                         tool,
@@ -1532,108 +1709,12 @@ impl ObservationStore for Store {
         next_cursor: &str,
         observations: &[Observation],
     ) -> std::result::Result<StoreCommit, String> {
-        let mut stored = Vec::with_capacity(observations.len());
-        for observation in observations {
-            if observation.harness_id.as_str() != source_id {
-                return Err("observation source identity mismatch".into());
-            }
-            stored.push(StoredObservation {
-                event_id: observation.event_id.clone(),
-                revision: observation.revision,
-                identity: ObservationIdentity {
-                    scope: stored_scope(observation.identity.scope),
-                    session_id: observation.identity.session_id.clone(),
-                    worker_id: observation.identity.worker_id.clone(),
-                    turn_id: observation.identity.turn_id.clone(),
-                    operation_id: observation.identity.operation_id.clone(),
-                },
-                observed_at_unix_ns: observation.observed_at_unix_ns,
-                kind: match &observation.kind {
-                    KernelObservationKind::SessionStarted => ObservationKind::SessionStarted,
-                    KernelObservationKind::SessionEnded => ObservationKind::SessionEnded,
-                    KernelObservationKind::Activity { category } => ObservationKind::Activity {
-                        category: category.clone(),
-                    },
-                    KernelObservationKind::Tool { category, result } => ObservationKind::Tool {
-                        category: category.clone(),
-                        result: result.clone(),
-                    },
-                    KernelObservationKind::McpCall {
-                        server,
-                        tool,
-                        method,
-                        duration_ns,
-                        result,
-                    } => ObservationKind::McpCall {
-                        server: server.clone(),
-                        tool: tool.clone(),
-                        method: *method,
-                        duration_ns: *duration_ns,
-                        result: result.clone(),
-                    },
-                    KernelObservationKind::TraceSpan(span) => {
-                        ObservationKind::TraceSpan(span.clone())
-                    }
-                    KernelObservationKind::Lifecycle { state, reason_code } => {
-                        ObservationKind::Lifecycle {
-                            state: state.clone(),
-                            reason_code: reason_code.clone(),
-                        }
-                    }
-                    KernelObservationKind::Check { category, result } => ObservationKind::Check {
-                        category: category.clone(),
-                        result: result.clone(),
-                    },
-                    KernelObservationKind::PullRequestRaised { repository, number } => {
-                        ObservationKind::PullRequestRaised {
-                            repository: repository.clone(),
-                            number: *number,
-                        }
-                    }
-                    KernelObservationKind::Relationship {
-                        relationship_kind,
-                        parent_session_id,
-                    } => ObservationKind::Relationship {
-                        relationship_kind: *relationship_kind,
-                        parent_session_id: parent_session_id.clone(),
-                    },
-                    KernelObservationKind::Message { role } => {
-                        ObservationKind::Message { role: role.clone() }
-                    }
-                    KernelObservationKind::CreditUsage { nanocredits } => {
-                        ObservationKind::CreditUsage {
-                            nanocredits: *nanocredits,
-                        }
-                    }
-                    KernelObservationKind::Diagnostic { code, severity } => {
-                        ObservationKind::Diagnostic {
-                            code: code.clone(),
-                            severity: severity.clone(),
-                        }
-                    }
-                    KernelObservationKind::Usage {
-                        input_tokens,
-                        output_tokens,
-                        cache_read_tokens,
-                        cache_write_tokens,
-                        total_tokens,
-                    } => ObservationKind::Usage {
-                        input_tokens: *input_tokens,
-                        output_tokens: *output_tokens,
-                        cache_read_tokens: *cache_read_tokens,
-                        cache_write_tokens: *cache_write_tokens,
-                        total_tokens: *total_tokens,
-                    },
-                },
-            });
-        }
-        let batch = ObservationBatch::new_deterministic(
+        let batch = ObservationBatch::from_observations(
             source_id,
-            expected_cursor.map(str::to_owned),
+            expected_cursor,
             next_cursor,
-            stored,
-        )
-        .map_err(|error| error.to_string())?;
+            observations,
+        )?;
         match self
             .commit_batch(&batch)
             .map_err(|error| error.to_string())?
@@ -1762,6 +1843,16 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
                 }))
         {
             return Err(StoreError::Invalid("lifecycle state or reason is invalid"));
+        }
+        if let ObservationKind::FileEdit(edit) = observation.kind
+            && (!edit.is_valid()
+                || observation.identity.scope != StoredScope::Session
+                || observation.identity.turn_id.is_none()
+                || observation.identity.operation_id.is_none())
+        {
+            return Err(StoreError::Invalid(
+                "file edit counts or operation identity are invalid",
+            ));
         }
         if let ObservationKind::Check { category, result } = &observation.kind
             && (!matches!(category.as_str(), "test" | "lint" | "build")
@@ -1928,6 +2019,60 @@ mod tests {
                  PRAGMA user_version=9;",
             )
             .unwrap();
+    }
+
+    #[test]
+    fn v11_approval_survives_upgrade_without_authorizing_mcp_payloads() {
+        let db = TempDb::new();
+        let source = agenturm_kernel::ExtensionId::parse("harness.codex").unwrap();
+        let prompt = ContentGrantScope::new(source.clone(), ContentKind::CodexUserText, [1; 32]);
+        let mcp = ContentGrantScope::new(source, ContentKind::CodexMcpPayload, [2; 32]);
+
+        let mut store = Store::open(&db.0).unwrap();
+        let existing = store.grant_content(&prompt).unwrap();
+        let transaction = store.connection.transaction().unwrap();
+        content_grant::migrate_grant_schema(&transaction, 11).unwrap();
+        transaction
+            .execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V11],
+            )
+            .unwrap();
+        transaction.pragma_update(None, "user_version", 11).unwrap();
+        transaction.commit().unwrap();
+        drop(store);
+
+        let mut reopened = Store::open(&db.0).unwrap();
+        reopened.verify_content_grant(&prompt, &existing).unwrap();
+        assert!(reopened.current_content_grant(&mcp).unwrap().is_none());
+        let mcp_grant = reopened.grant_content(&mcp).unwrap();
+        reopened.verify_content_grant(&mcp, &mcp_grant).unwrap();
+    }
+
+    #[test]
+    fn v12_mcp_approval_survives_upgrade_without_authorizing_edit_detail() {
+        let db = TempDb::new();
+        let source = agenturm_kernel::ExtensionId::parse("harness.codex").unwrap();
+        let mcp = ContentGrantScope::new(source.clone(), ContentKind::CodexMcpPayload, [1; 32]);
+        let edit = ContentGrantScope::new(source, ContentKind::CodexEditDetail, [2; 32]);
+        let mut store = Store::open(&db.0).unwrap();
+        let existing = store.grant_content(&mcp).unwrap();
+        let transaction = store.connection.transaction().unwrap();
+        content_grant::migrate_grant_schema(&transaction, 12).unwrap();
+        transaction
+            .execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V12],
+            )
+            .unwrap();
+        transaction.pragma_update(None, "user_version", 12).unwrap();
+        transaction.commit().unwrap();
+        drop(store);
+        let mut reopened = Store::open(&db.0).unwrap();
+        reopened.verify_content_grant(&mcp, &existing).unwrap();
+        assert!(reopened.current_content_grant(&edit).unwrap().is_none());
+        let edit_grant = reopened.grant_content(&edit).unwrap();
+        reopened.verify_content_grant(&edit, &edit_grant).unwrap();
     }
 
     fn downgrade_fixture_to_v7(connection: &Connection) {

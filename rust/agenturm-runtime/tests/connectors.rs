@@ -5,7 +5,9 @@ use agenturm_connector_api::{
     CONNECTOR_API_VERSION, ConnectorDescriptor, ConnectorDirection, ConnectorId, OutboundDelivery,
     request_sha256,
 };
-use agenturm_runtime::connector::{ConnectorRuntime, ConnectorSpec, DeliveryState};
+use agenturm_runtime::connector::{
+    ConnectorLaunch, ConnectorRuntime, ConnectorSpec, DeliveryState,
+};
 use agenturm_store::Store;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -43,6 +45,7 @@ impl Fixture {
             executable: binary,
             target,
             sha256,
+            launch: ConnectorLaunch::Trusted,
         };
         Self { path, spec }
     }
@@ -396,4 +399,160 @@ fn wrong_scope_and_modified_artifact_fail_before_process_launch() {
             .unwrap()
             .is_none()
     );
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn isolated_policy_rejects_interpreter_bearing_artifact() {
+    let mut fixture = Fixture::new(ConnectorDirection::Inbound, "immediate");
+    fixture.spec.launch = ConnectorLaunch::IsolatedLinux;
+    assert_eq!(
+        fixture.runtime().grant(&fixture.spec),
+        Err("connector_isolation_artifact_unsupported")
+    );
+    assert!(!fixture.path.join("launched").exists());
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn isolated_connector_has_only_framed_io_and_commits_before_ack() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let mut fixture = Fixture::new(ConnectorDirection::Inbound, "isolated");
+    let executable = fixture.path.join("static-connector");
+    let build = Command::new("cc")
+        .args(["-static", "-Wall", "-Wextra", "-Werror", "-o"])
+        .arg(&executable)
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/isolated_connector.c"
+        ))
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    fixture.spec.launch = ConnectorLaunch::IsolatedLinux;
+    fixture.spec.sha256 = format!("{:x}", Sha256::digest(fs::read(&executable).unwrap()));
+    fixture.spec.executable = executable;
+    let config = fixture.path.join("config.json");
+    let ledger = fixture.path.join("connector.sqlite");
+    let history = fixture.path.join("history.sqlite");
+    let private = fixture.path.join("unrelated-user-file");
+    fs::write(&config, serde_json::to_vec(&fixture.spec).unwrap()).unwrap();
+    fs::write(&private, b"synthetic fixture credential").unwrap();
+    let private_file = fs::File::open(private).unwrap();
+    let mut runtime = fixture.runtime();
+    runtime.grant(&fixture.spec).unwrap();
+    let mut wrong_launch = fixture.spec.clone();
+    wrong_launch.launch = ConnectorLaunch::Trusted;
+    assert_eq!(
+        runtime.check_grant(&wrong_launch),
+        Err("connector_permission_denied")
+    );
+    let collect = |deny_setup| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_agenturm-connector"));
+        command
+            .args([&ledger, &config])
+            .arg("collect")
+            .arg(&history)
+            .env("AGENTURM_CONNECTOR_TEST_CREDENTIAL", "synthetic");
+        let private_fd = private_file.as_raw_fd();
+        // SAFETY: child-only dup2 preserves a fixture descriptor through the
+        // driver's exec, so the connector has to remove it at its own exec.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(private_fd, 199) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if deny_setup {
+                    deny_close_range()?;
+                }
+                Ok(())
+            });
+        }
+        command.output().unwrap()
+    };
+    let failed_setup = collect(true);
+    assert!(!failed_setup.status.success());
+    assert_eq!(failed_setup.stderr, b"connector_isolation_unavailable\n");
+    assert!(
+        fixture
+            .history()
+            .load_observations(10)
+            .unwrap()
+            .observations
+            .is_empty()
+    );
+
+    let result = collect(false);
+    // SAFETY: version query takes no ruleset or userspace pointers.
+    let landlock_abi = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, 0, 0, 1) };
+    if landlock_abi < 1 {
+        assert!(!result.status.success());
+        assert_eq!(result.stderr, b"connector_isolation_unavailable\n");
+        assert!(
+            fixture
+                .history()
+                .load_observations(10)
+                .unwrap()
+                .observations
+                .is_empty()
+        );
+        return;
+    }
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(result.stdout, b"1\n");
+    let stored = fixture.history();
+    assert_eq!(
+        stored
+            .source_cursor(&fixture.spec.target)
+            .unwrap()
+            .as_deref(),
+        Some("sandbox-1")
+    );
+    assert_eq!(stored.load_observations(10).unwrap().observations.len(), 1);
+    drop(stored);
+    assert!(runtime.revoke(&fixture.spec).unwrap());
+    let denied = collect(false);
+    assert!(!denied.status.success());
+    assert_eq!(denied.stderr, b"connector_permission_denied\n");
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn deny_close_range() -> std::io::Result<()> {
+    // Simulate a kernel or administrator denying one of the required launch
+    // controls even when Landlock is present.
+    let instruction = |code, jt, jf, k| libc::sock_filter { code, jt, jf, k };
+    let ret = (libc::BPF_RET | libc::BPF_K) as u16;
+    let mut filter = [
+        instruction((libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16, 0, 0, 0),
+        instruction(
+            (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            0,
+            1,
+            libc::SYS_close_range as u32,
+        ),
+        instruction(ret, 0, 0, libc::SECCOMP_RET_ERRNO | libc::EPERM as u32),
+        instruction(ret, 0, 0, libc::SECCOMP_RET_ALLOW),
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_mut_ptr(),
+    };
+    // SAFETY: pre_exec context. The filter only denies close_range and the
+    // kernel copies these stack instructions before returning.
+    if unsafe {
+        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+            || libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program) != 0
+    } {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }

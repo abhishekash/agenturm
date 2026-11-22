@@ -184,7 +184,9 @@ pub(super) fn execute(
 pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
     matches!(
         command,
-        WorkCommand::Prompts(_) | WorkCommand::RevealPrompt(_, _)
+        WorkCommand::Prompts(_)
+            | WorkCommand::RevealPrompt(_, _)
+            | WorkCommand::RevealOperation(_, _)
     )
 }
 
@@ -238,6 +240,26 @@ pub(super) fn execute_prompt(
             Ok(WorkResult::Status(
                 "Prompt shown from the verified current source".into(),
             ))
+        }
+        WorkCommand::RevealOperation(operation, mut delivery) => {
+            let config = prompt_config(db)?;
+            let source = ExtensionId::parse(&operation.source_id).map_err(string)?;
+            super::content_preview::reveal_operation_detail(
+                db,
+                &config,
+                &source,
+                operation.kind,
+                &agenturm_store::CodexOperationSelection {
+                    session_id: &operation.session_id,
+                    turn_id: Some(&operation.turn_id),
+                    operation_id: &operation.operation_id,
+                    event_id: &operation.event_id,
+                    revision: operation.revision,
+                },
+                &mut delivery,
+                writer,
+            )?;
+            Ok(WorkResult::Status(String::new()))
         }
         _ => Err("Unsupported prompt request".into()),
     }

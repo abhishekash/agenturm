@@ -8,6 +8,8 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod connector;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod connector_sandbox;
 mod observation;
 mod observation_extension;
 

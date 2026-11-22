@@ -40,17 +40,17 @@ The coverage below concerns workflow behavior and recorded evidence.
 <tr>
 <td>Investigate Activity, MCP, or a trace</td>
 <td>Dedicated Activity, MCP and Traces navigate to linked evidence.</td>
-<td>Activity, MCP and Operations show recorded operations, including typed Codex MCP server, tool, duration and outcome where present. Traces shows native OTLP span IDs, parent, timing and status from JSON or protobuf. A validated explicit source/session binding links spans to a native session. MCP payloads remain open.</td>
+<td>Activity, MCP and Operations show recorded operations, including typed Codex MCP server, tool, duration and outcome where present. Traces shows native OTLP span IDs, parent, timing and status from JSON or protobuf. A validated explicit source/session binding links spans to a native session. <code>m</code> opens recorded Codex payloads under an explicit <code>codex.mcp_payload</code> approval when the exact operation has a retained source proof.</td>
 </tr>
 <tr>
 <td>Review an agent's work</td>
 <td>Review presents recorded edits, checks, errors and context. The workflow includes richer saved decisions.</td>
-<td>Review shows recorded tools, checks, errors and work results with lifecycle evidence. <code>y</code> saves an acknowledgement for the selected evidence version. <code>n</code> opens the decision list and <code>e</code> adds a note tied to that version. Detailed edit evidence remains open.</td>
+<td>Review shows recorded tools, checks, errors and work results with lifecycle evidence. <code>y</code> saves an acknowledgement for the selected evidence version. <code>n</code> opens the decision list, where <code>e</code> adds a note tied to that version. From Review or turn activity, <code>e</code> opens a Codex edit picker. Enter reveals recorded paths and bounded diffs or file contents under a separate <code>codex.edit_detail</code> approval.</td>
 </tr>
 <tr>
 <td>Read prompts</td>
 <td>The Prompts navigator provides recorded requests, readable and original views, and pagination.</td>
-<td>Message roles appear in Activity. <code>p</code> lists eligible user prompt references for pinned Pi, Codex, Claude Code, Kiro, and OpenCode sources. Enter reveals the exact event under the current grant. Escape clears the view. Retained JSONL batches carry their own proof. A current OpenCode SQLite sweep can provide scoped prompt text.</td>
+<td>Message roles appear in Activity. <code>p</code> lists eligible user prompt references for pinned Pi, Codex, Claude Code, Kiro, and OpenCode sources. Enter reveals the exact event under the current grant. Escape clears the view. Retained JSONL batches and supported OpenCode SQLite sweeps carry their own proofs. Older OpenCode prompt text can be revealed when the retained row still matches the current source bytes.</td>
 </tr>
 <tr>
 <td>Check usage or host health</td>

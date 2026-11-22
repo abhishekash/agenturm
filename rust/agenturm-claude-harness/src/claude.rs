@@ -789,6 +789,32 @@ mod tests {
     }
 
     #[test]
+    fn shared_session_worker_does_not_infer_parentage_or_a_check_from_shell_text() {
+        let context =
+            header_identity(br#"{"type":"user","sessionId":"session","agentId":"worker"}"#)
+                .unwrap();
+        let (facts, _) = translate_line(
+            br#"{"type":"user","sessionId":"session","agentId":"worker","isSidechain":true,"parentUuid":"another-message","uuid":"result","timestamp":"2026-10-24T12:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"call-1","content":"private stdout reports success"}]},"toolUseResult":{"stdout":"private stdout reports success","stderr":"","interrupted":false,"noOutputExpected":false}}"#,
+            &context,
+            "origin",
+            42,
+        )
+        .unwrap();
+        assert_eq!(facts[0]["identity"]["session_id"], "session");
+        assert_eq!(facts[0]["identity"]["worker_id"], "worker");
+        assert!(
+            facts
+                .iter()
+                .all(|fact| matches!(fact["kind"].as_str(), Some("tool" | "lifecycle")))
+        );
+        assert!(
+            !serde_json::to_string(&facts)
+                .unwrap()
+                .contains("private stdout")
+        );
+    }
+
+    #[test]
     fn checkpoint_persists_stream_maxima_and_rejects_malformed_state() {
         let mut context = header_identity(br#"{"type":"user","sessionId":"session"}"#).unwrap();
         context.turn_id = digest("turn");
