@@ -1,18 +1,19 @@
 use agenturm_app::{
-    AgenturmApp, Command, discover, execute_backup, execute_cockpit, execute_collect,
-    execute_content, execute_ingest, execute_inspect_ui, execute_prune, execute_query,
-    execute_service, execute_trace_import, execute_trace_receiver, execute_watch, parse_command,
-    render,
+    AgenturmApp, Command, discover, execute_attention, execute_backup, execute_backup_workspace,
+    execute_cockpit_with_extensions, execute_collect, execute_content, execute_ingest,
+    execute_inspect_ui, execute_prune, execute_query, execute_restore_workspace, execute_service,
+    execute_task, execute_trace_import, execute_trace_receiver, execute_trace_run, execute_watch,
+    parse_os_command, render,
 };
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut args = std::env::args_os().skip(1).collect::<Vec<_>>();
     if args.is_empty() && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         args.push("cockpit".into());
     }
-    let command = match parse_command(&args) {
+    let command = match parse_os_command(&args) {
         Ok(command) => command,
         Err(message) => {
             eprintln!("{message}");
@@ -21,8 +22,20 @@ fn main() -> ExitCode {
     };
 
     match command {
-        Command::Cockpit { db } => {
-            if let Err(message) = execute_cockpit(db.as_deref()) {
+        Command::Attention(options) => {
+            if let Err(message) = execute_attention(&options, std::io::stdout().lock()) {
+                eprintln!("attention failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Command::Task(options) => {
+            if let Err(message) = execute_task(&options, std::io::stdout().lock()) {
+                eprintln!("task failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Command::Cockpit { db, extensions } => {
+            if let Err(message) = execute_cockpit_with_extensions(db.as_deref(), extensions) {
                 eprintln!("cockpit failed: {message}");
                 return ExitCode::FAILURE;
             }
@@ -46,6 +59,15 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        Command::Run(options) => {
+            return match execute_trace_run(&options) {
+                Ok(code) => code,
+                Err(message) => {
+                    eprintln!("run failed: {message}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Command::ImportTraces(options) => match execute_trace_import(&options) {
             Ok(summary) => print!("{summary}"),
             Err(message) => {
@@ -67,6 +89,23 @@ fn main() -> ExitCode {
             }
             println!("Saved backup to {}", output.display());
         }
+        Command::BackupWorkspace { db, output } => {
+            if let Err(message) = execute_backup_workspace(&db, &output) {
+                eprintln!("workspace backup failed: {message}");
+                return ExitCode::FAILURE;
+            }
+            println!("Saved workspace backup to {}", output.display());
+        }
+        Command::RestoreWorkspace { bundle, output } => {
+            if let Err(message) = execute_restore_workspace(&bundle, &output) {
+                eprintln!("workspace restore failed: {message}");
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "Restored workspace history to {}",
+                output.join("history.sqlite").display()
+            );
+        }
         Command::Prune { db, before_unix_ns } => match execute_prune(&db, before_unix_ns) {
             Ok(summary) => print!("{summary}"),
             Err(message) => {
@@ -76,7 +115,7 @@ fn main() -> ExitCode {
         },
         Command::Content(options) => {
             if let Err(message) = execute_content(&options, &mut std::io::stdout().lock()) {
-                eprintln!("Pi content failed: {message}");
+                eprintln!("content preview failed: {message}");
                 return ExitCode::FAILURE;
             }
         }

@@ -1,6 +1,6 @@
-# Rust connector API: first contract slice
+# Rust connector API and trusted runtime
 
-Status: API crate and contract tests implemented; runtime integration is not implemented.
+Status: bounded contracts and an opt-in trusted process runtime are available.
 
 ## Goal
 
@@ -32,7 +32,63 @@ Process supervision is a crash/protocol boundary, not an OS sandbox. A child und
 
 Fourteen tests cover version/identity validation, bounded inbound batches, duplicate record rejection, checkpoint progress and control-character validation, modeled commit-before-ACK ordering, idempotent/stale ACK behavior, outbound request digest validation and response correlation, idempotency conflict, fake accept-then-timeout reconciliation, distinct unknown/missing/accepted states, bounded serialization, and a closed error-code vocabulary that rejects token-like strings. The fake-source test models the intended host/store sequence; it is not a Store integration test.
 
-This slice does not register connectors in the app/kernel, launch connector processes, evaluate grants, persist connector checkpoints or delivery receipts, schedule retries/dead letters, fence revocation during in-flight work, manage credentials, or sandbox code. These are explicit follow-on requirements, not implicit behavior of the traits. Full runtime connector work remains behind the Rust service/recovery/packaging critical path in the execution plan.
+## Trusted process runtime
+
+Build the standalone driver with `cargo build --locked -p agenturm-runtime
+--bin agenturm-connector`. The driver takes a connector ledger and a JSON
+configuration. The configuration declares `descriptor` (the public connector
+descriptor), absolute `executable`, lower-case `sha256`, and exact `target`.
+For inbound collection, the target is the host-assigned observation source ID.
+For outbound delivery, it is the destination ID in every queued request.
+
+The driver requires an explicit grant for the whole configuration before it
+opens a connector process. Revocation takes effect before the next fenced
+exchange. An unchanged reapproval preserves the epoch. Changed configuration
+or reapproval after revocation does not restore old work. The child receives
+one length-prefixed JSON request with the version, descriptor, target and
+request ID. A matching single-frame response is required. Commands run with
+a cleared environment, bounded frame size and invocation deadline. This
+transport is for pinned executables that the operator already trusts.
+
+```sh
+agenturm-connector connector.sqlite source.json grant
+agenturm-connector connector.sqlite source.json watch history.sqlite
+agenturm-connector connector.sqlite sink.json grant
+agenturm-connector connector.sqlite sink.json enqueue-status delivery-id stable-key completed
+agenturm-connector connector.sqlite sink.json watch
+agenturm-connector connector.sqlite sink.json revoke
+```
+
+Inbound projection currently admits only exact `session_id` and supported
+lifecycle `state` fields. The host atomically commits the resulting observations
+with the checkpoint in the Rust observation store. The next collect repeats
+the ACK for the durable checkpoint before polling, including after a crash.
+Outbound currently permits the exact `write_status` action with a lifecycle
+state string. The ledger binds delivery IDs and idempotency keys to the request
+digest and grant epoch. Each `drive` advances one delivery when due. It persists
+uncertain state before sending, reconciles ambiguous effects using the same
+key, and retries only after confirmed absence. Attempts and reconciliation
+have independent persisted bounds and backoff. A sink that cannot confirm
+acceptance or absence leaves the delivery unresolved.
+
+`watch` stays in the foreground for one pinned configuration. It polls an
+inbound connector using an exclusive history writer lease, or advances up to
+eight due outbound deliveries per cycle. Progress appears as safe JSON
+events. These report inbound counts, delivery state changes, retry errors,
+startup and shutdown. Delivery keys, receipts and payloads stay out of the
+watch log. SIGINT or SIGTERM stops the worker after the current bounded
+operation. A revoked grant stops further processing. For one step at a time,
+use `collect <history.sqlite>` or `drive <delivery-id>`.
+
+Run `cargo test --locked -p agenturm-runtime --test connectors` for
+the local fixture executables. The suite exercises authorization denial,
+commit-before-ACK recovery, enqueue conflict checks, accept-then-timeout
+reconciliation, confirmed-missing retry, watcher shutdown, and the standalone
+command entry point. The fixtures use temporary local files and no remote accounts.
+
+Additional field permissions, independent parallel execution within one
+ledger, credential provisioning, and an OS boundary for untrusted executables
+remain open.
 
 ## Acceptance gates for runtime integration
 

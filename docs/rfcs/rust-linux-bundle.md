@@ -1,7 +1,8 @@
 # Agenturm Rust bundle for Linux
 
 The bundle contains the Agenturm CLI and inspector, the process host, the
-Codex and Pi adapters, and their SHA-256-pinned adapter catalog. The runtime
+Codex, Pi, Claude Code, Kiro, and OpenCode adapters and their
+SHA-256-pinned catalog, plus the trusted connector driver. The runtime
 requires a compatible Linux system and does not require Python or Rust.
 The managed collector uses a running systemd user manager. Foreground
 collection is available on Linux systems without a user manager.
@@ -43,9 +44,11 @@ From a terminal, run the installed binary.
 
 The cockpit opens on Agents. It uses
 `${XDG_STATE_HOME:-$HOME/.local/state}/agenturm-rust/history.sqlite`.
-It starts session-owned Pi and Codex collection when the default database is
+It starts session-owned collection of supported local harnesses when the default database is
 available for writing. When another writer owns the database, the cockpit
-reads the same history. The collector started by the cockpit stops on quit.
+reads the same history. When the cockpit owns collection, it also receives
+OTLP/HTTP traces at `http://127.0.0.1:14318/v1/traces`. Set `AGENTURM_OTLP_PORT`
+to use another loopback port. Both stop on quit.
 
 Use `↑` and `↓` to choose a session, `/` to search the loaded roster,
 and Enter to open its Overview. The newest roster page refreshes while open.
@@ -71,10 +74,16 @@ From Agents, press `w` to see recorded requests. Use `s` to mark an item
 seen and `l` to focus the matching tmux pane when Agenturm verifies the
 route. Respond in the harness terminal.
 
-Select a session and press `p` for eligible Pi user prompts. Press Enter to
-reveal a prompt and Escape to clear it. The view requires a current grant
-for a pinned, single-file Pi source and uses `sources.json` next to the
-history database or the path set in `AGENTURM_CONTENT_CONFIG`.
+In Review, press `n` for saved decision notes. Press `e` to write a note
+against the selected evidence version and Ctrl+S to save it.
+
+Select a session and press `p` for eligible user prompts. Press Enter to
+reveal one and Escape to clear it. The view requires a current grant for a
+pinned source and uses `sources.json` next to the history database or the
+path set in `AGENTURM_CONTENT_CONFIG`. It verifies retained JSONL rows by
+their committed receipt and SQLite rows against the current source sweep.
+The default cockpit uses its collector's writer lease for reveal. Establish
+or revoke grants from the CLI while the history writer is available.
 
 Use `"$agenturm" cockpit --db <path>` or `"$agenturm" inspect --db <path>`
 to open a specific existing Rust store without starting local collection.
@@ -82,9 +91,12 @@ For collection between cockpit sessions, set up the managed collector below.
 
 ## Open native traces
 
-Point an OTLP JSON producer at the loopback receiver. Each span needs a
-`session.id` or `gen_ai.conversation.id` string attribute. Send uncompressed
-JSON to `http://127.0.0.1:4318/v1/traces`.
+Point an OTLP/HTTP producer at the loopback receiver. Each span needs a
+`session.id` or `gen_ai.conversation.id` string attribute. The receiver
+accepts uncompressed JSON or protobuf at
+`http://127.0.0.1:4318/v1/traces`. To attach the span to a native session,
+also set `agenturm.source.id` to the exact collected harness source ID.
+Press `8` from a native session to see its linked spans.
 
 ```sh
 "$agenturm" serve-traces --listen 127.0.0.1:4318 --db traces.sqlite --source-id otlp.local
@@ -106,7 +118,49 @@ After the first stored span, open the cockpit in another terminal and press
 If you target a database owned by an active history writer, the receiver
 returns HTTP 503 until the writer releases its lease.
 
+Use `run` to start a program whose OpenTelemetry exporter already honors
+OTLP environment configuration. It starts a loopback listener on an
+ephemeral port, sets the program's trace exporter to HTTP/protobuf, and
+closes the listener after the program exits. The default source is
+`otlp.run`. The program keeps its standard streams and exit status. Spans
+without native session identity are grouped under the actual launch.
+
+```sh
+"$agenturm" run --db traces.sqlite --source-id otlp.local -- ./instrumented-program
+```
+
+The launcher replaces inherited OTLP endpoint, transport, and header
+settings, disables metrics and log exporters for this run, and adds
+loopback addresses to the proxy exclusions. Configure scope on the
+producer as described above. The launcher is for existing instrumentation
+and SDKs that honor these settings.
+[OpenTelemetry exporter configuration](https://opentelemetry.io/docs/specs/otel/protocol/exporter/)
+
+## Use the workspace from scripts
+
+`agenturm task --help` lists the native task and handoff commands. They use
+the same task records as the cockpit. Run `agenturm attention status --db
+<path>` for one pending-request snapshot or `agenturm attention watch --db
+<path>` for changes.
+
+Explicitly enable installed capability executables in
+`${XDG_CONFIG_HOME:-$HOME/.config}/agenturm-rust/extensions.json`. The file
+uses the inspector extension catalog with an additional `enabled` array
+of selected plugin IDs. Agenturm verifies the pinned SHA-256 and the
+declared data grants before starting them. An empty selection starts no
+capability processes. A cockpit opened with `--db` accepts explicit
+`--extension-catalog` and `--extension` options.
+
 ## Discover, collect, and inspect
+
+The bundle discovers Codex, Pi, Claude Code, Kiro, and OpenCode in their
+default local data directories. Discovery also honors `CODEX_HOME`,
+`PI_CODING_AGENT_DIR`, `CLAUDE_CONFIG_DIR`, `KIRO_HOME`, and
+`OPENCODE_DB`. It selects up to 16 sources, giving each available harness a
+slot before taking additional recent transcript files. OpenCode contributes
+one read-only SQLite source with a 1 GiB database limit, a 512 MiB WAL
+limit, and a 50,000-row limit. Existing follow configurations retain the
+roots they declare.
 
 ```sh
 state="${XDG_STATE_HOME:-$HOME/.local/state}/agenturm-rust"
@@ -144,15 +198,26 @@ Use the arrow keys to choose a turn, then press Enter to open its scoped
 observations. A recorded pull request appears as a work result alongside
 the native lifecycle state.
 
-## Back up history
+## Back up and restore
 
-Run `"$agenturm" backup --db "$state/history.sqlite" --output
-"$state/history-backup.sqlite"` while collection is running or stopped.
-The output path must be new. Query or inspect the backup by passing its
-path with `--db`. To resume collection from a snapshot, stop the current
-collector and configure the backup file as the new database. Local review
-acknowledgements and saved workbench data use adjacent `.reviews.sqlite`
-and `.workspace.sqlite` files. The history backup covers observations.
+Create a history-only snapshot while collection is running or stopped.
+
+```sh
+"$agenturm" backup --db "$state/history.sqlite" --output "$state/history-backup.sqlite"
+```
+
+Use a workspace backup to include saved tasks, handoffs, request seen state,
+and review acknowledgements and notes. The destination directory must be new.
+
+```sh
+"$agenturm" backup --db "$state/history.sqlite" --bundle "$state/workspace-backup"
+"$agenturm" restore --bundle "$state/workspace-backup" --output "$state/restored"
+"$agenturm" cockpit --db "$state/restored/history.sqlite"
+```
+
+Private-content approvals require renewal after restore. Connector delivery
+state lives in its explicitly configured ledger. See the [trusted connector
+runtime](rust-connector-api.md).
 
 ## Uninstall
 

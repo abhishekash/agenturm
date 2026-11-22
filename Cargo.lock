@@ -4,15 +4,17 @@ version = 4
 
 [[package]]
 name = "agenturm-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "agenturm-jsonl-source",
  "agenturm-kernel",
  "agenturm-lifecycle-extension-example",
+ "agenturm-opencode-harness",
  "agenturm-runtime",
  "agenturm-service",
  "agenturm-store",
  "agenturm-ui",
+ "libc",
  "rustix",
  "serde",
  "serde_json",
@@ -36,6 +38,7 @@ name = "agenturm-claude-harness"
 version = "0.1.0"
 dependencies = [
  "agenturm-jsonl-source",
+ "agenturm-protocol",
  "serde_json",
  "sha2",
  "time",
@@ -170,6 +173,7 @@ dependencies = [
 name = "agenturm-opencode-harness"
 version = "0.1.0"
 dependencies = [
+ "agenturm-protocol",
  "agenturm-source-process",
  "rusqlite",
  "serde_json",
@@ -210,13 +214,16 @@ dependencies = [
 name = "agenturm-runtime"
 version = "0.1.0"
 dependencies = [
+ "agenturm-connector-api",
  "agenturm-kernel",
  "agenturm-protocol",
  "agenturm-store",
  "libc",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "signal-hook",
 ]
 
 [[package]]
@@ -1085,6 +1092,7 @@ version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
 dependencies = [
+ "cc",
  "libc",
  "signal-hook-registry",
 ]

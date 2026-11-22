@@ -13,7 +13,11 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd -- "$repo"
 
 target_dir=${CARGO_TARGET_DIR:-"$repo/target"}
-binaries=(agenturm agenturm-plugin-host agenturm-codex-harness agenturm-pi-harness)
+adapters=(codex pi claude kiro opencode)
+binaries=(agenturm agenturm-plugin-host agenturm-connector)
+for adapter in "${adapters[@]}"; do
+    binaries+=("agenturm-$adapter-harness")
+done
 build_args=()
 for binary in "${binaries[@]}"; do
     build_args+=(--bin "$binary")
@@ -37,31 +41,18 @@ install -m 0644 -- LICENSE "$bundle/LICENSE"
 install -m 0644 -- docs/rfcs/rust-linux-bundle.md "$bundle/README.md"
 install -m 0644 -- docs/rfcs/rust-linux-bundle.html "$bundle/README.html"
 
-codex_sha=$(sha256sum < "$bundle/bin/agenturm-codex-harness")
-pi_sha=$(sha256sum < "$bundle/bin/agenturm-pi-harness")
-cat > "$bundle/agenturm-plugins.json" <<JSON
 {
-  "version": 1,
-  "plugins": [
-    {
-      "plugin_id": "example.rust-codex-harness",
-      "adapter": "bin/agenturm-codex-harness",
-      "sha256": "${codex_sha%% *}",
-      "protocol": 1,
-      "features": ["source-adapter/1", "configured-root/1"],
-      "observation_format": "agenturm-observations/1"
-    },
-    {
-      "plugin_id": "example.rust-pi-harness",
-      "adapter": "bin/agenturm-pi-harness",
-      "sha256": "${pi_sha%% *}",
-      "protocol": 1,
-      "features": ["source-adapter/1", "configured-root/1"],
-      "observation_format": "agenturm-observations/1"
-    }
-  ]
-}
-JSON
+    printf '{"version":1,"plugins":[\n'
+    separator=""
+    for adapter in "${adapters[@]}"; do
+        executable="bin/agenturm-$adapter-harness"
+        digest=$(sha256sum < "$bundle/$executable")
+        printf '%s{"plugin_id":"example.rust-%s-harness","adapter":"%s","sha256":"%s","protocol":1,"features":["source-adapter/1","configured-root/1"],"observation_format":"agenturm-observations/1"}' \
+            "$separator" "$adapter" "$executable" "${digest%% *}"
+        separator=$',\n'
+    done
+    printf '\n]}\n'
+} > "$bundle/agenturm-plugins.json"
 
 (
     cd -- "$staging"

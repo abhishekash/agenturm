@@ -55,6 +55,7 @@ pub enum SessionView {
     Activity,
     Review,
     Usage,
+    Traces,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -401,6 +402,7 @@ struct Workspace {
     prompt: Option<PromptScreen>,
     redact_then_acknowledge: Option<mpsc::Sender<()>>,
     pending: Option<Change>,
+    deferred_request: Option<(WorkspaceRequest, Change)>,
     message: Option<String>,
     refresh_after: Instant,
 }
@@ -444,6 +446,11 @@ impl Workspace {
         change: Change,
     ) {
         if self.pending.is_some() {
+            if matches!(self.pending, Some(Change::RefreshSessions))
+                && !matches!(change, Change::RefreshSessions)
+            {
+                self.deferred_request = Some((request, change));
+            }
             return;
         }
         if sender.send(request).is_ok() {
@@ -681,6 +688,24 @@ impl Workspace {
                     );
                 }
             }
+            KeyCode::Char('n') if view.page.reviewing() => {
+                if let HistorySelection::Session(session, _) = &view.selection {
+                    let session = session.clone();
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(WorkCommand::ReviewNotes(session)),
+                        Change::Work(None),
+                    );
+                }
+            }
+            KeyCode::Char('8') if !view.page.ui.help => {
+                if let HistorySelection::Session(session, kind) = &view.selection
+                    && !matches!(kind, SessionView::Traces)
+                {
+                    let selection = HistorySelection::Session(session.clone(), SessionView::Traces);
+                    self.open(sender, selection);
+                }
+            }
             KeyCode::Char('[') if !view.page.ui.help => {
                 if let Some(before) = view.page.ui.older_cursor().cloned() {
                     let selection = view.selection.clone();
@@ -857,6 +882,7 @@ pub fn run_workspace(
                 prompt: None,
                 redact_then_acknowledge: None,
                 pending: None,
+                deferred_request: None,
                 message: None,
                 refresh_after: Instant::now(),
             };
@@ -884,6 +910,9 @@ pub fn run_workspace(
                 }
                 if let Ok(result) = results.try_recv() {
                     workspace.finish(result);
+                    if let Some((next, change)) = workspace.deferred_request.take() {
+                        workspace.request(&request, next, change);
+                    }
                     if workspace.work.is_some()
                         && let Some(queued) = workspace.queued_prompt.take()
                     {
@@ -1003,10 +1032,13 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 && view.page.reviewing()
             {
                 if session.reviewed {
-                    "Reviewed · Esc back"
+                    "Reviewed · n decisions · 8 traces · Esc back"
                 } else {
-                    "y mark reviewed · Esc back"
+                    "y mark reviewed · n decisions · 8 traces · Esc back"
                 }
+            } else if matches!(view.selection, HistorySelection::Session(_, kind) if !matches!(kind, SessionView::Traces))
+            {
+                "8 session traces · Esc back · [ ] history pages"
             } else {
                 "Esc back · [ ] history pages"
             };

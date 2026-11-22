@@ -26,6 +26,41 @@ enum ViewScope {
     Session,
 }
 
+pub(super) fn add_session_trace_pane(
+    snapshot: &mut Snapshot,
+    source_id: &str,
+    session_id: &str,
+) -> ExtensionId {
+    let own_trace_source = source_id.starts_with("otlp.");
+    let evidence: Vec<_> = snapshot
+        .observations
+        .iter()
+        .filter(|row| {
+            row.identity.session_id.as_deref() == Some(session_id)
+                && matches!(
+                    &row.kind,
+                    ObservationKind::TraceSpan(span)
+                        if if own_trace_source {
+                            row.harness_id.as_str() == source_id
+                        } else {
+                            row.harness_id.as_str().starts_with("otlp.")
+                                && span.target_source_id.as_deref() == Some(source_id)
+                        }
+                )
+        })
+        .collect();
+    let mut rows = vec![metric("Source", source_id), metric("Session", session_id)];
+    rows.extend(rows_or_empty(
+        trace_rows(&evidence, ViewScope::Workspace),
+        if own_trace_source {
+            "No trace spans recorded for this session"
+        } else {
+            "No trace spans explicitly linked to this session"
+        },
+    ));
+    insert_pane(snapshot, "app.session-traces", "Traces", rows)
+}
+
 pub(super) fn add_workspace_panes(snapshot: &mut Snapshot) -> WorkspacePaneIds {
     let mut evidence: Vec<_> = snapshot.observations.iter().collect();
     evidence.sort_unstable_by_key(|&row| observation_order(row));
@@ -351,10 +386,13 @@ fn trace_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
                 metric(
                     "Span",
                     format!(
-                        "{} · {} · {}",
+                        "{} · {} · {}{}",
                         span_description(span),
                         timestamp_at(span.started_at_unix_ns),
                         duration_millis(duration),
+                        span.target_source_id
+                            .as_ref()
+                            .map_or_else(String::new, |target| format!(" · target {target}")),
                     ),
                 )
             }))

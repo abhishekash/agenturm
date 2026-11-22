@@ -285,6 +285,14 @@ pub fn is_mcp_identifier(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }
 
+/// Splits the exact native qualified tool name, rejecting ambiguous separators
+/// and labels that cannot cross the metadata boundary.
+pub fn mcp_tool_labels(name: &str) -> Option<(&str, &str)> {
+    let (server, tool) = name.strip_prefix("mcp__")?.split_once("__")?;
+    (!tool.contains("__") && is_mcp_identifier(server) && is_mcp_identifier(tool))
+        .then_some((server, tool))
+}
+
 pub fn is_valid_mcp_metadata(
     server: Option<&str>,
     tool: Option<&str>,
@@ -307,6 +315,9 @@ pub struct TraceSpan {
     pub span_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_span_id: Option<String>,
+    /// Explicit harness source for the observation's native session identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_source_id: Option<String>,
     pub started_at_unix_ns: u64,
     pub status: TraceStatus,
 }

@@ -4,23 +4,29 @@
 //! explicit one-shot and configured multi-source usage collection, and a
 //! full-screen durable-history viewer and Linux user service management.
 
+mod attention;
 mod cockpit_host;
 mod cockpit_startup;
 mod cockpit_workflows;
+mod content_preview;
 mod discovery;
 mod handoff_export;
 mod inspector_activity;
-mod pi_preview;
 mod session_evidence;
+mod task_cli;
 mod task_git;
 mod trace_import;
 mod trace_receiver;
+mod trace_run;
 mod workflow_route;
 
+pub use attention::{AttentionOptions, execute_attention};
+pub use content_preview::{ContentOptions, execute_content};
 pub use discovery::{discover, execute_discover};
-pub use pi_preview::{PiContentOptions, execute_content};
+pub use task_cli::{TaskOptions, execute_task};
 pub use trace_import::{TraceImportOptions, execute_trace_import};
 pub use trace_receiver::{TraceReceiverOptions, execute_trace_receiver};
+pub use trace_run::{TraceRunOptions, execute_trace_run};
 
 use agenturm_kernel::{
     Capability, ExtensionId, ExtensionPlugin, Harness, Kernel, MAX_DURABLE_SNAPSHOT_OBSERVATIONS,
@@ -169,23 +175,35 @@ pub enum Command {
     Help,
     Version,
     Status,
+    Attention(AttentionOptions),
+    Task(TaskOptions),
     Inspect(InspectOptions),
     Cockpit {
         db: Option<PathBuf>,
+        extensions: ResolvedExtensionCatalog,
     },
     Query(HistoryQueryOptions),
     Backup {
         db: PathBuf,
         output: PathBuf,
     },
+    BackupWorkspace {
+        db: PathBuf,
+        output: PathBuf,
+    },
+    RestoreWorkspace {
+        bundle: PathBuf,
+        output: PathBuf,
+    },
     Prune {
         db: PathBuf,
         before_unix_ns: u64,
     },
-    Content(PiContentOptions),
+    Content(ContentOptions),
     Ingest(IngestOptions),
     ImportTraces(TraceImportOptions),
     ServeTraces(TraceReceiverOptions),
+    Run(TraceRunOptions),
     Collect(ConfiguredCollectOptions),
     Discover {
         sessions_per_harness: usize,
@@ -315,6 +333,8 @@ fn default_observation_format() -> String {
 struct ProcessExtensionCatalogFile {
     version: u32,
     extensions: Vec<ProcessExtensionCatalogEntry>,
+    #[serde(default)]
+    enabled: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -659,27 +679,56 @@ fn lifecycle_evidence_rows(
     ]
 }
 
+pub fn parse_os_command(args: &[std::ffi::OsString]) -> Result<Command, String> {
+    if args.first().is_some_and(|arg| arg == "run") {
+        return trace_run::parse_trace_run(&args[1..]).map(Command::Run);
+    }
+    let args = args
+        .iter()
+        .map(|arg| {
+            arg.to_str()
+                .map(str::to_owned)
+                .ok_or("Agenturm options must be UTF-8")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    parse_command(&args)
+}
+
 pub fn parse_command(args: &[String]) -> Result<Command, String> {
     match args.first().map(String::as_str) {
         None => Ok(Command::Help),
         Some("--help" | "-h" | "help") if args.len() == 1 => Ok(Command::Help),
         Some("--version" | "-V" | "version") if args.len() == 1 => Ok(Command::Version),
         Some("status") if args.len() == 1 => Ok(Command::Status),
-        Some("cockpit") => match &args[1..] {
-            [] => Ok(Command::Cockpit { db: None }),
-            [flag, value] if flag == "--db" && !value.is_empty() && !value.starts_with("--") => {
-                Ok(Command::Cockpit {
-                    db: Some(PathBuf::from(value)),
-                })
-            }
-            _ => Err(usage()),
-        },
+        Some("attention") => attention::parse(&args[1..]).map(Command::Attention),
+        Some("task") => task_cli::parse(&args[1..]).map(Command::Task),
+        Some("cockpit") if args.len() == 1 => Ok(Command::Cockpit {
+            db: None,
+            extensions: ResolvedExtensionCatalog::default(),
+        }),
+        Some("cockpit") => parse_inspect_options(&args[1..]).map(|options| Command::Cockpit {
+            db: Some(options.db),
+            extensions: options.extensions,
+        }),
         Some("inspect") => parse_inspect_options(&args[1..]).map(Command::Inspect),
         Some("query") => parse_query_options(&args[1..]).map(Command::Query),
         Some("backup") => {
+            if let Ok((db, output)) = parse_db_and_option(&args[1..], "--bundle") {
+                return Ok(Command::BackupWorkspace {
+                    db,
+                    output: output.into(),
+                });
+            }
             let (db, output) = parse_db_and_option(&args[1..], "--output")?;
             Ok(Command::Backup {
                 db,
+                output: output.into(),
+            })
+        }
+        Some("restore") => {
+            let (bundle, output) = parse_two_options(&args[1..], "--bundle", "--output")?;
+            Ok(Command::RestoreWorkspace {
+                bundle: bundle.into(),
                 output: output.into(),
             })
         }
@@ -690,12 +739,19 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
                 .map_err(|_| "--before-unix-ns requires a Unix nanosecond timestamp".to_owned())?;
             Ok(Command::Prune { db, before_unix_ns })
         }
-        Some("content") => pi_preview::parse(&args[1..]).map(Command::Content),
+        Some("content") => content_preview::parse(&args[1..]).map(Command::Content),
         Some("discover") => parse_discover_options(&args[1..]),
         Some("collect") => parse_collect_options(&args[1..]).map(Command::Collect),
         Some("service") => parse_service_options(&args[1..]).map(Command::Service),
         Some("ingest-usage") => parse_ingest_options(&args[1..], None).map(Command::Ingest),
         Some("serve-traces") => trace_receiver::parse(&args[1..]).map(Command::ServeTraces),
+        Some("run") => trace_run::parse_trace_run(
+            &args[1..]
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>(),
+        )
+        .map(Command::Run),
         Some("import-traces") => trace_import::parse(&args[1..]).map(Command::ImportTraces),
         Some("ingest-codex-usage") => {
             parse_ingest_options(&args[1..], Some(CODEX_PLUGIN_ID)).map(Command::Ingest)
@@ -1043,7 +1099,45 @@ fn load_process_extension_catalog(
     path: &std::path::Path,
     selected_ids: &[String],
 ) -> Result<ResolvedExtensionCatalog, String> {
-    if selected_ids.is_empty() || selected_ids.len() > MAX_ENABLED_PROCESS_EXTENSIONS {
+    load_process_extension_selection(path, Some(selected_ids))
+}
+
+fn load_process_extension_selection(
+    path: &std::path::Path,
+    explicit_ids: Option<&[String]>,
+) -> Result<ResolvedExtensionCatalog, String> {
+    let catalog_path = match std::fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(error) if explicit_ids.is_none() && error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ResolvedExtensionCatalog::default());
+        }
+        Err(_) => return Err("cannot resolve extension catalog path".into()),
+    };
+    let metadata = std::fs::metadata(&catalog_path)
+        .map_err(|_| "cannot inspect extension catalog".to_owned())?;
+    if !metadata.is_file() {
+        return Err("extension catalog must be a regular file".into());
+    }
+    let file = File::open(&catalog_path).map_err(|_| "cannot open extension catalog".to_owned())?;
+    let mut bytes = Vec::new();
+    file.take(MAX_PLUGIN_CATALOG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "cannot read extension catalog".to_owned())?;
+    if bytes.len() as u64 > MAX_PLUGIN_CATALOG_BYTES {
+        return Err("extension catalog exceeds the 64 KiB limit".into());
+    }
+    let catalog: ProcessExtensionCatalogFile = serde_json::from_slice(&bytes)
+        .map_err(|_| "extension catalog is invalid JSON".to_owned())?;
+    let selected_ids = explicit_ids.unwrap_or(&catalog.enabled);
+    if catalog.version != 1
+        || (!selected_ids.is_empty() && catalog.extensions.is_empty())
+        || catalog.extensions.len() > MAX_PROCESS_EXTENSION_CATALOG_ENTRIES
+    {
+        return Err("unsupported or invalid extension catalog size/version".into());
+    }
+    if selected_ids.len() > MAX_ENABLED_PROCESS_EXTENSIONS
+        || (explicit_ids.is_some() && selected_ids.is_empty())
+    {
         return Err(format!(
             "select 1 to {MAX_ENABLED_PROCESS_EXTENSIONS} process extensions"
         ));
@@ -1057,31 +1151,6 @@ fn load_process_extension_catalog(
             return Err(format!("duplicate extension selection: {selected_id}"));
         }
         selected.push(id);
-    }
-
-    let catalog_path = std::fs::canonicalize(path)
-        .map_err(|_| "cannot resolve extension catalog path".to_owned())?;
-    let file = File::open(&catalog_path).map_err(|_| "cannot open extension catalog".to_owned())?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| "cannot inspect extension catalog".to_owned())?;
-    if !metadata.is_file() {
-        return Err("extension catalog must be a regular file".into());
-    }
-    let mut bytes = Vec::new();
-    file.take(MAX_PLUGIN_CATALOG_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "cannot read extension catalog".to_owned())?;
-    if bytes.len() as u64 > MAX_PLUGIN_CATALOG_BYTES {
-        return Err("extension catalog exceeds the 64 KiB limit".into());
-    }
-    let catalog: ProcessExtensionCatalogFile = serde_json::from_slice(&bytes)
-        .map_err(|_| "extension catalog is invalid JSON".to_owned())?;
-    if catalog.version != 1
-        || catalog.extensions.is_empty()
-        || catalog.extensions.len() > MAX_PROCESS_EXTENSION_CATALOG_ENTRIES
-    {
-        return Err("unsupported or invalid extension catalog size/version".into());
     }
 
     let base = catalog_path
@@ -1223,6 +1292,31 @@ fn load_process_extension_catalog(
     Ok(ResolvedExtensionCatalog { extensions })
 }
 
+#[cfg(target_os = "linux")]
+fn default_cockpit_extensions(
+    config_home: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Result<ResolvedExtensionCatalog, String> {
+    use std::path::Path;
+
+    let base = config_home
+        .map(Path::new)
+        .filter(|path| path.is_absolute())
+        .map(Path::to_owned)
+        .or_else(|| {
+            home.map(Path::new)
+                .filter(|path| path.is_absolute())
+                .map(|path| path.join(".config"))
+        });
+    match base {
+        Some(base) => load_process_extension_selection(
+            &base.join("agenturm-rust").join("extensions.json"),
+            None,
+        ),
+        None => Ok(ResolvedExtensionCatalog::default()),
+    }
+}
+
 fn parse_query_options(args: &[String]) -> Result<HistoryQueryOptions, String> {
     let mut db = None;
     let mut harness_id = None;
@@ -1346,30 +1440,57 @@ fn parse_ingest_options(
 }
 
 fn usage() -> String {
-    "usage: agenturm [--help|--version|status] | agenturm cockpit [--db <path>] | agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...] | agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>] | agenturm backup --db <path> --output <new-path> | agenturm prune --db <path> --before-unix-ns <ns> | agenturm discover [--follow] [--sessions-per-harness <1..8>] | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm service install --config <json-path> --db <path> [--interval-ms <100..60000>] | agenturm service status | agenturm service uninstall | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
+    "usage: agenturm [--help|--version|status] | agenturm cockpit [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]] | agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...] | agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>] | agenturm backup --db <path> [--output <new-path>|--bundle <new-directory>] | agenturm restore --bundle <directory> --output <new-directory> | agenturm prune --db <path> --before-unix-ns <ns> | agenturm discover [--follow] [--sessions-per-harness <1..8>] | agenturm collect --config <json-path> --db <path> [--watch [--interval-ms <100..60000>]] | agenturm service install --config <json-path> --db <path> [--interval-ms <100..60000>] | agenturm service status | agenturm service uninstall | agenturm ingest-usage --plugin-id <id> --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id> | agenturm ingest-codex-usage --plugin-host <absolute-path> --adapter <absolute-path> --source-root <absolute-path> --db <path> --source-id <id>".into()
 }
 
 fn parse_db_and_option<'a>(args: &'a [String], option: &str) -> Result<(PathBuf, &'a str), String> {
+    let (db, value) = parse_two_options(args, "--db", option)?;
+    Ok((db.into(), value))
+}
+
+fn parse_two_options<'a>(
+    args: &'a [String],
+    first_option: &str,
+    second_option: &str,
+) -> Result<(&'a str, &'a str), String> {
     let [first, first_value, second, second_value] = args else {
         return Err(usage());
     };
-    let (db, value) = match (first.as_str(), second.as_str()) {
-        ("--db", name) if name == option => (first_value, second_value),
-        (name, "--db") if name == option => (second_value, first_value),
+    let (left, right) = match (first.as_str(), second.as_str()) {
+        (first, second) if first == first_option && second == second_option => {
+            (first_value, second_value)
+        }
+        (first, second) if first == second_option && second == first_option => {
+            (second_value, first_value)
+        }
         _ => return Err(usage()),
     };
-    if [db, value]
+    if [left, right]
         .iter()
         .any(|item| item.is_empty() || item.starts_with("--"))
     {
         return Err(usage());
     }
-    Ok((db.into(), value))
+    Ok((left, right))
 }
 
 pub fn execute_backup(db: &std::path::Path, output: &std::path::Path) -> Result<(), String> {
     let store = Store::open_read_only(db).map_err(|error| format!("open store failed: {error}"))?;
     store.backup_to(output).map_err(|error| error.to_string())
+}
+
+pub fn execute_backup_workspace(
+    db: &std::path::Path,
+    output: &std::path::Path,
+) -> Result<(), String> {
+    Store::backup_workspace_bundle(db, output).map_err(|error| error.to_string())
+}
+
+pub fn execute_restore_workspace(
+    bundle: &std::path::Path,
+    output: &std::path::Path,
+) -> Result<(), String> {
+    Store::restore_workspace_bundle(bundle, output).map_err(|error| error.to_string())
 }
 
 pub fn execute_prune(db: &std::path::Path, before_unix_ns: u64) -> Result<String, String> {
@@ -1395,14 +1516,31 @@ pub fn execute_inspect(db_path: &std::path::Path) -> Result<Snapshot, String> {
 }
 
 pub fn execute_cockpit(db: Option<&std::path::Path>) -> Result<(), String> {
+    execute_cockpit_with_extensions(db, ResolvedExtensionCatalog::default())
+}
+
+pub fn execute_cockpit_with_extensions(
+    db: Option<&std::path::Path>,
+    extensions: ResolvedExtensionCatalog,
+) -> Result<(), String> {
     if let Some(db) = db {
         return execute_inspect_ui(&InspectOptions {
             db: db.to_path_buf(),
-            extensions: ResolvedExtensionCatalog::default(),
+            extensions,
         });
     }
     let mut startup = None;
     let mut app = AgenturmApp::default_composition();
+    #[cfg(target_os = "linux")]
+    let extensions = if extensions.extensions.is_empty() {
+        default_cockpit_extensions(
+            std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+            std::env::var_os("HOME").as_deref(),
+        )?
+    } else {
+        extensions
+    };
+    install_process_extensions(&mut app, &extensions)?;
     let mut store = None;
     agenturm_ui::run_workspace(move |request| {
         if startup.is_none() {
@@ -1416,14 +1554,35 @@ pub fn execute_cockpit(db: Option<&std::path::Path>) -> Result<(), String> {
             );
         }
         let store = store.as_ref().expect("history opened");
-        workspace_response(&mut app, store, &startup.db, request, || startup.notice())
+        match request {
+            WorkspaceRequest::Work(command) if cockpit_workflows::is_prompt_command(&command) => {
+                startup.prompt(command).map(WorkspaceResponse::Work)
+            }
+            request => {
+                workspace_response(&mut app, store, &startup.db, request, || startup.notice())
+            }
+        }
     })
     .map_err(|error| error.to_string())
 }
 
 pub fn execute_inspect_ui(options: &InspectOptions) -> Result<(), String> {
     let mut app = AgenturmApp::default_composition();
-    for extension in &options.extensions.extensions {
+    install_process_extensions(&mut app, &options.extensions)?;
+    let store = Store::open_read_only(&options.db)
+        .map_err(|error| format!("open store failed: {error}"))?;
+    let db = options.db.clone();
+    agenturm_ui::run_workspace(move |request| {
+        workspace_response(&mut app, &store, &db, request, || None)
+    })
+    .map_err(|error| error.to_string())
+}
+
+fn install_process_extensions(
+    app: &mut AgenturmApp,
+    catalog: &ResolvedExtensionCatalog,
+) -> Result<(), String> {
+    for extension in &catalog.extensions {
         verify_extension_artifact(&extension.executable, &extension.sha256)?;
         let grants = extension
             .grants
@@ -1452,13 +1611,7 @@ pub fn execute_inspect_ui(options: &InspectOptions) -> Result<(), String> {
         app.register_observation_extension(extension.plugin_id.clone(), process_extension)
             .map_err(|error| error.to_string())?;
     }
-    let store = Store::open_read_only(&options.db)
-        .map_err(|error| format!("open store failed: {error}"))?;
-    let db = options.db.clone();
-    agenturm_ui::run_workspace(move |request| {
-        workspace_response(&mut app, &store, &db, request, || None)
-    })
-    .map_err(|error| error.to_string())
+    Ok(())
 }
 
 fn workspace_response(
@@ -1507,9 +1660,9 @@ fn workspace_response(
             }
             Ok(WorkspaceResponse::ReviewSaved)
         }
-        WorkspaceRequest::History { selection, before } => Ok(WorkspaceResponse::History(
-            load_workspace_history(app, store, selection, before),
-        )),
+        WorkspaceRequest::History { selection, before } => {
+            load_workspace_history(app, store, selection, before).map(WorkspaceResponse::History)
+        }
     }
 }
 
@@ -1589,7 +1742,7 @@ fn load_workspace_history(
     store: &Store,
     selection: HistorySelection,
     before: Option<ObservationPosition>,
-) -> agenturm_ui::HistoryPage {
+) -> Result<agenturm_ui::HistoryPage, String> {
     let (source, session, pinned) = match &selection {
         HistorySelection::All(_) => (None, None, None),
         HistorySelection::Session(session, _) => (
@@ -1618,9 +1771,37 @@ fn load_workspace_history(
                 &turn.turn_id,
                 turn.worker_id.as_deref(),
             );
-            inspector_activity::turn_page(snapshot, &turn)
+            Ok(inspector_activity::turn_page(snapshot, &turn))
         }
         HistorySelection::Session(session, view) => {
+            let select_pane: fn(session_evidence::SessionPaneIds) -> ExtensionId = match view {
+                SessionView::Overview => |ids| ids.overview,
+                SessionView::Activity => |ids| ids.activity,
+                SessionView::Review => |ids| ids.review,
+                SessionView::Usage => |ids| ids.usage,
+                SessionView::Traces => {
+                    let page = if session.harness_id.starts_with("otlp.") {
+                        store.query_observations(&query)
+                    } else {
+                        store.query_linked_traces(&query)
+                    }
+                    .map_err(|error| format!("Read session traces failed: {error}"))?;
+                    let mut snapshot = Snapshot {
+                        observations: page.observations,
+                        observations_truncated: page.has_more,
+                        history_snapshot_id: page.snapshot_id,
+                        ..Snapshot::default()
+                    };
+                    let pane = session_evidence::add_session_trace_pane(
+                        &mut snapshot,
+                        &session.harness_id,
+                        &session.session_id,
+                    );
+                    let mut page = inspector_activity::overview_page(snapshot);
+                    page.initial_pane = Some(pane);
+                    return Ok(page);
+                }
+            };
             let mut snapshot = app.refresh_history_query(store, query);
             let panes = session_evidence::add_session_panes(
                 &mut snapshot,
@@ -1631,14 +1812,8 @@ fn load_workspace_history(
             if !page.snapshot.observations.is_empty() {
                 page.review_pane = Some(panes.review.clone());
             }
-            let pane = match view {
-                SessionView::Overview => panes.overview,
-                SessionView::Activity => panes.activity,
-                SessionView::Review => panes.review,
-                SessionView::Usage => panes.usage,
-            };
-            page.initial_pane = Some(pane);
-            page
+            page.initial_pane = Some(select_pane(panes));
+            Ok(page)
         }
         HistorySelection::All(view) => {
             let mut snapshot = app.refresh_history_query(store, query);
@@ -1657,7 +1832,7 @@ fn load_workspace_history(
                 WorkspaceView::Usage => ids.usage,
                 WorkspaceView::Traces => ids.traces,
             });
-            page
+            Ok(page)
         }
     }
 }
@@ -1722,12 +1897,18 @@ pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
                     "method":method.as_str(), "duration_ns":duration_ns.map(|nanos| nanos.to_string()),
                     "result":result,
                 }),
-                ObservationKind::TraceSpan(span) => serde_json::json!({
-                    "kind":"trace_span", "trace_id":span.trace_id, "span_id":span.span_id,
-                    "parent_span_id":span.parent_span_id,
-                    "started_at_unix_ns":span.started_at_unix_ns.to_string(),
-                    "status":span.status.as_str(),
-                }),
+                ObservationKind::TraceSpan(span) => {
+                    let mut evidence = serde_json::json!({
+                        "kind":"trace_span", "trace_id":span.trace_id, "span_id":span.span_id,
+                        "parent_span_id":span.parent_span_id,
+                        "started_at_unix_ns":span.started_at_unix_ns.to_string(),
+                        "status":span.status.as_str(),
+                    });
+                    if let Some(target) = &span.target_source_id {
+                        evidence["target_source_id"] = serde_json::json!(target);
+                    }
+                    evidence
+                }
                 ObservationKind::Lifecycle { state, reason_code } => {
                     serde_json::json!({"kind":"lifecycle", "state":state, "reason_code":reason_code})
                 }
@@ -2311,23 +2492,18 @@ fn validate_collection_config(
     let (sources, follow) = match config.follow {
         Some(mut selection) => {
             if !(1..=discovery::MAX_SESSIONS_PER_HARNESS).contains(&selection.sessions_per_harness)
-                || selection
-                    .roots()
-                    .iter()
-                    .any(|root| !valid_config_path(root))
+                || selection.roots().any(|root| !valid_config_path(root))
             {
                 return Err("invalid follow discovery roots or session limit".into());
             }
-            selection.codex_root = resolve(selection.codex_root);
-            selection.pi_root = resolve(selection.pi_root);
+            selection.resolve_paths(resolve);
             if selection
                 .roots()
-                .iter()
                 .any(|root| !root.is_absolute() || !valid_config_path(root))
             {
                 return Err("follow discovery roots must resolve to bounded absolute paths".into());
             }
-            for plugin in [CODEX_PLUGIN_ID, discovery::PI_PLUGIN_ID] {
+            for plugin in selection.plugins() {
                 if !catalog.contains_key(plugin) {
                     return Err(format!(
                         "follow discovery requires plugin {plugin} in the catalog"
@@ -2739,13 +2915,20 @@ pub fn render(command: Command) -> String {
             "Agenturm · Rust application (early composition shell)\n",
             "\n",
             "Usage: agenturm [--help|--version|status]\n",
+            "       agenturm cockpit [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
             "       agenturm backup --db <path> --output <new-path>\n",
+            "       agenturm backup --db <path> --bundle <new-directory>\n",
+            "       agenturm restore --bundle <directory> --output <new-directory>\n",
             "       agenturm prune --db <path> --before-unix-ns <ns>\n",
             "       agenturm content <grant|revoke|list|preview> [options]\n",
             "       agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id>\n",
+            "       agenturm run --db <path> [--source-id otlp.<id>] -- <program> [args...]\n",
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
+            "       agenturm attention status --db <path>\n",
+            "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] [--interval-ms <100..60000>]\n",
+            "       agenturm task <list|add|show|complete|reopen|link|unlink|handoffs|export> [options]\n",
             "       agenturm discover [--follow] [--sessions-per-harness <1..8>]\n",
             "       agenturm collect --config <json-path> --db <path>\n",
             "       agenturm collect --config <json-path> --db <path> --watch [--interval-ms <100..60000>]\n",
@@ -2754,6 +2937,8 @@ pub fn render(command: Command) -> String {
             "\n",
             "This explicit projection stores token counters and skips other supported facts.\n",
             "Run `agenturm` in a terminal to discover sessions and open the cockpit.\n",
+            "On Linux, the default cockpit loads selected IDs from the enabled array in agenturm-rust/extensions.json under your configuration directory.\n",
+            "Use `backup --bundle` to include saved tasks, handoffs, and reviews. Open history.sqlite in the restored directory.\n",
             "Collection config is versioned JSON; relative executable and source paths resolve beside the config.\n",
             "On Linux, install the managed foreground collector with `agenturm service install`.\n",
         )
@@ -2772,11 +2957,15 @@ pub fn render(command: Command) -> String {
             ),
             SERVICE_STATUS_LINE
         ),
-        Command::Backup { .. } | Command::Prune { .. } | Command::Content(_) => String::new(),
+        Command::Backup { .. }
+        | Command::BackupWorkspace { .. }
+        | Command::RestoreWorkspace { .. }
+        | Command::Prune { .. }
+        | Command::Content(_) => String::new(),
         Command::Discover { .. } | Command::Cockpit { .. } => String::new(),
         Command::Inspect(_) => String::new(),
-        Command::Query(_) => String::new(),
-        Command::Ingest(_) | Command::ImportTraces(_) | Command::ServeTraces(_) => String::new(),
+        Command::Query(_) | Command::Attention(_) | Command::Task(_) => String::new(),
+        Command::Ingest(_) | Command::ImportTraces(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),
         Command::Collect(_) => String::new(),
         Command::Service(_) => String::new(),
     }
@@ -3350,6 +3539,85 @@ mod tests {
         assert!(error.contains("SHA-256 mismatch"));
         assert!(!database.exists());
 
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cockpit_enables_only_selected_user_extensions_and_accepts_explicit_inspect_flags() {
+        let directory = extension_catalog_test_directory();
+        let config_home = directory.join("xdg");
+        let home = directory.join("home");
+        let config_dir = config_home.join("agenturm-rust");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let catalog_path = config_dir.join("extensions.json");
+        let defaults =
+            || default_cockpit_extensions(Some(config_home.as_os_str()), Some(home.as_os_str()));
+        assert!(defaults().unwrap().extensions.is_empty());
+        write_extension_catalog(
+            &catalog_path,
+            &serde_json::json!({
+                "version": 1, "enabled": [], "extensions": []
+            }),
+        );
+        assert!(defaults().unwrap().extensions.is_empty());
+
+        let mut catalog = serde_json::json!({
+            "version": 1,
+            "extensions": [
+                extension_catalog_entry("example.selected", "/bin/true"),
+                extension_catalog_entry("example.unselected", "missing")
+            ]
+        });
+        write_extension_catalog(&catalog_path, &catalog);
+        assert!(defaults().unwrap().extensions.is_empty());
+        catalog["enabled"] = serde_json::json!(["example.selected"]);
+        write_extension_catalog(&catalog_path, &catalog);
+        let selected = defaults().unwrap();
+        assert_eq!(selected.extensions.len(), 1);
+        assert_eq!(
+            selected.extensions[0].plugin_id.as_str(),
+            "example.selected"
+        );
+
+        let fallback = home.join(".config/agenturm-rust");
+        std::fs::create_dir_all(&fallback).unwrap();
+        write_extension_catalog(&fallback.join("extensions.json"), &catalog);
+        assert_eq!(
+            default_cockpit_extensions(Some("relative".as_ref()), Some(home.as_os_str())).unwrap(),
+            selected
+        );
+
+        let command = parse_command(&[
+            "cockpit".into(),
+            "--db".into(),
+            "existing.sqlite".into(),
+            "--extension-catalog".into(),
+            catalog_path.to_string_lossy().into_owned(),
+            "--extension".into(),
+            "example.selected".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            command,
+            Command::Cockpit {
+                db: Some("existing.sqlite".into()),
+                extensions: selected,
+            }
+        );
+        assert!(
+            execute_cockpit_with_extensions(
+                Some(&config_dir.join("must-not-open.sqlite")),
+                defaults().unwrap(),
+            )
+            .unwrap_err()
+            .contains("SHA-256 mismatch")
+        );
+        assert!(!config_dir.join("must-not-open.sqlite").exists());
+
+        catalog["enabled"] = serde_json::json!(["example.absent"]);
+        write_extension_catalog(&catalog_path, &catalog);
+        assert!(defaults().unwrap_err().contains("not present in catalog"));
         std::fs::remove_dir_all(directory).unwrap();
     }
 

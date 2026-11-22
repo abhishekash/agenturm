@@ -1,7 +1,7 @@
 //! Keyboard-first lists and editors for actions owned by the application.
 
 use super::*;
-use crate::workspace::RecordedSession;
+use crate::workspace::{RecordedSession, ReviewVersion};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -126,6 +126,11 @@ impl io::Write for PromptDelivery {
 }
 
 pub enum WorkCommand {
+    ReviewNotes(RecordedSession),
+    SaveReviewNote {
+        session: RecordedSession,
+        note: String,
+    },
     Tasks(Option<u64>),
     Handoffs(Option<u64>),
     SaveTask {
@@ -168,7 +173,16 @@ pub enum WorkCommand {
     RevealPrompt(PromptEntry, PromptDelivery),
 }
 
+pub struct ReviewNoteEntry {
+    pub version: ReviewVersion,
+    pub note: String,
+}
+
 pub enum WorkResult {
+    ReviewNotes {
+        session: RecordedSession,
+        items: Vec<ReviewNoteEntry>,
+    },
     Tasks {
         items: Vec<TaskEntry>,
         older: Option<u64>,
@@ -196,6 +210,10 @@ pub enum WorkResult {
 }
 
 enum Draft {
+    ReviewNote {
+        session: RecordedSession,
+        note: String,
+    },
     Task {
         id: Option<u64>,
         anchor: Option<WorkAnchor>,
@@ -232,6 +250,7 @@ pub(super) struct Workbench {
     draft: Option<Draft>,
     target: Option<WorkAnchor>,
     help: bool,
+    review_note_scroll: u16,
 }
 
 impl Workbench {
@@ -242,6 +261,7 @@ impl Workbench {
             draft: None,
             target,
             help: false,
+            review_note_scroll: 0,
         };
         work.reset_cursor();
         work
@@ -293,10 +313,12 @@ impl Workbench {
 
     fn reset_cursor(&mut self) {
         self.cursor = ListState::default().with_selected((self.len() != 0).then_some(0));
+        self.review_note_scroll = 0;
     }
 
     fn len(&self) -> usize {
         match &self.data {
+            WorkResult::ReviewNotes { items, .. } => items.len(),
             WorkResult::Tasks { items, .. } => items.len(),
             WorkResult::Handoffs { items, .. } => items.len(),
             WorkResult::TaskLinks { items, .. } => items.len(),
@@ -332,12 +354,22 @@ impl Workbench {
         let selected = self.cursor.selected().unwrap_or_default();
         match key.code {
             KeyCode::Esc => WorkInput::Close,
+            KeyCode::PageDown if matches!(self.data, WorkResult::ReviewNotes { .. }) => {
+                self.review_note_scroll = self.review_note_scroll.saturating_add(4);
+                WorkInput::None
+            }
+            KeyCode::PageUp if matches!(self.data, WorkResult::ReviewNotes { .. }) => {
+                self.review_note_scroll = self.review_note_scroll.saturating_sub(4);
+                WorkInput::None
+            }
             KeyCode::Down | KeyCode::Char('j') if self.len() != 0 => {
                 self.cursor.select(Some((selected + 1).min(self.len() - 1)));
+                self.review_note_scroll = 0;
                 WorkInput::None
             }
             KeyCode::Up | KeyCode::Char('k') if self.len() != 0 => {
                 self.cursor.select(Some(selected.saturating_sub(1)));
+                self.review_note_scroll = 0;
                 WorkInput::None
             }
             _ => self.action(key.code, selected),
@@ -346,6 +378,12 @@ impl Workbench {
 
     fn action(&mut self, key: KeyCode, selected: usize) -> WorkInput {
         match (&self.data, key) {
+            (WorkResult::ReviewNotes { session, .. }, KeyCode::Char('e')) => {
+                self.draft = Some(Draft::ReviewNote {
+                    session: session.clone(),
+                    note: String::new(),
+                });
+            }
             (WorkResult::Tasks { .. }, KeyCode::Char('n' | 'N')) => {
                 self.draft = Some(Draft::Task {
                     id: None,
@@ -528,6 +566,12 @@ impl Workbench {
         }
         if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return match draft {
+                Draft::ReviewNote { session, note } if !note.trim().is_empty() => {
+                    WorkInput::Command(WorkCommand::SaveReviewNote {
+                        session: session.clone(),
+                        note: note.clone(),
+                    })
+                }
                 Draft::Task {
                     id,
                     anchor,
@@ -558,6 +602,7 @@ impl Workbench {
             };
         }
         let (value, limit) = match draft {
+            Draft::ReviewNote { note, .. } => (note, 4096),
             Draft::Task {
                 title,
                 note,
@@ -627,17 +672,21 @@ impl Workbench {
         if let Some(draft) = &self.draft {
             let (title, lines) = draft_text(draft);
             frame.render_widget(Paragraph::new(title), header);
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .wrap(Wrap { trim: false })
-                    .block(Block::bordered()),
-                body,
-            );
+            let paragraph = if matches!(draft, Draft::ReviewNote { .. }) {
+                let lines = wrap_review_note(lines, body);
+                let scroll = note_scroll_limit(lines.len(), body);
+                Paragraph::new(lines).scroll((scroll, 0))
+            } else {
+                Paragraph::new(lines).wrap(Wrap { trim: false })
+            };
+            frame.render_widget(paragraph.block(Block::bordered()), body);
             draw_footer(
                 frame,
                 footer,
                 if matches!(draft, Draft::Delete { .. }) {
                     "y delete · Esc cancel"
+                } else if matches!(draft, Draft::ReviewNote { .. }) {
+                    "Enter new line · Ctrl+S save · Esc cancel"
                 } else {
                     "Tab fields · Ctrl+S save · Esc cancel"
                 },
@@ -669,6 +718,34 @@ impl Workbench {
         }
         let selected = self.cursor.selected().unwrap_or_default();
         let (title, keys, options, details, empty) = match &self.data {
+            WorkResult::ReviewNotes { session, items } => (
+                "Review decisions",
+                "e new · ↑↓ select · PgUp/PgDn read · Esc review",
+                items
+                    .iter()
+                    .map(|item| {
+                        let scope = if item.version == session.review_version {
+                            "Current evidence"
+                        } else {
+                            "Other evidence version"
+                        };
+                        format!("{scope} · {}", item.note.lines().next().unwrap_or_default())
+                    })
+                    .collect(),
+                items
+                    .get(selected)
+                    .map(|item| {
+                        let mut details = vec![Line::from(format!(
+                            "Evidence receipt {} · {} observations",
+                            item.version.receipt_sequence, item.version.retained_observations,
+                        ))];
+                        details
+                            .extend(item.note.lines().map(|line| Line::from(visible_text(line))));
+                        details
+                    })
+                    .unwrap_or_default(),
+                "No decision notes for this session",
+            ),
             WorkResult::Tasks { items, .. } => (
                 "Saved tasks",
                 "n new · N blank · e edit · l link · r runs · ? help",
@@ -777,15 +854,33 @@ impl Workbench {
                 list,
                 &mut self.cursor,
             );
-            frame.render_widget(
-                Paragraph::new(details)
-                    .wrap(Wrap { trim: false })
-                    .block(Block::bordered().title("Details")),
-                detail,
-            );
+            let paragraph = if matches!(self.data, WorkResult::ReviewNotes { .. }) {
+                let details = wrap_review_note(details, detail);
+                self.review_note_scroll = self
+                    .review_note_scroll
+                    .min(note_scroll_limit(details.len(), detail));
+                Paragraph::new(details).scroll((self.review_note_scroll, 0))
+            } else {
+                Paragraph::new(details).wrap(Wrap { trim: false })
+            };
+            frame.render_widget(paragraph.block(Block::bordered().title("Details")), detail);
         }
         draw_footer(frame, footer, keys, pending, status);
     }
+}
+
+fn wrap_review_note(lines: Vec<Line<'_>>, area: Rect) -> Vec<Line<'static>> {
+    let width = usize::from(area.width.saturating_sub(2).max(1));
+    lines
+        .into_iter()
+        .flat_map(|line| wrap_display_width(&line.to_string(), width))
+        .map(Line::from)
+        .collect()
+}
+
+fn note_scroll_limit(rows: usize, area: Rect) -> u16 {
+    let visible = usize::from(area.height.saturating_sub(2).max(1));
+    rows.saturating_sub(visible).try_into().unwrap_or(u16::MAX)
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, keys: &str, pending: bool, status: Option<&str>) {
@@ -852,6 +947,15 @@ fn anchor_details(anchor: &WorkAnchor) -> Vec<Line<'static>> {
 
 fn draft_text(draft: &Draft) -> (&'static str, Vec<Line<'static>>) {
     match draft {
+        Draft::ReviewNote { session, note } => {
+            let mut lines = vec![Line::from(format!(
+                "{} · evidence receipt {}",
+                visible_text(&session.session_id),
+                session.review_version.receipt_sequence,
+            ))];
+            lines.extend(note.lines().map(|line| Line::from(visible_text(line))));
+            (" New review decision", lines)
+        }
         Draft::Task {
             title,
             note,

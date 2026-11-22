@@ -1,7 +1,9 @@
-//! Loopback-only HTTP ingestion for bounded OTLP JSON trace exports.
+//! Loopback-only HTTP ingestion for bounded OTLP trace exports.
 
-use crate::trace_import::{MAX_EXPORT_BYTES, commit, decode, parse_source_id};
-use agenturm_kernel::ExtensionId;
+use crate::trace_import::{
+    MAX_EXPORT_BYTES, commit, decode_json, decode_protobuf, parse_source_id, protobuf_response,
+};
+use agenturm_kernel::{ExtensionId, Observation};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -21,6 +23,7 @@ pub struct TraceReceiverOptions {
     listen: SocketAddr,
     db: PathBuf,
     source: ExtensionId,
+    launch_session: Option<String>,
 }
 
 pub(super) fn parse(args: &[String]) -> Result<TraceReceiverOptions, String> {
@@ -52,65 +55,180 @@ pub(super) fn parse(args: &[String]) -> Result<TraceReceiverOptions, String> {
         listen: listen.ok_or(USAGE)?,
         db: db.ok_or(USAGE)?,
         source: source.ok_or(USAGE)?,
+        launch_session: None,
     })
 }
 
 pub fn execute_trace_receiver(options: &TraceReceiverOptions) -> Result<(), String> {
     let stop = Arc::new(AtomicBool::new(false));
     let _signals = crate::WatchSignalRegistrations::new(Arc::clone(&stop))?;
-    let listener = TcpListener::bind(options.listen)
-        .map_err(|error| format!("bind trace receiver: {error}"))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| error.to_string())?;
-    let address = listener.local_addr().map_err(|error| error.to_string())?;
-    println!("Listening for OTLP JSON traces at http://{address}/v1/traces");
-    while !stop.load(Ordering::Relaxed) {
-        match listener.accept() {
-            Ok((stream, peer)) if peer.ip().is_loopback() => handle(stream, address, options),
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(25))
-            }
-            Err(error) => return Err(format!("trace receiver accept failed: {error}")),
-        }
-    }
-    Ok(())
+    let receiver = TraceReceiver::bind(options.clone())?;
+    println!(
+        "Listening for OTLP traces at http://{}/v1/traces",
+        receiver.address()
+    );
+    receiver.serve(&stop)
 }
 
-fn handle(mut stream: TcpStream, address: SocketAddr, options: &TraceReceiverOptions) {
+pub(super) struct TraceReceiver {
+    listener: TcpListener,
+    address: SocketAddr,
+    options: TraceReceiverOptions,
+}
+
+impl TraceReceiver {
+    fn bind(options: TraceReceiverOptions) -> Result<Self, String> {
+        let listener = TcpListener::bind(options.listen)
+            .map_err(|error| format!("bind trace receiver: {error}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| error.to_string())?;
+        let address = listener.local_addr().map_err(|error| error.to_string())?;
+        Ok(Self {
+            listener,
+            address,
+            options,
+        })
+    }
+
+    pub(super) fn bind_ephemeral(
+        db: PathBuf,
+        source: ExtensionId,
+        launch_session: String,
+    ) -> Result<Self, String> {
+        Self::bind(TraceReceiverOptions {
+            listen: SocketAddr::from(([127, 0, 0, 1], 0)),
+            db,
+            source,
+            launch_session: Some(launch_session),
+        })
+    }
+
+    pub(super) fn bind_cockpit(db: PathBuf) -> Result<Self, String> {
+        let port = std::env::var_os("AGENTURM_OTLP_PORT")
+            .map(|value| {
+                value
+                    .to_str()
+                    .and_then(|text| text.parse::<u16>().ok())
+                    .filter(|port| *port > 0)
+                    .ok_or("AGENTURM_OTLP_PORT must name a valid port")
+            })
+            .transpose()?
+            .unwrap_or(14318);
+        Self::bind(TraceReceiverOptions {
+            listen: SocketAddr::from(([127, 0, 0, 1], port)),
+            db,
+            source: parse_source_id("otlp.local")?,
+            launch_session: None,
+        })
+    }
+
+    pub(super) fn address(&self) -> SocketAddr {
+        self.address
+    }
+
+    pub(super) fn serve(self, stop: &AtomicBool) -> Result<(), String> {
+        let db = self.options.db.clone();
+        self.serve_with(stop, |source, rows| commit(&db, source, &rows).map(|_| ()))
+    }
+
+    pub(super) fn serve_with(
+        self,
+        stop: &AtomicBool,
+        mut store: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        while !stop.load(Ordering::Relaxed) {
+            match self.listener.accept() {
+                Ok((stream, peer)) if peer.ip().is_loopback() => handle(
+                    stream,
+                    self.address,
+                    &self.options.source,
+                    self.options.launch_session.as_deref(),
+                    &mut store,
+                ),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(25))
+                }
+                Err(error) => return Err(format!("trace receiver accept failed: {error}")),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn handle(
+    mut stream: TcpStream,
+    address: SocketAddr,
+    source: &ExtensionId,
+    launch_session: Option<&str>,
+    commit: &mut impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String>,
+) {
     let deadline = Instant::now() + READ_BUDGET;
-    let body = read_request(&stream, address, deadline);
-    let result = body.and_then(|body| {
-        let (rows, skipped) = decode(&body, &options.source).map_err(|_| "400 Bad Request")?;
-        commit(&options.db, &options.source, &rows).map_err(|_| "503 Service Unavailable")?;
-        Ok(if skipped == 0 {
-            "{}".to_owned()
-        } else {
-            serde_json::json!({"partialSuccess": {
+    let result = read_request(&stream, address, deadline).and_then(|(encoding, body)| {
+        let decoded = match encoding {
+            Encoding::Json => decode_json(&body, source, launch_session),
+            Encoding::Protobuf => decode_protobuf(&body, source, launch_session),
+        };
+        let (rows, skipped) = decoded.map_err(|_| "400 Bad Request")?;
+        if !rows.is_empty() {
+            commit(source, rows).map_err(|_| "503 Service Unavailable")?;
+        }
+        let bytes = match encoding {
+            Encoding::Json if skipped == 0 => b"{}".to_vec(),
+            Encoding::Json => serde_json::json!({"partialSuccess": {
                 "rejectedSpans": skipped.to_string(),
                 "errorMessage": "Span lacks an explicit session identity",
             }})
             .to_string()
-        })
+            .into_bytes(),
+            Encoding::Protobuf => protobuf_response(skipped),
+        };
+        Ok((encoding, bytes))
     });
-    let (status, response) = match result {
-        Ok(response) => ("200 OK", response),
-        Err(status) => (status, serde_json::json!({"message":status}).to_string()),
+    let (status, encoding, response) = match result {
+        Ok((encoding, response)) => ("200 OK", encoding, response),
+        Err(status) => (
+            status,
+            Encoding::Json,
+            serde_json::json!({"message":status})
+                .to_string()
+                .into_bytes(),
+        ),
     };
     let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-    let _ = write!(
+    if write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{response}",
-        response.len()
-    );
+        "HTTP/1.1 {status}\r\nContent-Type: {}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        encoding.media_type(),
+        response.len(),
+    )
+    .is_ok()
+    {
+        let _ = stream.write_all(&response);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Encoding {
+    Json,
+    Protobuf,
+}
+
+impl Encoding {
+    fn media_type(self) -> &'static str {
+        match self {
+            Self::Json => "application/json",
+            Self::Protobuf => "application/x-protobuf",
+        }
+    }
 }
 
 fn read_request(
     stream: &TcpStream,
     address: SocketAddr,
     deadline: Instant,
-) -> Result<Vec<u8>, &'static str> {
+) -> Result<(Encoding, Vec<u8>), &'static str> {
     let mut reader = BufReader::new(stream);
     let mut raw = Vec::new();
     while !raw.ends_with(b"\r\n\r\n") {
@@ -126,7 +244,7 @@ fn read_request(
         reader.consume(1);
     }
     let headers = std::str::from_utf8(&raw).map_err(|_| "400 Bad Request")?;
-    let length = parse_headers(headers, address)?;
+    let (encoding, length) = parse_headers(headers, address)?;
     let mut body = vec![0; length];
     let mut consumed = 0;
     while consumed < length {
@@ -139,7 +257,7 @@ fn read_request(
         }
         consumed += count;
     }
-    Ok(body)
+    Ok((encoding, body))
 }
 
 fn timeout(stream: &TcpStream, deadline: Instant) -> Result<(), &'static str> {
@@ -152,7 +270,7 @@ fn timeout(stream: &TcpStream, deadline: Instant) -> Result<(), &'static str> {
         .map_err(|_| "408 Request Timeout")
 }
 
-fn parse_headers(headers: &str, address: SocketAddr) -> Result<usize, &'static str> {
+fn parse_headers(headers: &str, address: SocketAddr) -> Result<(Encoding, usize), &'static str> {
     let mut lines = headers.split("\r\n");
     if !matches!(
         lines.next(),
@@ -161,7 +279,7 @@ fn parse_headers(headers: &str, address: SocketAddr) -> Result<usize, &'static s
         return Err("404 Not Found");
     }
     let mut host = false;
-    let mut json = false;
+    let mut encoding = None;
     let mut length = None;
     for line in lines.take_while(|line| !line.is_empty()) {
         let (name, value) = line.split_once(':').ok_or("400 Bad Request")?;
@@ -181,8 +299,12 @@ fn parse_headers(headers: &str, address: SocketAddr) -> Result<usize, &'static s
                     return Err("400 Bad Request");
                 }
             }
-            "content-type" if !json && value.eq_ignore_ascii_case("application/json") => {
-                json = true
+            "content-type" if encoding.is_none() => {
+                let format = [Encoding::Json, Encoding::Protobuf]
+                    .into_iter()
+                    .find(|format| value.eq_ignore_ascii_case(format.media_type()))
+                    .ok_or("415 Unsupported Media Type")?;
+                encoding = Some(format);
             }
             "content-length"
                 if length.is_none() && value.bytes().all(|byte| byte.is_ascii_digit()) =>
@@ -201,14 +323,15 @@ fn parse_headers(headers: &str, address: SocketAddr) -> Result<usize, &'static s
             _ => {}
         }
     }
-    if !host || !json {
+    if !host {
         return Err("400 Bad Request");
     }
+    let encoding = encoding.ok_or("400 Bad Request")?;
     let length = length.ok_or("411 Length Required")?;
     if length as u64 > MAX_EXPORT_BYTES {
         return Err("413 Content Too Large");
     }
-    Ok(length)
+    Ok((encoding, length))
 }
 
 #[cfg(test)]
@@ -218,7 +341,17 @@ mod tests {
     fn rejects_cross_origin_and_ambiguous_lengths() {
         let address = "127.0.0.1:4318".parse().unwrap();
         let prefix = "POST /v1/traces HTTP/1.1\r\nHost: 127.0.0.1:4318\r\nContent-Type: application/json\r\nContent-Length: 2\r\n";
-        assert_eq!(parse_headers(&format!("{prefix}\r\n"), address), Ok(2));
+        assert_eq!(
+            parse_headers(&format!("{prefix}\r\n"), address),
+            Ok((Encoding::Json, 2))
+        );
+        assert_eq!(
+            parse_headers(
+                &format!("{prefix}\r\n").replace("application/json", "application/x-protobuf"),
+                address
+            ),
+            Ok((Encoding::Protobuf, 2)),
+        );
         assert!(parse_headers(&format!("{prefix}Content-Length: 3\r\n\r\n"), address).is_err());
         assert!(
             parse_headers(

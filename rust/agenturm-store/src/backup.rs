@@ -1,5 +1,7 @@
 //! Online SQLite backup of the Rust-owned store.
 
+mod bundle;
+
 use crate::{Store, StoreError};
 use rusqlite::backup::{Backup, StepResult};
 use rusqlite::{Connection, OpenFlags};
@@ -26,6 +28,8 @@ pub enum BackupError {
     DestinationExists,
     Busy,
     InvalidSnapshot,
+    InvalidBundle,
+    Sidecar(String),
     PublishedDirectorySync(io::Error),
     Io(io::Error),
     Sqlite(rusqlite::Error),
@@ -39,6 +43,10 @@ impl fmt::Display for BackupError {
             Self::DestinationExists => f.write_str("backup destination or a SQLite sidecar exists"),
             Self::Busy => f.write_str("SQLite backup remained busy"),
             Self::InvalidSnapshot => f.write_str("backup snapshot failed its integrity check"),
+            Self::InvalidBundle => {
+                f.write_str("directory is not a valid Agenturm workspace backup")
+            }
+            Self::Sidecar(error) => write!(f, "workspace backup sidecar: {error}"),
             Self::PublishedDirectorySync(error) => {
                 write!(
                     f,
@@ -184,7 +192,7 @@ fn copy_committed_snapshot(from: &Connection, to: &mut Connection) -> Result<(),
     // An explicit read transaction pins a point-in-time source snapshot even
     // if other connections commit while SQLite copies the pages.
     let transaction = from.unchecked_transaction()?;
-    transaction.query_row("SELECT COUNT(*) FROM agenturm_store_meta", [], |_| Ok(()))?;
+    transaction.query_row("SELECT COUNT(*) FROM sqlite_schema", [], |_| Ok(()))?;
     {
         let backup = Backup::new(&transaction, to)?;
         let mut last_progress = Instant::now();

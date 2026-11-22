@@ -1,19 +1,9 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>Rust connector API: first contract slice</title>
-<style>
-:root{color-scheme:light dark;--bg:#f5f7fb;--fg:#202534;--muted:#5b6475;--panel:#fff;--line:#d8deea;--code:#edf0f6;--accent:#3659bd}
-@media(prefers-color-scheme:dark){:root{--bg:#11141a;--fg:#e8ebf2;--muted:#a9b1c0;--panel:#191e27;--line:#303849;--code:#252b37;--accent:#a8bcff}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:900px;margin:auto;padding:clamp(18px,5vw,54px)}article{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:clamp(20px,4vw,48px)}h1,h2{line-height:1.25}h1{font-size:2rem;margin:0 0 .4em}h2{margin:2em 0 .5em;border-bottom:1px solid var(--line);padding-bottom:.35em}p,li{max-width:78ch}.status{color:var(--muted)}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--code);padding:.12em .32em;border-radius:4px}a{color:var(--accent)}li+li{margin-top:.35em}
-</style>
-</head>
-<body><main><article>
-<h1>Rust connector API: first contract slice</h1>
-<p class="status">API crate and contract tests implemented; runtime integration is not implemented.</p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Connector Api</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.3.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-connector-api.md">Markdown source ↗</a></nav><h1>Rust connector API and trusted runtime</h1>
+<p>Status: bounded contracts and an opt-in trusted process runtime are available.</p>
 <h2>Goal</h2>
 <p>Connectors are a separate extension family from harness adapters. A connector talks to an external system; harness adapters discover and decode an agent's local activity. Inbound connectors import remote records. Outbound connectors deliver host-authorized actions. The two directions have different acknowledgement and uncertainty rules, so the API exposes separate traits.</p>
 <p>The current slice is <code>rust/agenturm-connector-api</code>. It defines versioned, serializable DTOs and Rust traits that can later be carried by a process protocol. It deliberately gives the connector no store, cursor table, credential store, or policy authority.</p>
@@ -29,16 +19,62 @@
 <p>Process supervision is a crash/protocol boundary, not an OS sandbox. A child under the Agenturm user's identity can still access that user's files, credentials and network. Do not activate untrusted third-party connector executables until a least-privilege OS boundary and credential isolation exist. Prompt/content and credential fields require separate grants; connector diagnostics use a closed enum code set that cannot carry payloads or secrets.</p>
 <h2>Current evidence and limits</h2>
 <p>Fourteen tests cover version/identity validation, bounded inbound batches, duplicate record rejection, checkpoint progress and control-character validation, modeled commit-before-ACK ordering, idempotent/stale ACK behavior, outbound request digest validation and response correlation, idempotency conflict, fake accept-then-timeout reconciliation, distinct unknown/missing/accepted states, bounded serialization, and a closed error-code vocabulary that rejects token-like strings. The fake-source test models the intended host/store sequence; it is not a Store integration test.</p>
-<p>This slice does not register connectors in the app/kernel, launch connector processes, evaluate grants, persist connector checkpoints or delivery receipts, schedule retries/dead letters, fence revocation during in-flight work, manage credentials, or sandbox code. These are explicit follow-on requirements, not implicit behavior of the traits. Full runtime connector work remains behind the Rust service/recovery/packaging critical path in the execution plan.</p>
+<h2>Trusted process runtime</h2>
+<p>Build the standalone driver with <code>cargo build --locked -p agenturm-runtime --bin agenturm-connector</code>. The driver takes a connector ledger and a JSON
+configuration. The configuration declares <code>descriptor</code> (the public connector
+descriptor), absolute <code>executable</code>, lower-case <code>sha256</code>, and exact <code>target</code>.
+For inbound collection, the target is the host-assigned observation source ID.
+For outbound delivery, it is the destination ID in every queued request.</p>
+<p>The driver requires an explicit grant for the whole configuration before it
+opens a connector process. Revocation takes effect before the next fenced
+exchange. An unchanged reapproval preserves the epoch. Changed configuration
+or reapproval after revocation does not restore old work. The child receives
+one length-prefixed JSON request with the version, descriptor, target and
+request ID. A matching single-frame response is required. Commands run with
+a cleared environment, bounded frame size and invocation deadline. This
+transport is for pinned executables that the operator already trusts.</p>
+<pre><code class="language-sh">agenturm-connector connector.sqlite source.json grant
+agenturm-connector connector.sqlite source.json watch history.sqlite
+agenturm-connector connector.sqlite sink.json grant
+agenturm-connector connector.sqlite sink.json enqueue-status delivery-id stable-key completed
+agenturm-connector connector.sqlite sink.json watch
+agenturm-connector connector.sqlite sink.json revoke
+</code></pre>
+<p>Inbound projection currently admits only exact <code>session_id</code> and supported
+lifecycle <code>state</code> fields. The host atomically commits the resulting observations
+with the checkpoint in the Rust observation store. The next collect repeats
+the ACK for the durable checkpoint before polling, including after a crash.
+Outbound currently permits the exact <code>write_status</code> action with a lifecycle
+state string. The ledger binds delivery IDs and idempotency keys to the request
+digest and grant epoch. Each <code>drive</code> advances one delivery when due. It persists
+uncertain state before sending, reconciles ambiguous effects using the same
+key, and retries only after confirmed absence. Attempts and reconciliation
+have independent persisted bounds and backoff. A sink that cannot confirm
+acceptance or absence leaves the delivery unresolved.</p>
+<p><code>watch</code> stays in the foreground for one pinned configuration. It polls an
+inbound connector using an exclusive history writer lease, or advances up to
+eight due outbound deliveries per cycle. Progress appears as safe JSON
+events. These report inbound counts, delivery state changes, retry errors,
+startup and shutdown. Delivery keys, receipts and payloads stay out of the
+watch log. SIGINT or SIGTERM stops the worker after the current bounded
+operation. A revoked grant stops further processing. For one step at a time,
+use <code>collect &lt;history.sqlite&gt;</code> or <code>drive &lt;delivery-id&gt;</code>.</p>
+<p>Run <code>cargo test --locked -p agenturm-runtime --test connectors</code> for
+the local fixture executables. The suite exercises authorization denial,
+commit-before-ACK recovery, enqueue conflict checks, accept-then-timeout
+reconciliation, confirmed-missing retry, watcher shutdown, and the standalone
+command entry point. The fixtures use temporary local files and no remote accounts.</p>
+<p>Additional field permissions, independent parallel execution within one
+ledger, credential provisioning, and an OS boundary for untrusted executables
+remain open.</p>
 <h2>Acceptance gates for runtime integration</h2>
 <ul>
 <li>Missing, wrong-scope, stale-artifact and revoked grants deny work before launch/send.</li>
 <li>Inbound rows and cursor commit atomically; crash after commit but before ACK replays without duplicate durable facts.</li>
 <li>Outbound stable key/request digest are persisted before send; timeout reconciliation checks the same key; retry occurs only after confirmed absence and retains the same key/data.</li>
 <li>Retry budget, backoff, dead-letter and uncertain states survive process restart.</li>
-<li>A blocked, malformed or oversized connector does not stall its siblings; cleanup covers descendants.</li>
+<li>A blocked/malformed/oversized connector does not stall its siblings; cleanup covers descendants.</li>
 <li>Diagnostics expose bounded safe codes only; no payload, prompt, credential or secret endpoint is logged.</li>
 <li>Fake source/sink conformance tests run without real external accounts or network access.</li>
 </ul>
-<p class="status">Markdown source: <a href="rust-connector-api.md">rust-connector-api.md</a></p>
-</article></main></body></html>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

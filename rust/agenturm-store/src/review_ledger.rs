@@ -13,6 +13,9 @@ use std::time::{Duration, UNIX_EPOCH};
 
 const APPLICATION_ID: i64 = 0x4152_5657;
 const SCHEMA_VERSION: i64 = 1;
+const NOTES_SCHEMA_VERSION: i64 = 2;
+const MAX_NOTE_BYTES: usize = 4 * 1024;
+const MAX_LISTED_NOTES: usize = 32;
 type Result<T> = std::result::Result<T, ReviewError>;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -28,6 +31,12 @@ pub struct ReviewKey {
 pub struct ReviewVersion {
     pub receipt_sequence: u64,
     pub retained_observations: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewDecisionNote {
+    pub version: ReviewVersion,
+    pub note: String,
 }
 
 #[derive(Debug)]
@@ -87,6 +96,14 @@ pub struct ReviewLedger {
 }
 
 impl ReviewLedger {
+    pub(super) fn backup_binding(&self) -> [u8; 32] {
+        self.history_binding
+    }
+
+    pub(super) fn open_for_backup(&self) -> Result<Option<Connection>> {
+        self.connect(false)
+    }
+
     pub fn open(history_path: impl AsRef<Path>) -> Result<Self> {
         let history_path = history_path.as_ref().canonicalize()?;
         let history_binding = file_binding(&history_path)?;
@@ -160,34 +177,12 @@ impl ReviewLedger {
         version: ReviewVersion,
         snapshot_id: u64,
     ) -> Result<bool> {
-        validate_key(key)?;
-        if version.receipt_sequence == 0
-            || version.receipt_sequence > snapshot_id
-            || version.retained_observations == 0
-            || version.retained_observations > i64::MAX as u64
-            || snapshot_id > i64::MAX as u64
-        {
-            return Err(ReviewError::Invalid("review version is invalid"));
-        }
+        validate_version(key, version, snapshot_id)?;
         self.verify_history()?;
         create_sidecar(&self.sidecar)?;
         let mut connection = self.connect(true)?.ok_or(ReviewError::UnrecognizedLedger)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if !ledger_initialized(&transaction)? {
-            transaction.execute_batch(
-                "CREATE TABLE agenturm_review_marks (
-                    history_binding BLOB NOT NULL CHECK (length(history_binding) = 32),
-                    source_id TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    receipt_sequence INTEGER NOT NULL CHECK (receipt_sequence > 0),
-                    retained_observations INTEGER NOT NULL CHECK (retained_observations > 0),
-                    snapshot_id INTEGER NOT NULL CHECK (snapshot_id >= receipt_sequence),
-                    PRIMARY KEY (history_binding, source_id, session_id)
-                ) WITHOUT ROWID;",
-            )?;
-            transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
-            transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        }
+        ensure_marks(&transaction)?;
         let changed = transaction.execute(
             "INSERT INTO agenturm_review_marks
                 (history_binding, source_id, session_id, receipt_sequence,
@@ -210,6 +205,114 @@ impl ReviewLedger {
         self.verify_history()?;
         transaction.commit()?;
         Ok(changed != 0)
+    }
+
+    /// Newest decision notes for this source and session. Existing review
+    /// ledgers remain readable without migration or creation.
+    pub fn decision_notes(&self, key: &ReviewKey) -> Result<Vec<ReviewDecisionNote>> {
+        validate_key(key)?;
+        let Some(mut connection) = self.connect(false)? else {
+            return Ok(Vec::new());
+        };
+        let transaction = connection.transaction()?;
+        if !ledger_initialized(&transaction)? || !notes_initialized(&transaction)? {
+            return Ok(Vec::new());
+        }
+        let notes = {
+            let mut read = transaction.prepare_cached(
+                "SELECT receipt_sequence, retained_observations, note
+                 FROM agenturm_review_notes
+                 WHERE history_binding = ?1 AND source_id = ?2 AND session_id = ?3
+                 ORDER BY id DESC LIMIT ?4",
+            )?;
+            read.query_map(
+                params![
+                    self.history_binding,
+                    key.harness_id.as_str(),
+                    key.session_id,
+                    MAX_LISTED_NOTES
+                ],
+                |row| {
+                    Ok(ReviewDecisionNote {
+                        version: ReviewVersion {
+                            receipt_sequence: row.get(0)?,
+                            retained_observations: row.get(1)?,
+                        },
+                        note: row.get(2)?,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        self.verify_history()?;
+        transaction.commit()?;
+        Ok(notes)
+    }
+
+    /// Saves a decision against the recorded evidence version. Identical
+    /// retries are idempotent and the review acknowledgement stays separate.
+    pub fn save_decision_note(
+        &self,
+        key: &ReviewKey,
+        version: ReviewVersion,
+        snapshot_id: u64,
+        note: &str,
+    ) -> Result<()> {
+        validate_version(key, version, snapshot_id)?;
+        let note = note.trim();
+        if note.is_empty()
+            || note.len() > MAX_NOTE_BYTES
+            || note.chars().any(|ch| ch.is_control() && ch != '\n')
+        {
+            return Err(ReviewError::Invalid("review decision note is invalid"));
+        }
+        self.verify_history()?;
+        create_sidecar(&self.sidecar)?;
+        let mut connection = self.connect(true)?.ok_or(ReviewError::UnrecognizedLedger)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_marks(&transaction)?;
+        if !notes_initialized(&transaction)? {
+            transaction.execute_batch(
+                "CREATE TABLE agenturm_review_notes (
+                    id INTEGER PRIMARY KEY,
+                    history_binding BLOB NOT NULL CHECK (length(history_binding) = 32),
+                    source_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    receipt_sequence INTEGER NOT NULL CHECK (receipt_sequence > 0),
+                    retained_observations INTEGER NOT NULL CHECK (retained_observations > 0),
+                    snapshot_id INTEGER NOT NULL CHECK (snapshot_id >= receipt_sequence),
+                    note TEXT NOT NULL CHECK (length(CAST(note AS BLOB)) BETWEEN 1 AND 4096),
+                    note_digest BLOB NOT NULL CHECK (length(note_digest) = 32),
+                    UNIQUE (history_binding, source_id, session_id,
+                            receipt_sequence, retained_observations, note_digest)
+                );
+                CREATE INDEX agenturm_review_notes_session
+                    ON agenturm_review_notes(history_binding, source_id, session_id, id DESC);",
+            )?;
+            transaction.pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)?;
+        }
+        let digest: [u8; 32] = Sha256::digest(note.as_bytes()).into();
+        transaction.execute(
+            "INSERT INTO agenturm_review_notes
+                (history_binding, source_id, session_id, receipt_sequence,
+                 retained_observations, snapshot_id, note, note_digest)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT (history_binding, source_id, session_id,
+                          receipt_sequence, retained_observations, note_digest) DO NOTHING",
+            params![
+                self.history_binding,
+                key.harness_id.as_str(),
+                key.session_id,
+                version.receipt_sequence,
+                version.retained_observations,
+                snapshot_id,
+                note,
+                digest
+            ],
+        )?;
+        self.verify_history()?;
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Removes one explicit acknowledgement. Clearing a missing ledger or a
@@ -268,11 +371,51 @@ fn validate_key(key: &ReviewKey) -> Result<()> {
         .map_err(|_| ReviewError::Invalid("review session ID is invalid"))
 }
 
-fn ledger_initialized(connection: &Connection) -> Result<bool> {
+fn validate_version(key: &ReviewKey, version: ReviewVersion, snapshot_id: u64) -> Result<()> {
+    validate_key(key)?;
+    if version.receipt_sequence == 0
+        || version.receipt_sequence > snapshot_id
+        || version.retained_observations == 0
+        || version.retained_observations > i64::MAX as u64
+        || snapshot_id > i64::MAX as u64
+    {
+        return Err(ReviewError::Invalid("review version is invalid"));
+    }
+    Ok(())
+}
+
+fn ensure_marks(connection: &Connection) -> Result<()> {
+    if ledger_initialized(connection)? {
+        return Ok(());
+    }
+    connection.execute_batch(
+        "CREATE TABLE agenturm_review_marks (
+            history_binding BLOB NOT NULL CHECK (length(history_binding) = 32),
+            source_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            receipt_sequence INTEGER NOT NULL CHECK (receipt_sequence > 0),
+            retained_observations INTEGER NOT NULL CHECK (retained_observations > 0),
+            snapshot_id INTEGER NOT NULL CHECK (snapshot_id >= receipt_sequence),
+            PRIMARY KEY (history_binding, source_id, session_id)
+        ) WITHOUT ROWID;",
+    )?;
+    connection.pragma_update(None, "application_id", APPLICATION_ID)?;
+    connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    Ok(())
+}
+
+fn notes_initialized(connection: &Connection) -> Result<bool> {
+    connection
+        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+        .map(|version| version == NOTES_SCHEMA_VERSION)
+        .map_err(Into::into)
+}
+
+pub(super) fn ledger_initialized(connection: &Connection) -> Result<bool> {
     let application_id = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     match (application_id, version) {
-        (APPLICATION_ID, SCHEMA_VERSION) => Ok(true),
+        (APPLICATION_ID, SCHEMA_VERSION | NOTES_SCHEMA_VERSION) => Ok(true),
         (0, 0) => {
             let has_schema: bool =
                 connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema)", [], |row| {
@@ -428,6 +571,69 @@ mod tests {
             Err(ReviewError::UnrecognizedLedger)
         ));
         assert_eq!(fs::read(&sidecar).unwrap(), before);
+    }
+
+    #[test]
+    fn decisions_migrate_existing_marks_and_reopen_by_exact_evidence() {
+        let scratch = Scratch::new();
+        let history = scratch.0.join("history.sqlite");
+        drop(Store::open(&history).unwrap());
+        let path = scratch.0.join("history.sqlite.reviews.sqlite");
+        let ledger = ReviewLedger::open(&history).unwrap();
+        let codex = key("harness.codex");
+        let old = version(2, 2);
+        let current = version(3, 4);
+        assert!(ledger.decision_notes(&codex).unwrap().is_empty());
+        assert!(!path.exists());
+        assert!(ledger.mark_reviewed(&codex, old, 2).unwrap());
+        let original = fs::read(&path).unwrap();
+        assert!(ledger.decision_notes(&codex).unwrap().is_empty());
+        assert_eq!(fs::read(&path).unwrap(), original);
+
+        ledger
+            .save_decision_note(&codex, old, 2, "Look at the failed check")
+            .unwrap();
+        for watermark in [3, 4] {
+            ledger
+                .save_decision_note(
+                    &codex,
+                    current,
+                    watermark,
+                    "Follow-up passed\nReady for review",
+                )
+                .unwrap();
+        }
+        assert!(
+            ledger
+                .save_decision_note(&codex, current, 3, "\x1b[2J trace")
+                .is_err()
+        );
+        drop(ledger);
+
+        let ledger = ReviewLedger::open(&history).unwrap();
+        assert_eq!(
+            ledger.decision_notes(&codex).unwrap(),
+            vec![
+                ReviewDecisionNote {
+                    version: current,
+                    note: "Follow-up passed\nReady for review".into()
+                },
+                ReviewDecisionNote {
+                    version: old,
+                    note: "Look at the failed check".into()
+                },
+            ],
+        );
+        assert!(
+            ledger
+                .decision_notes(&key("harness.pi"))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            ledger.reviewed(std::slice::from_ref(&codex)).unwrap()[&codex],
+            old
+        );
     }
 
     fn key(harness_id: &str) -> ReviewKey {

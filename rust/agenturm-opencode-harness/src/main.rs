@@ -2,8 +2,6 @@
 
 #![forbid(unsafe_code)]
 
-mod sqlite;
-
 use agenturm_source_process::{Poller, Result};
 use serde_json::Value;
 use std::path::Path;
@@ -20,7 +18,7 @@ impl Poller for OpenCode {
         max_records: usize,
         max_bytes: usize,
     ) -> Result<Value> {
-        sqlite::poll(path, source_id, cursor, max_records, max_bytes)
+        agenturm_opencode_harness::poll(path, source_id, cursor, max_records, max_bytes)
     }
 }
 

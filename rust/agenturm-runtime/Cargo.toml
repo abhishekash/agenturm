@@ -7,13 +7,15 @@ publish = false
 license = "MIT"
 
 [dependencies]
+agenturm-connector-api = { path = "../agenturm-connector-api" }
+rusqlite = { version = "0.37", features = ["bundled"] }
 agenturm-kernel = { path = "../agenturm-kernel" }
 agenturm-protocol = { path = "../agenturm-protocol" }
 libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+signal-hook = "0.3"
 
-[dev-dependencies]
 agenturm-store = { path = "../agenturm-store" }
 

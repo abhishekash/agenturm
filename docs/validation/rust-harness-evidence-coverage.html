@@ -2,11 +2,10 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.1.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-harness-evidence-coverage.md">Markdown source ↗</a></nav><h1>Rust harness evidence coverage</h1>
+</style></head><body><main><nav><strong>Agenturm / 0.3.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-harness-evidence-coverage.md">Markdown source ↗</a></nav><h1>Rust harness evidence coverage</h1>
 <p>This matrix describes the evidence each Rust adapter can emit and the checks
-that exercise it. The Linux bundle defaults to Pi and Codex. Claude Code, Kiro
-and OpenCode have separate Rust adapter crates and require explicit
-configuration. Source continuity diagnostics report specific gaps the adapter
+that exercise it. The Linux bundle discovers Pi, Codex, Claude Code, Kiro, and OpenCode
+through separate Rust adapter executables. Source continuity diagnostics report specific gaps the adapter
 detected.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -49,9 +48,9 @@ detected.</p>
 </tr>
 <tr>
 <td>OpenCode</td>
-<td>The current SQLite adapter uses session identity and explicit idle outcome when present. The session-level lifecycle scope is limited to the session.</td>
+<td>The current SQLite adapter uses session identity and explicit idle outcomes. A retained preceding idle boundary scopes later native messages, tool parts, and the closing outcome to one turn.</td>
 <td>User and assistant roles, token and cache counters, and typed tool status from tool parts. Recognized direct test, lint and build commands emit a check when a native terminal shell exit is recorded.</td>
-<td>Database continuity, oversized-record and unknown-outcome diagnostics. <code>session_v2.parent_id</code> and <code>fork_session_id</code> supply separate delegation and fork facts. Stable turn membership is open.</td>
+<td>Database continuity, oversized-record and unknown-outcome diagnostics. <code>session_v2.parent_id</code> and <code>fork_session_id</code> supply separate delegation and fork facts. A missing prior idle boundary leaves evidence scoped to the session.</td>
 <td><a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-opencode-harness/src/sqlite.rs">Current SQLite adapter</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-opencode-harness/tests/configured_checks.rs">standalone check and relationship round trip</a>. The fixture run below verified an explicit idle failure after reopen.</td>
 </tr>
 </tbody>
@@ -66,7 +65,7 @@ reopened their lifecycle observations. The Codex sample containing internal
 automated review was excluded by the adapter’s existing review boundary. A bounded snapshot of one actual
 OpenCode session preserved 64 native message rows and yielded 107 committed
 observations, including lifecycle, message, usage, and diagnostics. The live
-OpenCode database exceeded the current 512 MiB adapter limit. The snapshot
+OpenCode database exceeded the former 512 MiB database limit. The current reader accepts up to 1 GiB and retains separate WAL and row budgets. The snapshot
 exercise covered native SQLite rows within that limit. The separate native-schema
 check fixture supplied explicit tool exits and verified paired check/tool
 operation IDs after restart. A separate metadata-only extract of ten native
@@ -140,10 +139,11 @@ and selected through a SHA-256-pinned extension catalog. On a 110×24 PTY, the
 inspector showed its pane with user and assistant counts and token totals from
 reopened Pi fixture data. BackTab opened Metrics, where the same extension
 reported its output-token count.</p>
-<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-content-grant-fence.md">Host-owned Pi content grants</a> are persisted.
-Verified delivery of private content remains open. Pi has a
-<a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-pi-harness/src/content.rs">separate experiment for bounded references</a>
-outside the standalone observation path.</p>
+<p>The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-content-grant-fence.md">host-owned prompt grant path</a> covers
+pinned Pi, Codex, Claude Code, and Kiro JSONL sources and a current pinned
+OpenCode SQLite sweep. JSONL history requires a retained receipt proof
+covering the exact row. The fixture test reopens a failed OpenCode
+turn beside later work and checks a scoped prompt and inline tool call.</p>
 <p>Step 3 still requires actual-record collection, reopen and interactive inspection
 for each supported harness, including missing evidence, subsequent turns, pane
 navigation and narrow terminals. The fixture paths above establish the listed
