@@ -93,7 +93,9 @@ fn connect(path: &Path) -> Result<NativeStore, String> {
 
 pub fn execute(options: &BrokerOptions) -> Result<(), String> {
     if matches!(options.command.as_ref(), Command::Help) {
-        println!("{USAGE}\nThe broker configuration pins its socket, receiver and service UID/GID.\nUse collect --config <sources.json> [--watch], query paging options, or inspect.");
+        println!(
+            "{USAGE}\nThe broker configuration pins its socket, receiver and service UID/GID.\nUse collect --config <sources.json> [--watch], query paging options, or inspect."
+        );
         return Ok(());
     }
     let store = connect(&options.config)?;
