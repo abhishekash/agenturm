@@ -538,6 +538,8 @@ impl NativeStore {
 
     /// Delivers one proven occurrence and ACKs only after the final sink
     /// flushes. For terminal callers, the sink flush waits for redaction.
+    /// The sink must enforce its own publication deadline below the broker's
+    /// 32-second ACK wait. Arbitrary blocking writes cannot be interrupted here.
     pub fn reveal_private(
         &self,
         selection: &PrivateEvidenceSelection,
@@ -561,6 +563,8 @@ impl NativeStore {
 
     /// Consume an exact prompt while the broker's revocation and retention
     /// fence is held. The callback must be bounded and use local resources.
+    /// If it publishes private bytes, it must use a sink whose publication
+    /// deadline expires before the broker's 32-second ACK wait.
     /// A failed callback closes the connection without acknowledging delivery.
     pub fn with_verified_prompt<T>(
         &self,

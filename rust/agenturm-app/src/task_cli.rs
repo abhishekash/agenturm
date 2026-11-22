@@ -473,6 +473,32 @@ impl From<WorkspaceError> for TaskExecutionError {
 
 type TaskResult<T> = Result<T, TaskExecutionError>;
 
+pub fn execute_task_stdout(options: &TaskOptions) -> TaskResult<()> {
+    with_task_stdout(options, |output| execute_task(options, output))
+}
+
+pub(super) fn with_task_stdout(
+    options: &TaskOptions,
+    execute: impl FnOnce(&mut dyn Write) -> TaskResult<()>,
+) -> TaskResult<()> {
+    if matches!(
+        options.request.as_ref().map(|(_, action)| action),
+        Some(
+            TaskAction::Draft(_)
+                | TaskAction::Continuity {
+                    reveal: Some(_),
+                    ..
+                }
+        )
+    ) {
+        crate::with_private_stdout(execute)
+    } else {
+        execute(&mut std::io::stdout().lock())
+    }
+}
+
+/// A sink used to publish a source-backed task draft or excerpt must
+/// complete its writes and flush promptly or fail without deferred output.
 pub fn execute_task(options: &TaskOptions, mut output: impl Write) -> TaskResult<()> {
     let Some((db, _)) = &options.request else {
         return Ok(output.write_all(USAGE.as_bytes()).map_err(string)?);

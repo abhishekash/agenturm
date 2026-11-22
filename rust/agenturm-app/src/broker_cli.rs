@@ -369,9 +369,11 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
             let store = store
                 .with_workspace_identity(&identity)
                 .map_err(|error| error.to_string())?;
-            store
-                .reveal_private(&selection, false, &mut std::io::stdout().lock())
-                .map_err(|error| error.to_string())?;
+            crate::with_private_stdout(|output| {
+                store
+                    .reveal_private(&selection, false, output)
+                    .map_err(|error| error.to_string())
+            })?;
             return Ok(());
         }
         BrokerCommand::Grant { verb, binding } => {
@@ -471,13 +473,9 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
         Command::Task(options) => {
             let (store, workspace) = open_workspace(&config, &store)?;
             let ledger = store.workspace_ledger(&workspace)?;
-            task_cli::execute_ledger(
-                options,
-                &ledger,
-                &workspace,
-                Some(&store),
-                std::io::stdout().lock(),
-            )?;
+            task_cli::with_task_stdout(options, |output| {
+                task_cli::execute_ledger(options, &ledger, &workspace, Some(&store), output)
+            })?;
         }
         Command::Inspect(options) => {
             let mut app = AgenturmApp::default_composition();

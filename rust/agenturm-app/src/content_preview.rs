@@ -272,6 +272,19 @@ pub(super) fn reveal_operation_detail(
     }
 }
 
+pub fn execute_content_stdout(options: &ContentOptions) -> Result<(), String> {
+    if matches!(
+        options.action,
+        Action::Preview { .. } | Action::PreviewOperation { .. }
+    ) {
+        crate::with_private_stdout(|output| execute_content(options, output))
+    } else {
+        execute_content(options, &mut std::io::stdout().lock())
+    }
+}
+
+/// The caller's sink must complete all private writes and flush promptly
+/// or return an error. The CLI uses a deadline-aware stdout sink.
 pub fn execute_content(options: &ContentOptions, output: &mut dyn Write) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
