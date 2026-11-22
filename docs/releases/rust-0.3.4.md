@@ -29,6 +29,8 @@ Review can select linked OTLP traces for an explicitly identified native
 turn and worker, or resolve the exact native turn from a trace. The native
 anchor and trace scope must agree at the selected retained snapshot.
 Session-only and ambiguous trace scope cannot establish a turn link.
+Trace-selected Review resolves the native anchor and reads its evidence
+in one authenticated broker request and one SQLite read transaction.
 
 Both Node and Python OTLP producers accept explicit source, session, turn
 and worker identities. The Python client supports direct manual tracing
@@ -43,9 +45,14 @@ application and receiver continue to run without a Python runtime.
 ## Validation and release gates
 
 The combined candidate passed 361 library tests across 22 suites, focused
-CLI process checks, three Node producer tests and nine Python producer
+CLI process checks, three Node producer tests and eleven Python producer
 tests. The Python checks include the real OpenTelemetry SDK with an
-offline instrumentor fixture. Archive and installed workflow qualification
+offline instrumentor fixture, continued delivery of healthy batches after
+a failure, and a total request deadline against a slow HTTP reply.
+After review fixes, all 152 affected app, store, broker and UI library tests
+passed. The UI regression checks that Escape closes help and preserves the
+selected session and inspector scroll at 120×32 and 60×18.
+Archive and installed workflow qualification
 must finish before publishing this candidate.
 
 Ubuntu 24.04 x86-64 remains the qualified platform. Real Kiro data,
