@@ -17,6 +17,7 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
         return;
     };
     let scratch = Scratch::new();
+    let adapter = pin_fixture_adapter(&scratch, &adapter);
     let source = scratch.0.join("session.jsonl");
     let config = scratch.0.join("config.json");
     let database = scratch.0.join("history.sqlite");
@@ -39,7 +40,7 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
             "version": 1,
             "plugins": [{
                 "plugin_id": "example.rust-pi-harness",
-                "adapter": PathBuf::from(adapter),
+                "adapter": adapter,
                 "sha256": artifact_sha256,
                 "protocol": 1,
                 "features": ["source-adapter/1", "configured-root/1"],
@@ -234,6 +235,7 @@ fn codex_preview_reveals_only_exact_completed_native_user_items() {
         return;
     };
     let scratch = Scratch::new();
+    let adapter = pin_fixture_adapter(&scratch, &adapter);
     let source = scratch.0.join("session.jsonl");
     let config = scratch.0.join("config.json");
     let database = scratch.0.join("history.sqlite");
@@ -256,7 +258,7 @@ fn codex_preview_reveals_only_exact_completed_native_user_items() {
             "version": 1,
             "plugins": [{
                 "plugin_id": plugin_id,
-                "adapter": PathBuf::from(&adapter),
+                "adapter": &adapter,
                 "sha256": format!("{:x}", Sha256::digest(fs::read(&adapter).unwrap())),
                 "protocol": 1,
                 "features": ["source-adapter/1", "configured-root/1"],
@@ -367,6 +369,7 @@ fn claude_and_kiro_preview_the_exact_native_user_rows() {
             continue;
         };
         let scratch = Scratch::new();
+        let adapter = pin_fixture_adapter(&scratch, &adapter);
         let source = scratch.0.join(member);
         let config = scratch.0.join("config.json");
         let database = scratch.0.join("history.sqlite");
@@ -381,7 +384,7 @@ fn claude_and_kiro_preview_the_exact_native_user_rows() {
                 "version": 1,
                 "plugins": [{
                     "plugin_id": plugin_id,
-                    "adapter": PathBuf::from(&adapter),
+                    "adapter": &adapter,
                     "sha256": format!("{:x}", Sha256::digest(fs::read(&adapter).unwrap())),
                     "protocol": 1,
                     "features": ["source-adapter/1", "configured-root/1"],
@@ -435,6 +438,12 @@ fn claude_and_kiro_preview_the_exact_native_user_rows() {
         checked(content("revoke", &[]));
         denied(list(), "requires approval");
     }
+}
+
+fn pin_fixture_adapter(root: &Scratch, built: &std::ffi::OsStr) -> PathBuf {
+    let adapter = root.0.join("adapter");
+    fs::copy(built, &adapter).unwrap();
+    adapter
 }
 
 fn run(args: &[&str]) -> Output {

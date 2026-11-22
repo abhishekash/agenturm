@@ -250,7 +250,8 @@ fn opencode_turns_and_granted_prompts_survive_collection_and_reopen() {
     let history = root.join("history.sqlite");
     let config = root.join("sources.json");
     let catalog = root.join("catalog.json");
-    let adapter = env!("CARGO_BIN_EXE_agenturm-opencode-harness");
+    let adapter = root.join("adapter");
+    fs::copy(env!("CARGO_BIN_EXE_agenturm-opencode-harness"), &adapter).unwrap();
     make_native_fixture(&source);
     let native = Connection::open(&source).unwrap();
     for (seq, id, role, payload) in [
@@ -290,7 +291,7 @@ fn opencode_turns_and_granted_prompts_survive_collection_and_reopen() {
             "version":1,
             "plugins":[{
                 "plugin_id":"example.rust-opencode-harness", "adapter":adapter,
-                "sha256":format!("{:x}", Sha256::digest(fs::read(adapter).unwrap())),
+                "sha256":format!("{:x}", Sha256::digest(fs::read(&adapter).unwrap())),
                 "protocol":1, "features":["source-adapter/1","configured-root/1"],
                 "observation_format":"agenturm-observations/1"
             }]
