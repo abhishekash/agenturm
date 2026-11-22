@@ -13,6 +13,10 @@ export interface TraceOptions {
   task?: string;
   sessionId?: string;
   harnessId?: string;
+  /** Exact native turn attached to each OTLP span. Requires sessionId and harnessId. */
+  turnId?: string;
+  /** Exact native worker attached to each OTLP span. Requires turnId. */
+  workerId?: string;
   attributes?: Record<string, unknown>;
 }
 

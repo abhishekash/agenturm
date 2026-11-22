@@ -29,6 +29,15 @@ function id(bytes) {
   return value;
 }
 
+function executionId(value, option) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.length > 512
+      || !/^[A-Za-z0-9]/.test(value) || /[^A-Za-z0-9._:/-]/.test(value)) {
+    throw new TypeError(`${option} must be an exact native execution identifier`);
+  }
+  return value;
+}
+
 function nowNs() {
   return (BigInt(Date.now()) * 1_000_000n + process.hrtime.bigint() % 1_000_000n).toString();
 }
@@ -170,6 +179,8 @@ export class Client {
     for (const [key, value] of [
       ['session.id', run.sessionId],
       ['agenturm.source.id', run.harnessId],
+      ['agenturm.turn.id', run.turnId],
+      ['agenturm.worker.id', run.workerId],
     ]) {
       if (value !== null) attributes.push({ key, value: { stringValue: value } });
     }
@@ -209,7 +220,9 @@ export class Client {
 }
 
 class Run {
-  constructor(client, { name = 'agent.run', task, sessionId, harnessId, attributes = {} } = {}) {
+  constructor(client, {
+    name = 'agent.run', task, sessionId, harnessId, turnId, workerId, attributes = {},
+  } = {}) {
     this.client = client;
     this.trace_id = id(16);
     this.sessionId = sessionId == null ? null : String(sessionId).trim();
@@ -217,6 +230,8 @@ class Run {
       throw new TypeError('sessionId must contain 1 to 512 characters');
     }
     this.harnessId = null;
+    this.turnId = null;
+    this.workerId = null;
     if (client.transport === 'otlp') {
       if (this.sessionId !== null && !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(this.sessionId)) {
         throw new TypeError('sessionId must be an exact native session identifier');
@@ -227,6 +242,14 @@ class Run {
             || this.harnessId.startsWith('otlp.')) {
           throw new TypeError('harnessId requires an exact sessionId and native harness identifier');
         }
+      }
+      this.turnId = executionId(turnId, 'turnId');
+      this.workerId = executionId(workerId, 'workerId');
+      if (this.turnId !== null && (!this.harnessId || !this.sessionId)) {
+        throw new TypeError('turnId requires an explicit harnessId and sessionId');
+      }
+      if (this.workerId !== null && this.turnId === null) {
+        throw new TypeError('workerId requires an explicit turnId');
       }
     }
     const rootAttributes = { ...attributes };
