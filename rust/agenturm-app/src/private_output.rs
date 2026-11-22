@@ -175,7 +175,7 @@ mod unix {
             let original = status_flags(fd).unwrap();
             let mut fill = DeadlineWriter::new(fd, Duration::from_secs(1)).unwrap();
             let mut filled = 0;
-            for filler in [&[b'x'; 4096][..], &[b'x'][..]] {
+            for filler in [&[b'x'; 4096][..], &b"x"[..]] {
                 loop {
                     match write_unbuffered(fd, filler) {
                         Ok(count) => filled += count,
