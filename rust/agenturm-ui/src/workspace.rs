@@ -440,6 +440,25 @@ impl PromptScreen {
 }
 
 impl Workspace {
+    fn new() -> Self {
+        Self {
+            agents: AgentList::default(),
+            newer_sessions: VecDeque::new(),
+            browsing_older: false,
+            history: Vec::new(),
+            work: None,
+            discard_work_result: false,
+            prompt_receiver: None,
+            queued_prompt: None,
+            prompt: None,
+            redact_then_acknowledge: None,
+            pending: None,
+            deferred_request: None,
+            message: None,
+            refresh_after: Instant::now(),
+        }
+    }
+
     fn request(
         &mut self,
         sender: &mpsc::Sender<WorkspaceRequest>,
@@ -619,6 +638,9 @@ impl Workspace {
             return self.agent_key(sender, key.code);
         }
         let view = self.history.last_mut().expect("history exists");
+        if view.page.ui.help {
+            return view.page.ui.handle_key(key.code);
+        }
         if let Some((kind, picker)) = &mut view.page.operation_picker {
             let kind = *kind;
             let entries = view
@@ -792,7 +814,6 @@ impl Workspace {
                     view.page = newer;
                 }
             }
-            KeyCode::F(1) => view.page.ui.help = !view.page.ui.help,
             KeyCode::Char('t') if view.page.ui.turn_available && !view.page.ui.help => {
                 view.page.turn_picker = Some(ListState::default().with_selected(Some(0)));
             }
@@ -802,6 +823,15 @@ impl Workspace {
     }
 
     fn agent_key(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, key: KeyCode) -> bool {
+        if key == KeyCode::F(1)
+            || (self.agents.help && matches!(key, KeyCode::Char('?') | KeyCode::Esc))
+        {
+            self.agents.help = !self.agents.help;
+            return false;
+        }
+        if self.agents.help {
+            return key == KeyCode::Char('q') && !self.agents.editing;
+        }
         if self.agents.editing {
             match key {
                 KeyCode::Enter | KeyCode::Esc => self.agents.editing = false,
@@ -820,7 +850,7 @@ impl Workspace {
             KeyCode::Up | KeyCode::Char('k') => self.agents.move_selection(false),
             KeyCode::Char('/') => self.agents.editing = true,
             KeyCode::Char('h') => self.agents.toggle_tree(),
-            KeyCode::Char('?') | KeyCode::F(1) => self.agents.help = !self.agents.help,
+            KeyCode::Char('?') => self.agents.help = true,
             KeyCode::Char('s') => {
                 let identity = self.agents.current().map(session_key);
                 self.agents.sort_by_state = !self.agents.sort_by_state;
@@ -938,22 +968,7 @@ pub fn run_workspace(
             }
         });
         let terminal_result = ratatui::run(|terminal| {
-            let mut workspace = Workspace {
-                agents: AgentList::default(),
-                newer_sessions: VecDeque::new(),
-                browsing_older: false,
-                history: Vec::new(),
-                work: None,
-                discard_work_result: false,
-                prompt_receiver: None,
-                queued_prompt: None,
-                prompt: None,
-                redact_then_acknowledge: None,
-                pending: None,
-                deferred_request: None,
-                message: None,
-                refresh_after: Instant::now(),
-            };
+            let mut workspace = Workspace::new();
             let mut dirty = true;
             loop {
                 if let Some(receiver) = &workspace.prompt_receiver
@@ -1140,7 +1155,9 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                     .iter()
                     .any(|entry| entry.kind == kind)
             };
-            let status = if let Some(error) = workspace.message.as_deref() {
+            let status = if view.page.ui.help {
+                HELP_CLOSE_HINT
+            } else if let Some(error) = workspace.message.as_deref() {
                 error
             } else if workspace.pending.is_some() {
                 "Loading history…"
@@ -1279,7 +1296,7 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
         frame.render_widget(
             Paragraph::new("Enter Overview · a Activity · v Review · u Usage\n2 Activity · 3 MCP · 4 Operations · 5 Findings\n6 Host · 7 Usage · 8 Traces · g History\nb Tasks · w Workflow · p Prompts\n/ Search · x Clear · f Filter · s Sort · r Refresh\n←/→ Collapse/expand · h Flat/tree · [ ] Page · q Quit")
                 .wrap(Wrap { trim: false })
-                .block(Block::bordered().title("? close help")),
+                .block(Block::bordered().title(HELP_CLOSE_HINT)),
             content,
         );
         return;
@@ -1407,6 +1424,102 @@ mod tests {
             sessions,
             older: None,
             notice: None,
+        }
+    }
+
+    #[test]
+    fn escape_closes_help_without_losing_agent_or_inspector_focus() {
+        for (width, height) in [(120, 32), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut workspace = Workspace::new();
+            let (sender, requests) = mpsc::channel();
+            let press = |workspace: &mut Workspace, code| {
+                workspace.key(&sender, event::KeyEvent::new(code, KeyModifiers::NONE))
+            };
+            let mut frame = |workspace: &mut Workspace| {
+                terminal
+                    .draw(|frame| draw_workspace(frame, workspace))
+                    .unwrap();
+                terminal.backend().buffer().clone()
+            };
+            let visible = |buffer: &ratatui::buffer::Buffer| {
+                buffer
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+            };
+            let selected = session("harness.codex", "selected", "completed", None);
+            workspace.agents.update(catalog(vec![
+                session("harness.codex", "first", "running", None),
+                selected.clone(),
+            ]));
+            assert!(!press(&mut workspace, KeyCode::Down));
+            assert_eq!(workspace.agents.current(), Some(&selected));
+            let agents = frame(&mut workspace);
+
+            assert!(!press(&mut workspace, KeyCode::F(1)));
+            assert!(visible(&frame(&mut workspace)).contains(HELP_CLOSE_HINT));
+            assert!(!press(&mut workspace, KeyCode::Up));
+            assert!(!press(&mut workspace, KeyCode::Esc));
+            assert_eq!(workspace.agents.current(), Some(&selected));
+            assert_eq!(frame(&mut workspace), agents);
+
+            assert!(!press(&mut workspace, KeyCode::Enter));
+            let WorkspaceRequest::History { selection, before } = requests.try_recv().unwrap()
+            else {
+                panic!("expected selected session history");
+            };
+            assert!(before.is_none());
+            assert!(
+                matches!(selection, HistorySelection::Session(ref session, _) if session == &selected)
+            );
+            let panes = ["Activity", "Usage"]
+                .into_iter()
+                .map(|title| {
+                    let id =
+                        agenturm_kernel::ExtensionId::parse(title.to_ascii_lowercase()).unwrap();
+                    let pane = agenturm_kernel::PaneModel {
+                        title: title.into(),
+                        rows: (0..40)
+                            .map(|index| MetricRow {
+                                label: format!("Evidence {index}"),
+                                value: index.to_string(),
+                            })
+                            .collect(),
+                    };
+                    (id, pane)
+                })
+                .collect();
+            workspace.finish(Ok(WorkspaceResponse::History(HistoryPage {
+                snapshot: Snapshot {
+                    panes,
+                    ..Snapshot::default()
+                },
+                turns: Vec::new(),
+                initial_pane: None,
+                review_pane: None,
+                operation_details: Vec::new(),
+            })));
+            let _ = frame(&mut workspace);
+            assert!(!press(&mut workspace, KeyCode::Right));
+            assert!(!press(&mut workspace, KeyCode::Down));
+            assert_eq!(workspace.history[0].page.ui.selected_title(), Some("Usage"));
+            assert_eq!(workspace.history[0].page.ui.scroll, 1);
+            let inspector = frame(&mut workspace);
+
+            assert!(!press(&mut workspace, KeyCode::F(1)));
+            assert!(visible(&frame(&mut workspace)).contains(HELP_CLOSE_HINT));
+            assert!(!press(&mut workspace, KeyCode::Left));
+            assert!(!press(&mut workspace, KeyCode::Esc));
+            assert_eq!(workspace.history.len(), 1);
+            assert_eq!(frame(&mut workspace), inspector);
+
+            assert!(!press(&mut workspace, KeyCode::Esc));
+            assert!(workspace.history.is_empty());
+            assert_eq!(frame(&mut workspace), agents);
+            assert!(!press(&mut workspace, KeyCode::F(1)));
+            assert!(press(&mut workspace, KeyCode::Char('q')));
         }
     }
 
