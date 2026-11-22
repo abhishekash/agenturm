@@ -69,3 +69,25 @@ database's checksum stayed unchanged. The published version's history backup cov
 acknowledgements use the adjacent `.reviews.sqlite` sidecar. The workspace
 backup added after this release preserves both local sidecars alongside
 history and requires fresh private-content approval after restore.
+
+
+## Published Rust 0.3.1
+
+Ubuntu 24.04.5 x86-64 qualified the tagged archive from
+`4661eae53a288d091688597f539c8a1167595e59`. The published
+archive has SHA-256
+`82c54a46812ee9231050a33d4773e93a0286f4dda487cabcec130a04137f53bb`.
+It opened and advanced the previous 0.2.0 history, ran as a systemd user
+service through restart and uninstall, and preserved history afterward.
+
+The exact published binary checked 13 real local sources with zero failures
+on both initial collection and reopen. The bundled Kiro adapter also
+collected and reopened a native-format fixture. An actual OpenCode SQLite
+sample reopened bounded inline tool and turn evidence. The 60×18 cockpit
+verified grant-fenced prompts and linked OTLP with the active collector.
+The OTLP/HTTP receiver also accepted a real SDK's protobuf export and
+returned the expected partial-success response.
+
+[Release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.1) ·
+[Tagged build](https://github.com/abhishekash/agenturm/actions/runs/45024901558) ·
+[Remaining migration acceptance](rust-only-execution-plan.md#remaining-work-and-acceptance)

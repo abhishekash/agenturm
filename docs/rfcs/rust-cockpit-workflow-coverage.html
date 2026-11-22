@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.3.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cockpit-workflow-coverage.md">Markdown source ↗</a></nav><h1>Rust cockpit workflow coverage</h1>
+</style></head><body><main><nav><strong>Agenturm / 0.3.1</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cockpit-workflow-coverage.md">Markdown source ↗</a></nav><h1>Rust cockpit workflow coverage</h1>
 <p>This comparison uses the tagged Python cockpit <code>v0.2.8</code> and the published
 Rust cockpit, including development changes after <code>rust-v0.2.0</code>. Python
 workflows come from the tagged release documentation. The published Rust
@@ -107,4 +107,21 @@ database's checksum stayed unchanged. The published version's history backup cov
 acknowledgements use the adjacent <code>.reviews.sqlite</code> sidecar. The workspace
 backup added after this release preserves both local sidecars alongside
 history and requires fresh private-content approval after restore.</p>
+<h2>Published Rust 0.3.1</h2>
+<p>Ubuntu 24.04.5 x86-64 qualified the tagged archive from
+<code>4661eae53a288d091688597f539c8a1167595e59</code>. The published
+archive has SHA-256
+<code>82c54a46812ee9231050a33d4773e93a0286f4dda487cabcec130a04137f53bb</code>.
+It opened and advanced the previous 0.2.0 history, ran as a systemd user
+service through restart and uninstall, and preserved history afterward.</p>
+<p>The exact published binary checked 13 real local sources with zero failures
+on both initial collection and reopen. The bundled Kiro adapter also
+collected and reopened a native-format fixture. An actual OpenCode SQLite
+sample reopened bounded inline tool and turn evidence. The 60×18 cockpit
+verified grant-fenced prompts and linked OTLP with the active collector.
+The OTLP/HTTP receiver also accepted a real SDK's protobuf export and
+returned the expected partial-success response.</p>
+<p><a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.1">Release</a> ·
+<a href="https://github.com/abhishekash/agenturm/actions/runs/45024901558">Tagged build</a> ·
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md#remaining-work-and-acceptance">Remaining migration acceptance</a></p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
