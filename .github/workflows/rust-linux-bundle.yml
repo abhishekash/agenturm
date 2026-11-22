@@ -62,9 +62,10 @@ jobs:
         run: |
           set -euo pipefail
           [[ $(uname -m) == aarch64 ]]
-          export CARGO_TARGET_DIR="$RUNNER_TEMP/agenturm-arm64-target"
-          prior-rust-release/scripts/build-rust-linux-bundle.sh "$RUNNER_TEMP/agenturm-arm64-prior"
-          scripts/build-rust-linux-bundle.sh "$RUNNER_TEMP/agenturm-arm64-candidate"
+          CARGO_TARGET_DIR="$RUNNER_TEMP/agenturm-arm64-prior-target" \
+            prior-rust-release/scripts/build-rust-linux-bundle.sh "$RUNNER_TEMP/agenturm-arm64-prior"
+          CARGO_TARGET_DIR="$RUNNER_TEMP/agenturm-arm64-candidate-target" \
+            scripts/build-rust-linux-bundle.sh "$RUNNER_TEMP/agenturm-arm64-candidate"
       - name: Qualify the arm64 archive and Linux user service
         shell: bash
         run: |
