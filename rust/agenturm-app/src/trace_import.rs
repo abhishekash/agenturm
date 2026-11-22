@@ -15,7 +15,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 pub(super) const MAX_EXPORT_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_EXPORT_SPANS: usize = 1_024;
+pub(super) const MAX_EXPORT_SPANS: usize = 1_024;
 const CURSOR_PREFIX: &str = "otlp-json/1:";
 const TURN_KEY: &str = "agenturm.turn.id";
 const WORKER_KEY: &str = "agenturm.worker.id";
@@ -65,24 +65,52 @@ pub(super) fn parse_source_id(value: &str) -> Result<ExtensionId, String> {
 }
 
 pub fn execute_trace_import(options: &TraceImportOptions) -> Result<String, String> {
-    let (observations, unscoped) = if options.file.as_os_str() == "-" {
-        prepare(io::stdin().lock(), &options.source_id)?
-    } else {
-        let metadata = options
-            .file
-            .metadata()
-            .map_err(|error| format!("cannot open OTLP export: {error}"))?;
-        if !metadata.is_file() || metadata.len() > MAX_EXPORT_BYTES {
-            return Err("OTLP export must be a regular file of at most 4 MiB".into());
-        }
-        let file = File::open(&options.file)
-            .map_err(|error| format!("cannot open OTLP export: {error}"))?;
-        prepare(file, &options.source_id)?
-    };
+    let (observations, unscoped) = prepare_export(options)?;
     let inserted = commit(&options.db, &options.source_id, &observations)?;
-    Ok(format!(
-        "Imported {inserted} spans. Skipped {unscoped} without session identity.\n"
-    ))
+    Ok(report(inserted, unscoped))
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn execute_with_store(
+    options: &TraceImportOptions,
+    store: &mut impl ObservationStore,
+) -> Result<String, String> {
+    let (observations, unscoped) = prepare_export(options)?;
+    let inserted = commit_with_store(store, &options.source_id, &observations)?;
+    Ok(report(inserted, unscoped))
+}
+
+fn report(inserted: usize, unscoped: usize) -> String {
+    format!("Imported {inserted} spans. Skipped {unscoped} without session identity.\n")
+}
+
+fn prepare_export(options: &TraceImportOptions) -> Result<(Vec<Observation>, usize), String> {
+    if options.file.as_os_str() == "-" {
+        return prepare(io::stdin().lock(), &options.source_id);
+    }
+    let file = open_regular_export(&options.file, "OTLP export")?;
+    prepare(file, &options.source_id)
+}
+
+pub(super) fn open_regular_export(path: &Path, format: &str) -> Result<File, String> {
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Open without blocking on a FIFO. Validate the opened inode.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| format!("Cannot open {format}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| format!("Cannot inspect {format}"))?;
+    if !metadata.is_file() || metadata.len() > MAX_EXPORT_BYTES {
+        return Err(format!("{format} must be a regular file of at most 4 MiB"));
+    }
+    Ok(file)
 }
 
 pub(super) fn commit(
@@ -99,7 +127,7 @@ pub(super) fn commit(
 }
 
 pub(super) fn commit_with_store(
-    store: &mut Store,
+    store: &mut impl ObservationStore,
     source_id: &ExtensionId,
     observations: &[Observation],
 ) -> Result<usize, String> {
@@ -107,20 +135,33 @@ pub(super) fn commit_with_store(
         return Ok(0);
     }
     let cursor = import_cursor(observations)?;
-    let source = source_id.as_str();
-    let prior = ObservationStore::source_cursor(store, source)?;
+    let prior = admission_cursor(store, source_id)?;
+    if prior.as_deref() == Some(cursor.as_str()) {
+        Ok(0)
+    } else {
+        ObservationStore::commit(
+            store,
+            source_id.as_str(),
+            prior.as_deref(),
+            &cursor,
+            observations,
+        )
+        .map(|receipt| receipt.inserted)
+    }
+}
+
+pub(super) fn admission_cursor(
+    store: &impl ObservationStore,
+    source_id: &ExtensionId,
+) -> Result<Option<String>, String> {
+    let prior = ObservationStore::source_cursor(store, source_id.as_str())?;
     if prior
         .as_deref()
         .is_some_and(|checkpoint| !checkpoint.starts_with(CURSOR_PREFIX))
     {
         return Err("OTLP source identifier already belongs to another collector".into());
     }
-    if prior.as_deref() == Some(cursor.as_str()) {
-        Ok(0)
-    } else {
-        ObservationStore::commit(store, source, prior.as_deref(), &cursor, observations)
-            .map(|receipt| receipt.inserted)
-    }
+    Ok(prior)
 }
 
 fn import_cursor(observations: &[Observation]) -> Result<String, String> {
@@ -199,7 +240,7 @@ pub(super) fn protobuf_response(rejected: usize) -> Vec<u8> {
     proto::response(rejected)
 }
 
-fn project(
+pub(super) fn project(
     spans: impl IntoIterator<Item = OtlpSpan>,
     source_id: &ExtensionId,
     launch_session: Option<&str>,
@@ -325,7 +366,7 @@ fn trace_scope(attributes: Vec<Attribute>) -> Result<TraceScope, String> {
     Ok(scope)
 }
 
-fn valid_session_id(value: &str) -> bool {
+pub(super) fn valid_session_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 512
         && value.as_bytes()[0].is_ascii_alphanumeric()
@@ -364,20 +405,20 @@ struct ScopeSpans {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct OtlpSpan {
-    trace_id: String,
-    span_id: String,
-    parent_span_id: Option<String>,
-    start_time_unix_nano: Timestamp,
-    end_time_unix_nano: Timestamp,
-    status: Option<Status>,
+pub(super) struct OtlpSpan {
+    pub(super) trace_id: String,
+    pub(super) span_id: String,
+    pub(super) parent_span_id: Option<String>,
+    pub(super) start_time_unix_nano: Timestamp,
+    pub(super) end_time_unix_nano: Timestamp,
+    pub(super) status: Option<Status>,
     #[serde(default)]
-    attributes: Vec<Attribute>,
+    pub(super) attributes: Vec<Attribute>,
 }
 
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum Timestamp {
+pub(super) enum Timestamp {
     Decimal(String),
     Number(u64),
 }
@@ -395,14 +436,25 @@ impl Timestamp {
 }
 
 #[derive(Deserialize)]
-struct Status {
-    code: Option<u8>,
+pub(super) struct Status {
+    pub(super) code: Option<u8>,
 }
 
 #[derive(Deserialize)]
-struct Attribute {
+pub(super) struct Attribute {
     key: String,
     value: Option<AttributeValue>,
+}
+
+impl Attribute {
+    pub(super) fn text(key: &str, value: String) -> Self {
+        Self {
+            key: key.into(),
+            value: Some(AttributeValue {
+                string_value: Some(value),
+            }),
+        }
+    }
 }
 
 #[derive(Deserialize)]

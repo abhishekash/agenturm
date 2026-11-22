@@ -65,6 +65,19 @@ endpoint and the broker's persistent history identity. A fresh database at
 the same socket opens a fresh workspace. A running cockpit pins its remote
 reads and exact link validation to the selected history identity.
 
+## Import trace files
+
+Add `otlp.exported` to `--native-sources` and run these commands as the configured collector UID and primary GID. The CLI reads and validates the file and submits bounded structural span records. The broker opens history and commits each import as one batch. Client files can also be read on stdin with `--file -`.
+
+```sh
+agenturm broker import-jsonl --broker-config broker.json \
+  --file spans.jsonl --source-id otlp.exported --session-id session-1
+agenturm broker import-traces --broker-config broker.json \
+  --file otlp.json --source-id otlp.exported
+```
+
+The same structural import and replay rules apply to local and broker history. [Span export format](rust-cutover-workflows.md#import-exported-spans)
+
 ## Grant administration
 
 The service can authorize separate reader, grant administrator and maintenance

@@ -20,6 +20,7 @@ mod investigate_cli;
 mod private_output;
 mod review_receipt;
 mod session_evidence;
+mod span_jsonl_import;
 mod task_cli;
 mod task_git;
 mod trace_import;
@@ -39,6 +40,7 @@ pub use discovery::{discover, execute_discover};
 pub use investigate_cli::{InvestigationOptions, execute_investigation};
 pub use private_output::with_private_stdout;
 pub use review_receipt::ReviewOutput;
+pub use span_jsonl_import::{SpanJsonlImportOptions, execute_span_jsonl_import};
 pub use task_cli::{TaskOptions, execute_task, execute_task_stdout};
 pub use trace_import::{TraceImportOptions, execute_trace_import};
 pub use trace_receiver::{TraceReceiverOptions, execute_trace_receiver};
@@ -228,6 +230,7 @@ pub enum Command {
     Content(ContentOptions),
     Ingest(IngestOptions),
     ImportTraces(TraceImportOptions),
+    ImportJsonl(SpanJsonlImportOptions),
     ServeTraces(TraceReceiverOptions),
     Run(TraceRunOptions),
     Collect(ConfiguredCollectOptions),
@@ -816,6 +819,7 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         )
         .map(Command::Run),
         Some("import-traces") => trace_import::parse(&args[1..]).map(Command::ImportTraces),
+        Some("import-jsonl") => span_jsonl_import::parse(&args[1..]).map(Command::ImportJsonl),
         Some("ingest-codex-usage") => {
             parse_ingest_options(&args[1..], Some(CODEX_PLUGIN_ID)).map(Command::Ingest)
         }
@@ -3257,6 +3261,7 @@ pub fn render(command: Command) -> String {
             "       agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id>\n",
             "       agenturm run --db <path> [--source-id otlp.<id>] -- <program> [args...]\n",
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
+            "       agenturm import-jsonl --file <span-jsonl-path|-> --db <path> --source-id otlp.<id> [--session-id <id>]\n",
             "       agenturm attention status --db <path>\n",
             "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] [--interval-ms <100..60000>]\n",
             "       agenturm task <list|add|show|complete|reopen|link|unlink|handoffs|export> [options]\n",
@@ -3300,7 +3305,7 @@ pub fn render(command: Command) -> String {
         Command::Query(_) | Command::Review { .. } | Command::Attention(_) | Command::Task(_) | Command::Investigate(_) => {
             String::new()
         }
-        Command::Ingest(_) | Command::ImportTraces(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),
+        Command::Ingest(_) | Command::ImportTraces(_) | Command::ImportJsonl(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),
         Command::Collect(_) => String::new(),
         Command::Service(_) => String::new(),
     }

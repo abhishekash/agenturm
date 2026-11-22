@@ -3,12 +3,11 @@
 Baseline is the Python `v0.2.8` tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.
 
 The current implementation scope retains the remaining workflows. Remote
-receiver access, explicit span-JSONL and eval imports, automatic retention,
-recorded cost and historical host views remain required gaps. No retirement
-has been approved for these features. The default entry-point switch stays
-gated while they and the paired keyboard journeys are incomplete. Explicit
-format imports are separate from automatic migration of Python-era state,
-which the Rust-only product decision excludes.
+receiver access, eval imports, automatic retention, recorded cost and
+historical host views remain required gaps. The default entry-point switch
+stays gated while they and the paired keyboard journeys are incomplete.
+Rust supports explicit structural span imports into Rust history. Automatic
+migration of Python-era databases remains outside the Rust-only product scope.
 
 ## Command inventory
 
@@ -17,7 +16,7 @@ which the Rust-only product decision excludes.
 | Bare `agenturm`, `cockpit`, global `--db` | Keep local startup, discovery, one-shot snapshots and explicit history selection. Bare Rust startup and `cockpit --db` exist. Use `query` for machine-readable history. Retain a documented answer for attaching to an existing remote receiver, `--new-window` and the old one-shot summary before removing those flags. |
 | `serve` | Keep local OTLP collection and source watch through `serve-traces`, `discover --follow` and `collect --watch` or the Linux user service. The old read API, remote bind/authentication and arbitrary legacy JSONL tail are open scope decisions. |
 | `run` | Keep command launch, exit status, local trace delivery and exact source/session linkage. Rust `run` configures OTLP for an instrumented producer. Python-specific script and module injection requires a product decision. |
-| `import-jsonl` | Keep offline ingest where producers emit supported native recordings or OTLP. `collect` and `import-traces` are available. Existing exported span JSONL needs an explicit format or retirement decision. |
+| `import-jsonl` | Use `import-jsonl` for supported native span exports and `import-traces` for OTLP JSON. Both retain structural trace metadata with exact session scope. Legacy payload, cost and eval import parity remains open. |
 | `import-evals` | Open. Existing `agent-evals` result imports and joins have no matched Rust workflow. |
 | `migrate-db` | Retired by the Rust-only product decision. Rust `backup` and `restore` operate on Rust-owned state. |
 | `prune` | Keep explicit age-based retention. Rust `prune --before-unix-ns` exists. Verify equivalent retained history and checkpoint behavior. Automatic retention remains a scope decision. |
@@ -29,6 +28,20 @@ which the Rust-only product decision excludes.
 | `task update\|snapshot\|brief\|decide\|decisions\|draft\|approve-draft` | Rust supports revision-checked editing, local Git summaries, opt-in tracked text patches, five structured brief fields, and immutable decisions with supersession. Drafts and decision citations can use one exact retained user prompt. Approval and excerpt reopening require revalidation of the original grant and source receipt. Broader Review evidence projections remain open. |
 
 The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. [Python command source](https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py) · [Rust workflow coverage](rust-cockpit-workflow-coverage.md)
+
+### Import exported spans
+
+Use `import-jsonl` with one exported native span object per line. The importer accepts a regular file or stdin (`--file -`) up to 4 MiB and 1,024 span records. It validates the complete batch before opening history for admission.
+
+```sh
+agenturm import-jsonl --file spans.jsonl --db history.sqlite --source-id otlp.exported
+```
+
+Rows carry `trace_id`, `span_id`, optional `parent_span_id`, `start_unix_nano` and `end_unix_nano`, and optional `status` (`UNSET`, `OK` or `ERROR`). Timestamps accept integers or decimal strings. IDs use 32 hexadecimal characters for the trace and 16 for each span. A parent outside the file is valid for a partial export.
+
+A span needs an exact session ID from its `attributes` or the explicit `--session-id` argument. Span-level session aliases must agree, including `session.id`, `gen_ai.conversation.id`, and the legacy session, conversation and thread aliases. The argument fills missing session IDs and must match any IDs carried by the file. A native turn link requires `agenturm.source.id` and `agenturm.turn.id`. A worker link adds `agenturm.worker.id`.
+
+Imports retain trace structure, timing, status and exact scope. Import discards span names, payloads, events, links, token usage, cost, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.
 
 ### Task Git patches
 

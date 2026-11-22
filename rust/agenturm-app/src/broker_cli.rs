@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 const USAGE: &str = concat!(
     "agenturm broker <collect|query|review|investigate|cockpit|task> --broker-config <json> [command options]\n",
+    "       agenturm broker import-traces --broker-config <json> --file <otlp-json-path|-> --source-id otlp.<id>\n",
+    "       agenturm broker import-jsonl --broker-config <json> --file <span-jsonl-path|-> --source-id otlp.<id> [--session-id <id>]\n",
     "       agenturm broker grant <check|approve|revoke> --broker-config <json> --binding <json>\n",
     "       agenturm broker content list --broker-config <json> --source-id <id> --session-id <id>\n",
     "       agenturm broker content preview --broker-config <json> --selection <json>\n",
@@ -175,7 +177,16 @@ pub(super) fn parse(args: &[String]) -> Result<BrokerOptions, String> {
     }
     if !matches!(
         command.first().map(String::as_str),
-        Some("collect" | "query" | "review" | "inspect" | "cockpit" | "task")
+        Some(
+            "collect"
+                | "query"
+                | "review"
+                | "inspect"
+                | "cockpit"
+                | "task"
+                | "import-traces"
+                | "import-jsonl"
+        )
     ) {
         return Err(USAGE.into());
     }
@@ -343,7 +354,7 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
         );
         return Ok(());
     }
-    let (store, config) = connect(&options.config)?;
+    let (mut store, config) = connect(&options.config)?;
     let command = match &options.command {
         BrokerCommand::Application(command) => command.as_ref(),
         BrokerCommand::Investigation(options) => {
@@ -488,6 +499,15 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
             if had_failures {
                 return Err("Broker collection reported source or storage failures".into());
             }
+        }
+        Command::ImportTraces(options) => {
+            print!("{}", trace_import::execute_with_store(options, &mut store)?);
+        }
+        Command::ImportJsonl(options) => {
+            print!(
+                "{}",
+                span_jsonl_import::execute_with_store(options, &mut store)?
+            );
         }
         Command::Query(query) => println!("{}", query_from_store(&store, query)?),
         Command::Review {
@@ -683,6 +703,8 @@ mod tests {
             "task list",
             "collect --config sources.json",
             "collect --config sources.json --watch",
+            "import-traces --file trace.json --source-id otlp.imported",
+            "import-jsonl --file - --source-id otlp.imported --session-id session",
             "content list --source-id harness.pi --session-id session",
             "content preview --selection selection.json",
         ] {
@@ -693,6 +715,8 @@ mod tests {
             "query --broker-config",
             "query --broker-config one --broker-config two",
             "query --broker-config one --db private.sqlite",
+            "import-traces --file trace.json --source-id otlp.imported --db path --broker-config one",
+            "import-jsonl --file trace.jsonl --source-id otlp.imported --db path --broker-config one",
             "backup --broker-config one --output arbitrary.sqlite",
             "review --broker-config one",
             "content preview --selection selection.json --db private.sqlite --broker-config one",

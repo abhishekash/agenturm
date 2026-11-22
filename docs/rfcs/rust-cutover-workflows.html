@@ -5,12 +5,11 @@
 </style></head><body><main><nav><strong>Agenturm / Rust 0.3.4 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
 <p>Baseline is the Python <code>v0.2.8</code> tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.</p>
 <p>The current implementation scope retains the remaining workflows. Remote
-receiver access, explicit span-JSONL and eval imports, automatic retention,
-recorded cost and historical host views remain required gaps. No retirement
-has been approved for these features. The default entry-point switch stays
-gated while they and the paired keyboard journeys are incomplete. Explicit
-format imports are separate from automatic migration of Python-era state,
-which the Rust-only product decision excludes.</p>
+receiver access, eval imports, automatic retention, recorded cost and
+historical host views remain required gaps. The default entry-point switch
+stays gated while they and the paired keyboard journeys are incomplete.
+Rust supports explicit structural span imports into Rust history. Automatic
+migration of Python-era databases remains outside the Rust-only product scope.</p>
 <h2>Command inventory</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -34,7 +33,7 @@ which the Rust-only product decision excludes.</p>
 </tr>
 <tr>
 <td><code>import-jsonl</code></td>
-<td>Keep offline ingest where producers emit supported native recordings or OTLP. <code>collect</code> and <code>import-traces</code> are available. Existing exported span JSONL needs an explicit format or retirement decision.</td>
+<td>Use <code>import-jsonl</code> for supported native span exports and <code>import-traces</code> for OTLP JSON. Both retain structural trace metadata with exact session scope. Legacy payload, cost and eval import parity remains open.</td>
 </tr>
 <tr>
 <td><code>import-evals</code></td>
@@ -75,6 +74,13 @@ which the Rust-only product decision excludes.</p>
 </tbody>
 </table></div>
 <p>The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. <a href="https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py">Python command source</a> · <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cockpit-workflow-coverage.md">Rust workflow coverage</a></p>
+<h3 id="import-exported-spans">Import exported spans</h3>
+<p>Use <code>import-jsonl</code> with one exported native span object per line. The importer accepts a regular file or stdin (<code>--file -</code>) up to 4 MiB and 1,024 span records. It validates the complete batch before opening history for admission.</p>
+<pre><code class="language-sh">agenturm import-jsonl --file spans.jsonl --db history.sqlite --source-id otlp.exported
+</code></pre>
+<p>Rows carry <code>trace_id</code>, <code>span_id</code>, optional <code>parent_span_id</code>, <code>start_unix_nano</code> and <code>end_unix_nano</code>, and optional <code>status</code> (<code>UNSET</code>, <code>OK</code> or <code>ERROR</code>). Timestamps accept integers or decimal strings. IDs use 32 hexadecimal characters for the trace and 16 for each span. A parent outside the file is valid for a partial export.</p>
+<p>A span needs an exact session ID from its <code>attributes</code> or the explicit <code>--session-id</code> argument. Span-level session aliases must agree, including <code>session.id</code>, <code>gen_ai.conversation.id</code>, and the legacy session, conversation and thread aliases. The argument fills missing session IDs and must match any IDs carried by the file. A native turn link requires <code>agenturm.source.id</code> and <code>agenturm.turn.id</code>. A worker link adds <code>agenturm.worker.id</code>.</p>
+<p>Imports retain trace structure, timing, status and exact scope. Import discards span names, payloads, events, links, token usage, cost, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.</p>
 <h3>Task Git patches</h3>
 <p>Save a patch from the Linux checkout attached to a task. The optional revision
 checks which version of the task receives the capture. The command reports
