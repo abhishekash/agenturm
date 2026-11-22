@@ -22,10 +22,83 @@ pub struct ResolvedTraceTurn {
     pub snapshot_id: u64,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TraceReviewQuery {
+    pub page: ObservationQuery,
+    pub trace_source_id: String,
+    pub trace_id: String,
+    pub expected_worker_id: Option<String>,
+    pub linked_traces: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedTraceReview {
+    pub turn_id: String,
+    pub worker_id: Option<String>,
+    pub page: ObservationPage,
+}
+
 impl Store {
     /// Reads the unique explicit turn of a trace at the selected watermark.
     /// A sibling scope, absent native anchor, or session-only trace yields no match.
     pub fn resolve_trace_turn(&self, query: &TraceTurnQuery) -> Result<Option<ResolvedTraceTurn>> {
+        let transaction = self.connection.unchecked_transaction()?;
+        Self::resolve_trace_turn_in(&transaction, query)
+    }
+
+    /// Resolves the native turn and reads one exact page in a single snapshot.
+    pub fn review_trace_turn(
+        &self,
+        query: &TraceReviewQuery,
+        allowed_sources: Option<&BTreeSet<ExtensionId>>,
+    ) -> Result<Option<ResolvedTraceReview>> {
+        let page = &query.page;
+        let anchor = TraceTurnQuery {
+            harness_id: page
+                .harness_id
+                .clone()
+                .ok_or(StoreError::Invalid("review requires a native source ID"))?,
+            session_id: page
+                .session_id
+                .clone()
+                .ok_or(StoreError::Invalid("review requires a session ID"))?,
+            trace_source_id: query.trace_source_id.clone(),
+            trace_id: query.trace_id.clone(),
+            snapshot_id: page.snapshot_id,
+        };
+        let transaction = self.connection.unchecked_transaction()?;
+        let Some(turn) = Self::resolve_trace_turn_in(&transaction, &anchor)? else {
+            return Ok(None);
+        };
+        if query
+            .expected_worker_id
+            .as_ref()
+            .is_some_and(|worker| turn.worker_id.as_ref() != Some(worker))
+        {
+            return Ok(None);
+        }
+        let page = Self::query_history_in(
+            &transaction,
+            page,
+            Some(&turn.turn_id),
+            Some(turn.worker_id.as_deref()),
+            query.linked_traces,
+            allowed_sources,
+        )?;
+        debug_assert_eq!(page.snapshot_id, turn.snapshot_id);
+        Ok(Some(ResolvedTraceReview {
+            turn_id: turn.turn_id,
+            worker_id: turn.worker_id,
+            page,
+        }))
+    }
+
+    fn resolve_trace_turn_in(
+        connection: &Connection,
+        query: &TraceTurnQuery,
+    ) -> Result<Option<ResolvedTraceTurn>> {
         validate_identifier(&query.session_id, MAX_SESSION_KEY_BYTES, "session ID")?;
         validate_identifier(&query.harness_id, MAX_SOURCE_ID_BYTES, "native source ID")?;
         validate_identifier(
@@ -48,13 +121,12 @@ impl Store {
                 "trace source, owner, or identity is invalid",
             ));
         }
-        let transaction = self.connection.unchecked_transaction()?;
         let (snapshot_id, watermark) =
-            retention::resolve_read_snapshot(&transaction, query.snapshot_id)?;
+            retention::resolve_read_snapshot(connection, query.snapshot_id)?;
         let event_prefix = format!("otlp:{}:", query.trace_id);
         // Bound the retained rows before checking their distinct scopes. A
         // sentinel row rejects oversized traces without choosing a partial scope.
-        let (count, turn_id, worker_id): (usize, Option<String>, Option<String>) = transaction
+        let (count, turn_id, worker_id): (usize, Option<String>, Option<String>) = connection
             .query_row(
                 "WITH retained AS MATERIALIZED (
                      SELECT span.kind_json, span.session_id, span.turn_id, span.worker_id
@@ -98,7 +170,6 @@ impl Store {
                 ],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
-        transaction.commit()?;
         if count > MAX_TRACE_SCOPE_ROWS {
             return Err(StoreError::TraceScopeTooLarge {
                 max_rows: MAX_TRACE_SCOPE_ROWS,

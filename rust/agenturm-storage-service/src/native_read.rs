@@ -4,7 +4,7 @@ use agenturm_kernel::{
     ExtensionId, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, ObservationPage, ObservationQuery,
 };
 use agenturm_store::{
-    ResolvedTraceTurn, SessionPage, SessionQuery, Store, StoreError, TraceTurnQuery,
+    ResolvedTraceReview, SessionPage, SessionQuery, Store, StoreError, TraceReviewQuery,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -46,31 +46,11 @@ pub fn query_history(
     query: &ObservationQuery,
     selection: HistorySelection<'_>,
 ) -> Result<ObservationPage, ReadFailure> {
-    authorize(allowed_sources, query.harness_id.as_deref())?;
-    authorize(
-        allowed_sources,
-        query
-            .before
-            .as_ref()
-            .map(|position| position.harness_id.as_str()),
-    )?;
-    if !(1..=MAX_DURABLE_SNAPSHOT_OBSERVATIONS).contains(&query.limit) {
-        return Err(ReadFailure::InvalidRequest);
-    }
-    if let Some(before) = &query.before
-        && !matches!(
-            selection,
-            HistorySelection::LinkedTraces | HistorySelection::LinkedTurnTraces { .. }
-        )
-        && query
-            .harness_id
-            .as_ref()
-            .is_some_and(|source| *source != before.harness_id)
-    {
-        return Err(ReadFailure::InvalidRequest);
-    }
-    let mut query = query.clone();
-    query.limit = query.limit.min(MAX_NATIVE_HISTORY_ROWS);
+    let include_linked_traces = matches!(
+        selection,
+        HistorySelection::LinkedTraces | HistorySelection::LinkedTurnTraces { .. }
+    );
+    let query = bounded_history_query(allowed_sources, query, include_linked_traces)?;
     match selection {
         HistorySelection::Observations => {
             store.query_observations_from_sources(&query, allowed_sources)
@@ -89,14 +69,49 @@ pub fn query_history(
     .map_err(failure)
 }
 
-pub fn resolve_trace_turn(
+fn bounded_history_query(
+    allowed_sources: &BTreeSet<ExtensionId>,
+    query: &ObservationQuery,
+    include_linked_traces: bool,
+) -> Result<ObservationQuery, ReadFailure> {
+    authorize(allowed_sources, query.harness_id.as_deref())?;
+    authorize(
+        allowed_sources,
+        query
+            .before
+            .as_ref()
+            .map(|position| position.harness_id.as_str()),
+    )?;
+    if !(1..=MAX_DURABLE_SNAPSHOT_OBSERVATIONS).contains(&query.limit) {
+        return Err(ReadFailure::InvalidRequest);
+    }
+    if let Some(before) = &query.before
+        && !include_linked_traces
+        && query
+            .harness_id
+            .as_ref()
+            .is_some_and(|source| *source != before.harness_id)
+    {
+        return Err(ReadFailure::InvalidRequest);
+    }
+    let mut query = query.clone();
+    query.limit = query.limit.min(MAX_NATIVE_HISTORY_ROWS);
+    Ok(query)
+}
+
+pub fn review_trace_turn(
     store: &Store,
     allowed_sources: &BTreeSet<ExtensionId>,
-    query: &TraceTurnQuery,
-) -> Result<Option<ResolvedTraceTurn>, ReadFailure> {
-    authorize(allowed_sources, Some(&query.harness_id))?;
+    query: TraceReviewQuery,
+) -> Result<Option<ResolvedTraceReview>, ReadFailure> {
     authorize(allowed_sources, Some(&query.trace_source_id))?;
-    store.resolve_trace_turn(query).map_err(failure)
+    let query = TraceReviewQuery {
+        page: bounded_history_query(allowed_sources, &query.page, query.linked_traces)?,
+        ..query
+    };
+    store
+        .review_trace_turn(&query, Some(allowed_sources))
+        .map_err(failure)
 }
 
 pub fn query_sessions(
@@ -157,21 +172,25 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let source = ExtensionId::parse("harness.authorized").unwrap();
         let trace_source = ExtensionId::parse("otlp.authorized").unwrap();
-        let query = TraceTurnQuery {
-            harness_id: source.as_str().into(),
-            session_id: "session-1".into(),
+        let query = TraceReviewQuery {
+            page: ObservationQuery {
+                harness_id: Some(source.as_str().into()),
+                session_id: Some("session-1".into()),
+                ..ObservationQuery::latest(1)
+            },
             trace_source_id: trace_source.as_str().into(),
             trace_id: "11111111111111111111111111111111".into(),
-            snapshot_id: None,
+            expected_worker_id: None,
+            linked_traces: false,
         };
         for one_source in [source.clone(), trace_source.clone()] {
             assert_eq!(
-                resolve_trace_turn(&store, &BTreeSet::from([one_source]), &query),
+                review_trace_turn(&store, &BTreeSet::from([one_source]), query.clone()),
                 Err(ReadFailure::Unauthorized),
             );
         }
         assert_eq!(
-            resolve_trace_turn(&store, &BTreeSet::from([source, trace_source]), &query),
+            review_trace_turn(&store, &BTreeSet::from([source, trace_source]), query),
             Ok(None),
         );
     }

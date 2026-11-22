@@ -54,8 +54,9 @@ background workspace request loop for session and turn navigation.
 Use `broker review --linked-traces` with an exact turn to page its linked
 spans. Use `--turn-of-trace <trace-id> --trace-source-id <otlp-source>`
 in place of `--turn-id` to select the native turn from an explicitly
-scoped trace. The broker checks both source IDs against its allowlist and
-uses a single history snapshot for selection and the Review results.
+scoped trace. The broker checks both source IDs against its allowlist.
+Each trace-selected Review page resolves the turn and reads its evidence
+in a single authenticated request and SQLite snapshot.
 
 The broker cockpit supports saved tasks, handoffs, request seen state and
 review decisions alongside remote history. These user-owned records live

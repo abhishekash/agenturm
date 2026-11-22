@@ -24,7 +24,7 @@ pub use content_grant::{
     CodexOperationEvidence, CodexOperationSelection, ContentGrant, ContentGrantScope, ContentKind,
     UserTextEvidence,
 };
-pub use linked_trace::{ResolvedTraceTurn, TraceTurnQuery};
+pub use linked_trace::{ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
 pub use retention::RetentionOutcome;
 pub use review_ledger::{ReviewDecisionNote, ReviewError, ReviewKey, ReviewLedger, ReviewVersion};
 pub use session_catalog::{
@@ -1498,6 +1498,25 @@ impl Store {
         linked_traces: bool,
         allowed_sources: Option<&BTreeSet<ExtensionId>>,
     ) -> Result<ObservationPage> {
+        let transaction = self.connection.unchecked_transaction()?;
+        Self::query_history_in(
+            &transaction,
+            query,
+            turn_id,
+            worker_filter,
+            linked_traces,
+            allowed_sources,
+        )
+    }
+
+    fn query_history_in(
+        connection: &Connection,
+        query: &ObservationQuery,
+        turn_id: Option<&str>,
+        worker_filter: Option<Option<&str>>,
+        linked_traces: bool,
+        allowed_sources: Option<&BTreeSet<ExtensionId>>,
+    ) -> Result<ObservationPage> {
         if query.limit == 0 || query.limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
             return Err(StoreError::Invalid("observation page limit is invalid"));
         }
@@ -1536,10 +1555,9 @@ impl Store {
         }
         // Use the same SQLite snapshot for the retention barrier, receipt head,
         // and result rows so a concurrent prune cannot shift an active page.
-        let transaction = self.connection.unchecked_transaction()?;
         let (snapshot_id, receipt_watermark) =
-            retention::resolve_read_snapshot(&transaction, query.snapshot_id)?;
-        let mut statement = transaction.prepare(
+            retention::resolve_read_snapshot(connection, query.snapshot_id)?;
+        let mut statement = connection.prepare(
             "SELECT observation.source_id, observation.event_id, observation.revision,
                     observation.scope, observation.session_id, observation.worker_id, observation.turn_id,
                     observation.operation_id, observation.observed_at_unix_ns,

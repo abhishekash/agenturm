@@ -60,8 +60,8 @@ use agenturm_service::{
     ServiceSpec, Systemctl, install_user_service, status_user_service, uninstall_user_service,
 };
 use agenturm_store::{
-    ResolvedTraceTurn, ReviewKey, ReviewLedger, ReviewVersion as StoredReviewVersion,
-    SessionPosition, SessionQuery, Store, TraceTurnQuery,
+    ResolvedTraceReview, ReviewKey, ReviewLedger, ReviewVersion as StoredReviewVersion,
+    SessionPosition, SessionQuery, Store, TraceReviewQuery,
 };
 use agenturm_ui::{
     HistorySelection, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor, SessionView,
@@ -1874,10 +1874,10 @@ trait HistoryReader: ObservationStore {
         turn_id: &str,
         worker_id: Option<&str>,
     ) -> Result<agenturm_kernel::ObservationPage, String>;
-    fn resolve_trace_turn(
+    fn review_trace_turn(
         &self,
-        query: &TraceTurnQuery,
-    ) -> Result<Option<ResolvedTraceTurn>, String>;
+        query: &TraceReviewQuery,
+    ) -> Result<Option<ResolvedTraceReview>, String>;
 }
 
 impl HistoryReader for Store {
@@ -1905,11 +1905,11 @@ impl HistoryReader for Store {
         Store::query_linked_turn_traces(self, query, turn_id, worker_id)
             .map_err(|error| error.to_string())
     }
-    fn resolve_trace_turn(
+    fn review_trace_turn(
         &self,
-        query: &TraceTurnQuery,
-    ) -> Result<Option<ResolvedTraceTurn>, String> {
-        Store::resolve_trace_turn(self, query).map_err(|error| error.to_string())
+        query: &TraceReviewQuery,
+    ) -> Result<Option<ResolvedTraceReview>, String> {
+        Store::review_trace_turn(self, query, None).map_err(|error| error.to_string())
     }
 }
 
@@ -1942,11 +1942,11 @@ impl HistoryReader for agenturm_storage_service::NativeStore {
         self.query_linked_turn_traces(query, turn_id, worker_id)
             .map_err(|error| error.to_string())
     }
-    fn resolve_trace_turn(
+    fn review_trace_turn(
         &self,
-        query: &TraceTurnQuery,
-    ) -> Result<Option<ResolvedTraceTurn>, String> {
-        self.resolve_trace_turn(query)
+        query: &TraceReviewQuery,
+    ) -> Result<Option<ResolvedTraceReview>, String> {
+        self.review_trace_turn(query)
             .map_err(|error| error.to_string())
     }
 }
@@ -2122,31 +2122,32 @@ fn review_from_store(
         .session_id
         .as_deref()
         .ok_or("Review requires a session ID")?;
-    let mut query = options.observation_query();
-    let (turn_id, worker_id) = match &selection.anchor {
-        ReviewAnchor::Turn { turn_id, worker_id } => (turn_id.clone(), worker_id.clone()),
+    let query = options.observation_query();
+    let (turn_id, worker_id, page) = match &selection.anchor {
+        ReviewAnchor::Turn { turn_id, worker_id } => {
+            let page = if selection.linked_traces {
+                store.query_linked_turn_traces(&query, turn_id, worker_id.as_deref())
+            } else {
+                store.query_worker_turn_observations(&query, turn_id, worker_id.as_deref())
+            }
+            .map_err(|error| format!("query store failed: {error}"))?;
+            (turn_id.clone(), worker_id.clone(), page)
+        }
         ReviewAnchor::Trace {
             trace_id,
             trace_source_id,
             expected_worker_id,
         } => {
             let resolved = store
-                .resolve_trace_turn(&TraceTurnQuery {
-                    harness_id: harness_id.into(),
-                    session_id: session_id.into(),
+                .review_trace_turn(&TraceReviewQuery {
+                    page: query,
                     trace_source_id: trace_source_id.clone(),
                     trace_id: trace_id.clone(),
-                    snapshot_id: query.snapshot_id,
+                    expected_worker_id: expected_worker_id.clone(),
+                    linked_traces: selection.linked_traces,
                 })?
-                .ok_or("Trace has no unique explicit turn for the selected native session at this snapshot")?;
-            if expected_worker_id
-                .as_ref()
-                .is_some_and(|worker| resolved.worker_id.as_ref() != Some(worker))
-            {
-                return Err("Trace belongs to a different worker".into());
-            }
-            query.snapshot_id = Some(resolved.snapshot_id);
-            (resolved.turn_id, resolved.worker_id)
+                .ok_or("Trace has no unique explicit turn for the selected native scope at this snapshot")?;
+            (resolved.turn_id, resolved.worker_id, resolved.page)
         }
     };
     let scope = review_receipt::ReviewScope {
@@ -2155,12 +2156,6 @@ fn review_from_store(
         turn_id: &turn_id,
         worker_id: worker_id.as_deref(),
     };
-    let page = if selection.linked_traces {
-        store.query_linked_turn_traces(&query, scope.turn_id, scope.worker_id)
-    } else {
-        store.query_worker_turn_observations(&query, scope.turn_id, scope.worker_id)
-    }
-    .map_err(|error| format!("query store failed: {error}"))?;
     let snapshot = page.snapshot_id;
     review_receipt::render(history_page_data(page), scope, snapshot, output)
 }
