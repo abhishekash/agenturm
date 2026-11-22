@@ -492,13 +492,23 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
         Command::Query(query) => println!("{}", query_from_store(&store, query)?),
         Command::Review {
             query,
-            turn_id,
-            worker_id,
+            selection,
             output,
-        } => println!(
-            "{}",
-            review_from_store(&store, query, turn_id, worker_id.as_deref(), output)?
-        ),
+        } => {
+            let store = if selection.linked_traces
+                || matches!(selection.anchor, ReviewAnchor::Trace { .. })
+            {
+                let identity = store
+                    .history_identity()
+                    .map_err(|error| error.to_string())?;
+                store
+                    .with_workspace_identity(&identity)
+                    .map_err(|error| error.to_string())?
+            } else {
+                store
+            };
+            println!("{}", review_from_store(&store, query, selection, output)?);
+        }
         Command::Task(options) => {
             let (store, workspace) = open_workspace(&config, &store)?;
             let ledger = store.workspace_ledger(&workspace)?;

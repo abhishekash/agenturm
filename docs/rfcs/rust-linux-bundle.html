@@ -196,11 +196,33 @@ accepts uncompressed JSON or protobuf at
 <code>http://127.0.0.1:4318/v1/traces</code>. To attach the span to a native session,
 also set <code>agenturm.source.id</code> to the exact collected harness source ID.
 Press <code>8</code> from a native session to see its linked spans.</p>
+<p>For turn-level evidence, set the span's <code>agenturm.turn.id</code> to the exact
+native turn ID. When the turn belongs to a worker, also set the span's
+<code>agenturm.worker.id</code> to its native worker ID. Use string values and put all
+IDs on each span you want to link. A turn-scoped span requires its own
+source and session attributes. Agenturm checks the native turn and worker
+against the same history snapshot as the span.</p>
 <pre><code class="language-sh">&quot;$agenturm&quot; serve-traces --listen 127.0.0.1:4318 --db traces.sqlite --source-id otlp.local
 </code></pre>
 <p>You can also load an export directly.</p>
 <pre><code class="language-sh">&quot;$agenturm&quot; import-traces --file export.json --db traces.sqlite --source-id otlp.local
 </code></pre>
+<p>To list trace spans for a known native turn, add <code>--linked-traces</code> to
+the exact Review command. Supply <code>--worker-id</code> if the turn belongs to
+a worker. To open the native turn of a known trace, supply the trace ID,
+its OTLP source, and the expected native source and session.</p>
+<pre><code class="language-sh">&quot;$agenturm&quot; review --db traces.sqlite --harness-id &quot;$source_id&quot; \
+  --session-id &quot;$session&quot; --turn-id &quot;$turn&quot; --linked-traces --format json
+&quot;$agenturm&quot; review --db traces.sqlite --harness-id &quot;$source_id&quot; \
+  --session-id &quot;$session&quot; --turn-of-trace &quot;$trace_id&quot; \
+  --trace-source-id otlp.local --format json
+</code></pre>
+<p>Trace-to-turn selection requires one explicit native scope among the
+trace's turn-scoped spans and a retained anchor for that scope. It checks
+up to 4,096 retained span rows for one trace. Spans with
+session-only attributes remain available in the session trace view. If a
+trace names conflicting turns or its native anchor has expired, choose an
+explicit source, session, and turn for Review.</p>
 <p>After the first stored span, open the cockpit in another terminal and press
 <code>8</code> in Agents.</p>
 <pre><code class="language-sh">&quot;$agenturm&quot; cockpit --db traces.sqlite

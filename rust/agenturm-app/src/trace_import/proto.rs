@@ -1,7 +1,9 @@
 //! Decode the structural OTLP/HTTP trace fields we retain. Unknown fields
 //! are skipped without decoding names, events, links, or payload attributes.
 
-use super::{Attribute, AttributeValue, MAX_EXPORT_SPANS, OtlpSpan, Status, Timestamp};
+use super::{
+    Attribute, AttributeValue, MAX_EXPORT_SPANS, OtlpSpan, Status, TURN_KEY, Timestamp, WORKER_KEY,
+};
 use std::fmt::Write as _;
 
 const MALFORMED: &str = "invalid OTLP protobuf trace export";
@@ -148,7 +150,7 @@ fn decode_attribute(input: &[u8]) -> Result<Option<Attribute>, &'static str> {
     };
     if !matches!(
         key,
-        "session.id" | "gen_ai.conversation.id" | "agenturm.source.id"
+        "session.id" | "gen_ai.conversation.id" | "agenturm.source.id" | TURN_KEY | WORKER_KEY
     ) {
         return Ok(None);
     }

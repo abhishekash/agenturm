@@ -14,8 +14,8 @@ use agenturm_kernel::{
 };
 use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
 use agenturm_store::{
-    ObservationBatch, RetentionOutcome, SessionPage, SessionQuery, Store, WorkspaceAnchor,
-    WorkspaceHistory,
+    ObservationBatch, ResolvedTraceTurn, RetentionOutcome, SessionPage, SessionQuery, Store,
+    TraceTurnQuery, WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
@@ -43,6 +43,10 @@ pub(crate) enum NativeOperation {
         query: SessionQuery,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_history_identity: Option<String>,
+    },
+    ResolveTraceTurn {
+        query: TraceTurnQuery,
+        expected_history_identity: String,
     },
     HistoryIdentity {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,6 +100,10 @@ pub(crate) enum NativeSelection {
         worker_id: Option<String>,
     },
     LinkedTraces,
+    LinkedTurnTraces {
+        turn_id: String,
+        worker_id: Option<String>,
+    },
 }
 
 #[derive(Serialize)]
@@ -104,6 +112,7 @@ pub(crate) enum NativeReply {
     Admission(Result<AdmissionReply, AdmissionFailure>),
     History(Result<ObservationPage, ReadFailure>),
     Sessions(Result<SessionPage, ReadFailure>),
+    TraceTurn(Result<Option<ResolvedTraceTurn>, ReadFailure>),
     Identity(Result<String, ReadFailure>),
     Workspace(Result<bool, ReadFailure>),
     PrivatePrompts(Result<Vec<agenturm_content::PromptReference>, PrivateEvidenceFailure>),
@@ -219,6 +228,12 @@ pub(crate) fn dispatch(
                     worker_id: worker_id.as_deref(),
                 },
                 NativeSelection::LinkedTraces => HistorySelection::LinkedTraces,
+                NativeSelection::LinkedTurnTraces { turn_id, worker_id } => {
+                    HistorySelection::LinkedTurnTraces {
+                        turn_id,
+                        worker_id: worker_id.as_deref(),
+                    }
+                }
             };
             return NativeReply::History(native_read::query_history(
                 store, allowed, &query, selection,
@@ -231,6 +246,15 @@ pub(crate) fn dispatch(
             return NativeReply::Sessions(
                 authorize_read(store, role, expected_history_identity.as_deref())
                     .and_then(|()| native_read::query_sessions(store, allowed, &query)),
+            );
+        }
+        NativeOperation::ResolveTraceTurn {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::TraceTurn(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::resolve_trace_turn(store, allowed, &query)),
             );
         }
         NativeOperation::HistoryIdentity {
@@ -397,6 +421,10 @@ impl Display for NativeClientError {
                     "history snapshot expired (minimum {minimum_snapshot_id})"
                 )
             }
+            Self::Read(ReadFailure::TraceScopeTooLarge { max_rows }) => write!(
+                formatter,
+                "trace exceeds the {max_rows}-row turn-resolution limit; select an explicit turn"
+            ),
             Self::Admission(AdmissionFailure::Unavailable)
             | Self::Read(ReadFailure::Unavailable)
             | Self::Admin(AdminFailure::Unavailable) => {
@@ -778,6 +806,38 @@ impl NativeStore {
         self.query(query, NativeSelection::LinkedTraces)
     }
 
+    pub fn query_linked_turn_traces(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+        worker_id: Option<&str>,
+    ) -> Result<ObservationPage, NativeClientError> {
+        self.query(
+            query,
+            NativeSelection::LinkedTurnTraces {
+                turn_id: turn_id.into(),
+                worker_id: worker_id.map(str::to_owned),
+            },
+        )
+    }
+
+    pub fn resolve_trace_turn(
+        &self,
+        query: &TraceTurnQuery,
+    ) -> Result<Option<ResolvedTraceTurn>, NativeClientError> {
+        let identity = self
+            .workspace_identity
+            .as_ref()
+            .ok_or(NativeClientError::Read(ReadFailure::InvalidRequest))?;
+        self.exchange::<Result<Option<ResolvedTraceTurn>, ReadFailure>>(
+            NativeOperation::ResolveTraceTurn {
+                query: query.clone(),
+                expected_history_identity: identity.clone(),
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
     fn admission(&self, operation: NativeOperation) -> Result<AdmissionReply, NativeClientError> {
         self.exchange::<Result<AdmissionReply, AdmissionFailure>>(operation)?
             .map_err(NativeClientError::Admission)
@@ -887,5 +947,82 @@ impl ObservationStore for NativeStore {
             }),
             AdmissionReply::Cursor { .. } => Err(NativeClientError::InvalidReply.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_review_requests_reject_a_replacement_history_at_the_same_snapshot() {
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-broker-trace-history-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let mut original = Store::open_collector(directory.join("original.sqlite")).unwrap();
+        let identity = original.ensure_history_identity().unwrap();
+        let mut replacement = Store::open_collector(directory.join("replacement.sqlite")).unwrap();
+        assert_ne!(replacement.ensure_history_identity().unwrap(), identity);
+
+        let mut query = ObservationQuery::latest(1);
+        query.harness_id = Some("harness.codex".into());
+        query.session_id = Some("session-1".into());
+        query.snapshot_id = Some(0);
+        let allowed = BTreeSet::from([
+            ExtensionId::parse("harness.codex").unwrap(),
+            ExtensionId::parse("otlp.test").unwrap(),
+        ]);
+        let resolve = || NativeOperation::ResolveTraceTurn {
+            query: TraceTurnQuery {
+                harness_id: "harness.codex".into(),
+                session_id: "session-1".into(),
+                trace_source_id: "otlp.test".into(),
+                trace_id: "11111111111111111111111111111111".into(),
+                snapshot_id: query.snapshot_id,
+            },
+            expected_history_identity: identity.clone(),
+        };
+        let linked = || NativeOperation::QueryHistory {
+            query: query.clone(),
+            selection: NativeSelection::LinkedTurnTraces {
+                turn_id: "turn-1".into(),
+                worker_id: None,
+            },
+            expected_history_identity: Some(identity.clone()),
+        };
+        assert!(matches!(
+            dispatch(&mut original, &allowed, Role::Reader, resolve(), None, None),
+            NativeReply::TraceTurn(Ok(None))
+        ));
+        assert!(matches!(
+            dispatch(&mut original, &allowed, Role::Reader, linked(), None, None),
+            NativeReply::History(Ok(page)) if page.snapshot_id == 0
+        ));
+        assert!(matches!(
+            dispatch(
+                &mut replacement,
+                &allowed,
+                Role::Reader,
+                resolve(),
+                None,
+                None
+            ),
+            NativeReply::TraceTurn(Err(ReadFailure::HistoryReplaced))
+        ));
+        assert!(matches!(
+            dispatch(
+                &mut replacement,
+                &allowed,
+                Role::Reader,
+                linked(),
+                None,
+                None
+            ),
+            NativeReply::History(Err(ReadFailure::HistoryReplaced))
+        ));
+        drop((original, replacement));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

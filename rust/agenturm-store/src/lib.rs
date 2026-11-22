@@ -13,6 +13,7 @@
 
 mod backup;
 mod content_grant;
+mod linked_trace;
 mod retention;
 mod review_ledger;
 mod session_catalog;
@@ -23,6 +24,7 @@ pub use content_grant::{
     CodexOperationEvidence, CodexOperationSelection, ContentGrant, ContentGrantScope, ContentKind,
     UserTextEvidence,
 };
+pub use linked_trace::{ResolvedTraceTurn, TraceTurnQuery};
 pub use retention::RetentionOutcome;
 pub use review_ledger::{ReviewDecisionNote, ReviewError, ReviewKey, ReviewLedger, ReviewVersion};
 pub use session_catalog::{
@@ -346,6 +348,7 @@ pub enum StoreError {
     StaleCursor,
     StaleContentGrant,
     ExpiredHistorySnapshot { minimum_snapshot_id: u64 },
+    TraceScopeTooLarge { max_rows: usize },
     EventConflict { event_id: String },
     UnrecognizedDatabase,
     UnsupportedSchema(i64),
@@ -367,6 +370,10 @@ impl Display for StoreError {
             } => write!(
                 f,
                 "history snapshot expired after retention; start a new query at snapshot {minimum_snapshot_id} or later"
+            ),
+            Self::TraceScopeTooLarge { max_rows } => write!(
+                f,
+                "trace exceeds the {max_rows}-row turn-resolution limit; select an explicit turn"
             ),
             Self::EventConflict { event_id } => {
                 write!(f, "event ID was reused with different content: {event_id}")
@@ -1427,7 +1434,7 @@ impl Store {
     /// Reads imported traces explicitly attached to the selected native
     /// source/session at the same history snapshot as the session evidence.
     pub fn query_linked_traces(&self, query: &ObservationQuery) -> Result<ObservationPage> {
-        self.query_linked_traces_impl(query, None)
+        self.query_linked_traces_impl(query, None, None)
     }
 
     pub fn query_linked_traces_from_sources(
@@ -1435,12 +1442,33 @@ impl Store {
         query: &ObservationQuery,
         allowed_sources: &BTreeSet<ExtensionId>,
     ) -> Result<ObservationPage> {
-        self.query_linked_traces_impl(query, Some(allowed_sources))
+        self.query_linked_traces_impl(query, None, Some(allowed_sources))
+    }
+
+    /// Reads traces attached to one native turn and its exact worker scope.
+    pub fn query_linked_turn_traces(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+        worker_id: Option<&str>,
+    ) -> Result<ObservationPage> {
+        self.query_linked_traces_impl(query, Some((turn_id, worker_id)), None)
+    }
+
+    pub fn query_linked_turn_traces_from_sources(
+        &self,
+        query: &ObservationQuery,
+        turn_id: &str,
+        worker_id: Option<&str>,
+        allowed_sources: &BTreeSet<ExtensionId>,
+    ) -> Result<ObservationPage> {
+        self.query_linked_traces_impl(query, Some((turn_id, worker_id)), Some(allowed_sources))
     }
 
     fn query_linked_traces_impl(
         &self,
         query: &ObservationQuery,
+        turn: Option<(&str, Option<&str>)>,
         allowed_sources: Option<&BTreeSet<ExtensionId>>,
     ) -> Result<ObservationPage> {
         if query
@@ -1453,7 +1481,13 @@ impl Store {
                 "linked traces require a harness source and session",
             ));
         }
-        self.query_history(query, None, None, true, allowed_sources)
+        self.query_history(
+            query,
+            turn.map(|(turn_id, _)| turn_id),
+            turn.map(|(_, worker_id)| worker_id),
+            true,
+            allowed_sources,
+        )
     }
 
     fn query_history(
@@ -1530,6 +1564,9 @@ impl Store {
                     WHERE anchor.source_id=?2 AND anchor.session_id=?3
                       AND anchor.scope='session' AND anchor_batch.sequence<=?1
                       AND json_extract(anchor.kind_json,'$.kind')<>'trace_span'
+                      AND (observation.turn_id IS NULL
+                           OR (anchor.turn_id=observation.turn_id
+                               AND anchor.worker_id IS observation.worker_id))
                ))
                AND (?9 IS NULL OR observation.turn_id=?9)
                AND (?10 = 0 OR observation.worker_id IS ?11)
@@ -1891,7 +1928,14 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         }
         if let ObservationKind::TraceSpan(span) = &observation.kind
             && (!span.is_valid(observation.observed_at_unix_ns)
-                || !agenturm_kernel::is_trace_source_link_valid(&batch.source_id, span))
+                || !agenturm_kernel::is_trace_source_link_valid(&batch.source_id, span)
+                || !agenturm_kernel::is_trace_turn_link_valid(
+                    span,
+                    &observation.event_id,
+                    observation.identity.turn_id.as_deref(),
+                    observation.identity.worker_id.as_deref(),
+                    observation.identity.operation_id.as_deref(),
+                ))
         {
             return Err(StoreError::Invalid(
                 "trace identity, timing, or source link is invalid",

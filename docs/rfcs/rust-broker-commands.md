@@ -51,6 +51,12 @@ Continue a traversal with the same filters and watermark. The broker limits
 source-free reads to its configured allowlist. The inspector uses the
 background workspace request loop for session and turn navigation.
 
+Use `broker review --linked-traces` with an exact turn to page its linked
+spans. Use `--turn-of-trace <trace-id> --trace-source-id <otlp-source>`
+in place of `--turn-id` to select the native turn from an explicitly
+scoped trace. The broker checks both source IDs against its allowlist and
+uses a single history snapshot for selection and the Review results.
+
 The broker cockpit supports saved tasks, handoffs, request seen state and
 review decisions alongside remote history. These user-owned records live
 under the client's state directory. Their namespace binds the authenticated
