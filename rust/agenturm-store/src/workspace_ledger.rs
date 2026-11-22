@@ -147,6 +147,14 @@ pub struct WorkspaceLedger {
 }
 
 impl WorkspaceLedger {
+    pub(super) fn backup_binding(&self) -> [u8; 32] {
+        self.binding
+    }
+
+    pub(super) fn open_for_backup(&self) -> Result<Option<Connection>> {
+        self.connect(false)
+    }
+
     pub fn open(history_path: impl AsRef<Path>) -> Result<Self> {
         let history = history_path.as_ref().canonicalize()?;
         let binding = history_binding(&history)?;
@@ -855,7 +863,7 @@ fn initialized(connection: &Connection) -> Result<bool> {
     Ok(schema_version(connection)? != 0)
 }
 
-fn schema_version(connection: &Connection) -> Result<i64> {
+pub(super) fn schema_version(connection: &Connection) -> Result<i64> {
     let application_id = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     match (application_id, version) {

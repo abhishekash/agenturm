@@ -40,7 +40,7 @@ pub(super) fn parse_source_batch(
     let mut observations = Vec::with_capacity(batch.records.len());
     let mut skipped_unprojected_facts = 0;
     for record in batch.records {
-        match project_record(record)? {
+        match project_record(record, expected_source_id)? {
             Some(observation) => observations.push(observation),
             None => skipped_unprojected_facts += 1,
         }
@@ -52,7 +52,7 @@ pub(super) fn parse_source_batch(
     })
 }
 
-fn project_record(record: ObservationRecord) -> Result<Option<RawObservation>> {
+fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<RawObservation>> {
     if !valid_source_identifier(&record.event_id, 256) {
         return Err(RuntimeError::new("source event identity is invalid"));
     }
@@ -151,9 +151,11 @@ fn project_record(record: ObservationRecord) -> Result<Option<RawObservation>> {
             }
         }
         ObservationFact::TraceSpan(span) => {
-            if !span.is_valid(observed_at_unix_ns) {
+            if !span.is_valid(observed_at_unix_ns)
+                || !agenturm_kernel::is_trace_source_link_valid(source_id, &span)
+            {
                 return Err(RuntimeError::new(
-                    "source trace identity or timing is invalid",
+                    "source trace identity, timing, or source link is invalid",
                 ));
             }
             ObservationKind::TraceSpan(span)

@@ -1,19 +1,29 @@
 //! Durable authorization state for host-controlled private source requests.
 
-use crate::{MAX_BATCH_EVENTS, ObservationKind, Result, SCHEMA_VERSION, Store, StoreError};
+use crate::{Result, SCHEMA_VERSION, Store, StoreError};
 use agenturm_kernel::ExtensionId;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::fmt;
 
+const MAX_REFERENCES: usize = 256;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContentKind {
     PiUserText,
+    CodexUserText,
+    ClaudeUserText,
+    KiroUserText,
+    OpenCodeUserText,
 }
 
 impl ContentKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::PiUserText => "pi.user_text",
+            Self::CodexUserText => "codex.user_text",
+            Self::ClaudeUserText => "claude.user_text",
+            Self::KiroUserText => "kiro.user_text",
+            Self::OpenCodeUserText => "opencode.user_text",
         }
     }
 }
@@ -66,26 +76,90 @@ impl fmt::Debug for ContentGrant {
 
 /// Metadata from the exact retained user message and its still-current
 /// committed source batch. The host must independently verify source bytes.
-#[derive(Debug, Eq, PartialEq)]
-pub struct PiUserTextEvidence {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UserTextEvidence {
     pub cursor: String,
+    pub admitted_cursor: Option<String>,
     pub session_id: String,
     pub worker_id: Option<String>,
     pub turn_id: String,
     pub observed_at_unix_ns: u64,
+    pub revision: u32,
 }
 
-pub(super) fn create_schema(connection: &Connection) -> Result<()> {
-    connection.execute_batch(
+pub(super) fn create_schema(connection: &Connection, modern: bool) -> Result<()> {
+    let rule = if modern {
+        "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text')"
+    } else {
+        "kind = 'pi.user_text'"
+    };
+    connection.execute_batch(&format!(
         "CREATE TABLE agenturm_content_grants (
             source_id TEXT NOT NULL,
-            kind TEXT NOT NULL CHECK (kind = 'pi.user_text'),
+            kind TEXT NOT NULL CHECK ({rule}),
             source_fingerprint BLOB NOT NULL CHECK (length(source_fingerprint) = 32),
             epoch INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch > 0),
             nonce BLOB NOT NULL CHECK (length(nonce) = 16),
             enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
             PRIMARY KEY (source_id, kind)
+        );"
+    ))?;
+    Ok(())
+}
+
+pub(super) fn create_receipt_proof_schema(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE agenturm_content_cursor_proofs (
+            request_id TEXT PRIMARY KEY NOT NULL REFERENCES agenturm_ingest_receipts(request_id),
+            cursor TEXT NOT NULL
         );",
+    )?;
+    Ok(())
+}
+
+pub(super) fn record_receipt_proof(
+    connection: &Connection,
+    request_id: &str,
+    cursor: &str,
+) -> Result<()> {
+    let Some(native) = cursor.strip_prefix("v2:") else {
+        return Ok(());
+    };
+    let fields: Vec<_> = native.splitn(7, ':').collect();
+    if fields.len() != 7
+        || fields[..3]
+            .iter()
+            .any(|value| value.parse::<u64>().is_err())
+        || fields[3..6].iter().any(|value| {
+            value.len() != 64
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+    {
+        return Ok(());
+    }
+    // Keep only the file identity, hash lengths and digests. Adapter
+    // checkpoint details are deliberately absent from historical proofs.
+    let proof = format!("v2:{}:", fields[..6].join(":"));
+    connection.execute(
+        "INSERT INTO agenturm_content_cursor_proofs(request_id, cursor) VALUES (?1, ?2)",
+        params![request_id, proof],
+    )?;
+    Ok(())
+}
+
+pub(super) fn migrate_v10(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "ALTER TABLE agenturm_content_grants RENAME TO agenturm_prior_content_grants;",
+    )?;
+    create_schema(connection, true)?;
+    create_receipt_proof_schema(connection)?;
+    connection.execute_batch(
+        "INSERT INTO agenturm_content_grants
+             SELECT source_id, kind, source_fingerprint, epoch, nonce, enabled
+             FROM agenturm_prior_content_grants;
+         DROP TABLE agenturm_prior_content_grants;",
     )?;
     Ok(())
 }
@@ -106,7 +180,7 @@ fn has_grant_schema(connection: &Connection) -> Result<bool> {
     let version =
         connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
     match version {
-        9 | SCHEMA_VERSION => Ok(true),
+        9..=SCHEMA_VERSION => Ok(true),
         8 => Ok(false),
         _ => Err(StoreError::UnsupportedSchema(version)),
     }
@@ -159,6 +233,16 @@ impl Store {
         Ok(changed != 0)
     }
 
+    /// Revokes every kind associated with this configured source ID.
+    pub fn revoke_source_content(&mut self, source_id: &ExtensionId) -> Result<bool> {
+        self.verify_write_admission()?;
+        let changed = self.connection.execute(
+            "UPDATE agenturm_content_grants SET enabled = 0 WHERE source_id = ?1 AND enabled = 1",
+            [source_id.as_str()],
+        )?;
+        Ok(changed != 0)
+    }
+
     /// Returns the approval for the exact current scope. Absent, revoked, or
     /// differently bound sources deny access.
     pub fn current_content_grant(&self, scope: &ContentGrantScope) -> Result<Option<ContentGrant>> {
@@ -201,8 +285,8 @@ impl Store {
 
     /// Retains the writer lease and serializes proof and delivery with
     /// admission, grants, and retention on other same-process connections.
-    pub fn with_pi_content_fence<T>(&self, use_current: impl FnOnce(&Self) -> T) -> Result<T> {
-        self.require_pi_content_writer()?;
+    pub fn with_user_content_fence<T>(&self, use_current: impl FnOnce(&Self) -> T) -> Result<T> {
+        self.require_content_writer()?;
         let fence =
             rusqlite::Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
         let response = use_current(self);
@@ -210,51 +294,51 @@ impl Store {
         Ok(response)
     }
 
-    /// Selects a retained observation in the same commit as the current
-    /// source cursor. Older batches cannot supply admission-time byte proof
-    /// through this API. The caller holds storage's writer fence through use.
-    pub fn current_pi_user_text_evidence(
+    /// Selects a retained observation and its admission proof. Older rows
+    /// require their own receipt proof. Legacy rows can use the latest
+    /// commit only. The caller holds storage's writer fence through use.
+    pub fn current_user_text_evidence(
         &self,
         scope: &ContentGrantScope,
         grant: &ContentGrant,
         event_id: &str,
         revision: u32,
-    ) -> Result<Option<PiUserTextEvidence>> {
+    ) -> Result<Option<UserTextEvidence>> {
         let mut found =
-            self.current_pi_user_text_candidates(scope, grant, Some(event_id), None, revision)?;
+            self.current_user_text_candidates(scope, grant, Some(event_id), None, Some(revision))?;
         Ok(found.pop().map(|(_, evidence)| evidence))
     }
 
-    /// Lists native-revision user messages from a single selected session and
-    /// the same commit as its source cursor. Entries still need byte proof.
-    pub fn current_pi_user_text_references(
+    /// Lists a bounded page of recent user messages from one session.
+    /// Each entry still needs native byte proof before disclosure.
+    pub fn current_user_text_references(
         &self,
         scope: &ContentGrantScope,
         grant: &ContentGrant,
         session_id: &str,
-    ) -> Result<Vec<(String, PiUserTextEvidence)>> {
-        self.current_pi_user_text_candidates(scope, grant, None, Some(session_id), 0)
+    ) -> Result<Vec<(String, UserTextEvidence)>> {
+        self.current_user_text_candidates(scope, grant, None, Some(session_id), None)
     }
 
-    fn require_pi_content_writer(&self) -> Result<()> {
+    fn require_content_writer(&self) -> Result<()> {
         #[cfg(target_os = "linux")]
         if self.writer_lease.is_none() {
             return Err(StoreError::WriterLease(std::io::Error::other(
-                "Pi preview requires a writer lease",
+                "Prompt preview requires a writer lease",
             )));
         }
         self.verify_write_admission()
     }
 
-    fn current_pi_user_text_candidates(
+    fn current_user_text_candidates(
         &self,
         scope: &ContentGrantScope,
         grant: &ContentGrant,
         event_id: Option<&str>,
         session_id: Option<&str>,
-        revision: u32,
-    ) -> Result<Vec<(String, PiUserTextEvidence)>> {
-        self.require_pi_content_writer()?;
+        revision: Option<u32>,
+    ) -> Result<Vec<(String, UserTextEvidence)>> {
+        self.require_content_writer()?;
         self.verify_content_grant(scope, grant)?;
         let version = self
             .connection
@@ -264,17 +348,20 @@ impl Store {
         }
         let mut statement = self.connection.prepare(
             "SELECT o.event_id, state.cursor, o.session_id, o.worker_id, o.turn_id,
-                    o.observed_at_unix_ns, o.kind_json
+                    o.observed_at_unix_ns, o.revision, proof.cursor
              FROM agenturm_observations AS o
              JOIN agenturm_source_state AS state ON state.source_id = o.source_id
-             WHERE o.source_id = ?1 AND (?2 IS NULL OR o.event_id = ?2) AND o.revision = ?3
+             LEFT JOIN agenturm_content_cursor_proofs AS proof ON proof.request_id = o.request_id
+             WHERE o.source_id = ?1 AND (?2 IS NULL OR o.event_id = ?2) AND (?3 IS NULL OR o.revision = ?3)
                AND (?4 IS NULL OR o.session_id = ?4)
                AND o.scope = 'session' AND o.turn_id IS NOT NULL AND o.operation_id IS NULL
-               AND o.request_id = (
+               AND json_extract(o.kind_json, '$.kind') = 'message'
+               AND json_extract(o.kind_json, '$.role') = 'user'
+               AND ((?6 AND proof.request_id IS NOT NULL) OR o.request_id = (
                    SELECT newest.request_id FROM agenturm_history_batches AS newest
                    JOIN agenturm_ingest_receipts AS receipt USING (request_id)
                    WHERE receipt.source_id = ?1 ORDER BY newest.sequence DESC LIMIT 1
-               )
+               ))
                AND NOT EXISTS (
                    SELECT 1 FROM agenturm_observations AS newer
                    WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
@@ -284,7 +371,7 @@ impl Store {
                    WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
                          AND newer.revision > o.revision
                )
-             ORDER BY o.observed_at_unix_ns, o.event_id
+             ORDER BY o.observed_at_unix_ns DESC, o.event_id DESC
              LIMIT ?5",
         )?;
         let rows = statement.query_map(
@@ -293,28 +380,24 @@ impl Store {
                 event_id,
                 revision,
                 session_id,
-                MAX_BATCH_EVENTS
+                MAX_REFERENCES,
+                scope.kind != ContentKind::OpenCodeUserText
             ],
             |row| {
-                let evidence = PiUserTextEvidence {
+                let evidence = UserTextEvidence {
                     cursor: row.get(1)?,
                     session_id: row.get(2)?,
                     worker_id: row.get(3)?,
                     turn_id: row.get(4)?,
                     observed_at_unix_ns: row.get(5)?,
+                    revision: row.get(6)?,
+                    admitted_cursor: row.get(7)?,
                 };
-                Ok((row.get(0)?, evidence, row.get::<_, String>(6)?))
+                Ok((row.get(0)?, evidence))
             },
         )?;
-        let mut found = Vec::new();
-        for row in rows {
-            let (event_id, evidence, kind) = row?;
-            if matches!(serde_json::from_str::<ObservationKind>(&kind)?,
-                ObservationKind::Message { role } if role == "user")
-            {
-                found.push((event_id, evidence));
-            }
-        }
+        let mut found = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        found.reverse();
         Ok(found)
     }
 }
@@ -344,7 +427,7 @@ mod tests {
         let scope = ContentGrantScope::new(source.clone(), ContentKind::PiUserText, [7; 32]);
         let grant = authorizer.grant_content(&scope).unwrap();
         authorizer
-            .with_pi_content_fence(|store| {
+            .with_user_content_fence(|store| {
                 assert!(matches!(
                     revoker.revoke_content(&source, ContentKind::PiUserText),
                     Err(StoreError::Sqlite(rusqlite::Error::SqliteFailure(err, _)))

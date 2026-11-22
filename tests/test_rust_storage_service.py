@@ -1,6 +1,7 @@
 """Installed Linux checks for the feature-off Rust storage-service skeleton."""
 from __future__ import annotations
 
+import json
 import os
 import signal
 import socket
@@ -201,6 +202,67 @@ class InstalledStorageServiceTests(unittest.TestCase):
         self.transport.chmod(0o2710)
         self.run_rejected(client_uid=os.geteuid())
         self.assertFalse(self.socket_path.exists())
+
+    def test_standalone_collector_history_is_rejected_by_legacy_write_modes(self):
+        binaries = Path(self.executable).resolve().parent
+        collector = binaries / "agenturm"
+        plugin_host = binaries / "agenturm-plugin-host"
+        pi = binaries / "agenturm-pi-harness"
+        if not all(os.access(binary, os.X_OK) for binary in (collector, plugin_host, pi)):
+            self.skipTest("build the standalone app, plugin host, and Pi adapter beside the service")
+
+        source = self.root / "session.jsonl"
+        source.write_text(
+            '{"type":"session","id":"service-boundary"}\n'
+            '{"id":"user-1","type":"message","timestamp":"2026-11-20T12:00:00Z",'
+            '"message":{"role":"user","content":"local fixture"}}\n',
+            encoding="utf-8",
+        )
+        config = self.root / "collection.json"
+        config.write_text(json.dumps({
+            "version": 1,
+            "plugin_host": str(plugin_host),
+            "sources": [{
+                "plugin_id": "example.rust-pi-harness",
+                "adapter": str(pi),
+                "source_root": str(source),
+                "source_id": "harness.pi",
+            }],
+        }), encoding="utf-8")
+        history = self.root / "history.sqlite"
+        collected = subprocess.run(
+            [collector, "collect", "--config", config, "--db", history],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+        self.assertIn("ACK sent=true", collected.stdout)
+        expected = subprocess.check_output(
+            [collector, "query", "--db", history], timeout=5,
+        )
+        self.assertTrue(json.loads(expected)["observations"])
+        for option, filename, marker_error in (
+            ("--experimental-v2-scratch", "scratch.db", "scratch database marker"),
+            ("--experimental-real-clone-activation", "telemetry-clone.db",
+             "real-schema activation clone marker"),
+        ):
+            with self.subTest(option=option):
+                copy = self.data / filename
+                subprocess.run(
+                    [collector, "backup", "--db", history, "--output", copy],
+                    capture_output=True, check=True, timeout=5,
+                )
+                before = copy.read_bytes()
+                refused = subprocess.run(
+                    self.args(max_connections=1) + [option, "enabled"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(marker_error, refused.stderr)
+                self.assertFalse(self.socket_path.exists())
+                self.assertEqual(copy.read_bytes(), before)
+                self.assertEqual(subprocess.check_output(
+                    [collector, "query", "--db", copy], timeout=5,
+                ), expected)
+                copy.unlink()
 
     def test_symlink_and_writable_parent_are_rejected(self):
         real = self.root / "real-data"

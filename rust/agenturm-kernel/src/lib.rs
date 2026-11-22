@@ -292,6 +292,16 @@ pub fn is_mcp_operation(identity: &ObservationIdentity) -> bool {
         && identity.operation_id.is_some()
 }
 
+/// Bound trace metadata is attributed to its OTLP source. The optional target
+/// is an independent, exact harness identifier rather than source ownership.
+pub fn is_trace_source_link_valid(import_source_id: &str, span: &TraceSpan) -> bool {
+    span.target_source_id.as_deref().is_none_or(|target| {
+        import_source_id.starts_with("otlp.")
+            && !target.starts_with("otlp.")
+            && ExtensionId::parse(target).is_ok()
+    })
+}
+
 /// Formats native credits without introducing floating-point rounding.
 pub fn format_credits(nanocredits: u64) -> String {
     let whole = nanocredits / NANOCREDITS_PER_CREDIT;

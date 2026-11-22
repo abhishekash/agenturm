@@ -1,4 +1,6 @@
-//! Explicit, bounded import of structural OTLP JSON trace evidence.
+//! Explicit, bounded import of structural OTLP trace evidence.
+
+mod proto;
 
 use agenturm_kernel::{
     ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationStore, TraceSpan,
@@ -89,11 +91,22 @@ pub(super) fn commit(
     if observations.is_empty() {
         return Ok(0);
     }
-    let cursor = import_cursor(observations)?;
     let mut store =
         Store::open_collector(db).map_err(|error| format!("open history failed: {error}"))?;
+    commit_with_store(&mut store, source_id, observations)
+}
+
+pub(super) fn commit_with_store(
+    store: &mut Store,
+    source_id: &ExtensionId,
+    observations: &[Observation],
+) -> Result<usize, String> {
+    if observations.is_empty() {
+        return Ok(0);
+    }
+    let cursor = import_cursor(observations)?;
     let source = source_id.as_str();
-    let prior = ObservationStore::source_cursor(&store, source)?;
+    let prior = ObservationStore::source_cursor(store, source)?;
     if prior
         .as_deref()
         .is_some_and(|checkpoint| !checkpoint.starts_with(CURSOR_PREFIX))
@@ -103,7 +116,7 @@ pub(super) fn commit(
     if prior.as_deref() == Some(cursor.as_str()) {
         Ok(0)
     } else {
-        ObservationStore::commit(&mut store, source, prior.as_deref(), &cursor, observations)
+        ObservationStore::commit(store, source, prior.as_deref(), &cursor, observations)
             .map(|receipt| receipt.inserted)
     }
 }
@@ -142,24 +155,61 @@ pub(super) fn decode(
     bytes: &[u8],
     source_id: &ExtensionId,
 ) -> Result<(Vec<Observation>, usize), String> {
+    decode_json(bytes, source_id, None)
+}
+
+pub(super) fn decode_json(
+    bytes: &[u8],
+    source_id: &ExtensionId,
+    launch_session: Option<&str>,
+) -> Result<(Vec<Observation>, usize), String> {
     if bytes.len() as u64 > MAX_EXPORT_BYTES {
         return Err("OTLP export exceeds 4 MiB".into());
     }
     let export: Export =
         serde_json::from_slice(bytes).map_err(|_| "invalid OTLP JSON trace export".to_owned())?;
+    project(
+        export
+            .resource_spans
+            .into_iter()
+            .flat_map(|resource| resource.scope_spans)
+            .flat_map(|scope| scope.spans),
+        source_id,
+        launch_session,
+    )
+}
+
+pub(super) fn decode_protobuf(
+    bytes: &[u8],
+    source_id: &ExtensionId,
+    launch_session: Option<&str>,
+) -> Result<(Vec<Observation>, usize), String> {
+    if bytes.len() as u64 > MAX_EXPORT_BYTES {
+        return Err("OTLP export exceeds 4 MiB".into());
+    }
+    project(proto::decode(bytes)?, source_id, launch_session)
+}
+
+pub(super) fn protobuf_response(rejected: usize) -> Vec<u8> {
+    proto::response(rejected)
+}
+
+fn project(
+    spans: impl IntoIterator<Item = OtlpSpan>,
+    source_id: &ExtensionId,
+    launch_session: Option<&str>,
+) -> Result<(Vec<Observation>, usize), String> {
     let mut observations = BTreeMap::new();
     let mut unscoped = 0;
-    for (index, span) in export
-        .resource_spans
-        .into_iter()
-        .flat_map(|resource| resource.scope_spans)
-        .flat_map(|scope| scope.spans)
-        .enumerate()
-    {
+    for (index, span) in spans.into_iter().enumerate() {
         if index >= MAX_EXPORT_SPANS {
             return Err("OTLP export exceeds 1024 spans".into());
         }
-        let Some(session_id) = session_id(span.attributes)? else {
+        let scope = trace_scope(span.attributes)?;
+        let Some(session_id) = scope
+            .session_id
+            .or_else(|| launch_session.map(str::to_owned))
+        else {
             unscoped += 1;
             continue;
         };
@@ -174,6 +224,7 @@ pub(super) fn decode(
                 .parent_span_id
                 .filter(|id| !id.is_empty())
                 .map(|id| id.to_ascii_lowercase()),
+            target_source_id: scope.target_source_id,
             started_at_unix_ns: span
                 .start_time_unix_nano
                 .value()
@@ -211,33 +262,48 @@ pub(super) fn decode(
     Ok((observations.into_values().collect(), unscoped))
 }
 
-fn session_id(attributes: Vec<Attribute>) -> Result<Option<String>, String> {
-    let mut session = None;
+#[derive(Default)]
+struct TraceScope {
+    session_id: Option<String>,
+    target_source_id: Option<String>,
+}
+
+fn trace_scope(attributes: Vec<Attribute>) -> Result<TraceScope, String> {
+    let mut scope = TraceScope::default();
     for attribute in attributes {
-        if !matches!(
-            attribute.key.as_str(),
-            "session.id" | "gen_ai.conversation.id"
-        ) {
-            continue;
-        }
+        let (slot, valid, error): (_, fn(&str) -> bool, _) = match attribute.key.as_str() {
+            "session.id" | "gen_ai.conversation.id" => (
+                &mut scope.session_id,
+                valid_session_id,
+                "invalid or conflicting OTLP span session identity",
+            ),
+            "agenturm.source.id" => (
+                &mut scope.target_source_id,
+                |value| !value.starts_with("otlp.") && ExtensionId::parse(value).is_ok(),
+                "invalid or conflicting OTLP span harness source",
+            ),
+            _ => continue,
+        };
         let value = attribute
             .value
             .and_then(|value| value.string_value)
-            .filter(|value| {
-                !value.is_empty()
-                    && value.len() <= 512
-                    && value.as_bytes()[0].is_ascii_alphanumeric()
-                    && value
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
-            })
-            .ok_or("invalid OTLP span session identity")?;
-        if session.as_ref().is_some_and(|prior| prior != &value) {
-            return Err("conflicting OTLP span session identities".into());
+            .filter(|value| valid(value))
+            .ok_or(error)?;
+        if slot.as_ref().is_some_and(|prior| prior != &value) {
+            return Err(error.into());
         }
-        session = Some(value);
+        *slot = Some(value);
     }
-    Ok(session)
+    Ok(scope)
+}
+
+fn valid_session_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
 }
 
 #[derive(Deserialize)]
@@ -353,6 +419,7 @@ mod tests {
                 trace_id: "5b8efff798038103d269b633813fc60c".into(),
                 span_id: "83d69f6fc3261111".into(),
                 parent_span_id: Some("83d69f6fc3261212".into()),
+                target_source_id: None,
                 started_at_unix_ns: 1_795_300_000_000_000_000,
                 status: TraceStatus::Error,
             })
@@ -381,6 +448,135 @@ mod tests {
             let mut span = fixture();
             span[field] = invalid;
             assert!(from_spans(vec![fixture(), span]).is_err());
+        }
+    }
+
+    #[test]
+    fn durable_trace_links_require_exact_source_and_session_at_the_selected_snapshot() {
+        use agenturm_kernel::ObservationQuery;
+
+        let mut store = Store::open(":memory:").unwrap();
+        let add_session = |store: &mut Store, source: &str| {
+            let row = Observation {
+                harness_id: ExtensionId::parse(source).unwrap(),
+                event_id: "native-start".into(),
+                revision: 0,
+                identity: ObservationIdentity::session("turn-session"),
+                observed_at_unix_ns: 10,
+                kind: ObservationKind::SessionStarted,
+            };
+            ObservationStore::commit(store, source, None, "1", &[row]).unwrap();
+        };
+        add_session(&mut store, "harness.codex");
+        add_session(&mut store, "harness.pi");
+        let bound = |span_id: &str, target: &str| {
+            let mut span = fixture();
+            span["spanId"] = json!(span_id);
+            span["attributes"].as_array_mut().unwrap().push(json!({
+                "key":"agenturm.source.id", "value":{"stringValue":target}
+            }));
+            span
+        };
+        let (observations, skipped) = from_spans(vec![
+            fixture(),
+            bound("83d69f6fc3261112", "harness.codex"),
+            bound("83d69f6fc3261113", "harness.pi"),
+            bound("83d69f6fc3261114", "harness.late"),
+        ])
+        .unwrap();
+        assert_eq!(skipped, 0);
+        ObservationStore::commit(&mut store, "otlp.synthetic", None, "1", &observations).unwrap();
+
+        let query = |source: &str, snapshot_id| ObservationQuery {
+            harness_id: Some(source.into()),
+            session_id: Some("turn-session".into()),
+            snapshot_id,
+            before: None,
+            limit: 1,
+        };
+        for (target, expected) in [
+            ("harness.codex", "83d69f6fc3261112"),
+            ("harness.pi", "83d69f6fc3261113"),
+        ] {
+            let page = store.query_linked_traces(&query(target, None)).unwrap();
+            assert_eq!(page.observations.len(), 1);
+            assert!(!page.has_more);
+            assert_eq!(page.observations[0].harness_id.as_str(), "otlp.synthetic");
+            assert!(matches!(
+                &page.observations[0].kind,
+                ObservationKind::TraceSpan(span)
+                    if span.span_id == expected && span.target_source_id.as_deref() == Some(target)
+            ));
+        }
+        let old = store
+            .query_linked_traces(&query("harness.late", None))
+            .unwrap();
+        assert!(old.observations.is_empty());
+        add_session(&mut store, "harness.late");
+        assert!(
+            store
+                .query_linked_traces(&query("harness.late", Some(old.snapshot_id)))
+                .unwrap()
+                .observations
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .query_linked_traces(&query("harness.late", None))
+                .unwrap()
+                .observations
+                .len(),
+            1
+        );
+        let imported = store
+            .query_observations(&ObservationQuery {
+                limit: 10,
+                ..query("otlp.synthetic", None)
+            })
+            .unwrap();
+        assert_eq!(imported.observations.len(), 4);
+        assert!(imported.observations.iter().any(|row| matches!(
+            &row.kind,
+            ObservationKind::TraceSpan(span) if span.target_source_id.is_none()
+        )));
+
+        let (new_span, _) = from_spans(vec![bound("83d69f6fc3261115", "harness.codex")]).unwrap();
+        ObservationStore::commit(&mut store, "otlp.synthetic", Some("1"), "2", &new_span).unwrap();
+        let page = store
+            .query_linked_traces(&query("harness.codex", None))
+            .unwrap();
+        assert!(page.has_more);
+        let first = &page.observations[0];
+        let mut older = query("harness.codex", Some(page.snapshot_id));
+        older.before = Some(agenturm_kernel::ObservationPosition {
+            observed_at_unix_ns: first.observed_at_unix_ns,
+            harness_id: first.harness_id.as_str().into(),
+            event_id: first.event_id.clone(),
+            revision: first.revision,
+            snapshot_id: page.snapshot_id,
+        });
+        let page = store.query_linked_traces(&older).unwrap();
+        assert!(!page.has_more);
+        assert!(matches!(
+            &page.observations[0].kind,
+            ObservationKind::TraceSpan(span) if span.span_id == "83d69f6fc3261112"
+        ));
+    }
+
+    #[test]
+    fn invalid_or_conflicting_explicit_harness_binding_is_rejected() {
+        for values in [
+            vec!["../invalid"],
+            vec!["otlp.synthetic"],
+            vec!["harness.codex", "harness.pi"],
+        ] {
+            let mut span = fixture();
+            for source in values {
+                span["attributes"].as_array_mut().unwrap().push(json!({
+                    "key":"agenturm.source.id", "value":{"stringValue":source}
+                }));
+            }
+            assert!(from_spans(vec![span]).is_err());
         }
     }
 }

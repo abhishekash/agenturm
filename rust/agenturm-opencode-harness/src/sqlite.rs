@@ -1,11 +1,12 @@
 //! The source DB is opened read-only. Each poll has one SQLite snapshot and
 //! pages complete rows; only coarse facts cross the process boundary.
 
+use agenturm_protocol::observation::{McpCall, McpMethod, mcp_tool_labels};
 use agenturm_source_process::Result;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::Read;
@@ -15,7 +16,10 @@ use std::time::UNIX_EPOCH;
 const MAX_ROW_BYTES: i64 = 64 * 1024;
 const MAX_SCAN_ROWS: usize = 256;
 const MAX_STRUCTURAL_TOKENS: usize = 8192;
-const MAX_SOURCE_FILE_BYTES: u64 = 512 * 1024 * 1024;
+// SQLite reads only the admitted rows and bounded fields. The database
+// file can include content from fields that the adapter never projects.
+const MAX_DATABASE_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_WAL_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_SOURCE_ROWS: i64 = 50_000;
 
 fn invalid(message: &'static str) -> Box<dyn Error> {
@@ -28,6 +32,7 @@ fn digest(raw: impl AsRef<[u8]>) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Cursor {
     legacy: bool,
+    turns: bool,
     epoch: String,
     signature: String,
     identities: String,
@@ -49,7 +54,7 @@ impl Cursor {
         }
         let parts: Vec<_> = raw.split(':').collect();
         let legacy = parts.first() == Some(&"oc1");
-        if !matches!(parts.first().copied(), Some("oc1" | "oc2"))
+        if !matches!(parts.first().copied(), Some("oc1" | "oc2" | "oc3"))
             || parts.len() != if legacy { 12 } else { 13 }
             || ![parts[1], parts[2]].iter().all(|s| {
                 s.len() == 64
@@ -87,6 +92,7 @@ impl Cursor {
         }
         Ok(Some(Self {
             legacy,
+            turns: parts[0] == "oc3",
             epoch: parts[1].to_owned(),
             signature: parts[2].to_owned(),
             identities: if legacy {
@@ -108,7 +114,7 @@ impl Cursor {
 
     fn encode(&self) -> String {
         format!(
-            "oc2:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            "oc3:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             self.epoch,
             self.signature,
             self.identities,
@@ -126,13 +132,13 @@ impl Cursor {
 }
 
 #[cfg(unix)]
-fn file_mark(path: &Path) -> Result<String> {
+fn file_mark(path: &Path, max_bytes: u64) -> Result<String> {
     use std::os::unix::fs::MetadataExt;
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_file() {
         return Err(invalid("OpenCode source is not a regular file"));
     }
-    if metadata.len() > MAX_SOURCE_FILE_BYTES {
+    if metadata.len() > max_bytes {
         return Err(invalid("OpenCode source file ceiling exceeded"));
     }
     let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos();
@@ -150,7 +156,7 @@ fn file_mark(path: &Path) -> Result<String> {
 compile_error!("The OpenCode source adapter currently supports POSIX platforms only");
 
 fn fingerprint(path: &Path) -> Result<(String, String)> {
-    let main = file_mark(path)?;
+    let main = file_mark(path, MAX_DATABASE_BYTES)?;
     let wal = path.with_file_name(format!(
         "{}-wal",
         path.file_name()
@@ -158,7 +164,7 @@ fn fingerprint(path: &Path) -> Result<(String, String)> {
             .to_string_lossy()
     ));
     let wal_mark = if wal.exists() {
-        file_mark(&wal)?
+        file_mark(&wal, MAX_WAL_BYTES)?
     } else {
         String::new()
     };
@@ -345,14 +351,18 @@ fn wire_id(epoch: &str, table: &str, session: &str, row: &str, kind: &str) -> St
     format!("oc:{}", opaque(&[epoch, table, session, row, kind]))
 }
 
-fn identity(session: &str, operation: Option<&str>) -> Value {
+fn identity(session: &str, turn: Option<&str>, operation: Option<&str>) -> Value {
     let mut id = json!({"session_id":session});
+    if let Some(turn) = turn {
+        id["turn_id"] = json!(turn);
+    }
     if let Some(operation) = operation {
         id["operation_id"] = json!(operation);
     }
     id
 }
 
+#[derive(Clone, Copy)]
 struct FactScope<'a> {
     epoch: &'a str,
     table: &'a str,
@@ -361,13 +371,14 @@ struct FactScope<'a> {
     revision: u32,
     time_ns: &'a str,
     operation: Option<&'a str>,
+    turn: Option<&'a str>,
 }
 
 impl FactScope<'_> {
     fn record(&self, kind: &str, payload: Value) -> Value {
         json!({"event_id":wire_id(self.epoch,self.table,self.session,self.row,kind),
             "revision":self.revision,"kind":kind,"time_ns":self.time_ns,
-            "identity":identity(self.session,self.operation),"payload":payload})
+            "identity":identity(self.session,self.turn,self.operation),"payload":payload})
     }
 
     fn diagnostic(&self, code: &str) -> Value {
@@ -459,7 +470,67 @@ fn usage(raw: &Value) -> Result<Option<Value>> {
     Ok((!result.is_empty()).then_some(Value::Object(result)))
 }
 
-fn message_facts(cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
+fn known_idle_outcome(outcome: Option<&str>) -> Option<(&'static str, &'static str)> {
+    match outcome? {
+        "succeeded" => Some(("completed", "opencode_idle_succeeded")),
+        "failed" => Some(("failed", "opencode_idle_failed")),
+        "interrupted" => Some(("interrupted", "opencode_idle_interrupted")),
+        _ => None,
+    }
+}
+
+fn verified_turn(
+    db: &Connection,
+    cursor: &Cursor,
+    session: &str,
+    seq: i64,
+) -> Result<Option<String>> {
+    let mut statement = db.prepare_cached(
+        "SELECT seq, CASE WHEN length(CAST(id AS BLOB)) BETWEEN 1 AND 512 THEN id END
+         FROM session_message WHERE session_id=?1 AND rowid<=?2 AND type='idle' AND seq<?3
+         ORDER BY seq DESC LIMIT 2",
+    )?;
+    let mut rows = statement.query(params![session, cursor.message_max, seq])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let boundary: i64 = row.get(0)?;
+    let id: Option<String> = row.get(1)?;
+    if boundary < 0 {
+        return Ok(None);
+    }
+    if let Some(next) = rows.next()?
+        && next.get::<_, i64>(0)? == boundary
+    {
+        return Ok(None);
+    }
+    Ok(id
+        .filter(|id| id.starts_with("msg_"))
+        .map(|id| opaque(&["opencode-turn", &cursor.epoch, session, &id])))
+}
+
+fn part_turn(
+    db: &Connection,
+    cursor: &Cursor,
+    session: &str,
+    message_id: &str,
+) -> Result<Option<String>> {
+    let mut statement = db.prepare_cached(
+        "SELECT seq FROM session_message
+         WHERE session_id=?1 AND rowid<=?2 AND id=?3 AND type='assistant' LIMIT 2",
+    )?;
+    let mut rows = statement.query(params![session, cursor.message_max, message_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let seq: i64 = row.get(0)?;
+    if seq < 0 || rows.next()?.is_some() {
+        return Ok(None);
+    }
+    verified_turn(db, cursor, session, seq)
+}
+
+fn message_facts(db: &Connection, cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
     if row.session.is_empty()
         || row.session.len() > 256
         || row.id.is_empty()
@@ -470,6 +541,7 @@ fn message_facts(cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
     }
     let raw: Value = serde_json::from_str(row.data)?;
     let time_ns = stamp(row.updated)?;
+    let turn = verified_turn(db, cursor, row.session, row.order)?;
     let scope = FactScope {
         epoch: &cursor.epoch,
         table: "message",
@@ -478,6 +550,7 @@ fn message_facts(cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
         revision: cursor.revision,
         time_ns: &time_ns,
         operation: None,
+        turn: turn.as_deref(),
     };
     let facts = match row.kind {
         "user" => vec![scope.record("message", json!({"role":"user"}))],
@@ -486,11 +559,84 @@ fn message_facts(cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
             if let Some(counters) = usage(&raw)? {
                 facts.push(scope.record("usage", counters));
             }
+            facts.extend(inline_tool_facts(db, cursor, &scope, &raw)?);
             facts
         }
-        "idle" => Vec::new(),
+        "idle" => {
+            match (
+                turn.as_deref(),
+                known_idle_outcome(raw.get("outcome").and_then(Value::as_str)),
+            ) {
+                (Some(_), Some((state, reason))) => {
+                    vec![scope.record("lifecycle", json!({"state":state,"reason_code":reason}))]
+                }
+                _ => Vec::new(),
+            }
+        }
         _ => vec![scope.diagnostic("unsupported_opencode_message")],
     };
+    Ok(facts)
+}
+
+fn inline_tool_facts(
+    db: &Connection,
+    cursor: &Cursor,
+    message: &FactScope<'_>,
+    raw: &Value,
+) -> Result<Vec<Value>> {
+    const TOOL_LIMIT: usize = 16;
+    let Some(content) = raw.get("content").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    let tools: Vec<_> = content
+        .iter()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("tool"))
+        .take(TOOL_LIMIT + 1)
+        .collect();
+    if tools.is_empty() {
+        return Ok(Vec::new());
+    }
+    let separate_parts: bool = db
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM session_part
+         WHERE session_id=?1 AND message_id=?2 AND rowid<=?3 AND type='tool')",
+        )?
+        .query_row(
+            params![message.session, message.row, cursor.part_max],
+            |row| row.get(0),
+        )?;
+    if separate_parts {
+        return Ok(Vec::new());
+    }
+    let mut facts = Vec::new();
+    let mut seen = HashSet::new();
+    let mut incomplete = tools.len() > TOOL_LIMIT;
+    for tool in tools.into_iter().take(TOOL_LIMIT) {
+        let Some(id) = tool
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty() && id.len() <= 512 && !id.chars().any(char::is_control))
+        else {
+            incomplete = true;
+            continue;
+        };
+        if !seen.insert(id) {
+            incomplete = true;
+            continue;
+        }
+        let row = opaque(&[message.row, id]);
+        let operation = opaque(&[message.epoch, message.session, "inline-tool", &row]);
+        let scope = FactScope {
+            table: "inline-tool",
+            row: &row,
+            operation: Some(&operation),
+            ..*message
+        };
+        facts.extend(tool_facts(&scope, tool)?);
+    }
+    if incomplete {
+        facts.push(message.diagnostic("oversized_opencode_row"));
+    }
     Ok(facts)
 }
 
@@ -548,7 +694,7 @@ fn check_category(command: &str) -> Option<&'static str> {
     Some(category)
 }
 
-fn part_facts(cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
+fn part_facts(cursor: &Cursor, row: SourceRow<'_>, turn: Option<&str>) -> Result<Vec<Value>> {
     if row.order < 0
         || row.session.is_empty()
         || row.session.len() > 256
@@ -572,7 +718,12 @@ fn part_facts(cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
         revision: cursor.revision,
         time_ns: &time_ns,
         operation: Some(&operation),
+        turn,
     };
+    tool_facts(&scope, &raw)
+}
+
+fn tool_facts(scope: &FactScope<'_>, raw: &Value) -> Result<Vec<Value>> {
     let state = raw.get("state").and_then(Value::as_object);
     let status = state
         .and_then(|v| v.get("status"))
@@ -607,6 +758,27 @@ fn part_facts(cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
         _ => return Ok(vec![scope.diagnostic("opencode_tool_result_unknown")]),
     };
     let mut facts = vec![scope.record("tool", json!({"category":category(name),"result":result}))];
+    if let Some((server, tool)) = mcp_tool_labels(name) {
+        let duration_ns = raw.get("time").and_then(|time| {
+            let ran = time.get("ran")?.as_u64()?;
+            let completed = time.get("completed")?.as_u64()?;
+            completed
+                .checked_sub(ran)?
+                .checked_mul(1_000_000)
+                .filter(|duration| *duration <= i64::MAX as u64)
+        });
+        facts.push(scope.record(
+            "mcp_call",
+            serde_json::to_value(McpCall {
+                server: Some(server.into()),
+                tool: Some(tool.into()),
+                method: McpMethod::ToolsCall,
+                duration_ns,
+                result: result.into(),
+            })?,
+        ));
+    }
+
     // Tool completion alone only establishes that the tool returned. A
     // native shell exit code establishes the check outcome.
     if shell
@@ -655,16 +827,13 @@ fn session_fact(db: &Connection, cursor: &Cursor, session: &str) -> Result<Vec<V
         revision: cursor.revision,
         time_ns: &time_ns,
         operation: None,
+        turn: None,
     };
     let (state, reason) = match role.as_str() {
         "user" => ("running", "opencode_latest_user"),
         "assistant" => ("running", "opencode_latest_assistant"),
-        "idle" => match outcome.as_deref() {
-            Some("succeeded") => ("completed", "opencode_idle_succeeded"),
-            Some("failed") => ("failed", "opencode_idle_failed"),
-            Some("interrupted") => ("interrupted", "opencode_idle_interrupted"),
-            _ => ("paused", "opencode_idle_outcome_unknown"),
-        },
+        "idle" => known_idle_outcome(outcome.as_deref())
+            .unwrap_or(("paused", "opencode_idle_outcome_unknown")),
         _ => return Ok(vec![scope.diagnostic("opencode_latest_role_unknown")]),
     };
     Ok(vec![scope.record(
@@ -726,6 +895,7 @@ fn session_relationships(
             revision: cursor.revision,
             time_ns: &time_ns,
             operation: None,
+            turn: None,
         };
         facts.push(scope.record(
             "relationship",
@@ -733,6 +903,105 @@ fn session_relationships(
         ));
     }
     Ok(facts)
+}
+
+/// Exact admitted coordinates for a user row. No text is requested by ID alone.
+pub struct UserPromptEvidence<'a> {
+    pub event_id: &'a str,
+    pub turn_id: &'a str,
+    pub revision: u32,
+    pub observed_at_unix_ns: u64,
+}
+
+pub fn verify_prompt_checkpoint(path: &Path, raw_cursor: &str) -> Result<()> {
+    const SOURCE_CHANGED: &str =
+        "Prompt source changed or no longer matches the committed checkpoint";
+    let (epoch, signature) = fingerprint(path).map_err(|_| invalid(SOURCE_CHANGED))?;
+    if !Cursor::parse(raw_cursor)?.is_some_and(|cursor| {
+        cursor.turns && cursor.epoch == epoch && cursor.signature == signature
+    }) {
+        return Err(invalid(SOURCE_CHANGED));
+    }
+    Ok(())
+}
+
+/// Reconstructs exact user rows inside the still-current native SQLite sweep.
+/// The caller owns content grants and must recheck before final disclosure.
+pub fn prove_user_prompts(
+    path: &Path,
+    raw_cursor: &str,
+    session: &str,
+    evidence: &[UserPromptEvidence<'_>],
+) -> Result<BTreeMap<String, String>> {
+    const SOURCE_CHANGED: &str =
+        "Prompt source changed or no longer matches the committed checkpoint";
+    if evidence.len() > 256 || session.is_empty() || session.len() > 256 {
+        return Err(invalid("OpenCode prompt selection exceeds its bound"));
+    }
+    let (epoch, signature) = fingerprint(path).map_err(|_| invalid(SOURCE_CHANGED))?;
+    let cursor = Cursor::parse(raw_cursor)?
+        .filter(|cursor| cursor.turns && cursor.epoch == epoch && cursor.signature == signature)
+        .ok_or_else(|| invalid(SOURCE_CHANGED))?;
+    preflight_sidecars(path)?;
+    let db = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    db.busy_timeout(std::time::Duration::from_millis(250))?;
+    db.execute_batch("PRAGMA query_only=ON; BEGIN")?;
+    check_schema(&db)?;
+    let wanted: BTreeMap<_, _> = evidence
+        .iter()
+        .filter(|row| row.revision == cursor.revision)
+        .map(|row| (row.event_id, row))
+        .collect();
+    let mut statement = db.prepare(
+        "SELECT rowid, id, seq, time_updated FROM session_message
+         WHERE session_id=?1 AND rowid<=?2 AND type='user'
+           AND length(CAST(id AS BLOB)) BETWEEN 1 AND 512
+         ORDER BY rowid LIMIT ?3",
+    )?;
+    let mut rows = statement.query(params![session, cursor.message_max, MAX_SOURCE_ROWS + 1])?;
+    let mut count = 0;
+    let mut found = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        count += 1;
+        if count > MAX_SOURCE_ROWS {
+            return Err(invalid("OpenCode prompt source row limit exceeded"));
+        }
+        let native_id: String = row.get(1)?;
+        let event_id = wire_id(&cursor.epoch, "message", session, &native_id, "message");
+        let Some(expected) = wanted.get(event_id.as_str()) else {
+            continue;
+        };
+        let seq: i64 = row.get(2)?;
+        let updated: i64 = row.get(3)?;
+        let native_stamp = stamp(updated)?.parse::<u64>()?;
+        if native_stamp != expected.observed_at_unix_ns
+            || verified_turn(&db, &cursor, session, seq)?.as_deref() != Some(expected.turn_id)
+        {
+            continue;
+        }
+        let rowid: i64 = row.get(0)?;
+        let text: Option<String> = db.query_row(
+            "SELECT CASE WHEN length(CAST(data AS BLOB))<=65536 AND json_valid(data)
+                    AND json_type(data,'$.text')='text'
+                    AND length(CAST(json_extract(data,'$.text') AS BLOB)) BETWEEN 1 AND 2048
+                    THEN json_extract(data,'$.text') END
+             FROM session_message WHERE rowid=?1",
+            [rowid],
+            |row| row.get(0),
+        )?;
+        if let Some(text) = text
+            && found.insert(event_id, text).is_some()
+        {
+            return Err(invalid("OpenCode prompt identity is ambiguous"));
+        }
+    }
+    if fingerprint(path).map_err(|_| invalid(SOURCE_CHANGED))? != (epoch, signature) {
+        return Err(invalid(SOURCE_CHANGED));
+    }
+    Ok(found)
 }
 
 pub fn poll(
@@ -760,7 +1029,7 @@ pub fn poll(
     if sweep_finished
         && previous
             .as_ref()
-            .is_some_and(|c| c.signature == signature && !replacement && !c.legacy)
+            .is_some_and(|c| c.signature == signature && !replacement && c.turns)
     {
         return Ok(batch(source_id, raw_cursor, &[]));
     }
@@ -775,7 +1044,7 @@ pub fn poll(
     let start_sweep = previous.is_none()
         || replacement
         || sweep_finished
-        || previous.as_ref().is_some_and(|c| c.legacy);
+        || previous.as_ref().is_some_and(|c| !c.turns);
     let prior_counts = previous
         .as_ref()
         .map(|c| (c.message_count, c.part_count, c.session_count));
@@ -822,6 +1091,7 @@ pub fn poll(
         let identities = identity_digest(&db, (message_max, part_max, session_max))?;
         Cursor {
             legacy: false,
+            turns: true,
             epoch,
             signature,
             identities,
@@ -942,9 +1212,14 @@ pub fn poll(
                 data: &data,
             };
             if phase == 'm' {
-                message_facts(&cursor, row)?
+                message_facts(&db, &cursor, row)?
             } else {
-                part_facts(&cursor, row)?
+                let turn = if row.kind == "tool" {
+                    part_turn(&db, &cursor, row.session, row.id)?
+                } else {
+                    None
+                };
+                part_facts(&cursor, row, turn.as_deref())?
             }
         };
         if candidates.len() > max_records - records.len() {
@@ -1087,6 +1362,57 @@ mod tests {
         assert_eq!(facts[0]["payload"]["result"], "started");
     }
 
+    #[test]
+    fn turn_membership_requires_a_retained_idle_boundary_and_exact_assistant_part() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE session_message(id TEXT, session_id TEXT, type TEXT, seq INTEGER);
+             INSERT INTO session_message VALUES
+             ('msg_first','s','assistant',1),('msg_previous','s','idle',2),
+             ('msg_user','s','user',3),('msg_assistant','s','assistant',5),('msg_end','s','idle',8),
+             ('msg_wrong_other_session','other','idle',4);",
+        )
+        .unwrap();
+        let cursor = Cursor::parse(&format!(
+            "oc3:{}:{}:{}:0:m:0:6:1:1:6:1:1",
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64)
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(verified_turn(&db, &cursor, "s", 1).unwrap().is_none());
+        let turn = verified_turn(&db, &cursor, "s", 3).unwrap().unwrap();
+        assert_eq!(
+            part_turn(&db, &cursor, "s", "msg_assistant")
+                .unwrap()
+                .as_deref(),
+            Some(turn.as_str())
+        );
+        assert!(
+            part_turn(&db, &cursor, "other", "msg_assistant")
+                .unwrap()
+                .is_none()
+        );
+        let facts = message_facts(
+            &db,
+            &cursor,
+            SourceRow {
+                session: "s",
+                id: "msg_end",
+                kind: "idle",
+                order: 8,
+                updated: 15,
+                data: r#"{"outcome":"failed"}"#,
+            },
+        )
+        .unwrap();
+        assert_eq!(facts[0]["identity"]["turn_id"], turn);
+        assert_eq!(facts[0]["payload"]["reason_code"], "opencode_idle_failed");
+        let later = verified_turn(&db, &cursor, "s", 9).unwrap().unwrap();
+        assert_ne!(later, turn);
+    }
+
     fn fixture_part(raw: &Value) -> Vec<Value> {
         let cursor = Cursor::parse(&format!(
             "oc2:{}:{}:{}:0:p:0:1:1:1:1:1:1",
@@ -1106,6 +1432,7 @@ mod tests {
                 updated: 1,
                 data: &raw.to_string(),
             },
+            None,
         )
         .unwrap()
     }

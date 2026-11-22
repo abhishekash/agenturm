@@ -1,7 +1,11 @@
 use agenturm_kernel::{ExtensionId, Observation, ObservationKind, ObservationQuery};
-use agenturm_store::{Store, WorkspaceAnchor, WorkspaceLedger};
+use agenturm_store::{
+    ReviewKey, ReviewLedger, ReviewVersion as StoredReviewVersion, Store, WorkspaceAnchor,
+    WorkspaceLedger,
+};
 use agenturm_ui::{
-    HandoffEntry, PromptEntry, RequestEntry, TaskEntry, WorkAnchor, WorkCommand, WorkResult,
+    HandoffEntry, PromptEntry, RecordedSession, RequestEntry, ReviewNoteEntry, ReviewVersion,
+    TaskEntry, WorkAnchor, WorkCommand, WorkResult,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,12 +14,48 @@ const WORK_PAGE_SIZE: usize = 100;
 const WORKFLOW_EVIDENCE_LIMIT: usize = 5000;
 const MAX_REQUESTS: usize = 200;
 
+fn review_notes(
+    db: &Path,
+    session: RecordedSession,
+    note: Option<&str>,
+) -> Result<WorkResult, String> {
+    let key = ReviewKey {
+        harness_id: ExtensionId::parse(&session.harness_id).map_err(|error| error.to_string())?,
+        session_id: session.session_id.clone(),
+    };
+    let ledger = ReviewLedger::open(db).map_err(|error| format!("Open reviews failed: {error}"))?;
+    if let Some(note) = note {
+        let version = StoredReviewVersion {
+            receipt_sequence: session.review_version.receipt_sequence,
+            retained_observations: session.review_version.retained_observations,
+        };
+        ledger
+            .save_decision_note(&key, version, session.snapshot_id, note)
+            .map_err(|error| format!("Save review decision failed: {error}"))?;
+    }
+    let items = ledger
+        .decision_notes(&key)
+        .map_err(|error| format!("Read review decisions failed: {error}"))?
+        .into_iter()
+        .map(|item| ReviewNoteEntry {
+            version: ReviewVersion {
+                receipt_sequence: item.version.receipt_sequence,
+                retained_observations: item.version.retained_observations,
+            },
+            note: item.note,
+        })
+        .collect();
+    Ok(WorkResult::ReviewNotes { session, items })
+}
+
 pub(super) fn execute(
     store: &Store,
     db: &Path,
     command: WorkCommand,
 ) -> Result<WorkResult, String> {
     match command {
+        WorkCommand::ReviewNotes(session) => review_notes(db, session, None),
+        WorkCommand::SaveReviewNote { session, note } => review_notes(db, session, Some(&note)),
         WorkCommand::Tasks(before) => tasks(&ledger(db)?, before),
         WorkCommand::Handoffs(before) => handoffs(&ledger(db)?, before),
         WorkCommand::SaveTask {
@@ -107,15 +147,7 @@ pub(super) fn execute(
             )))
         }
         WorkCommand::Workflow => {
-            let (mut items, partial) = pending_requests(store)?;
-            let keys = items
-                .iter()
-                .map(request_key)
-                .collect::<Result<Vec<_>, _>>()?;
-            let seen = ledger(db)?.seen_requests(&keys).map_err(string)?;
-            for (item, key) in items.iter_mut().zip(keys) {
-                item.seen = seen.contains(&key);
-            }
+            let (items, partial) = pending_requests_with_seen(store, &ledger(db)?)?;
             Ok(WorkResult::Workflow { items, partial })
         }
         WorkCommand::Seen(item) => {
@@ -145,11 +177,33 @@ pub(super) fn execute(
             super::workflow_route::locate(&item.owner.source, &item.owner.session)
                 .map(WorkResult::Status)
         }
+        command => execute_prompt(db, None, command),
+    }
+}
+
+pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
+    matches!(
+        command,
+        WorkCommand::Prompts(_) | WorkCommand::RevealPrompt(_, _)
+    )
+}
+
+pub(super) fn execute_prompt(
+    db: &Path,
+    writer: Option<&Store>,
+    command: WorkCommand,
+) -> Result<WorkResult, String> {
+    match command {
         WorkCommand::Prompts(owner) => {
             let config = prompt_config(db)?;
             let source = ExtensionId::parse(&owner.source).map_err(string)?;
-            let prompts =
-                super::pi_preview::list_pi_user_prompts(db, &config, &source, &owner.session)?;
+            let prompts = super::content_preview::list_user_prompts(
+                db,
+                &config,
+                &source,
+                &owner.session,
+                writer,
+            )?;
             Ok(WorkResult::Prompts(
                 prompts
                     .into_iter()
@@ -169,19 +223,23 @@ pub(super) fn execute(
         WorkCommand::RevealPrompt(prompt, mut delivery) => {
             let config = prompt_config(db)?;
             let source = ExtensionId::parse(&prompt.anchor.source).map_err(string)?;
-            super::pi_preview::reveal_pi_user_prompt(
+            super::content_preview::reveal_user_prompt(
                 db,
                 &config,
                 &source,
-                &prompt.anchor.session,
-                &prompt.event_id,
-                prompt.revision,
+                super::content_preview::PromptSelection {
+                    session_id: &prompt.anchor.session,
+                    event_id: &prompt.event_id,
+                    revision: prompt.revision,
+                },
                 &mut delivery,
+                writer,
             )?;
             Ok(WorkResult::Status(
                 "Prompt shown from the verified current source".into(),
             ))
         }
+        _ => Err("Unsupported prompt request".into()),
     }
 }
 
@@ -192,7 +250,7 @@ fn prompt_config(db: &Path) -> Result<PathBuf, String> {
         Ok(config)
     } else {
         Err(
-            "Set AGENTURM_CONTENT_CONFIG to the collection config used to grant Pi prompt access."
+            "Set AGENTURM_CONTENT_CONFIG to the collection config used to grant prompt access."
                 .into(),
         )
     }
@@ -309,6 +367,21 @@ fn pending_requests(store: &Store) -> Result<(Vec<RequestEntry>, bool), String> 
     Ok((results, partial))
 }
 
+pub(super) fn pending_requests_with_seen(
+    store: &Store,
+    ledger: &WorkspaceLedger,
+) -> Result<(Vec<RequestEntry>, bool), String> {
+    let (mut items, partial) = pending_requests(store)?;
+    let keys = items
+        .iter()
+        .map(request_key)
+        .collect::<Result<Vec<_>, _>>()?;
+    let seen = ledger.seen_requests(&keys).map_err(string)?;
+    for (item, key) in items.iter_mut().zip(keys) {
+        item.seen = seen.contains(&key);
+    }
+    Ok((items, partial))
+}
 fn project_requests(rows: &[Observation]) -> Vec<RequestEntry> {
     let mut latest_revisions = HashMap::new();
     for row in rows

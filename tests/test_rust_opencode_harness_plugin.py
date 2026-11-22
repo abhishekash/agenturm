@@ -217,7 +217,7 @@ class RustOpenCodeHarnessTests(unittest.TestCase):
             self.drain(worker)
             current = worker.cursor
         fields = current.split(":")
-        self.assertEqual(fields[0], "oc2")
+        self.assertEqual(fields[0], "oc3")
         def old_mark(path):
             stat = path.stat()
             return f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"

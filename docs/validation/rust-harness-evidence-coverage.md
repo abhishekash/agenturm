@@ -1,9 +1,8 @@
 # Rust harness evidence coverage
 
 This matrix describes the evidence each Rust adapter can emit and the checks
-that exercise it. The Linux bundle defaults to Pi and Codex. Claude Code, Kiro
-and OpenCode have separate Rust adapter crates and require explicit
-configuration. Source continuity diagnostics report specific gaps the adapter
+that exercise it. The Linux bundle discovers Pi, Codex, Claude Code, Kiro, and OpenCode
+through separate Rust adapter executables. Source continuity diagnostics report specific gaps the adapter
 detected.
 
 | Harness | Session, turn and lifecycle | Activity and usage | Coverage and relationships | Verification |
@@ -12,7 +11,7 @@ detected.
 | Codex | The rollout header supplies thread identity and can identify a worker. Native turn IDs attach when present. Task completion, explicit final answers and aborts produce bounded lifecycle evidence. The adapter diagnoses late outcomes it cannot attribute to the current turn. | User and assistant roles, token and cache counters, tool activity, a bounded set of explicit test, lint and build results, and a typed work result for an explicitly successful GitHub PR creation. A missing tool outcome produces a diagnostic. | Shared JSONL continuity diagnostics and unsupported, historical or unknown-result diagnostics. Explicit delegation and fork relationships retain child and parent thread IDs. Complete check coverage is open. | [Adapter tests](../../rust/agenturm-codex-harness/src/codex.rs) and [commit, retry, ACK and reopen through the real adapter](../../rust/agenturm-runtime/tests/codex_process.rs). A real local Codex rollout also passed collect, reopen and terminal inspection for delegation. |
 | Claude Code | Main transcript session identity and optional agent identity. Observed user messages establish turn context. An explicit end-turn records completion. Unknown stop reasons produce a diagnostic. | User and assistant roles, tool calls and results, and per-model-message usage and cache counters. Check outcomes are open. | Shared JSONL continuity diagnostics and unsupported-row, stop-reason and content-block evidence. Parent/child edges are open. | [Adapter-level tests](../../rust/agenturm-claude-harness/src/claude.rs) cover stream checkpoints, tool outcomes and privacy. The local fixture run below verified completion after reopen. |
 | Kiro | Configured JSONL path and native row identities distinguish main and worker streams. Turn-end records preserve explicit completion, cancellation or failure. Bounded interaction tracking records pauses and resumed activity. | User and assistant roles, correlated tool calls and results, and a distinct credit-usage fact from native summaries. Check outcomes are open. | Shared JSONL continuity diagnostics and scoped permission, queued-prompt and unsupported-evidence diagnostics. The spawning transcript's `sub_agent_start.subSessionId` supplies the immediate worker relationship. | [Adapter-level tests](../../rust/agenturm-kiro-harness/src/kiro.rs) cover path identity, permissions, checkpoints, and credit evidence. A [real-process fixture](../../rust/agenturm-runtime/tests/kiro_process.rs) commits, ACKs and reopens an explicit failed turn, two levels of delegation, and fractional, zero and unknown credit evidence. |
-| OpenCode | The current SQLite adapter uses session identity and explicit idle outcome when present. The session-level lifecycle scope is limited to the session. | User and assistant roles, token and cache counters, and typed tool status from tool parts. Recognized direct test, lint and build commands emit a check when a native terminal shell exit is recorded. | Database continuity, oversized-record and unknown-outcome diagnostics. `session_v2.parent_id` and `fork_session_id` supply separate delegation and fork facts. Stable turn membership is open. | [Current SQLite adapter](../../rust/agenturm-opencode-harness/src/sqlite.rs) and [standalone check and relationship round trip](../../rust/agenturm-opencode-harness/tests/configured_checks.rs). The fixture run below verified an explicit idle failure after reopen. |
+| OpenCode | The current SQLite adapter uses session identity and explicit idle outcomes. A retained preceding idle boundary scopes later native messages, tool parts, and the closing outcome to one turn. | User and assistant roles, token and cache counters, and typed tool status from tool parts. Recognized direct test, lint and build commands emit a check when a native terminal shell exit is recorded. | Database continuity, oversized-record and unknown-outcome diagnostics. `session_v2.parent_id` and `fork_session_id` supply separate delegation and fork facts. A missing prior idle boundary leaves evidence scoped to the session. | [Current SQLite adapter](../../rust/agenturm-opencode-harness/src/sqlite.rs) and [standalone check and relationship round trip](../../rust/agenturm-opencode-harness/tests/configured_checks.rs). The fixture run below verified an explicit idle failure after reopen. |
 
 A Linux run with the real Rust plugin host and adapters collected a synthetic
 Claude Code transcript and an OpenCode SQLite fixture in one command. It
@@ -25,7 +24,7 @@ reopened their lifecycle observations. The Codex sample containing internal
 automated review was excluded by the adapter’s existing review boundary. A bounded snapshot of one actual
 OpenCode session preserved 64 native message rows and yielded 107 committed
 observations, including lifecycle, message, usage, and diagnostics. The live
-OpenCode database exceeded the current 512 MiB adapter limit. The snapshot
+OpenCode database exceeded the former 512 MiB database limit. The current reader accepts up to 1 GiB and retains separate WAL and row budgets. The snapshot
 exercise covered native SQLite rows within that limit. The separate native-schema
 check fixture supplied explicit tool exits and verified paired check/tool
 operation IDs after restart. A separate metadata-only extract of ten native
@@ -111,10 +110,11 @@ inspector showed its pane with user and assistant counts and token totals from
 reopened Pi fixture data. BackTab opened Metrics, where the same extension
 reported its output-token count.
 
-[Host-owned Pi content grants](rust-content-grant-fence.md) are persisted.
-Verified delivery of private content remains open. Pi has a
-[separate experiment for bounded references](../../rust/agenturm-pi-harness/src/content.rs)
-outside the standalone observation path.
+The [host-owned prompt grant path](rust-content-grant-fence.md) covers
+pinned Pi, Codex, Claude Code, and Kiro JSONL sources and a current pinned
+OpenCode SQLite sweep. JSONL history requires a retained receipt proof
+covering the exact row. The fixture test reopens a failed OpenCode
+turn beside later work and checks a scoped prompt and inline tool call.
 
 Step 3 still requires actual-record collection, reopen and interactive inspection
 for each supported harness, including missing evidence, subsequent turns, pane

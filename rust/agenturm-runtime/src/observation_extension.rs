@@ -97,6 +97,100 @@ pub fn verify_extension_artifact(path: &Path, sha256: &str) -> Result<(), String
     verify_artifact(path, sha256, MAX_ARTIFACT_BYTES, None).map_err(|error| error.to_string())
 }
 
+/// Runs one credential-free, pinned connector exchange on the same bounded
+/// process transport used by observation extensions.
+pub(crate) fn invoke_connector(
+    executable: &Path,
+    sha256: &str,
+    request: &[u8],
+) -> Result<Vec<u8>, &'static str> {
+    #[cfg(unix)]
+    fn run(executable: &Path, sha256: &str, request: &[u8]) -> Result<Vec<u8>, InvocationError> {
+        use std::os::unix::process::CommandExt;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let artifact = open_connector_artifact(executable, sha256, deadline)?;
+        #[cfg(target_os = "linux")]
+        let executable = PathBuf::from(format!("/proc/self/fd/{}", artifact.as_raw_fd()));
+        #[cfg(not(target_os = "linux"))]
+        let _artifact = artifact;
+        let process = Command::new(executable)
+            .current_dir("/")
+            .env_clear()
+            .env("AGENTURM_CONNECTOR_PROTOCOL", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .map_err(|_| InvocationError::Launch)?;
+        let mut guard = GuardedChild(Some(process));
+        let process = guard.0.as_mut().expect("child guard populated");
+        let input = process
+            .stdin
+            .as_ref()
+            .ok_or(InvocationError::Pipe)?
+            .as_raw_fd();
+        let output = process
+            .stdout
+            .as_ref()
+            .ok_or(InvocationError::Pipe)?
+            .as_raw_fd();
+        set_nonblocking(input).map_err(|_| InvocationError::Pipe)?;
+        set_nonblocking(output).map_err(|_| InvocationError::Pipe)?;
+        write_frame_deadline(input, request, deadline)?;
+        drop(process.stdin.take());
+        let response = read_frame_deadline(output, deadline)?;
+        require_eof_deadline(output, deadline)?;
+        wait_child_deadline(process, deadline)?;
+        if !process.wait().map_err(|_| InvocationError::Io)?.success() {
+            return Err(InvocationError::Exit);
+        }
+        Ok(response)
+    }
+    #[cfg(unix)]
+    return run(executable, sha256, request).map_err(|error| match error {
+        InvocationError::Timeout => "connector_timeout",
+        InvocationError::Protocol(_) => "connector_protocol_error",
+        _ => "connector_process_error",
+    });
+    #[cfg(not(unix))]
+    {
+        let _ = (executable, sha256, request);
+        Err("connector_unsupported_platform")
+    }
+}
+
+pub(crate) fn verify_connector_artifact(
+    executable: &Path,
+    sha256: &str,
+) -> Result<(), &'static str> {
+    #[cfg(unix)]
+    return open_connector_artifact(executable, sha256, Instant::now() + Duration::from_secs(2))
+        .map(|_| ())
+        .map_err(|_| "connector_artifact_mismatch");
+    #[cfg(not(unix))]
+    {
+        let _ = (executable, sha256);
+        Err("connector_unsupported_platform")
+    }
+}
+
+#[cfg(unix)]
+fn open_connector_artifact(
+    path: &Path,
+    hash: &str,
+    deadline: Instant,
+) -> Result<File, InvocationError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| InvocationError::Protocol("connector executable is unavailable"))?;
+    verify_artifact_file(&file, hash, MAX_ARTIFACT_BYTES, Some(deadline))?;
+    Ok(file)
+}
+
 fn validate_config(config: &ProcessObservationExtensionConfig) -> Result<(), String> {
     if !config.executable.is_absolute() {
         return Err("extension executable path must be absolute".into());
@@ -597,10 +691,19 @@ fn verify_artifact(
     max_bytes: u64,
     deadline: Option<Instant>,
 ) -> Result<(), InvocationError> {
-    validate_sha256(expected)
-        .map_err(|_| InvocationError::Protocol("extension SHA-256 pin is invalid"))?;
     let file = File::open(path)
         .map_err(|_| InvocationError::Protocol("extension executable is unavailable"))?;
+    verify_artifact_file(&file, expected, max_bytes, deadline)
+}
+
+fn verify_artifact_file(
+    file: &File,
+    expected: &str,
+    max_bytes: u64,
+    deadline: Option<Instant>,
+) -> Result<(), InvocationError> {
+    validate_sha256(expected)
+        .map_err(|_| InvocationError::Protocol("extension SHA-256 pin is invalid"))?;
     let metadata = file
         .metadata()
         .map_err(|_| InvocationError::Protocol("extension executable metadata is unavailable"))?;

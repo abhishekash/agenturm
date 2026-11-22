@@ -10,8 +10,8 @@ mod workbench;
 mod workspace;
 
 pub use workbench::{
-    HandoffEntry, PromptDelivery, PromptEntry, RequestEntry, TaskEntry, WorkAnchor, WorkCommand,
-    WorkResult,
+    HandoffEntry, PromptDelivery, PromptEntry, RequestEntry, ReviewNoteEntry, TaskEntry,
+    WorkAnchor, WorkCommand, WorkResult,
 };
 
 pub use workspace::{

@@ -59,6 +59,12 @@ fn spawn_child(path: &PathBuf) -> Result<(OwnedChild, ChildStdin, ChildStdout)> 
     if let Some(root) = std::env::var_os("AGENTURM_PLUGIN_SOURCE_ROOT") {
         command.env("AGENTURM_PLUGIN_SOURCE_ROOT", root);
     }
+    if std::env::var_os("AGENTURM_PLUGIN_LEGACY_ADMISSION").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        command.env("AGENTURM_PLUGIN_LEGACY_ADMISSION", "1");
+    }
+
     if std::env::var_os("AGENTURM_PLUGIN_DISCOVERY_MODE").as_deref()
         == Some(std::ffi::OsStr::new("1"))
     {

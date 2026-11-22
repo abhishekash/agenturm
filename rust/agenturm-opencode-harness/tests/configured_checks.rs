@@ -228,3 +228,149 @@ fn run(command: &mut Command) -> String {
     );
     stdout
 }
+
+#[test]
+fn opencode_turns_and_granted_prompts_survive_collection_and_reopen() {
+    use sha2::{Digest, Sha256};
+
+    let (Some(app), Some(host)) = (
+        std::env::var_os("AGENTURM_RUNTIME_APP"),
+        std::env::var_os("AGENTURM_RUNTIME_PLUGIN_HOST"),
+    ) else {
+        eprintln!("skipping OpenCode prompt proof: set Rust app and plugin host paths");
+        return;
+    };
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("agenturm-opencode-proof-{unique}"));
+    fs::create_dir(&root).unwrap();
+    let source = root.join("native.sqlite");
+    let history = root.join("history.sqlite");
+    let config = root.join("sources.json");
+    let catalog = root.join("catalog.json");
+    let adapter = root.join("adapter");
+    fs::copy(env!("CARGO_BIN_EXE_agenturm-opencode-harness"), &adapter).unwrap();
+    make_native_fixture(&source);
+    let native = Connection::open(&source).unwrap();
+    for (seq, id, role, payload) in [
+        (1, "msg_before", "idle", r#"{"outcome":"succeeded"}"#),
+        (
+            2,
+            "msg_request",
+            "user",
+            r#"{"text":"review fixture scenario"}"#,
+        ),
+        (3, "msg_end", "idle", r#"{"outcome":"failed"}"#),
+        (
+            4,
+            "msg_next",
+            "user",
+            r#"{"text":"check next fixture scenario"}"#,
+        ),
+        (
+            5,
+            "msg_inline",
+            "assistant",
+            r#"{"content":[{"type":"tool","name":"mcp__fixture__lookup","id":"native-op","time":{"ran":30,"completed":34},"state":{"status":"completed","input":{"text":"synthetic private tool input"}}}]}"#,
+        ),
+    ] {
+        native
+            .execute(
+                "INSERT INTO session_message VALUES
+                 (?1,'ses_schema_fixture',?2,?3,1794650400000+?3,1794650400000+?3,?4)",
+                params![id, role, seq, payload],
+            )
+            .unwrap();
+    }
+    drop(native);
+    fs::write(
+        &catalog,
+        serde_json::to_vec(&json!({
+            "version":1,
+            "plugins":[{
+                "plugin_id":"example.rust-opencode-harness", "adapter":adapter,
+                "sha256":format!("{:x}", Sha256::digest(fs::read(&adapter).unwrap())),
+                "protocol":1, "features":["source-adapter/1","configured-root/1"],
+                "observation_format":"agenturm-observations/1"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(&config, serde_json::to_vec(&json!({
+        "version":2, "plugin_host":Path::new(&host), "plugin_catalog":catalog,
+        "sources":[{"plugin_id":"example.rust-opencode-harness","source_root":source,"source_id":"harness.opencode"}]
+    })).unwrap()).unwrap();
+    let args = ["--db", history.to_str().unwrap()];
+    run(Command::new(&app)
+        .arg("collect")
+        .args(args)
+        .arg("--config")
+        .arg(&config));
+    let query = run(Command::new(&app).arg("query").args(args));
+    assert!(!query.contains("review fixture scenario"));
+    assert!(!query.contains("synthetic private tool input"));
+    let json: Value = serde_json::from_str(&query).unwrap();
+    let rows = json["observations"].as_array().unwrap();
+    let failed = rows
+        .iter()
+        .find(|row| {
+            row["observation"]["state"] == "failed" && row["identity"]["turn_id"].is_string()
+        })
+        .unwrap();
+    let mcp = rows
+        .iter()
+        .find(|row| row["observation"]["kind"] == "mcp_call")
+        .unwrap();
+    assert_eq!(mcp["observation"]["server"], "fixture");
+    assert_eq!(mcp["observation"]["tool"], "lookup");
+    assert_eq!(mcp["observation"]["duration_ns"], "4000000");
+    assert!(rows.iter().any(|row| row["observation"]["kind"] == "tool"
+        && row["identity"]["operation_id"] == mcp["identity"]["operation_id"]));
+    let request = |action| {
+        let mut command = Command::new(&app);
+        command
+            .args(["content", action])
+            .args(args)
+            .args(["--source-id", "harness.opencode"]);
+        if action != "revoke" {
+            command.arg("--config").arg(&config);
+        }
+        command
+    };
+    assert!(
+        !request("list")
+            .args(["--session-id", "ses_schema_fixture"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    run(&mut request("grant"));
+    let listed = run(request("list").args(["--session-id", "ses_schema_fixture"]));
+    let listed: Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 2);
+    assert_eq!(listed[0]["turn_id"], failed["identity"]["turn_id"]);
+    assert_ne!(listed[0]["turn_id"], listed[1]["turn_id"]);
+    assert_eq!(listed[1]["turn_id"], mcp["identity"]["turn_id"]);
+    let mut preview = request("preview");
+    preview.args([
+        "--event-id",
+        listed[0]["event_id"].as_str().unwrap(),
+        "--revision",
+        "0",
+    ]);
+    assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
+    Connection::open(&source)
+        .unwrap()
+        .execute(
+            "UPDATE session_message SET data=?1 WHERE id='msg_request'",
+            [r#"{"text":"modified fixture scenario"}"#],
+        )
+        .unwrap();
+    assert!(!preview.output().unwrap().status.success());
+    run(&mut request("revoke"));
+    fs::remove_dir_all(root).unwrap();
+}

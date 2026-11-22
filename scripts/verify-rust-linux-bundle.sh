@@ -171,6 +171,31 @@ inspect_history "$db"
 "${isolated[@]}" query --db "$state/backup.sqlite" | expect_usage
 echo "Verified extracted bundle, foreground restart, both sessions in the inspector, and backup"
 
+harness_home="$scratch/harness-home"
+claude="$harness_home/.claude/projects/example"
+kiro="$harness_home/.kiro/sessions/example/sess_bundle_kiro"
+mkdir -p -- "$claude" "$kiro"
+cat > "$claude/session.jsonl" <<'JSONL'
+{"type":"user","sessionId":"bundle-claude-session","uuid":"user-1","timestamp":"2026-11-20T12:00:00Z","message":{"content":"Synthetic prompt"}}
+{"type":"assistant","sessionId":"bundle-claude-session","uuid":"assistant-1","timestamp":"2026-11-20T12:00:01Z","message":{"content":[{"type":"text","text":"Synthetic answer"}],"stop_reason":"end_turn"}}
+JSONL
+cat > "$kiro/messages.jsonl" <<'JSONL'
+{"id":"user-1","timestamp":"2026-11-20T12:00:00Z","payload":{"type":"user","content":"Synthetic prompt"}}
+{"id":"end-1","timestamp":"2026-11-20T12:00:01Z","payload":{"type":"turn_end","stopReason":"end_turn"}}
+JSONL
+harness_isolated=(env -i HOME="$harness_home" PATH="$empty_path" "$agenturm")
+harness_config="$state/additional-harnesses.json"
+harness_db="$state/additional-harnesses.sqlite"
+"${harness_isolated[@]}" discover --sessions-per-harness 1 > "$harness_config"
+jq -e '[.sources[].plugin_id] | sort == ["example.rust-claude-harness", "example.rust-kiro-harness"]' "$harness_config" > /dev/null
+"${harness_isolated[@]}" collect --config "$harness_config" --db "$harness_db" > "$state/additional-harnesses.log"
+"${harness_isolated[@]}" query --db "$harness_db" | jq -e '
+    [.observations[] | select(.observation.kind == "lifecycle" and .observation.state == "completed")
+        | .identity.session_id] | sort == ["bundle-claude-session", "sess_bundle_kiro"]
+' > /dev/null
+echo "Verified bundled Claude Code and Kiro discovery, collection, and reopen"
+
+
 wait_for_live_check() {
     local attempt
     for ((attempt=0; attempt<100; attempt++)); do

@@ -218,6 +218,12 @@ mod linux {
             self.lexical.verify()
         }
 
+        /// The canonical database target captured at lease acquisition.
+        /// Recheck admission around any open using this pathname.
+        pub fn database_path(&self) -> &Path {
+            &self.inner.target
+        }
+
         /// The resolved sibling lock path, for diagnostics and tests only.
         pub fn lock_path(&self) -> &Path {
             &self.inner.lock_path

@@ -42,7 +42,7 @@ pub(super) fn read_state(connection: &Connection) -> Result<RetentionState> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     match version {
         8 | 9 => Ok(RetentionState::default()),
-        SCHEMA_VERSION => connection
+        10..=SCHEMA_VERSION => connection
             .query_row(
                 "SELECT cutoff_unix_ns, snapshot_offset, minimum_snapshot_id
                  FROM agenturm_retention_state WHERE singleton = 1",
@@ -148,6 +148,17 @@ impl Store {
             "DELETE FROM agenturm_observations WHERE observed_at_unix_ns < ?1",
             [cutoff],
         )?;
+        if removed_observations > 0 {
+            transaction.execute(
+                "DELETE FROM agenturm_content_cursor_proofs AS proof
+                 WHERE proof.request_id NOT IN (
+                    SELECT request_id FROM agenturm_observations
+                    WHERE json_extract(kind_json, '$.kind') = 'message'
+                      AND json_extract(kind_json, '$.role') = 'user'
+                 )",
+                [],
+            )?;
+        }
         transaction.execute(
             "UPDATE agenturm_retention_state SET cutoff_unix_ns = ?1,
                     snapshot_offset = ?2, minimum_snapshot_id = ?3 WHERE singleton = 1",

@@ -1,10 +1,17 @@
 //! Bounded, content-free translation of one Claude Code main-transcript row.
 
 use agenturm_jsonl_source::Result;
+use agenturm_protocol::observation::{McpCall, McpMethod, is_mcp_identifier, mcp_tool_labels};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::error::Error;
+use std::fmt::Write;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+// Leave room for the turn/usage fields and the shared JSONL cursor envelope.
+// Even two maximum-length labels fit as one exact current declaration.
+const MAX_MCP_CHECKPOINT_BYTES: usize = 384;
+const MAX_MCP_DECLARATIONS: usize = 4;
 
 fn invalid(message: &'static str) -> Box<dyn Error> {
     message.into()
@@ -30,6 +37,77 @@ pub(crate) struct Context {
     worker_id: String,
     last_usage_key: String,
     last_usage: [Option<u64>; 4],
+    mcp: Vec<McpDeclaration>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct McpDeclaration {
+    operation: String,
+    worker: String,
+    turn: String,
+    /// Conflicting declarations with the same anchor withhold name linkage.
+    labels: Option<(String, String)>,
+}
+
+impl McpDeclaration {
+    fn wire_len(&self) -> usize {
+        let (server, tool) = self.labels.as_ref().map_or(("-", "-"), |(server, tool)| {
+            (server.as_str(), tool.as_str())
+        });
+        5 + self.operation.len() + self.worker.len() + self.turn.len() + server.len() + tool.len()
+    }
+}
+
+impl Context {
+    fn mcp_worker(&self) -> String {
+        if self.worker_id.is_empty() {
+            "x".into()
+        } else {
+            digest(&self.worker_id)
+        }
+    }
+
+    fn remember_mcp(&mut self, operation: &str, labels: Option<(&str, &str)>) {
+        let worker = self.mcp_worker();
+        let turn = checkpoint_field(&self.turn_id);
+        if let Some(call) = self
+            .mcp
+            .iter_mut()
+            .find(|call| call.operation == operation && call.worker == worker && call.turn == turn)
+        {
+            if call
+                .labels
+                .as_ref()
+                .is_some_and(|(server, tool)| Some((server.as_str(), tool.as_str())) != labels)
+            {
+                call.labels = None;
+            }
+            return;
+        }
+        let Some((server, tool)) = labels else { return };
+        self.mcp.push(McpDeclaration {
+            operation: operation.to_owned(),
+            worker,
+            turn: turn.to_owned(),
+            labels: Some((server.to_owned(), tool.to_owned())),
+        });
+        while self.mcp.len() > MAX_MCP_DECLARATIONS
+            || self.mcp.iter().map(McpDeclaration::wire_len).sum::<usize>()
+                > MAX_MCP_CHECKPOINT_BYTES
+        {
+            self.mcp.remove(0);
+        }
+    }
+
+    fn mcp_labels(&self, operation: &str) -> Option<(&str, &str)> {
+        let worker = self.mcp_worker();
+        let turn = checkpoint_field(&self.turn_id);
+        self.mcp
+            .iter()
+            .find(|call| call.operation == operation && call.worker == worker && call.turn == turn)
+            .and_then(|call| call.labels.as_ref())
+            .map(|(server, tool)| (server.as_str(), tool.as_str()))
+    }
 }
 
 pub(crate) fn header_identity(raw: &[u8]) -> Result<Context> {
@@ -47,27 +125,45 @@ pub(crate) fn header_identity(raw: &[u8]) -> Result<Context> {
         worker_id: String::new(),
         last_usage_key: String::new(),
         last_usage: [None; 4],
+        mcp: Vec::new(),
     })
 }
 
+fn checkpoint_field(value: &str) -> &str {
+    if value.is_empty() { "x" } else { value }
+}
+
 pub(crate) fn checkpoint(context: &Context) -> String {
-    fn field(value: &str) -> &str {
-        if value.is_empty() { "x" } else { value }
-    }
     let number = |value: Option<u64>| value.map_or("x".to_owned(), |value| value.to_string());
-    format!(
+    let mut checkpoint = format!(
         "c.{}.{}.{}.{}.{}.{}",
-        field(&context.turn_id),
-        field(&context.last_usage_key),
+        checkpoint_field(&context.turn_id),
+        checkpoint_field(&context.last_usage_key),
         number(context.last_usage[0]),
         number(context.last_usage[1]),
         number(context.last_usage[2]),
         number(context.last_usage[3])
-    )
+    );
+    for call in &context.mcp {
+        let (server, tool) = call.labels.as_ref().map_or(("-", "-"), |(server, tool)| {
+            (server.as_str(), tool.as_str())
+        });
+        write!(
+            checkpoint,
+            ":{}:{}:{}:{server}:{tool}",
+            call.operation, call.worker, call.turn
+        )
+        .expect("writing a string does not fail");
+    }
+    checkpoint
 }
 
 pub(crate) fn restore(context: &mut Context, checkpoint: &str) -> Result<()> {
-    let fields: Vec<_> = checkpoint.split('.').collect();
+    let (base, mcp) = checkpoint.split_once(':').unwrap_or((checkpoint, ""));
+    if checkpoint.ends_with(':') {
+        return Err(invalid("invalid Claude MCP checkpoint"));
+    }
+    let fields: Vec<_> = base.split('.').collect();
     if fields.len() != 7 || fields[0] != "c" {
         return Err(invalid("invalid Claude turn checkpoint"));
     }
@@ -104,6 +200,47 @@ pub(crate) fn restore(context: &mut Context, checkpoint: &str) -> Result<()> {
     }
     if context.last_usage_key.is_empty() && context.last_usage.iter().any(Option::is_some) {
         return Err(invalid("Claude checkpoint usage lacks identity"));
+    }
+    context.mcp.clear();
+    if !mcp.is_empty() {
+        let fields = mcp.split(':').collect::<Vec<_>>();
+        let (entries, rest) = fields.as_chunks::<5>();
+        if !rest.is_empty()
+            || entries.len() > MAX_MCP_DECLARATIONS
+            || mcp.len() >= MAX_MCP_CHECKPOINT_BYTES
+        {
+            return Err(invalid("Claude MCP checkpoint exceeds its bounds"));
+        }
+        for &[operation, worker, turn, server, tool] in entries {
+            if operation == "x"
+                || !hash(operation)
+                || !hash(worker)
+                || turn != checkpoint_field(&context.turn_id)
+                || context
+                    .mcp
+                    .iter()
+                    .any(|known| known.operation == operation && known.worker == worker)
+            {
+                return Err(invalid("invalid Claude MCP checkpoint operation"));
+            }
+            let labels = if server == "-" && tool == "-" {
+                None
+            } else if is_mcp_identifier(server)
+                && is_mcp_identifier(tool)
+                && !server.contains("__")
+                && !tool.contains("__")
+            {
+                Some((server.to_owned(), tool.to_owned()))
+            } else {
+                return Err(invalid("invalid Claude MCP checkpoint labels"));
+            };
+            context.mcp.push(McpDeclaration {
+                operation: operation.to_owned(),
+                worker: worker.to_owned(),
+                turn: turn.to_owned(),
+                labels,
+            });
+        }
     }
     Ok(())
 }
@@ -192,6 +329,40 @@ fn category(name: &str) -> &'static str {
     } else {
         "other"
     }
+}
+
+fn mcp_payload((server, tool): (&str, &str), result: &str) -> Value {
+    json!(McpCall {
+        server: Some(server.to_owned()),
+        tool: Some(tool.to_owned()),
+        method: McpMethod::ToolsCall,
+        duration_ns: None,
+        result: result.to_owned(),
+    })
+}
+
+fn append_mcp_details(facts: &mut Vec<Value>, details: Vec<Value>) -> Result<()> {
+    use agenturm_jsonl_source::{MAX_STRUCTURAL_TOKENS, structural_tokens};
+    // Preserve all existing facts on dense lines. Leave room for the shared
+    // cursor and batch envelope within the configured host frame limits.
+    const MAX_RECORDS: usize = 256;
+    const MAX_BYTES: usize = 64 * 1024 - 1024;
+    if details.is_empty() {
+        return Ok(());
+    }
+    let encoded = serde_json::to_vec(facts)?;
+    let mut bytes = encoded.len();
+    let mut tokens = structural_tokens(&encoded);
+    for detail in details {
+        let encoded = serde_json::to_vec(&detail)?;
+        bytes += encoded.len() + 1;
+        tokens += structural_tokens(&encoded) + 1;
+        if facts.len() >= MAX_RECORDS || bytes > MAX_BYTES || tokens > MAX_STRUCTURAL_TOKENS - 64 {
+            break;
+        }
+        facts.push(detail);
+    }
+    Ok(())
 }
 
 fn count(value: &Value) -> Result<u64> {
@@ -319,6 +490,7 @@ pub(crate) fn translate_line(
     let content = message.get("content").unwrap_or(&Value::Null);
     let blocks = blocks(content)?;
     let mut facts = Vec::new();
+    let mut mcp_details = Vec::new();
     if kind == "user" {
         let tool_results: Vec<_> = blocks
             .iter()
@@ -326,6 +498,7 @@ pub(crate) fn translate_line(
             .collect();
         if tool_results.is_empty() && has_text(content) {
             next.turn_id = digest(if row_key.is_empty() { &base } else { row_key });
+            next.mcp.clear();
             facts.push(fact(
                 format!("{base}:message"),
                 revision,
@@ -363,6 +536,8 @@ pub(crate) fn translate_line(
                 Some(_) => return Err(invalid("Claude tool result has invalid is_error")),
             };
             let operation = digest(operation);
+            let labels = next.mcp_labels(&operation);
+            let result = if failed { "failed" } else { "succeeded" };
             facts.push(fact(
                 format!("{base}:tool-result-{index}"),
                 revision,
@@ -370,8 +545,19 @@ pub(crate) fn translate_line(
                 &time_ns,
                 &next,
                 Some(&operation),
-                json!({"category":"other","result":if failed {"failed"} else {"succeeded"}}),
+                json!({"category":if labels.is_some() { "mcp" } else { "other" }, "result":result}),
             ));
+            if let Some(labels) = labels {
+                mcp_details.push(fact(
+                    format!("{base}:mcp-result-{index}"),
+                    revision,
+                    "mcp_call",
+                    &time_ns,
+                    &next,
+                    Some(&operation),
+                    mcp_payload(labels, result),
+                ));
+            }
             facts.push(fact(
                 format!("{base}:lifecycle-{index}"),
                 revision,
@@ -429,6 +615,8 @@ pub(crate) fn translate_line(
             }
             let operation = digest(operation);
             let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+            let labels = mcp_tool_labels(name);
+            next.remember_mcp(&operation, labels);
             facts.push(fact(
                 format!("{base}:tool-use-{index}"),
                 revision,
@@ -438,6 +626,17 @@ pub(crate) fn translate_line(
                 Some(&operation),
                 json!({"category":category(name),"result":"started"}),
             ));
+            if let Some(labels) = labels {
+                mcp_details.push(fact(
+                    format!("{base}:mcp-use-{index}"),
+                    revision,
+                    "mcp_call",
+                    &time_ns,
+                    &next,
+                    Some(&operation),
+                    mcp_payload(labels, "started"),
+                ));
+            }
         }
         match message.get("stop_reason").and_then(Value::as_str) {
             Some("end_turn") => facts.push(fact(
@@ -487,12 +686,84 @@ pub(crate) fn translate_line(
             );
         }
     }
+    append_mcp_details(&mut facts, mcp_details)?;
     Ok((facts, next))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qualified_mcp_names_require_exact_safe_boundaries() {
+        assert_eq!(
+            mcp_tool_labels("mcp__server.name__safe-tool"),
+            Some(("server.name", "safe-tool"))
+        );
+        for name in [
+            "mcp__bad path__tool",
+            "mcp__server__/secret",
+            "mcp__server__tool__extra",
+            "mcp__server__",
+            "mcp__",
+            "Read",
+        ] {
+            assert_eq!(mcp_tool_labels(name), None);
+        }
+        assert!(mcp_tool_labels(&format!("mcp__{}__tool", "s".repeat(129))).is_none());
+    }
+
+    #[test]
+    fn bounded_mcp_checkpoint_withholds_ambiguous_or_cross_worker_linkage() {
+        let mut context = header_identity(br#"{"sessionId":"session"}"#).unwrap();
+        context.turn_id = digest("active-turn");
+        context.worker_id = "worker-one".into();
+        context.last_usage_key = digest("message");
+        context.last_usage = [Some(i64::MAX as u64); 4];
+        let operation = digest("call");
+        let server = "s".repeat(128);
+        let tool = "t".repeat(128);
+        context.remember_mcp(&operation, Some((&server, &tool)));
+        let saved = checkpoint(&context);
+        assert!(saved.len() + 261 <= agenturm_jsonl_source::MAX_CURSOR);
+
+        let mut restored = header_identity(br#"{"sessionId":"session"}"#).unwrap();
+        restore(&mut restored, &saved).unwrap();
+        assert!(restored.mcp_labels(&operation).is_none());
+        restored.worker_id = "worker-one".into();
+        assert_eq!(
+            restored.mcp_labels(&operation),
+            Some((server.as_str(), tool.as_str()))
+        );
+        restored.remember_mcp(&operation, Some(("another", "tool")));
+        assert!(restored.mcp_labels(&operation).is_none());
+        let mut restored_again = restored.clone();
+        restore(&mut restored_again, &checkpoint(&restored)).unwrap();
+        assert!(restored_again.mcp_labels(&operation).is_none());
+
+        let legacy = saved.split_once(':').unwrap().0;
+        restore(&mut restored_again, legacy).unwrap();
+        assert!(restored_again.mcp.is_empty());
+        assert!(restore(&mut restored_again, &format!("{legacy}:")).is_err());
+    }
+
+    #[test]
+    fn dense_result_rows_keep_the_preexisting_record_budget() {
+        let mut context = header_identity(br#"{"sessionId":"session"}"#).unwrap();
+        context.remember_mcp(&digest("operation"), Some(("server", "tool")));
+        let results = vec![json!({"type":"tool_result","tool_use_id":"operation"}); 128];
+        let row = json!({
+            "type":"user","sessionId":"session","timestamp":"2026-10-24T12:00:00Z",
+            "message":{"content":results},
+        });
+        let (facts, _) =
+            translate_line(&serde_json::to_vec(&row).unwrap(), &context, "origin", 1).unwrap();
+        assert_eq!(facts.len(), 256);
+        assert_eq!(
+            facts.iter().filter(|fact| fact["kind"] == "tool").count(),
+            128
+        );
+    }
 
     #[test]
     fn tool_and_usage_payloads_never_copy_private_content() {

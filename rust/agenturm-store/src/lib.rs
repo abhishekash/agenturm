@@ -19,9 +19,9 @@ mod session_catalog;
 mod workspace_ledger;
 
 pub use backup::BackupError;
-pub use content_grant::{ContentGrant, ContentGrantScope, ContentKind, PiUserTextEvidence};
+pub use content_grant::{ContentGrant, ContentGrantScope, ContentKind, UserTextEvidence};
 pub use retention::RetentionOutcome;
-pub use review_ledger::{ReviewError, ReviewKey, ReviewLedger, ReviewVersion};
+pub use review_ledger::{ReviewDecisionNote, ReviewError, ReviewKey, ReviewLedger, ReviewVersion};
 pub use session_catalog::{
     MAX_SESSION_PAGE_SIZE, SessionLifecycle, SessionPage, SessionPosition, SessionQuery,
     SessionSummary,
@@ -43,7 +43,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -51,7 +51,8 @@ const MAX_EVENT_ID_BYTES: usize = 256;
 const MAX_SESSION_KEY_BYTES: usize = 512;
 const MAX_CATEGORY_BYTES: usize = 64;
 const MAX_CURSOR_BYTES: usize = 800;
-const STORE_MARKER: &str = "agenturm.observation-store.v10";
+const STORE_MARKER_V10: &str = "agenturm.observation-store.v10";
+const STORE_MARKER: &str = "agenturm.observation-store.v11";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -320,6 +321,12 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
             "agenturm_retired_observations".to_owned(),
         ));
     }
+    if version >= 11 {
+        expected.push((
+            "table".to_owned(),
+            "agenturm_content_cursor_proofs".to_owned(),
+        ));
+    }
     expected.sort();
     if objects != expected {
         return Err(StoreError::UnrecognizedDatabase);
@@ -340,7 +347,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         7 => STORE_MARKER_V7,
         8 => STORE_MARKER_V8,
         9 => STORE_MARKER_V9,
-        10 => STORE_MARKER,
+        10 => STORE_MARKER_V10,
+        11 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -418,6 +426,12 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
                 ("revision", "INTEGER", 1, 3),
                 ("event_digest", "TEXT", 1, 0),
             ],
+        ));
+    }
+    if version >= 11 {
+        expected_tables.push((
+            "agenturm_content_cursor_proofs",
+            vec![("request_id", "TEXT", 1, 1), ("cursor", "TEXT", 1, 0)],
         ));
     }
     for (table, expected_columns) in expected_tables {
@@ -622,15 +636,20 @@ impl Store {
             }
             let lease = agenturm_storage_lease::WriterLease::acquire(&path)
                 .map_err(StoreError::WriterLease)?;
-            let connection = Self::open_writable_connection(&path)?;
+            let connection = Self::open_leased_connection(&lease)?;
+            let connection = Self::initialize_writable_connection(connection)?;
             lease.verify_admission().map_err(StoreError::WriterLease)?;
             return Ok(Self {
                 connection,
                 writer_lease: Some(lease),
             });
         }
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+        )?;
         Ok(Self {
-            connection: Self::open_writable_connection(path)?,
+            connection: Self::initialize_writable_connection(connection)?,
             #[cfg(target_os = "linux")]
             writer_lease: None,
         })
@@ -644,14 +663,14 @@ impl Store {
         Self::open(path)
     }
 
-    /// Opens a v8, v9, or v10 store through a read-only connection. This path
+    /// Opens a v8 through v11 store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let transaction = connection.unchecked_transaction()?;
         let schema_version: i64 =
             transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !matches!(schema_version, 8 | 9 | SCHEMA_VERSION) {
+        if !matches!(schema_version, 8..=SCHEMA_VERSION) {
             return Err(StoreError::UnsupportedSchema(schema_version));
         }
         validate_marked_shape(&transaction, schema_version)?;
@@ -663,11 +682,21 @@ impl Store {
         })
     }
 
-    fn open_writable_connection(path: &Path) -> Result<Connection> {
-        let mut connection = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+    #[cfg(target_os = "linux")]
+    fn open_leased_connection(lease: &agenturm_storage_lease::WriterLease) -> Result<Connection> {
+        lease.verify_admission().map_err(StoreError::WriterLease)?;
+        // The lease already requires an existing file. Open the bound
+        // canonical name without creating a replacement or following a
+        // symlink if the target changed after that check.
+        let connection = Connection::open_with_flags(
+            lease.database_path(),
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
+        lease.verify_admission().map_err(StoreError::WriterLease)?;
+        Ok(connection)
+    }
+
+    fn initialize_writable_connection(mut connection: Connection) -> Result<Connection> {
         let schema_version: i64 =
             connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if schema_version == 0 {
@@ -688,7 +717,7 @@ impl Store {
                     value TEXT NOT NULL
                 );
                 INSERT INTO agenturm_store_meta (key, value)
-                    VALUES ('format', 'agenturm.observation-store.v10');
+                    VALUES ('format', 'agenturm.observation-store.v11');
                 CREATE TABLE agenturm_ingest_receipts (
                     request_id TEXT PRIMARY KEY NOT NULL,
                     source_id TEXT NOT NULL,
@@ -727,9 +756,10 @@ impl Store {
                 CREATE INDEX agenturm_observations_by_session
                     ON agenturm_observations
                         (session_id, observed_at_unix_ns, event_id, revision);
-                PRAGMA user_version = 10;",
+                PRAGMA user_version = 11;",
             )?;
-            content_grant::create_schema(&transaction)?;
+            content_grant::create_schema(&transaction, true)?;
+            content_grant::create_receipt_proof_schema(&transaction)?;
             retention::create_schema(&transaction)?;
             transaction.commit()?;
         } else if schema_version == 2 {
@@ -886,7 +916,7 @@ impl Store {
             validate_marked_shape(&connection, 7)?;
         } else if schema_version == 7 {
             validate_marked_shape(&connection, 7)?;
-        } else if matches!(schema_version, 8 | 9) {
+        } else if matches!(schema_version, 8..=10) {
             validate_marked_shape(&connection, schema_version)?;
         } else if schema_version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(schema_version));
@@ -899,7 +929,7 @@ impl Store {
         if (2..9).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            content_grant::create_schema(&transaction)?;
+            content_grant::create_schema(&transaction, false)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER_V9],
@@ -908,10 +938,22 @@ impl Store {
             transaction.commit()?;
             validate_marked_shape(&connection, 9)?;
         }
-        if (2..SCHEMA_VERSION).contains(&schema_version) {
+        if (2..10).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             retention::create_schema(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V10],
+            )?;
+            transaction.pragma_update(None, "user_version", 10)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 10)?;
+        }
+        if (2..SCHEMA_VERSION).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_v10(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -1055,6 +1097,17 @@ impl Store {
                     .map_err(|_| StoreError::Invalid("event count exceeds SQLite INTEGER"))?,
             ],
         )?;
+        if batch
+            .observations
+            .iter()
+            .any(|row| matches!(&row.kind, ObservationKind::Message { role } if role == "user"))
+        {
+            content_grant::record_receipt_proof(
+                &transaction,
+                &batch.request_id,
+                &batch.next_cursor,
+            )?;
+        }
         transaction.execute(
             "INSERT INTO agenturm_history_batches(request_id) VALUES (?1)",
             [&batch.request_id],
@@ -1144,7 +1197,7 @@ impl Store {
     /// Reads one filtered, keyset-paginated page in chronological order.
     /// `before` is exclusive and uses the full stable sort key.
     pub fn query_observations(&self, query: &ObservationQuery) -> Result<ObservationPage> {
-        self.query_history(query, None, None)
+        self.query_history(query, None, None, false)
     }
 
     /// Reads a bounded history page for one exact native turn.
@@ -1153,7 +1206,7 @@ impl Store {
         query: &ObservationQuery,
         turn_id: &str,
     ) -> Result<ObservationPage> {
-        self.query_history(query, Some(turn_id), None)
+        self.query_history(query, Some(turn_id), None, false)
     }
 
     /// Reads a turn for one exact worker anchor. `None` selects rows whose
@@ -1164,7 +1217,23 @@ impl Store {
         turn_id: &str,
         worker_id: Option<&str>,
     ) -> Result<ObservationPage> {
-        self.query_history(query, Some(turn_id), Some(worker_id))
+        self.query_history(query, Some(turn_id), Some(worker_id), false)
+    }
+
+    /// Reads imported traces explicitly attached to the selected native
+    /// source/session at the same history snapshot as the session evidence.
+    pub fn query_linked_traces(&self, query: &ObservationQuery) -> Result<ObservationPage> {
+        if query
+            .harness_id
+            .as_deref()
+            .is_none_or(|source| source.starts_with("otlp."))
+            || query.session_id.is_none()
+        {
+            return Err(StoreError::Invalid(
+                "linked traces require a harness source and session",
+            ));
+        }
+        self.query_history(query, None, None, true)
     }
 
     fn query_history(
@@ -1172,6 +1241,7 @@ impl Store {
         query: &ObservationQuery,
         turn_id: Option<&str>,
         worker_filter: Option<Option<&str>>,
+        linked_traces: bool,
     ) -> Result<ObservationPage> {
         if query.limit == 0 || query.limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
             return Err(StoreError::Invalid("observation page limit is invalid"));
@@ -1225,8 +1295,21 @@ impl Store {
              JOIN agenturm_history_batches AS history_batch
                ON history_batch.request_id=receipt.request_id
              WHERE history_batch.sequence <= ?1
-               AND (?2 IS NULL OR observation.source_id=?2)
+               AND ((?12 = 0 AND (?2 IS NULL OR observation.source_id=?2))
+                    OR (?12 = 1
+                        AND substr(observation.source_id,1,5)='otlp.'
+                        AND json_extract(observation.kind_json,'$.kind')='trace_span'
+                        AND json_extract(observation.kind_json,'$.target_source_id')=?2))
                AND (?3 IS NULL OR observation.session_id=?3)
+               AND (?12 = 0 OR EXISTS (
+                    SELECT 1
+                    FROM agenturm_observations AS anchor
+                    JOIN agenturm_history_batches AS anchor_batch
+                      ON anchor_batch.request_id=anchor.request_id
+                    WHERE anchor.source_id=?2 AND anchor.session_id=?3
+                      AND anchor.scope='session' AND anchor_batch.sequence<=?1
+                      AND json_extract(anchor.kind_json,'$.kind')<>'trace_span'
+               ))
                AND (?9 IS NULL OR observation.turn_id=?9)
                AND (?10 = 0 OR observation.worker_id IS ?11)
                AND (?4 IS NULL OR
@@ -1253,6 +1336,7 @@ impl Store {
                 turn_id,
                 worker_filter.is_some(),
                 worker_filter.flatten(),
+                linked_traces,
             ],
             |row| {
                 let revision: i64 = row.get(2)?;
@@ -1658,9 +1742,12 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
             ));
         }
         if let ObservationKind::TraceSpan(span) = &observation.kind
-            && !span.is_valid(observation.observed_at_unix_ns)
+            && (!span.is_valid(observation.observed_at_unix_ns)
+                || !agenturm_kernel::is_trace_source_link_valid(&batch.source_id, span))
         {
-            return Err(StoreError::Invalid("trace identity or timing is invalid"));
+            return Err(StoreError::Invalid(
+                "trace identity, timing, or source link is invalid",
+            ));
         }
         if let ObservationKind::Lifecycle { state, reason_code } = &observation.kind
             && (!agenturm_kernel::is_lifecycle_state(state)
@@ -1833,7 +1920,8 @@ mod tests {
     fn downgrade_fixture_to_v9(connection: &Connection) {
         connection
             .execute_batch(
-                "DROP TABLE agenturm_retired_observations;
+                "DROP TABLE agenturm_content_cursor_proofs;
+                 DROP TABLE agenturm_retired_observations;
                  DROP TABLE agenturm_retention_state;
                  UPDATE agenturm_store_meta SET value='agenturm.observation-store.v9'
                   WHERE key='format';
@@ -2504,6 +2592,52 @@ mod tests {
             "{}{}",
             String::from_utf8_lossy(&reopened.stdout),
             String::from_utf8_lossy(&reopened.stderr),
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn leased_open_resolves_aliases_and_rejects_a_missing_or_replaced_target() {
+        use agenturm_storage_lease::WriterLease;
+        use std::os::unix::fs::symlink;
+
+        let db = TempDb::new();
+        let alias = TempDb::new();
+        let moved = TempDb::new();
+        let unrelated = TempDb::new();
+        let mut seed = Store::open(&db.0).unwrap();
+        seed.commit_batch(&batch("leased-open", vec![event("original", "session", 1)]))
+            .unwrap();
+        drop(seed);
+        symlink(&db.0, &alias.0).unwrap();
+        let store = Store::open_collector(&alias.0).unwrap();
+        assert_eq!(
+            Path::new(store.connection.path().unwrap()),
+            db.0.canonicalize().unwrap()
+        );
+        assert_eq!(store.observations().unwrap().len(), 1);
+        drop(store);
+        let lease = WriterLease::acquire(&alias.0).unwrap();
+        fs::rename(&db.0, &moved.0).unwrap();
+        assert!(matches!(
+            Store::open_leased_connection(&lease),
+            Err(StoreError::WriterLease(_))
+        ));
+        assert!(!db.0.exists());
+        fs::write(&unrelated.0, b"keep this file").unwrap();
+        symlink(&unrelated.0, &db.0).unwrap();
+        assert!(matches!(
+            Store::open_leased_connection(&lease),
+            Err(StoreError::WriterLease(_))
+        ));
+        assert_eq!(fs::read(&unrelated.0).unwrap(), b"keep this file");
+        assert_eq!(
+            Store::open_read_only(&moved.0)
+                .unwrap()
+                .observations()
+                .unwrap()
+                .len(),
+            1
         );
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "agenturm-app"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.100"
 publish = false
@@ -17,8 +17,13 @@ serde_json = "1.0"
 sha2 = "0.10"
 signal-hook = "0.3"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+signal-hook = { version = "0.3", features = ["extended-siginfo"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 agenturm-jsonl-source = { path = "../agenturm-jsonl-source" }
+agenturm-opencode-harness = { path = "../agenturm-opencode-harness" }
 rustix = { version = "1.1", features = ["fs"] }
 time = { version = "0.3", features = ["parsing"] }
 

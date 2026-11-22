@@ -7,9 +7,9 @@ mod claude;
 use agenturm_jsonl_source::{Result, SourceFormat};
 use serde_json::Value;
 
-struct ClaudeFormat;
+struct ClaudeFormat<const LEGACY: bool>;
 
-impl SourceFormat for ClaudeFormat {
+impl<const LEGACY: bool> SourceFormat for ClaudeFormat<LEGACY> {
     type Context = claude::Context;
     const PLUGIN_ID: &'static str = "example.rust-claude-harness";
     const GAP_EVENT_PREFIX: &'static str = "claude-gap";
@@ -32,12 +32,23 @@ impl SourceFormat for ClaudeFormat {
         origin: &str,
         offset: u64,
     ) -> Result<(Vec<Value>, Self::Context)> {
-        claude::translate_line(raw, context, origin, offset)
+        let (mut facts, context) = claude::translate_line(raw, context, origin, offset)?;
+        if LEGACY {
+            facts.retain(|row| row["kind"] != "mcp_call");
+        }
+        Ok((facts, context))
     }
 }
 
 fn main() {
-    if agenturm_jsonl_source::run::<ClaudeFormat>().is_err() {
+    let legacy = std::env::var_os("AGENTURM_PLUGIN_LEGACY_ADMISSION").as_deref()
+        == Some(std::ffi::OsStr::new("1"));
+    let outcome = if legacy {
+        agenturm_jsonl_source::run::<ClaudeFormat<true>>()
+    } else {
+        agenturm_jsonl_source::run::<ClaudeFormat<false>>()
+    };
+    if outcome.is_err() {
         // Host receives only a coarse process failure; no private row or path.
         std::process::exit(2);
     }
