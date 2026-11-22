@@ -25,6 +25,7 @@ const OPENCODE_PLUGIN_ID: &str = "example.rust-opencode-harness";
 pub enum OperationDetailKind {
     Mcp,
     Edit,
+    Command,
 }
 /// Broker-owned resolved source inputs. Clients never supply these paths.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -57,6 +58,50 @@ pub struct VerifiedPrompt {
     pub turn_id: String,
     pub observed_at_unix_ns: u64,
     pub grant_binding: [u8; 32],
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifiedEdit {
+    pub changes: Vec<EditChange>,
+    pub turn_id: String,
+    pub observed_at_unix_ns: u64,
+    pub grant_binding: [u8; 32],
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifiedCommand {
+    pub recorded_invocation: RecordedInvocation,
+    pub turn_id: String,
+    pub observed_at_unix_ns: u64,
+    pub grant_binding: [u8; 32],
+}
+
+/// Native strings and argument vectors retain their original representation.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RecordedInvocation {
+    Text(String),
+    Argv(Vec<String>),
+}
+
+impl RecordedInvocation {
+    pub fn searchable_text(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Text(text) => std::borrow::Cow::Borrowed(text),
+            Self::Argv(args) => std::borrow::Cow::Owned(args.join(" ")),
+        }
+    }
+}
+
+impl VerifiedEdit {
+    /// Compare recorded paths literally, including the destination of a move.
+    pub fn contains_path(&self, path: &str) -> bool {
+        self.changes
+            .iter()
+            .any(|change| change.path == path || change.edit.move_path.as_deref() == Some(path))
+    }
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Harness {
@@ -130,6 +175,14 @@ fn operation_definition(kind: OperationDetailKind) -> OperationDefinition {
             native_kind: "FileChange",
             description: "file edit",
             unavailable: "The selected file edit has no verified detail",
+        },
+        OperationDetailKind::Command => OperationDefinition {
+            grant: ContentKind::CodexCommandDetail,
+            fingerprint_domain: b"agenturm.codex-command-detail/1",
+            event_suffix: ":tool",
+            native_kind: "CommandExecution",
+            description: "recorded command invocation",
+            unavailable: "The selected command has no verified invocation",
         },
     }
 }
@@ -240,6 +293,95 @@ pub fn reveal_operation_fenced(
     output: &mut dyn Write,
     terminal: bool,
 ) -> Result<(), String> {
+    with_verified_operation(
+        store,
+        resolver,
+        source_id,
+        kind,
+        selection,
+        |payload, _, _| {
+            let mut reveal = payload
+                .encode(terminal)
+                .map_err(|_| operation_definition(kind).unavailable)?;
+            reveal.push('\n');
+            write_output(output, reveal.as_bytes())
+        },
+    )
+}
+
+/// Uses one exact retained Codex edit while its approval and evidence are fenced.
+pub fn with_verified_edit<T>(
+    store: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    selection: &CodexOperationSelection<'_>,
+    consume: impl FnOnce(&VerifiedEdit) -> T,
+) -> Result<T, String> {
+    with_verified_operation(
+        store,
+        resolver,
+        source_id,
+        OperationDetailKind::Edit,
+        selection,
+        |payload, evidence, grant_binding| {
+            payload
+                .encode(false)
+                .map_err(|_| operation_definition(OperationDetailKind::Edit).unavailable)?;
+            let CodexOperationPayload::Edit { changes } = payload else {
+                return Err(operation_definition(OperationDetailKind::Edit)
+                    .unavailable
+                    .into());
+            };
+            Ok(consume(&VerifiedEdit {
+                changes,
+                turn_id: evidence.turn_id,
+                observed_at_unix_ns: evidence.observed_at_unix_ns,
+                grant_binding,
+            }))
+        },
+    )
+}
+
+pub fn with_verified_command<T>(
+    store: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    selection: &CodexOperationSelection<'_>,
+    consume: impl FnOnce(&VerifiedCommand) -> T,
+) -> Result<T, String> {
+    with_verified_operation(
+        store,
+        resolver,
+        source_id,
+        OperationDetailKind::Command,
+        selection,
+        |payload, evidence, grant_binding| {
+            let CodexOperationPayload::Command {
+                recorded_invocation,
+            } = payload
+            else {
+                return Err(operation_definition(OperationDetailKind::Command)
+                    .unavailable
+                    .into());
+            };
+            Ok(consume(&VerifiedCommand {
+                recorded_invocation,
+                turn_id: evidence.turn_id,
+                observed_at_unix_ns: evidence.observed_at_unix_ns,
+                grant_binding,
+            }))
+        },
+    )
+}
+
+fn with_verified_operation<T>(
+    store: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    kind: OperationDetailKind,
+    selection: &CodexOperationSelection<'_>,
+    consume: impl FnOnce(CodexOperationPayload, CodexOperationEvidence, [u8; 32]) -> Result<T, String>,
+) -> Result<T, String> {
     if !valid_id(selection.session_id)
         || !valid_id(selection.operation_id)
         || selection.turn_id.is_some_and(|turn| !valid_id(turn))
@@ -268,15 +410,11 @@ pub fn reveal_operation_fenced(
             let evidence = select(&source.scope)?;
             let prefix = source.verified_prefix(&evidence.cursor)?;
             let payload = prefix.operation_payload(kind, &operation, selection, &evidence)?;
-            let mut reveal = payload
-                .encode(terminal)
-                .map_err(|_| operation.unavailable)?;
             let fresh = source.recheck(resolver, source_id)?;
             if select(&fresh.scope)? != evidence {
                 return Err("The selected operation changed".into());
             }
-            reveal.push('\n');
-            write_output(output, reveal.as_bytes())
+            consume(payload, evidence, grant.binding_fingerprint())
         })
         .map_err(|error| error.to_string())?
 }
@@ -724,6 +862,7 @@ impl VerifiedPrefix {
         match kind {
             OperationDetailKind::Mcp => item.mcp_detail(),
             OperationDetailKind::Edit => item.edit_detail(),
+            OperationDetailKind::Command => item.command_detail(),
         }
         .ok_or_else(|| unavailable.to_owned())
     }
@@ -1032,9 +1171,30 @@ struct CodexOperationItem {
     #[serde(default, deserialize_with = "present_payload_value")]
     result: Option<serde_json::Value>,
     changes: Option<BTreeMap<String, NativeFileChange>>,
+    command: Option<serde_json::Value>,
 }
 
 impl CodexOperationItem {
+    fn command_detail(self) -> Option<CodexOperationPayload> {
+        let recorded_invocation: RecordedInvocation = serde_json::from_value(self.command?).ok()?;
+        if let RecordedInvocation::Argv(args) = &recorded_invocation
+            && (!(1..=64).contains(&args.len()) || args[0].trim().is_empty())
+        {
+            return None;
+        }
+        let text = recorded_invocation.searchable_text();
+        if text.trim().is_empty()
+            || text.chars().any(char::is_control)
+            || command_credential_flags(&text)
+            || bounded_text_preview(text.to_string(), MAX_TEXT_BYTES).ok()? != text
+        {
+            return None;
+        }
+        Some(CodexOperationPayload::Command {
+            recorded_invocation,
+        })
+    }
+
     fn mcp_detail(self) -> Option<CodexOperationPayload> {
         let fields = [("arguments", self.arguments), ("result", self.result)]
             .into_iter()
@@ -1078,6 +1238,33 @@ impl CodexOperationItem {
     }
 }
 
+fn command_credential_flags(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let arguments: Vec<_> = lower
+        .split_ascii_whitespace()
+        .map(|word| word.trim_matches(['\'', '"']))
+        .collect();
+    arguments.iter().any(|argument| {
+        let name = argument.split_once('=').map_or(*argument, |(name, _)| name);
+        matches!(
+            name,
+            "--password"
+                | "--passwd"
+                | "--pass"
+                | "--auth"
+                | "--authorization"
+                | "--token"
+                | "--access-token"
+                | "--oauth2-bearer"
+                | "--secret"
+                | "--client-secret"
+                | "--api-key"
+        )
+    }) || arguments
+        .windows(2)
+        .any(|pair| matches!(pair[0], "-u" | "--user") && pair[1].contains(':'))
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum EditAction {
@@ -1098,9 +1285,9 @@ struct NativeFileChange {
     move_path: Option<String>,
 }
 
-#[derive(Serialize)]
-struct EditChange {
-    path: String,
+#[derive(Deserialize, Serialize)]
+pub struct EditChange {
+    pub path: String,
     #[serde(flatten)]
     edit: NativeFileChange,
 }
@@ -1109,7 +1296,12 @@ struct EditChange {
 #[serde(untagged)]
 enum CodexOperationPayload {
     Mcp(serde_json::Map<String, serde_json::Value>),
-    Edit { changes: Vec<EditChange> },
+    Edit {
+        changes: Vec<EditChange>,
+    },
+    Command {
+        recorded_invocation: RecordedInvocation,
+    },
 }
 
 impl CodexOperationPayload {
@@ -1128,6 +1320,9 @@ impl CodexOperationPayload {
                 .map(EditChange::display)
                 .collect::<Vec<_>>()
                 .join("\n\n"),
+            Self::Command {
+                recorded_invocation,
+            } => serde_json::to_string(recorded_invocation).map_err(|_| ())?,
         };
         serde_json::to_string(&display).map_err(|_| ())
     }

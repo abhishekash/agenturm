@@ -67,6 +67,11 @@ pub(crate) enum NativeOperation {
         history_identity: String,
         selection: PrivatePromptSelection,
     },
+    VerifyPrivateOperation {
+        history_identity: String,
+        selection: PrivateEvidenceSelection,
+        snapshot_id: u64,
+    },
     Admin {
         request: AdminRequest,
     },
@@ -109,7 +114,9 @@ impl NativeOperation {
     pub(crate) fn delivers_private(&self) -> bool {
         matches!(
             self,
-            Self::RevealPrivate { .. } | Self::VerifyPrivatePrompt { .. }
+            Self::RevealPrivate { .. }
+                | Self::VerifyPrivatePrompt { .. }
+                | Self::VerifyPrivateOperation { .. }
         )
     }
 
@@ -148,6 +155,27 @@ impl NativeOperation {
                     &selection.source_id,
                 )?;
                 native_content::verify_prompt(store, private, allowed, &selection, output)
+            }
+            Self::VerifyPrivateOperation {
+                history_identity,
+                selection,
+                snapshot_id,
+            } => {
+                authorize_private(
+                    store,
+                    allowed,
+                    role,
+                    &history_identity,
+                    &selection.source_id,
+                )?;
+                native_content::verify_operation(
+                    store,
+                    private,
+                    allowed,
+                    &selection,
+                    snapshot_id,
+                    output,
+                )
             }
             _ => Err(PrivateEvidenceFailure::Unauthorized),
         }
@@ -241,7 +269,9 @@ pub(crate) fn dispatch(
                 ),
             );
         }
-        NativeOperation::RevealPrivate { .. } | NativeOperation::VerifyPrivatePrompt { .. } => {
+        NativeOperation::RevealPrivate { .. }
+        | NativeOperation::VerifyPrivatePrompt { .. }
+        | NativeOperation::VerifyPrivateOperation { .. } => {
             return NativeReply::PrivatePrompts(Err(PrivateEvidenceFailure::Unauthorized));
         }
         NativeOperation::Admin { request } => {
@@ -392,6 +422,9 @@ impl Display for NativeClientError {
             }
             Self::Private(PrivateEvidenceFailure::HistoryReplaced) => {
                 formatter.write_str("broker history changed since this workspace opened")
+            }
+            Self::Private(PrivateEvidenceFailure::SnapshotExpired) => {
+                formatter.write_str("broker history snapshot expired after retention")
             }
             Self::Private(PrivateEvidenceFailure::Unavailable) => formatter
                 .write_str("broker could not verify private evidence for the selected occurrence"),
@@ -574,6 +607,19 @@ impl NativeStore {
         revision: u32,
         consume: impl FnOnce(&agenturm_content::VerifiedPrompt) -> Result<T, String>,
     ) -> Result<T, NativeClientError> {
+        self.with_verified_prompt_at_snapshot(source, session_id, event_id, revision, None, consume)
+    }
+
+    /// Recheck an optional history snapshot under the same fence as the proof.
+    pub fn with_verified_prompt_at_snapshot<T>(
+        &self,
+        source: &ExtensionId,
+        session_id: &str,
+        event_id: &str,
+        revision: u32,
+        snapshot_id: Option<u64>,
+        consume: impl FnOnce(&agenturm_content::VerifiedPrompt) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
         self.consume_private(
             NativeOperation::VerifyPrivatePrompt {
                 history_identity: self.private_history_identity()?,
@@ -582,6 +628,7 @@ impl NativeStore {
                     session_id: session_id.into(),
                     event_id: event_id.into(),
                     revision,
+                    snapshot_id,
                 },
             },
             |prompt: &agenturm_content::VerifiedPrompt| {
@@ -590,6 +637,42 @@ impl NativeStore {
                 }
                 consume(prompt).map_err(|_| NativeClientError::PrivateConsumer)
             },
+        )
+    }
+
+    /// Consume one exact edit before acknowledging the broker's proof.
+    pub fn with_verified_edit<T>(
+        &self,
+        selection: &PrivateEvidenceSelection,
+        snapshot_id: u64,
+        consume: impl FnOnce(&agenturm_content::VerifiedEdit) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_private_operation(selection, snapshot_id, consume)
+    }
+
+    /// Consume a recorded Codex invocation under its independent grant.
+    pub fn with_verified_command<T>(
+        &self,
+        selection: &PrivateEvidenceSelection,
+        snapshot_id: u64,
+        consume: impl FnOnce(&agenturm_content::VerifiedCommand) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_private_operation(selection, snapshot_id, consume)
+    }
+
+    fn consume_private_operation<P: DeserializeOwned, T>(
+        &self,
+        selection: &PrivateEvidenceSelection,
+        snapshot_id: u64,
+        consume: impl FnOnce(&P) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_private(
+            NativeOperation::VerifyPrivateOperation {
+                history_identity: self.private_history_identity()?,
+                selection: selection.clone(),
+                snapshot_id,
+            },
+            |proof| consume(proof).map_err(|_| NativeClientError::PrivateConsumer),
         )
     }
 

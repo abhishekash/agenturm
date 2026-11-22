@@ -102,6 +102,12 @@ pub(super) fn resolve_read_snapshot(
 }
 
 impl Store {
+    /// Checks a snapshot against the current receipt head and retention barrier.
+    /// Call inside the same transaction as the read or disclosure it guards.
+    pub fn verify_history_snapshot(&self, snapshot_id: u64) -> Result<()> {
+        resolve_read_snapshot(&self.connection, Some(snapshot_id)).map(|_| ())
+    }
+
     /// Atomically removes observations strictly older than the supplied cutoff.
     /// Equal cutoffs are idempotent and lowering the cutoff is an error.
     /// Later batches still advance their checkpoint when an observation falls

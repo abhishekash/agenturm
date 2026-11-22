@@ -17,6 +17,7 @@ mod discovery;
 mod handoff_export;
 mod inspector_activity;
 mod private_output;
+mod investigate_cli;
 mod review_receipt;
 mod session_evidence;
 mod task_cli;
@@ -36,6 +37,7 @@ pub use attention::{AttentionOptions, execute_attention};
 pub use content_preview::{ContentOptions, execute_content, execute_content_stdout};
 pub use discovery::{discover, execute_discover};
 pub use private_output::with_private_stdout;
+pub use investigate_cli::{InvestigationOptions, execute_investigation};
 pub use review_receipt::ReviewOutput;
 pub use task_cli::{TaskOptions, execute_task, execute_task_stdout};
 pub use trace_import::{TraceImportOptions, execute_trace_import};
@@ -207,6 +209,7 @@ pub enum Command {
         worker_id: Option<String>,
         output: ReviewOutput,
     },
+    Investigate(InvestigationOptions),
     Backup {
         db: PathBuf,
         output: PathBuf,
@@ -741,6 +744,7 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("inspect") => parse_inspect_options(&args[1..]).map(Command::Inspect),
         Some("query") => parse_query_options(&args[1..], false),
         Some("review") => parse_query_options(&args[1..], true),
+        Some("investigate") => investigate_cli::parse(&args[1..], false).map(Command::Investigate),
         Some("backup") => {
             if let Ok((db, output)) = parse_db_and_option(&args[1..], "--bundle") {
                 return Ok(Command::BackupWorkspace {
@@ -3123,6 +3127,7 @@ pub fn render(command: Command) -> String {
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
             "       agenturm review --db <path> --harness-id <id> --session-id <id> --turn-id <id> [--worker-id <id>] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]\n",
+            "       agenturm investigate <instruction|path|command|source> <query> [options]\n",
             "       agenturm backup --db <path> --output <new-path>\n",
             "       agenturm backup --db <path> --bundle <new-directory>\n",
             "       agenturm restore --bundle <directory> --output <new-directory>\n",
@@ -3171,7 +3176,7 @@ pub fn render(command: Command) -> String {
         Command::Inspect(_) => String::new(),
         #[cfg(target_os = "linux")]
         Command::Broker(_) | Command::InstallAdapter(_) => String::new(),
-        Command::Query(_) | Command::Review { .. } | Command::Attention(_) | Command::Task(_) => {
+        Command::Query(_) | Command::Review { .. } | Command::Attention(_) | Command::Task(_) | Command::Investigate(_) => {
             String::new()
         }
         Command::Ingest(_) | Command::ImportTraces(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),

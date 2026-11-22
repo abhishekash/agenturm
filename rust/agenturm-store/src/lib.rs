@@ -49,7 +49,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -60,7 +60,8 @@ const MAX_CURSOR_BYTES: usize = 800;
 const STORE_MARKER_V10: &str = "agenturm.observation-store.v10";
 const STORE_MARKER_V11: &str = "agenturm.observation-store.v11";
 const STORE_MARKER_V12: &str = "agenturm.observation-store.v12";
-const STORE_MARKER: &str = "agenturm.observation-store.v13";
+const STORE_MARKER_V13: &str = "agenturm.observation-store.v13";
+const STORE_MARKER: &str = "agenturm.observation-store.v14";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -472,7 +473,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         10 => STORE_MARKER_V10,
         11 => STORE_MARKER_V11,
         12 => STORE_MARKER_V12,
-        13 => STORE_MARKER,
+        13 => STORE_MARKER_V13,
+        14 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -816,7 +818,7 @@ impl Store {
         read_history_identity(&self.connection)
     }
 
-    /// Opens a v8 through v13 store through a read-only connection. This path
+    /// Opens a v8 through v14 store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -869,8 +871,6 @@ impl Store {
                     key TEXT PRIMARY KEY NOT NULL,
                     value TEXT NOT NULL
                 );
-                INSERT INTO agenturm_store_meta (key, value)
-                    VALUES ('format', 'agenturm.observation-store.v13');
                 CREATE TABLE agenturm_ingest_receipts (
                     request_id TEXT PRIMARY KEY NOT NULL,
                     source_id TEXT NOT NULL,
@@ -908,9 +908,13 @@ impl Store {
                 );
                 CREATE INDEX agenturm_observations_by_session
                     ON agenturm_observations
-                        (session_id, observed_at_unix_ns, event_id, revision);
-                PRAGMA user_version = 13;",
+                        (session_id, observed_at_unix_ns, event_id, revision);",
             )?;
+            transaction.execute(
+                "INSERT INTO agenturm_store_meta (key, value) VALUES ('format', ?1)",
+                [STORE_MARKER],
+            )?;
+            transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             content_grant::create_schema(&transaction, SCHEMA_VERSION)?;
             content_grant::create_receipt_proof_schema(&transaction)?;
             retention::create_schema(&transaction)?;
@@ -1069,7 +1073,7 @@ impl Store {
             validate_marked_shape(&connection, 7)?;
         } else if schema_version == 7 {
             validate_marked_shape(&connection, 7)?;
-        } else if matches!(schema_version, 8..=12) {
+        } else if (8..SCHEMA_VERSION).contains(&schema_version) {
             validate_marked_shape(&connection, schema_version)?;
         } else if schema_version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(schema_version));
@@ -1127,10 +1131,22 @@ impl Store {
             transaction.commit()?;
             validate_marked_shape(&connection, 12)?;
         }
-        if (2..SCHEMA_VERSION).contains(&schema_version) {
+        if (2..13).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             content_grant::migrate_v12(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V13],
+            )?;
+            transaction.pragma_update(None, "user_version", 13)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 13)?;
+        }
+        if (2..SCHEMA_VERSION).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_v13(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -2124,6 +2140,40 @@ mod tests {
         assert!(reopened.current_content_grant(&edit).unwrap().is_none());
         let edit_grant = reopened.grant_content(&edit).unwrap();
         reopened.verify_content_grant(&edit, &edit_grant).unwrap();
+    }
+
+    #[test]
+    fn v13_edit_approval_survives_upgrade_without_authorizing_commands() {
+        let db = TempDb::new();
+        let source = agenturm_kernel::ExtensionId::parse("harness.codex").unwrap();
+        let edit = ContentGrantScope::new(source.clone(), ContentKind::CodexEditDetail, [1; 32]);
+        let command = ContentGrantScope::new(source, ContentKind::CodexCommandDetail, [2; 32]);
+        let mut store = Store::open(&db.0).unwrap();
+        let existing = store.grant_content(&edit).unwrap();
+        let transaction = store.connection.transaction().unwrap();
+        content_grant::migrate_grant_schema(&transaction, 13).unwrap();
+        transaction
+            .execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V13],
+            )
+            .unwrap();
+        transaction.pragma_update(None, "user_version", 13).unwrap();
+        transaction.commit().unwrap();
+        drop(store);
+        let read_only = Store::open_read_only(&db.0).unwrap();
+        assert!(read_only.current_content_grant(&command).unwrap().is_none());
+        drop(read_only);
+        let mut reopened = Store::open(&db.0).unwrap();
+        reopened.verify_content_grant(&edit, &existing).unwrap();
+        assert!(reopened.current_content_grant(&command).unwrap().is_none());
+        let grant = reopened.grant_content(&command).unwrap();
+        assert_ne!(grant.binding_fingerprint(), existing.binding_fingerprint());
+        drop(reopened);
+        Store::open_read_only(&db.0)
+            .unwrap()
+            .verify_content_grant(&command, &grant)
+            .unwrap();
     }
 
     fn downgrade_fixture_to_v7(connection: &Connection) {

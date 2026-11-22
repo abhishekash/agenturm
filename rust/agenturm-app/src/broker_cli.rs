@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 const USAGE: &str = concat!(
-    "agenturm broker <collect|query|review|cockpit|task> --broker-config <json> [command options]\n",
+    "agenturm broker <collect|query|review|investigate|cockpit|task> --broker-config <json> [command options]\n",
     "       agenturm broker grant <check|approve|revoke> --broker-config <json> --binding <json>\n",
     "       agenturm broker content list --broker-config <json> --source-id <id> --session-id <id>\n",
     "       agenturm broker content preview --broker-config <json> --selection <json>\n",
@@ -63,6 +63,7 @@ pub struct BrokerOptions {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum BrokerCommand {
     Application(Box<Command>),
+    Investigation(Box<InvestigationOptions>),
     Grant {
         verb: String,
         binding: PathBuf,
@@ -115,6 +116,15 @@ pub(super) fn parse(args: &[String]) -> Result<BrokerOptions, String> {
         }
     }
     let config = config.ok_or(USAGE)?;
+    if command.first().is_some_and(|verb| verb == "investigate") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::Investigation(Box::new(investigate_cli::parse(
+                &command[1..],
+                true,
+            )?)),
+        });
+    }
     let management = match command.as_slice() {
         [content, verb, source_flag, source, session_flag, session]
             if content == "content"
@@ -336,6 +346,23 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
     let (store, config) = connect(&options.config)?;
     let command = match &options.command {
         BrokerCommand::Application(command) => command.as_ref(),
+        BrokerCommand::Investigation(options) => {
+            return investigate_cli::execute_broker(
+                options,
+                store,
+                (
+                    &config.socket,
+                    &config.receiver_id,
+                    config.service_uid,
+                    config.service_gid,
+                ),
+                std::io::stdout().lock(),
+            )
+            .map_err(|message| BrokerExecutionError {
+                message,
+                exit_code: 2,
+            });
+        }
         BrokerCommand::ContentList { source, session } => {
             let identity = store
                 .history_identity()
