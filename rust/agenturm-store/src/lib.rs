@@ -30,9 +30,10 @@ pub use session_catalog::{
     SessionSummary,
 };
 pub use workspace_ledger::{
-    ApprovedTaskDraft, MAX_WORKSPACE_PAGE_SIZE, SavedHandoff, SavedTask, SavedTaskDecision, TaskBrief,
-    TaskBriefUpdate, TaskDecisionInput, TaskDecisionKind, TaskDraftApproval, TaskHandoff, TaskSourceProof, WorkspaceAnchor, WorkspaceError,
-    WorkspaceGitSnapshot, WorkspaceHistory, WorkspaceLedger, WorkspacePage,
+    ApprovedTaskDraft, MAX_WORKSPACE_PAGE_SIZE, SavedHandoff, SavedTask, SavedTaskDecision,
+    TaskBrief, TaskBriefUpdate, TaskDecisionInput, TaskDecisionKind, TaskDraftApproval,
+    TaskHandoff, TaskSourceProof, WorkspaceAnchor, WorkspaceError, WorkspaceGitSnapshot,
+    WorkspaceHistory, WorkspaceLedger, WorkspacePage,
 };
 
 use agenturm_kernel::{

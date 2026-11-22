@@ -1997,8 +1997,14 @@ fn review_from_store(
     output: &ReviewOutput,
 ) -> Result<String, String> {
     let scope = review_receipt::ReviewScope {
-        harness_id: options.harness_id.as_deref().ok_or("Review requires a source ID")?,
-        session_id: options.session_id.as_deref().ok_or("Review requires a session ID")?,
+        harness_id: options
+            .harness_id
+            .as_deref()
+            .ok_or("Review requires a source ID")?,
+        session_id: options
+            .session_id
+            .as_deref()
+            .ok_or("Review requires a session ID")?,
         turn_id,
         worker_id,
     };
