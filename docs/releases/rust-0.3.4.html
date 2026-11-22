@@ -2,8 +2,8 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Rust 0.3.4 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/releases/rust-0.3.4.md">Markdown source ↗</a></nav><h1>Agenturm Rust 0.3.4</h1>
-<p>This Linux candidate adds grant-fenced source investigations, optional Git
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.4</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/releases/rust-0.3.4.md">Markdown source ↗</a></nav><h1>Agenturm Rust 0.3.4</h1>
+<p>This Linux release adds grant-fenced source investigations, optional Git
 patches in task handoffs, and explicit native turn and worker links for
 OTLP traces. Python applications can export trace metadata directly to
 the Rust receiver without running a Python receiver.</p>
@@ -45,8 +45,23 @@ a failure, and a total request deadline against a slow HTTP reply.
 After review fixes, all 152 affected app, store, broker and UI library tests
 passed. The UI regression checks that Escape closes help and preserves the
 selected session and inspector scroll at 120×32 and 60×18.
-Archive and installed workflow qualification
-must finish before publishing this candidate.</p>
+The qualified x86-64 archive has SHA-256
+<code>74f85b9d0b1f0c9c2afc9dbcc9e97119087777b03deed1203a0072e28878a18c</code>.
+That exact archive passed Python-free startup, managed installation and
+restart, history upgrade from Rust 0.3.3, backup and uninstall with history
+retained. Its installed commands passed Git patch capture and export,
+grant-fenced instruction/source reopening, Review receipts and task
+continuity. All 14 Node/Python producer cases and the real OpenTelemetry
+HTTP/protobuf exact-turn scenario passed against the extracted binaries.</p>
+<p>A disposable Linux guest ran the same packaged binaries under distinct
+broker and client UIDs. It verified raw database/source denial, instruction,
+path, command and source investigations, grant revocation, bounded blocked
+output, and private-view redaction at 60×18. A separate crash fixture proved
+three SIGKILL restarts, exact replay after a complete admission whose reply
+the client discarded, an unchanged durable checkpoint on replay, and denial
+of a competing broker writer.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/scripts/validate_rust_native_private_content.py">Private-content qualification</a> ·
+<a href="https://github.com/abhishekash/agenturm/blob/main/scripts/validate_rust_broker_crash_replay.py">Crash and lost-reply qualification</a></p>
 <p>Ubuntu 24.04 x86-64 remains the qualified platform. Real Kiro data,
 production connector qualification, additional platforms and the remaining
 paired keyboard journeys retain their separate gates. The default

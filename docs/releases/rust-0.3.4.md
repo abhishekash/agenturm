@@ -1,6 +1,6 @@
 # Agenturm Rust 0.3.4
 
-This Linux candidate adds grant-fenced source investigations, optional Git
+This Linux release adds grant-fenced source investigations, optional Git
 patches in task handoffs, and explicit native turn and worker links for
 OTLP traces. Python applications can export trace metadata directly to
 the Rust receiver without running a Python receiver.
@@ -52,8 +52,25 @@ a failure, and a total request deadline against a slow HTTP reply.
 After review fixes, all 152 affected app, store, broker and UI library tests
 passed. The UI regression checks that Escape closes help and preserves the
 selected session and inspector scroll at 120×32 and 60×18.
-Archive and installed workflow qualification
-must finish before publishing this candidate.
+The qualified x86-64 archive has SHA-256
+`74f85b9d0b1f0c9c2afc9dbcc9e97119087777b03deed1203a0072e28878a18c`.
+That exact archive passed Python-free startup, managed installation and
+restart, history upgrade from Rust 0.3.3, backup and uninstall with history
+retained. Its installed commands passed Git patch capture and export,
+grant-fenced instruction/source reopening, Review receipts and task
+continuity. All 14 Node/Python producer cases and the real OpenTelemetry
+HTTP/protobuf exact-turn scenario passed against the extracted binaries.
+
+A disposable Linux guest ran the same packaged binaries under distinct
+broker and client UIDs. It verified raw database/source denial, instruction,
+path, command and source investigations, grant revocation, bounded blocked
+output, and private-view redaction at 60×18. A separate crash fixture proved
+three SIGKILL restarts, exact replay after a complete admission whose reply
+the client discarded, an unchanged durable checkpoint on replay, and denial
+of a competing broker writer.
+
+[Private-content qualification](../../scripts/validate_rust_native_private_content.py) ·
+[Crash and lost-reply qualification](../../scripts/validate_rust_broker_crash_replay.py)
 
 Ubuntu 24.04 x86-64 remains the qualified platform. Real Kiro data,
 production connector qualification, additional platforms and the remaining
