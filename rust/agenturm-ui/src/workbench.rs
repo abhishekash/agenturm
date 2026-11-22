@@ -27,6 +27,7 @@ impl From<&RecordedSession> for WorkAnchor {
 #[derive(Clone, Debug)]
 pub struct TaskEntry {
     pub id: u64,
+    pub revision: u64,
     pub anchor: Option<WorkAnchor>,
     pub title: String,
     pub note: String,
@@ -155,12 +156,14 @@ pub enum WorkCommand {
     Handoffs(Option<u64>),
     SaveTask {
         id: Option<u64>,
+        revision: Option<u64>,
         anchor: Option<WorkAnchor>,
         title: String,
         note: String,
     },
     CompleteTask {
         id: u64,
+        revision: u64,
         completed: bool,
     },
     TaskLinks(u64),
@@ -237,6 +240,7 @@ enum Draft {
     },
     Task {
         id: Option<u64>,
+        revision: Option<u64>,
         anchor: Option<WorkAnchor>,
         title: String,
         note: String,
@@ -408,6 +412,7 @@ impl Workbench {
             (WorkResult::Tasks { .. }, KeyCode::Char('n' | 'N')) => {
                 self.draft = Some(Draft::Task {
                     id: None,
+                    revision: None,
                     anchor: (key == KeyCode::Char('n'))
                         .then(|| self.target.clone())
                         .flatten(),
@@ -421,6 +426,7 @@ impl Workbench {
             {
                 self.draft = Some(Draft::Task {
                     id: Some(task.id),
+                    revision: Some(task.revision),
                     anchor: task.anchor.clone(),
                     title: task.title.clone(),
                     note: task.note.clone(),
@@ -432,6 +438,7 @@ impl Workbench {
             {
                 return WorkInput::Command(WorkCommand::CompleteTask {
                     id: task.id,
+                    revision: task.revision,
                     completed: !task.completed,
                 });
             }
@@ -595,12 +602,14 @@ impl Workbench {
                 }
                 Draft::Task {
                     id,
+                    revision,
                     anchor,
                     title,
                     note,
                     ..
                 } if !title.trim().is_empty() => WorkInput::Command(WorkCommand::SaveTask {
                     id: *id,
+                    revision: *revision,
                     anchor: anchor.clone(),
                     title: title.trim().to_owned(),
                     note: note.clone(),

@@ -283,7 +283,10 @@ fn collection_notice(report: &CollectionReport) -> Option<String> {
     })
 }
 
-fn state_directory(state_home: Option<&OsStr>, home: Option<&OsStr>) -> Result<PathBuf, String> {
+pub(super) fn state_directory(
+    state_home: Option<&OsStr>,
+    home: Option<&OsStr>,
+) -> Result<PathBuf, String> {
     let state_home = state_home.map(Path::new).filter(|path| path.is_absolute());
     let home = home.map(Path::new).filter(|path| path.is_absolute());
     let base = state_home

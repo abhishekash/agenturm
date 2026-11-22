@@ -1,5 +1,6 @@
 export interface ClientOptions {
   endpoint?: string;
+  transport?: 'agenturm' | 'otlp';
   service?: string;
   token?: string;
   timeoutMs?: number;
@@ -11,6 +12,7 @@ export interface TraceOptions {
   name?: string;
   task?: string;
   sessionId?: string;
+  harnessId?: string;
   attributes?: Record<string, unknown>;
 }
 
@@ -36,6 +38,7 @@ export interface RunHandle {
 export declare class Client {
   constructor(options?: ClientOptions);
   readonly endpoint: string;
+  readonly transport: 'agenturm' | 'otlp';
   readonly service: string;
   readonly lastError: Error | null;
   trace<T>(callback: (run: RunHandle) => T | Promise<T>): Promise<T>;

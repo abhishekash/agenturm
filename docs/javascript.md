@@ -26,3 +26,50 @@ await telemetry.trace(
 ```
 
 The client sends completed spans to the local receiver. By default, delivery is best effort so telemetry failures do not interrupt the agent; enable `strict: true` to raise delivery errors. See [all client options](usage.md).
+
+## Send traces to standalone Rust
+
+Choose the `otlp` transport when running against a standalone Rust receiver.
+Set `sessionId` to the exact native session and `harnessId` to its collected
+source ID to make the trace available from that session. The client attaches
+those identities to every span in the trace.
+
+```js
+import { Client } from '@agenturm/client';
+
+const telemetry = new Client({ transport: 'otlp', strict: true });
+await telemetry.trace(
+  { sessionId: 'thread-42', harnessId: 'harness.codex' },
+  async run => run.span('work', async span => {
+    await doWork();
+    span.setStatus('OK');
+  }),
+);
+```
+
+Launch the producer with the installed Rust app to configure its loopback
+trace endpoint for this invocation.
+
+```sh
+agenturm run --db history.sqlite --source-id otlp.node -- node agent.mjs
+```
+
+To send from an existing process, start the receiver with
+`agenturm serve-traces --listen 127.0.0.1:14318 --db history.sqlite --source-id otlp.node`.
+Set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:14318/v1/traces` for the
+producer. Use a literal loopback IP. An explicit `endpoint` overrides the environment. With neither
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` nor `OTEL_EXPORTER_OTLP_ENDPOINT` set,
+the transport uses that same loopback address.
+
+OTLP/HTTP JSON exports trace IDs, parent relationships, timestamps, status
+and optional session and harness identity. Payloads use fixed span names
+and omit custom attributes, events and task text. The `agenturm` transport
+remains the default and supports progress messages. The OTLP receiver can
+group unscoped traces under an `agenturm run` invocation. Supply a
+`sessionId` to export from a standalone receiver.
+
+Node.js 22.23.4 and the published Rust 0.3.2 Linux x86-64 bundle verified
+the launcher, durable parent and source/session identity, nonzero producer
+exit status, and standalone partial rejection and 1,025-span export across
+the receiver's bounded requests. The existing JavaScript-to-Python
+integration test also passed.

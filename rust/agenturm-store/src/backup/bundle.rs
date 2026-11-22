@@ -358,6 +358,8 @@ mod tests {
                 .save_task_workspace_snapshot(task.id, &git)
                 .unwrap()
         );
+        let task = workspace.task(task.id).unwrap().unwrap();
+        assert_eq!(task.revision, 3);
         let handoff = workspace
             .create_handoff(&first, &second, "Look at this turn")
             .unwrap();
@@ -387,6 +389,21 @@ mod tests {
         live_sidecar.execute(
             "INSERT INTO agenturm_saved_tasks (history_binding, title, note) VALUES (?1, 'Obsolete', ?2)",
             params![[4_u8; 32], obsolete_note],
+        ).unwrap();
+        let obsolete_id = live_sidecar.last_insert_rowid();
+        live_sidecar
+            .execute(
+                "INSERT INTO agenturm_task_briefs (task_id, brief_json) VALUES (?1, ?2)",
+                params![
+                    obsolete_id,
+                    serde_json::json!({"intent":obsolete_note}).to_string()
+                ],
+            )
+            .unwrap();
+        live_sidecar.execute(
+            "INSERT INTO agenturm_task_decisions (task_id, kind, text, rationale, scope, created_at_unix_ns)
+             VALUES (?1, 'accepted', ?2, '', '', 1)",
+            params![obsolete_id, obsolete_note],
         ).unwrap();
         drop(live_sidecar);
         let review_sidecar =

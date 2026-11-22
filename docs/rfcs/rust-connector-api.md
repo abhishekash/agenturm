@@ -129,22 +129,69 @@ the local credential-free profile and its fail-closed launch path on that host.
 
 ## Host-managed credentials and destinations
 
-The isolated child has no socket access and receives no credential or
-destination configuration. The remaining credentialed transport should
-keep the application and TLS connection in trusted host code. Bind an
-operator-managed endpoint and credential reference to the connector
-descriptor, pin, launch policy, target and current grant epoch. Resolve the
-credential at the point of use. Connector frames can select only the
-host-authorized operation and carry the bounded data for that operation.
-The host selects the exact approved origin and resource, disables redirects
-and verifies the endpoint before sending a credential. Credentials stay out
-of executable arguments, connector frames, queue rows, receipts and
-diagnostics.
+An outbound connector with the `isolated_linux` launch policy can use the
+host-owned `unix_status_v1` transport. The connector gets the queued status
+operation with its logical destination. It can approve forwarding by
+returning a correlated `forward` outcome. The host chooses the socket,
+credential reference and wire operation from the grant and the queued work.
+The child has no socket or filesystem access and receives neither the
+credential nor the physical endpoint configuration.
 
-The transport must recheck the current grant at dispatch and reconciliation,
-and use the same idempotency key and request digest after an ambiguous
-effect. Credentialed transport and production endpoint qualification remain
-open.
+Add the transport to the connector configuration, then approve that
+configuration with the existing `grant` command.
+
+```json
+{
+  "launch": "isolated_linux",
+  "host_transport": {
+    "kind": "unix_status_v1",
+    "socket": "/run/status-service/agenturm.sock",
+    "peer_uid": 45000,
+    "peer_gid": 45000,
+    "credential_file": "/run/user/1000/agenturm/status-token"
+  }
+}
+```
+
+The grant binds the absolute socket path, the peer's Linux UID and primary
+GID, and the credential reference alongside the descriptor, artifact pin,
+launch policy and logical destination. Change any of those settings and
+approve a new grant. The existing queue checks the grant epoch before sending
+and before reconciliation. The operator manages the two paths and controls
+which local account can create a service socket. At each connection the host
+verifies the socket owner and inode and checks the connected peer credentials
+before opening the credential file. The credential must be a private mode
+`0600` regular file owned by the runtime user, with one link and a
+32–256-byte ASCII token using letters, digits, hyphens or underscores and an
+optional final newline. The host can read a rotated token from the same
+approved reference on its next connection.
+
+`unix_status_v1` uses one length-prefixed JSON request and response per
+connection, each capped at 4 KiB. The request and response carry protocol
+version `1`, destination ID, idempotency key and request SHA-256. The
+request also carries the connector ID, credential and either
+`{"kind":"deliver","state":"completed"}` or `{"kind":"lookup"}` as the
+operation. The supported values for `state` are the runtime's typed lifecycle
+states. The client and endpoint each close their write side after their frame.
+A deliver reply can report `accepted`. A lookup reply can report
+`accepted`, `confirmed_missing` or `unknown`. The endpoint may return
+`confirmed_missing` only after it can rule out a delayed effect for the
+same key and digest. Mismatched replies, unknown results, and transport
+failures leave the delivery uncertain. A valid acceptance uses a
+host-derived receipt ID based on the delivery identity.
+
+The token traverses only the authenticated host-to-service connection.
+The executable arguments, child frames, queue rows, receipts and diagnostics
+contain no credential. This profile targets a local status service. HTTPS
+transport, credential provisioning for production providers and production
+endpoint qualification remain open.
+
+On Ubuntu 24.04.5 x86-64, the connector suite used a static isolated child and
+a local Unix status fixture. The host withheld request bytes from a mismatched
+peer and when the token file had unsafe permissions. It timed out a partial
+reply, reopened the ledger, and reconciled the exact key and digest after
+token rotation. An injected endpoint receipt field was rejected, and
+revocation stopped subsequent dispatch.
 
 ## Acceptance gates for runtime integration
 

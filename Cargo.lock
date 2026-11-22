@@ -4,8 +4,9 @@ version = 4
 
 [[package]]
 name = "agenturm-app"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
+ "agenturm-content",
  "agenturm-jsonl-source",
  "agenturm-kernel",
  "agenturm-lifecycle-extension-example",
@@ -66,6 +67,21 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "agenturm-content"
+version = "0.1.0"
+dependencies = [
+ "agenturm-jsonl-source",
+ "agenturm-kernel",
+ "agenturm-opencode-harness",
+ "agenturm-store",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "time",
 ]
 
 [[package]]
@@ -273,12 +289,16 @@ dependencies = [
 name = "agenturm-storage-service"
 version = "0.1.0"
 dependencies = [
+ "agenturm-content",
  "agenturm-kernel",
+ "agenturm-runtime",
  "agenturm-storage-admission",
  "agenturm-storage-service-contract",
  "agenturm-store",
  "libc",
  "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

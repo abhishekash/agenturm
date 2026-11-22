@@ -1,27 +1,34 @@
 //! Explicit, local cockpit tasks and cross-session handoffs.
 
+mod continuity;
+pub use continuity::{ApprovedTaskDraft, TaskDraftApproval, TaskSourceProof};
+
 use crate::{MAX_EVENT_ID_BYTES, MAX_SESSION_KEY_BYTES, Store, StoreError, validate_identifier};
 use agenturm_kernel::ExtensionId;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Row, TransactionBehavior, params, types::Type,
 };
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APPLICATION_ID: i64 = 0x4157_5350;
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 4;
 pub const MAX_WORKSPACE_PAGE_SIZE: usize = 200;
 const MAX_TITLE_BYTES: usize = 256;
 const MAX_NOTE_BYTES: usize = 4 * 1024;
+const MAX_DECISION_VERSIONS: usize = 128;
+const MAX_DECISION_BYTES: usize = 480 * 1024;
 
 type Result<T> = std::result::Result<T, WorkspaceError>;
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceAnchor {
     pub harness_id: ExtensionId,
     pub session_id: String,
@@ -36,6 +43,86 @@ pub struct SavedTask {
     pub title: String,
     pub note: String,
     pub completed: bool,
+    pub archived: bool,
+    pub revision: u64,
+    pub workspace_directory: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskBrief {
+    pub intent: String,
+    pub acceptance_criteria: String,
+    pub constraints: String,
+    pub open_questions: String,
+    pub next_action: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskBriefUpdate {
+    #[serde(default, deserialize_with = "present_brief_text")]
+    pub intent: Option<String>,
+    #[serde(default, deserialize_with = "present_brief_text")]
+    pub acceptance_criteria: Option<String>,
+    #[serde(default, deserialize_with = "present_brief_text")]
+    pub constraints: Option<String>,
+    #[serde(default, deserialize_with = "present_brief_text")]
+    pub open_questions: Option<String>,
+    #[serde(default, deserialize_with = "present_brief_text")]
+    pub next_action: Option<String>,
+}
+
+fn present_brief_text<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskDecisionKind {
+    Accepted,
+    Rejected,
+}
+
+impl TaskDecisionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize)]
+pub struct TaskDecisionInput {
+    pub kind: TaskDecisionKind,
+    pub text: String,
+    pub rationale: String,
+    pub scope: String,
+    pub supersedes_id: Option<u64>,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize)]
+pub struct SavedTaskDecision {
+    pub id: u64,
+    pub created_at_unix_ns: u64,
+    #[serde(flatten)]
+    pub decision: TaskDecisionInput,
+    pub source: Option<TaskSourceProof>,
+}
+
+/// One consistent, bounded read of the operator-authored task handoff.
+pub struct TaskHandoff {
+    pub task: SavedTask,
+    pub brief: TaskBrief,
+    pub decisions: Vec<SavedTaskDecision>,
+    pub links: Vec<WorkspaceAnchor>,
+    pub links_truncated: bool,
+    pub git_snapshot: Option<WorkspaceGitSnapshot>,
+    pub continuity: Vec<ApprovedTaskDraft>,
 }
 
 impl fmt::Debug for SavedTask {
@@ -90,6 +177,8 @@ pub struct WorkspaceGitSnapshot {
 pub enum WorkspaceError {
     Invalid(&'static str),
     MissingAnchor,
+    HistoryUnavailable(String),
+    TaskRevisionConflict { expected: u64, current: u64 },
     HistoryChanged,
     UnrecognizedLedger,
     Io(io::Error),
@@ -102,6 +191,13 @@ impl fmt::Display for WorkspaceError {
         match self {
             Self::Invalid(message) => f.write_str(message),
             Self::MissingAnchor => f.write_str("the selected history anchor is unavailable"),
+            Self::HistoryUnavailable(message) => {
+                write!(f, "Cannot verify workspace history: {message}")
+            }
+            Self::TaskRevisionConflict { expected, current } => write!(
+                f,
+                "Task revision conflict: expected {expected}, current {current}. Reload the task before saving."
+            ),
             Self::HistoryChanged => {
                 f.write_str("the history file changed since opening the workspace")
             }
@@ -144,6 +240,34 @@ pub struct WorkspaceLedger {
     history: PathBuf,
     path: PathBuf,
     binding: [u8; 32],
+    verifier: Option<Box<dyn WorkspaceHistory + Send + Sync>>,
+}
+
+/// Checks that a workspace reference still belongs to the bound history.
+pub trait WorkspaceHistory {
+    fn contains_anchor(&self, anchor: &WorkspaceAnchor) -> std::result::Result<bool, String>;
+    fn contains_event(
+        &self,
+        anchor: &WorkspaceAnchor,
+        event_id: &str,
+        revision: u32,
+    ) -> std::result::Result<bool, String>;
+}
+
+impl WorkspaceHistory for Store {
+    fn contains_anchor(&self, anchor: &WorkspaceAnchor) -> std::result::Result<bool, String> {
+        contains_anchor_in(&self.connection, anchor).map_err(|error| error.to_string())
+    }
+
+    fn contains_event(
+        &self,
+        anchor: &WorkspaceAnchor,
+        event_id: &str,
+        revision: u32,
+    ) -> std::result::Result<bool, String> {
+        contains_event_in(&self.connection, anchor, event_id, revision)
+            .map_err(|error| error.to_string())
+    }
 }
 
 impl WorkspaceLedger {
@@ -164,7 +288,19 @@ impl WorkspaceLedger {
             history,
             path: path.into(),
             binding,
+            verifier: None,
         })
+    }
+
+    /// Uses an explicit history authority and binds local state to a private
+    /// identity file for that authority.
+    pub fn open_with_history(
+        marker: impl AsRef<Path>,
+        verifier: impl WorkspaceHistory + Send + Sync + 'static,
+    ) -> Result<Self> {
+        let mut ledger = Self::open(marker)?;
+        ledger.verifier = Some(Box::new(verifier));
+        Ok(ledger)
     }
 
     pub fn create_task(
@@ -173,65 +309,129 @@ impl WorkspaceLedger {
         title: &str,
         note: &str,
     ) -> Result<SavedTask> {
+        self.create_task_in_workspace(anchor, title, note, None)
+    }
+
+    pub fn create_task_in_workspace(
+        &self,
+        anchor: Option<&WorkspaceAnchor>,
+        title: &str,
+        note: &str,
+        workspace_directory: Option<&str>,
+    ) -> Result<SavedTask> {
         validate_title(title)?;
         validate_note(note, true)?;
+        if let Some(directory) = workspace_directory {
+            validate_workspace_directory(directory)?;
+        }
         if let Some(anchor) = anchor {
             self.require_anchors(&[anchor])?;
         }
         let id = self
             .write(true, |connection| {
-                let id = connection.query_row(
-                    "INSERT INTO agenturm_saved_tasks
-                    (history_binding, source_id, session_id, worker_id, turn_id, title, note)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
-                    params![
-                        self.binding,
-                        anchor.map(|anchor| anchor.harness_id.as_str()),
-                        anchor.map(|anchor| anchor.session_id.as_str()),
-                        anchor.and_then(|anchor| anchor.worker_id.as_deref()),
-                        anchor.and_then(|anchor| anchor.turn_id.as_deref()),
-                        title,
-                        note
-                    ],
-                    |row| row.get::<_, i64>(0),
-                )?;
-                if let Some(anchor) = anchor {
-                    insert_task_link(connection, self.binding, id, anchor)?;
-                }
-                Ok(id as u64)
+                insert_task_row(
+                    connection,
+                    self.binding,
+                    anchor,
+                    title,
+                    note,
+                    workspace_directory,
+                )
             })?
             .ok_or(WorkspaceError::UnrecognizedLedger)?;
         Ok(SavedTask {
-            id,
+            id: id as u64,
             anchor: anchor.cloned(),
             title: title.into(),
             note: note.into(),
             completed: false,
+            archived: false,
+            revision: 1,
+            workspace_directory: workspace_directory
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
         })
     }
 
     pub fn update_task(&self, id: u64, title: &str, note: &str) -> Result<bool> {
-        let id = positive_id(id)?;
-        validate_title(title)?;
-        validate_note(note, true)?;
-        self.change(|connection| {
+        Ok(self
+            .update_task_fields(id, Some(title), Some(note), None, None)?
+            .is_some())
+    }
+
+    pub fn update_task_fields(
+        &self,
+        id: u64,
+        title: Option<&str>,
+        note: Option<&str>,
+        workspace_directory: Option<&str>,
+        expected_revision: Option<u64>,
+    ) -> Result<Option<SavedTask>> {
+        if title.is_none() && note.is_none() && workspace_directory.is_none() {
+            return Err(WorkspaceError::Invalid(
+                "Choose at least one task field to update",
+            ));
+        }
+        if let Some(title) = title {
+            validate_title(title)?;
+        }
+        if let Some(note) = note {
+            validate_note(note, true)?;
+        }
+        if let Some(directory) = workspace_directory {
+            validate_workspace_directory(directory)?;
+        }
+        self.edit_task(id, expected_revision, |connection, current| {
+            if workspace_directory.is_some_and(|directory| directory.is_empty() || Some(directory) != current.workspace_directory.as_deref()) {
+                connection.execute("DELETE FROM agenturm_task_git_snapshots WHERE task_id = ?1", [id])?;
+            }
             connection.execute(
-                "UPDATE agenturm_saved_tasks SET title = ?3, note = ?4
-                 WHERE history_binding = ?1 AND id = ?2",
-                params![self.binding, id, title, note],
-            )
+                "UPDATE agenturm_saved_tasks
+                 SET title = COALESCE(?2, title), note = COALESCE(?3, note),
+                     workspace_directory = CASE WHEN ?4 IS NULL THEN workspace_directory ELSE NULLIF(?4, '') END
+                 WHERE id = ?1",
+                params![id, title, note, workspace_directory],
+            )?;
+            Ok(())
+        }).map(|saved| saved.map(|(task, ())| task))
+    }
+
+    pub fn set_task_archived(
+        &self,
+        id: u64,
+        archived: bool,
+        expected_revision: Option<u64>,
+    ) -> Result<Option<SavedTask>> {
+        self.edit_task(id, expected_revision, |connection, _| {
+            connection.execute(
+                "UPDATE agenturm_saved_tasks SET archived = ?2 WHERE id = ?1",
+                params![id, archived],
+            )?;
+            Ok(())
         })
+        .map(|saved| saved.map(|(task, ())| task))
     }
 
     pub fn set_task_completed(&self, id: u64, completed: bool) -> Result<bool> {
-        let id = positive_id(id)?;
-        self.change(|connection| {
+        Ok(self
+            .set_task_completed_if_current(id, completed, None)?
+            .is_some())
+    }
+
+    pub fn set_task_completed_if_current(
+        &self,
+        id: u64,
+        completed: bool,
+        expected_revision: Option<u64>,
+    ) -> Result<Option<SavedTask>> {
+        self.edit_task(id, expected_revision, |connection, _| {
             connection.execute(
-                "UPDATE agenturm_saved_tasks SET completed = ?3
-                 WHERE history_binding = ?1 AND id = ?2",
-                params![self.binding, id, completed],
-            )
+                "UPDATE agenturm_saved_tasks SET completed = ?2 WHERE id = ?1",
+                params![id, completed],
+            )?;
+            Ok(())
         })
+        .map(|saved| saved.map(|(task, ())| task))
     }
 
     pub fn delete_task(&self, id: u64) -> Result<bool> {
@@ -249,57 +449,220 @@ impl WorkspaceLedger {
         limit: usize,
         before: Option<u64>,
     ) -> Result<WorkspacePage<SavedTask>> {
+        self.list_tasks_including_archived(limit, before, false)
+    }
+
+    pub fn list_tasks_including_archived(
+        &self,
+        limit: usize,
+        before: Option<u64>,
+        include_archived: bool,
+    ) -> Result<WorkspacePage<SavedTask>> {
         self.list(
-            "SELECT id, source_id, session_id, worker_id, turn_id, title, note, completed
-             FROM agenturm_saved_tasks
-             WHERE history_binding = ?1 AND id <= ?2
-             ORDER BY id DESC LIMIT ?3",
+            |version| match (version, include_archived) {
+                (3..=SCHEMA_VERSION, true) => "SELECT id, source_id, session_id, worker_id, turn_id, title, note, completed, archived, revision, workspace_directory
+                    FROM agenturm_saved_tasks WHERE history_binding = ?1 AND id <= ?2 ORDER BY id DESC LIMIT ?3",
+                (3..=SCHEMA_VERSION, false) => "SELECT id, source_id, session_id, worker_id, turn_id, title, note, completed, archived, revision, workspace_directory
+                    FROM agenturm_saved_tasks WHERE history_binding = ?1 AND id <= ?2 AND archived = 0 ORDER BY id DESC LIMIT ?3",
+                _ => "SELECT id, source_id, session_id, worker_id, turn_id, title, note, completed, 0, 1, NULL
+                    FROM agenturm_saved_tasks WHERE history_binding = ?1 AND id <= ?2 ORDER BY id DESC LIMIT ?3",
+            },
             limit,
             before,
-            |row, id| {
-                Ok(SavedTask {
-                    id,
-                    anchor: decode_optional_anchor(row, 1)?,
-                    title: row.get(5)?,
-                    note: row.get(6)?,
-                    completed: row.get(7)?,
-                })
-            },
+            decode_task,
         )
+    }
+
+    /// Finds the exact task, including an archived task hidden by the default list.
+    pub fn task(&self, id: u64) -> Result<Option<SavedTask>> {
+        self.read_task(id, |_, task, _| Ok(task.clone()))
+    }
+
+    pub fn task_handoff(&self, id: u64) -> Result<Option<TaskHandoff>> {
+        self.read_task(id, |connection, task, version| {
+            let mut links =
+                load_task_links(connection, task, version, MAX_WORKSPACE_PAGE_SIZE + 1)?;
+            let links_truncated = links.len() > MAX_WORKSPACE_PAGE_SIZE;
+            links.truncate(MAX_WORKSPACE_PAGE_SIZE);
+            let (brief, decisions) = if version >= 3 {
+                (
+                    load_task_brief(connection, id)?,
+                    load_task_decisions(connection, id, version)?,
+                )
+            } else {
+                (TaskBrief::default(), Vec::new())
+            };
+            Ok(TaskHandoff {
+                task: task.clone(),
+                brief,
+                decisions,
+                links,
+                links_truncated,
+                git_snapshot: load_task_git_snapshot(connection, id, version)?,
+                continuity: continuity::load_approvals(connection, id, version)?,
+            })
+        })
+    }
+
+    pub fn task_brief(&self, id: u64) -> Result<Option<(SavedTask, TaskBrief)>> {
+        self.read_task(id, |connection, task, version| {
+            let brief = if version >= 3 {
+                load_task_brief(connection, id)?
+            } else {
+                TaskBrief::default()
+            };
+            Ok((task.clone(), brief))
+        })
+    }
+
+    pub fn update_task_brief(
+        &self,
+        id: u64,
+        patch: &TaskBriefUpdate,
+        expected_revision: Option<u64>,
+    ) -> Result<Option<(SavedTask, TaskBrief)>> {
+        for value in [
+            &patch.intent,
+            &patch.acceptance_criteria,
+            &patch.constraints,
+            &patch.open_questions,
+            &patch.next_action,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            validate_note(value, true)?;
+        }
+        self.edit_task(id, expected_revision, |connection, _| {
+            let mut brief = load_task_brief(connection, id)?;
+            for (field, update) in [
+                (&mut brief.intent, &patch.intent),
+                (&mut brief.acceptance_criteria, &patch.acceptance_criteria),
+                (&mut brief.constraints, &patch.constraints),
+                (&mut brief.open_questions, &patch.open_questions),
+                (&mut brief.next_action, &patch.next_action),
+            ] {
+                if let Some(update) = update {
+                    field.clone_from(update);
+                }
+            }
+            let encoded = serde_json::to_string(&brief)
+                .map_err(|_| WorkspaceError::Invalid("Cannot encode this task brief"))?;
+            connection.execute(
+                "INSERT INTO agenturm_task_briefs(task_id, brief_json) VALUES (?1, ?2)
+                 ON CONFLICT(task_id) DO UPDATE SET brief_json = excluded.brief_json",
+                params![id, encoded],
+            )?;
+            Ok(brief)
+        })
+    }
+
+    pub fn task_decisions(&self, id: u64) -> Result<Option<(SavedTask, Vec<SavedTaskDecision>)>> {
+        self.read_task(id, |connection, task, version| {
+            let decisions = if version >= 3 {
+                load_task_decisions(connection, id, version)?
+            } else {
+                Vec::new()
+            };
+            Ok((task.clone(), decisions))
+        })
+    }
+
+    pub fn add_task_decision(
+        &self,
+        id: u64,
+        decision: &TaskDecisionInput,
+        expected_revision: Option<u64>,
+    ) -> Result<Option<(SavedTask, SavedTaskDecision)>> {
+        self.add_task_decision_with_source(id, decision, expected_revision, None)
+    }
+
+    pub fn add_task_decision_with_source(
+        &self,
+        id: u64,
+        decision: &TaskDecisionInput,
+        expected_revision: Option<u64>,
+        source: Option<&TaskSourceProof>,
+    ) -> Result<Option<(SavedTask, SavedTaskDecision)>> {
+        validate_note(&decision.text, false)?;
+        validate_note(&decision.rationale, true)?;
+        validate_note(&decision.scope, true)?;
+        let supersedes = decision.supersedes_id.map(positive_id).transpose()?;
+        let source_json = source.map(continuity::encode_proof).transpose()?;
+        let created_at_unix_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|time| u64::try_from(time.as_nanos()).ok())
+            .filter(|time| *time <= i64::MAX as u64 && *time > 0)
+            .ok_or(WorkspaceError::Invalid(
+                "Cannot timestamp the task decision",
+            ))?;
+        self.edit_task(id, expected_revision, |connection, _| {
+            let (count, bytes): (usize, usize) = connection.query_row(
+                "SELECT count(*), COALESCE(sum(length(CAST(text AS BLOB)) + length(CAST(rationale AS BLOB))
+                     + length(CAST(scope AS BLOB))), 0) FROM agenturm_task_decisions WHERE task_id = ?1",
+                [id], |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let appended = decision.text.len() + decision.rationale.len() + decision.scope.len();
+            if count >= MAX_DECISION_VERSIONS || bytes.saturating_add(appended) > MAX_DECISION_BYTES {
+                return Err(WorkspaceError::Invalid("This task has reached its retained decision history limit"));
+            }
+            if let Some(previous) = supersedes {
+                let valid = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM agenturm_task_decisions WHERE task_id = ?1 AND id = ?2)
+                        AND NOT EXISTS(SELECT 1 FROM agenturm_task_decisions WHERE task_id = ?1 AND supersedes_id = ?2)",
+                    params![id, previous], |row| row.get::<_, bool>(0),
+                )?;
+                if !valid { return Err(WorkspaceError::Invalid("Supersede a current decision in this task")); }
+            }
+            let saved = connection.query_row(
+                "INSERT INTO agenturm_task_decisions(task_id, kind, text, rationale, scope, created_at_unix_ns, supersedes_id, source_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING id",
+                params![id, decision.kind.as_str(), decision.text, decision.rationale, decision.scope,
+                    created_at_unix_ns, supersedes, source_json], |row| row.get(0),
+            )?;
+            Ok(SavedTaskDecision { id: saved, created_at_unix_ns, decision: decision.clone(), source: source.cloned() })
+        })
     }
 
     /// Adds a verified session or exact worker turn to a saved task.
     /// Returns false for duplicate links or a task that was removed.
     pub fn link_task(&self, id: u64, anchor: &WorkspaceAnchor) -> Result<bool> {
-        let id = positive_id(id)?;
+        Ok(self
+            .link_task_if_current(id, anchor, None)?
+            .is_some_and(|(_, changed)| changed))
+    }
+
+    pub fn link_task_if_current(
+        &self,
+        id: u64,
+        anchor: &WorkspaceAnchor,
+        expected_revision: Option<u64>,
+    ) -> Result<Option<(SavedTask, bool)>> {
+        let signed_id = positive_id(id)?;
         self.require_anchors(&[anchor])?;
-        self.change(|connection| {
-            let changed = insert_task_link(connection, self.binding, id, anchor)?;
-            if changed != 0 {
-                connection.execute(
-                    "UPDATE agenturm_saved_tasks
-                     SET source_id = ?3, session_id = ?4, worker_id = ?5, turn_id = ?6
-                     WHERE history_binding = ?1 AND id = ?2 AND source_id IS NULL",
-                    params![
-                        self.binding,
-                        id,
-                        anchor.harness_id.as_str(),
-                        anchor.session_id,
-                        anchor.worker_id,
-                        anchor.turn_id
-                    ],
-                )?;
-            }
-            Ok(changed)
+        self.edit_task_with_change(id, expected_revision, |connection, _| {
+            let changed = add_task_link(connection, self.binding, signed_id, anchor)?;
+            Ok((changed, changed))
         })
     }
 
     /// Removes the exact link. If it was primary, the newest remaining link
     /// becomes primary. Links to expired history can still be removed.
     pub fn unlink_task(&self, id: u64, anchor: &WorkspaceAnchor) -> Result<bool> {
-        let id = positive_id(id)?;
+        Ok(self
+            .unlink_task_if_current(id, anchor, None)?
+            .is_some_and(|(_, changed)| changed))
+    }
+
+    pub fn unlink_task_if_current(
+        &self,
+        id: u64,
+        anchor: &WorkspaceAnchor,
+        expected_revision: Option<u64>,
+    ) -> Result<Option<(SavedTask, bool)>> {
         validate_anchor(anchor)?;
-        self.change(|connection| {
+        self.edit_task_with_change(id, expected_revision, |connection, _| {
             let changed = connection.execute(
                 "DELETE FROM agenturm_task_links
                  WHERE task_id = ?2 AND source_id = ?3 AND session_id = ?4
@@ -326,55 +689,21 @@ impl WorkspaceLedger {
                         anchor.worker_id, anchor.turn_id],
                 )?;
             }
-            Ok(changed)
+            Ok((changed != 0, changed != 0))
         })
     }
 
     pub fn task_links(&self, id: u64, limit: usize) -> Result<Vec<WorkspaceAnchor>> {
-        let id = positive_id(id)?;
         if !(1..=MAX_WORKSPACE_PAGE_SIZE).contains(&limit) {
             return Err(WorkspaceError::Invalid(
                 "workspace task-link limit is invalid",
             ));
         }
-        let mut links = Vec::new();
-        let Some(mut connection) = self.connect(false)? else {
-            return Ok(links);
-        };
-        let transaction = connection.transaction()?;
-        match schema_version(&transaction)? {
-            1 => {
-                let anchor = transaction
-                    .query_row(
-                        "SELECT source_id, session_id, worker_id, turn_id FROM agenturm_saved_tasks
-                     WHERE history_binding = ?1 AND id = ?2",
-                        params![self.binding, id],
-                        |row| decode_optional_anchor(row, 0),
-                    )
-                    .optional()?
-                    .flatten();
-                links.extend(anchor);
-            }
-            SCHEMA_VERSION => {
-                let mut statement = transaction.prepare(
-                    "SELECT link.source_id, link.session_id, NULLIF(link.worker_key, ''),
-                            NULLIF(link.turn_key, '')
-                     FROM agenturm_task_links AS link JOIN agenturm_saved_tasks AS task
-                          ON task.id = link.task_id
-                     WHERE task.history_binding = ?1 AND task.id = ?2
-                     ORDER BY link.id DESC LIMIT ?3",
-                )?;
-                links = statement
-                    .query_map(params![self.binding, id, limit as i64], |row| {
-                        decode_anchor(row, 0)
-                    })?
-                    .collect::<rusqlite::Result<_>>()?;
-            }
-            _ => {}
-        }
-        self.verify_history()?;
-        transaction.commit()?;
-        Ok(links)
+        Ok(self
+            .read_task(id, |connection, task, version| {
+                load_task_links(connection, task, version, limit)
+            })?
+            .unwrap_or_default())
     }
 
     pub fn save_task_workspace_snapshot(
@@ -382,58 +711,42 @@ impl WorkspaceLedger {
         id: u64,
         snapshot: &WorkspaceGitSnapshot,
     ) -> Result<bool> {
-        let id = positive_id(id)?;
+        Ok(self
+            .save_task_workspace_snapshot_if_current(id, snapshot, None)?
+            .is_some())
+    }
+
+    pub fn save_task_workspace_snapshot_if_current(
+        &self,
+        id: u64,
+        snapshot: &WorkspaceGitSnapshot,
+        expected_revision: Option<u64>,
+    ) -> Result<Option<SavedTask>> {
         validate_git_snapshot(snapshot)?;
-        self.change(|connection| {
+        self.edit_task(id, expected_revision, |connection, _| {
             connection.execute(
                 "INSERT INTO agenturm_task_git_snapshots
                     (task_id, repository_root, branch, head_commit, staged_changes,
                      unstaged_changes, untracked_files, captured_at_unix_ns)
-                 SELECT id, ?3, ?4, ?5, ?6, ?7, ?8, ?9 FROM agenturm_saved_tasks
-                 WHERE history_binding = ?1 AND id = ?2
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT (task_id) DO UPDATE SET
                      repository_root = excluded.repository_root, branch = excluded.branch,
                      head_commit = excluded.head_commit, staged_changes = excluded.staged_changes,
                      unstaged_changes = excluded.unstaged_changes, untracked_files = excluded.untracked_files,
                      captured_at_unix_ns = excluded.captured_at_unix_ns",
-                params![self.binding, id, snapshot.repository_root, snapshot.branch, snapshot.head_commit,
+                params![id, snapshot.repository_root, snapshot.branch, snapshot.head_commit,
                     snapshot.staged_changes, snapshot.unstaged_changes, snapshot.untracked_files,
                     snapshot.captured_at_unix_ns],
-            )
-        })
+            )?;
+            Ok(())
+        }).map(|saved| saved.map(|(task, ())| task))
     }
 
     pub fn task_workspace_snapshot(&self, id: u64) -> Result<Option<WorkspaceGitSnapshot>> {
-        let id = positive_id(id)?;
-        let Some(mut connection) = self.connect(false)? else {
-            return Ok(None);
-        };
-        let transaction = connection.transaction()?;
-        let snapshot =
-            if schema_version(&transaction)? == SCHEMA_VERSION {
-                transaction.query_row(
-                "SELECT git.repository_root, git.branch, git.head_commit, git.staged_changes,
-                        git.unstaged_changes, git.untracked_files, git.captured_at_unix_ns
-                 FROM agenturm_task_git_snapshots AS git JOIN agenturm_saved_tasks AS task
-                      ON task.id = git.task_id
-                 WHERE task.history_binding = ?1 AND task.id = ?2",
-                params![self.binding, id],
-                |row| Ok(WorkspaceGitSnapshot {
-                    repository_root: row.get(0)?,
-                    branch: row.get(1)?,
-                    head_commit: row.get(2)?,
-                    staged_changes: row.get(3)?,
-                    unstaged_changes: row.get(4)?,
-                    untracked_files: row.get(5)?,
-                    captured_at_unix_ns: row.get(6)?,
-                }),
-            ).optional()?
-            } else {
-                None
-            };
-        self.verify_history()?;
-        transaction.commit()?;
-        Ok(snapshot)
+        self.read_task(id, |connection, _, version| {
+            load_task_git_snapshot(connection, id, version)
+        })
+        .map(Option::flatten)
     }
 
     pub fn create_handoff(
@@ -508,11 +821,13 @@ impl WorkspaceLedger {
         before: Option<u64>,
     ) -> Result<WorkspacePage<SavedHandoff>> {
         self.list(
-            "SELECT id, from_source_id, from_session_id, from_worker_id, from_turn_id,
+            |_| {
+                "SELECT id, from_source_id, from_session_id, from_worker_id, from_turn_id,
                     to_source_id, to_session_id, to_worker_id, to_turn_id, note
              FROM agenturm_saved_handoffs
              WHERE history_binding = ?1 AND id <= ?2
-             ORDER BY id DESC LIMIT ?3",
+             ORDER BY id DESC LIMIT ?3"
+            },
             limit,
             before,
             |row, id| {
@@ -535,23 +850,14 @@ impl WorkspaceLedger {
         revision: u32,
     ) -> Result<bool> {
         validate_request_key(anchor, event_id)?;
-        let history = Store::open_read_only(&self.history).map_err(WorkspaceError::History)?;
-        let found = history.connection.query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM agenturm_observations
-                 WHERE source_id = ?1 AND session_id = ?2 AND worker_id IS ?3 AND turn_id IS ?4
-                   AND event_id = ?5 AND revision = ?6
-             )",
-            params![
-                anchor.harness_id.as_str(),
-                anchor.session_id,
-                anchor.worker_id,
-                anchor.turn_id,
-                event_id,
-                revision
-            ],
-            |row| row.get::<_, bool>(0),
-        )?;
+        let found = if let Some(verifier) = &self.verifier {
+            verifier
+                .contains_event(anchor, event_id, revision)
+                .map_err(WorkspaceError::HistoryUnavailable)?
+        } else {
+            let history = Store::open_read_only(&self.history).map_err(WorkspaceError::History)?;
+            contains_event_in(&history.connection, anchor, event_id, revision)?
+        };
         if !found {
             return Err(WorkspaceError::MissingAnchor);
         }
@@ -628,7 +934,7 @@ impl WorkspaceLedger {
 
     fn list<T>(
         &self,
-        sql: &str,
+        sql: impl FnOnce(i64) -> &'static str,
         limit: usize,
         before: Option<u64>,
         decode: impl Fn(&Row<'_>, u64) -> rusqlite::Result<T>,
@@ -648,8 +954,9 @@ impl WorkspaceLedger {
             return Ok(page);
         };
         let transaction = connection.transaction()?;
-        if initialized(&transaction)? {
-            let mut statement = transaction.prepare(sql)?;
+        let version = schema_version(&transaction)?;
+        if version != 0 {
+            let mut statement = transaction.prepare(sql(version))?;
             let mut rows = statement.query(params![self.binding, upper_id, (limit + 1) as i64])?;
             let mut last = None;
             while let Some(row) = rows.next()? {
@@ -668,32 +975,22 @@ impl WorkspaceLedger {
     }
 
     fn require_anchors(&self, anchors: &[&WorkspaceAnchor]) -> Result<()> {
+        if let Some(verifier) = &self.verifier {
+            for anchor in anchors {
+                validate_link_anchor(anchor)?;
+                if !verifier
+                    .contains_anchor(anchor)
+                    .map_err(WorkspaceError::HistoryUnavailable)?
+                {
+                    return Err(WorkspaceError::MissingAnchor);
+                }
+            }
+            return Ok(());
+        }
         let history = Store::open_read_only(&self.history).map_err(WorkspaceError::History)?;
         let transaction = history.connection.unchecked_transaction()?;
-        let mut lookup = transaction.prepare(
-            "SELECT EXISTS(
-                SELECT 1 FROM agenturm_observations
-                WHERE source_id = ?1 AND session_id = ?2
-                  AND (?3 IS NULL OR (turn_id = ?3 AND worker_id IS ?4))
-             )",
-        )?;
         for anchor in anchors {
-            validate_anchor(anchor)?;
-            if anchor.worker_id.is_some() && anchor.turn_id.is_none() {
-                return Err(WorkspaceError::Invalid(
-                    "workspace worker anchors require a turn",
-                ));
-            }
-            let found = lookup.query_row(
-                params![
-                    anchor.harness_id.as_str(),
-                    anchor.session_id,
-                    anchor.turn_id,
-                    anchor.worker_id
-                ],
-                |row| row.get::<_, bool>(0),
-            )?;
-            if !found {
+            if !contains_anchor_in(&transaction, anchor)? {
                 return Err(WorkspaceError::MissingAnchor);
             }
         }
@@ -706,10 +1003,82 @@ impl WorkspaceLedger {
             .is_some_and(|changed| changed != 0))
     }
 
+    fn read_task<T>(
+        &self,
+        id: u64,
+        action: impl FnOnce(&Connection, &SavedTask, i64) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let id = positive_id(id)?;
+        let Some(mut connection) = self.connect(false)? else {
+            return Ok(None);
+        };
+        let transaction = connection.transaction()?;
+        let version = schema_version(&transaction)?;
+        let result = select_task(&transaction, &self.binding, id, version)?
+            .map(|task| action(&transaction, &task, version))
+            .transpose()?;
+        self.verify_history()?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
+    fn edit_task<T>(
+        &self,
+        id: u64,
+        expected: Option<u64>,
+        action: impl FnOnce(&Connection, &SavedTask) -> Result<T>,
+    ) -> Result<Option<(SavedTask, T)>> {
+        self.edit_task_with_change(id, expected, |connection, task| {
+            action(connection, task).map(|value| (value, true))
+        })
+    }
+
+    fn edit_task_with_change<T>(
+        &self,
+        id: u64,
+        expected: Option<u64>,
+        action: impl FnOnce(&Connection, &SavedTask) -> Result<(T, bool)>,
+    ) -> Result<Option<(SavedTask, T)>> {
+        let id = positive_id(id)?;
+        self.write_workspace(false, |connection| {
+            let Some(task) = select_task(connection, &self.binding, id, SCHEMA_VERSION)? else {
+                return Ok(None);
+            };
+            if let Some(expected) = expected
+                && expected != task.revision
+            {
+                return Err(WorkspaceError::TaskRevisionConflict {
+                    expected,
+                    current: task.revision,
+                });
+            }
+            let (value, changed) = action(connection, &task)?;
+            if !changed {
+                return Ok(Some((task, value)));
+            }
+            connection.execute(
+                "UPDATE agenturm_saved_tasks SET revision = revision + 1 WHERE id = ?1",
+                [id],
+            )?;
+            let updated = select_task(connection, &self.binding, id, SCHEMA_VERSION)?
+                .ok_or(WorkspaceError::UnrecognizedLedger)?;
+            Ok(Some((updated, value)))
+        })
+        .map(Option::flatten)
+    }
+
     fn write<T>(
         &self,
         create: bool,
         action: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+    ) -> Result<Option<T>> {
+        self.write_workspace(create, |connection| Ok(action(connection)?))
+    }
+
+    fn write_workspace<T>(
+        &self,
+        create: bool,
+        action: impl FnOnce(&Connection) -> Result<T>,
     ) -> Result<Option<T>> {
         if create {
             self.verify_history()?;
@@ -719,16 +1088,21 @@ impl WorkspaceLedger {
             return Ok(None);
         };
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        match schema_version(&transaction)? {
-            0 if !create => {
+        let version = schema_version(&transaction)?;
+        if version == 0 {
+            if !create {
                 return Ok(None);
             }
-            0 => {
-                create_schema(&transaction)?;
-                create_task_extensions(&transaction)?;
-            }
-            1 => create_task_extensions(&transaction)?,
-            _ => {}
+            create_schema(&transaction)?;
+        }
+        if version < 2 {
+            create_task_extensions(&transaction)?;
+        }
+        if version < 3 {
+            create_task_planning(&transaction)?;
+        }
+        if version < 4 {
+            continuity::create_schema(&transaction)?;
         }
         let value = action(&transaction)?;
         self.verify_history()?;
@@ -773,8 +1147,177 @@ impl WorkspaceLedger {
     }
 }
 
+fn contains_anchor_in(connection: &Connection, anchor: &WorkspaceAnchor) -> Result<bool> {
+    validate_link_anchor(anchor)?;
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agenturm_observations
+            WHERE source_id = ?1 AND session_id = ?2
+              AND (?3 IS NULL OR (turn_id = ?3 AND worker_id IS ?4)))",
+        params![
+            anchor.harness_id.as_str(),
+            anchor.session_id,
+            anchor.turn_id,
+            anchor.worker_id
+        ],
+        |row| row.get(0),
+    )?)
+}
+
+fn contains_event_in(
+    connection: &Connection,
+    anchor: &WorkspaceAnchor,
+    event_id: &str,
+    revision: u32,
+) -> Result<bool> {
+    validate_request_key(anchor, event_id)?;
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agenturm_observations
+            WHERE source_id = ?1 AND session_id = ?2 AND worker_id IS ?3 AND turn_id IS ?4
+              AND event_id = ?5 AND revision = ?6)",
+        params![
+            anchor.harness_id.as_str(),
+            anchor.session_id,
+            anchor.worker_id,
+            anchor.turn_id,
+            event_id,
+            revision
+        ],
+        |row| row.get(0),
+    )?)
+}
+
+fn validate_link_anchor(anchor: &WorkspaceAnchor) -> Result<()> {
+    validate_anchor(anchor)?;
+    if anchor.worker_id.is_some() && anchor.turn_id.is_none() {
+        return Err(WorkspaceError::Invalid(
+            "workspace worker anchors require a turn",
+        ));
+    }
+    Ok(())
+}
+
 fn decode_anchor(row: &Row<'_>, column: usize) -> rusqlite::Result<WorkspaceAnchor> {
     decode_scoped_anchor(row, column, row.get(column)?)
+}
+
+fn decode_task(row: &Row<'_>, id: u64) -> rusqlite::Result<SavedTask> {
+    Ok(SavedTask {
+        id,
+        anchor: decode_optional_anchor(row, 1)?,
+        title: row.get(5)?,
+        note: row.get(6)?,
+        completed: row.get(7)?,
+        archived: row.get(8)?,
+        revision: row.get(9)?,
+        workspace_directory: row.get(10)?,
+    })
+}
+
+fn select_task(
+    connection: &Connection,
+    binding: &[u8; 32],
+    id: i64,
+    version: i64,
+) -> Result<Option<SavedTask>> {
+    let sql = match version {
+        0 => return Ok(None),
+        1..=2 => "SELECT id, source_id, session_id, worker_id, turn_id, title, note, completed, 0, 1, NULL
+                  FROM agenturm_saved_tasks WHERE history_binding = ?1 AND id = ?2",
+        _ => "SELECT id, source_id, session_id, worker_id, turn_id, title, note, completed, archived, revision, workspace_directory
+              FROM agenturm_saved_tasks WHERE history_binding = ?1 AND id = ?2",
+    };
+    Ok(connection
+        .query_row(sql, params![binding, id], |row| decode_task(row, id as u64))
+        .optional()?)
+}
+
+fn load_task_brief(connection: &Connection, id: u64) -> Result<TaskBrief> {
+    let encoded: Option<String> = connection
+        .query_row(
+            "SELECT brief_json FROM agenturm_task_briefs WHERE task_id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    encoded
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map(|brief| brief.unwrap_or_default())
+        .map_err(|_| WorkspaceError::UnrecognizedLedger)
+}
+
+fn load_task_links(
+    connection: &Connection,
+    task: &SavedTask,
+    version: i64,
+    limit: usize,
+) -> Result<Vec<WorkspaceAnchor>> {
+    if version == 1 {
+        return Ok(task.anchor.clone().into_iter().collect());
+    }
+    let mut statement = connection.prepare(
+        "SELECT source_id, session_id, NULLIF(worker_key, ''), NULLIF(turn_key, '')
+         FROM agenturm_task_links WHERE task_id = ?1 ORDER BY id DESC LIMIT ?2",
+    )?;
+    Ok(statement
+        .query_map(params![task.id, limit], |row| decode_anchor(row, 0))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+fn load_task_git_snapshot(
+    connection: &Connection,
+    id: u64,
+    version: i64,
+) -> Result<Option<WorkspaceGitSnapshot>> {
+    if version < 2 {
+        return Ok(None);
+    }
+    Ok(connection.query_row(
+        "SELECT repository_root, branch, head_commit, staged_changes, unstaged_changes, untracked_files, captured_at_unix_ns
+         FROM agenturm_task_git_snapshots WHERE task_id = ?1", [id],
+        |row| Ok(WorkspaceGitSnapshot {
+            repository_root: row.get(0)?, branch: row.get(1)?, head_commit: row.get(2)?,
+            staged_changes: row.get(3)?, unstaged_changes: row.get(4)?, untracked_files: row.get(5)?, captured_at_unix_ns: row.get(6)?,
+        }),
+    ).optional()?)
+}
+
+fn load_task_decisions(
+    connection: &Connection,
+    id: u64,
+    version: i64,
+) -> Result<Vec<SavedTaskDecision>> {
+    let sql = if version >= 4 {
+        "SELECT id, kind, text, rationale, scope, created_at_unix_ns, supersedes_id, source_json
+         FROM agenturm_task_decisions WHERE task_id = ?1 ORDER BY id LIMIT ?2"
+    } else {
+        "SELECT id, kind, text, rationale, scope, created_at_unix_ns, supersedes_id, NULL
+         FROM agenturm_task_decisions WHERE task_id = ?1 ORDER BY id LIMIT ?2"
+    };
+    let mut statement = connection.prepare(sql)?;
+    Ok(statement
+        .query_map(params![id, MAX_DECISION_VERSIONS], |row| {
+            let kind: String = row.get(1)?;
+            let kind = match kind.as_str() {
+                "accepted" => TaskDecisionKind::Accepted,
+                "rejected" => TaskDecisionKind::Rejected,
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
+            Ok(SavedTaskDecision {
+                id: row.get(0)?,
+                created_at_unix_ns: row.get(5)?,
+                decision: TaskDecisionInput {
+                    kind,
+                    text: row.get(2)?,
+                    rationale: row.get(3)?,
+                    scope: row.get(4)?,
+                    supersedes_id: row.get(6)?,
+                },
+                source: continuity::decode_proof(row, 7)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?)
 }
 
 fn decode_optional_anchor(
@@ -867,7 +1410,7 @@ pub(super) fn schema_version(connection: &Connection) -> Result<i64> {
     let application_id = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     match (application_id, version) {
-        (APPLICATION_ID, 1 | SCHEMA_VERSION) => Ok(version),
+        (APPLICATION_ID, 1..=SCHEMA_VERSION) => Ok(version),
         (0, 0) => {
             let has_schema =
                 connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema)", [], |row| {
@@ -956,8 +1499,76 @@ fn create_task_extensions(connection: &Connection) -> Result<()> {
             captured_at_unix_ns INTEGER NOT NULL CHECK (captured_at_unix_ns > 0)
          );",
     )?;
-    connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    connection.pragma_update(None, "user_version", 2)?;
     Ok(())
+}
+
+fn create_task_planning(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "ALTER TABLE agenturm_saved_tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1));
+         ALTER TABLE agenturm_saved_tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 1
+            CHECK (typeof(revision) = 'integer' AND revision > 0);
+         ALTER TABLE agenturm_saved_tasks ADD COLUMN workspace_directory TEXT;
+         CREATE TABLE agenturm_task_briefs (
+            task_id INTEGER PRIMARY KEY REFERENCES agenturm_saved_tasks(id) ON DELETE CASCADE,
+            brief_json TEXT NOT NULL
+         );
+         CREATE TABLE agenturm_task_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES agenturm_saved_tasks(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK (kind IN ('accepted', 'rejected')),
+            text TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            created_at_unix_ns INTEGER NOT NULL CHECK (created_at_unix_ns > 0),
+            supersedes_id INTEGER,
+            UNIQUE(task_id, id),
+            UNIQUE(task_id, supersedes_id),
+            FOREIGN KEY (task_id, supersedes_id) REFERENCES agenturm_task_decisions(task_id, id)
+         );",
+    )?;
+    connection.pragma_update(None, "user_version", 3)?;
+    Ok(())
+}
+
+fn insert_task_row(
+    connection: &Connection,
+    binding: [u8; 32],
+    anchor: Option<&WorkspaceAnchor>,
+    title: &str,
+    note: &str,
+    workspace_directory: Option<&str>,
+) -> rusqlite::Result<i64> {
+    let id = connection.query_row(
+        "INSERT INTO agenturm_saved_tasks
+         (history_binding, source_id, session_id, worker_id, turn_id, title, note, workspace_directory)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULLIF(?8, '')) RETURNING id",
+        params![binding, anchor.map(|anchor| anchor.harness_id.as_str()), anchor.map(|anchor| anchor.session_id.as_str()),
+            anchor.and_then(|anchor| anchor.worker_id.as_deref()), anchor.and_then(|anchor| anchor.turn_id.as_deref()),
+            title, note, workspace_directory],
+        |row| row.get(0),
+    )?;
+    if let Some(anchor) = anchor {
+        insert_task_link(connection, binding, id, anchor)?;
+    }
+    Ok(id)
+}
+
+fn add_task_link(
+    connection: &Connection,
+    binding: [u8; 32],
+    id: i64,
+    anchor: &WorkspaceAnchor,
+) -> rusqlite::Result<bool> {
+    let changed = insert_task_link(connection, binding, id, anchor)? != 0;
+    if changed {
+        connection.execute(
+            "UPDATE agenturm_saved_tasks SET source_id = ?3, session_id = ?4, worker_id = ?5, turn_id = ?6
+             WHERE history_binding = ?1 AND id = ?2 AND source_id IS NULL",
+            params![binding, id, anchor.harness_id.as_str(), anchor.session_id, anchor.worker_id, anchor.turn_id],
+        )?;
+    }
+    Ok(changed)
 }
 
 fn insert_task_link(
@@ -1005,6 +1616,19 @@ fn validate_git_snapshot(snapshot: &WorkspaceGitSnapshot) -> Result<()> {
     if snapshot.captured_at_unix_ns == 0 || snapshot.captured_at_unix_ns > i64::MAX as u64 {
         return Err(WorkspaceError::Invalid(
             "workspace Git capture time is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_workspace_directory(directory: &str) -> Result<()> {
+    if !directory.is_empty()
+        && (!Path::new(directory).is_absolute()
+            || directory.len() > MAX_NOTE_BYTES
+            || !display_safe(directory, false))
+    {
+        return Err(WorkspaceError::Invalid(
+            "Task workspace directory is invalid",
         ));
     }
     Ok(())
@@ -1109,6 +1733,7 @@ mod tests {
                 title: "Follow up".into(),
                 note: "edited".into(),
                 completed: true,
+                revision: linked.revision + 2,
                 ..linked.clone()
             }]
         );

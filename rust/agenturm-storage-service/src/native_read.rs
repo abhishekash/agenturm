@@ -28,6 +28,7 @@ pub enum HistorySelection<'a> {
 pub enum ReadFailure {
     Unauthorized,
     InvalidRequest,
+    HistoryReplaced,
     ExpiredSnapshot { minimum_snapshot_id: u64 },
     Unavailable,
 }

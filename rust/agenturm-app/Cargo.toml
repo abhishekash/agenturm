@@ -1,6 +1,6 @@
 [package]
 name = "agenturm-app"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version = "1.100"
 publish = false
@@ -22,6 +22,7 @@ libc = "0.2"
 signal-hook = { version = "0.3", features = ["extended-siginfo"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+agenturm-content = { path = "../agenturm-content" }
 agenturm-storage-service = { path = "../agenturm-storage-service" }
 agenturm-jsonl-source = { path = "../agenturm-jsonl-source" }
 agenturm-opencode-harness = { path = "../agenturm-opencode-harness" }

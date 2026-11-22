@@ -7,15 +7,25 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+#[cfg(target_os = "linux")]
+mod native_admin;
 pub mod native_admission;
+#[cfg(target_os = "linux")]
+mod native_content;
 pub mod native_read;
 #[cfg(target_os = "linux")]
 mod native_store;
+#[cfg(target_os = "linux")]
+pub use native_admin::{AdminFailure, BackupReceipt, GrantBinding, GrantStatus};
+#[cfg(target_os = "linux")]
+pub use native_content::{PrivateEvidenceFailure, PrivateEvidenceKind, PrivateEvidenceSelection};
 #[cfg(target_os = "linux")]
 pub use native_store::{NativeClientError, NativeStore};
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use crate::native_admin::Role;
+    use crate::native_content::{Disclosure, PrivateConfig};
     use crate::native_store::{self, NativeOperation};
     use agenturm_kernel::ExtensionId;
     use agenturm_storage_service_contract::native;
@@ -83,6 +93,23 @@ mod linux {
         pub experimental_v2_scratch: bool,
         pub experimental_real_clone_activation: bool,
         pub native_sources: BTreeSet<ExtensionId>,
+        pub native_roles: NativeRolesConfig,
+        pub native_restore: Option<String>,
+        pub native_content_config: Option<PathBuf>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct ClientIdentity {
+        pub uid: u32,
+        pub gid: u32,
+    }
+
+    #[derive(Clone, Debug, Default)]
+    pub struct NativeRolesConfig {
+        pub reader: Option<ClientIdentity>,
+        pub grant_administrator: Option<ClientIdentity>,
+        pub maintenance: Option<ClientIdentity>,
+        pub backup_root: Option<PathBuf>,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,6 +119,7 @@ mod linux {
         DataClone,
         DataNative,
         Transport,
+        Backup,
     }
 
     #[derive(Clone)]
@@ -162,7 +190,7 @@ mod linux {
         }
     }
 
-    fn secure_ancestors(path: &Path) -> io::Result<()> {
+    pub(crate) fn secure_ancestors(path: &Path) -> io::Result<()> {
         for ancestor in path.ancestors().skip(1) {
             let metadata = fs::symlink_metadata(ancestor)?;
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -199,7 +227,7 @@ mod linux {
                 Self::DataScratch => SCRATCH_FILES,
                 Self::DataClone => CLONE_FILES,
                 Self::DataNative => NATIVE_FILES,
-                Self::DataProbe | Self::Transport => &[],
+                Self::DataProbe | Self::Transport | Self::Backup => &[],
             }
         }
     }
@@ -282,6 +310,11 @@ mod linux {
                         return Err(denied(
                             "transport directory must be service-owned 2710 with client group",
                         ));
+                    }
+                }
+                RootKind::Backup => {
+                    if metadata.mode() & 0o7777 != 0o700 {
+                        return Err(denied("backup root must be private 0700"));
                     }
                 }
             }
@@ -454,6 +487,11 @@ mod linux {
         {
             return Err(denied("invalid service receiver or connection bound"));
         }
+        if config.native_restore.is_some()
+            && (config.native_sources.is_empty() || config.native_roles.backup_root.is_none())
+        {
+            return Err(denied("restore requires native sources and backup root"));
+        }
         let policy = PeerPolicy::for_current_service(config.client_uid, config.client_gid)
             .map_err(|_| {
                 denied("service and client identities must be distinct non-root accounts")
@@ -482,10 +520,117 @@ mod linux {
         Ok((data, transport, policy))
     }
 
+    fn native_role_policies(
+        config: &ServiceConfig,
+        collector: PeerPolicy,
+    ) -> io::Result<Vec<(Role, PeerPolicy)>> {
+        let mut users = BTreeSet::from([config.client_uid]);
+        let mut policies = vec![(Role::Collector, collector)];
+        let roles = &config.native_roles;
+        for (role, identity) in [
+            (Role::Reader, roles.reader),
+            (Role::GrantAdministrator, roles.grant_administrator),
+            (Role::Maintenance, roles.maintenance),
+        ] {
+            if let Some(identity) = identity {
+                if config.native_sources.is_empty() || !users.insert(identity.uid) {
+                    return Err(denied("native roles require distinct client UIDs"));
+                }
+                let policy = PeerPolicy::for_current_service(identity.uid, identity.gid)
+                    .map_err(|_| denied("invalid native role identity"))?;
+                policies.push((role, policy));
+            }
+        }
+        Ok(policies)
+    }
+
+    fn native_backup_root(
+        config: &ServiceConfig,
+        data: &RootProof,
+        transport: &RootProof,
+    ) -> io::Result<Option<RootProof>> {
+        let Some(path) = &config.native_roles.backup_root else {
+            return Ok(None);
+        };
+        if config.native_roles.maintenance.is_none() {
+            return Err(denied("backup root requires a native maintenance identity"));
+        }
+        let backup = RootProof::capture(path, RootKind::Backup, config.client_gid)?;
+        if [&data.path, &transport.path]
+            .into_iter()
+            .any(|root| backup.path.starts_with(root) || root.starts_with(&backup.path))
+        {
+            return Err(denied(
+                "backup root must be separate from history and transport",
+            ));
+        }
+        Ok(Some(backup))
+    }
+
+    fn offline_restore(
+        data: &RootProof,
+        backup: Option<&RootProof>,
+        instance: &InstanceGuard,
+        name: &str,
+    ) -> io::Result<()> {
+        use crate::native_admin::valid_backup_name;
+
+        let backup =
+            backup.ok_or_else(|| denied("restore requires a private native backup root"))?;
+        if !valid_backup_name(name) {
+            return Err(denied("restore requires a broker-assigned backup name"));
+        }
+        if data.kind != RootKind::DataNative || data.database_identity.is_some() {
+            return Err(denied("restore requires a fresh private native data root"));
+        }
+        let source = backup.path.join(name);
+        let prove_source = || {
+            backup.verify()?;
+            let metadata = fs::symlink_metadata(&source)?;
+            if !metadata.is_file()
+                || metadata.nlink() != 1
+                || metadata.uid() != current_uid()
+                || metadata.mode() & 0o7777 != 0o600
+            {
+                return Err(denied(
+                    "backup must be a private regular file owned by the broker",
+                ));
+            }
+            for suffix in ["-journal", "-wal", "-shm"] {
+                match fs::symlink_metadata(backup.path.join(format!("{name}{suffix}"))) {
+                    Ok(_) => return Err(denied("backup must be a detached SQLite file")),
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok((metadata.dev(), metadata.ino()))
+        };
+        instance.verify()?;
+        data.verify()?;
+        let original = prove_source()?;
+        let detached = Store::open_read_only(&source)
+            .map_err(|_| denied("backup is not a valid native history"))?;
+        detached
+            .history_identity()
+            .map_err(|_| denied("backup has no valid broker history identity"))?;
+        if prove_source()? != original {
+            return Err(denied("backup identity changed"));
+        }
+        instance.verify()?;
+        data.verify()?;
+        detached
+            .backup_to(data.path.join(NATIVE_DB))
+            .map_err(|_| denied("could not restore a verified native history"))?;
+        data.verify()?;
+        Ok(())
+    }
+
     pub fn run(config: &ServiceConfig) -> io::Result<()> {
         STOP.store(false, Ordering::Relaxed);
         let (mut data, transport, policy) = validate(config)?;
         let is_native = !config.native_sources.is_empty();
+        let policies = native_role_policies(config, policy)?;
+        let backup = native_backup_root(config, &data, &transport)?;
         let _private_mask = (config.experimental_v2_scratch
             || config.experimental_real_clone_activation
             || is_native)
@@ -496,6 +641,20 @@ mod linux {
             (SOCKET_NAME, LOCK_NAME)
         };
         let instance = InstanceGuard::acquire(transport.clone(), lock_name)?;
+        if let Some(name) = &config.native_restore {
+            return offline_restore(&data, backup.as_ref(), &instance, name);
+        }
+        let private = match &config.native_content_config {
+            Some(path) if is_native && config.native_roles.reader.is_some() => Some(
+                PrivateConfig::validate(path.clone(), current_uid(), &config.native_sources)?,
+            ),
+            Some(_) => {
+                return Err(denied(
+                    "private content requires a separate native reader identity",
+                ));
+            }
+            None => None,
+        };
         if config.experimental_v2_scratch {
             // SQLite may touch a WAL shared-memory sidecar even for a read.
             // Never inspect the marker until this service owns the lock.
@@ -521,12 +680,16 @@ mod linux {
         }
         let mut native_store = if is_native {
             data.verify()?;
-            let store = Store::open_collector(data.path.join(NATIVE_DB))
+            let mut store = Store::open_collector(data.path.join(NATIVE_DB))
                 .map_err(|_| denied("native history is unavailable"))?;
             if data.database_identity.is_none() {
                 let database = fs::symlink_metadata(data.path.join(NATIVE_DB))?;
                 data.database_identity = Some((database.dev(), database.ino()));
             }
+            data.verify()?;
+            store
+                .ensure_history_identity()
+                .map_err(|_| denied("native history identity is unavailable"))?;
             data.verify()?;
             Some(store)
         } else {
@@ -584,19 +747,51 @@ mod linux {
             instance.verify()?;
             socket.verify()?;
             if let Some(store) = native_store.as_mut() {
-                if let Ok((request, identity)) = native::read_authorized_request::<NativeOperation>(
-                    &mut stream,
-                    policy,
-                    &config.receiver_id,
-                ) {
+                if let Ok((role, request, identity)) =
+                    native::read_authorized_native_message::<NativeOperation, Role>(
+                        &mut stream,
+                        &policies,
+                        &config.receiver_id,
+                        NativeOperation::delivers_private,
+                    )
+                {
                     data.verify()?;
                     instance.verify()?;
                     socket.verify()?;
-                    let reply = native_store::dispatch(store, &config.native_sources, request);
-                    data.verify()?;
-                    instance.verify()?;
-                    socket.verify()?;
-                    let _ = native::send_reply(&mut stream, &identity, reply);
+                    if request.delivers_private() {
+                        let mut output = Disclosure::new(&mut stream, &identity);
+                        let result = request.deliver_private(
+                            store,
+                            &config.native_sources,
+                            role,
+                            private.as_ref(),
+                            &mut output,
+                        );
+                        data.verify()?;
+                        instance.verify()?;
+                        socket.verify()?;
+                        output.complete(result);
+                    } else {
+                        let backup = if request.requests_backup(role) {
+                            backup.as_ref().filter(|root| root.verify().is_ok())
+                        } else {
+                            None
+                        };
+                        let reply = native_store::dispatch(
+                            store,
+                            &config.native_sources,
+                            role,
+                            request,
+                            backup.map(|root| root.path.as_path()),
+                            private.as_ref(),
+                        );
+                        data.verify()?;
+                        instance.verify()?;
+                        socket.verify()?;
+                        if backup.is_none_or(|root| root.verify().is_ok()) {
+                            let _ = native::send_reply(&mut stream, &identity, reply);
+                        }
+                    }
                 }
             } else if config.experimental_v2_scratch {
                 if let Ok(request) =
@@ -653,6 +848,62 @@ mod linux {
         use super::*;
         use std::os::unix::fs::symlink;
         use std::time::{SystemTime, UNIX_EPOCH};
+
+        #[test]
+        fn offline_restore_accepts_only_private_detached_backup_into_fresh_root() {
+            const BACKUP: &str =
+                "history-0123456789abcdef0123456789abcdef-00000001-0000000000000001.sqlite";
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "agenturm-offline-restore-{}-{nonce}",
+                std::process::id()
+            ));
+            let data_path = root.join("data");
+            let transport_path = root.join("transport");
+            let backup_path = root.join("backup");
+            fs::create_dir(&root).unwrap();
+            for path in [&root, &data_path, &transport_path, &backup_path] {
+                if path != &root {
+                    fs::create_dir(path).unwrap();
+                }
+                fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            // SAFETY: getegid accepts no pointers.
+            let gid = unsafe { libc::getegid() };
+            fs::set_permissions(&transport_path, fs::Permissions::from_mode(0o2710)).unwrap();
+            let backup = RootProof::capture(&backup_path, RootKind::Backup, gid).unwrap();
+            let data = RootProof::capture(&data_path, RootKind::DataNative, gid).unwrap();
+            let transport = RootProof::capture(&transport_path, RootKind::Transport, gid).unwrap();
+            let instance = InstanceGuard::acquire(transport, NATIVE_LOCK_NAME).unwrap();
+            let mut store = Store::open_collector(root.join("source.sqlite")).unwrap();
+            let identity = store.ensure_history_identity().unwrap();
+            let source = backup_path.join(BACKUP);
+            store.backup_to(&source).unwrap();
+            drop(store);
+
+            assert!(offline_restore(&data, Some(&backup), &instance, "../source.sqlite").is_err());
+            let sidecar = backup_path.join(format!("{BACKUP}-wal"));
+            fs::write(&sidecar, b"sidecar").unwrap();
+            assert!(offline_restore(&data, Some(&backup), &instance, BACKUP).is_err());
+            fs::remove_file(sidecar).unwrap();
+            fs::set_permissions(&source, fs::Permissions::from_mode(0o640)).unwrap();
+            assert!(offline_restore(&data, Some(&backup), &instance, BACKUP).is_err());
+            fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(!data_path.join(NATIVE_DB).exists());
+
+            offline_restore(&data, Some(&backup), &instance, BACKUP).unwrap();
+            let restored = Store::open_read_only(data_path.join(NATIVE_DB)).unwrap();
+            assert_eq!(restored.history_identity().unwrap(), identity);
+            restored.check_history_integrity().unwrap();
+            let populated = RootProof::capture(&data_path, RootKind::DataNative, gid).unwrap();
+            assert!(offline_restore(&populated, Some(&backup), &instance, BACKUP).is_err());
+            drop(restored);
+            drop(instance);
+            fs::remove_dir_all(root).unwrap();
+        }
 
         #[test]
         fn direct_root_rejects_symlink_and_parent_swap_risk() {
@@ -738,4 +989,4 @@ mod linux {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{ServiceConfig, run};
+pub use linux::{ClientIdentity, NativeRolesConfig, ServiceConfig, run};

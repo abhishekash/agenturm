@@ -1,6 +1,7 @@
 //! Exports a saved handoff to a new local directory.
 
-use agenturm_store::{SavedHandoff, WorkspaceAnchor};
+use agenturm_store::{SavedHandoff, TaskHandoff, WorkspaceAnchor};
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Write};
@@ -12,6 +13,48 @@ static EXPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn export(db: &Path, handoff: &SavedHandoff) -> Result<PathBuf, String> {
     write_export(db, handoff).map_err(|error| format!("cannot export handoff: {error}"))
+}
+
+pub(super) fn export_task(
+    destination: &Path,
+    handoff: &TaskHandoff,
+    history: bool,
+) -> Result<PathBuf, String> {
+    let (title, sections) = task_sections(handoff, history);
+    export_documents(
+        destination,
+        &[
+            ("handoff.md", &markdown_sections(&title, &sections)),
+            ("handoff.html", &html_sections(&title, &sections)),
+        ],
+    )
+    .map_err(|error| format!("cannot export task handoff: {error}"))
+}
+
+pub(super) fn export_documents(
+    destination: &Path,
+    documents: &[(&str, &str)],
+) -> io::Result<PathBuf> {
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let parent = parent.canonicalize()?;
+    let name = destination.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "supply a new export directory")
+    })?;
+    let destination = parent.join(name);
+    write_documents(&staging_dir(&parent)?, &destination, documents)?;
+    Ok(destination)
+}
+
+pub(super) fn render_task(handoff: &TaskHandoff, history: bool, html: bool) -> String {
+    let (title, sections) = task_sections(handoff, history);
+    if html {
+        html_sections(&title, &sections)
+    } else {
+        markdown_sections(&title, &sections)
+    }
 }
 
 fn write_export(db: &Path, handoff: &SavedHandoff) -> io::Result<PathBuf> {
@@ -35,21 +78,61 @@ fn write_export(db: &Path, handoff: &SavedHandoff) -> io::Result<PathBuf> {
         std::process::id()
     );
     let destination = root.join(&name);
-    let staging_path = root.join(format!(".{name}.pending"));
-    private_dir().create(&staging_path)?;
-    let staging = Staging(staging_path);
-    write_private(&staging.0.join("handoff.md"), &markdown(handoff))?;
-    write_private(&staging.0.join("handoff.html"), &html(handoff))?;
-    sync_dir(&staging.0)?;
-    publish(&staging.0, &destination)?;
-    sync_dir(&root)
-        .and_then(|()| sync_dir(parent))
-        .map_err(|error| {
-            io::Error::other(format!(
-                "files were published but the export directory could not be synced: {error}"
-            ))
-        })?;
+    let staging = staging_dir(&root)?;
+    let title = format!("Handoff {}", handoff.id);
+    let sections = [
+        ("From", anchor_text(&handoff.from)),
+        ("To", anchor_text(&handoff.to)),
+        ("Note", handoff.note.clone()),
+    ];
+    write_documents(
+        &staging,
+        &destination,
+        &[
+            ("handoff.md", &markdown_sections(&title, &sections)),
+            ("handoff.html", &html_sections(&title, &sections)),
+        ],
+    )?;
+    sync_dir(parent).map_err(|error| {
+        io::Error::other(format!(
+            "files were published but the export directory could not be synced: {error}"
+        ))
+    })?;
     Ok(destination)
+}
+
+fn staging_dir(parent: &Path) -> io::Result<Staging> {
+    let sequence = EXPORT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_nanos();
+    let staging = parent.join(format!(
+        ".agenturm-handoff-{timestamp}-{}-{sequence}.pending",
+        std::process::id()
+    ));
+    private_dir().create(&staging)?;
+    Ok(Staging(staging))
+}
+
+fn write_documents(
+    staging: &Staging,
+    destination: &Path,
+    documents: &[(&str, &str)],
+) -> io::Result<()> {
+    for (name, contents) in documents {
+        write_private(&staging.0.join(name), contents)?;
+    }
+    sync_dir(&staging.0)?;
+    publish(&staging.0, destination, documents)?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| io::Error::other("export path has no parent"))?;
+    sync_dir(parent).map_err(|error| {
+        io::Error::other(format!(
+            "files were published but the export directory could not be synced: {error}"
+        ))
+    })
 }
 
 fn create_export_root(root: &Path) -> io::Result<()> {
@@ -108,16 +191,16 @@ fn sync_dir(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn publish(staging: &Path, destination: &Path) -> io::Result<()> {
+fn publish(staging: &Path, destination: &Path, _: &[(&str, &str)]) -> io::Result<()> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
     renameat_with(CWD, staging, CWD, destination, RenameFlags::NOREPLACE)?;
     Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn publish(staging: &Path, destination: &Path) -> io::Result<()> {
+fn publish(staging: &Path, destination: &Path, documents: &[(&str, &str)]) -> io::Result<()> {
     private_dir().create(destination)?;
-    for name in ["handoff.md", "handoff.html"] {
+    for (name, _) in documents {
         if let Err(error) = fs::hard_link(staging.join(name), destination.join(name)) {
             let _ = fs::remove_dir_all(destination);
             return Err(error);
@@ -134,13 +217,9 @@ impl Drop for Staging {
     }
 }
 
-fn markdown(handoff: &SavedHandoff) -> String {
-    let mut output = format!("# Handoff {}\n", handoff.id);
-    for (label, text) in [
-        ("From", anchor_text(&handoff.from)),
-        ("To", anchor_text(&handoff.to)),
-        ("Note", handoff.note.clone()),
-    ] {
+pub(super) fn markdown_sections(title: &str, sections: &[(&str, String)]) -> String {
+    let mut output = format!("# {title}\n");
+    for (label, text) in sections {
         let mut run = 0;
         let mut longest = 2;
         for byte in text.bytes() {
@@ -168,24 +247,131 @@ fn anchor_text(anchor: &WorkspaceAnchor) -> String {
     output
 }
 
-fn html(handoff: &SavedHandoff) -> String {
+fn task_sections(handoff: &TaskHandoff, history: bool) -> (String, Vec<(&'static str, String)>) {
+    let task = &handoff.task;
+    let title = format!("Task {} handoff", task.id);
+    let status = if task.completed { "Completed" } else { "Open" };
+    let archived = if task.archived { " · Archived" } else { "" };
+    let mut sections = vec![(
+        "Task",
+        format!(
+            "{}\nRevision {}\n{status}{archived}",
+            task.title, task.revision
+        ),
+    )];
+    let brief = &handoff.brief;
+    for (label, text) in [
+        ("Notes", &task.note),
+        ("Intent", &brief.intent),
+        ("Acceptance criteria", &brief.acceptance_criteria),
+        ("Constraints", &brief.constraints),
+        ("Open questions", &brief.open_questions),
+        ("Next action", &brief.next_action),
+    ] {
+        if !text.is_empty() {
+            sections.push((label, text.clone()));
+        }
+    }
+    if !handoff.links.is_empty() {
+        let mut links = handoff
+            .links
+            .iter()
+            .map(anchor_text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if handoff.links_truncated {
+            links.push_str("\n\nMore linked runs are available in the task ledger.");
+        }
+        sections.push(("Linked runs", links));
+    }
+    if let Some(approval) = handoff.continuity.last() {
+        let mut text = format!(
+            "Approved continuation {}\n{}\nEvent {} · revision {}",
+            approval.id,
+            anchor_text(&approval.source.anchor),
+            approval.source.event_id,
+            approval.source.revision
+        );
+        if !approval.continuation.is_empty() {
+            let _ = write!(text, "\n\n{}", approval.continuation);
+        }
+        sections.push(("Latest approved continuation", text));
+    }
+    let superseded: BTreeSet<_> = handoff
+        .decisions
+        .iter()
+        .filter_map(|item| item.decision.supersedes_id)
+        .collect();
+    let mut decisions = Vec::new();
+    for item in &handoff.decisions {
+        let replaced = superseded.contains(&item.id);
+        if !history && replaced {
+            continue;
+        }
+        let decision = &item.decision;
+        let status = if replaced { "superseded" } else { "current" };
+        let mut text = format!(
+            "{} · {} · {status}\n{}",
+            item.id,
+            decision.kind.as_str(),
+            decision.text
+        );
+        if !decision.rationale.is_empty() {
+            let _ = write!(text, "\nRationale\n{}", decision.rationale);
+        }
+        if !decision.scope.is_empty() {
+            let _ = write!(text, "\nScope\n{}", decision.scope);
+        }
+        if let Some(previous) = decision.supersedes_id {
+            let _ = write!(text, "\nSupersedes {previous}");
+        }
+        if let Some(source) = &item.source {
+            let _ = write!(
+                text,
+                "\nSource reference\n{}\nEvent {} · revision {}",
+                anchor_text(&source.anchor),
+                source.event_id,
+                source.revision
+            );
+        }
+        decisions.push(text);
+    }
+    if !decisions.is_empty() {
+        sections.push(("Decisions", decisions.join("\n\n")));
+    }
+    if let Some(git) = &handoff.git_snapshot {
+        let mut text = format!(
+            "{}\nStaged {} · Unstaged {} · Untracked {}\nCaptured at {} Unix ns",
+            git.repository_root,
+            git.staged_changes,
+            git.unstaged_changes,
+            git.untracked_files,
+            git.captured_at_unix_ns
+        );
+        if let Some(branch) = &git.branch {
+            let _ = write!(text, "\nBranch {branch}");
+        }
+        if let Some(head) = &git.head_commit {
+            let _ = write!(text, "\nHEAD {head}");
+        }
+        sections.push(("Local Git summary", text));
+    }
+    (title, sections)
+}
+
+pub(super) fn html_sections(title: &str, sections: &[(&str, String)]) -> String {
     let mut output = format!(
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">\n\
          <meta name=\"referrer\" content=\"no-referrer\">\n\
-         <title>Handoff {0}</title>\n\
+         <title>{title}</title>\n\
          <style>html{{color-scheme:light dark}}body{{font:1rem/1.5 system-ui,sans-serif;max-width:54rem;margin:3rem auto;padding:0 1.25rem}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid GrayText;border-radius:.25rem;padding:1rem}}</style>\n\
-         </head><body><main><h1>Handoff {0}</h1>\n",
-        handoff.id
+         </head><body><main><h1>{title}</h1>\n",
     );
-    for (label, text) in [
-        ("From", anchor_text(&handoff.from)),
-        ("To", anchor_text(&handoff.to)),
-        ("Note", handoff.note.clone()),
-    ] {
+    for (label, text) in sections {
         let _ = write!(output, "<section><h2>{label}</h2><pre>");
-        escape_html(&mut output, &text);
+        escape_html(&mut output, text);
         output.push_str("</pre></section>\n");
     }
     output.push_str("</main></body></html>\n");
@@ -299,7 +485,7 @@ mod tests {
         private_dir().create(&staging).unwrap();
         private_dir().create(&destination).unwrap();
         assert_eq!(
-            publish(&staging, &destination).unwrap_err().kind(),
+            publish(&staging, &destination, &[]).unwrap_err().kind(),
             io::ErrorKind::AlreadyExists
         );
         assert!(staging.is_dir());

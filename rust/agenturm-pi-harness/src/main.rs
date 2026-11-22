@@ -16,8 +16,10 @@ impl<const CONTENT: bool, const COMMAND: bool> SourceFormat for PiFormat<CONTENT
     const PLUGIN_ID: &'static str = "example.rust-pi-harness";
     const GAP_EVENT_PREFIX: &'static str = "pi-gap";
 
-    fn header_identity(_path: &std::path::Path, raw: &[u8]) -> Result<Self::Context> {
-        pi::header_identity(raw)
+    fn header_identity(path: &std::path::Path, raw: &[u8]) -> Result<Self::Context> {
+        let legacy = std::env::var_os("AGENTURM_PLUGIN_LEGACY_ADMISSION").as_deref()
+            == Some(std::ffi::OsStr::new("1"));
+        pi::header_context((!legacy).then_some(path), raw)
     }
 
     fn checkpoint(context: &Self::Context) -> String {
@@ -115,6 +117,78 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn native_fork_requires_a_verified_sibling_and_a_copied_entry() {
+        use std::os::unix::fs::symlink;
+
+        const PARENT: &str = "11111111-1111-4111-8111-111111111111";
+        const CHILD: &str = "22222222-2222-4222-8222-222222222222";
+        const STAMP: &str = "2026-11-22T12:00:00.000Z";
+        let scratch = Scratch::new();
+        let parent = scratch
+            .0
+            .join(format!("2026-11-22T12-00-00-000Z_{PARENT}.jsonl"));
+        let child = scratch
+            .0
+            .join(format!("2026-11-22T12-00-01-000Z_{CHILD}.jsonl"));
+        let parent_header = json!({"type":"session","id":PARENT,"timestamp":STAMP});
+        let mut child_header =
+            json!({"type":"session","id":CHILD,"timestamp":STAMP,"parentSession":parent});
+        let copied = json!({"type":"message","id":"first","timestamp":STAMP,
+            "message":{"role":"user","content":"private inherited prompt"}});
+        fs::write(&parent, format!("{parent_header}\n{copied}\n")).unwrap();
+        fs::write(&child, format!("{child_header}\n{copied}\n")).unwrap();
+
+        let first = poll(&child, "harness.pi", "", 64, max_frame_bytes()).unwrap();
+        let edge = &first["records"][0];
+        assert_eq!(edge["kind"], "relationship");
+        assert_eq!(edge["identity"]["session_id"], CHILD);
+        assert_eq!(
+            edge["payload"],
+            json!({"relationship_kind":"forked","parent_session_id":PARENT})
+        );
+        assert!(!first.to_string().contains("private inherited prompt"));
+        assert!(!first.to_string().contains("parentSession"));
+        let second = poll(
+            &child,
+            "harness.pi",
+            first["cursor"].as_str().unwrap(),
+            64,
+            max_frame_bytes(),
+        )
+        .unwrap();
+        assert_eq!(second["records"], json!([]));
+
+        let no_edge = || {
+            let batch = poll(&child, "harness.pi", "", 64, max_frame_bytes()).unwrap();
+            assert!(
+                !batch["records"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["kind"] == "relationship")
+            );
+        };
+        // A continuation shares the native pointer but has no copied row.
+        fs::write(&child, format!("{child_header}\n")).unwrap();
+        no_edge();
+        fs::write(&child, format!("{child_header}\n{copied}\n")).unwrap();
+        let wrong = json!({"type":"session","id":"unrelated","timestamp":STAMP});
+        fs::write(&parent, format!("{wrong}\n{copied}\n")).unwrap();
+        no_edge();
+        let elsewhere = scratch.0.join("outside");
+        fs::create_dir(&elsewhere).unwrap();
+        let elsewhere = elsewhere.join(parent.file_name().unwrap());
+        fs::write(&elsewhere, format!("{parent_header}\n{copied}\n")).unwrap();
+        fs::remove_file(&parent).unwrap();
+        no_edge();
+        symlink(&elsewhere, &parent).unwrap();
+        no_edge();
+        child_header["parentSession"] = json!(elsewhere);
+        fs::write(&child, format!("{child_header}\n{copied}\n")).unwrap();
+        no_edge();
     }
 
     fn append(path: &Path, line: &str) {

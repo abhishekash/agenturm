@@ -6,6 +6,21 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 const activeSpan = new AsyncLocalStorage();
 const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
+const MAX_OTLP_SPANS = 1024;
+const MAX_OTLP_REPLY_BYTES = 4096;
+const OTLP_STATUS = { UNSET: 0, OK: 1, ERROR: 2 };
+
+function otlpTraceEndpoint(explicit) {
+  const url = new URL(explicit ?? (process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+    || process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://127.0.0.1:14318'));
+  if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(url.hostname)
+      || url.username || url.password || url.search || url.hash
+      || !['/', '/v1/traces'].includes(url.pathname)) {
+    throw new TypeError('OTLP endpoint must be a loopback HTTP trace receiver');
+  }
+  url.pathname = '/v1/traces';
+  return url.href;
+}
 
 function id(bytes) {
   let value;
@@ -45,12 +60,22 @@ function receiverToken(endpoint, explicit) {
 }
 
 export class Client {
-  constructor({ endpoint = 'http://127.0.0.1:4318', service = 'node-agent', token,
+  constructor({ endpoint, service = 'node-agent', token, transport = 'agenturm',
                 timeoutMs = 3000, strict = false, resourceAttributes = {} } = {}) {
-    this.endpoint = String(endpoint).replace(/\/+$/, '');
+    if (!['agenturm', 'otlp'].includes(transport)) throw new TypeError('unknown trace transport');
+    this.transport = transport;
     this.service = String(service);
     this.configurationError = null;
-    try { this.token = receiverToken(this.endpoint, token); }
+    this.endpoint = transport === 'otlp' ? ''
+      : String(endpoint === undefined ? 'http://127.0.0.1:4318' : endpoint).replace(/\/+$/, '');
+    try {
+      if (transport === 'otlp') {
+        this.endpoint = otlpTraceEndpoint(endpoint);
+        this.token = token;
+      } else {
+        this.token = receiverToken(this.endpoint, token);
+      }
+    }
     catch (error) { if (strict) throw error; this.configurationError = error; }
     this.timeoutMs = Math.max(1, Number(timeoutMs) || 3000);
     this.strict = Boolean(strict);
@@ -67,7 +92,23 @@ export class Client {
         method: 'POST', redirect: 'error', headers, body: JSON.stringify(payload),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
-      if (!response.ok) throw new Error(`Goechala returned HTTP ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`${this.transport === 'otlp' ? 'OTLP receiver' : 'Goechala'} returned HTTP ${response.status}`);
+      }
+      if (this.transport === 'otlp') {
+        const length = response.headers.get('content-length') ?? '';
+        if (!/^\d+$/.test(length) || Number(length) > MAX_OTLP_REPLY_BYTES) {
+          await response.body?.cancel();
+          throw new Error('OTLP receiver returned an unbounded reply');
+        }
+        const reply = await response.json();
+        if (!reply || typeof reply !== 'object' || Array.isArray(reply)) {
+          throw new Error('OTLP receiver returned an invalid reply');
+        }
+        if (Number(reply.partialSuccess?.rejectedSpans ?? 0) !== 0) {
+          throw new Error('OTLP receiver rejected one or more spans');
+        }
+      }
       this.lastError = null;
       return true;
     } catch (error) {
@@ -124,6 +165,24 @@ export class Client {
     return successful;
   }
 
+  async _postOtlp(run) {
+    const attributes = [];
+    for (const [key, value] of [
+      ['session.id', run.sessionId],
+      ['agenturm.source.id', run.harnessId],
+    ]) {
+      if (value !== null) attributes.push({ key, value: { stringValue: value } });
+    }
+    let failure = null;
+    for (let offset = 0; offset < run.spans.length; offset += MAX_OTLP_SPANS) {
+      const spans = run.spans.slice(offset, offset + MAX_OTLP_SPANS)
+        .map(span => span.exportOtlp(attributes));
+      const payload = { resourceSpans: [{ scopeSpans: [{ scope: { name: '@agenturm/client' }, spans }] }] };
+      if (!await this._post('', payload)) failure = this.lastError;
+    }
+    if (failure) this.lastError = failure;
+  }
+
   async trace(options, callback) {
     if (typeof options === 'function') {
       callback = options;
@@ -141,7 +200,8 @@ export class Client {
     } finally {
       run._closed = true;
       run.root.finish();
-      await this._postSpans(run.spans.map(span => span.export()));
+      if (this.transport === 'otlp') await this._postOtlp(run);
+      else await this._postSpans(run.spans.map(span => span.export()));
     }
     if (failure) throw failure;
     return result;
@@ -149,12 +209,25 @@ export class Client {
 }
 
 class Run {
-  constructor(client, { name = 'agent.run', task, sessionId, attributes = {} } = {}) {
+  constructor(client, { name = 'agent.run', task, sessionId, harnessId, attributes = {} } = {}) {
     this.client = client;
     this.trace_id = id(16);
     this.sessionId = sessionId == null ? null : String(sessionId).trim();
     if (this.sessionId !== null && (!this.sessionId || this.sessionId.length > 512)) {
       throw new TypeError('sessionId must contain 1 to 512 characters');
+    }
+    this.harnessId = null;
+    if (client.transport === 'otlp') {
+      if (this.sessionId !== null && !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(this.sessionId)) {
+        throw new TypeError('sessionId must be an exact native session identifier');
+      }
+      if (harnessId != null) {
+        this.harnessId = String(harnessId);
+        if (!this.sessionId || !/^[a-z][a-z0-9._/-]{0,95}$/.test(this.harnessId)
+            || this.harnessId.startsWith('otlp.')) {
+          throw new TypeError('harnessId requires an exact sessionId and native harness identifier');
+        }
+      }
     }
     const rootAttributes = { ...attributes };
     if (task != null) rootAttributes['agent.task'] ??= String(task);
@@ -167,6 +240,12 @@ class Run {
 
   async progress(stage, message = '', percent) {
     if (this._closed) throw new Error('run is already closed');
+    if (this.client.transport === 'otlp') {
+      const error = new Error('OTLP transport does not export progress messages');
+      this.client.lastError = error;
+      if (this.client.strict) throw error;
+      return false;
+    }
     const payload = { trace_id: this.trace_id, stage: String(stage), message: String(message), service: this.client.service };
     if (percent !== undefined && percent !== null) payload.percent = percent;
     if (this.sessionId) payload.session_id = this.sessionId;
@@ -253,6 +332,20 @@ class Span {
       attributes: this.attributes,
       events: this.events,
       resource_attributes: this.run.client.resourceAttributes,
+    };
+  }
+
+  exportOtlp(attributes) {
+    this.finish();
+    return {
+      traceId: this.run.trace_id,
+      spanId: this.span_id,
+      parentSpanId: this.parent_span_id ?? undefined,
+      name: this.parent_span_id ? 'agent.span' : 'agent.run',
+      startTimeUnixNano: this.start_unix_nano,
+      endTimeUnixNano: this.end_unix_nano,
+      status: { code: OTLP_STATUS[this.status] },
+      attributes,
     };
   }
 }

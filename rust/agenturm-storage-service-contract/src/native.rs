@@ -3,19 +3,23 @@
 
 use super::local::{DeadlineIo, IO_TIMEOUT, kernel_peer};
 use super::{
-    ContractError, PeerPolicy, Result, ServerPolicy, read_frame_bytes_bounded, valid_identity,
-    valid_request_id, write_frame_bytes_bounded,
+    ContractError, PeerPolicy, Result, ServerPolicy, read_frame_bytes_bounded, read_sized_frame,
+    require_frame_eof, valid_identity, valid_request_id, write_frame_bytes_bounded,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use std::time::Duration;
 
 pub const VERSION: u16 = 1;
 pub const SOCKET_NAME: &str = "agenturm-native-storage-v1.sock";
 /// 16 KiB per observation for a 2,048-row native store batch, including
 /// bounded identity and fact JSON escaping. A batch is always one frame.
 pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
+const MAX_DELIVERY_FRAME: usize = 128 * 1024;
+const MAX_ACK_FRAME: usize = 1024;
+const DISPLAY_ACK_TIMEOUT: Duration = Duration::from_secs(32);
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -70,10 +74,36 @@ pub fn send_request<T: Serialize>(
     request: &Request<T>,
     policy: ServerPolicy,
 ) -> Result<ReplyIdentity> {
+    send_request_frame(stream, request, policy, false)
+}
+
+/// Starts a private delivery. The caller keeps its write side open for one ACK.
+pub fn send_delivery_request<T: Serialize>(
+    stream: &mut UnixStream,
+    request: &Request<T>,
+    policy: ServerPolicy,
+) -> Result<ReplyIdentity> {
+    send_request_frame(stream, request, policy, true)
+}
+
+fn send_request_frame<T: Serialize>(
+    stream: &mut UnixStream,
+    request: &Request<T>,
+    policy: ServerPolicy,
+    delivery: bool,
+) -> Result<ReplyIdentity> {
     policy.authorize(kernel_peer(stream)?)?;
     request.validate()?;
     let frame = encode(request)?;
-    send_frame(stream, &frame)?;
+    if delivery {
+        write_frame_bytes_bounded(
+            &mut DeadlineIo::new(stream, IO_TIMEOUT),
+            &frame,
+            MAX_DELIVERY_FRAME,
+        )?;
+    } else {
+        send_frame(stream, &frame)?;
+    }
     Ok(ReplyIdentity::new(request, &frame))
 }
 
@@ -83,8 +113,40 @@ pub fn read_authorized_request<T: DeserializeOwned>(
     policy: PeerPolicy,
     expected_receiver_id: &str,
 ) -> Result<(T, ReplyIdentity)> {
-    policy.authorize(kernel_peer(stream)?)?;
-    let frame = read_frame(stream)?;
+    let ((), operation, identity) =
+        read_authorized_role_request(stream, &[((), policy)], expected_receiver_id)?;
+    Ok((operation, identity))
+}
+
+/// Matches exactly one configured role against kernel credentials before
+/// reading any frame bytes. The request body cannot choose its own role.
+pub fn read_authorized_role_request<T: DeserializeOwned, Role: Copy>(
+    stream: &mut UnixStream,
+    policies: &[(Role, PeerPolicy)],
+    expected_receiver_id: &str,
+) -> Result<(Role, T, ReplyIdentity)> {
+    read_authorized_native_message(stream, policies, expected_receiver_id, |_| false)
+}
+
+/// Delimited first message shared by ordinary requests and private delivery.
+/// Only the server's recognized delivery operation may leave the peer write
+/// side open. Ordinary requests retain their strict one-frame rule.
+pub fn read_authorized_native_message<T: DeserializeOwned, Role: Copy>(
+    stream: &mut UnixStream,
+    policies: &[(Role, PeerPolicy)],
+    expected_receiver_id: &str,
+    is_delivery: impl FnOnce(&T) -> bool,
+) -> Result<(Role, T, ReplyIdentity)> {
+    let peer = kernel_peer(stream)?;
+    let mut allowed = policies
+        .iter()
+        .filter_map(|(role, policy)| policy.authorize(peer).ok().map(|_| *role));
+    let role = allowed
+        .next()
+        .filter(|_| allowed.next().is_none())
+        .ok_or(ContractError::Denied("peer has no unique native role"))?;
+    let mut reader = DeadlineIo::new(stream, IO_TIMEOUT);
+    let frame = read_sized_frame(&mut reader, MAX_FRAME_BYTES)?;
     let request: Request<T> = decode(&frame)?;
     request.validate()?;
     if request.receiver_id != expected_receiver_id {
@@ -92,8 +154,17 @@ pub fn read_authorized_request<T: DeserializeOwned>(
             "receiver identity differs from service",
         ));
     }
+    if is_delivery(&request.operation) {
+        if frame.len() > MAX_DELIVERY_FRAME {
+            return Err(ContractError::Invalid(
+                "private delivery request exceeds frame limit",
+            ));
+        }
+    } else {
+        require_frame_eof(&mut reader)?;
+    }
     let identity = ReplyIdentity::new(&request, &frame);
-    Ok((request.operation, identity))
+    Ok((role, request.operation, identity))
 }
 
 pub fn send_reply<T: Serialize>(
@@ -110,13 +181,95 @@ pub fn read_reply<T: DeserializeOwned>(
     policy: ServerPolicy,
 ) -> Result<T> {
     policy.authorize(kernel_peer(stream)?)?;
-    let reply: Reply<ReplyIdentity, T> = decode(&read_frame(stream)?)?;
+    decode_reply(&read_frame(stream)?, identity)
+}
+
+pub fn send_delivery_reply<T: Serialize>(
+    stream: &mut UnixStream,
+    identity: &ReplyIdentity,
+    result: T,
+) -> Result<()> {
+    let frame = encode(&Reply { identity, result })?;
+    write_frame_bytes_bounded(
+        &mut DeadlineIo::new(stream, IO_TIMEOUT),
+        &frame,
+        MAX_DELIVERY_FRAME,
+    )
+}
+
+pub fn read_delivery_reply<T: DeserializeOwned>(
+    stream: &mut UnixStream,
+    identity: &ReplyIdentity,
+    policy: ServerPolicy,
+) -> Result<T> {
+    policy.authorize(kernel_peer(stream)?)?;
+    let frame = read_sized_frame(&mut DeadlineIo::new(stream, IO_TIMEOUT), MAX_DELIVERY_FRAME)?;
+    decode_reply(&frame, identity)
+}
+
+fn decode_reply<T: DeserializeOwned>(bytes: &[u8], identity: &ReplyIdentity) -> Result<T> {
+    let reply: Reply<ReplyIdentity, T> = decode(bytes)?;
     if &reply.identity != identity {
         return Err(ContractError::Invalid(
             "native reply is for another request",
         ));
     }
     Ok(reply.result)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryAck<I> {
+    identity: I,
+    challenge: [u8; 16],
+}
+
+/// Acknowledge only after the client's final display sink has flushed and,
+/// where applicable, redacted. No further messages follow the ACK.
+pub fn send_delivery_ack(
+    stream: &mut UnixStream,
+    identity: &ReplyIdentity,
+    challenge: [u8; 16],
+    policy: ServerPolicy,
+) -> Result<()> {
+    policy.authorize(kernel_peer(stream)?)?;
+    let frame = encode(&DeliveryAck {
+        identity,
+        challenge,
+    })?;
+    write_frame_bytes_bounded(
+        &mut DeadlineIo::new(stream, IO_TIMEOUT),
+        &frame,
+        MAX_ACK_FRAME,
+    )?;
+    stream.shutdown(Shutdown::Write)?;
+    Ok(())
+}
+
+/// Waits for the exact connection-bound challenge while the server retains
+/// its disclosure fence.
+pub fn receive_delivery_ack(
+    stream: &mut UnixStream,
+    identity: &ReplyIdentity,
+    challenge: [u8; 16],
+) -> Result<()> {
+    receive_delivery_ack_with_timeout(stream, identity, challenge, DISPLAY_ACK_TIMEOUT)
+}
+
+fn receive_delivery_ack_with_timeout(
+    stream: &mut UnixStream,
+    identity: &ReplyIdentity,
+    challenge: [u8; 16],
+    timeout: Duration,
+) -> Result<()> {
+    let frame = read_frame_bytes_bounded(&mut DeadlineIo::new(stream, timeout), MAX_ACK_FRAME)?;
+    let acknowledgement: DeliveryAck<ReplyIdentity> = decode(&frame)?;
+    if &acknowledgement.identity != identity || acknowledgement.challenge != challenge {
+        return Err(ContractError::Invalid(
+            "delivery ACK is for another request",
+        ));
+    }
+    Ok(())
 }
 
 /// Connects without waiting on a full local listener backlog.
@@ -322,5 +475,98 @@ mod tests {
             read_reply::<u64>(&mut client, &identity, server_policy),
             Err(ContractError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut
         ));
+    }
+
+    #[test]
+    fn exact_peer_selects_one_configured_role_before_read() {
+        let (mut client, mut service) = UnixStream::pair().unwrap();
+        let (peer_policy, server_policy) = policies();
+        // SAFETY: credential getters accept no pointers.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let unmatched = PeerPolicy::synthetic_for_test(uid + 1, uid + 2, gid).unwrap();
+        let identity = send_request(&mut client, &request(42), server_policy).unwrap();
+        assert!(matches!(
+            read_authorized_role_request::<Operation, _>(
+                &mut service,
+                &[(0, peer_policy), (1, peer_policy)],
+                "receiver:native"
+            ),
+            Err(ContractError::Denied(_))
+        ));
+        let (role, operation, verified) = read_authorized_role_request::<Operation, _>(
+            &mut service,
+            &[(0, unmatched), (1, peer_policy)],
+            "receiver:native",
+        )
+        .unwrap();
+        assert_eq!(role, 1);
+        assert_eq!(verified, identity);
+        assert_eq!(operation.value, 42);
+    }
+
+    #[test]
+    fn private_delivery_requires_both_peers_and_exact_display_challenge() {
+        let (peer_policy, server_policy) = policies();
+        // SAFETY: credential getters accept no pointers.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let unrelated_client = PeerPolicy::for_current_service(uid + 1, gid).unwrap();
+        let unrelated_server = ServerPolicy::for_current_client(uid + 1, gid).unwrap();
+        for valid_ack in [false, true] {
+            let (mut client, mut service) = UnixStream::pair().unwrap();
+            let requested = request(42);
+            assert!(matches!(
+                send_delivery_request(&mut client, &requested, unrelated_server),
+                Err(ContractError::Denied(_))
+            ));
+            let key = send_delivery_request(&mut client, &requested, server_policy).unwrap();
+            assert!(matches!(
+                read_authorized_native_message::<Operation, _>(
+                    &mut service,
+                    &[(0, unrelated_client)],
+                    "receiver:native",
+                    |_| true,
+                ),
+                Err(ContractError::Denied(_))
+            ));
+            let (_, operation, verified) = read_authorized_native_message::<Operation, _>(
+                &mut service,
+                &[(1, peer_policy)],
+                "receiver:native",
+                |_| true,
+            )
+            .unwrap();
+            assert_eq!(operation.value, 42);
+            assert_eq!(key, verified);
+
+            let challenge = [8; 16];
+            send_delivery_reply(&mut service, &verified, challenge).unwrap();
+            assert!(matches!(
+                read_delivery_reply::<[u8; 16]>(&mut client, &key, unrelated_server),
+                Err(ContractError::Denied(_))
+            ));
+            assert_eq!(
+                read_delivery_reply::<[u8; 16]>(&mut client, &key, server_policy).unwrap(),
+                challenge
+            );
+            assert!(matches!(
+                receive_delivery_ack_with_timeout(
+                    &mut service, &verified, challenge, Duration::from_millis(45),
+                ),
+                Err(ContractError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut
+            ));
+            let acknowledgement = if valid_ack { challenge } else { [7; 16] };
+            send_delivery_ack(&mut client, &key, acknowledgement, server_policy).unwrap();
+            let result = receive_delivery_ack(&mut service, &verified, challenge);
+            if valid_ack {
+                result.unwrap();
+                send_reply(&mut service, &verified, "acknowledged").unwrap();
+                assert_eq!(
+                    read_reply::<String>(&mut client, &key, server_policy).unwrap(),
+                    "acknowledged"
+                );
+            } else {
+                assert!(matches!(result, Err(ContractError::Invalid(_))));
+            }
+        }
     }
 }
