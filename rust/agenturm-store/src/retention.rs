@@ -155,7 +155,7 @@ impl Store {
                     SELECT request_id FROM agenturm_observations
                     WHERE (json_extract(kind_json, '$.kind') = 'message'
                            AND json_extract(kind_json, '$.role') = 'user')
-                       OR json_extract(kind_json, '$.kind') = 'mcp_call'
+                       OR json_extract(kind_json, '$.kind') IN ('mcp_call', 'file_edit')
                  )",
                 [],
             )?;

@@ -4,10 +4,11 @@
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
 </style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-storage-broker.md">Markdown source ↗</a></nav><h1>Rust storage broker contract</h1>
 <p>This contract is for a fresh standalone Rust history database under a dedicated Linux service identity. The current storage service provides local socket and peer-identity checks to reuse. Its existing probe and experimental Python-era storage operations stay on their existing endpoints.</p>
-<h2>Native admission endpoint</h2>
+<h2>Native history endpoint</h2>
 <p>Run <code>agenturm-storage-service</code> with the existing data root, transport directory,
 receiver and client identity options, plus <code>--native-sources ID[,ID]</code>. The
-allowlist admits 1–64 distinct source IDs for that single collector principal.
+allowlist grants 1–64 distinct source IDs to that single collector and reader
+principal. Reads without an explicit source select only those IDs.
 This mode uses <code>agenturm-native-storage-v1.sock</code>, its own listener lock and a
 broker-owned <code>history.sqlite</code>. It accepts an empty private data root or an
 existing native history database with its expected sidecars. The service holds
@@ -18,20 +19,32 @@ owner and mode and refuse a nonblocking connection before removing it.</p>
 <p>Native requests use a big-endian u32 length followed by UTF-8 JSON. The
 envelope contains version <code>1</code>, a 32-digit lowercase hexadecimal
 <code>request_id</code>, the configured <code>receiver_id</code> and an <code>operation</code>. The
-available operations are <code>source_cursor</code> with a <code>source_id</code> and <code>admit</code>
-with a typed <code>ObservationBatch</code>. The reply binds the version, request ID,
+available operations are <code>source_cursor</code> with a <code>source_id</code>, <code>admit</code>
+with a typed <code>ObservationBatch</code>, <code>query_sessions</code> with a <code>SessionQuery</code>,
+and <code>query_history</code> with an <code>ObservationQuery</code> and a selection. Selections
+cover observations, all workers on an exact turn, one exact worker or
+workerless turn, and linked traces. The linked trace importer and native
+session source must both be within the grant. The reply binds the version, request ID,
 receiver ID and SHA-256 of the exact request frame body. Both peers
 authenticate kernel credentials before exchanging bodies. Each write side
 half-closes after one frame. Frames have a 32 MiB limit and a two-second
-I/O deadline. Admission retries use the same deterministic batch ID.</p>
+I/O deadline. The client connects without blocking on a full listener
+backlog. Admission retries use the same deterministic batch ID.</p>
+<p>Observation pages return at most 2,048 rows, with <code>has_more</code> and the original
+snapshot watermark for keyset continuation. Session queries have the Store's
+256-row limit and return their typed continuation. Source filters are applied
+before ordering and paging. An expired snapshot returns the minimum live
+watermark in a typed error. The Rust <code>NativeStore</code> client takes the absolute
+socket path, receiver ID and broker UID/GID. It provides the kernel's
+<code>ObservationStore</code> port and typed session and linked trace reads.</p>
 <p>The local listener test verifies socket and database ownership and modes,
 denial of same-UID peers, clean socket removal and restart after SIGKILL.
 Unexpected paths and active sockets are preserved. The contract tests
-exercise peer-first checks, malformed frames and request/reply correlation.
-The admission tests exercise replay after a later commit and reopen. The
-standalone collector and cockpit do not select the broker yet. Query
-operations have a scoped service core. Their wire endpoint, grant and
-retention authority, and production client integration remain open.</p>
+exercise peer-first checks, malformed frames, a partial-frame timeout and
+request/reply correlation. The admission tests exercise replay after a later
+commit and reopen. Read tests verify allowlisted cross-source pagination and
+exact worker selection. Separate reader roles, grant and retention authority,
+and private evidence delivery remain open.</p>
 <h2>Principals and deployment</h2>
 <p>The non-root broker owns a <code>0700</code> data directory and every database, WAL, shared-memory, lease and maintenance file inside it. Its listener verifies the filesystem owner, mode and identity of the socket directory and lock before use. The collector and cockpit use a different Linux UID. Each configured caller is identified by <code>SO_PEERCRED</code> UID and primary GID on every connection. The client also verifies the broker UID and GID before sending requests. Receiver identity and protocol version bind each exchange to its configured endpoint. Each role has a configured UID/GID and may share a UID only if that principal is deliberately authorized for the union of those roles.</p>
 <p>The collector owns native discovery, source supervision, format decoding and ACK delivery. The cockpit owns terminal state. Children must be denied the broker socket as well as the database. Children running as the client UID can impersonate that client unless their OS boundary denies access. Process isolation and deployment proof remain separate gates. The broker refuses startup on insecure ownership or unexpected database identity. Clients configured for broker access fail closed if the broker is unavailable.</p>

@@ -80,9 +80,24 @@ From Agents, press `w` to see recorded requests. Use `s` to mark an item
 seen and `l` to focus the matching tmux pane when Agenturm verifies the
 route. Respond in the harness terminal.
 
-In Review, press `n` for saved decision notes. Press `e` to write a note
-against the selected evidence version and Ctrl+S to save it.
-Supported Codex file changes show recorded edit counts by operation.
+In Review, press `n` for saved decision notes. In the decision list, press
+`e` to write a note against the selected evidence version and Ctrl+S to save it.
+Review shows recorded Codex edit counts. Press `e` from Review or turn
+activity to select a recorded edit, then Enter to view its paths and any
+bounded diff or file contents. Escape clears the preview and returns to
+the same selection.
+
+Edit detail requires its own approval and verifies the selected event,
+session, turn and operation against the retained source receipt. Set `db`
+to the history file, `config` to the collection configuration, and
+`source_id` to the exact recorded source ID.
+
+```sh
+"$agenturm" content grant --kind codex.edit_detail --db "$db" \
+  --config "$config" --source-id "$source_id"
+"$agenturm" content revoke --kind codex.edit_detail --db "$db" \
+  --source-id "$source_id"
+```
 
 Select a session and press `p` for eligible user prompts. Press Enter to
 reveal one and Escape to clear it. The view requires a current grant for a

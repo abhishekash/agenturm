@@ -6,10 +6,13 @@ use crate::{
 };
 use agenturm_kernel::{ExtensionId, RelationshipKind};
 use rusqlite::{OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 pub const MAX_SESSION_PAGE_SIZE: usize = 256;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionQuery {
     pub harness_id: Option<String>,
     pub limit: usize,
@@ -29,7 +32,8 @@ impl SessionQuery {
 }
 
 /// An exclusive position ordered by last observed time, source, then session.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionPosition {
     pub observed_at_unix_ns: u64,
     pub harness_id: String,
@@ -37,7 +41,8 @@ pub struct SessionPosition {
     pub snapshot_id: u64,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionPage {
     /// Newest first, with descending source and session IDs as tie-breakers.
     pub sessions: Vec<SessionSummary>,
@@ -45,7 +50,8 @@ pub struct SessionPage {
     pub next_before: Option<SessionPosition>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionSummary {
     pub harness_id: ExtensionId,
     pub session_id: String,
@@ -60,7 +66,8 @@ pub struct SessionSummary {
     pub relationship_kind: Option<RelationshipKind>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionLifecycle {
     pub observed_at_unix_ns: u64,
     pub state: String,
@@ -75,6 +82,22 @@ impl Store {
     /// An active traversal keeps its ordering and lifecycle evidence when
     /// later collection commits. Pruning expires older snapshots.
     pub fn query_sessions(&self, query: &SessionQuery) -> Result<SessionPage> {
+        self.query_sessions_impl(query, None)
+    }
+
+    pub fn query_sessions_from_sources(
+        &self,
+        query: &SessionQuery,
+        allowed_sources: &BTreeSet<ExtensionId>,
+    ) -> Result<SessionPage> {
+        self.query_sessions_impl(query, Some(allowed_sources))
+    }
+
+    fn query_sessions_impl(
+        &self,
+        query: &SessionQuery,
+        allowed_sources: Option<&BTreeSet<ExtensionId>>,
+    ) -> Result<SessionPage> {
         if !(1..=MAX_SESSION_PAGE_SIZE).contains(&query.limit) {
             return Err(StoreError::Invalid("session page limit is invalid"));
         }
@@ -111,6 +134,7 @@ impl Store {
              JOIN agenturm_history_batches AS h ON h.request_id = o.request_id
              WHERE o.session_id IS NOT NULL AND h.sequence <= ?1
                AND (?2 IS NULL OR o.source_id = ?2)
+               AND (?7 IS NULL OR o.source_id IN (SELECT value FROM json_each(?7)))
              GROUP BY o.session_id, o.source_id
              HAVING ?3 IS NULL OR (latest, o.source_id, o.session_id) < (?3, ?4, ?5)
              ORDER BY latest DESC, o.source_id DESC, o.session_id DESC
@@ -125,6 +149,7 @@ impl Store {
                 before.map(|position| position.harness_id.as_str()),
                 before.map(|position| position.session_id.as_str()),
                 (query.limit + 1) as i64,
+                allowed_sources.map(serde_json::to_string).transpose()?,
             ],
             |row| {
                 Ok((

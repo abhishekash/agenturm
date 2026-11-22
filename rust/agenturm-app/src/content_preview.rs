@@ -2,11 +2,12 @@
 
 use agenturm_kernel::ExtensionId;
 use agenturm_store::Store;
+use agenturm_ui::OperationDetailKind;
 use serde::Serialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: agenturm content grant --db <path> --config <path> --source-id <id> [--kind codex.mcp_payload]\n       agenturm content revoke --db <path> --source-id <id> [--kind codex.mcp_payload]\n       agenturm content list --db <path> --config <path> --source-id <id> --session-id <id>\n       agenturm content preview --db <path> --config <path> --source-id <id> [--session-id <id>] --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.mcp_payload --db <path> --config <path> --source-id <id> --session-id <id> --operation-id <id> --event-id <id> --revision <revision>";
+const USAGE: &str = "Usage: agenturm content grant --db <path> --config <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail]\n       agenturm content revoke --db <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail]\n       agenturm content list --db <path> --config <path> --source-id <id> --session-id <id>\n       agenturm content preview --db <path> --config <path> --source-id <id> [--session-id <id>] --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.mcp_payload --db <path> --config <path> --source-id <id> --session-id <id> --operation-id <id> --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.edit_detail --db <path> --config <path> --source-id <id> --session-id <id> --turn-id <id> --operation-id <id> --event-id <id> --revision <revision>";
 
 /// Proof-eligible metadata for a single retained user prompt. The selection
 /// grants no authority and is checked anew before any text is delivered.
@@ -29,10 +30,10 @@ pub struct ContentOptions {
 enum Action {
     Grant {
         config: PathBuf,
-        mcp: bool,
+        kind: Option<OperationDetailKind>,
     },
     Revoke {
-        mcp_only: bool,
+        kind: Option<OperationDetailKind>,
     },
     List {
         config: PathBuf,
@@ -44,9 +45,11 @@ enum Action {
         event_id: String,
         revision: u32,
     },
-    PreviewMcp {
+    PreviewOperation {
         config: PathBuf,
+        kind: OperationDetailKind,
         session_id: String,
+        turn_id: Option<String>,
         operation_id: String,
         event_id: String,
         revision: u32,
@@ -70,18 +73,19 @@ pub(crate) fn parse(args: &[String]) -> Result<ContentOptions, String> {
     let db = PathBuf::from(values.remove("--db").ok_or(USAGE)?);
     let source_id = ExtensionId::parse(values.remove("--source-id").ok_or(USAGE)?)
         .map_err(|_| "invalid content source ID")?;
-    let mcp = match values.remove("--kind") {
-        None => false,
-        Some("codex.mcp_payload") => true,
+    let kind = match values.remove("--kind") {
+        None => None,
+        Some("codex.mcp_payload") => Some(OperationDetailKind::Mcp),
+        Some("codex.edit_detail") => Some(OperationDetailKind::Edit),
         _ => return Err(USAGE.into()),
     };
     let action = match action.as_str() {
         "grant" => Action::Grant {
             config: PathBuf::from(values.remove("--config").ok_or(USAGE)?),
-            mcp,
+            kind,
         },
-        "revoke" => Action::Revoke { mcp_only: mcp },
-        "list" if !mcp => Action::List {
+        "revoke" => Action::Revoke { kind },
+        "list" if kind.is_none() => Action::List {
             config: PathBuf::from(values.remove("--config").ok_or(USAGE)?),
             session_id: values.remove("--session-id").ok_or(USAGE)?.to_owned(),
         },
@@ -95,10 +99,16 @@ pub(crate) fn parse(args: &[String]) -> Result<ContentOptions, String> {
                 .remove("--revision")
                 .and_then(|value| value.parse::<u32>().ok())
                 .ok_or("invalid content revision")?;
-            if mcp {
-                Action::PreviewMcp {
+            if let Some(kind) = kind {
+                let turn_id = values.remove("--turn-id");
+                if kind == OperationDetailKind::Edit && turn_id.is_none() {
+                    return Err(USAGE.into());
+                }
+                Action::PreviewOperation {
                     config,
+                    kind,
                     session_id: values.remove("--session-id").ok_or(USAGE)?.to_owned(),
+                    turn_id: turn_id.map(str::to_owned),
                     operation_id: values.remove("--operation-id").ok_or(USAGE)?.to_owned(),
                     event_id: event_id.to_owned(),
                     revision,
@@ -191,23 +201,25 @@ pub(super) fn reveal_user_prompt(
     )
 }
 
-pub(super) fn reveal_mcp_payload(
+pub(super) fn reveal_operation_detail(
     db: &Path,
     config: &Path,
     source_id: &ExtensionId,
-    selection: &agenturm_store::CodexMcpSelection<'_>,
+    kind: OperationDetailKind,
+    selection: &agenturm_store::CodexOperationSelection<'_>,
     output: &mut dyn Write,
     writer: Option<&Store>,
 ) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         if let Some(writer) = writer {
-            linux::reveal_mcp_fenced(writer, config, source_id, selection, output, true)
+            linux::reveal_operation_fenced(writer, config, source_id, kind, selection, output, true)
         } else {
-            linux::reveal_mcp_fenced(
+            linux::reveal_operation_fenced(
                 &linux::open_store(db)?,
                 config,
                 source_id,
+                kind,
                 selection,
                 output,
                 true,
@@ -216,8 +228,8 @@ pub(super) fn reveal_mcp_payload(
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (db, config, source_id, selection, output, writer);
-        Err("MCP payload preview is available on Linux".into())
+        let _ = (db, config, source_id, kind, selection, output, writer);
+        Err("Operation detail preview is available on Linux".into())
     }
 }
 
@@ -242,7 +254,8 @@ mod linux {
     };
     use agenturm_jsonl_source::{CursorProof, cursor_proof};
     use agenturm_store::{
-        CodexMcpEvidence, CodexMcpSelection, ContentGrantScope, ContentKind, UserTextEvidence,
+        CodexOperationEvidence, CodexOperationSelection, ContentGrantScope, ContentKind,
+        UserTextEvidence,
     };
     use rustix::fs::{Mode, OFlags, open, openat};
     use serde::Deserialize;
@@ -301,15 +314,46 @@ mod linux {
         "Prompt source changed or no longer matches the committed checkpoint";
     const NO_EVIDENCE: &str = "selected revision is unavailable in the current source commit";
 
+    struct OperationDefinition {
+        grant: ContentKind,
+        fingerprint_domain: &'static [u8],
+        event_suffix: &'static str,
+        native_kind: &'static str,
+        description: &'static str,
+        unavailable: &'static str,
+    }
+
+    fn operation_definition(kind: OperationDetailKind) -> OperationDefinition {
+        match kind {
+            OperationDetailKind::Mcp => OperationDefinition {
+                grant: ContentKind::CodexMcpPayload,
+                fingerprint_domain: b"agenturm.codex-mcp-payload/1",
+                event_suffix: ":mcp-call",
+                native_kind: "McpToolCall",
+                description: "MCP payload",
+                unavailable: "The selected MCP operation has no verified payload",
+            },
+            OperationDetailKind::Edit => OperationDefinition {
+                grant: ContentKind::CodexEditDetail,
+                fingerprint_domain: b"agenturm.codex-edit-detail/1",
+                event_suffix: ":file-edit",
+                native_kind: "FileChange",
+                description: "file edit",
+                unavailable: "The selected file edit has no verified detail",
+            },
+        }
+    }
+
     pub(super) fn execute(options: &ContentOptions, output: &mut dyn Write) -> Result<(), String> {
         let mut store = open_store(&options.db)?;
         match &options.action {
-            Action::Grant { config, mcp } => {
-                let source = BoundSource::open_with_kind(config, &options.source_id, *mcp)?;
+            Action::Grant { config, kind } => {
+                let source = BoundSource::open_with_kind(config, &options.source_id, *kind)?;
                 store
                     .grant_content(&source.scope)
                     .map_err(|error| error.to_string())?;
-                let description = if *mcp { "MCP payload" } else { "user-text" };
+                let description =
+                    kind.map_or("user-text", |kind| operation_definition(kind).description);
                 write_output(
                     output,
                     format!(
@@ -319,13 +363,21 @@ mod linux {
                     .as_bytes(),
                 )
             }
-            Action::Revoke { mcp_only: true } => {
+            Action::Revoke { kind: Some(kind) } => {
+                let operation = operation_definition(*kind);
                 store
-                    .revoke_content(&options.source_id, ContentKind::CodexMcpPayload)
+                    .revoke_content(&options.source_id, operation.grant)
                     .map_err(|error| error.to_string())?;
-                write_output(output, b"Codex MCP payload preview approval is revoked.\n")
+                write_output(
+                    output,
+                    format!(
+                        "Codex {} preview approval is revoked.\n",
+                        operation.description
+                    )
+                    .as_bytes(),
+                )
             }
-            Action::Revoke { mcp_only: false } => {
+            Action::Revoke { kind: None } => {
                 store
                     .revoke_source_content(&options.source_id)
                     .map_err(|error| error.to_string())?;
@@ -352,18 +404,22 @@ mod linux {
                 *revision,
                 output,
             ),
-            Action::PreviewMcp {
+            Action::PreviewOperation {
                 config,
+                kind,
                 session_id,
+                turn_id,
                 operation_id,
                 event_id,
                 revision,
-            } => reveal_mcp_fenced(
+            } => reveal_operation_fenced(
                 &store,
                 config,
                 &options.source_id,
-                &CodexMcpSelection {
+                *kind,
+                &CodexOperationSelection {
                     session_id,
+                    turn_id: turn_id.as_deref(),
                     operation_id,
                     event_id,
                     revision: *revision,
@@ -449,46 +505,49 @@ mod linux {
             .map_err(|error| error.to_string())?
     }
 
-    pub(super) fn reveal_mcp_fenced(
+    pub(super) fn reveal_operation_fenced(
         store: &Store,
         config: &Path,
         source_id: &ExtensionId,
-        selection: &CodexMcpSelection<'_>,
+        kind: OperationDetailKind,
+        selection: &CodexOperationSelection<'_>,
         output: &mut dyn Write,
         terminal: bool,
     ) -> Result<(), String> {
-        if !valid_id(selection.session_id) || !valid_id(selection.operation_id) {
-            return Err("Invalid MCP session or operation ID".into());
+        if !valid_id(selection.session_id)
+            || !valid_id(selection.operation_id)
+            || selection.turn_id.is_some_and(|turn| !valid_id(turn))
+        {
+            return Err("Invalid session, turn, or operation ID".into());
         }
+        let operation = operation_definition(kind);
         store
             .with_user_content_fence(|store| {
-                let mut source = BoundSource::open_with_kind(config, source_id, true)?;
+                let mut source = BoundSource::open_with_kind(config, source_id, Some(kind))?;
                 let grant = store
                     .current_content_grant(&source.scope)
                     .map_err(|error| error.to_string())?
-                    .ok_or("MCP payload preview requires approval for the current source")?;
+                    .ok_or_else(|| {
+                        format!(
+                            "Codex {} preview requires approval for the current source",
+                            operation.description
+                        )
+                    })?;
                 let select = |scope: &ContentGrantScope| {
                     store
-                        .current_codex_mcp_evidence(scope, &grant, selection)
+                        .current_codex_operation_evidence(scope, &grant, selection)
                         .map_err(|error| error.to_string())?
-                        .ok_or_else(|| {
-                            "The selected MCP operation has no verified payload".to_owned()
-                        })
+                        .ok_or_else(|| operation.unavailable.to_owned())
                 };
                 let evidence = select(&source.scope)?;
                 let prefix = source.verified_prefix(&evidence.cursor)?;
-                let mut reveal = prefix.mcp_payload(selection, &evidence)?;
-                if terminal {
-                    let payload: serde_json::Value =
-                        serde_json::from_str(&reveal).map_err(|_| "Cannot format MCP payload")?;
-                    let pretty = serde_json::to_string_pretty(&payload)
-                        .map_err(|_| "Cannot format MCP payload")?;
-                    reveal =
-                        serde_json::to_string(&pretty).map_err(|_| "Cannot format MCP payload")?;
-                }
+                let payload = prefix.operation_payload(kind, &operation, selection, &evidence)?;
+                let mut reveal = payload
+                    .encode(terminal)
+                    .map_err(|_| operation.unavailable)?;
                 let fresh = source.recheck(config, source_id)?;
                 if select(&fresh.scope)? != evidence {
-                    return Err("The selected MCP operation changed".into());
+                    return Err("The selected operation changed".into());
                 }
                 reveal.push('\n');
                 write_output(output, reveal.as_bytes())
@@ -595,18 +654,18 @@ mod linux {
         scope: ContentGrantScope,
         harness: Harness,
         source_path: PathBuf,
-        mcp: bool,
+        operation_kind: Option<OperationDetailKind>,
     }
 
     impl BoundSource {
         fn open(config: &Path, source_id: &ExtensionId) -> Result<Self, String> {
-            Self::open_with_kind(config, source_id, false)
+            Self::open_with_kind(config, source_id, None)
         }
 
         fn open_with_kind(
             config: &Path,
             source_id: &ExtensionId,
-            mcp: bool,
+            operation_kind: Option<OperationDetailKind>,
         ) -> Result<Self, String> {
             let config = load_collection_config(config)?;
             let source = config
@@ -624,8 +683,8 @@ mod linux {
                     return Err("Prompt preview requires a supported pinned source".into());
                 }
             };
-            if mcp && harness != Harness::Codex {
-                return Err("MCP payload preview requires a supported pinned Codex source".into());
+            if operation_kind.is_some() && harness != Harness::Codex {
+                return Err("Operation details require a supported pinned Codex source".into());
             }
             let artifact = source.artifact_sha256.as_deref().ok_or(
                 "Prompt preview requires a SHA-256-pinned adapter in catalog configuration",
@@ -638,11 +697,11 @@ mod linux {
             let device = stamp.device.to_be_bytes();
             let inode = stamp.inode.to_be_bytes();
             let mut fingerprint = Sha256::new();
-            let domain = if mcp {
-                b"agenturm.codex-mcp-payload/1"
-            } else {
-                harness.fingerprint_domain()
-            };
+            let operation = operation_kind.map(operation_definition);
+            let domain = operation.as_ref().map_or_else(
+                || harness.fingerprint_domain(),
+                |operation| operation.fingerprint_domain,
+            );
             for field in [
                 domain,
                 source.source_id.as_bytes(),
@@ -662,11 +721,7 @@ mod linux {
             }
             let scope = ContentGrantScope::new(
                 source_id.clone(),
-                if mcp {
-                    ContentKind::CodexMcpPayload
-                } else {
-                    harness.content_kind()
-                },
+                operation.map_or_else(|| harness.content_kind(), |operation| operation.grant),
                 fingerprint.finalize().into(),
             );
             Ok(Self {
@@ -675,7 +730,7 @@ mod linux {
                 scope,
                 harness,
                 source_path: source.source_root.clone(),
-                mcp,
+                operation_kind,
             })
         }
 
@@ -869,7 +924,7 @@ mod linux {
         }
 
         fn recheck(&self, config: &Path, source_id: &ExtensionId) -> Result<Self, String> {
-            let fresh = Self::open_with_kind(config, source_id, self.mcp)?;
+            let fresh = Self::open_with_kind(config, source_id, self.operation_kind)?;
             if self.stamp != fresh.stamp
                 || self.scope != fresh.scope
                 || FileStamp::from_file(&fresh.file)? != fresh.stamp
@@ -894,65 +949,56 @@ mod linux {
     }
 
     impl VerifiedPrefix {
-        fn mcp_payload(
+        fn operation_payload(
             &self,
-            selection: &CodexMcpSelection<'_>,
-            evidence: &CodexMcpEvidence,
-        ) -> Result<String, String> {
-            const UNAVAILABLE: &str = "The selected MCP operation has no verified payload";
+            kind: OperationDetailKind,
+            operation: &OperationDefinition,
+            selection: &CodexOperationSelection<'_>,
+            evidence: &CodexOperationEvidence,
+        ) -> Result<CodexOperationPayload, String> {
+            let unavailable = operation.unavailable;
             if !matches!(&self.header, Header::Codex(thread) if thread == selection.session_id)
                 || selection.revision != 0
             {
-                return Err(UNAVAILABLE.into());
+                return Err(unavailable.into());
             }
             let offset = selection
                 .event_id
                 .strip_prefix("codex:")
                 .and_then(|event| event.strip_prefix(&self.cursor.generation))
                 .and_then(|event| event.strip_prefix(':'))
-                .and_then(|event| event.strip_suffix(":mcp-call"))
+                .and_then(|event| event.strip_suffix(operation.event_suffix))
                 .filter(|offset| {
                     !offset.is_empty() && offset.bytes().all(|byte| byte.is_ascii_digit())
                 })
-                .ok_or(UNAVAILABLE)?;
+                .ok_or(unavailable)?;
             let proofs = self.admitted_offsets(std::iter::once(evidence.admitted_cursor.as_str()));
             let proof_end = proofs
                 .get(evidence.admitted_cursor.as_str())
-                .ok_or(UNAVAILABLE)?;
+                .ok_or(unavailable)?;
             let rows = self.rows(std::iter::once(offset.to_owned()))?;
             let line = match rows.get(offset) {
                 Some(RowMatch::Exact { line, end }) if end <= proof_end => *line,
-                _ => return Err(UNAVAILABLE.into()),
+                _ => return Err(unavailable.into()),
             };
-            let row: CodexMcpRow = serde_json::from_slice(line).map_err(|_| UNAVAILABLE)?;
+            let row: CodexOperationRow = serde_json::from_slice(line).map_err(|_| unavailable)?;
             let item = row.payload.item;
             if row.kind != "event_msg"
                 || row.payload.kind != "item_completed"
                 || row.payload.thread_id != selection.session_id
                 || row.payload.turn_id != evidence.turn_id
-                || item.kind != "McpToolCall"
+                || item.kind != operation.native_kind
                 || item.id.is_empty()
                 || hash(item.id.as_bytes()) != selection.operation_id
                 || observed_timestamp(&row.timestamp) != Some(evidence.observed_at_unix_ns)
-                || (item.arguments.is_none() && item.result.is_none())
             {
-                return Err(UNAVAILABLE.into());
+                return Err(unavailable.into());
             }
-            let fields = [("arguments", item.arguments), ("result", item.result)]
-                .into_iter()
-                .filter_map(|(field, value)| value.map(|value| (field.to_owned(), value)))
-                .collect::<serde_json::Map<_, _>>();
-            let serialized = serde_json::to_string(&fields).map_err(|_| UNAVAILABLE)?;
-            // Reuse the bounded text policy. Escaped terminal controls remain
-            // JSON data and any policy-driven alteration makes the payload unavailable.
-            if text_preview(UserContent::Text(serialized.clone()))
-                .ok()
-                .as_ref()
-                != Some(&serialized)
-            {
-                return Err(UNAVAILABLE.into());
+            match kind {
+                OperationDetailKind::Mcp => item.mcp_detail(),
+                OperationDetailKind::Edit => item.edit_detail(),
             }
-            Ok(serialized)
+            .ok_or_else(|| unavailable.to_owned())
         }
 
         fn admitted_offsets<'a>(
@@ -1235,24 +1281,24 @@ mod linux {
     }
 
     #[derive(Deserialize)]
-    struct CodexMcpRow {
+    struct CodexOperationRow {
         #[serde(rename = "type")]
         kind: String,
         timestamp: String,
-        payload: CodexMcpItemCompleted,
+        payload: CodexItemCompleted,
     }
 
     #[derive(Deserialize)]
-    struct CodexMcpItemCompleted {
+    struct CodexItemCompleted {
         #[serde(rename = "type")]
         kind: String,
         thread_id: String,
         turn_id: String,
-        item: CodexMcpItem,
+        item: CodexOperationItem,
     }
 
     #[derive(Deserialize)]
-    struct CodexMcpItem {
+    struct CodexOperationItem {
         #[serde(rename = "type")]
         kind: String,
         id: String,
@@ -1260,6 +1306,145 @@ mod linux {
         arguments: Option<serde_json::Value>,
         #[serde(default, deserialize_with = "present_payload_value")]
         result: Option<serde_json::Value>,
+        changes: Option<BTreeMap<String, NativeFileChange>>,
+    }
+
+    impl CodexOperationItem {
+        fn mcp_detail(self) -> Option<CodexOperationPayload> {
+            let fields = [("arguments", self.arguments), ("result", self.result)]
+                .into_iter()
+                .filter_map(|(field, value)| value.map(|value| (field.to_owned(), value)))
+                .collect::<serde_json::Map<_, _>>();
+            let text = serde_json::to_string(&fields).ok()?;
+            if fields.is_empty() || text_preview(UserContent::Text(text.clone())).ok()? != text {
+                return None;
+            }
+            Some(CodexOperationPayload::Mcp(fields))
+        }
+
+        fn edit_detail(self) -> Option<CodexOperationPayload> {
+            let changes = self.changes?;
+            if !(1..=agenturm_kernel::FileEdit::MAX_CHANGES).contains(&changes.len()) {
+                return None;
+            }
+            let changes = changes
+                .into_iter()
+                .map(|(path, edit)| {
+                    if !edit_path(&path)
+                        || edit
+                            .move_path
+                            .as_deref()
+                            .is_some_and(|path| !edit_path(path))
+                        || edit
+                            .diff
+                            .as_deref()
+                            .is_some_and(|text| !safe_edit_text(text))
+                        || edit
+                            .content
+                            .as_deref()
+                            .is_some_and(|text| !safe_edit_text(text))
+                    {
+                        return None;
+                    }
+                    Some(EditChange { path, edit })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(CodexOperationPayload::Edit { changes })
+        }
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    enum EditAction {
+        Add,
+        Delete,
+        Update,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    struct NativeFileChange {
+        #[serde(rename = "type")]
+        action: EditAction,
+        #[serde(alias = "unified_diff", skip_serializing_if = "Option::is_none")]
+        diff: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        move_path: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    struct EditChange {
+        path: String,
+        #[serde(flatten)]
+        edit: NativeFileChange,
+    }
+
+    #[derive(Serialize)]
+    #[serde(untagged)]
+    enum CodexOperationPayload {
+        Mcp(serde_json::Map<String, serde_json::Value>),
+        Edit { changes: Vec<EditChange> },
+    }
+
+    impl CodexOperationPayload {
+        fn encode(&self, terminal: bool) -> Result<String, ()> {
+            let encoded = serde_json::to_string(self).map_err(|_| ())?;
+            if encoded.len() > MAX_ROW {
+                return Err(());
+            }
+            if !terminal {
+                return Ok(encoded);
+            }
+            let display = match self {
+                Self::Mcp(fields) => serde_json::to_string_pretty(fields).map_err(|_| ())?,
+                Self::Edit { changes } => changes
+                    .iter()
+                    .map(EditChange::display)
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            };
+            serde_json::to_string(&display).map_err(|_| ())
+        }
+    }
+
+    impl EditChange {
+        fn display(&self) -> String {
+            let action = match self.edit.action {
+                EditAction::Add => "Added",
+                EditAction::Delete => "Deleted",
+                EditAction::Update if self.edit.move_path.is_some() => "Moved",
+                EditAction::Update => "Updated",
+            };
+            let mut text = format!("{action} {}", self.path);
+            if let Some(path) = &self.edit.move_path {
+                text.push_str(" → ");
+                text.push_str(path);
+            }
+            for body in [self.edit.diff.as_deref(), self.edit.content.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                text.push('\n');
+                text.push_str(body);
+            }
+            text
+        }
+    }
+
+    fn edit_path(path: &str) -> bool {
+        !path.is_empty()
+            && path.len() <= 512
+            && !path.chars().any(char::is_control)
+            && safe_edit_text(path)
+    }
+
+    fn safe_edit_text(text: &str) -> bool {
+        text.is_empty()
+            || bounded_text_preview(text.to_owned(), MAX_ROW)
+                .ok()
+                .as_deref()
+                == Some(text)
     }
 
     fn present_payload_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
@@ -1363,7 +1548,11 @@ mod linux {
                 .collect::<Vec<_>>()
                 .join("\n"),
         };
-        if text.is_empty() || text.len() > MAX_TEXT_BYTES {
+        bounded_text_preview(text, MAX_TEXT_BYTES)
+    }
+
+    fn bounded_text_preview(text: String, max_bytes: usize) -> Result<String, String> {
+        if text.is_empty() || text.len() > max_bytes {
             return Err("Content is unavailable within the preview text limit".into());
         }
         let lower = text.to_ascii_lowercase();

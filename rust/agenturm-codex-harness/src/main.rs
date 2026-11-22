@@ -7,10 +7,11 @@ mod directory;
 
 use agenturm_jsonl_source::{Result, SourceFormat};
 use serde_json::Value;
+use std::ffi::OsStr;
 
-struct CodexFormat;
+struct CodexFormat<const LEGACY: bool = false>;
 
-impl SourceFormat for CodexFormat {
+impl<const LEGACY: bool> SourceFormat for CodexFormat<LEGACY> {
     type Context = codex::Context;
     const PLUGIN_ID: &'static str = "example.rust-codex-harness";
     const GAP_EVENT_PREFIX: &'static str = "codex-gap";
@@ -34,18 +35,34 @@ impl SourceFormat for CodexFormat {
         origin: &str,
         offset: u64,
     ) -> Result<(Vec<Value>, Self::Context)> {
-        codex::translate_line(raw, context, origin, offset)
+        let (mut facts, context) = codex::translate_line(raw, context, origin, offset)?;
+        if LEGACY {
+            facts.retain_mut(|fact| match fact["kind"].as_str() {
+                Some("file_edit" | "mcp_call" | "pull_request_raised") => false,
+                Some("check") => {
+                    if let Some(identity) = fact["identity"].as_object_mut() {
+                        identity.remove("operation_id");
+                    }
+                    true
+                }
+                _ => true,
+            });
+        }
+        Ok((facts, context))
     }
 }
 
 fn main() {
     // The host receives a coarse failure only, never source contents or paths.
-    let directory_mode = std::env::var_os("AGENTURM_PLUGIN_DISCOVERY_MODE").as_deref()
-        == Some(std::ffi::OsStr::new("1"));
-    let result = if directory_mode {
-        agenturm_source_process::run::<directory::DirectoryPoller>()
-    } else {
-        agenturm_jsonl_source::run::<CodexFormat>()
+    let directory_mode =
+        std::env::var_os("AGENTURM_PLUGIN_DISCOVERY_MODE").as_deref() == Some(OsStr::new("1"));
+    let legacy =
+        std::env::var_os("AGENTURM_PLUGIN_LEGACY_ADMISSION").as_deref() == Some(OsStr::new("1"));
+    let result = match (directory_mode, legacy) {
+        (true, false) => agenturm_source_process::run::<directory::DirectoryPoller<false>>(),
+        (true, true) => agenturm_source_process::run::<directory::DirectoryPoller<true>>(),
+        (false, false) => agenturm_jsonl_source::run::<CodexFormat>(),
+        (false, true) => agenturm_jsonl_source::run::<CodexFormat<true>>(),
     };
     if result.is_err() {
         std::process::exit(2);

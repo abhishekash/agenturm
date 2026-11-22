@@ -184,7 +184,9 @@ pub(super) fn execute(
 pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
     matches!(
         command,
-        WorkCommand::Prompts(_) | WorkCommand::RevealPrompt(_, _) | WorkCommand::RevealMcp(_, _)
+        WorkCommand::Prompts(_)
+            | WorkCommand::RevealPrompt(_, _)
+            | WorkCommand::RevealOperation(_, _)
     )
 }
 
@@ -239,15 +241,17 @@ pub(super) fn execute_prompt(
                 "Prompt shown from the verified current source".into(),
             ))
         }
-        WorkCommand::RevealMcp(operation, mut delivery) => {
+        WorkCommand::RevealOperation(operation, mut delivery) => {
             let config = prompt_config(db)?;
             let source = ExtensionId::parse(&operation.source_id).map_err(string)?;
-            super::content_preview::reveal_mcp_payload(
+            super::content_preview::reveal_operation_detail(
                 db,
                 &config,
                 &source,
-                &agenturm_store::CodexMcpSelection {
+                operation.kind,
+                &agenturm_store::CodexOperationSelection {
                     session_id: &operation.session_id,
+                    turn_id: Some(&operation.turn_id),
                     operation_id: &operation.operation_id,
                     event_id: &operation.event_id,
                     revision: operation.revision,

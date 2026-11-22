@@ -2,11 +2,12 @@
 
 This contract is for a fresh standalone Rust history database under a dedicated Linux service identity. The current storage service provides local socket and peer-identity checks to reuse. Its existing probe and experimental Python-era storage operations stay on their existing endpoints.
 
-## Native admission endpoint
+## Native history endpoint
 
 Run `agenturm-storage-service` with the existing data root, transport directory,
 receiver and client identity options, plus `--native-sources ID[,ID]`. The
-allowlist admits 1–64 distinct source IDs for that single collector principal.
+allowlist grants 1–64 distinct source IDs to that single collector and reader
+principal. Reads without an explicit source select only those IDs.
 This mode uses `agenturm-native-storage-v1.sock`, its own listener lock and a
 broker-owned `history.sqlite`. It accepts an empty private data root or an
 existing native history database with its expected sidecars. The service holds
@@ -18,21 +19,34 @@ owner and mode and refuse a nonblocking connection before removing it.
 Native requests use a big-endian u32 length followed by UTF-8 JSON. The
 envelope contains version `1`, a 32-digit lowercase hexadecimal
 `request_id`, the configured `receiver_id` and an `operation`. The
-available operations are `source_cursor` with a `source_id` and `admit`
-with a typed `ObservationBatch`. The reply binds the version, request ID,
+available operations are `source_cursor` with a `source_id`, `admit`
+with a typed `ObservationBatch`, `query_sessions` with a `SessionQuery`,
+and `query_history` with an `ObservationQuery` and a selection. Selections
+cover observations, all workers on an exact turn, one exact worker or
+workerless turn, and linked traces. The linked trace importer and native
+session source must both be within the grant. The reply binds the version, request ID,
 receiver ID and SHA-256 of the exact request frame body. Both peers
 authenticate kernel credentials before exchanging bodies. Each write side
 half-closes after one frame. Frames have a 32 MiB limit and a two-second
-I/O deadline. Admission retries use the same deterministic batch ID.
+I/O deadline. The client connects without blocking on a full listener
+backlog. Admission retries use the same deterministic batch ID.
+
+Observation pages return at most 2,048 rows, with `has_more` and the original
+snapshot watermark for keyset continuation. Session queries have the Store's
+256-row limit and return their typed continuation. Source filters are applied
+before ordering and paging. An expired snapshot returns the minimum live
+watermark in a typed error. The Rust `NativeStore` client takes the absolute
+socket path, receiver ID and broker UID/GID. It provides the kernel's
+`ObservationStore` port and typed session and linked trace reads.
 
 The local listener test verifies socket and database ownership and modes,
 denial of same-UID peers, clean socket removal and restart after SIGKILL.
 Unexpected paths and active sockets are preserved. The contract tests
-exercise peer-first checks, malformed frames and request/reply correlation.
-The admission tests exercise replay after a later commit and reopen. The
-standalone collector and cockpit do not select the broker yet. Query
-operations have a scoped service core. Their wire endpoint, grant and
-retention authority, and production client integration remain open.
+exercise peer-first checks, malformed frames, a partial-frame timeout and
+request/reply correlation. The admission tests exercise replay after a later
+commit and reopen. Read tests verify allowlisted cross-source pagination and
+exact worker selection. Separate reader roles, grant and retention authority,
+and private evidence delivery remain open.
 
 ## Principals and deployment
 

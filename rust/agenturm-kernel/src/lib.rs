@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -31,8 +32,16 @@ const MAX_CURSOR_BYTES: usize = 800;
 pub const MAX_DURABLE_SNAPSHOT_OBSERVATIONS: usize = 16_384;
 
 /// Stable package identity for one registered extension.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
 pub struct ExtensionId(String);
+
+impl<'de> Deserialize<'de> for ExtensionId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::parse(String::deserialize(deserializer)?)
+            .map_err(|_| serde::de::Error::custom("invalid extension ID"))
+    }
+}
 
 impl ExtensionId {
     pub fn parse(value: impl Into<String>) -> Result<Self, RegistrationError> {
@@ -113,7 +122,8 @@ impl std::error::Error for RegistrationError {}
 
 /// Harness facts are intentionally source-neutral. The host supplies the
 /// harness identity so an adapter cannot attribute its output to a sibling.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Observation {
     pub harness_id: ExtensionId,
     pub event_id: String,
@@ -124,7 +134,8 @@ pub struct Observation {
 }
 
 /// Source-native identity components preserved across collection and storage.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ObservationScope {
     Source,
     Session,
@@ -175,7 +186,8 @@ pub fn is_safe_diagnostic_code(code: &str) -> bool {
     )
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservationIdentity {
     pub scope: ObservationScope,
     pub session_id: Option<String>,
@@ -206,7 +218,8 @@ impl ObservationIdentity {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ObservationKind {
     SessionStarted,
     SessionEnded,
@@ -376,7 +389,8 @@ pub struct StoreCommit {
     pub replay: bool,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservationPage {
     pub observations: Vec<Observation>,
     pub has_more: bool,
@@ -385,7 +399,8 @@ pub struct ObservationPage {
 }
 
 /// Exclusive keyset cursor for deterministic paging through durable history.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservationPosition {
     pub observed_at_unix_ns: u64,
     pub harness_id: String,
@@ -396,7 +411,8 @@ pub struct ObservationPosition {
 
 /// Bounded durable-history query. `before` selects rows older than its exact
 /// ordering key; filters are applied before the page limit.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservationQuery {
     pub harness_id: Option<String>,
     pub session_id: Option<String>,

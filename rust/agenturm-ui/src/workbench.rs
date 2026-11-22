@@ -60,13 +60,21 @@ pub struct PromptEntry {
 }
 
 #[derive(Clone, Debug)]
-pub struct McpPayloadEntry {
+pub struct OperationDetailEntry {
+    pub kind: OperationDetailKind,
     pub source_id: String,
     pub session_id: String,
+    pub turn_id: String,
     pub event_id: String,
     pub revision: u32,
     pub operation_id: String,
     pub label: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationDetailKind {
+    Mcp,
+    Edit,
 }
 
 pub struct PromptDelivery {
@@ -183,7 +191,7 @@ pub enum WorkCommand {
     Locate(RequestEntry),
     Prompts(WorkAnchor),
     RevealPrompt(PromptEntry, PromptDelivery),
-    RevealMcp(McpPayloadEntry, PromptDelivery),
+    RevealOperation(OperationDetailEntry, PromptDelivery),
 }
 
 pub struct ReviewNoteEntry {

@@ -15,6 +15,7 @@ pub enum ContentKind {
     KiroUserText,
     OpenCodeUserText,
     CodexMcpPayload,
+    CodexEditDetail,
 }
 
 impl ContentKind {
@@ -26,6 +27,7 @@ impl ContentKind {
             Self::KiroUserText => "kiro.user_text",
             Self::OpenCodeUserText => "opencode.user_text",
             Self::CodexMcpPayload => "codex.mcp_payload",
+            Self::CodexEditDetail => "codex.edit_detail",
         }
     }
 }
@@ -90,15 +92,16 @@ pub struct UserTextEvidence {
 }
 
 /// The exact durable MCP occurrence to be checked against a native source.
-pub struct CodexMcpSelection<'a> {
+pub struct CodexOperationSelection<'a> {
     pub event_id: &'a str,
     pub revision: u32,
     pub session_id: &'a str,
+    pub turn_id: Option<&'a str>,
     pub operation_id: &'a str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CodexMcpEvidence {
+pub struct CodexOperationEvidence {
     pub cursor: String,
     pub admitted_cursor: String,
     pub turn_id: String,
@@ -113,6 +116,9 @@ pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()>
         }
         12 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload')"
+        }
+        13 => {
+            "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail')"
         }
         _ => return Err(StoreError::UnsupportedSchema(version)),
     };
@@ -199,6 +205,10 @@ pub(super) fn migrate_v10(connection: &Connection) -> Result<()> {
 
 pub(super) fn migrate_v11(connection: &Connection) -> Result<()> {
     migrate_grant_schema(connection, 12)
+}
+
+pub(super) fn migrate_v12(connection: &Connection) -> Result<()> {
+    migrate_grant_schema(connection, 13)
 }
 
 pub(super) fn migrate_grant_schema(connection: &Connection, version: i64) -> Result<()> {
@@ -373,16 +383,18 @@ impl Store {
 
     /// Joins the selected occurrence to its byte proof while the disclosure
     /// caller holds the writer fence. User-text approvals grant no access here.
-    pub fn current_codex_mcp_evidence(
+    pub fn current_codex_operation_evidence(
         &self,
         scope: &ContentGrantScope,
         grant: &ContentGrant,
-        selection: &CodexMcpSelection<'_>,
-    ) -> Result<Option<CodexMcpEvidence>> {
+        selection: &CodexOperationSelection<'_>,
+    ) -> Result<Option<CodexOperationEvidence>> {
         self.require_content_writer()?;
-        if scope.kind != ContentKind::CodexMcpPayload {
-            return Err(StoreError::StaleContentGrant);
-        }
+        let observation_kind = match scope.kind {
+            ContentKind::CodexMcpPayload => "mcp_call",
+            ContentKind::CodexEditDetail if selection.turn_id.is_some() => "file_edit",
+            _ => return Err(StoreError::StaleContentGrant),
+        };
         self.verify_content_grant(scope, grant)?;
         self.connection
             .query_row(
@@ -393,7 +405,8 @@ impl Store {
                  WHERE o.source_id = ?1 AND o.event_id = ?2 AND o.revision = ?3
                    AND o.session_id = ?4 AND o.operation_id = ?5
                    AND o.scope = 'session' AND o.worker_id IS NULL AND o.turn_id IS NOT NULL
-                   AND proof.cursor GLOB 'v2:*' AND json_extract(o.kind_json, '$.kind') = 'mcp_call'
+                   AND (?6 IS NULL OR o.turn_id = ?6)
+                   AND proof.cursor GLOB 'v2:*' AND json_extract(o.kind_json, '$.kind') = ?7
                    AND NOT EXISTS (
                        SELECT 1 FROM agenturm_observations AS newer
                        WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
@@ -409,9 +422,11 @@ impl Store {
                     selection.revision,
                     selection.session_id,
                     selection.operation_id,
+                    selection.turn_id,
+                    observation_kind,
                 ],
                 |row| {
-                    Ok(CodexMcpEvidence {
+                    Ok(CodexOperationEvidence {
                         cursor: row.get(0)?,
                         admitted_cursor: row.get(1)?,
                         turn_id: row.get(2)?,
@@ -442,7 +457,10 @@ impl Store {
         revision: Option<u32>,
     ) -> Result<Vec<(String, UserTextEvidence)>> {
         self.require_content_writer()?;
-        if scope.kind == ContentKind::CodexMcpPayload {
+        if matches!(
+            scope.kind,
+            ContentKind::CodexMcpPayload | ContentKind::CodexEditDetail
+        ) {
             return Err(StoreError::StaleContentGrant);
         }
         self.verify_content_grant(scope, grant)?;

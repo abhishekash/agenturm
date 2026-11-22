@@ -22,6 +22,13 @@ fn main() -> ExitCode {
     };
 
     match command {
+        #[cfg(target_os = "linux")]
+        Command::Broker(options) => {
+            if let Err(message) = agenturm_app::execute_broker(&options) {
+                eprintln!("broker failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
         Command::Attention(options) => {
             if let Err(message) = execute_attention(&options, std::io::stdout().lock()) {
                 eprintln!("attention failed: {message}");

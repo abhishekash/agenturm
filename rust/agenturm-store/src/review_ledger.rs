@@ -3,6 +3,7 @@
 use crate::{MAX_SESSION_KEY_BYTES, MAX_SESSION_PAGE_SIZE, validate_identifier};
 use agenturm_kernel::ExtensionId;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -27,7 +28,8 @@ pub struct ReviewKey {
 /// Identifies the retained evidence read for one session. Unrelated commits
 /// do not change it. An admitted late event advances the session receipt
 /// sequence, and pruning retained rows changes the count.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewVersion {
     pub receipt_sequence: u64,
     pub retained_observations: u64,

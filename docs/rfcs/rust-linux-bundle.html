@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.3.1</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-linux-bundle.md">Markdown source ↗</a></nav><h1>Agenturm Rust bundle for Linux</h1>
+</style></head><body><main><nav><strong>Agenturm / 0.3.2</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-linux-bundle.md">Markdown source ↗</a></nav><h1>Agenturm Rust bundle for Linux</h1>
 <p>The bundle contains the Agenturm CLI and inspector, the process host, the
 Codex, Pi, Claude Code, Kiro, and OpenCode adapters and their
 SHA-256-pinned catalog, plus the trusted connector driver. The runtime
@@ -86,9 +86,21 @@ also record a Git snapshot from a directory you choose with <code>G</code>.</p>
 <p>From Agents, press <code>w</code> to see recorded requests. Use <code>s</code> to mark an item
 seen and <code>l</code> to focus the matching tmux pane when Agenturm verifies the
 route. Respond in the harness terminal.</p>
-<p>In Review, press <code>n</code> for saved decision notes. Press <code>e</code> to write a note
-against the selected evidence version and Ctrl+S to save it.
-Supported Codex file changes show recorded edit counts by operation.</p>
+<p>In Review, press <code>n</code> for saved decision notes. In the decision list, press
+<code>e</code> to write a note against the selected evidence version and Ctrl+S to save it.
+Review shows recorded Codex edit counts. Press <code>e</code> from Review or turn
+activity to select a recorded edit, then Enter to view its paths and any
+bounded diff or file contents. Escape clears the preview and returns to
+the same selection.</p>
+<p>Edit detail requires its own approval and verifies the selected event,
+session, turn and operation against the retained source receipt. Set <code>db</code>
+to the history file, <code>config</code> to the collection configuration, and
+<code>source_id</code> to the exact recorded source ID.</p>
+<pre><code class="language-sh">&quot;$agenturm&quot; content grant --kind codex.edit_detail --db &quot;$db&quot; \
+  --config &quot;$config&quot; --source-id &quot;$source_id&quot;
+&quot;$agenturm&quot; content revoke --kind codex.edit_detail --db &quot;$db&quot; \
+  --source-id &quot;$source_id&quot;
+</code></pre>
 <p>Select a session and press <code>p</code> for eligible user prompts. Press Enter to
 reveal one and Escape to clear it. The view requires a current grant for a
 pinned source and uses <code>sources.json</code> next to the history database or the

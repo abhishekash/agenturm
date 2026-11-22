@@ -27,7 +27,7 @@ pub struct Request<T> {
 }
 
 impl<T> Request<T> {
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.version != VERSION
             || !valid_request_id(&self.request_id)
             || !valid_identity(&self.receiver_id)
@@ -117,6 +117,56 @@ pub fn read_reply<T: DeserializeOwned>(
         ));
     }
     Ok(reply.result)
+}
+
+/// Connects without waiting on a full local listener backlog.
+#[cfg(target_os = "linux")]
+pub fn connect(path: &std::path::Path) -> std::io::Result<UnixStream> {
+    use std::io;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    // SAFETY: zero is a valid initial value for sockaddr_un. The pathname
+    // bytes below are bounded by its initialized sun_path buffer.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let name = path.as_os_str().as_bytes();
+    if name.contains(&0) || name.len() >= address.sun_path.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "native service socket path is invalid",
+        ));
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (target, byte) in address.sun_path.iter_mut().zip(name) {
+        *target = *byte as libc::c_char;
+    }
+    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + name.len() + 1;
+    // SAFETY: socket arguments use the Linux Unix stream protocol. The
+    // successful descriptor is owned by this call and closed by OwnedFd.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    // SAFETY: address and length describe the initialized pathname above.
+    let status = unsafe {
+        libc::connect(
+            fd.as_raw_fd(),
+            (&raw const address).cast(),
+            length as libc::socklen_t,
+        )
+    };
+    if status < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let stream = UnixStream::from(fd);
+    stream.set_nonblocking(false)?;
+    Ok(stream)
 }
 
 fn read_frame(stream: &mut UnixStream) -> Result<Vec<u8>> {
@@ -258,6 +308,19 @@ mod tests {
         assert!(matches!(
             read_authorized_request::<Operation>(&mut service, peer_policy, "receiver:native"),
             Err(ContractError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn client_reply_times_out_on_a_partial_native_frame() {
+        let (mut client, mut service) = UnixStream::pair().unwrap();
+        let (_, server_policy) = policies();
+        let identity = send_request(&mut client, &request(42), server_policy).unwrap();
+        service.write_all(&64_u32.to_be_bytes()).unwrap();
+        service.write_all(b"x").unwrap();
+        assert!(matches!(
+            read_reply::<u64>(&mut client, &identity, server_policy),
+            Err(ContractError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut
         ));
     }
 }

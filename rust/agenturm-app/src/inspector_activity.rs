@@ -1,5 +1,5 @@
 use agenturm_kernel::{MetricRow, ObservationKind, Snapshot};
-use agenturm_ui::{HistoryPage, McpPayloadEntry, RecordedTurn};
+use agenturm_ui::{HistoryPage, OperationDetailEntry, OperationDetailKind, RecordedTurn};
 use std::collections::HashMap;
 
 pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
@@ -40,7 +40,7 @@ pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
         }
     }
     HistoryPage {
-        mcp_payloads: mcp_payloads(&snapshot),
+        operation_details: operation_details(&snapshot),
         snapshot,
         turns,
         initial_pane: None,
@@ -48,34 +48,45 @@ pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
     }
 }
 
-fn mcp_payloads(snapshot: &Snapshot) -> Vec<McpPayloadEntry> {
+fn operation_details(snapshot: &Snapshot) -> Vec<OperationDetailEntry> {
     snapshot
         .observations
         .iter()
         .rev()
         .filter_map(|row| {
-            let ObservationKind::McpCall { server, tool, .. } = &row.kind else {
-                return None;
-            };
-            if !row.event_id.starts_with("codex:")
-                || row.identity.worker_id.is_some()
-                || row.identity.turn_id.is_none()
-            {
+            if !row.event_id.starts_with("codex:") || row.identity.worker_id.is_some() {
                 return None;
             }
+            let (kind, label) = match &row.kind {
+                ObservationKind::McpCall { server, tool, .. } => (
+                    OperationDetailKind::Mcp,
+                    format!(
+                        "{} · {}",
+                        tool.as_deref().unwrap_or("MCP call"),
+                        server.as_deref().unwrap_or("server unavailable")
+                    ),
+                ),
+                ObservationKind::FileEdit(_) => (
+                    OperationDetailKind::Edit,
+                    crate::session_evidence::describe_observation(&row.kind).1,
+                ),
+                _ => return None,
+            };
             let session = row.identity.session_id.as_ref()?;
+            let turn = row.identity.turn_id.as_ref()?;
             let operation = row.identity.operation_id.as_ref()?;
-            Some(McpPayloadEntry {
+            Some(OperationDetailEntry {
+                kind,
                 source_id: row.harness_id.as_str().to_owned(),
                 session_id: session.clone(),
+                turn_id: turn.clone(),
                 event_id: row.event_id.clone(),
                 revision: row.revision,
                 operation_id: operation.clone(),
                 label: format!(
-                    "{} · {} · {}",
-                    tool.as_deref().unwrap_or("MCP call"),
-                    server.as_deref().unwrap_or("server unavailable"),
-                    operation.chars().take(8).collect::<String>()
+                    "{label} · {} · turn {}",
+                    operation.chars().take(8).collect::<String>(),
+                    turn.chars().take(8).collect::<String>()
                 ),
             })
         })
@@ -125,7 +136,7 @@ pub(super) fn turn_page(mut snapshot: Snapshot, turn: &RecordedTurn) -> HistoryP
         rows,
     );
     HistoryPage {
-        mcp_payloads: mcp_payloads(&snapshot),
+        operation_details: operation_details(&snapshot),
         snapshot,
         turns: Vec::new(),
         initial_pane: Some(pane_id),

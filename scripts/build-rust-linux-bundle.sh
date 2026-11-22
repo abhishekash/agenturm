@@ -14,7 +14,7 @@ cd -- "$repo"
 
 target_dir=${CARGO_TARGET_DIR:-"$repo/target"}
 adapters=(codex pi claude kiro opencode)
-binaries=(agenturm agenturm-plugin-host agenturm-connector)
+binaries=(agenturm agenturm-plugin-host agenturm-connector agenturm-storage-service)
 for adapter in "${adapters[@]}"; do
     binaries+=("agenturm-$adapter-harness")
 done

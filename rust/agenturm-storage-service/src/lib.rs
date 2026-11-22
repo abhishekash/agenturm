@@ -9,10 +9,14 @@
 
 pub mod native_admission;
 pub mod native_read;
+#[cfg(target_os = "linux")]
+mod native_store;
+#[cfg(target_os = "linux")]
+pub use native_store::{NativeClientError, NativeStore};
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use crate::native_admission::{self, AdmissionRequest};
+    use crate::native_store::{self, NativeOperation};
     use agenturm_kernel::ExtensionId;
     use agenturm_storage_service_contract::native;
     use agenturm_storage_service_contract::{
@@ -24,8 +28,7 @@ mod linux {
     use std::ffi::OsStr;
     use std::fs::{self, File, Metadata, OpenOptions};
     use std::io::{self, ErrorKind};
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::os::unix::ffi::OsStrExt;
+    use std::os::fd::AsRawFd;
     use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::os::unix::net::UnixListener;
     use std::path::{Component, Path, PathBuf};
@@ -381,49 +384,13 @@ mod linux {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         };
-        if !socket_refuses_connection(path)? {
+        if !matches!(native::connect(path), Err(error) if error.raw_os_error() == Some(libc::ECONNREFUSED))
+        {
             return Err(denied("native service socket may still be active"));
         }
         instance.verify()?;
         previous.verify()?;
         fs::remove_file(path)
-    }
-
-    fn socket_refuses_connection(path: &Path) -> io::Result<bool> {
-        // SAFETY: zero is a valid initial value for sockaddr_un. The pathname
-        // bytes below are bounded by its initialized sun_path buffer.
-        let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-        let name = path.as_os_str().as_bytes();
-        if name.contains(&0) || name.len() >= address.sun_path.len() {
-            return Err(denied("native service socket path is invalid"));
-        }
-        address.sun_family = libc::AF_UNIX as libc::sa_family_t;
-        for (target, byte) in address.sun_path.iter_mut().zip(name) {
-            *target = *byte as libc::c_char;
-        }
-        let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + name.len() + 1;
-        // SAFETY: socket arguments use the Linux Unix stream protocol. The
-        // successful descriptor is owned by this call and closed by OwnedFd.
-        let fd = unsafe {
-            libc::socket(
-                libc::AF_UNIX,
-                libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
-                0,
-            )
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-        // SAFETY: address and length describe the initialized pathname above.
-        let status = unsafe {
-            libc::connect(
-                fd.as_raw_fd(),
-                (&raw const address).cast(),
-                length as libc::socklen_t,
-            )
-        };
-        Ok(status < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ECONNREFUSED))
     }
 
     struct UmaskGuard(libc::mode_t);
@@ -617,7 +584,7 @@ mod linux {
             instance.verify()?;
             socket.verify()?;
             if let Some(store) = native_store.as_mut() {
-                if let Ok((request, identity)) = native::read_authorized_request::<AdmissionRequest>(
+                if let Ok((request, identity)) = native::read_authorized_request::<NativeOperation>(
                     &mut stream,
                     policy,
                     &config.receiver_id,
@@ -625,7 +592,7 @@ mod linux {
                     data.verify()?;
                     instance.verify()?;
                     socket.verify()?;
-                    let reply = native_admission::dispatch(store, &config.native_sources, request);
+                    let reply = native_store::dispatch(store, &config.native_sources, request);
                     data.verify()?;
                     instance.verify()?;
                     socket.verify()?;
