@@ -1,7 +1,7 @@
 use agenturm_app::{
     AgenturmApp, Command, discover, execute_attention, execute_backup, execute_backup_workspace,
-    execute_cockpit_with_extensions, execute_collect, execute_content_stdout, execute_ingest,
-    execute_inspect_ui, execute_investigation, execute_prune, execute_query,
+    execute_cockpit_with_extensions, execute_collect, execute_content_stdout, execute_evals,
+    execute_ingest, execute_inspect_ui, execute_investigation, execute_prune, execute_query,
     execute_restore_workspace, execute_retention, execute_selected_review, execute_service,
     execute_span_jsonl_import, execute_task_stdout, execute_trace_import, execute_trace_receiver,
     execute_trace_run, execute_watch, parse_os_command, render, with_private_stdout,
@@ -113,6 +113,13 @@ fn main() -> ExitCode {
             Ok(summary) => print!("{summary}"),
             Err(message) => {
                 eprintln!("span JSONL import failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Command::Evals(options) => match execute_evals(&options) {
+            Ok(result) => print!("{result}"),
+            Err(message) => {
+                eprintln!("evaluation failed: {message}");
                 return ExitCode::FAILURE;
             }
         },

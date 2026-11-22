@@ -14,6 +14,7 @@ mod cockpit_startup;
 mod cockpit_workflows;
 mod content_preview;
 mod discovery;
+mod eval_import;
 mod handoff_export;
 mod inspector_activity;
 mod investigate_cli;
@@ -38,6 +39,7 @@ pub use adapter_install::execute as execute_adapter_install;
 pub use attention::{AttentionOptions, execute_attention};
 pub use content_preview::{ContentOptions, execute_content, execute_content_stdout};
 pub use discovery::{discover, execute_discover};
+pub use eval_import::{EvalOptions, execute_evals};
 pub use investigate_cli::{InvestigationOptions, execute_investigation};
 pub use private_output::with_private_stdout;
 pub use retention_cli::{RetentionOptions, execute_retention};
@@ -234,6 +236,7 @@ pub enum Command {
     Ingest(IngestOptions),
     ImportTraces(TraceImportOptions),
     ImportJsonl(SpanJsonlImportOptions),
+    Evals(EvalOptions),
     ServeTraces(TraceReceiverOptions),
     Run(TraceRunOptions),
     Collect(ConfiguredCollectOptions),
@@ -828,6 +831,8 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         .map(Command::Run),
         Some("import-traces") => trace_import::parse(&args[1..]).map(Command::ImportTraces),
         Some("import-jsonl") => span_jsonl_import::parse(&args[1..]).map(Command::ImportJsonl),
+        Some("import-evals") => eval_import::parse(&args[1..], true).map(Command::Evals),
+        Some("evals") => eval_import::parse(&args[1..], false).map(Command::Evals),
         Some("ingest-codex-usage") => {
             parse_ingest_options(&args[1..], Some(CODEX_PLUGIN_ID)).map(Command::Ingest)
         }
@@ -3306,6 +3311,8 @@ pub fn render(command: Command) -> String {
             "       agenturm run --db <path> [--source-id otlp.<id>] -- <program> [args...]\n",
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
             "       agenturm import-jsonl --file <span-jsonl-path|-> --db <path> --source-id otlp.<id> [--session-id <id>]\n",
+            "       agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id>\n",
+            "       agenturm evals --db <path> --source-id otlp.<id> --trace-id <id> [--json]\n",
             "       agenturm attention status --db <path>\n",
             "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] [--interval-ms <100..60000>]\n",
             "       agenturm task <list|add|show|complete|reopen|link|unlink|handoffs|export> [options]\n",
@@ -3350,7 +3357,7 @@ pub fn render(command: Command) -> String {
         Command::Query(_) | Command::Review { .. } | Command::Attention(_) | Command::Task(_) | Command::Investigate(_) => {
             String::new()
         }
-        Command::Ingest(_) | Command::ImportTraces(_) | Command::ImportJsonl(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),
+        Command::Ingest(_) | Command::ImportTraces(_) | Command::ImportJsonl(_) | Command::Evals(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),
         Command::Collect(_) => String::new(),
         Command::Service(_) => String::new(),
     }

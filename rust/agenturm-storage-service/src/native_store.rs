@@ -14,9 +14,9 @@ use agenturm_kernel::{
 };
 use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
 use agenturm_store::{
-    AutomaticRetentionPolicy, AutomaticRetentionStatus, ObservationBatch, ResolvedTraceReview,
-    RetentionOutcome, SessionPage, SessionQuery, Store, TraceReviewQuery, WorkspaceAnchor,
-    WorkspaceHistory,
+    AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalImportReport, EvalOutcome,
+    ObservationBatch, ResolvedTraceReview, RetainedEvalOutcome, RetentionOutcome, SessionPage,
+    SessionQuery, Store, TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
@@ -48,6 +48,16 @@ pub(crate) enum NativeOperation {
     ReviewTraceTurn {
         query: TraceReviewQuery,
         expected_history_identity: String,
+    },
+    ImportEvalOutcomes {
+        source_id: ExtensionId,
+        outcomes: Vec<EvalOutcome>,
+    },
+    EvalOutcome {
+        source_id: ExtensionId,
+        trace_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_history_identity: Option<String>,
     },
     HistoryIdentity {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -114,6 +124,8 @@ pub(crate) enum NativeReply {
     History(Result<ObservationPage, ReadFailure>),
     Sessions(Result<SessionPage, ReadFailure>),
     TraceReview(Result<Option<ResolvedTraceReview>, ReadFailure>),
+    EvalImported(Result<EvalImportReport, ReadFailure>),
+    EvalOutcome(Result<Option<RetainedEvalOutcome>, ReadFailure>),
     Identity(Result<String, ReadFailure>),
     Workspace(Result<bool, ReadFailure>),
     PrivatePrompts(Result<Vec<agenturm_content::PromptReference>, PrivateEvidenceFailure>),
@@ -257,6 +269,35 @@ pub(crate) fn dispatch(
                 authorize_read(store, role, Some(&expected_history_identity))
                     .and_then(|()| native_read::review_trace_turn(store, allowed, query)),
             );
+        }
+        NativeOperation::ImportEvalOutcomes {
+            source_id,
+            outcomes,
+        } => {
+            return NativeReply::EvalImported(
+                if role == Role::Collector && allowed.contains(&source_id) {
+                    store
+                        .import_eval_outcomes(&source_id, &outcomes)
+                        .map_err(native_read::failure)
+                } else {
+                    Err(ReadFailure::Unauthorized)
+                },
+            );
+        }
+        NativeOperation::EvalOutcome {
+            source_id,
+            trace_id,
+            expected_history_identity,
+        } => {
+            return NativeReply::EvalOutcome(if allowed.contains(&source_id) {
+                authorize_read(store, role, expected_history_identity.as_deref()).and_then(|()| {
+                    store
+                        .eval_outcome(&source_id, &trace_id)
+                        .map_err(native_read::failure)
+                })
+            } else {
+                Err(ReadFailure::Unauthorized)
+            });
         }
         NativeOperation::HistoryIdentity {
             expected_history_identity,
@@ -426,6 +467,8 @@ impl Display for NativeClientError {
                 formatter,
                 "trace exceeds the {max_rows}-row turn-resolution limit; select an explicit turn"
             ),
+            Self::Read(ReadFailure::EvalTraceNotRetained) => formatter
+                .write_str("an evaluation trace is absent from the selected retained source"),
             Self::Admission(AdmissionFailure::Unavailable)
             | Self::Read(ReadFailure::Unavailable)
             | Self::Admin(AdminFailure::Unavailable) => {
@@ -486,6 +529,35 @@ pub struct NativeStore {
 }
 
 impl NativeStore {
+    pub fn import_eval_outcomes(
+        &self,
+        source_id: &ExtensionId,
+        outcomes: &[EvalOutcome],
+    ) -> Result<EvalImportReport, NativeClientError> {
+        self.exchange::<Result<EvalImportReport, ReadFailure>>(
+            NativeOperation::ImportEvalOutcomes {
+                source_id: source_id.clone(),
+                outcomes: outcomes.to_vec(),
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn eval_outcome(
+        &self,
+        source_id: &ExtensionId,
+        trace_id: &str,
+    ) -> Result<Option<RetainedEvalOutcome>, NativeClientError> {
+        self.exchange::<Result<Option<RetainedEvalOutcome>, ReadFailure>>(
+            NativeOperation::EvalOutcome {
+                source_id: source_id.clone(),
+                trace_id: trace_id.into(),
+                expected_history_identity: self.workspace_identity.clone(),
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
     pub fn new(
         socket_path: impl Into<PathBuf>,
         receiver_id: impl Into<String>,
@@ -984,6 +1056,129 @@ mod tests {
     use super::*;
     use agenturm_kernel::{ObservationIdentity, ObservationKind, TraceSpan, TraceStatus};
     use agenturm_store::TraceTurnQuery;
+
+    #[test]
+    fn evaluation_transport_checks_collector_role_and_exact_source_allowlist() {
+        let directory =
+            std::env::temp_dir().join(format!("agenturm-broker-evaluation-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut store = Store::open_collector(directory.join("history.sqlite")).unwrap();
+        let allowed_source = ExtensionId::parse("otlp.allowed").unwrap();
+        let sibling_source = ExtensionId::parse("otlp.sibling").unwrap();
+        let allowed = BTreeSet::from([allowed_source.clone()]);
+        let trace_id = "11111111111111111111111111111111";
+        let import = |source_id: &ExtensionId| NativeOperation::ImportEvalOutcomes {
+            source_id: source_id.clone(),
+            outcomes: vec![EvalOutcome {
+                trace_id: trace_id.into(),
+                passed: false,
+                task_id: None,
+                provider_model: None,
+                scores: Vec::new(),
+            }],
+        };
+        let read = |source_id: &ExtensionId| NativeOperation::EvalOutcome {
+            source_id: source_id.clone(),
+            trace_id: trace_id.into(),
+            expected_history_identity: None,
+        };
+        for (role, source) in [
+            (Role::Reader, &allowed_source),
+            (Role::Collector, &sibling_source),
+            (Role::Maintenance, &allowed_source),
+        ] {
+            assert!(matches!(
+                dispatch(&mut store, &allowed, role, import(source), None, None),
+                NativeReply::EvalImported(Err(ReadFailure::Unauthorized))
+            ));
+        }
+        assert!(matches!(
+            dispatch(
+                &mut store,
+                &allowed,
+                Role::Collector,
+                import(&allowed_source),
+                None,
+                None
+            ),
+            NativeReply::EvalImported(Err(ReadFailure::EvalTraceNotRetained))
+        ));
+        for (role, source) in [
+            (Role::Reader, &sibling_source),
+            (Role::GrantAdministrator, &allowed_source),
+        ] {
+            assert!(matches!(
+                dispatch(&mut store, &allowed, role, read(source), None, None),
+                NativeReply::EvalOutcome(Err(ReadFailure::Unauthorized))
+            ));
+        }
+        assert!(matches!(
+            dispatch(
+                &mut store,
+                &allowed,
+                Role::Reader,
+                read(&allowed_source),
+                None,
+                None
+            ),
+            NativeReply::EvalOutcome(Ok(None))
+        ));
+        let span_id = "2222222222222222";
+        store
+            .commit(
+                allowed_source.as_str(),
+                None,
+                "trace",
+                &[Observation {
+                    harness_id: allowed_source.clone(),
+                    event_id: format!("otlp:{trace_id}:{span_id}"),
+                    revision: 0,
+                    identity: ObservationIdentity::session("session-1"),
+                    observed_at_unix_ns: 2,
+                    kind: ObservationKind::TraceSpan(TraceSpan {
+                        trace_id: trace_id.into(),
+                        span_id: span_id.into(),
+                        parent_span_id: None,
+                        target_source_id: None,
+                        started_at_unix_ns: 1,
+                        status: TraceStatus::Ok,
+                    }),
+                }],
+            )
+            .unwrap();
+        let request = serde_json::to_vec(&import(&allowed_source)).unwrap();
+        assert!(matches!(
+            dispatch(
+                &mut store,
+                &allowed,
+                Role::Collector,
+                serde_json::from_slice(&request).unwrap(),
+                None,
+                None
+            ),
+            NativeReply::EvalImported(Ok(EvalImportReport {
+                inserted: 1,
+                corrected: 0,
+                replayed: 0
+            }))
+        ));
+        let reply = dispatch(
+            &mut store,
+            &allowed,
+            Role::Reader,
+            read(&allowed_source),
+            None,
+            None,
+        );
+        let NativeReply::EvalOutcome(Ok(Some(evaluation))) = reply else {
+            panic!("reader should receive retained metadata");
+        };
+        assert_eq!(evaluation.trace_source_id, allowed_source);
+        assert_eq!(evaluation.outcome.trace_id, trace_id);
+        assert!(!evaluation.outcome.passed);
+        drop(store);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 
     #[test]
     fn trace_review_resolves_and_reads_under_the_same_incarnation_after_rollback() {

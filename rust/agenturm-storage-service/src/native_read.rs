@@ -37,6 +37,7 @@ pub enum ReadFailure {
     HistoryReplaced,
     ExpiredSnapshot { minimum_snapshot_id: u64 },
     TraceScopeTooLarge { max_rows: usize },
+    EvalTraceNotRetained,
     Unavailable,
 }
 
@@ -146,7 +147,7 @@ fn authorize(
     Ok(())
 }
 
-fn failure(error: StoreError) -> ReadFailure {
+pub(crate) fn failure(error: StoreError) -> ReadFailure {
     match error {
         StoreError::Invalid(_) => ReadFailure::InvalidRequest,
         StoreError::ExpiredHistorySnapshot {
@@ -155,6 +156,7 @@ fn failure(error: StoreError) -> ReadFailure {
             minimum_snapshot_id,
         },
         StoreError::TraceScopeTooLarge { max_rows } => ReadFailure::TraceScopeTooLarge { max_rows },
+        StoreError::EvalTraceNotRetained => ReadFailure::EvalTraceNotRetained,
         _ => ReadFailure::Unavailable,
     }
 }

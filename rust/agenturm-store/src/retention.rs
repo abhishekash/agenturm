@@ -185,6 +185,7 @@ pub(super) fn prune_in(
         [cutoff],
     )?;
     if removed_observations > 0 {
+        crate::eval_outcome::purge_unretained(transaction)?;
         transaction.execute(
             "DELETE FROM agenturm_content_cursor_proofs AS proof
              WHERE proof.request_id NOT IN (

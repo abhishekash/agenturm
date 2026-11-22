@@ -5,7 +5,7 @@
 </style></head><body><main><nav><strong>Agenturm / Rust 0.3.4 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
 <p>Baseline is the Python <code>v0.2.8</code> tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.</p>
 <p>The current implementation scope retains the remaining workflows. Remote
-receiver access, eval imports, automatic retention, recorded cost and
+receiver access, remaining eval views, automatic retention, recorded cost and
 historical host views remain required gaps. The default entry-point switch
 stays gated while they and the paired keyboard journeys are incomplete.
 Rust supports explicit structural span imports into Rust history. Automatic
@@ -33,11 +33,11 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 </tr>
 <tr>
 <td><code>import-jsonl</code></td>
-<td>Use <code>import-jsonl</code> for supported native span exports and <code>import-traces</code> for OTLP JSON. Both retain structural trace metadata with exact session scope. Legacy payload, cost and eval import parity remains open.</td>
+<td>Use <code>import-jsonl</code> for supported native span exports and <code>import-traces</code> for OTLP JSON. Both retain structural trace metadata with exact session scope. Legacy payload and cost import parity remains open.</td>
 </tr>
 <tr>
 <td><code>import-evals</code></td>
-<td>Open. Existing <code>agent-evals</code> result imports and joins have no matched Rust workflow.</td>
+<td>Import bounded <code>agent-evals</code> result metadata into an exact retained OTLP trace source. Use <code>evals</code> to read the current outcome in text or JSON. Aggregate views, historical revision queries, and private result detail remain open.</td>
 </tr>
 <tr>
 <td><code>migrate-db</code></td>
@@ -81,6 +81,13 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 <p>Rows carry <code>trace_id</code>, <code>span_id</code>, optional <code>parent_span_id</code>, <code>start_unix_nano</code> and <code>end_unix_nano</code>, and optional <code>status</code> (<code>UNSET</code>, <code>OK</code> or <code>ERROR</code>). Timestamps accept integers or decimal strings. IDs use 32 hexadecimal characters for the trace and 16 for each span. A parent outside the file is valid for a partial export.</p>
 <p>A span needs an exact session ID from its <code>attributes</code> or the explicit <code>--session-id</code> argument. Span-level session aliases must agree, including <code>session.id</code>, <code>gen_ai.conversation.id</code>, and the legacy session, conversation and thread aliases. The argument fills missing session IDs and must match any IDs carried by the file. A native turn link requires <code>agenturm.source.id</code> and <code>agenturm.turn.id</code>. A worker link adds <code>agenturm.worker.id</code>.</p>
 <p>Imports retain trace structure, timing, status and exact scope. Import discards span names, payloads, events, links, token usage, cost, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.</p>
+<h3>Import evaluation results</h3>
+<p>Import the spans first, then select their exact OTLP source for the outcome import and lookup. These commands also support <code>--broker-config</code> in place of <code>--db</code>. A broker collector can import only into an allowlisted source. Collectors and readers can read the outcome for an allowlisted source.</p>
+<pre><code>agenturm import-evals --file results.json --db history.sqlite --source-id otlp.exported
+agenturm evals --db history.sqlite --source-id otlp.exported \
+  --trace-id 11111111111111111111111111111111 --json</code></pre>
+<p>The importer accepts a regular <code>results.json</code> file or stdin (<code>--file -</code>) up to 4 MiB. The top-level <code>results</code> array accepts up to 1,024 outcomes. Each outcome requires a 32-character hexadecimal <code>trace_id</code> and a boolean <code>passed</code>. Optional fields include <code>task_id</code>, <code>provider_model</code> and up to 32 scores. Each score supplies a <code>scorer</code> plus a boolean <code>passed</code>, a numeric <code>score</code>, or both. Metadata labels allow up to 128 ASCII characters. They start with a letter or digit and can also contain <code>._:/@+-</code>. The importer rejects recognized credential prefixes and discards producer errors, score detail text, inputs, outputs, and other result fields.</p>
+<p>Every result must match a retained trace under the selected source ID. Duplicate trace IDs within a batch or a missing match reject the whole batch. Evaluation pass/fail is independent of the execution status of the spans. Corrected metadata advances the outcome revision. An exact replay of any previous revision leaves the latest outcome unchanged. Plain <code>evals</code> prints the current outcome and <code>--json</code> returns its metadata or <code>null</code>. SQLite backups preserve outcomes. Pruning removes the outcome and its revisions when the trace loses its last retained span in that source. Aggregate evaluation views, revision browsing, and private result detail remain outside this implementation.</p>
 <h3>Task Git patches</h3>
 <p>Save a patch from the Linux checkout attached to a task. The optional revision
 checks which version of the task receives the capture. The command reports

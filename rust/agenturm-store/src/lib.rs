@@ -14,6 +14,7 @@
 mod automatic_retention;
 mod backup;
 mod content_grant;
+mod eval_outcome;
 mod linked_trace;
 mod retention;
 mod review_ledger;
@@ -28,6 +29,9 @@ pub use backup::BackupError;
 pub use content_grant::{
     CodexOperationEvidence, CodexOperationSelection, ContentGrant, ContentGrantScope, ContentKind,
     UserTextEvidence,
+};
+pub use eval_outcome::{
+    EvalImportReport, EvalOutcome, EvalScore, MAX_EVAL_OUTCOMES, RetainedEvalOutcome,
 };
 pub use linked_trace::{ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
 pub use retention::RetentionOutcome;
@@ -56,7 +60,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -68,7 +72,8 @@ const STORE_MARKER_V10: &str = "agenturm.observation-store.v10";
 const STORE_MARKER_V11: &str = "agenturm.observation-store.v11";
 const STORE_MARKER_V12: &str = "agenturm.observation-store.v12";
 const STORE_MARKER_V13: &str = "agenturm.observation-store.v13";
-const STORE_MARKER: &str = "agenturm.observation-store.v14";
+const STORE_MARKER_V14: &str = "agenturm.observation-store.v14";
+const STORE_MARKER: &str = "agenturm.observation-store.v15";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -352,6 +357,7 @@ pub enum StoreError {
     RequestConflict,
     StaleCursor,
     StaleContentGrant,
+    EvalTraceNotRetained,
     ExpiredHistorySnapshot { minimum_snapshot_id: u64 },
     TraceScopeTooLarge { max_rows: usize },
     EventConflict { event_id: String },
@@ -370,6 +376,12 @@ impl Display for StoreError {
             Self::RequestConflict => write!(f, "request ID was reused with different content"),
             Self::StaleCursor => write!(f, "source cursor changed since batch preparation"),
             Self::StaleContentGrant => write!(f, "content grant is stale or denied"),
+            Self::EvalTraceNotRetained => {
+                write!(
+                    f,
+                    "an evaluation trace is absent from the selected retained source"
+                )
+            }
             Self::ExpiredHistorySnapshot {
                 minimum_snapshot_id,
             } => write!(
@@ -462,6 +474,13 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
             "agenturm_content_cursor_proofs".to_owned(),
         ));
     }
+    if version >= 15 {
+        expected.push((
+            "index".to_owned(),
+            "agenturm_observations_by_trace".to_owned(),
+        ));
+        expected.push(("table".to_owned(), "agenturm_eval_outcomes".to_owned()));
+    }
     expected.sort();
     if objects != expected {
         return Err(StoreError::UnrecognizedDatabase);
@@ -486,7 +505,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         11 => STORE_MARKER_V11,
         12 => STORE_MARKER_V12,
         13 => STORE_MARKER_V13,
-        14 => STORE_MARKER,
+        14 => STORE_MARKER_V14,
+        15 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -571,6 +591,19 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
             "agenturm_content_cursor_proofs",
             vec![("request_id", "TEXT", 1, 1), ("cursor", "TEXT", 1, 0)],
         ));
+    }
+    if version >= 15 {
+        expected_tables.push((
+            "agenturm_eval_outcomes",
+            vec![
+                ("trace_source_id", "TEXT", 1, 1),
+                ("trace_id", "TEXT", 1, 2),
+                ("revision", "INTEGER", 1, 3),
+                ("outcome_digest", "BLOB", 1, 0),
+                ("outcome_json", "TEXT", 1, 0),
+            ],
+        ));
+        eval_outcome::validate_trace_index(connection)?;
     }
     for (table, expected_columns) in expected_tables {
         let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
@@ -833,7 +866,7 @@ impl Store {
         read_history_identity(&self.connection)
     }
 
-    /// Opens a v8 through v14 store through a read-only connection. This path
+    /// Opens a v8 through v15 store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -934,6 +967,7 @@ impl Store {
             content_grant::create_schema(&transaction, SCHEMA_VERSION)?;
             content_grant::create_receipt_proof_schema(&transaction)?;
             retention::create_schema(&transaction)?;
+            eval_outcome::create_schema(&transaction)?;
             transaction.commit()?;
         } else if schema_version == 2 {
             validate_marked_shape(&connection, 2)?;
@@ -1159,10 +1193,22 @@ impl Store {
             transaction.commit()?;
             validate_marked_shape(&connection, 13)?;
         }
-        if (2..SCHEMA_VERSION).contains(&schema_version) {
+        if (2..14).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             content_grant::migrate_v13(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V14],
+            )?;
+            transaction.pragma_update(None, "user_version", 14)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 14)?;
+        }
+        if (2..SCHEMA_VERSION).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            eval_outcome::create_schema(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -2147,7 +2193,17 @@ mod tests {
         }
     }
 
+    fn downgrade_fixture_to_v14(connection: &Connection) {
+        connection.execute_batch(
+            "DROP INDEX agenturm_observations_by_trace;
+             DROP TABLE agenturm_eval_outcomes;
+             UPDATE agenturm_store_meta SET value='agenturm.observation-store.v14' WHERE key='format';
+             PRAGMA user_version=14;"
+        ).unwrap();
+    }
+
     fn downgrade_fixture_to_v9(connection: &Connection) {
+        downgrade_fixture_to_v14(connection);
         connection
             .execute_batch(
                 "DROP TABLE agenturm_content_cursor_proofs;
@@ -2161,6 +2217,81 @@ mod tests {
     }
 
     #[test]
+    fn v14_migration_retains_trace_membership_and_command_approval() {
+        use agenturm_kernel::{ExtensionId, ObservationIdentity, TraceSpan, TraceStatus};
+
+        let db = TempDb::new();
+        let source = ExtensionId::parse("otlp.evaluation").unwrap();
+        let trace_id = "11111111111111111111111111111111";
+        let span_id = "2222222222222222";
+        let command = ContentGrantScope::new(
+            ExtensionId::parse("harness.codex").unwrap(),
+            ContentKind::CodexCommandDetail,
+            [1; 32],
+        );
+        let mut store = Store::open(&db.0).unwrap();
+        let grant = store.grant_content(&command).unwrap();
+        store
+            .commit(
+                source.as_str(),
+                None,
+                "trace",
+                &[Observation {
+                    harness_id: source.clone(),
+                    event_id: format!("otlp:{trace_id}:{span_id}"),
+                    revision: 0,
+                    identity: ObservationIdentity::session("session-1"),
+                    observed_at_unix_ns: 2,
+                    kind: agenturm_kernel::ObservationKind::TraceSpan(TraceSpan {
+                        trace_id: trace_id.into(),
+                        span_id: span_id.into(),
+                        parent_span_id: None,
+                        target_source_id: None,
+                        started_at_unix_ns: 1,
+                        status: TraceStatus::Ok,
+                    }),
+                }],
+            )
+            .unwrap();
+        downgrade_fixture_to_v14(&store.connection);
+        drop(store);
+
+        let reader = Store::open_read_only(&db.0).unwrap();
+        assert!(reader.eval_outcome(&source, trace_id).unwrap().is_none());
+        reader.verify_content_grant(&command, &grant).unwrap();
+        drop(reader);
+
+        let outcome = EvalOutcome {
+            trace_id: trace_id.into(),
+            passed: false,
+            task_id: None,
+            provider_model: None,
+            scores: Vec::new(),
+        };
+        let mut store = Store::open_collector(&db.0).unwrap();
+        store.verify_content_grant(&command, &grant).unwrap();
+        assert_eq!(
+            store
+                .import_eval_outcomes(&source, std::slice::from_ref(&outcome))
+                .unwrap()
+                .inserted,
+            1
+        );
+        let stored = store.eval_outcome(&source, trace_id).unwrap().unwrap();
+        assert_eq!(stored.outcome, outcome);
+        assert_eq!(stored.revision, 1);
+        store.prune_observations_before(3).unwrap();
+        assert_eq!(
+            store
+                .connection
+                .query_row("SELECT count(*) FROM agenturm_eval_outcomes", [], |row| row
+                    .get::<_, u64>(0),)
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
     fn v11_approval_survives_upgrade_without_authorizing_mcp_payloads() {
         let db = TempDb::new();
         let source = agenturm_kernel::ExtensionId::parse("harness.codex").unwrap();
@@ -2170,6 +2301,7 @@ mod tests {
         let mut store = Store::open(&db.0).unwrap();
         let existing = store.grant_content(&prompt).unwrap();
         let transaction = store.connection.transaction().unwrap();
+        downgrade_fixture_to_v14(&transaction);
         content_grant::migrate_grant_schema(&transaction, 11).unwrap();
         transaction
             .execute(
@@ -2197,6 +2329,7 @@ mod tests {
         let mut store = Store::open(&db.0).unwrap();
         let existing = store.grant_content(&mcp).unwrap();
         let transaction = store.connection.transaction().unwrap();
+        downgrade_fixture_to_v14(&transaction);
         content_grant::migrate_grant_schema(&transaction, 12).unwrap();
         transaction
             .execute(
@@ -2223,6 +2356,7 @@ mod tests {
         let mut store = Store::open(&db.0).unwrap();
         let existing = store.grant_content(&edit).unwrap();
         let transaction = store.connection.transaction().unwrap();
+        downgrade_fixture_to_v14(&transaction);
         content_grant::migrate_grant_schema(&transaction, 13).unwrap();
         transaction
             .execute(

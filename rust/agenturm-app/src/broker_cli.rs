@@ -13,6 +13,8 @@ const USAGE: &str = concat!(
     "       agenturm broker import-jsonl --broker-config <json> --file <span-jsonl-path|-> --source-id otlp.<id> [--session-id <id>]\n",
     "       agenturm broker serve-traces --broker-config <json> --listen <loopback-IP:port> --source-id otlp.<id> --token-file <path>\n",
     "       agenturm broker run --broker-config <json> --source-id otlp.<id> -- <program> [args...]\n",
+    "       agenturm broker import-evals --broker-config <json> --file <results.json|-> --source-id otlp.<id>\n",
+    "       agenturm broker evals --broker-config <json> --source-id otlp.<id> --trace-id <id> [--json]\n",
     "       agenturm broker grant <check|approve|revoke> --broker-config <json> --binding <json>\n",
     "       agenturm broker content list --broker-config <json> --source-id <id> --session-id <id>\n",
     "       agenturm broker content preview --broker-config <json> --selection <json>\n",
@@ -228,6 +230,8 @@ pub(super) fn parse_os(args: &[OsString]) -> Result<BrokerOptions, String> {
                 | "task"
                 | "import-traces"
                 | "import-jsonl"
+                | "import-evals"
+                | "evals"
         )
     ) {
         return Err(USAGE.into());
@@ -567,6 +571,9 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
                 "{}",
                 span_jsonl_import::execute_with_store(options, &mut store)?
             );
+        }
+        Command::Evals(options) => {
+            print!("{}", eval_import::execute_with_store(options, &store)?);
         }
         Command::Query(query) => println!("{}", query_from_store(&store, query)?),
         Command::Review {

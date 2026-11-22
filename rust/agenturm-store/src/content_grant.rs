@@ -154,7 +154,7 @@ pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()>
         13 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail')"
         }
-        14 => {
+        14 | 15 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail')"
         }
         _ => return Err(StoreError::UnsupportedSchema(version)),
