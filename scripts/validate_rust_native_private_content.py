@@ -164,6 +164,37 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         run(READER,'task','continuity',task_id,'--approval-id',approval_id,ok=False)
         assert draft['excerpt'] not in run(READER,'task','continuity',task_id).stdout
         run(ADMIN,'grant','approve','--binding',binding)
+        read_end,write_end=os.pipe()
+        os.set_blocking(write_end,False)
+        filled=0
+        while True:
+            try:filled+=os.write(write_end,b'X'*4096)
+            except BlockingIOError:break
+        os.set_blocking(write_end,True)
+        before_flags=fcntl.fcntl(write_end,fcntl.F_GETFL)
+        blocked=None;pipe_revoke=None
+        try:
+            blocked=subprocess.Popen([APP,'broker','content','preview','--selection',selection,'--broker-config',endpoint],preexec_fn=drop(READER),stdout=write_end,stderr=subprocess.PIPE)
+            time.sleep(.8)
+            pipe_revoke=subprocess.Popen([APP,'broker','grant','revoke','--binding',binding,'--broker-config',endpoint],preexec_fn=drop(ADMIN),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            time.sleep(.3)
+            assert blocked.poll() is None and pipe_revoke.poll() is None
+            _,errors=blocked.communicate(timeout=30)
+            assert blocked.returncode!=0 and b'Review the bounded broker fixture' not in errors,errors
+            output,errors=pipe_revoke.communicate(timeout=10)
+            assert pipe_revoke.returncode==0,(output,errors)
+            assert fcntl.fcntl(write_end,fcntl.F_GETFL)==before_flags
+            os.set_blocking(read_end,False)
+            drained=b''
+            while True:
+                try:drained+=os.read(read_end,65536)
+                except BlockingIOError:break
+            assert drained==b'X'*filled,(len(drained),filled)
+        finally:
+            for process in [blocked,pipe_revoke]:
+                if process is not None and process.poll() is None:process.kill();process.wait(timeout=5)
+            os.close(read_end);os.close(write_end)
+        run(ADMIN,'grant','approve','--binding',binding)
         wrong=json.loads(selection.read_text());wrong['session_id']='other';selection.write_text(json.dumps(wrong));run(READER,*preview,ok=False)
         wrong['session_id']='private-session';selection.write_text(json.dumps(wrong))
         source.rename(root/'old-source.jsonl');source.write_text(original);os.chown(source,COLLECTOR,SOURCE_GID);source.chmod(0o640)
@@ -175,7 +206,7 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         for uid in [READER,ADMIN]:
             denied=subprocess.run([os.sys.executable,'-c',deny_script,str(source)],preexec_fn=drop(uid),capture_output=True)
             assert denied.returncode==73,(uid,denied.returncode,denied.stdout,denied.stderr)
-        print('PASS broker source-backed task draft/approval/decision/CAS, 60x18 cockpit display/redaction/revocation fence, private delivery, distinct reader, grant revocation, exact session/inode proof and metadata-only queries',flush=True)
+        print('PASS bounded private pipe and broker source-backed task draft/approval/decision/CAS, 60x18 cockpit display/redaction/revocation fence, private delivery, distinct reader, grant revocation, exact session/inode proof and metadata-only queries',flush=True)
     finally:
         service.terminate()
         assert service.wait(timeout=10)==0
