@@ -1282,8 +1282,12 @@ def main(binary: Path, codex_binary: Path) -> None:
             except subprocess.TimeoutExpired:
                 service.kill()
                 _, stderr = service.communicate(timeout=5)
+            replacement_fences = {
+                "Agenturm storage service unavailable: database identity changed",
+                "Agenturm storage service unavailable: scratch database identity changed",
+            }
             check(service.returncode == 0
-                  or "scratch database identity changed" in stderr,
+                  or (service.returncode == 1 and stderr.strip() in replacement_fences),
                   f"service failed outside the expected database replacement fence: {stderr}")
 
 
