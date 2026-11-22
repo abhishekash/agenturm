@@ -115,6 +115,18 @@ Build and publish versioned Rust artifacts with checksums, install and uninstall
 
 **Verified on Ubuntu 24.04.5 x86-64.** The [first standalone Rust release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.1.0) ships the exact archive and checksum from the successful tag build. The archive passed install, rolling discovery, collection, restart, query, inspection, backup, and uninstall. The database upgrade used an earlier local candidate because this is the first tagged Rust release. Additional platforms require their own qualification.
 
+**Rust 0.3.1 qualified and published.** The tag points to commit
+`4661eae53a288d091688597f539c8a1167595e59`. The exact Ubuntu 24.04.5
+x86-64 archive passed bare startup, collection without a Python executable
+on PATH, prior 0.2.0 history and cursor upgrade, backup, systemd user
+installation and restart, inspection, and retained history after uninstall.
+A 60×18 PTY verified the active collector's prompt fence and linked OTLP
+view. A real OpenTelemetry SDK verified protobuf ingestion. The published
+download matched the qualified archive and its SHA-256.
+
+[Release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.1) ·
+[Tagged build](https://github.com/abhishekash/agenturm/actions/runs/45024901558)
+
 ### Step 6 — Add connector runtime support after the Rust release gates
 
 Use the existing inbound admission path and the connector API as the starting point. Wire explicit grants and supervised processes, then add durable outbound delivery and reconciliation.
@@ -134,8 +146,8 @@ gated on OS isolation and credential control.
 | Configured process boundary | An independently built adapter and the bundled adapters collect through the same pinned catalog, validation, commit and ACK path. An independent capability adds metrics and a pane. | The default cockpit loads explicitly selected, pinned independent capabilities from its user catalog. Automatic decoder installation and untrusted process activation remain open. |
 | Installed Linux collector | Codex, Pi, Claude Code and OpenCode were collected from real local data. Kiro has an end-to-end native fixture. Published Rust history and cursors reopen in the development bundle. | Collect a real Kiro session on a host with a native Kiro transcript. Qualify installer and user service on any additional platform before advertising it. |
 | Evidence and cockpit | Native review decisions, exact task handoffs, pending request routing, typed Codex MCP metadata, and explicit OTLP source/session links have terminal and durable checks. Grant-fenced JSONL history and OpenCode's current SQLite sweep have prompt proof tests. | Add source-specific missing lifecycle and relationship evidence, older SQLite prompt proofs, and richer review/edit and MCP detail. Verify more actual native turn shapes in the installed cockpit. |
-| Storage and recovery | Atomic records and cursors, crash replay, writer leases, and portable workspace backup/restore are exercised. Restore preserves review and workbench state and disables private-content approvals. | A distinct principal for the standalone observation database remains a separate storage cutover. The distinct-UID Rust storage service fixture currently exercises its own contracts. |
-| Release and compatibility | Ubuntu 24.04 x86-64 installations were qualified from published Rust releases. The development archive upgrades real release-format history. | Qualify the new tagged archive before publication. Additional operating systems and architectures remain unqualified. |
+| Storage and recovery | Atomic records and cursors, crash replay, writer leases, and portable workspace backup/restore are exercised. Restore preserves review and workbench state and disables private-content approvals. | A standalone broker must serve observation admission, queries, grants, and retention under a distinct principal. The available host denied user-namespace mapping and offered no noninteractive secondary UID. The feature-off service tests exercised their own contracts and refused standalone history writes. |
+| Release and compatibility | The published Rust 0.3.1 archive passed Ubuntu 24.04.5 x86-64 install, restart, history upgrade, and uninstall. | Additional operating systems and architectures remain unqualified. |
 | Connector runtime | The pinned driver supervises local processes, checks policy epochs, persists inbound and outbound progress, and reconciles an ambiguous external effect before retrying. Sustained watch is exercised with local fixture executables. | Add verified least-privilege OS isolation and credential/egress control before enabling untrusted connectors. Exercise a supported production connector under that boundary. |
 | Full product cutover | The native cockpit, collector, telemetry receiver, and scoped extension paths can run without a Python process. | Account for the remaining Python CLI workflows, SDK-specific automatic instrumentation and payload views before changing the default distribution entry point. |
 
